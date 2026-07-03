@@ -42,8 +42,11 @@ REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
 ANALYSIS_DATA_PRODUCT_SCHEMA_ID = "feedbax.manifest.analysis_data_product"
 ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION = "feedbax.manifest.analysis_data_product.v1"
 EVALUATION_STATES_CONTAINER_SCHEMA_ID = "feedbax.manifest.evaluation_states_container"
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.evaluation_states_container.v1"
+)
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
+    "feedbax.manifest.evaluation_states_container.v2"
 )
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled"]

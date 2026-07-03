@@ -158,6 +158,10 @@ def test_default_registry_registers_evaluation_states_container_family() -> None
     assert family.current_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
     assert family.policy is not None
     assert family.policy.stance == "reject"
+    migrations = default_spec_registry.available_migrations("EvaluationStatesContainer")
+    assert [migration.migration_id for migration in migrations] == [
+        "evaluation-states-container-v1-to-v2"
+    ]
 
 
 def test_structured_spec_registry_reports_missing_migration_path() -> None:

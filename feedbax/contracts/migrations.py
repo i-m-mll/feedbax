@@ -40,6 +40,7 @@ from feedbax.contracts.manifest import (
     ArtifactMigrationRecord,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
@@ -1015,6 +1016,26 @@ def migrate_graph_project_payload(
     return migrated
 
 
+def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["storage_backend"] = "npz.v2"
+    migrated["leaves"] = [
+        {
+            "path": record.get("path"),
+            "kind": "array",
+            "storage_key": record.get("storage_key"),
+            "dtype": record.get("dtype"),
+            "shape": record.get("shape"),
+            "sha256": record.get("sha256"),
+        }
+        for record in list(payload.get("arrays") or [])
+        if isinstance(record, Mapping)
+    ]
+    migrated.pop("arrays", None)
+    migrated["metadata_sha256"] = None
+    return migrated
+
+
 def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     """Populate schema identities for emitted Feedbax spec families."""
     def _old(schema_id: str) -> str:
@@ -1402,6 +1423,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             required_tests=(
                 "tests/test_regeneration_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ManifestPacket",
+            "feedbax.spec.manifest_packet",
+            "feedbax.spec.manifest_packet.v1",
+            owner_module="feedbax.contracts.manifest_packet",
+            emitted_by=("feedbax.contracts.manifest_packet", "feedbax.bin.packet"),
+            consumed_by=("feedbax.contracts.manifest_packet",),
+            description=(
+                "Directory packet index for identity-preserving manifest and artifact "
+                "import/export."
+            ),
+            required_tests=(
+                "tests/test_manifest_packets.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -1977,6 +2014,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "EvaluationStatesContainer",
+    SchemaMigration(
+        source_version=EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+        migration_id="evaluation-states-container-v1-to-v2",
+        migrate=_migrate_evaluation_states_container_v1,
+        description=(
+            "Promote array-only evaluation-state container metadata to the v2 "
+            "mixed array/JSON metadata leaf envelope."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
