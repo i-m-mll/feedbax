@@ -1259,7 +1259,17 @@ class Graph(Component):
                     f"{wire.target_node}.{wire.target_port} recurrent_initializer "
                     "kind 'constant' requires 'value'"
                 )
-            return jnp.asarray(initializer["value"])
+            dtype = initializer.get("dtype")
+            if dtype is not None:
+                try:
+                    dtype = jnp.dtype(dtype)
+                except TypeError as exc:
+                    raise ValueError(
+                        f"Wire {wire.source_node}.{wire.source_port} -> "
+                        f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                        f"kind 'constant' has invalid dtype {dtype!r}"
+                    ) from exc
+            return jnp.asarray(initializer["value"], dtype=dtype)
         if kind == "graph-input":
             source = initializer.get("source")
             if not isinstance(source, str) or not source:

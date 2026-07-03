@@ -413,6 +413,65 @@ def test_node_output_recurrent_initializer_serializes_verbatim() -> None:
     assert runtime_roundtrip.wires[0].recurrent_initializer == spec.wires[0].recurrent_initializer
 
 
+def _constant_recurrent_spec() -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 0.5},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        wires=[
+            WireSpec(
+                source_node="gain",
+                source_port="output",
+                target_node="gain",
+                target_port="input",
+                temporality="recurrent",
+                recurrent_initializer={
+                    "kind": "constant",
+                    "scope": "trial",
+                    "value": [8.0, 10.0],
+                    "dtype": "float32",
+                    "state_slot": "input",
+                },
+            )
+        ],
+        input_ports=[],
+        output_ports=["out"],
+        output_bindings={"out": ("gain", "output")},
+    )
+
+
+def test_constant_recurrent_initializer_serializes_dtype_verbatim() -> None:
+    spec = _constant_recurrent_spec()
+
+    json_roundtrip = GraphSpec.model_validate_json(spec.model_dump_json())
+    runtime_roundtrip = graph_to_spec(spec_to_graph(spec, {}))
+
+    assert json_roundtrip.wires[0].recurrent_initializer == {
+        "kind": "constant",
+        "scope": "trial",
+        "value": [8.0, 10.0],
+        "dtype": "float32",
+        "state_slot": "input",
+    }
+    assert runtime_roundtrip.wires[0].recurrent_initializer == spec.wires[0].recurrent_initializer
+
+
+def test_constant_recurrent_initializer_dtype_preserved_end_to_end(enable_jax_x64) -> None:
+    spec = _constant_recurrent_spec()
+    graph = spec_to_graph(GraphSpec.model_validate_json(spec.model_dump_json()), {})
+
+    wire = next(w for w in graph.wires if w.temporality == "recurrent")
+    value = graph._initial_value_from_recurrent_initializer(wire)
+
+    assert value.dtype == jnp.float32
+    assert jnp.array_equal(value, jnp.asarray([8.0, 10.0], dtype=jnp.float32))
+
+
 def test_node_output_recurrent_initializer_feeds_prototype_inference() -> None:
     spec = _node_output_recurrent_spec()
 

@@ -936,6 +936,77 @@ def test_zero_constant_and_graph_input_recurrent_initializer_behavior_is_unchang
     assert jnp.allclose(graph_input_outputs["out"], jnp.array([[5.0, 6.0], [3.5, 4.0]]))
 
 
+def test_constant_recurrent_initializer_honors_dtype_key_under_x64(enable_jax_x64) -> None:
+    graph = _make_cyclic_graph()
+
+    typed_wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={
+            "kind": "constant",
+            "value": [1.0, 2.0, 3.0],
+            "dtype": "float32",
+        },
+    )
+    typed_value = graph._initial_value_from_recurrent_initializer(typed_wire)
+    assert typed_value.dtype == jnp.float32
+    assert jnp.array_equal(typed_value, jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32))
+
+    # Without the dtype key, the same JSON-native list promotes to float64 under
+    # globally-enabled x64 — the exact mismatch the dtype key exists to prevent.
+    untyped_wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={"kind": "constant", "value": [1.0, 2.0, 3.0]},
+    )
+    untyped_value = graph._initial_value_from_recurrent_initializer(untyped_wire)
+    assert untyped_value.dtype == jnp.float64
+
+
+def test_constant_recurrent_initializer_without_dtype_is_unchanged() -> None:
+    graph = _make_cyclic_graph()
+    value = [4.0, 5.0]
+
+    wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={"kind": "constant", "value": value},
+    )
+    result = graph._initial_value_from_recurrent_initializer(wire)
+    expected = jnp.asarray(value)
+
+    assert result.dtype == expected.dtype
+    assert jnp.array_equal(result, expected)
+
+
+def test_constant_recurrent_initializer_rejects_invalid_dtype() -> None:
+    graph = _make_cyclic_graph()
+
+    wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={
+            "kind": "constant",
+            "value": [1.0],
+            "dtype": "not_a_dtype",
+        },
+    )
+    with pytest.raises(ValueError, match="invalid dtype"):
+        graph._initial_value_from_recurrent_initializer(wire)
+
+
 def test_recurrent_cycle_init_error_names_wire_and_reason() -> None:
     graph = _make_cyclic_graph()
     state = init_state_from_component(graph)
