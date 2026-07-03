@@ -21,12 +21,18 @@ from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
     EVALUATION_STATES_MEDIA_TYPE,
     EVALUATION_STATES_METADATA_KEY,
+    EVALUATION_STATES_METADATA_VALUES_KEY,
+    EvaluationStatesContainerError,
     EvaluationStatesHashMismatch,
     EvaluationStatesLeafError,
     evaluation_states_container_bytes,
+    evaluation_states_container_bytes_v1,
+    load_evaluation_states_container_bytes,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion
 from feedbax.contracts.manifest import (
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     EvaluationRunSpec,
     EvaluationRunManifest,
     ParentRef,
@@ -52,7 +58,15 @@ def _assert_tree_arrays_equal(left, right) -> None:
         for left_item, right_item in zip(left, right):
             _assert_tree_arrays_equal(left_item, right_item)
         return
-    np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
+    if isinstance(left, list):
+        assert len(left) == len(right)
+        for left_item, right_item in zip(left, right):
+            _assert_tree_arrays_equal(left_item, right_item)
+        return
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
+        return
+    assert left == right
 
 
 def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_path: Path):
@@ -142,9 +156,16 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
 def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
     expected_states = {
         "float_batch": np.asarray([[1.0, 2.0], [3.5, 4.5]], dtype=np.float32),
+        "metadata": {
+            "bridge": "rlrmp",
+            "enabled": True,
+            "n_trials": 3,
+            "tags": ["bridge", "certificate"],
+            "threshold": 0.125,
+        },
         "nested": (
             np.asarray([1, 2, 3], dtype=np.int32),
-            {"sample": np.asarray(7, dtype=np.int64)},
+            {"sample": np.asarray(7, dtype=np.int64), "label": "scalar-metadata"},
         ),
     }
     spec = EvaluationRunSpec(
@@ -174,15 +195,20 @@ def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
         assert artifact.media_type == EVALUATION_STATES_MEDIA_TYPE
         assert artifact.sha256 == sha256_file(Path(artifact.uri))
         assert artifact.size_bytes == Path(artifact.uri).stat().st_size
-        assert artifact.metadata["schema_version"] == (
-            "feedbax.manifest.evaluation_states_container.v1"
-        )
+        assert artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
 
         loaded_states = load_evaluation_states(manifest, root=tmp_path)
         _assert_tree_arrays_equal(expected_states, loaded_states)
 
         loaded_manifest = load_manifest(path)
         assert loaded_manifest.artifacts[0].sha256 == artifact.sha256
+
+        data_a, payload_a = evaluation_states_container_bytes(expected_states)
+        data_b, payload_b = evaluation_states_container_bytes(expected_states)
+        assert payload_a.schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+        assert payload_a.metadata_sha256 is not None
+        assert data_a == data_b
+        assert payload_a == payload_b
     finally:
         unregister_evaluation_recipe("testpkg.durable_eval")
 
@@ -250,7 +276,56 @@ def test_evaluation_states_unknown_container_version_rejected(tmp_path: Path):
         load_evaluation_states(manifest, root=tmp_path)
 
 
-def test_evaluation_states_durable_rejects_non_array_leaf_path(tmp_path: Path):
+def test_evaluation_states_v2_metadata_section_tamper_fails_closed() -> None:
+    data, _payload = evaluation_states_container_bytes(
+        {
+            "array": np.asarray([1], dtype=np.int32),
+            "metadata": {"label": "clean"},
+        }
+    )
+    source = zipfile.ZipFile(io.BytesIO(data), mode="r")
+    output = io.BytesIO()
+    with source, zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as dest:
+        for name in source.namelist():
+            member_data = source.read(name)
+            if name == EVALUATION_STATES_METADATA_VALUES_KEY:
+                values = json.loads(member_data.decode("utf-8"))
+                values[0]["value"] = "tampered"
+                member_data = (
+                    json.dumps(values, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                    + b"\n"
+                )
+            info = zipfile.ZipInfo(filename=name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            dest.writestr(info, member_data)
+
+    with pytest.raises(EvaluationStatesContainerError, match="metadata section digest"):
+        load_evaluation_states_container_bytes(output.getvalue())
+
+
+def test_evaluation_states_v1_loads_and_rejects_non_array_leaf_path() -> None:
+    states = {
+        "float_batch": np.asarray([[1.0, 2.0]], dtype=np.float32),
+        "nested": (np.asarray([1, 2, 3], dtype=np.int32),),
+    }
+    data, payload = evaluation_states_container_bytes_v1(states)
+
+    assert payload.schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1
+    _assert_tree_arrays_equal(states, load_evaluation_states_container_bytes(data))
+
+    with pytest.raises(EvaluationStatesLeafError) as excinfo:
+        evaluation_states_container_bytes_v1(
+            {
+                "ok": np.asarray([1], dtype=np.int32),
+                "bad": "metadata",
+            }
+        )
+    message = str(excinfo.value)
+    assert "['bad']" in message
+    assert "str" in message
+
+
+def test_evaluation_states_durable_rejects_non_json_metadata_leaf_path(tmp_path: Path):
     spec = EvaluationRunSpec(
         evaluation_type="testpkg.exotic_eval",
         params={"states_custody": "durable"},
