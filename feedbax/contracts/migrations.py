@@ -1656,24 +1656,39 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
         )
 
-    for kind, schema_id, description in (
-        ("ExecutionSpec", "feedbax.spec.execution", "Provider-neutral execution request."),
-        ("ExecutionPlan", "feedbax.manifest.execution_plan", "Inspectable concrete execution plan."),
-        ("LocalExecutionResult", "feedbax.manifest.local_execution_result", "Local execution result."),
+    for kind, schema_id, current_version, rejected_versions, description in (
+        (
+            "ExecutionSpec",
+            "feedbax.spec.execution",
+            "feedbax.spec.execution.v2",
+            ("feedbax.spec.execution.v1",),
+            "Provider-neutral execution request.",
+        ),
+        (
+            "ExecutionPlan",
+            "feedbax.manifest.execution_plan",
+            "feedbax.manifest.execution.v2",
+            ("feedbax.manifest.execution.v1",),
+            "Inspectable concrete execution plan.",
+        ),
+        (
+            "LocalExecutionResult",
+            "feedbax.manifest.local_execution_result",
+            "feedbax.manifest.execution.v2",
+            ("feedbax.manifest.execution.v1",),
+            "Local execution result.",
+        ),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                (
-                    "feedbax.spec.execution.v1"
-                    if kind == "ExecutionSpec"
-                    else "feedbax.manifest.execution.v1"
-                ),
+                current_version,
                 owner_module="feedbax.execution.models",
                 emitted_by=execution_emitters,
                 consumed_by=("execution planning", "Studio execution"),
                 description=description,
+                rejected_old_versions=rejected_versions,
             )
         )
 

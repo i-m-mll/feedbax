@@ -115,7 +115,8 @@ def cloud_payload(spec: ExecutionSpec, job_id: str) -> dict[str, Any]:
             ],
         }
     if spec.backend == "modal":
-        cells = spec.cells or [ExecutionCell(id="main", command=spec.command)]
+        default_command = _execution_command(spec, job_id=job_id)
+        cells = spec.cells or [ExecutionCell(id="main", command=default_command)]
         return {
             "provider": "modal",
             "app_name": spec.modal.app_name,
@@ -153,11 +154,12 @@ def render_modal_app(spec: ExecutionSpec) -> str:
     if spec.backend != "modal":
         raise ValueError("render_modal_app only accepts backend='modal'")
     job_id = spec.resolved_job_id()
-    cells = spec.cells or [ExecutionCell(id="main", command=spec.command)]
+    default_command = _execution_command(spec, job_id=job_id)
+    cells = spec.cells or [ExecutionCell(id="main", command=default_command)]
     cell_payload = [
         {
             "id": cell.id,
-            "command": cell.command or spec.command,
+            "command": cell.command or default_command,
             "env": cell.env,
             "params": cell.params,
         }
@@ -173,6 +175,19 @@ def render_modal_app(spec: ExecutionSpec) -> str:
     app_name = json.dumps(spec.modal.app_name)
     manifest_root = json.dumps(spec.artifact_policy.manifest_root)
     log_dir = json.dumps(spec.artifact_policy.log_dir)
+    training_run_spec_payload = json.dumps(
+        (
+            spec.training_run_spec.inline_payload()
+            if spec.training_run_spec is not None
+            else None
+        ),
+        sort_keys=True,
+    )
+    training_run_spec_path = json.dumps(
+        _training_run_spec_path(spec, job_id=job_id)
+        if spec.training_run_spec is not None
+        else None
+    )
     use_spawn_map = "True" if spec.modal.use_spawn_map else "False"
     max_containers = "None" if spec.modal.max_containers is None else str(spec.modal.max_containers)
     return (
@@ -191,7 +206,7 @@ def render_modal_app(spec: ExecutionSpec) -> str:
 
             APP_NAME = {app_name}
             JOB_ID = {json.dumps(job_id)}
-            DEFAULT_COMMAND = {json.dumps(spec.command)}
+            DEFAULT_COMMAND = {json.dumps(default_command)}
             DEFAULT_ENV = {default_env}
             CELLS = {cells_json}
             GPU = {gpu}
@@ -201,6 +216,8 @@ def render_modal_app(spec: ExecutionSpec) -> str:
             MAX_CONTAINERS = {max_containers}
             SECRETS = {secrets}
             TIMEOUT_SECONDS = {spec.modal.timeout_seconds}
+            TRAINING_RUN_SPEC_PATH = {training_run_spec_path}
+            TRAINING_RUN_SPEC_PAYLOAD = {training_run_spec_payload}
             USE_SPAWN_MAP = {use_spawn_map}
             VOLUME_MOUNT_PATH = {volume_mount_path}
             VOLUME_NAME = {volume_name}
@@ -250,6 +267,13 @@ def render_modal_app(spec: ExecutionSpec) -> str:
                 env.update(DEFAULT_ENV)
                 env.update(cell.get("env") or {{}})
                 command = cell.get("command") or DEFAULT_COMMAND
+                if TRAINING_RUN_SPEC_PAYLOAD is not None:
+                    spec_path = pathlib.Path(TRAINING_RUN_SPEC_PATH)
+                    spec_path.parent.mkdir(parents=True, exist_ok=True)
+                    spec_path.write_text(
+                        json.dumps(TRAINING_RUN_SPEC_PAYLOAD, indent=2, sort_keys=True) + "\\n",
+                        encoding="utf-8",
+                    )
                 stdout_path = run_root / "stdout.log"
                 stderr_path = run_root / "stderr.log"
                 with stdout_path.open("w", encoding="utf-8") as stdout:
@@ -292,6 +316,47 @@ def write_modal_app(spec: ExecutionSpec, path: Path | str) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_modal_app(spec), encoding="utf-8")
     return output
+
+
+def _execution_command(spec: ExecutionSpec, *, job_id: str) -> str:
+    if spec.training_run_spec is None:
+        if spec.command is None:
+            raise ValueError("ExecutionSpec.command is required without training_run_spec")
+        return spec.command
+    run_directory = _modal_run_directory(spec, job_id=job_id)
+    spec_path = _training_run_spec_path(spec, job_id=job_id)
+    return shlex.join(
+        [
+            "python",
+            "-m",
+            "feedbax",
+            "execute-training-run-spec",
+            spec_path,
+            "--manifest-root",
+            run_directory,
+            "--checkpoint-root",
+            f"{run_directory.rstrip('/')}/checkpoints",
+            "--run-id",
+            job_id,
+        ]
+    )
+
+
+def _modal_run_directory(spec: ExecutionSpec, *, job_id: str) -> str:
+    return (
+        f"{spec.modal.volume_mount_path.rstrip('/')}/"
+        f"{spec.artifact_policy.manifest_root}/{job_id}"
+    )
+
+
+def _training_run_spec_path(spec: ExecutionSpec, *, job_id: str) -> str:
+    if spec.training_run_spec is None:
+        raise ValueError("training_run_spec is required")
+    run_directory = _modal_run_directory(spec, job_id=job_id)
+    spec_path = spec.training_run_spec.path
+    if not Path(spec_path).is_absolute():
+        return f"{run_directory.rstrip('/')}/{spec_path.lstrip('/')}"
+    return spec_path
 
 
 def modal_image_packages(spec: ExecutionSpec) -> list[str]:

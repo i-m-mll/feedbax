@@ -19,8 +19,65 @@ from feedbax.execution.planning import (
     default_feedbax_sources,
     prepare_execution_plan,
 )
+from feedbax.contracts.training import (
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
+)
 from feedbax.integrations.provider import provider_manifest
 from feedbax.web.app import create_app
+
+
+def _minimal_graph() -> dict[str, object]:
+    return {
+        "nodes": {
+            "gain": {
+                "type": "Gain",
+                "params": {"gain": 1.0},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            }
+        },
+        "wires": [],
+        "input_ports": ["input"],
+        "output_ports": ["output"],
+        "input_bindings": {"input": ("gain", "input")},
+        "output_bindings": {"output": ("gain", "output")},
+    }
+
+
+def _training_run_payload() -> dict[str, object]:
+    worker = WorkerExecutionSpec(
+        method_contract=standard_supervised_method_contract(),
+        effective_phase=standard_supervised_effective_phase_spec(),
+    )
+    spec = TrainingRunSpec(
+        graph={"inline": _minimal_graph()},
+        task=TaskSpec(type="ReachingTask", params={"n_steps": 4}),
+        training_config=TrainingConfig(n_batches=2, batch_size=3),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(type="target_state", label="target", selector="output")
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=worker,
+    )
+    return spec.model_dump(mode="json")
+
+
+def _training_source() -> dict[str, object]:
+    return {
+        "kind": "inline",
+        "identity": "studio:training-run-spec:toy",
+        "inline": _training_run_payload(),
+    }
 
 
 def test_execution_spec_declares_and_rejects_schema_versions() -> None:
@@ -32,10 +89,60 @@ def test_execution_spec_declares_and_rejects_schema_versions() -> None:
     with pytest.raises(ValidationError):
         ExecutionSpec.model_validate(
             {
-                "schema_version": "feedbax.spec.execution.v0",
+                "schema_version": "feedbax.spec.execution.v1",
                 "command": "python train.py",
             }
         )
+
+
+def test_training_execution_plan_derives_local_command_from_training_run_spec() -> None:
+    spec = ExecutionSpec(
+        backend="local",
+        job_id="training-local",
+        command="python rlrmp_train.py --duplicated-flag 123",
+        training_run_spec=_training_source(),
+    )
+
+    plan = prepare_execution_plan(spec)
+
+    assert "python -m feedbax execute-training-run-spec" in plan.command
+    assert "rlrmp_train.py" not in plan.command
+    assert "--duplicated-flag" not in plan.command
+    assert "--run-id training-local" in plan.command
+    training_record = plan.reproducibility["training_run_spec"]
+    assert training_record["identity"] == "studio:training-run-spec:toy"
+    assert len(training_record["content_sha256"]) == 64
+    assert training_record["path"].endswith("/feedbax_runs/training-local/training-run-spec.json")
+    assert any(route.role == "training_run_spec" for route in plan.artifact_routes)
+    manifest_route = next(
+        route for route in plan.artifact_routes if route.role == "training_run_manifest"
+    )
+    assert manifest_route.source.endswith(
+        "/feedbax_runs/training-local/manifests/training_runs/"
+        "feedbax-training-run_training-local.json"
+    )
+    assert any("ignore command" in warning for warning in plan.warnings)
+
+
+def test_training_execution_plan_accepts_referenced_training_run_spec() -> None:
+    spec = ExecutionSpec(
+        backend="local",
+        job_id="training-ref",
+        training_run_spec={
+            "kind": "ref",
+            "ref": "repo://specs/training-run.json",
+            "content_sha256": "a" * 64,
+        },
+    )
+
+    plan = prepare_execution_plan(spec)
+
+    record = plan.reproducibility["training_run_spec"]
+    assert "python -m feedbax execute-training-run-spec" in plan.command
+    assert record["source_kind"] == "ref"
+    assert record["identity"] == "repo://specs/training-run.json"
+    assert record["ref"] == "repo://specs/training-run.json"
+    assert record["content_sha256"] == "a" * 64
 
 
 def test_runpod_plan_uses_ssh_worker_contract() -> None:
@@ -75,6 +182,29 @@ def test_runpod_plan_uses_ssh_worker_contract() -> None:
     assert "nohup bash -lc" in plan.launch.command
     assert "/workspace/feedbax_runs/runpod-smoke/done" in plan.launch.command
     assert plan.reproducibility["repo_refs"]["feedbax"]["git_ref"] == "abc123"
+
+
+def test_runpod_training_plan_records_training_source_without_provider_contact() -> None:
+    spec = ExecutionSpec(
+        backend="runpod",
+        job_id="runpod-training-spec",
+        training_run_spec=_training_source(),
+        repos=default_feedbax_sources(feedbax_ref="abc123"),
+        primary_repo="feedbax",
+    )
+
+    plan = prepare_execution_plan(spec)
+
+    assert "python -m feedbax execute-training-run-spec" in plan.command
+    assert plan.command.count("--") == 3
+    assert "scripts/train" not in plan.command
+    assert plan.cloud_payload["provider"] == "runpod"
+    assert plan.cloud_payload["training_run_spec"] == plan.reproducibility["training_run_spec"]
+    assert plan.cloud_payload["training_run_spec"]["path"] == (
+        "/workspace/feedbax_runs/runpod-training-spec/training-run-spec.json"
+    )
+    assert any(check.id == "ssh" for check in plan.health_checks)
+    assert any(check.id == "gpu" for check in plan.health_checks)
 
 
 def test_runpod_plan_marks_local_rsync_as_dev_override() -> None:
@@ -142,6 +272,31 @@ def test_modal_plan_represents_parallel_cells_without_ssh() -> None:
     assert next(step for step in plan.bootstrap if step.id == "modal-source-feedbax")
     assert plan.launch.command == "modal run --detach feedbax_modal_execution.py  # generated app uses spawn_map/map for independent cells"
     assert any("disjoint output paths" in warning for warning in plan.warnings)
+
+
+def test_modal_training_plan_and_app_use_training_run_spec_runner() -> None:
+    spec = ExecutionSpec(
+        backend="modal",
+        job_id="modal-training-spec",
+        training_run_spec=_training_source(),
+        modal={"use_spawn_map": False},
+    )
+
+    plan = prepare_execution_plan(spec)
+    rendered = render_modal_app(spec)
+
+    assert "python -m feedbax execute-training-run-spec" in plan.command
+    assert "python -m feedbax execute-training-run-spec" in rendered
+    assert "rlrmp" not in plan.command
+    assert "rlrmp" not in rendered
+    assert plan.cloud_payload["provider"] == "modal"
+    assert plan.cloud_payload["training_run_spec"] == plan.reproducibility["training_run_spec"]
+    assert plan.cloud_payload["training_run_spec"]["path"] == (
+        "/vol/feedbax_runs/modal-training-spec/training-run-spec.json"
+    )
+    assert plan.cloud_payload["cells"][0]["command"].startswith(
+        "python -m feedbax execute-training-run-spec"
+    )
 
 
 def test_modal_app_renderer_contains_volume_health_and_map_semantics() -> None:
