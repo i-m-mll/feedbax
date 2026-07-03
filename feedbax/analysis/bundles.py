@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
+from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
@@ -31,7 +32,6 @@ from feedbax.contracts.manifest import (
     default_manifest_root,
     load_manifest,
     spec_payload,
-    store_json_artifact,
     write_manifest,
 )
 from feedbax.persistence.manifest_index import iter_manifest_files
@@ -640,47 +640,31 @@ def _execute_report_stage(
 ) -> list[StageMaterialization]:
     products: list[StageMaterialization] = []
     for index, inputs in enumerate(input_groups):
+        stage_params = _params_for_stage(stage)
+        bundle_metadata = {
+            "name": bundle.name,
+            "stage": stage.name,
+            "index": index,
+            "schema_id": bundle.schema_id,
+            "schema_version": bundle.schema_version,
+        }
         spec = ReportSpec(
-            report_type=str(stage.report_type),
+            report_type=str(stage.report_type or BUNDLE_SUMMARY_REPORT_TYPE),
             inputs=list(inputs),
-            params=_params_for_stage(stage),
+            params={
+                "stage_params": stage_params,
+                "bundle": bundle_metadata,
+            },
             narrative=stage.params.get("narrative"),
         )
-        report_body = {
-            "kind": "AnalysisBundleReport",
-            "bundle": bundle.name,
-            "stage": stage.name,
-            "input_manifest_ids": [input_ref.id for input_ref in inputs],
-            "params": dict(stage.params),
-        }
-        artifact = store_json_artifact(
-            report_body,
+        manifest, path = execute_report_spec(
+            spec,
             root=root,
-            role="report",
-            logical_name=f"{bundle.name}-{stage.name}-{index}.json",
-            metadata={"bundle": bundle.name, "stage": stage.name},
-        )
-        regeneration_payload = _stage_regeneration_payload(
-            stage,
-            inputs=inputs,
-            outputs=[artifact],
-            issues=issues,
-        )
-        manifest = ReportManifest(
-            id=f"feedbax-report:{bundle.name}:{stage.name}:{index}",
-            status="completed",
-            report_spec=spec_payload(
-                "ReportSpec",
-                spec.model_dump(mode="json", exclude_none=True),
-            ),
-            inputs=list(inputs),
             provenance=Provenance(
                 parents=list(inputs),
                 issues=list(issues),
                 metadata={"bundle": bundle.name, "stage": stage.name},
             ),
-            artifacts=[artifact],
-            regeneration_specs=[regeneration_payload],
             metadata={
                 "bundle": {
                     "name": bundle.name,
@@ -690,12 +674,23 @@ def _execute_report_stage(
                 }
             },
         )
-        path = write_manifest(manifest, root=root)
+        manifest_ref = _manifest_ref(manifest, path, "report")
+        regeneration_payload = _stage_regeneration_payload(
+            stage,
+            inputs=inputs,
+            outputs=[manifest_ref, *manifest.artifacts],
+            issues=issues,
+        )
+        updated_manifest, updated_path = _with_regeneration_spec(
+            manifest,
+            regeneration_payload,
+            root=root,
+        )
         products.append(
             StageMaterialization(
-                manifest_ref=_manifest_ref(manifest, path, "report"),
-                artifacts=tuple(manifest.artifacts),
-                manifest_path=path,
+                manifest_ref=_manifest_ref(updated_manifest, updated_path, "report"),
+                artifacts=tuple(updated_manifest.artifacts),
+                manifest_path=updated_path,
                 regeneration_spec=regeneration_payload,
             )
         )

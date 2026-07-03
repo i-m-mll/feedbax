@@ -7,9 +7,11 @@ import pytest
 from feedbax.analysis import (
     AnalysisRecipeProtocol,
     EvaluationRecipeProtocol,
+    ReportRecipeProtocol,
     RecipeValidationError,
     validate_analysis_recipe,
     validate_evaluation_recipe,
+    validate_report_recipe,
 )
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
@@ -21,7 +23,8 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
-from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec
+from feedbax.analysis.reports import ReportRecipeResult
+from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec, ReportSpec
 from feedbax.plugins import discovery
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
@@ -30,8 +33,10 @@ from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 def test_public_validation_protocols_are_importable_from_stable_paths() -> None:
     assert AnalysisRecipeProtocol is not None
     assert EvaluationRecipeProtocol is not None
+    assert ReportRecipeProtocol is not None
     assert validate_analysis_recipe is not None
     assert validate_evaluation_recipe is not None
+    assert validate_report_recipe is not None
 
 
 class CustomEvaluationRecipe:
@@ -164,3 +169,25 @@ def test_analysis_recipe_registration_rejects_bad_signature_and_names_type() -> 
         match="Analysis recipe 'testpkg.bad_analysis'.*three positional arguments.*inputs",
     ):
         register_analysis_recipe("testpkg.bad_analysis", recipe, replace=True)
+
+
+def test_valid_report_recipe_validates() -> None:
+    def recipe(
+        _report_spec: ReportSpec,
+        _root: Path,
+        _inputs: list[object],
+    ) -> ReportRecipeResult:
+        return ReportRecipeResult()
+
+    assert validate_report_recipe("testpkg.valid_report", recipe) is recipe
+
+
+def test_report_recipe_validation_rejects_bad_signature_and_names_type() -> None:
+    def recipe(_report_spec: ReportSpec, _root: Path) -> ReportRecipeResult:
+        return ReportRecipeResult()
+
+    with pytest.raises(
+        RecipeValidationError,
+        match="Report recipe 'testpkg.bad_report'.*three positional arguments.*inputs",
+    ):
+        validate_report_recipe("testpkg.bad_report", recipe)

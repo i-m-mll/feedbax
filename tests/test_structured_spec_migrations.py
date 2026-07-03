@@ -191,6 +191,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
     assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v2"
+    assert families["ReportSpec"].identity == "feedbax.spec.report"
+    assert families["ReportSpec"].current_version == "feedbax.spec.report.v1"
     assert (
         families["AnalysisDataProductRequirement"].identity
         == "feedbax.spec.analysis_data_product_requirement"
@@ -502,6 +504,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
     execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
     local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
+    report_policy = default_spec_registry.resolve("ReportSpec").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
@@ -519,6 +522,9 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert population_policy is not None
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
+    assert report_policy is not None
+    assert report_policy.stance == "reject"
+    assert report_policy.rejected_old_versions == ("feedbax.spec.report.v0",)
     assert execution_plan_policy is not None
     assert execution_plan_policy.rejected_old_versions == (
         "feedbax.manifest.execution.v2",
