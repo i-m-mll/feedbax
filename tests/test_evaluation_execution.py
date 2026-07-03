@@ -148,7 +148,7 @@ def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
         ),
     }
     spec = EvaluationRunSpec(
-        evaluation_type="durable_eval",
+        evaluation_type="testpkg.durable_eval",
         params={"states_custody": "durable"},
     )
 
@@ -159,7 +159,7 @@ def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states=expected_states)
 
-    register_evaluation_recipe("durable_eval", recipe, replace=True)
+    register_evaluation_recipe("testpkg.durable_eval", recipe, replace=True)
     try:
         manifest, path = execute_evaluation_run_spec(spec, root=tmp_path)
 
@@ -184,12 +184,12 @@ def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
         loaded_manifest = load_manifest(path)
         assert loaded_manifest.artifacts[0].sha256 == artifact.sha256
     finally:
-        unregister_evaluation_recipe("durable_eval")
+        unregister_evaluation_recipe("testpkg.durable_eval")
 
 
 def test_evaluation_states_tamper_fails_closed(tmp_path: Path):
     spec = EvaluationRunSpec(
-        evaluation_type="tamper_eval",
+        evaluation_type="testpkg.tamper_eval",
         params={"states_custody": "durable"},
     )
 
@@ -200,7 +200,7 @@ def test_evaluation_states_tamper_fails_closed(tmp_path: Path):
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states={"value": np.asarray([1], dtype=np.int32)})
 
-    register_evaluation_recipe("tamper_eval", recipe, replace=True)
+    register_evaluation_recipe("testpkg.tamper_eval", recipe, replace=True)
     try:
         manifest, _path = execute_evaluation_run_spec(spec, root=tmp_path)
         artifact = next(
@@ -213,7 +213,7 @@ def test_evaluation_states_tamper_fails_closed(tmp_path: Path):
         with pytest.raises(EvaluationStatesHashMismatch):
             load_evaluation_states(manifest, root=tmp_path)
     finally:
-        unregister_evaluation_recipe("tamper_eval")
+        unregister_evaluation_recipe("testpkg.tamper_eval")
 
 
 def test_evaluation_states_unknown_container_version_rejected(tmp_path: Path):
@@ -252,7 +252,7 @@ def test_evaluation_states_unknown_container_version_rejected(tmp_path: Path):
 
 def test_evaluation_states_durable_rejects_non_array_leaf_path(tmp_path: Path):
     spec = EvaluationRunSpec(
-        evaluation_type="exotic_eval",
+        evaluation_type="testpkg.exotic_eval",
         params={"states_custody": "durable"},
     )
 
@@ -268,7 +268,7 @@ def test_evaluation_states_durable_rejects_non_array_leaf_path(tmp_path: Path):
             }
         )
 
-    register_evaluation_recipe("exotic_eval", recipe, replace=True)
+    register_evaluation_recipe("testpkg.exotic_eval", recipe, replace=True)
     try:
         with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
             execute_evaluation_run_spec(spec, root=tmp_path)
@@ -277,7 +277,7 @@ def test_evaluation_states_durable_rejects_non_array_leaf_path(tmp_path: Path):
         assert "['bad']" in message
         assert "object" in message
     finally:
-        unregister_evaluation_recipe("exotic_eval")
+        unregister_evaluation_recipe("testpkg.exotic_eval")
 
 
 def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: Path):
