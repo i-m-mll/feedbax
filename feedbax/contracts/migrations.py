@@ -34,6 +34,10 @@ from feedbax.contracts.descriptors import (
     VARIABLE_DESCRIPTOR_SCHEMA_ID,
     VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
 )
+from feedbax.contracts.expressions import (
+    PATH_EXPRESSION_SCHEMA_ID,
+    PATH_EXPRESSION_SCHEMA_VERSION,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
@@ -1391,6 +1395,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
             required_tests=("tests/test_analysis_spec_bundles.py",),
+        ),
+        _family(
+            "PathExpression",
+            PATH_EXPRESSION_SCHEMA_ID,
+            PATH_EXPRESSION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.expressions",
+            emitted_by=("bundle conditions", "data-product extraction", "report predicates"),
+            consumed_by=(
+                "feedbax.contracts.expressions.evaluate_expr",
+                "feedbax.contracts.expressions.evaluate_query",
+            ),
+            description="Composable manifest path-expression and value-query AST.",
+            required_tests=(
+                "tests/test_path_expressions.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "ReportSpec",
