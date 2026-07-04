@@ -1257,6 +1257,13 @@ def _pos_only_states(positions: Float[Array, "... ndim=2"]):
     return states
 
 
+def _optional_array(value: Any) -> Optional[Array]:
+    """Convert optional array-valued module fields."""
+    if value is None:
+        return None
+    return jnp.asarray(value)
+
+
 def internal_grid_points(
     bounds: Float[Array, "bounds=2 ndim=2"], n: int = 2
 ) -> Float[Array, "n**ndim ndim=2"]:
@@ -1333,6 +1340,11 @@ class SimpleReaches(AbstractTask):
 
     Validation set is center-out reaches.
 
+    Epoch-aware consumers such as ``EpochMaskedLoss``, timeline masks, and
+    epoch-vline plot helpers require ``epoch_name`` to be set. When set, the
+    full trial is labeled as one epoch with bounds ``[0, n_steps]``; when left
+    as ``None`` the task emits the historical empty timeline.
+
     !!! Note
         This passes a trajectory of target velocities all equal to zero, assuming
         that the user will choose a loss function that penalizes only the initial
@@ -1356,6 +1368,12 @@ class SimpleReaches(AbstractTask):
             of trials in the validation set is equal to
             `eval_n_directions * eval_grid_n ** 2`.
         eval_reach_length: The length (in space) of each reach in the validation set.
+        epoch_name: Optional name for a full-trial epoch. Set this for
+            epoch-aware losses, Studio timeline masks, and epoch-aware plots.
+        fixed_endpoints: Optional deterministic endpoint pair with shape ``(2, 2)``
+            and dtype convertible to a JAX array. Row 0 is the initial effector
+            position and row 1 is the target position. When set, training ignores
+            the random key and validation emits one trial.
     """
 
     n_steps: int
@@ -1367,6 +1385,15 @@ class SimpleReaches(AbstractTask):
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
+    epoch_name: Optional[str] = field(default=None, static=True)
+    fixed_endpoints: Optional[Float[Array, "2 2"]] = field(
+        default=None,
+        converter=_optional_array,
+    )
+
+    def __check_init__(self) -> None:
+        if self.fixed_endpoints is not None and self.fixed_endpoints.shape != (2, N_DIM):
+            raise ValueError("SimpleReaches.fixed_endpoints must have shape (2, 2)")
 
     def get_train_trial(
         self, key: PRNGKeyArray, batch_info: Optional[BatchInfo] = None
@@ -1377,7 +1404,10 @@ class SimpleReaches(AbstractTask):
             key: A random key for generating the trial.
         """
 
-        effector_pos_endpoints = uniform_tuples(key, n=2, bounds=self.workspace)
+        if self.fixed_endpoints is None:
+            effector_pos_endpoints = uniform_tuples(key, n=2, bounds=self.workspace)
+        else:
+            effector_pos_endpoints = self.fixed_endpoints
         effector_init_state, effector_target_state = _pos_only_states(effector_pos_endpoints)
 
         # Broadcast the fixed targets to a sequence with the desired number of
@@ -1400,12 +1430,15 @@ class SimpleReaches(AbstractTask):
         This doesn't generate intervention params, and they are empty in the returned spec.
         """
 
-        effector_pos_endpoints = _centerout_endpoints_grid(
-            self.workspace,
-            self.eval_grid_n,
-            self.eval_n_directions,
-            self.eval_reach_length,
-        )
+        if self.fixed_endpoints is None:
+            effector_pos_endpoints = _centerout_endpoints_grid(
+                self.workspace,
+                self.eval_grid_n,
+                self.eval_n_directions,
+                self.eval_reach_length,
+            )
+        else:
+            effector_pos_endpoints = jnp.expand_dims(self.fixed_endpoints, axis=1)
 
         effector_init_states, effector_target_states = _pos_only_states(effector_pos_endpoints)
 
@@ -1419,6 +1452,21 @@ class SimpleReaches(AbstractTask):
         return self._construct_trial_spec(effector_init_states, effector_target_states)
 
     def _construct_trial_spec(self, effector_init_state, effector_target_state):
+        batched = effector_init_state.pos.ndim > 1
+        pos_discount = self._pos_discount
+        if self.epoch_name is None:
+            timeline = TrialTimeline(self.n_steps)
+        else:
+            epoch_bounds = jnp.asarray([0, self.n_steps], dtype=jnp.int32)
+            if batched:
+                epoch_bounds = jnp.broadcast_to(epoch_bounds, (effector_init_state.pos.shape[0], 2))
+                pos_discount = jnp.broadcast_to(pos_discount, effector_target_state.pos.shape[:-1])
+            timeline = TrialTimeline.from_epochs_events(
+                self.n_steps,
+                epoch_bounds=epoch_bounds,
+                epoch_names=(self.epoch_name,),
+            )
+
         return TaskTrialSpec(
             inits=WhereDict({(lambda state: state.mechanics.effector): effector_init_state}),
             inputs=dict(
@@ -1427,7 +1475,7 @@ class SimpleReaches(AbstractTask):
             targets=WhereDict(
                 {
                     (lambda state: state.mechanics.effector.pos): (
-                        TargetSpec(effector_target_state.pos, discount=self._pos_discount)
+                        TargetSpec(effector_target_state.pos, discount=pos_discount)
                     ),
                     # (lambda state: state.mechanics.effector.vel): {
                     #     "Effector final velocity": (
@@ -1438,12 +1486,14 @@ class SimpleReaches(AbstractTask):
                     # },
                 }
             ),
-            timeline=TrialTimeline(self.n_steps),
+            timeline=timeline,
         )
 
     @property
     def n_validation_trials(self) -> int:
         """Number of trials in the validation set."""
+        if self.fixed_endpoints is not None:
+            return 1
         return self.eval_n_directions * self.eval_grid_n**2
 
     def validation_plots(
