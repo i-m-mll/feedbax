@@ -15,6 +15,7 @@ from feedbax.execution.backends import (
     ssh_prefix_for_backend,
 )
 from feedbax.contracts.manifest import ArtifactRef, utc_now
+from feedbax.execution.container import collect_source_provenance
 from feedbax.execution.models import (
     ExecutionPlan,
     ExecutionSpec,
@@ -61,7 +62,8 @@ def prepare_execution_plan(spec: ExecutionSpec) -> ExecutionPlan:
     training_record = _training_run_spec_record(spec, run_directory)
     if training_record is not None and payload:
         payload = {**payload, "training_run_spec": training_record}
-    warnings = _warnings(spec)
+    reproducibility = _reproducibility(spec, run_directory)
+    warnings = _warnings(spec, reproducibility)
     return ExecutionPlan(
         job_id=job_id,
         backend=spec.backend,
@@ -73,7 +75,7 @@ def prepare_execution_plan(spec: ExecutionSpec) -> ExecutionPlan:
         monitor=_monitor_steps(spec, run_directory),
         artifact_routes=_artifact_routes(spec, run_directory),
         cloud_payload=payload,
-        reproducibility=_reproducibility(spec, run_directory),
+        reproducibility=reproducibility,
         warnings=warnings,
     )
 
@@ -182,7 +184,10 @@ def _bootstrap_steps(
                 id="sync-primary-environment",
                 title="Install primary project environment",
                 command=f"cd {shlex.quote(primary_path)} && uv sync",
-                description="Run once before CUDA/JAX wheel overrides; later runs should use uv run --no-sync.",
+                description=(
+                    "Run once before CUDA/JAX wheel overrides; later runs should use "
+                    "uv run --no-sync."
+                ),
             )
         )
     return steps
@@ -254,6 +259,18 @@ def _repo_steps(
                 title=f"Sync local {source.name}",
                 command=command,
                 description="Development override; record as non-reproducible until committed.",
+            )
+        ]
+    if source.install_mode == "local-embed":
+        return [
+            PlanStep(
+                id=f"embed-{source.name}",
+                title=f"Embed local {source.name}",
+                description=(
+                    "local-embed is implemented by the Modal renderer at image-build time; "
+                    "use local-rsync for SSH or RunPod workers."
+                ),
+                critical=spec.backend == "modal",
             )
         ]
     clone = (
@@ -337,7 +354,10 @@ def _launch_step(spec: ExecutionSpec, command: str, run_directory: str) -> PlanS
             id="modal-submit",
             title="Submit Modal execution",
             command=submit,
-            description="Generated Modal app runs the command in a function with configured GPU/image/volume.",
+            description=(
+                "Generated Modal app runs the command in a function with configured "
+                "GPU/image/volume."
+            ),
         )
     log_dir = f"{run_directory.rstrip('/')}/{spec.artifact_policy.log_dir}"
     if spec.cells:
@@ -525,7 +545,10 @@ def _artifact_routes(spec: ExecutionSpec, run_directory: str) -> list[ArtifactRe
     return routes
 
 
-def _warnings(spec: ExecutionSpec) -> list[str]:
+def _warnings(
+    spec: ExecutionSpec,
+    reproducibility: dict[str, Any],
+) -> list[str]:
     warnings: list[str] = []
     if spec.training_run_spec is not None and spec.command is not None:
         warnings.append(
@@ -545,6 +568,18 @@ def _warnings(spec: ExecutionSpec) -> list[str]:
                 f"{source.name}: local-rsync is a development override; prefer github-ref "
                 "or pypi for reproducible runs."
             )
+        if source.install_mode == "local-embed":
+            source_records = {
+                record["name"]: record
+                for record in reproducibility.get("local_embed_sources", [])
+            }
+            record = source_records.get(source.name, {})
+            warnings.append(
+                f"{source.name}: local-embed is a development mode; the image reflects "
+                "the working tree at render time "
+                f"(commit {record.get('commit')}, dirty={record.get('dirty')}). "
+                "Use github-ref or pypi for content-pinned runs."
+            )
         if source.install_mode == "github-ref" and not source.git_ref:
             warnings.append(f"{source.name}: github-ref source has no explicit git_ref.")
         if spec.backend == "modal" and source.install_mode == "local-rsync":
@@ -554,7 +589,8 @@ def _warnings(spec: ExecutionSpec) -> list[str]:
             )
     if spec.backend == "modal" and spec.cells and spec.modal.volume_name:
         warnings.append(
-            "Modal cells must write to disjoint output paths or explicitly coordinate volume commits."
+            "Modal cells must write to disjoint output paths or explicitly coordinate "
+            "volume commits."
         )
     return warnings
 
@@ -578,7 +614,31 @@ def _reproducibility(spec: ExecutionSpec, run_directory: str) -> dict[str, Any]:
     training_source = _training_run_spec_record(spec, run_directory)
     if training_source is not None:
         record["training_run_spec"] = training_source
+    local_embed_sources = [
+        _local_embed_source_record(source)
+        for source in spec.repos
+        if source.install_mode == "local-embed"
+    ]
+    if local_embed_sources:
+        record["local_embed_sources"] = local_embed_sources
     return record
+
+
+def _local_embed_source_record(source: RepoSource) -> dict[str, Any]:
+    local_path = source.local_path
+    provenance = (
+        collect_source_provenance(Path(local_path).expanduser())
+        if local_path is not None
+        else {}
+    )
+    status_short = provenance.get("status_short")
+    return {
+        "name": source.name,
+        "local_path": local_path,
+        "commit": provenance.get("commit"),
+        "branch": provenance.get("branch"),
+        "dirty": bool(status_short) if status_short is not None else None,
+    }
 
 
 def _primary_repo(spec: ExecutionSpec) -> Optional[str]:

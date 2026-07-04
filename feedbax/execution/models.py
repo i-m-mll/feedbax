@@ -32,8 +32,19 @@ LOCAL_EXECUTION_RESULT_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
-InstallMode = Literal["pypi", "github-ref", "local-rsync"]
+InstallMode = Literal["pypi", "github-ref", "local-rsync", "local-embed"]
 RepoRole = Literal["project", "dependency", "tooling"]
+
+DEFAULT_LOCAL_EMBED_IGNORE_PARTS = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    "_artifacts",
+    "worktrees",
+]
+DEFAULT_LOCAL_EMBED_IGNORE_SUFFIXES = [".assets"]
+DEFAULT_LOCAL_EMBED_REWRITE_FILES = ["pyproject.toml", "uv.lock"]
 
 
 class ExecutionModel(BaseModel):
@@ -54,7 +65,23 @@ class RepoSource(ExecutionModel):
     local_path: Optional[str] = None
     target_path: Optional[str] = None
     editable: bool = True
+    ignore_parts: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LOCAL_EMBED_IGNORE_PARTS)
+    )
+    ignore_suffixes: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LOCAL_EMBED_IGNORE_SUFFIXES)
+    )
+    extra_path_rewrites: dict[str, str] = Field(default_factory=dict)
+    rewrite_files: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LOCAL_EMBED_REWRITE_FILES)
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_local_embed(self) -> "RepoSource":
+        if self.install_mode == "local-embed" and not self.local_path:
+            raise ValueError("local-embed sources require local_path")
+        return self
 
     def remote_path(self, workspace: str) -> str:
         """Return the path where this source should live on a worker."""
@@ -278,6 +305,10 @@ class ModalBackendConfig(ExecutionModel):
     timeout_seconds: int = 6 * 60 * 60
     max_containers: Optional[int] = None
     use_spawn_map: bool = True
+    python_version: str = "3.12"
+    apt_packages: list[str] = Field(default_factory=lambda: ["git"])
+    extra_install_commands: list[str] = Field(default_factory=list)
+    workspace: str = "/workspace"
 
 
 class ExecutionSpec(ExecutionModel):
