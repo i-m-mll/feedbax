@@ -12,20 +12,20 @@ import modal
 APP_NAME = "feedbax-execution"
 JOB_ID = "modal-no-embed-golden"
 DEFAULT_COMMAND = "python scripts/run_cell.py"
-DEFAULT_ENV = {"XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
-CELLS = [{"command": "python scripts/run_cell.py", "env": {}, "id": "cell-a", "params": {"seed": 1}}]
-GPU = ["L40S", "A100"]
-IMAGE_PACKAGES = ["jax[cuda12]", "uv", "feedbax @ git+https://github.com/i-m-mll/feedbax.git@abc123"]
+DEFAULT_ENV = json.loads("{\"XLA_PYTHON_CLIENT_PREALLOCATE\": \"false\"}")
+CELLS = json.loads("[{\"command\": \"python scripts/run_cell.py\", \"env\": {}, \"id\": \"cell-a\", \"params\": {\"seed\": 1}}]")
+GPU = json.loads("[\"L40S\", \"A100\"]")
+IMAGE_PACKAGES = json.loads("[\"jax[cuda12]\", \"uv\", \"feedbax @ git+https://github.com/i-m-mll/feedbax.git@abc123\"]")
 LOG_DIR = "logs"
 MANIFEST_ROOT = "feedbax_runs"
 MAX_CONTAINERS = None
-SECRETS = ["feedbax-github"]
+SECRETS = json.loads("[\"feedbax-github\"]")
 TIMEOUT_SECONDS = 21600
-TRAINING_RUN_SPEC_PATH = null
-TRAINING_RUN_SPEC_PAYLOAD = null
+TRAINING_RUN_SPEC_PATH = json.loads("null")
+TRAINING_RUN_SPEC_PAYLOAD = json.loads("null")
 USE_SPAWN_MAP = False
 VOLUME_MOUNT_PATH = "/vol"
-VOLUME_NAME = "feedbax-runs"
+VOLUME_NAME = json.loads("\"feedbax-runs\"")
 
 image = modal.Image.debian_slim().pip_install(*IMAGE_PACKAGES)
 app = modal.App(APP_NAME)
@@ -109,4 +109,3 @@ def main() -> None:
     else:
         for result in run_cell.map(CELLS):
             print(json.dumps(result, sort_keys=True))
-
