@@ -38,6 +38,10 @@ from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
     PATH_EXPRESSION_SCHEMA_VERSION,
 )
+from feedbax.contracts.extraction import (
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
@@ -1409,6 +1413,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Composable manifest path-expression and value-query AST.",
             required_tests=(
                 "tests/test_path_expressions.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ExtractionProductSpec",
+            EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
+            EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.extraction",
+            emitted_by=("data-product extraction specs", "provider_manifest.schemas"),
+            consumed_by=(
+                "feedbax.contracts.extraction.materialize_extraction_product",
+                "feedbax.contracts.extraction.verify_extraction_product",
+            ),
+            description="Declarative source-to-analysis-data-product extraction spec.",
+            rejected_old_versions=("feedbax.spec.extraction_product.v0",),
+            required_tests=(
+                "tests/test_extraction_products.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),

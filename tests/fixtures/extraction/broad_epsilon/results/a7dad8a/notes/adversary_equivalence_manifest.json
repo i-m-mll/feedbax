@@ -1,0 +1,368 @@
+{
+  "artifact_npz": "_artifacts/a7dad8a/adversary_equivalence/adversary_equivalence.npz",
+  "artifact_npz_keys": [
+    "open_loop_200_epsilon",
+    "open_loop_200_u",
+    "open_loop_200_x",
+    "open_loop_50_epsilon",
+    "open_loop_50_u",
+    "open_loop_50_x",
+    "open_loop_800_epsilon",
+    "open_loop_800_u",
+    "open_loop_800_x",
+    "riccati_F_policy",
+    "riccati_epsilon",
+    "riccati_u",
+    "riccati_x"
+  ],
+  "budget": 5.421868381615368e-06,
+  "budget_l2": 0.0023284905801002004,
+  "game_card_issue": "cb98e58",
+  "game_card_summary": {
+    "cost": {
+      "R": "I_2",
+      "fact_t": "((t + 1) / T)^6, capped at 1",
+      "force_and_integrator_weight": "1.0",
+      "position_weight": "fact_t * 1e6",
+      "schedule": "C&S Eq. 15 physical 8-state schedule with 5-step delay distribution",
+      "velocity_weight": "fact_t * 1e5"
+    },
+    "diagnostic_gamma_factor": 1.5,
+    "epsilon_metric": {
+      "dt_scaled": false,
+      "norm": "sum_t ||epsilon_t||_2^2 over the 8 physical epsilon coordinates",
+      "note": "Gamma is an H-infinity attenuation parameter, not an epsilon budget. Any PGD budget must be derived explicitly from a realized Riccati epsilon sequence and treated as an open-loop surrogate budget."
+    },
+    "frontier": [
+      {
+        "closed_loop_epsilon_energy": 5.421868381615368e-06,
+        "closed_loop_epsilon_l2": 0.0023284905801002004,
+        "delta_v_percent": 7.460371202249536,
+        "epsilon_on_nominal_energy": 2.4614862445624304e-06,
+        "epsilon_on_nominal_l2": 0.0015689124400559869,
+        "factor": 1.05,
+        "factor_key": "1p05",
+        "gamma": 9625.172849747514,
+        "hinf_peak_forward_velocity": 0.7855454302704938,
+        "nominal_total_cost": 4580.631255161967,
+        "terminal_position_error_m": 6.551959065377899e-06,
+        "time_to_peak_step": 16,
+        "worst_case_h_infinity_objective": 4803.289292860973,
+        "worst_case_total_cost_without_penalty": 5305.592609058729
+      }
+    ],
+    "gamma_star": 9166.831285473823,
+    "issue": "cb98e58",
+    "lqr": {
+      "peak_forward_velocity": 0.7310094144305818,
+      "terminal_position_error_m": 0.0031107800086920224,
+      "time_to_peak_step": 16,
+      "total_cost": 4363.509943825159
+    },
+    "plant": {
+      "bw_contract": "top physical 8x8 block is identity; lag rows are zero",
+      "bw_shape": [
+        48,
+        8
+      ],
+      "damping": 0.1,
+      "delay_steps": 5,
+      "discretization": "euler",
+      "disturbance_dim": 8,
+      "dt": 0.01,
+      "mass": 1.0,
+      "name": "cs_faithful_pointmass",
+      "physical_state_dim": 8,
+      "state_dim": 48,
+      "state_order": [
+        "px",
+        "py",
+        "vx",
+        "vy",
+        "fx",
+        "fy",
+        "eps_x_int",
+        "eps_y_int",
+        "lag1_px",
+        "...",
+        "lag5_eps_y_int"
+      ],
+      "tau": 0.066
+    },
+    "primary_gamma_factor": 1.05,
+    "regeneration_command": "PYTHONPATH=src python scripts/materialize_analytical_game_card.py",
+    "rerun_metadata": {
+      "discretization": "euler",
+      "discretization_description": "Forward Euler C&S released-code discretization.",
+      "lane": "deterministic_analytical",
+      "lane_description": "Deterministic analytical lane: exact recursions and deterministic rollouts/audits with no sampled sensory, motor/process, or signal-dependent control noise.",
+      "materializer": "analytical_game_card",
+      "phase_label_policy": "Phase 1 and Phase 3 reruns must report both discretization and lane. Euler deterministic analytical results are canonical after the Euler card lands; ZOH results remain sensitivity/historical unless explicitly promoted."
+    },
+    "task": {
+      "duration_s": 0.6,
+      "hold_free": true,
+      "horizon_steps": 60,
+      "init_pos_m": [
+        0.0,
+        0.0
+      ],
+      "single_reach": true,
+      "target_pos_m": [
+        0.15,
+        0.0
+      ]
+    },
+    "umbrella": "43e8728"
+  },
+  "gamma": 9625.172849747514,
+  "gamma_factor": 1.05,
+  "issue": "a7dad8a",
+  "open_loop": [
+    {
+      "best_cost": {
+        "control_stage": 2040.4576983624331,
+        "disturbance_energy": 5.421868381615368e-06,
+        "h_infinity_objective": 4803.289292860973,
+        "state_stage": 3248.7025774281283,
+        "terminal_state": 16.432333268167827,
+        "total_without_disturbance_penalty": 5305.592609058729
+      },
+      "best_energies": [
+        5.421868381615368e-06,
+        5.421868381615369e-06,
+        5.421868381615369e-06,
+        5.421868381615369e-06,
+        5.421868381615366e-06,
+        5.4218683816153645e-06,
+        5.421868381615369e-06,
+        5.421868381615367e-06
+      ],
+      "best_objectives": [
+        5305.59260905873,
+        4818.318325875696,
+        4823.364071235481,
+        4808.878108310365,
+        4825.833035271642,
+        4809.803879955082,
+        4822.216582318368,
+        4820.86932444581
+      ],
+      "best_peak_forward_velocity": 0.806246878420358,
+      "best_restart_idx": 0,
+      "best_terminal_position_error_m": 0.004626819218735484,
+      "best_time_to_peak_step": 16,
+      "epsilon_l2_distance_to_riccati": 0.0,
+      "final_energies": [
+        5.42186838161537e-06,
+        5.421868381615369e-06,
+        5.421868381615365e-06,
+        5.421868381615369e-06,
+        5.42186838161537e-06,
+        5.421868381615363e-06,
+        5.421868381615362e-06,
+        5.421868381615367e-06
+      ],
+      "final_objectives": [
+        4872.668990358581,
+        4804.259279895719,
+        4809.539796496979,
+        4798.280164680082,
+        4815.715210276667,
+        4794.333907699028,
+        4810.160517677823,
+        4816.077095679608
+      ],
+      "initial_objectives": [
+        5305.592609058729,
+        4568.051488744425,
+        4603.392962429346,
+        4565.063509824601,
+        4557.352117509218,
+        4581.738520228434,
+        4599.97300812959,
+        4583.355993111877
+      ],
+      "learning_rate": 0.03,
+      "n_restarts": 8,
+      "n_steps": 50,
+      "seed": 0,
+      "total_cost_minus_riccati": 0.0,
+      "total_cost_ratio_to_riccati": 1.0
+    },
+    {
+      "best_cost": {
+        "control_stage": 2040.4576983624331,
+        "disturbance_energy": 5.421868381615368e-06,
+        "h_infinity_objective": 4803.289292860973,
+        "state_stage": 3248.7025774281283,
+        "terminal_state": 16.432333268167827,
+        "total_without_disturbance_penalty": 5305.592609058729
+      },
+      "best_energies": [
+        5.421868381615368e-06,
+        5.421868381615369e-06,
+        5.421868381615368e-06,
+        5.421868381615369e-06,
+        5.42186838161537e-06,
+        5.421868381615369e-06,
+        5.421868381615369e-06,
+        5.421868381615371e-06
+      ],
+      "best_objectives": [
+        5305.59260905873,
+        4820.01516858573,
+        4827.009610453935,
+        4816.763376927561,
+        4814.981677872388,
+        4807.478375116932,
+        4809.650904838397,
+        4812.895424921798
+      ],
+      "best_peak_forward_velocity": 0.806246878420358,
+      "best_restart_idx": 0,
+      "best_terminal_position_error_m": 0.004626819218735484,
+      "best_time_to_peak_step": 16,
+      "epsilon_l2_distance_to_riccati": 0.0,
+      "final_energies": [
+        5.421868381615367e-06,
+        5.421868381615366e-06,
+        5.421868381615364e-06,
+        5.421868381615368e-06,
+        5.421868381615372e-06,
+        5.421868381615365e-06,
+        5.421868381615366e-06,
+        5.421868381615365e-06
+      ],
+      "final_objectives": [
+        4859.612829672354,
+        4804.780325149132,
+        4815.804915882199,
+        4816.138003173215,
+        4794.314809201866,
+        4779.471408570926,
+        4804.893923014309,
+        4801.4914352405085
+      ],
+      "initial_objectives": [
+        5305.592609058729,
+        4596.948971746586,
+        4633.487496323485,
+        4582.511399704086,
+        4564.150356215254,
+        4586.030822843429,
+        4630.531353915121,
+        4570.146656495072
+      ],
+      "learning_rate": 0.03,
+      "n_restarts": 8,
+      "n_steps": 200,
+      "seed": 1009,
+      "total_cost_minus_riccati": 0.0,
+      "total_cost_ratio_to_riccati": 1.0
+    },
+    {
+      "best_cost": {
+        "control_stage": 2040.4576983624331,
+        "disturbance_energy": 5.421868381615368e-06,
+        "h_infinity_objective": 4803.289292860973,
+        "state_stage": 3248.7025774281283,
+        "terminal_state": 16.432333268167827,
+        "total_without_disturbance_penalty": 5305.592609058729
+      },
+      "best_energies": [
+        5.421868381615368e-06,
+        5.421868381615368e-06,
+        5.421868381615367e-06,
+        5.421868381615369e-06,
+        5.421868381615371e-06,
+        5.421868381615367e-06,
+        5.421868381615365e-06,
+        5.4218683816153645e-06
+      ],
+      "best_objectives": [
+        5305.59260905873,
+        4828.728057239447,
+        4829.098359073225,
+        4829.080094264171,
+        4860.564908141849,
+        4865.389021452047,
+        4822.457918435722,
+        4831.05654588511
+      ],
+      "best_peak_forward_velocity": 0.806246878420358,
+      "best_restart_idx": 0,
+      "best_terminal_position_error_m": 0.004626819218735484,
+      "best_time_to_peak_step": 16,
+      "epsilon_l2_distance_to_riccati": 0.0,
+      "final_energies": [
+        5.421868381615367e-06,
+        5.421868381615369e-06,
+        5.42186838161537e-06,
+        5.421868381615367e-06,
+        5.42186838161537e-06,
+        5.421868381615364e-06,
+        5.421868381615374e-06,
+        5.421868381615369e-06
+      ],
+      "final_objectives": [
+        4871.104732089552,
+        4818.572727232961,
+        4796.95740233279,
+        4821.415679684629,
+        4805.651313383355,
+        4795.834099276199,
+        4812.722855294875,
+        4795.403307200694
+      ],
+      "initial_objectives": [
+        5305.592609058729,
+        4549.451649285267,
+        4604.583539198509,
+        4587.157603617087,
+        4560.434501468655,
+        4608.939223786889,
+        4588.606117720319,
+        4539.641617124013
+      ],
+      "learning_rate": 0.03,
+      "n_restarts": 8,
+      "n_steps": 800,
+      "seed": 2018,
+      "total_cost_minus_riccati": 0.0,
+      "total_cost_ratio_to_riccati": 1.0
+    }
+  ],
+  "predeclared_tolerances": {
+    "deterministic_replay_atol": 1e-11,
+    "deterministic_replay_rtol": 1e-09,
+    "equivalence_relative_tolerance": 0.01,
+    "pgd_convergence_relative_improvement": 0.001,
+    "restart_stability_top3_relative_span": 0.002
+  },
+  "primary_gamma_factor": 1.05,
+  "rerun_metadata": {
+    "discretization": "euler",
+    "discretization_description": "Forward Euler C&S released-code discretization.",
+    "lane": "deterministic_analytical",
+    "lane_description": "Deterministic analytical lane: exact recursions and deterministic rollouts/audits with no sampled sensory, motor/process, or signal-dependent control noise.",
+    "materializer": "adversary_equivalence",
+    "phase_label_policy": "Phase 1 and Phase 3 reruns must report both discretization and lane. Euler deterministic analytical results are canonical after the Euler card lands; ZOH results remain sensitivity/historical unless explicitly promoted."
+  },
+  "riccati_feedback": {
+    "cost": {
+      "control_stage": 2040.4576983624331,
+      "disturbance_energy": 5.421868381615368e-06,
+      "h_infinity_objective": 4803.289292860973,
+      "state_stage": 3248.7025774281283,
+      "terminal_state": 16.432333268167827,
+      "total_without_disturbance_penalty": 5305.592609058729
+    },
+    "peak_forward_velocity": 0.806246878420358,
+    "terminal_position_error_m": 0.004626819218735484,
+    "time_to_peak_step": 16
+  },
+  "tracked_manifest": "results/a7dad8a/notes/adversary_equivalence_manifest.json",
+  "tracked_note": "results/a7dad8a/notes/adversary_equivalence.md",
+  "umbrella": "43e8728"
+}
