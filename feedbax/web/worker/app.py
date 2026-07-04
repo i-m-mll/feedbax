@@ -202,7 +202,7 @@ class _TrainingCfg:
     n_batches: int = 2000
     batch_size: int = 128
     learning_rate: float = 1e-3
-    grad_clip: float = 1.0
+    grad_clip: float | None = 1.0
     hidden_dim: int = 128
     network_type: str = "gru"
     n_reach_steps: int = 80
@@ -266,10 +266,12 @@ def _extract_training_cfg(
 
     if training_config is not None:
 
-        def _get(key: str, default, cast=None):
-            val = training_config.get(key, default)
-            if val is None:
+        def _get(key: str, default, cast=None, *, allow_none: bool = False):
+            if key not in training_config:
                 return default
+            val = training_config[key]
+            if val is None:
+                return None if allow_none else default
             try:
                 return cast(val) if cast is not None else val
             except (TypeError, ValueError):
@@ -278,7 +280,7 @@ def _extract_training_cfg(
         cfg.n_batches = _get("n_batches", cfg.n_batches, int)
         cfg.batch_size = _get("batch_size", cfg.batch_size, int)
         cfg.learning_rate = _get("learning_rate", cfg.learning_rate, float)
-        cfg.grad_clip = _get("grad_clip", cfg.grad_clip, float)
+        cfg.grad_clip = _get("grad_clip", cfg.grad_clip, float, allow_none=True)
         cfg.hidden_dim = _get("hidden_dim", cfg.hidden_dim, int)
         cfg.network_type = _get("network_type", cfg.network_type, str)
         cfg.n_reach_steps = _get("n_reach_steps", cfg.n_reach_steps, int)

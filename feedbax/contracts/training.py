@@ -116,7 +116,8 @@ class TrainingConfig(BaseModel):
         n_batches: Number of training steps.
         batch_size: Trials per gradient update.
         learning_rate: AdamW learning rate.
-        grad_clip: Global gradient clipping norm.
+        grad_clip: Global gradient clipping norm. The schema default remains 1.0;
+            set explicitly to None to disable gradient clipping.
         hidden_dim: GRU / CDE hidden state dimension.
         network_type: Controller architecture — ``"gru"`` or ``"cde"``.
         n_reach_steps: Number of control steps per episode.
@@ -127,7 +128,7 @@ class TrainingConfig(BaseModel):
     n_batches: int = 2000
     batch_size: int = 128
     learning_rate: float = 1e-3
-    grad_clip: float = 1.0
+    grad_clip: float | None = 1.0
     hidden_dim: int = 128
     network_type: str = "gru"
     n_reach_steps: int = 80

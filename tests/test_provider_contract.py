@@ -2488,6 +2488,16 @@ def test_worker_training_cfg_uses_timeline_task_n_steps() -> None:
     assert cfg.n_reach_steps == 150
 
 
+def test_worker_training_cfg_parses_grad_clip_absent_null_and_float() -> None:
+    absent_cfg = _extract_training_cfg({})
+    null_cfg = _extract_training_cfg({"grad_clip": None})
+    float_cfg = _extract_training_cfg({"grad_clip": "2.5"})
+
+    assert absent_cfg.grad_clip == 1.0
+    assert null_cfg.grad_clip is None
+    assert float_cfg.grad_clip == 2.5
+
+
 def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> None:
     event_queue: queue.Queue = queue.Queue()
     job = _Job(

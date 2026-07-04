@@ -84,6 +84,17 @@ def test_training_run_spec_current_version_round_trips_and_embeds_in_manifest() 
     assert manifest.training_spec == embedded
 
 
+def test_training_config_grad_clip_default_and_explicit_null_round_trip() -> None:
+    default_config = TrainingConfig.model_validate({})
+    unclipped_config = TrainingConfig.model_validate({"grad_clip": None})
+    payload = unclipped_config.model_dump(mode="json")
+
+    assert default_config.grad_clip == 1.0
+    assert unclipped_config.grad_clip is None
+    assert payload["grad_clip"] is None
+    assert TrainingConfig.model_validate(payload).grad_clip is None
+
+
 def test_training_run_spec_old_version_rejection_policy_is_explicit() -> None:
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         default_spec_registry.migrate(
