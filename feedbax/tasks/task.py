@@ -1457,12 +1457,13 @@ class SimpleReaches(AbstractTask):
         if self.epoch_name is None:
             timeline = TrialTimeline(self.n_steps)
         else:
-            epoch_bounds = jnp.asarray([0, self.n_steps], dtype=jnp.int32)
+            n_time = self.n_steps - 1
+            epoch_bounds = jnp.asarray([0, n_time], dtype=jnp.int32)
             if batched:
                 epoch_bounds = jnp.broadcast_to(epoch_bounds, (effector_init_state.pos.shape[0], 2))
                 pos_discount = jnp.broadcast_to(pos_discount, effector_target_state.pos.shape[:-1])
             timeline = TrialTimeline.from_epochs_events(
-                self.n_steps,
+                n_time,
                 epoch_bounds=epoch_bounds,
                 epoch_names=(self.epoch_name,),
             )

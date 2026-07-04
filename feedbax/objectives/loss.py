@@ -1207,6 +1207,24 @@ class EpochMaskedLoss(AbstractLoss):
             mask = mask | ((t[None, :] >= s) & (t[None, :] < e))
         return mask  # (N, T) bool
 
+    def _mask_n_steps(self, trial_specs: "TaskTrialSpec", fallback: int) -> int:
+        timeline_n_steps = getattr(trial_specs.timeline, "n_steps", None)
+        if timeline_n_steps is None:
+            return fallback
+        return int(timeline_n_steps)
+
+    def _align_mask_to_loss_time_axis(self, mask: Array, expected_len: int) -> Array:
+        """Right-align a timeline mask to a loss density time axis."""
+        mask_len = mask.shape[-1]
+        if mask_len < expected_len:
+            raise ValueError(
+                f"EpochMaskedLoss('{self.label}') built a mask with {mask_len} "
+                f"timesteps for a loss density with {expected_len} timesteps."
+            )
+        if mask_len > expected_len:
+            return mask[:, -expected_len:]
+        return mask
+
     # ----------------------------------------------------------------------
     # Dispatch
     # ----------------------------------------------------------------------
@@ -1285,11 +1303,13 @@ class EpochMaskedLoss(AbstractLoss):
         # `.shape[0]` which fails on scalar targets. Multiplying the (N, T)
         # mask into the density up-front sidesteps both issues and remains
         # numerically equivalent because all subsequent reductions are linear.
-        # epoch_bounds is in absolute n_steps; the [:, 1:] slice drops t=0
-        # so T = n_steps - 1.
-        n_steps = T + 1
-        epoch_mask = self._build_mask(trial_specs, n_steps)  # (N, n_steps)
-        epoch_mask_inner = epoch_mask[:, 1:].astype(loss_over_time.dtype)  # (N, T)
+        # Full-rollout timelines right-align by dropping the initial sample;
+        # target-length timelines already match the post-initial target axis.
+        n_steps = self._mask_n_steps(trial_specs, T + 1)
+        epoch_mask = self._build_mask(trial_specs, n_steps)
+        epoch_mask_inner = self._align_mask_to_loss_time_axis(epoch_mask, T).astype(
+            loss_over_time.dtype
+        )
 
         m_view_shape = [1] * loss_over_time.ndim
         m_view_shape[0] = epoch_mask_inner.shape[0]
@@ -1346,12 +1366,14 @@ class EpochMaskedLoss(AbstractLoss):
                 "selected no array leaves to penalise."
             )
         T_full = leaves[0].shape[time_axis]
-        epoch_mask = self._build_mask(trial_specs, T_full)  # (N, T_full)
-        # Right-edge alignment: drop the first `order` mask entries so the
-        # remaining mask of length `T_full - order` aligns with the differenced
-        # array (which has length `T_full - order` along the time axis).
-        # See class docstring for the convention.
-        mask_aligned = epoch_mask[:, order:].astype(leaves[0].dtype)  # (N, T_full - order)
+        T_diff = T_full - order
+        n_steps = self._mask_n_steps(trial_specs, T_full)
+        epoch_mask = self._build_mask(trial_specs, n_steps)
+        # Full-rollout timelines drop the consumed initial samples; target-length
+        # timelines already share the right edge with first-difference densities.
+        mask_aligned = self._align_mask_to_loss_time_axis(epoch_mask, T_diff).astype(
+            leaves[0].dtype
+        )
 
         def _per_leaf(arr: Array) -> Array:
             d = jnp.diff(arr, n=order, axis=time_axis)  # (N, T_full-order, ...)
