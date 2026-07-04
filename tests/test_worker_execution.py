@@ -18,6 +18,7 @@ from feedbax.contracts.graph import (
     StudioTaskBindingSpec,
 )
 from feedbax.web.worker.execution import (
+    _build_optimizer,
     compile_training_run,
     rollout_graph,
     run_training_graph,
@@ -239,6 +240,16 @@ def _cfg(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_build_optimizer_omits_clip_when_grad_clip_is_none() -> None:
+    params = {"weight": jnp.array([0.0])}
+
+    clipped_state = _build_optimizer(0.1, 1.0).init(params)
+    unclipped_state = _build_optimizer(0.1, None).init(params)
+
+    assert len(clipped_state) == 2
+    assert len(unclipped_state) == 1
 
 
 def test_compile_training_run_accepts_full_graph_without_bridge_nodes() -> None:

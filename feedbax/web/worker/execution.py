@@ -54,6 +54,16 @@ def _should_emit_training_progress(batch: int, total_batches: int, interval: int
     return batch == 1 or batch == total_batches or batch % interval == 0
 
 
+def _build_optimizer(
+    learning_rate: float,
+    grad_clip: float | None,
+) -> optax.GradientTransformationExtraArgs:
+    """Return the worker optimizer, optionally including global-norm clipping."""
+    if grad_clip is None:
+        return optax.chain(optax.adam(learning_rate))
+    return optax.chain(optax.clip_by_global_norm(grad_clip), optax.adam(learning_rate))
+
+
 @dataclass
 class CompiledTrainingRun:
     """Preflighted generic worker execution plan."""
@@ -204,9 +214,10 @@ def run_training_graph(
     """Train an executable graph and stream Studio-compatible worker events."""
     graph = compiled.graph
     learning_rate = float(getattr(cfg, "learning_rate", 1e-3))
-    grad_clip = float(getattr(cfg, "grad_clip", 1.0))
+    raw_grad_clip = getattr(cfg, "grad_clip", 1.0)
+    grad_clip = None if raw_grad_clip is None else float(raw_grad_clip)
     snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
-    optimizer = optax.chain(optax.clip_by_global_norm(grad_clip), optax.adam(learning_rate))
+    optimizer = _build_optimizer(learning_rate, grad_clip)
 
     trainable, static = eqx.partition(graph, compiled.trainable_filter)
     opt_state = optimizer.init(trainable)
