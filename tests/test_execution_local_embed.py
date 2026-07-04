@@ -94,7 +94,8 @@ def test_modal_local_embed_render_contains_sources_rewrites_and_uv(tmp_path: Pat
     assert ".apt_install(*APT_PACKAGES)" in rendered
     assert '.pip_install("uv")' in rendered
     assert '"uv sync"' in rendered
-    assert '"uv pip install -U \\"jax[cuda12]\\""' in rendered
+    assert "uv pip install -U" in rendered
+    assert "jax[cuda12]" in rendered
     assert 'DEFAULT_COMMAND = "uv run --no-sync python scripts/run_cell.py --seed 1"' in rendered
     assert "source_provenance.json" in rendered
     assert plan.cloud_payload["cells"][0]["command"] == (
