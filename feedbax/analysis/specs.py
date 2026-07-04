@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -59,6 +59,7 @@ class AnalysisRecipeResult:
 
 
 AnalysisRecipe = AnalysisRecipeProtocol
+AnalysisRecipeResultValidator = Callable[[str, AnalysisRecipeResult], None]
 
 _ANALYSIS_RECIPES: dict[str, AnalysisRecipe] = {}
 
@@ -233,6 +234,7 @@ def execute_analysis_run_spec(
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    validate_result: AnalysisRecipeResultValidator | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
 ) -> tuple[AnalysisRunManifest, Path]:
@@ -255,6 +257,8 @@ def execute_analysis_run_spec(
         result = recipe(run_spec, root_path, resolved_inputs)
         if not result.analyses:
             raise ValueError(f"Analysis recipe {run_spec.analysis_type!r} returned no analyses")
+        if validate_result is not None:
+            validate_result(run_spec.analysis_type, result)
         run_analyses_with_context(
             result.analyses,
             result.data,

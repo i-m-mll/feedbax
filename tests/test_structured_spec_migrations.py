@@ -26,6 +26,14 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.expressions import (
+    PATH_EXPRESSION_SCHEMA_ID,
+    PATH_EXPRESSION_SCHEMA_VERSION,
+)
+from feedbax.contracts.extraction import (
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.manifest import EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import validate_objective_spec
@@ -195,6 +203,13 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
     assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v2"
+    assert families["PathExpression"].identity == PATH_EXPRESSION_SCHEMA_ID
+    assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
+    assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID
+    assert (
+        families["ExtractionProductSpec"].current_version
+        == EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION
+    )
     assert families["ReportSpec"].identity == "feedbax.spec.report"
     assert families["ReportSpec"].current_version == "feedbax.spec.report.v1"
     assert (
@@ -386,6 +401,8 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "EvaluationRunSpec",
         "AnalysisRunSpec",
         "AnalysisBundleSpec",
+        "PathExpression",
+        "ExtractionProductSpec",
         "ReportSpec",
         "RegenerationSpec",
         "ExecutionSpec",
@@ -509,6 +526,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
     local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
     report_policy = default_spec_registry.resolve("ReportSpec").policy
+    extraction_policy = default_spec_registry.resolve("ExtractionProductSpec").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
@@ -529,6 +547,11 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert report_policy is not None
     assert report_policy.stance == "reject"
     assert report_policy.rejected_old_versions == ("feedbax.spec.report.v0",)
+    assert extraction_policy is not None
+    assert extraction_policy.stance == "reject"
+    assert extraction_policy.rejected_old_versions == (
+        "feedbax.spec.extraction_product.v0",
+    )
     assert execution_plan_policy is not None
     assert execution_plan_policy.rejected_old_versions == (
         "feedbax.manifest.execution.v2",
