@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ast
+import copy
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -36,6 +40,71 @@ from feedbax.contracts.training import (
 )
 from feedbax.integrations.provider import provider_manifest
 from feedbax.web.app import create_app
+
+
+class _StubModalImage:
+    @staticmethod
+    def debian_slim(*args: object, **kwargs: object) -> "_StubModalImage":
+        return _StubModalImage()
+
+    def apt_install(self, *args: object, **kwargs: object) -> "_StubModalImage":
+        return self
+
+    def pip_install(self, *args: object, **kwargs: object) -> "_StubModalImage":
+        return self
+
+    def env(self, *args: object, **kwargs: object) -> "_StubModalImage":
+        return self
+
+    def add_local_dir(self, *args: object, **kwargs: object) -> "_StubModalImage":
+        return self
+
+    def workdir(self, *args: object, **kwargs: object) -> "_StubModalImage":
+        return self
+
+    def run_commands(self, *args: object, **kwargs: object) -> "_StubModalImage":
+        return self
+
+
+class _StubModalApp:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def function(self, **kwargs: object) -> object:
+        def _decorator(function: object) -> object:
+            return function
+
+        return _decorator
+
+    def local_entrypoint(self) -> object:
+        def _decorator(function: object) -> object:
+            return function
+
+        return _decorator
+
+
+class _StubModalVolume:
+    @staticmethod
+    def from_name(name: str, *, create_if_missing: bool = False) -> "_StubModalVolume":
+        return _StubModalVolume()
+
+    def commit(self) -> None:
+        return None
+
+
+class _StubModalSecret:
+    @staticmethod
+    def from_name(name: str) -> object:
+        return {"name": name}
+
+
+def _stub_modal_module() -> types.ModuleType:
+    modal = types.ModuleType("modal")
+    modal.Image = _StubModalImage
+    modal.App = _StubModalApp
+    modal.Volume = _StubModalVolume
+    modal.Secret = _StubModalSecret
+    return modal
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -80,6 +149,53 @@ def _training_source() -> dict[str, object]:
         "kind": "inline",
         "identity": "studio:training-run-spec:toy",
         "inline": _training_run_payload(),
+    }
+
+
+def _training_source_with_json_literals() -> dict[str, object]:
+    source = copy.deepcopy(_training_source())
+    inline = source["inline"]
+    assert isinstance(inline, dict)
+    inline["metadata"] = {
+        "enabled": True,
+        "disabled": False,
+        "nullable": None,
+        "nested": [{"present": True, "missing": None}],
+    }
+    task = inline["task"]
+    assert isinstance(task, dict)
+    params = task["params"]
+    assert isinstance(params, dict)
+    params["json_literals"] = {
+        "enabled": True,
+        "disabled": False,
+        "nullable": None,
+    }
+    return source
+
+
+def _json_literal_cell_params() -> dict[str, object]:
+    return {
+        "enabled": True,
+        "disabled": False,
+        "nullable": None,
+        "nested": [{"present": True, "missing": None}],
+    }
+
+
+def _exec_rendered_modal_app(rendered: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    monkeypatch.setitem(sys.modules, "modal", _stub_modal_module())
+    namespace: dict[str, object] = {}
+    exec(compile(rendered, "<feedbax_modal_execution.py>", "exec"), namespace)
+    return namespace
+
+
+def _forbidden_json_literal_names(rendered: str) -> set[str]:
+    parsed = ast.parse(rendered)
+    return {
+        node.id
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.Name) and node.id in {"true", "false", "null"}
     }
 
 
@@ -328,8 +444,82 @@ def test_modal_app_renderer_contains_volume_health_and_map_semantics() -> None:
     assert "def health() -> dict:" in rendered
     assert "volume.commit()" in rendered
     assert "run_cell.map(CELLS)" in rendered
-    assert '"cell-a"' in rendered
-    assert '"feedbax-github"' in rendered
+    assert '\\"cell-a\\"' in rendered
+    assert '\\"feedbax-github\\"' in rendered
+
+
+def test_modal_app_json_payload_globals_exec_without_json_name_shim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cell_params = _json_literal_cell_params()
+    common_kwargs = {
+        "backend": "modal",
+        "training_run_spec": _training_source_with_json_literals(),
+        "cells": [ExecutionCell(id="cell-a", params=cell_params)],
+        "env": {"STRING_FALSE": "false"},
+        "modal": {"gpu": ["L40S", "A100"], "volume_name": None},
+    }
+    pip_spec = ExecutionSpec(job_id="modal-json-pip", **common_kwargs)
+    local_root = tmp_path / "feedbax"
+    local_root.mkdir()
+    local_spec = ExecutionSpec(
+        job_id="modal-json-local",
+        repos=[
+            RepoSource(
+                name="feedbax",
+                role="project",
+                install_mode="local-embed",
+                local_path=str(local_root),
+            )
+        ],
+        primary_repo="feedbax",
+        **common_kwargs,
+    )
+
+    for spec in (pip_spec, local_spec):
+        namespace = _exec_rendered_modal_app(render_modal_app(spec), monkeypatch)
+
+        assert namespace["DEFAULT_ENV"] == spec.env
+        assert namespace["CELLS"][0]["params"] == cell_params
+        assert namespace["GPU"] == ["L40S", "A100"]
+        assert namespace["TRAINING_RUN_SPEC_PATH"].endswith("/training-run-spec.json")
+        assert namespace["TRAINING_RUN_SPEC_PAYLOAD"] == spec.training_run_spec.inline_payload()
+        assert namespace["VOLUME_NAME"] is None
+
+
+def test_modal_app_renderer_does_not_emit_bare_json_literal_names(tmp_path: Path) -> None:
+    cell_params = _json_literal_cell_params()
+    common_kwargs = {
+        "backend": "modal",
+        "training_run_spec": _training_source_with_json_literals(),
+        "cells": [ExecutionCell(id="cell-a", params=cell_params)],
+        "env": {"STRING_FALSE": "false"},
+        "modal": {"gpu": ["L40S", "A100"], "volume_name": None},
+    }
+    local_root = tmp_path / "feedbax"
+    local_root.mkdir()
+    specs = [
+        ExecutionSpec(job_id="modal-json-pip", **common_kwargs),
+        ExecutionSpec(
+            job_id="modal-json-local",
+            repos=[
+                RepoSource(
+                    name="feedbax",
+                    role="project",
+                    install_mode="local-embed",
+                    local_path=str(local_root),
+                )
+            ],
+            primary_repo="feedbax",
+            **common_kwargs,
+        ),
+    ]
+
+    for spec in specs:
+        rendered = render_modal_app(spec)
+
+        assert _forbidden_json_literal_names(rendered) == set()
 
 
 def test_local_execution_emits_manifest_and_logs(tmp_path: Path) -> None:

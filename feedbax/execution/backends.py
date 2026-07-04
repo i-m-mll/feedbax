@@ -181,6 +181,12 @@ def render_modal_app(spec: ExecutionSpec) -> str:
     return _render_modal_app_pip_install(spec)
 
 
+def _json_loads_literal(payload: Any, *, sort_keys: bool = False) -> str:
+    """Render a Python expression that loads a JSON payload safely at import time."""
+    payload_json = json.dumps(payload, sort_keys=sort_keys)
+    return f"json.loads({json.dumps(payload_json)})"
+
+
 def _render_modal_app_pip_install(spec: ExecutionSpec) -> str:
     """Render the legacy pip-install Modal app path."""
     job_id = spec.resolved_job_id()
@@ -195,17 +201,17 @@ def _render_modal_app_pip_install(spec: ExecutionSpec) -> str:
         }
         for cell in cells
     ]
-    packages = json.dumps(modal_image_packages(spec))
-    secrets = json.dumps(spec.modal.secrets)
-    gpu = json.dumps(spec.modal.gpu)
-    volume_name = json.dumps(spec.modal.volume_name)
+    packages = _json_loads_literal(modal_image_packages(spec))
+    secrets = _json_loads_literal(spec.modal.secrets)
+    gpu = _json_loads_literal(spec.modal.gpu)
+    volume_name = _json_loads_literal(spec.modal.volume_name)
     volume_mount_path = json.dumps(spec.modal.volume_mount_path)
-    default_env = json.dumps(spec.env, sort_keys=True)
-    cells_json = json.dumps(cell_payload, sort_keys=True)
+    default_env = _json_loads_literal(spec.env, sort_keys=True)
+    cells_json = _json_loads_literal(cell_payload, sort_keys=True)
     app_name = json.dumps(spec.modal.app_name)
     manifest_root = json.dumps(spec.artifact_policy.manifest_root)
     log_dir = json.dumps(spec.artifact_policy.log_dir)
-    training_run_spec_payload = json.dumps(
+    training_run_spec_payload = _json_loads_literal(
         (
             spec.training_run_spec.inline_payload()
             if spec.training_run_spec is not None
@@ -213,7 +219,7 @@ def _render_modal_app_pip_install(spec: ExecutionSpec) -> str:
         ),
         sort_keys=True,
     )
-    training_run_spec_path = json.dumps(
+    training_run_spec_path = _json_loads_literal(
         _training_run_spec_path(spec, job_id=job_id)
         if spec.training_run_spec is not None
         else None
@@ -336,7 +342,6 @@ def _render_modal_app_pip_install(spec: ExecutionSpec) -> str:
                         print(json.dumps(result, sort_keys=True))
             """
         ).lstrip()
-        + "\n"
     )
 
 
@@ -375,15 +380,22 @@ def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
         )
         for source in embedded_sources
     )
-    secrets = json.dumps(spec.modal.secrets)
-    gpu = json.dumps(spec.modal.gpu)
-    volume_name = json.dumps(spec.modal.volume_name)
+    secrets = _json_loads_literal(spec.modal.secrets)
+    gpu = _json_loads_literal(spec.modal.gpu)
+    volume_name = _json_loads_literal(spec.modal.volume_name)
     volume_mount_path = json.dumps(spec.modal.volume_mount_path)
-    cells_json = json.dumps(cell_payload, sort_keys=True)
+    cells_json = _json_loads_literal(cell_payload, sort_keys=True)
     app_name = json.dumps(spec.modal.app_name)
     manifest_root = json.dumps(spec.artifact_policy.manifest_root)
     log_dir = json.dumps(spec.artifact_policy.log_dir)
-    training_run_spec_payload = json.dumps(
+    apt_packages = _json_loads_literal(spec.modal.apt_packages)
+    default_env = _json_loads_literal(spec.env, sort_keys=True)
+    extra_install_commands = _json_loads_literal(spec.modal.extra_install_commands)
+    image_env_literal = _json_loads_literal(image_env, sort_keys=True)
+    source_provenance_literal = _json_loads_literal(source_provenance, sort_keys=True)
+    rewrite_files_literal = _json_loads_literal(rewrite_files, sort_keys=True)
+    rewrite_replacements_literal = _json_loads_literal(replacements, sort_keys=True)
+    training_run_spec_payload = _json_loads_literal(
         (
             spec.training_run_spec.inline_payload()
             if spec.training_run_spec is not None
@@ -391,7 +403,7 @@ def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
         ),
         sort_keys=True,
     )
-    training_run_spec_path = json.dumps(
+    training_run_spec_path = _json_loads_literal(
         _training_run_spec_path(spec, job_id=job_id)
         if spec.training_run_spec is not None
         else None
@@ -413,13 +425,13 @@ def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
 
 
             APP_NAME = {app_name}
-            APT_PACKAGES = {json.dumps(spec.modal.apt_packages)}
+            APT_PACKAGES = {apt_packages}
             DEFAULT_COMMAND = {json.dumps(_uv_run_command(default_command))}
-            DEFAULT_ENV = {json.dumps(spec.env, sort_keys=True)}
+            DEFAULT_ENV = {default_env}
             CELLS = {cells_json}
-            EXTRA_INSTALL_COMMANDS = {json.dumps(spec.modal.extra_install_commands)}
+            EXTRA_INSTALL_COMMANDS = {extra_install_commands}
             GPU = {gpu}
-            IMAGE_ENV = {json.dumps(image_env, sort_keys=True)}
+            IMAGE_ENV = {image_env_literal}
             JOB_ID = {json.dumps(job_id)}
             LOG_DIR = {log_dir}
             MANIFEST_ROOT = {manifest_root}
@@ -427,7 +439,7 @@ def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
             PRIMARY_REPO_REMOTE_PATH = {json.dumps(primary_remote_path)}
             PYTHON_VERSION = {json.dumps(spec.modal.python_version)}
             SECRETS = {secrets}
-            SOURCE_PROVENANCE = {json.dumps(source_provenance, sort_keys=True)}
+            SOURCE_PROVENANCE = {source_provenance_literal}
             TIMEOUT_SECONDS = {spec.modal.timeout_seconds}
             TRAINING_RUN_SPEC_PATH = {training_run_spec_path}
             TRAINING_RUN_SPEC_PAYLOAD = {training_run_spec_payload}
@@ -435,8 +447,8 @@ def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
             VOLUME_MOUNT_PATH = {volume_mount_path}
             VOLUME_NAME = {volume_name}
 
-            REWRITE_FILES = {json.dumps(rewrite_files, sort_keys=True)}
-            REWRITE_REPLACEMENTS = {json.dumps(replacements, sort_keys=True)}
+            REWRITE_FILES = {rewrite_files_literal}
+            REWRITE_REPLACEMENTS = {rewrite_replacements_literal}
             REWRITE_COMMAND = r'''python - <<'PY'
             from pathlib import Path
 
@@ -571,7 +583,6 @@ def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
                         print(json.dumps(result, sort_keys=True))
             """
         ).lstrip()
-        + "\n"
     )
 
 
