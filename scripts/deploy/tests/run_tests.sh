@@ -182,6 +182,8 @@ mkdir -p "$SDIR" "$LDIR" "$CDIR/checkpoint_800" "$CDIR/checkpoint_2400"
 # bootstrap sentinels should be filtered out of the rows roll-up
 : > "$SDIR/uv_sync.done"
 : > "$SDIR/jax_cuda.done"
+: > "$SDIR/venv_probe.done"
+: > "$SDIR/probe_ok.done"
 # row a: done
 : > "$SDIR/row_a.pid"; : > "$SDIR/row_a.done"
 # row b: running (pid, no terminal)
@@ -193,7 +195,7 @@ printf 'compiling only\n' > "$LDIR/row_b.log"
 
 eq "discover_row_ids (rows only, sorted, bootstrap excluded)" \
    "row_a,row_b,row_c," \
-   "$(discover_row_ids "$SDIR" | grep -vE '^(uv_sync|jax_cuda)$' | tr '\n' ',')"
+   "$(discover_row_ids "$SDIR" | grep -vE '^(uv_sync|jax_cuda|venv_probe|probe_ok|probe_failed_rebuilding|rebuild_done)$' | tr '\n' ',')"
 eq "row_state done" "done" "$(row_state "$SDIR" row_a)"
 eq "row_state running" "running" "$(row_state "$SDIR" row_b)"
 eq "row_state failed" "failed" "$(row_state "$SDIR" row_c)"
@@ -232,6 +234,10 @@ esac
 case "$rendered" in
   *"uv_sync=done"*) ok "remote status uv_sync=done" ;;
   *) no "remote status uv_sync=done" "...uv_sync=done..." "$rendered" ;;
+esac
+case "$rendered" in
+  *"venv_probe=done"*"probe_ok=done"*) ok "remote status venv probe markers" ;;
+  *) no "remote status venv probe markers" "...venv_probe=done...probe_ok=done..." "$rendered" ;;
 esac
 case "$rendered" in
   *"last_checkpoint=2400 last_batch=2350"*) ok "remote status progress signals" ;;
