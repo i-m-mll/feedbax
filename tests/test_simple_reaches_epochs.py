@@ -219,7 +219,7 @@ def test_simple_reaches_defaults_match_prechange_golden() -> None:
     _assert_snapshot_equal(_snapshot(validation), _DEFAULT_GOLDEN["validation"])
 
 
-def test_simple_reaches_epoch_name_populates_full_trial_bounds() -> None:
+def test_simple_reaches_epoch_name_populates_target_length_bounds() -> None:
     task = _make_epoch_task()
 
     train = task.get_train_trial(jax.random.PRNGKey(17))
@@ -228,13 +228,15 @@ def test_simple_reaches_epoch_name_populates_full_trial_bounds() -> None:
     validation_target = _first_value(validation.targets)
 
     assert train.timeline.epoch_names == ("movement",)
-    assert jnp.array_equal(train.timeline.epoch_bounds, jnp.asarray([0, 5], dtype=jnp.int32))
+    assert train.timeline.n_steps == task.n_steps - 1
+    assert jnp.array_equal(train.timeline.epoch_bounds, jnp.asarray([0, 4], dtype=jnp.int32))
     assert train_target.discount.shape == (4,)
 
     assert validation.timeline.epoch_names == ("movement",)
+    assert validation.timeline.n_steps == task.n_steps - 1
     assert jnp.array_equal(
         validation.timeline.epoch_bounds,
-        jnp.asarray([[0, 5], [0, 5]], dtype=jnp.int32),
+        jnp.asarray([[0, 4], [0, 4]], dtype=jnp.int32),
     )
     assert validation_target.discount.shape == (2, 4)
     assert jnp.array_equal(
@@ -243,7 +245,7 @@ def test_simple_reaches_epoch_name_populates_full_trial_bounds() -> None:
     )
 
 
-def test_simple_reaches_epoch_consumers_accept_full_trial_epoch() -> None:
+def test_simple_reaches_epoch_consumers_accept_target_length_epoch() -> None:
     task = _make_epoch_task()
     validation = task.get_validation_trials(jax.random.PRNGKey(23))
     states = _states_matching_targets(validation)
@@ -263,9 +265,9 @@ def test_simple_reaches_epoch_consumers_accept_full_trial_epoch() -> None:
     timeline_mask = build_task_timeline_mask(
         _timeline_mask_spec(validation),
         segment_name="movement",
-        n_steps=task.n_steps,
+        n_steps=task.n_steps - 1,
     )
-    assert jnp.array_equal(timeline_mask.mask, jnp.ones((task.n_steps,), dtype=bool))
+    assert jnp.array_equal(timeline_mask.mask, jnp.ones((task.n_steps - 1,), dtype=bool))
 
 
 def test_simple_reaches_fixed_endpoints_drive_train_and_single_validation_trial() -> None:
@@ -289,7 +291,11 @@ def test_simple_reaches_fixed_endpoints_drive_train_and_single_validation_trial(
         train_target.value,
         jnp.broadcast_to(fixed_endpoints[1], (task.n_steps - 1, 2)),
     )
-    assert jnp.array_equal(train_a.timeline.epoch_bounds, jnp.asarray([0, task.n_steps]))
+    assert train_a.timeline.n_steps == task.n_steps - 1
+    assert jnp.array_equal(
+        train_a.timeline.epoch_bounds,
+        jnp.asarray([0, task.n_steps - 1], dtype=jnp.int32),
+    )
 
     assert jnp.array_equal(validation_init.pos, fixed_endpoints[None, 0])
     assert jnp.array_equal(
@@ -297,7 +303,8 @@ def test_simple_reaches_fixed_endpoints_drive_train_and_single_validation_trial(
         jnp.broadcast_to(fixed_endpoints[None, 1], (1, task.n_steps - 1, 2)),
     )
     assert validation_target.discount.shape == (1, task.n_steps - 1)
+    assert validation.timeline.n_steps == task.n_steps - 1
     assert jnp.array_equal(
         validation.timeline.epoch_bounds,
-        jnp.asarray([[0, task.n_steps]], dtype=jnp.int32),
+        jnp.asarray([[0, task.n_steps - 1]], dtype=jnp.int32),
     )
