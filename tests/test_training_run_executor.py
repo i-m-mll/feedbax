@@ -171,6 +171,8 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert result.final_slots["model"] == 1
     assert result.final_slots["optimizer"]["count"] == 2
     assert result.final_slots["train_loss"] == 1.0
+    assert result.history_events[0]["metrics"] == {"train_loss": 1.0}
+    assert result.history_events[0]["coordinate"]["metrics"] == {"train_loss": 1.0}
     assert result.manifest_path.is_relative_to(tmp_path)
     assert manifest.training_spec.kind == "RLRMPRunSpec"
     assert manifest.training_spec.inline == {"experiment": "rlrmp-demo", "variant": "a"}
@@ -181,6 +183,49 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert Path(manifest.checkpoint_custody[0].uri).is_file()
     assert manifest.summary_metrics["train_loss"] == 1.0
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
+
+
+def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(stop_after_global_step=3)
+    callback_events: list[dict[str, object]] = []
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="callback-run",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path,
+        registry=registry,
+        progress_callback=callback_events.append,
+    )
+
+    assert [event["coordinate"]["global_step"] for event in callback_events] == [1, 2, 3]
+    assert [event["coordinate"]["phase"] for event in callback_events] == [
+        "train_batch",
+        "train_batch",
+        "train_batch",
+    ]
+    assert [event["metrics"]["train_loss"] for event in callback_events] == [1.0, 2.0, 3.0]
+    callback_events[0]["metrics"]["train_loss"] = 999.0
+    assert result.history_events[0]["metrics"]["train_loss"] == 1.0
+
+
+def test_execute_training_run_spec_propagates_progress_callback_errors(
+    tmp_path: Path,
+) -> None:
+    def fail_on_progress(event: dict[str, object]) -> None:
+        assert event["type"] == "training_progress"
+        raise RuntimeError("callback failed")
+
+    with pytest.raises(RuntimeError, match="callback failed"):
+        execute_training_run_spec(
+            _run_spec(),
+            run_id="callback-failure",
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path,
+            progress_callback=fail_on_progress,
+        )
 
 
 def test_execute_training_run_spec_resumes_through_checkpoint_custody(

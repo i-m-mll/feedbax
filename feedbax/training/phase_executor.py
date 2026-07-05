@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from feedbax.contracts.worker import (
     PhaseProgramSpec,
     ProgressCoordinate,
+    StateSlotSpec,
 )
 from feedbax.training.worker_validation import (
     WorkerContractValidationError,
@@ -135,11 +136,13 @@ class PhaseProgramExecutor:
         *,
         guard_predicates: Mapping[str, UpdateKernel] | None = None,
         checkpoint_store: PhaseCheckpointStore | None = None,
+        state_slots: Sequence[StateSlotSpec] = (),
     ) -> None:
         self.program = program
         self.kernels = dict(kernels)
         self.guard_predicates = dict(guard_predicates or {})
         self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
+        self._metric_slots = tuple(slot.name for slot in state_slots if slot.role == "metric")
         self._phases = {phase.name: phase for phase in program.phases}
         self._steps = {step.name: step for step in program.update_steps}
         self._transitions = {
@@ -207,7 +210,10 @@ class PhaseProgramExecutor:
                         )
                     current_slots.update(deepcopy(dict(updates)))
                 coordinate = coordinate.model_copy(
-                    update={"global_step": coordinate.global_step + 1}
+                    update={
+                        "global_step": coordinate.global_step + 1,
+                        "metrics": self._progress_metrics(current_slots),
+                    }
                 )
                 progress.append(coordinate)
 
@@ -269,6 +275,13 @@ class PhaseProgramExecutor:
                 slots=captured,
             )
         )
+
+    def _progress_metrics(self, slots: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            slot: deepcopy(slots[slot])
+            for slot in self._metric_slots
+            if slot in slots
+        }
 
     def _resume_phase_for_barrier(self, barrier_name: str) -> str:
         barrier = self._barriers.get(barrier_name)

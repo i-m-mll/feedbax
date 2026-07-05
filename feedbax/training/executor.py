@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -52,6 +53,7 @@ from feedbax.training.worker_validation import (
 
 
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
+ProgressCallback = Callable[[Mapping[str, Any]], None]
 
 
 class TrainingRunExecutorError(ValueError):
@@ -137,8 +139,15 @@ def execute_training_run_spec(
     stop_after_barrier: str | None = None,
     manifest_conflict_policy: ManifestConflictPolicy = "error",
     issues: Sequence[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TrainingRunExecutionResult:
-    """Validate, execute, checkpoint, and natively emit one training-run manifest."""
+    """Validate, execute, checkpoint, and natively emit one training-run manifest.
+
+    ``progress_callback`` is called once for each generated training-progress
+    history event, in history order, after execution completes and before
+    manifest emission. Callback payloads have the same shape as stored history
+    events. Exceptions raised by the callback propagate to the caller.
+    """
     run_spec = _validate_spec(spec)
     root_path = Path(manifest_root) if manifest_root is not None else (
         Path(run_spec.artifacts.manifest_root)
@@ -220,6 +229,7 @@ def execute_training_run_spec(
         kernels,
         guard_predicates=guards,
         checkpoint_store=checkpoint_store,
+        state_slots=effective_phase.state_slots,
     )
     execution = executor.run(
         slots,
@@ -230,6 +240,7 @@ def execute_training_run_spec(
     )
     checkpoint_writes = checkpoint_store.writes
     history_events = _history_events(execution.progress)
+    _emit_progress_callbacks(history_events, progress_callback)
     final_metrics = _final_metrics(execution.slots, execution.coordinate)
     manifest = _build_manifest(
         run_spec,
@@ -351,6 +362,16 @@ def _history_events(progress: Sequence[ProgressCoordinate]) -> list[dict[str, An
         }
         for coordinate in progress
     ]
+
+
+def _emit_progress_callbacks(
+    history_events: Sequence[Mapping[str, Any]],
+    progress_callback: ProgressCallback | None,
+) -> None:
+    if progress_callback is None:
+        return
+    for event in history_events:
+        progress_callback(deepcopy(dict(event)))
 
 
 def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> dict[str, Any]:
