@@ -1,4 +1,15 @@
-"""Declarative extraction specs for governed analysis data products."""
+"""Declarative extraction specs for governed analysis data products.
+
+Extraction source files are loaded from the filesystem before their payloads are
+bound into the expression context. That filesystem-existence check is separate
+from ``Compare(op="exists")``, which only checks paths inside already-bound
+payloads.
+
+Additive changelog, 2026-07-05: v1 accepts structural value expressions
+(``ValueQuery`` or ``Coalesce``) in field mappings and source payload queries.
+Optional source placeholders and residual passthrough are additive fields in the
+same v1 schema family.
+"""
 
 from __future__ import annotations
 
@@ -11,11 +22,13 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from feedbax.contracts.expressions import (
+    Coalesce,
     Compare,
     ContextItem,
     ExpressionContext,
     ExpressionPathMissing,
     Select,
+    ValueExpr,
     ValueQuery,
     evaluate_query,
 )
@@ -58,8 +71,12 @@ class SourceBinding(StrictModel):
     alias: str
     kind: str
     uri: str
-    payload_query: ValueQuery | None = None
+    payload_query: ValueExpr | None = None
     adoption_note: str | None = None
+    # SourceBinding is not part of expression_hash; the bool default is explicit
+    # extraction-layer state and does not affect path-expression hash stability.
+    optional: bool = False
+    missing_payload: Any | None = None
 
     @model_validator(mode="after")
     def _validate_source(self) -> "SourceBinding":
@@ -71,6 +88,11 @@ class SourceBinding(StrictModel):
             raise ValueError("SourceBinding uri must not be empty")
         if Path(self.uri).is_absolute():
             raise ValueError("SourceBinding uri must be repo-relative")
+        has_missing_payload = "missing_payload" in self.model_fields_set
+        if self.optional and not has_missing_payload:
+            raise ValueError("SourceBinding missing_payload is required when optional=True")
+        if not self.optional and has_missing_payload:
+            raise ValueError("SourceBinding missing_payload is only allowed when optional=True")
         return self
 
 
@@ -78,8 +100,9 @@ class FieldMapping(StrictModel):
     """One destination parameter path populated by a value query."""
 
     output_path: str
-    query: ValueQuery
+    query: ValueExpr
     adopts_source_field: str | None = None
+    residual_exclude: list[str] | None = None
 
     @model_validator(mode="after")
     def _validate_output_path(self) -> "FieldMapping":
@@ -89,6 +112,10 @@ class FieldMapping(StrictModel):
             raise ValueError(
                 "FieldMapping output_path is not dotted-path-like: "
                 f"{self.output_path!r}"
+            )
+        if self.residual_exclude is not None and self.adopts_source_field is not None:
+            raise ValueError(
+                "FieldMapping residual_exclude is incompatible with adopts_source_field"
             )
         return self
 
@@ -127,10 +154,11 @@ class ExtractionProductSpec(StrictModel):
             raise ValueError("ExtractionProductSpec sources must have unique aliases")
         source_aliases = set(aliases)
         for field in self.fields:
-            if field.query.item not in source_aliases:
+            undeclared = _query_items(field.query) - source_aliases
+            if undeclared:
                 raise ValueError(
                     "FieldMapping query item is not a declared source alias: "
-                    f"output_path={field.output_path!r}, item={field.query.item!r}"
+                    f"output_path={field.output_path!r}, items={sorted(undeclared)!r}"
                 )
         return self
 
@@ -144,13 +172,22 @@ def materialize_extraction_product(
     repo_root = Path(repo_root)
     ctx = _load_expression_context(spec, repo_root)
     parameters = deepcopy(spec.static_parameters)
-    source_by_alias = {source.alias: source for source in spec.sources}
-    field_sources: dict[str, str] = {}
 
     for field in spec.fields:
         value = evaluate_query(field.query, ctx)
+        if field.residual_exclude is not None:
+            if not isinstance(value, Mapping):
+                raise ValueError(
+                    "FieldMapping residual_exclude requires a Mapping query result: "
+                    f"output_path={field.output_path!r}, got {type(value).__name__}"
+                )
+            excluded = set(field.residual_exclude)
+            value = {
+                key: deepcopy(child_value)
+                for key, child_value in value.items()
+                if key not in excluded
+            }
         _set_path(parameters, field.output_path, value)
-        field_sources[field.output_path] = source_by_alias[field.query.item].uri
 
     _add_adoption_records(spec, ctx, parameters)
 
@@ -209,7 +246,13 @@ def verify_extraction_product(
 def _load_expression_context(spec: ExtractionProductSpec, repo_root: Path) -> ExpressionContext:
     items: dict[str, ContextItem] = {}
     for source in spec.sources:
-        payload = _read_source_payload(repo_root, source.uri)
+        try:
+            payload = _read_source_payload(repo_root, source.uri)
+        except FileNotFoundError:
+            if not source.optional:
+                raise
+            items[source.alias] = ContextItem(kind=source.kind, payload=deepcopy(source.missing_payload))
+            continue
         if source.payload_query is not None:
             payload = evaluate_query(
                 source.payload_query,
@@ -242,7 +285,7 @@ def _add_adoption_records(
         groups.setdefault(parent_path, []).append(field)
 
     for parent_path, fields in groups.items():
-        source_aliases = {field.query.item for field in fields}
+        source_aliases = set().union(*(_query_items(field.query) for field in fields))
         if len(source_aliases) != 1:
             raise ValueError(
                 "adoption records require one source alias per output object: "
@@ -274,7 +317,13 @@ def _add_adoption_records(
 
 def _source_pointer(source: SourceBinding) -> str:
     query = source.payload_query
-    if query is None or query.select is None:
+    if query is None:
+        return ""
+    if isinstance(query, Coalesce):
+        if len(query.queries) != 1:
+            return ""
+        query = query.queries[0]
+    if query.select is None:
         return query.path if query is not None else ""
     selector = _select_pointer(query.select)
     if selector is None:
@@ -320,12 +369,26 @@ def _source_uri_by_output_path(spec: ExtractionProductSpec) -> dict[str, str]:
     source_by_alias = {source.alias: source for source in spec.sources}
     result: dict[str, str] = {}
     for field in spec.fields:
-        source_uri = source_by_alias[field.query.item].uri
-        result[field.output_path] = source_uri
+        source_uris = [
+            source_by_alias[item].uri
+            for item in sorted(_query_items(field.query))
+            if item in source_by_alias
+        ]
+        if source_uris:
+            result[field.output_path] = source_uris[0]
         if field.adopts_source_field is not None:
             parent_path = field.output_path.rsplit(".", 1)[0]
-            result.setdefault(parent_path, source_uri)
+            if source_uris:
+                result.setdefault(parent_path, source_uris[0])
     return result
+
+
+def _query_items(query: ValueExpr) -> set[str]:
+    if isinstance(query, ValueQuery):
+        return {query.item}
+    if isinstance(query, Coalesce):
+        return set().union(*(_query_items(child) for child in query.queries))
+    raise TypeError(f"unsupported value query type: {type(query).__name__}")
 
 
 def _source_uri_for_output_path(

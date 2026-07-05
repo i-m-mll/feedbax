@@ -1,10 +1,21 @@
 """Versioned path-expression contracts and evaluator.
 
 The expression algebra is deliberately small: field paths, leaf comparisons,
-boolean combinators, exact-cardinality list selection, scalar coercion, and a
-registered named-predicate escape hatch. Named predicates are contractually pure
-and deterministic; hosts are responsible for registering reviewed callable
+boolean combinators, exact-cardinality list selection, zero-or-more list
+filtering, scalar coercion, ordered value coalescing, and a registered
+named-predicate escape hatch. Named predicates are contractually pure and
+deterministic; hosts are responsible for registering reviewed callable
 components and for mapping typed evaluator failures to host-specific statuses.
+
+``Compare(op="exists")`` checks whether a payload path exists inside the bound
+expression context. It does not check whether a source file exists on disk;
+filesystem existence is handled by extraction ``SourceBinding`` loading.
+
+Additive changelog, 2026-07-05: v1 accepts optional value-query defaults,
+``Coalesce`` value expressions, ``Filter`` list subsets, and string
+``startswith``/``endswith`` comparisons. These additions preserve canonical
+JSON and hash bytes for pre-existing expressions because all new fields are
+None-default optional fields or new node types.
 """
 
 from __future__ import annotations
@@ -36,6 +47,8 @@ CompareOp: TypeAlias = Literal[
     "ge",
     "in",
     "contains",
+    "startswith",
+    "endswith",
     "has_type",
 ]
 CoerceTarget: TypeAlias = Literal["float", "int", "str", "bool"]
@@ -53,8 +66,12 @@ class ExpressionPathMissing(ExpressionEvaluationError):
     """Raised when a non-absence-tolerant expression path is missing."""
 
 
+class _ExpressionAbsenceMiss(ExpressionPathMissing):
+    """Internal absence-class miss that defaults and Coalesce may handle."""
+
+
 class ExpressionSelectAmbiguous(ExpressionEvaluationError):
-    """Raised when list selection matches zero or multiple entries."""
+    """Raised when exact-cardinality list selection matches multiple entries."""
 
 
 class ExpressionTypeError(ExpressionEvaluationError):
@@ -171,12 +188,32 @@ Expr: TypeAlias = Annotated[
 
 
 class Select(StrictModel):
-    """Exact-cardinality list search using the reserved ``entry`` alias."""
+    """Exact-cardinality list search using the reserved ``entry`` alias.
+
+    A zero-match ``Select`` result is an absence-class miss. ``ValueQuery``
+    defaults and ``Coalesce`` may handle that miss; multiple matches always
+    raise ``ExpressionSelectAmbiguous``.
+    """
 
     where: Expr
 
     @model_validator(mode="after")
     def _validate_depth(self) -> "Select":
+        _check_depth(self.where)
+        return self
+
+
+class Filter(StrictModel):
+    """Zero-or-more list search using the reserved ``entry`` alias.
+
+    Unlike ``Select``, an empty ``Filter`` result is a real value (``[]``), not
+    an absence-class miss.
+    """
+
+    where: Expr
+
+    @model_validator(mode="after")
+    def _validate_depth(self) -> "Filter":
         _check_depth(self.where)
         return self
 
@@ -189,27 +226,59 @@ class Coerce(StrictModel):
 
 
 class ValueQuery(StrictModel):
-    """Read one value from a bound context item, optionally selecting/coercing it."""
+    """Read one value from a bound context item, optionally selecting/filtering it."""
 
     item: str
     path: PathRef = ""
     select: Select | None = None
+    filter: Filter | None = None
     coerce: Coerce | None = None
+    default: Any | None = None
+
+    @model_validator(mode="after")
+    def _validate_selection_fields(self) -> "ValueQuery":
+        if self.select is not None and self.filter is not None:
+            raise ValueError("ValueQuery select and filter are mutually exclusive")
+        _check_value_query_depth(self)
+        return self
+
+
+class Coalesce(StrictModel):
+    """Ordered fallback over absence-class value-query misses.
+
+    Inner ``ValueQuery.default`` values are allowed and make later queries
+    unreachable when that query misses; that is valid but usually a spec smell.
+    """
+
+    queries: list[ValueQuery] = Field(min_length=1)
+    default: Any | None = None
+
+    @model_validator(mode="after")
+    def _validate_depth(self) -> "Coalesce":
+        for query in self.queries:
+            _check_value_query_depth(query)
+        return self
+
+
+ValueExpr: TypeAlias = ValueQuery | Coalesce
 
 
 AllOf.model_rebuild()
 AnyOf.model_rebuild()
 Not.model_rebuild()
 Select.model_rebuild()
+Filter.model_rebuild()
+ValueQuery.model_rebuild()
+Coalesce.model_rebuild()
 
 
-def expression_hash(expr: Expr | ValueQuery) -> str:
+def expression_hash(expr: Expr | ValueExpr | Select | Filter) -> str:
     """Return a stable SHA-256 digest for a path expression or value query."""
     canonical = canonical_expression_json(expr)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def canonical_expression_json(expr: Expr | ValueQuery) -> str:
+def canonical_expression_json(expr: Expr | ValueExpr | Select | Filter) -> str:
     """Return canonical JSON for hashing and deterministic review diffs."""
     payload = expr.model_dump(mode="json", exclude_none=True)
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -266,21 +335,69 @@ def evaluate_expr(
 
 
 def evaluate_query(
-    query: ValueQuery,
+    query: ValueExpr,
     ctx: ExpressionContext,
     *,
     named_predicates: NamedPredicateResolver | None = None,
 ) -> Any:
     """Evaluate a value query against a host-bound context."""
-    value = _resolve_path(ctx, query.item, query.path)
+    if isinstance(query, ValueQuery):
+        return _evaluate_value_query(query, ctx, named_predicates=named_predicates)
+    if isinstance(query, Coalesce):
+        return _evaluate_coalesce(query, ctx, named_predicates=named_predicates)
+    raise ExpressionTypeError(f"unsupported value query type: {type(query).__name__}")
+
+
+def _evaluate_value_query(
+    query: ValueQuery,
+    ctx: ExpressionContext,
+    *,
+    named_predicates: NamedPredicateResolver | None,
+) -> Any:
+    try:
+        value = _resolve_path(ctx, query.item, query.path)
+    except ExpressionPathMissing as exc:
+        if "default" in query.model_fields_set:
+            return query.default
+        raise _ExpressionAbsenceMiss(str(exc)) from exc
+
     if query.select is not None:
-        value = _select_one(value, query.select, ctx, named_predicates=named_predicates)
+        try:
+            value = _select_one(value, query.select, ctx, named_predicates=named_predicates)
+        except _ExpressionAbsenceMiss:
+            if "default" in query.model_fields_set:
+                return query.default
+            raise
+    if query.filter is not None:
+        value = _filter_many(value, query.filter, ctx, named_predicates=named_predicates)
+
     if query.coerce is not None:
-        value = _coerce(value, query.coerce)
+        if query.filter is not None:
+            value = [_coerce(entry, query.coerce) for entry in value]
+        else:
+            value = _coerce(value, query.coerce)
     return value
 
 
-def _check_depth(expr: Expr) -> None:
+def _evaluate_coalesce(
+    query: Coalesce,
+    ctx: ExpressionContext,
+    *,
+    named_predicates: NamedPredicateResolver | None,
+) -> Any:
+    misses: list[str] = []
+    for child in query.queries:
+        try:
+            return _evaluate_value_query(child, ctx, named_predicates=named_predicates)
+        except _ExpressionAbsenceMiss as exc:
+            misses.append(f"{child.item}:{child.path or '<root>'} ({exc})")
+    if "default" in query.model_fields_set:
+        return query.default
+    attempted = "; ".join(misses)
+    raise ExpressionPathMissing(f"Coalesce found no available query value; attempted {attempted}")
+
+
+def _check_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce) -> None:
     depth = _expr_depth(expr)
     if depth > MAX_EXPR_DEPTH:
         raise ValueError(
@@ -288,14 +405,29 @@ def _check_depth(expr: Expr) -> None:
         )
 
 
-def _expr_depth(expr: Expr) -> int:
+def _expr_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce) -> int:
     if isinstance(expr, (Compare, NamedPredicateRef)):
         return 1
     if isinstance(expr, Not):
         return 1 + _expr_depth(expr.expr)
     if isinstance(expr, (AllOf, AnyOf)):
         return 1 + max(_expr_depth(child) for child in expr.exprs)
+    if isinstance(expr, (Select, Filter)):
+        return 1 + _expr_depth(expr.where)
+    if isinstance(expr, ValueQuery):
+        child_depths = [
+            _expr_depth(child)
+            for child in (expr.select, expr.filter)
+            if child is not None
+        ]
+        return 1 + (max(child_depths) if child_depths else 0)
+    if isinstance(expr, Coalesce):
+        return 1 + max(_expr_depth(query) for query in expr.queries)
     return 1
+
+
+def _check_value_query_depth(query: ValueQuery) -> None:
+    _check_depth(query)
 
 
 def _evaluate_compare(expr: Compare, ctx: ExpressionContext) -> bool:
@@ -332,6 +464,14 @@ def _evaluate_compare(expr: Compare, ctx: ExpressionContext) -> bool:
             return actual in expected
         if expr.op == "contains":
             return expected in actual
+        if expr.op in {"startswith", "endswith"}:
+            if not isinstance(actual, str) or not isinstance(expected, str):
+                raise TypeError
+            return (
+                actual.startswith(expected)
+                if expr.op == "startswith"
+                else actual.endswith(expected)
+            )
     except TypeError as exc:
         raise ExpressionTypeError(
             f"Compare op {expr.op!r} cannot compare {type(actual).__name__} "
@@ -402,10 +542,34 @@ def _select_one(
             matches.append(entry)
 
     if len(matches) != 1:
+        if not matches:
+            raise _ExpressionAbsenceMiss("Select expected exactly one match, found 0")
         raise ExpressionSelectAmbiguous(
             f"Select expected exactly one match, found {len(matches)}"
         )
     return matches[0]
+
+
+def _filter_many(
+    value: Any,
+    filter_: Filter,
+    ctx: ExpressionContext,
+    *,
+    named_predicates: NamedPredicateResolver | None,
+) -> list[Any]:
+    if not isinstance(value, list):
+        raise ExpressionTypeError(
+            f"Filter requires a list at the query terminus, got {type(value).__name__}"
+        )
+
+    matches = []
+    for entry in value:
+        entry_ctx = ExpressionContext(
+            items={**ctx.items, "entry": ContextItem(kind="entry", payload=entry)}
+        )
+        if evaluate_expr(filter_.where, entry_ctx, named_predicates=named_predicates):
+            matches.append(entry)
+    return matches
 
 
 def _coerce(value: Any, coerce: Coerce) -> Any:
@@ -475,6 +639,7 @@ __all__ = [
     "AllOf",
     "AnyOf",
     "Coerce",
+    "Coalesce",
     "Compare",
     "CompareOp",
     "ContextItem",
@@ -491,7 +656,9 @@ __all__ = [
     "NamedPredicateUnresolved",
     "Not",
     "PathRef",
+    "Filter",
     "Select",
+    "ValueExpr",
     "ValueQuery",
     "canonical_expression_json",
     "evaluate_expr",

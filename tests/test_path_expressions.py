@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,7 @@ from feedbax.contracts.expressions import (
     AllOf,
     AnyOf,
     Coerce,
+    Coalesce,
     Compare,
     ContextItem,
     Expr,
@@ -21,10 +24,12 @@ from feedbax.contracts.expressions import (
     ExpressionPathMissing,
     ExpressionSelectAmbiguous,
     ExpressionTypeError,
+    Filter,
     NamedPredicateRef,
     NamedPredicateUnresolved,
     Not,
     Select,
+    ValueExpr,
     ValueQuery,
     canonical_expression_json,
     evaluate_expr,
@@ -34,8 +39,115 @@ from feedbax.contracts.expressions import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 
 
+HASH_CORPUS_PATH = (
+    Path(__file__).parent
+    / "fixtures"
+    / "path_expressions"
+    / "pre_extension_hash_corpus.json"
+)
+
+
 def _ctx(payload: object, *, kind: str = "manifest") -> ExpressionContext:
     return ExpressionContext(items={"manifest": ContextItem(kind=kind, payload=payload)})
+
+
+def _hash_corpus_expressions() -> dict[str, object]:
+    select = Select(
+        where=Compare(
+            item="entry",
+            path="factor",
+            op="approx_eq",
+            value=1.05,
+            tolerance=1e-12,
+        )
+    )
+    score_gt = Compare(item="manifest", path="metrics.score", op="gt", value=0.8)
+    loss_ok = Compare(item="manifest", path="metrics.loss", op="lt", value=0.3)
+    group_ok = Compare(item="manifest", path="metadata.group", op="eq", value="control")
+    return {
+        "compare_exists": Compare(item="manifest", path="metadata.group", op="exists"),
+        "compare_eq": Compare(
+            item="manifest",
+            path="metadata.group",
+            op="eq",
+            value="control",
+        ),
+        "compare_ne": Compare(
+            item="manifest",
+            path="metadata.group",
+            op="ne",
+            value="treated",
+        ),
+        "compare_approx_eq": Compare(
+            item="manifest",
+            path="metrics.score",
+            op="approx_eq",
+            value=0.125,
+            tolerance=1e-9,
+        ),
+        "compare_lt": Compare(item="manifest", path="metrics.loss", op="lt", value=0.2),
+        "compare_le": Compare(item="manifest", path="metrics.loss", op="le", value=0.2),
+        "compare_gt": Compare(item="manifest", path="metrics.score", op="gt", value=0.1),
+        "compare_ge": Compare(item="manifest", path="metrics.score", op="ge", value=0.1),
+        "compare_in": Compare(
+            item="manifest",
+            path="metadata.group",
+            op="in",
+            value=["control", "treated"],
+        ),
+        "compare_contains": Compare(
+            item="manifest",
+            path="tags",
+            op="contains",
+            value="stable",
+        ),
+        "compare_has_type": Compare(
+            item="manifest",
+            op="has_type",
+            value="evaluation_manifest",
+        ),
+        "nested_all_any_not": AllOf(
+            exprs=[score_gt, AnyOf(exprs=[loss_ok, Not(expr=group_ok)])]
+        ),
+        "named_predicate": NamedPredicateRef(
+            predicate_id="feedbax.test.predicate",
+            params={"z": 2, "a": 1},
+        ),
+        "select_factor": select,
+        "value_query_empty_path": ValueQuery(item="manifest"),
+        "value_query_nested_path": ValueQuery(item="manifest", path="metadata.group"),
+        "value_query_select": ValueQuery(
+            item="manifest",
+            path="frontier",
+            select=select,
+        ),
+        "value_query_coerce_float_scale": ValueQuery(
+            item="manifest",
+            path="percent",
+            coerce=Coerce(to="float", scale=0.01),
+        ),
+        "value_query_coerce_int": ValueQuery(
+            item="manifest",
+            path="count",
+            coerce=Coerce(to="int"),
+        ),
+        "value_query_coerce_str": ValueQuery(
+            item="manifest",
+            path="label",
+            coerce=Coerce(to="str"),
+        ),
+        "value_query_coerce_bool": ValueQuery(
+            item="manifest",
+            path="enabled",
+            coerce=Coerce(to="bool"),
+        ),
+        "value_query_select_coerce": ValueQuery(
+            item="manifest",
+            path="frontier",
+            select=select,
+            coerce=Coerce(to="float", scale=2.0),
+        ),
+    }
 
 
 def test_path_ref_matches_manifest_get_path_for_dict_and_attribute_walks() -> None:
@@ -132,14 +244,15 @@ def test_value_query_selects_exactly_one_entry_with_tolerance_predicate() -> Non
 
 
 @pytest.mark.parametrize(
-    "frontier",
+    ("frontier", "expected_error"),
     [
-        [{"factor": 1.0}, {"factor": 1.1}],
-        [{"factor": 1.05}, {"factor": 1.0500000000001}],
+        ([{"factor": 1.0}, {"factor": 1.1}], ExpressionPathMissing),
+        ([{"factor": 1.05}, {"factor": 1.0500000000001}], ExpressionSelectAmbiguous),
     ],
 )
 def test_value_query_select_raises_for_zero_or_multiple_matches(
     frontier: list[dict[str, float]],
+    expected_error: type[Exception],
 ) -> None:
     query = ValueQuery(
         item="manifest",
@@ -155,8 +268,198 @@ def test_value_query_select_raises_for_zero_or_multiple_matches(
         ),
     )
 
-    with pytest.raises(ExpressionSelectAmbiguous):
+    with pytest.raises(expected_error):
         evaluate_query(query, _ctx({"frontier": frontier}))
+
+
+def test_value_query_default_only_handles_absence_class_misses() -> None:
+    select = Select(where=Compare(item="entry", path="id", op="eq", value="missing"))
+
+    assert (
+        evaluate_query(
+            ValueQuery(item="manifest", path="missing.path", default=None),
+            _ctx({"present": 1}),
+        )
+        is None
+    )
+    assert evaluate_query(
+        ValueQuery(item="manifest", path="frontier", select=select, default={"id": "fallback"}),
+        _ctx({"frontier": [{"id": "other"}]}),
+    ) == {"id": "fallback"}
+    assert evaluate_query(
+        ValueQuery(
+            item="manifest",
+            path="missing",
+            coerce=Coerce(to="float"),
+            default="not-float",
+        ),
+        _ctx({}),
+    ) == "not-float"
+
+    with pytest.raises(ExpressionItemMissing):
+        evaluate_query(ValueQuery(item="unknown", path="x", default=0), _ctx({}))
+    with pytest.raises(ExpressionSelectAmbiguous):
+        evaluate_query(
+            ValueQuery(
+                item="manifest",
+                path="frontier",
+                select=Select(where=Compare(item="entry", path="id", op="exists")),
+                default={"id": "fallback"},
+            ),
+            _ctx({"frontier": [{"id": 1}, {"id": 2}]}),
+        )
+    with pytest.raises(ExpressionTypeError):
+        evaluate_query(
+            ValueQuery(
+                item="manifest",
+                path="value",
+                coerce=Coerce(to="float"),
+                default=0.0,
+            ),
+            _ctx({"value": "not-float"}),
+        )
+    with pytest.raises(ExpressionPathMissing):
+        evaluate_query(
+            ValueQuery(
+                item="manifest",
+                path="frontier",
+                select=Select(where=Compare(item="entry", path="missing", op="eq", value=1)),
+                default={"id": "fallback"},
+            ),
+            _ctx({"frontier": [{"id": 1}]}),
+        )
+
+
+def test_coalesce_returns_first_hit_and_only_falls_back_on_absence_misses() -> None:
+    ctx = _ctx({"primary": {}, "secondary": {"value": 3}, "bad": "not-float"})
+
+    assert evaluate_query(
+        Coalesce(
+            queries=[
+                ValueQuery(item="manifest", path="primary.value"),
+                ValueQuery(item="manifest", path="secondary.value"),
+            ]
+        ),
+        ctx,
+    ) == 3
+    assert (
+        evaluate_query(
+            Coalesce(
+                queries=[ValueQuery(item="manifest", path="primary.value")],
+                default=None,
+            ),
+            ctx,
+        )
+        is None
+    )
+
+    with pytest.raises(ExpressionPathMissing, match="primary.value"):
+        evaluate_query(
+            Coalesce(
+                queries=[
+                    ValueQuery(item="manifest", path="primary.value"),
+                    ValueQuery(item="manifest", path="secondary.missing"),
+                ]
+            ),
+            ctx,
+        )
+    with pytest.raises(ExpressionTypeError):
+        evaluate_query(
+            Coalesce(
+                queries=[
+                    ValueQuery(
+                        item="manifest",
+                        path="bad",
+                        coerce=Coerce(to="float"),
+                    ),
+                    ValueQuery(item="manifest", path="secondary.value"),
+                ]
+            ),
+            ctx,
+        )
+    with pytest.raises(ExpressionPathMissing, match="missing"):
+        evaluate_query(
+            Coalesce(
+                queries=[
+                    ValueQuery(
+                        item="manifest",
+                        path="frontier",
+                        select=Select(
+                            where=Compare(item="entry", path="missing", op="eq", value=1)
+                        ),
+                    ),
+                    ValueQuery(item="manifest", path="secondary.value"),
+                ]
+            ),
+            _ctx({"frontier": [{"id": 1}], "secondary": {"value": 3}}),
+        )
+
+
+def test_filter_returns_zero_or_more_matches_and_maps_coercion_per_entry() -> None:
+    ctx = _ctx(
+        {
+            "values": [
+                {"kind": "keep", "amount": "1.5"},
+                {"kind": "drop", "amount": "2.5"},
+                {"kind": "keep", "amount": "3.5"},
+            ]
+        }
+    )
+    filtered = ValueQuery(
+        item="manifest",
+        path="values",
+        filter=Filter(where=Compare(item="entry", path="kind", op="eq", value="keep")),
+    )
+    amounts = ValueQuery(
+        item="manifest",
+        path="values",
+        filter=Filter(where=Compare(item="entry", path="kind", op="eq", value="keep")),
+        coerce=Coerce(to="str"),
+    )
+
+    assert evaluate_query(filtered, ctx) == [
+        {"kind": "keep", "amount": "1.5"},
+        {"kind": "keep", "amount": "3.5"},
+    ]
+    assert evaluate_query(
+        ValueQuery(
+            item="manifest",
+            path="values",
+            filter=Filter(where=Compare(item="entry", path="kind", op="eq", value="none")),
+            default=["not-used"],
+        ),
+        ctx,
+    ) == []
+    assert evaluate_query(amounts, ctx) == [
+        "{'kind': 'keep', 'amount': '1.5'}",
+        "{'kind': 'keep', 'amount': '3.5'}",
+    ]
+    assert evaluate_query(
+        ValueQuery(
+            item="manifest",
+            path="missing",
+            filter=Filter(where=Compare(item="entry", path="kind", op="eq", value="keep")),
+            default=["fallback"],
+        ),
+        ctx,
+    ) == ["fallback"]
+
+    with pytest.raises(ExpressionTypeError):
+        evaluate_query(
+            ValueQuery(
+                item="manifest",
+                path="metadata",
+                filter=Filter(where=Compare(item="entry", path="kind", op="eq", value="keep")),
+            ),
+            _ctx({"metadata": {"kind": "keep"}}),
+        )
+    with pytest.raises(ValidationError):
+        ValueQuery(
+            item="manifest",
+            path="values",
+            select=Select(where=Compare(item="entry", path="kind", op="eq", value="keep")),
+            filter=Filter(where=Compare(item="entry", path="kind", op="eq", value="keep")),
+        )
 
 
 def test_value_query_scalar_coercion_and_scaling() -> None:
@@ -214,7 +517,7 @@ def test_negative_canaries_for_typed_failures() -> None:
         evaluate_expr(Compare(item="unknown", path="value", op="eq", value=1), ctx)
     with pytest.raises(ExpressionPathMissing):
         evaluate_expr(Compare(item="manifest", path="missing", op="eq", value=1), ctx)
-    with pytest.raises(ExpressionSelectAmbiguous):
+    with pytest.raises(ExpressionPathMissing):
         evaluate_query(
             ValueQuery(
                 item="manifest",
@@ -231,6 +534,23 @@ def test_negative_canaries_for_typed_failures() -> None:
         evaluate_expr(NamedPredicateRef(predicate_id="missing.predicate"), ctx)
 
 
+def test_startswith_and_endswith_are_strict_string_comparisons() -> None:
+    ctx = _ctx({"label": "feedbax-run", "count": 3})
+
+    assert evaluate_expr(
+        Compare(item="manifest", path="label", op="startswith", value="feed"),
+        ctx,
+    )
+    assert evaluate_expr(
+        Compare(item="manifest", path="label", op="endswith", value="run"),
+        ctx,
+    )
+    with pytest.raises(ExpressionTypeError):
+        evaluate_expr(Compare(item="manifest", path="count", op="startswith", value="3"), ctx)
+    with pytest.raises(ExpressionTypeError):
+        evaluate_expr(Compare(item="manifest", path="label", op="endswith", value=3), ctx)
+
+
 def test_depth_guard_allows_depth_limit_and_rejects_pathological_nesting() -> None:
     expr = Compare(item="manifest", path="x", op="eq", value=True)
     for _ in range(MAX_EXPR_DEPTH - 1):
@@ -240,6 +560,25 @@ def test_depth_guard_allows_depth_limit_and_rejects_pathological_nesting() -> No
 
     with pytest.raises(ValidationError):
         Not(expr=expr)
+
+
+def test_depth_guard_covers_filter_and_coalesce_query_children() -> None:
+    expr = Compare(item="entry", path="x", op="eq", value=True)
+    for _ in range(MAX_EXPR_DEPTH - 1):
+        expr = Not(expr=expr)
+
+    with pytest.raises(ValidationError):
+        ValueQuery(item="manifest", path="entries", filter=Filter(where=expr))
+    with pytest.raises(ValidationError):
+        Coalesce(
+            queries=[
+                ValueQuery(
+                    item="manifest",
+                    path="entries",
+                    select=Select(where=expr),
+                )
+            ]
+        )
 
 
 def test_expression_hash_uses_sorted_canonical_json_excluding_none() -> None:
@@ -256,6 +595,17 @@ def test_expression_hash_uses_sorted_canonical_json_excluding_none() -> None:
     )
 
 
+def test_pre_extension_expression_hash_corpus_is_byte_stable() -> None:
+    corpus = json.loads(HASH_CORPUS_PATH.read_text(encoding="utf-8"))
+    expressions = _hash_corpus_expressions()
+
+    assert {entry["name"] for entry in corpus} == set(expressions)
+    for entry in corpus:
+        expr = expressions[entry["name"]]
+        assert canonical_expression_json(expr) == entry["canonical_json"]
+        assert expression_hash(expr) == entry["expression_hash"]
+
+
 def test_discriminated_expr_schema_validates_from_plain_payloads() -> None:
     expr = TypeAdapter(Expr).validate_python(
         {
@@ -268,6 +618,26 @@ def test_discriminated_expr_schema_validates_from_plain_payloads() -> None:
     )
 
     assert evaluate_expr(expr, _ctx({"x": 1})) is True
+
+
+def test_structural_value_expr_union_validates_value_query_and_coalesce_payloads() -> None:
+    adapter = TypeAdapter(ValueExpr)
+
+    value_query = adapter.validate_python({"item": "manifest", "path": "x"})
+    coalesce = adapter.validate_python(
+        {
+            "queries": [
+                {"item": "manifest", "path": "missing"},
+                {"item": "fallback", "path": "x"},
+            ],
+            "default": None,
+        }
+    )
+
+    assert isinstance(value_query, ValueQuery)
+    assert isinstance(coalesce, Coalesce)
+    with pytest.raises(ValidationError):
+        adapter.validate_python({"item": "manifest", "queries": []})
 
 
 def test_manifest_predicate_expressibility_without_bundle_behavior_change() -> None:

@@ -1,0 +1,112 @@
+[
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"exists\",\"path\":\"metadata.group\"}",
+    "expression_hash": "8367fc0fe28a5497cd082bdc1747fe93f98cd03254aa8d85b51d75fab367d42a",
+    "name": "compare_exists"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"eq\",\"path\":\"metadata.group\",\"value\":\"control\"}",
+    "expression_hash": "4771105a8a4df3528c22c9aeeb0b819bd411b8d6032fd08c0045b06b4efd7f3f",
+    "name": "compare_eq"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"ne\",\"path\":\"metadata.group\",\"value\":\"treated\"}",
+    "expression_hash": "79f196004c30772a1d07c78441730325efa5384e8d2908493951ca05669eacc9",
+    "name": "compare_ne"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"approx_eq\",\"path\":\"metrics.score\",\"tolerance\":1e-09,\"value\":0.125}",
+    "expression_hash": "1865c8e498318c9fe5436685e44e3601bfe8295195afbd0dac7cecbfb3befd72",
+    "name": "compare_approx_eq"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"lt\",\"path\":\"metrics.loss\",\"value\":0.2}",
+    "expression_hash": "dfdb85114381e9e36c0233ba47cec752e934024d2adedcfec2b7359f6165b0c3",
+    "name": "compare_lt"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"le\",\"path\":\"metrics.loss\",\"value\":0.2}",
+    "expression_hash": "b1772938184b958adb24e7864dc5453879ba94e612d7883471d3d37551f8a4f2",
+    "name": "compare_le"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"gt\",\"path\":\"metrics.score\",\"value\":0.1}",
+    "expression_hash": "13e73297be0db7fe4835ece6eb55183caeb2bd78471e362c03544db80b8ed2d4",
+    "name": "compare_gt"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"ge\",\"path\":\"metrics.score\",\"value\":0.1}",
+    "expression_hash": "929d53edfc5051d1eaf8ab4789901c86aadafe12592d4b91eb06cf560d35898e",
+    "name": "compare_ge"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"in\",\"path\":\"metadata.group\",\"value\":[\"control\",\"treated\"]}",
+    "expression_hash": "009e9e445129bb3b110918e93c2123ce07694db4f595bbc76a0f923afdab9f36",
+    "name": "compare_in"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"contains\",\"path\":\"tags\",\"value\":\"stable\"}",
+    "expression_hash": "95d96b36cbd3b430836e6322eb9c62f0b5d98cc8147c3c0210817ea98095be8a",
+    "name": "compare_contains"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"has_type\",\"path\":\"\",\"value\":\"evaluation_manifest\"}",
+    "expression_hash": "a88481a623ded6d4c4ec0ade16f2abed7400685d47f94b51b4046026cf4fdb4d",
+    "name": "compare_has_type"
+  },
+  {
+    "canonical_json": "{\"exprs\":[{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"gt\",\"path\":\"metrics.score\",\"value\":0.8},{\"exprs\":[{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"lt\",\"path\":\"metrics.loss\",\"value\":0.3},{\"expr\":{\"item\":\"manifest\",\"kind\":\"compare\",\"op\":\"eq\",\"path\":\"metadata.group\",\"value\":\"control\"},\"kind\":\"not\"}],\"kind\":\"any\"}],\"kind\":\"all\"}",
+    "expression_hash": "b53b0e0899043649043a735bee0003467203ed439b762ded1be1bf8634f095f7",
+    "name": "nested_all_any_not"
+  },
+  {
+    "canonical_json": "{\"kind\":\"named\",\"params\":{\"a\":1,\"z\":2},\"predicate_id\":\"feedbax.test.predicate\"}",
+    "expression_hash": "8724af62d8c1368655b5613f1ad3476fb419a74c7f89e1b4516fa2824b3fabbf",
+    "name": "named_predicate"
+  },
+  {
+    "canonical_json": "{\"where\":{\"item\":\"entry\",\"kind\":\"compare\",\"op\":\"approx_eq\",\"path\":\"factor\",\"tolerance\":1e-12,\"value\":1.05}}",
+    "expression_hash": "6b00671806a7ca7aa7982e8c3f694309d13e54b0f1b706fbbed407cf154887c3",
+    "name": "select_factor"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"path\":\"\"}",
+    "expression_hash": "0e4e4f71e0af014e0782cd8d5f25a815fa49c37dbca09abc3e114e883261e744",
+    "name": "value_query_empty_path"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"path\":\"metadata.group\"}",
+    "expression_hash": "eab367acb7c05ec53676edc6920fe96c168fe0b9e33c83d8736d92bdcd127d0d",
+    "name": "value_query_nested_path"
+  },
+  {
+    "canonical_json": "{\"item\":\"manifest\",\"path\":\"frontier\",\"select\":{\"where\":{\"item\":\"entry\",\"kind\":\"compare\",\"op\":\"approx_eq\",\"path\":\"factor\",\"tolerance\":1e-12,\"value\":1.05}}}",
+    "expression_hash": "13d822b44a8460bec2b0380322dc6b6988cb23e91a24612e05ddea4e978efc52",
+    "name": "value_query_select"
+  },
+  {
+    "canonical_json": "{\"coerce\":{\"scale\":0.01,\"to\":\"float\"},\"item\":\"manifest\",\"path\":\"percent\"}",
+    "expression_hash": "56cf1c19fbdbc6df43cc0f6a810b18e494f44e76e96bbb59489e1df4681ab499",
+    "name": "value_query_coerce_float_scale"
+  },
+  {
+    "canonical_json": "{\"coerce\":{\"to\":\"int\"},\"item\":\"manifest\",\"path\":\"count\"}",
+    "expression_hash": "b9140024b81aca35b6b9fa72552d2f9d10f95d3cbbed2ee10b8d0781fc94479b",
+    "name": "value_query_coerce_int"
+  },
+  {
+    "canonical_json": "{\"coerce\":{\"to\":\"str\"},\"item\":\"manifest\",\"path\":\"label\"}",
+    "expression_hash": "dcd052e73cf0935b37617a4adda7ee7581efe91bcfed1af63af481525ff250e9",
+    "name": "value_query_coerce_str"
+  },
+  {
+    "canonical_json": "{\"coerce\":{\"to\":\"bool\"},\"item\":\"manifest\",\"path\":\"enabled\"}",
+    "expression_hash": "e1adf94cb6dab7e76cd5912005bf9d9bf354d783f827913a9f4a8de2a7cdfc7e",
+    "name": "value_query_coerce_bool"
+  },
+  {
+    "canonical_json": "{\"coerce\":{\"scale\":2.0,\"to\":\"float\"},\"item\":\"manifest\",\"path\":\"frontier\",\"select\":{\"where\":{\"item\":\"entry\",\"kind\":\"compare\",\"op\":\"approx_eq\",\"path\":\"factor\",\"tolerance\":1e-12,\"value\":1.05}}}",
+    "expression_hash": "5e0b3a62a639b47da49bbc48012dc039f74f3751062b001cb58454dff39839c5",
+    "name": "value_query_select_coerce"
+  }
+]
