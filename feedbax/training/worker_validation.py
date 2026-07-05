@@ -612,6 +612,14 @@ def validate_worker_contract(
                     f"{barrier_path}/slots/{slot_index}/axis",
                     f"unknown axis {checkpoint_slot.axis!r}",
                 )
+        checkpoint_slot_names = {checkpoint_slot.slot for checkpoint_slot in barrier.slots}
+        for sink_index, artifact_sink in enumerate(barrier.artifact_sinks):
+            _require(
+                artifact_sink.slot in checkpoint_slot_names,
+                f"{barrier_path}/artifact_sinks/{sink_index}/slot",
+                "artifact sink slot must be captured by the same checkpoint barrier; "
+                f"found {artifact_sink.slot!r}",
+            )
         if barrier.resume_coordinate is not None:
             _require(
                 barrier.resume_coordinate.phase in phases,
