@@ -334,9 +334,12 @@ def test_checkpoint_barrier_artifact_sinks_validate_against_captured_slots() -> 
 
     payload = toy_minimax_method_contract().model_dump(mode="json")
     assert payload["phase_program"]["checkpoint_barriers"][0].get("artifact_sinks") == []
-    assert MethodContractSpec.model_validate(payload).phase_program.checkpoint_barriers[
-        0
-    ].artifact_sinks == []
+    assert (
+        MethodContractSpec.model_validate(payload)
+        .phase_program.checkpoint_barriers[0]
+        .artifact_sinks
+        == []
+    )
 
 
 def test_checkpoint_barrier_artifact_sink_rejects_uncaptured_slot() -> None:

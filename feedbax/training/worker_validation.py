@@ -95,7 +95,9 @@ class WorkerExecutabilityEnvironment(StrictModel):
     supported_state_slot_roles: set[StateSlotRole] = Field(
         default_factory=lambda: set(SUPPORTED_STATE_SLOT_ROLES)
     )
-    supported_phase_kinds: set[PhaseKind] = Field(default_factory=lambda: set(SUPPORTED_PHASE_KINDS))
+    supported_phase_kinds: set[PhaseKind] = Field(
+        default_factory=lambda: set(SUPPORTED_PHASE_KINDS)
+    )
     supported_update_step_kinds: set[UpdateStepKind] = Field(
         default_factory=lambda: set(SUPPORTED_UPDATE_STEP_KINDS)
     )
@@ -172,7 +174,11 @@ def validate_per_trial_bindings(
     data_by_id: dict[str, Any] = {}
     for index, data in enumerate(exposed_data):
         data_id = _field(data, "id")
-        _require(isinstance(data_id, str) and bool(data_id), f"{path}/exposed_data/{index}/id", "missing data id")
+        _require(
+            isinstance(data_id, str) and bool(data_id),
+            f"{path}/exposed_data/{index}/id",
+            "missing data id",
+        )
         data_by_id[data_id] = data
 
     for index, binding in enumerate(bindings):
@@ -184,7 +190,9 @@ def validate_per_trial_bindings(
             f"unknown source data id {source_id!r}",
         )
         data = data_by_id[source_id]
-        role = _field(binding, "role") or _field(data, "role") or _metadata(data).get("task_data_role")
+        role = (
+            _field(binding, "role") or _field(data, "role") or _metadata(data).get("task_data_role")
+        )
         _require(
             role in GRAPH_BINDABLE_TASK_DATA_ROLES,
             f"{binding_path}/role",
@@ -285,14 +293,14 @@ def _validate_dry_run(
     contract: MethodContractSpec,
     *,
     environment: WorkerExecutabilityEnvironment,
-    dry_run_shape_check: Callable[[MethodContractSpec], DryRunShapeCheckResult | bool | None] | None,
+    dry_run_shape_check: Callable[[MethodContractSpec], DryRunShapeCheckResult | bool | None]
+    | None,
 ) -> None:
     declared_fields = {
         field
         for step in contract.phase_program.update_steps
         for field in (
-            step.kernel.jit_static_payload_fields
-            + step.kernel.resource_significant_payload_fields
+            step.kernel.jit_static_payload_fields + step.kernel.resource_significant_payload_fields
         )
     }
     if dry_run_shape_check is None:
@@ -323,7 +331,8 @@ def validate_worker_contract(
     contract: MethodContractSpec,
     *,
     environment: WorkerExecutabilityEnvironment | None = None,
-    dry_run_shape_check: Callable[[MethodContractSpec], DryRunShapeCheckResult | bool | None] | None = None,
+    dry_run_shape_check: Callable[[MethodContractSpec], DryRunShapeCheckResult | bool | None]
+    | None = None,
     update_kernels: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
     task_binding_spec: Any | None = None,
     objective_requirements: Any | None = None,

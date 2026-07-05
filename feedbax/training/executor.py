@@ -199,10 +199,14 @@ def execute_training_run_spec(
     events. Exceptions raised by the callback propagate to the caller.
     """
     run_spec = _validate_spec(spec)
-    root_path = Path(manifest_root) if manifest_root is not None else (
-        Path(run_spec.artifacts.manifest_root)
-        if run_spec.artifacts.manifest_root is not None
-        else default_manifest_root()
+    root_path = (
+        Path(manifest_root)
+        if manifest_root is not None
+        else (
+            Path(run_spec.artifacts.manifest_root)
+            if run_spec.artifacts.manifest_root is not None
+            else default_manifest_root()
+        )
     )
     resolved_run_id = run_id or _default_run_id(run_spec)
     method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
@@ -492,9 +496,7 @@ def _barrier_artifact_bytes(
         )
     if sink.encoding == "json":
         media_type = (
-            "application/json"
-            if sink.media_type == "application/octet-stream"
-            else sink.media_type
+            "application/json" if sink.media_type == "application/octet-stream" else sink.media_type
         )
         return canonical_json_bytes(value), media_type
     return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), sink.media_type
@@ -656,14 +658,11 @@ def _emit_manifest(
         existing = path.read_text(encoding="utf-8")
         if existing != payload:
             raise ManifestEmissionConflictError(
-                "manifest identity already exists with different content: "
-                f"{manifest.id!r}"
+                f"manifest identity already exists with different content: {manifest.id!r}"
             )
         if conflict_policy == "reuse-identical":
             return path
-        raise ManifestEmissionConflictError(
-            f"manifest identity already exists: {manifest.id!r}"
-        )
+        raise ManifestEmissionConflictError(f"manifest identity already exists: {manifest.id!r}")
     return write_manifest(manifest, root=root)
 
 

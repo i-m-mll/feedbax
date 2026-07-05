@@ -29,9 +29,7 @@ _GENERATOR_SOURCE = (
     "slot-init-read-write+lifetime+optimizer-bindings+objective-reads+"
     "measurement-control+metric-guards"
 )
-CONSISTENCY_PREDICATE_GENERATOR_HASH = hashlib.sha256(
-    _GENERATOR_SOURCE.encode("utf-8")
-).hexdigest()
+CONSISTENCY_PREDICATE_GENERATOR_HASH = hashlib.sha256(_GENERATOR_SOURCE.encode("utf-8")).hexdigest()
 
 AxisRole = Literal[
     "authored_sweep",
@@ -180,8 +178,7 @@ class UpdateKernelSpec(StrictModel):
             )
         if self.signature != FIXED_UPDATE_KERNEL_SIGNATURE:
             raise ValueError(
-                "update kernel signature must be exactly "
-                f"{FIXED_UPDATE_KERNEL_SIGNATURE!r}"
+                f"update kernel signature must be exactly {FIXED_UPDATE_KERNEL_SIGNATURE!r}"
             )
         return self
 

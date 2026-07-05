@@ -346,7 +346,9 @@ def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
         registry=registry,
     )
 
-    assert [write.manifest.metadata["barrier_visit_ordinal"] for write in result.checkpoint_writes] == [
+    assert [
+        write.manifest.metadata["barrier_visit_ordinal"] for write in result.checkpoint_writes
+    ] == [
         0,
         1,
         2,

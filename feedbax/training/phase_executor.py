@@ -318,9 +318,7 @@ class PhaseProgramExecutor:
 
     def _progress_metrics(self, slots: Mapping[str, Any]) -> dict[str, Any]:
         return {
-            slot: _copy_executor_value(slots[slot])
-            for slot in self._metric_slots
-            if slot in slots
+            slot: _copy_executor_value(slots[slot]) for slot in self._metric_slots if slot in slots
         }
 
     def _resume_phase_for_barrier(self, barrier_name: str) -> str:
