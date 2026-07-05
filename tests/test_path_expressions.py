@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,8 +36,115 @@ from feedbax.contracts.expressions import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 
 
+HASH_CORPUS_PATH = (
+    Path(__file__).parent
+    / "fixtures"
+    / "path_expressions"
+    / "pre_extension_hash_corpus.json"
+)
+
+
 def _ctx(payload: object, *, kind: str = "manifest") -> ExpressionContext:
     return ExpressionContext(items={"manifest": ContextItem(kind=kind, payload=payload)})
+
+
+def _hash_corpus_expressions() -> dict[str, object]:
+    select = Select(
+        where=Compare(
+            item="entry",
+            path="factor",
+            op="approx_eq",
+            value=1.05,
+            tolerance=1e-12,
+        )
+    )
+    score_gt = Compare(item="manifest", path="metrics.score", op="gt", value=0.8)
+    loss_ok = Compare(item="manifest", path="metrics.loss", op="lt", value=0.3)
+    group_ok = Compare(item="manifest", path="metadata.group", op="eq", value="control")
+    return {
+        "compare_exists": Compare(item="manifest", path="metadata.group", op="exists"),
+        "compare_eq": Compare(
+            item="manifest",
+            path="metadata.group",
+            op="eq",
+            value="control",
+        ),
+        "compare_ne": Compare(
+            item="manifest",
+            path="metadata.group",
+            op="ne",
+            value="treated",
+        ),
+        "compare_approx_eq": Compare(
+            item="manifest",
+            path="metrics.score",
+            op="approx_eq",
+            value=0.125,
+            tolerance=1e-9,
+        ),
+        "compare_lt": Compare(item="manifest", path="metrics.loss", op="lt", value=0.2),
+        "compare_le": Compare(item="manifest", path="metrics.loss", op="le", value=0.2),
+        "compare_gt": Compare(item="manifest", path="metrics.score", op="gt", value=0.1),
+        "compare_ge": Compare(item="manifest", path="metrics.score", op="ge", value=0.1),
+        "compare_in": Compare(
+            item="manifest",
+            path="metadata.group",
+            op="in",
+            value=["control", "treated"],
+        ),
+        "compare_contains": Compare(
+            item="manifest",
+            path="tags",
+            op="contains",
+            value="stable",
+        ),
+        "compare_has_type": Compare(
+            item="manifest",
+            op="has_type",
+            value="evaluation_manifest",
+        ),
+        "nested_all_any_not": AllOf(
+            exprs=[score_gt, AnyOf(exprs=[loss_ok, Not(expr=group_ok)])]
+        ),
+        "named_predicate": NamedPredicateRef(
+            predicate_id="feedbax.test.predicate",
+            params={"z": 2, "a": 1},
+        ),
+        "select_factor": select,
+        "value_query_empty_path": ValueQuery(item="manifest"),
+        "value_query_nested_path": ValueQuery(item="manifest", path="metadata.group"),
+        "value_query_select": ValueQuery(
+            item="manifest",
+            path="frontier",
+            select=select,
+        ),
+        "value_query_coerce_float_scale": ValueQuery(
+            item="manifest",
+            path="percent",
+            coerce=Coerce(to="float", scale=0.01),
+        ),
+        "value_query_coerce_int": ValueQuery(
+            item="manifest",
+            path="count",
+            coerce=Coerce(to="int"),
+        ),
+        "value_query_coerce_str": ValueQuery(
+            item="manifest",
+            path="label",
+            coerce=Coerce(to="str"),
+        ),
+        "value_query_coerce_bool": ValueQuery(
+            item="manifest",
+            path="enabled",
+            coerce=Coerce(to="bool"),
+        ),
+        "value_query_select_coerce": ValueQuery(
+            item="manifest",
+            path="frontier",
+            select=select,
+            coerce=Coerce(to="float", scale=2.0),
+        ),
+    }
 
 
 def test_path_ref_matches_manifest_get_path_for_dict_and_attribute_walks() -> None:
@@ -254,6 +363,17 @@ def test_expression_hash_uses_sorted_canonical_json_excluding_none() -> None:
     assert "tolerance" not in canonical_expression_json(
         Compare(item="manifest", path="x", op="eq", value=1)
     )
+
+
+def test_pre_extension_expression_hash_corpus_is_byte_stable() -> None:
+    corpus = json.loads(HASH_CORPUS_PATH.read_text(encoding="utf-8"))
+    expressions = _hash_corpus_expressions()
+
+    assert {entry["name"] for entry in corpus} == set(expressions)
+    for entry in corpus:
+        expr = expressions[entry["name"]]
+        assert canonical_expression_json(expr) == entry["canonical_json"]
+        assert expression_hash(expr) == entry["expression_hash"]
 
 
 def test_discriminated_expr_schema_validates_from_plain_payloads() -> None:
