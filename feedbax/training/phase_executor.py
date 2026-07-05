@@ -13,6 +13,7 @@ import jax.tree as jt
 from feedbax.contracts.worker import (
     PhaseProgramSpec,
     ProgressCoordinate,
+    StateSlotSpec,
 )
 from feedbax.training.worker_validation import (
     WorkerContractValidationError,
@@ -22,6 +23,7 @@ from feedbax.training.worker_validation import (
 UpdateKernel = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], Mapping[str, Any]
 ]
+ProgressCallback = Callable[[ProgressCoordinate], None]
 
 
 def _is_shareable_jax_array(value: Any) -> bool:
@@ -48,6 +50,10 @@ def _copy_phase_checkpoint(checkpoint: "PhaseCheckpoint") -> "PhaseCheckpoint":
         slots=_copy_executor_mapping(checkpoint.slots),
         visit_ordinal=checkpoint.visit_ordinal,
     )
+
+
+def _copy_progress_coordinate(coordinate: ProgressCoordinate) -> ProgressCoordinate:
+    return coordinate.model_copy(update={"metrics": _copy_executor_mapping(coordinate.metrics)})
 
 
 @dataclass
@@ -166,11 +172,13 @@ class PhaseProgramExecutor:
         *,
         guard_predicates: Mapping[str, UpdateKernel] | None = None,
         checkpoint_store: PhaseCheckpointStore | None = None,
+        state_slots: Sequence[StateSlotSpec] = (),
     ) -> None:
         self.program = program
         self.kernels = dict(kernels)
         self.guard_predicates = dict(guard_predicates or {})
         self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
+        self._metric_slots = tuple(slot.name for slot in state_slots if slot.role == "metric")
         self._phases = {phase.name: phase for phase in program.phases}
         self._steps = {step.name: step for step in program.update_steps}
         self._transitions = {
@@ -190,6 +198,7 @@ class PhaseProgramExecutor:
         resume_from_barrier: str | None = None,
         stop_after_barrier: str | None = None,
         context: Mapping[str, Any] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier."""
         progress: list[ProgressCoordinate] = []
@@ -237,9 +246,14 @@ class PhaseProgramExecutor:
                         )
                     current_slots.update(_copy_executor_mapping(updates))
                 coordinate = coordinate.model_copy(
-                    update={"global_step": coordinate.global_step + 1}
+                    update={
+                        "global_step": coordinate.global_step + 1,
+                        "metrics": self._progress_metrics(current_slots),
+                    }
                 )
                 progress.append(coordinate)
+                if progress_callback is not None:
+                    progress_callback(_copy_progress_coordinate(coordinate))
 
             if phase.checkpoint_barrier is not None:
                 saved_checkpoint = self._save_barrier(
@@ -301,6 +315,13 @@ class PhaseProgramExecutor:
                 slots=captured,
             )
         )
+
+    def _progress_metrics(self, slots: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            slot: _copy_executor_value(slots[slot])
+            for slot in self._metric_slots
+            if slot in slots
+        }
 
     def _resume_phase_for_barrier(self, barrier_name: str) -> str:
         barrier = self._barriers.get(barrier_name)

@@ -315,6 +315,7 @@ def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
         _toy_adaptive_kernels(),
         guard_predicates=_toy_adaptive_guards(),
         checkpoint_store=store,
+        state_slots=contract.state_slots,
     )
     slots = {
         "controller": 7,
@@ -332,6 +333,7 @@ def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
     assert first.slots["guard_counter"] == 1
     assert first.slots["adaptive_lambda"] == 1
     assert first.coordinate.schedule_origin_step == 0
+    assert [coordinate.metrics for coordinate in first.progress] == [{"heldout_metric": 1.0}]
 
     resumed = executor.run(
         {},
@@ -343,6 +345,10 @@ def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
     assert resumed.slots["controller"] == 7
     assert resumed.slots["guard_counter"] == 2
     assert resumed.slots["adaptive_lambda"] == 3
+    assert [coordinate.metrics for coordinate in resumed.progress] == [
+        {"heldout_metric": 1.0},
+        {"heldout_metric": 1.0},
+    ]
 
 
 def test_population_length_mismatch_is_rejected_at_load() -> None:

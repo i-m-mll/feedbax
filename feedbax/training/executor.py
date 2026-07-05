@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -52,6 +53,7 @@ from feedbax.training.worker_validation import (
 
 
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
+ProgressCallback = Callable[[Mapping[str, Any]], None]
 
 
 class TrainingRunExecutorError(ValueError):
@@ -137,8 +139,15 @@ def execute_training_run_spec(
     stop_after_barrier: str | None = None,
     manifest_conflict_policy: ManifestConflictPolicy = "error",
     issues: Sequence[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TrainingRunExecutionResult:
-    """Validate, execute, checkpoint, and natively emit one training-run manifest."""
+    """Validate, execute, checkpoint, and natively emit one training-run manifest.
+
+    ``progress_callback`` is called once for each generated training-progress
+    history event, in history order, as each progress coordinate is produced
+    during execution. Callback payloads have the same shape as stored history
+    events. Exceptions raised by the callback propagate to the caller.
+    """
     run_spec = _validate_spec(spec)
     root_path = Path(manifest_root) if manifest_root is not None else (
         Path(run_spec.artifacts.manifest_root)
@@ -220,16 +229,27 @@ def execute_training_run_spec(
         kernels,
         guard_predicates=guards,
         checkpoint_store=checkpoint_store,
+        state_slots=effective_phase.state_slots,
     )
+    live_history_events: list[dict[str, Any]] = []
     execution = executor.run(
         slots,
         run_id=resolved_run_id,
         resume_from_barrier=resume_barrier,
         stop_after_barrier=stop_after_barrier,
         context={"run_spec": run_spec, "method_payload": method_payload},
+        progress_callback=(
+            _live_progress_callback(progress_callback, live_history_events)
+            if progress_callback is not None
+            else None
+        ),
     )
     checkpoint_writes = checkpoint_store.writes
-    history_events = _history_events(execution.progress)
+    history_events = (
+        live_history_events
+        if progress_callback is not None
+        else _history_events(execution.progress)
+    )
     final_metrics = _final_metrics(execution.slots, execution.coordinate)
     manifest = _build_manifest(
         run_spec,
@@ -343,14 +363,28 @@ def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:
 
 
 def _history_events(progress: Sequence[ProgressCoordinate]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "training_progress",
-            "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
-            "metrics": dict(coordinate.metrics),
-        }
-        for coordinate in progress
-    ]
+    return [_history_event(coordinate) for coordinate in progress]
+
+
+def _history_event(coordinate: ProgressCoordinate) -> dict[str, Any]:
+    return {
+        "type": "training_progress",
+        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
+        "metrics": dict(coordinate.metrics),
+    }
+
+
+def _live_progress_callback(
+    progress_callback: ProgressCallback | None,
+    history_events: list[dict[str, Any]],
+) -> Callable[[ProgressCoordinate], None]:
+    def emit(coordinate: ProgressCoordinate) -> None:
+        event = _history_event(coordinate)
+        history_events.append(event)
+        if progress_callback is not None:
+            progress_callback(deepcopy(event))
+
+    return emit
 
 
 def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> dict[str, Any]:
