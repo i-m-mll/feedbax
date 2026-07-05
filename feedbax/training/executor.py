@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -19,10 +20,13 @@ from feedbax.contracts.manifest import (
     Provenance,
     SpecPayload,
     TrainingRunManifest,
+    ArtifactRef,
     canonical_json_bytes,
     default_manifest_root,
+    safe_manifest_key,
     sha256_bytes,
     spec_payload,
+    store_bytes_artifact,
     store_json_artifact,
     training_run_manifest_id,
     utc_now,
@@ -34,7 +38,7 @@ from feedbax.contracts.training import (
     TrainingMethodRegistry,
     TrainingRunSpec,
 )
-from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
@@ -65,6 +69,15 @@ class ManifestEmissionConflictError(TrainingRunExecutorError):
 
 
 @dataclass(frozen=True)
+class _PreparedBarrierArtifact:
+    sink: BarrierArtifactSinkSpec
+    data: bytes
+    logical_name: str
+    media_type: str
+    suffix: str
+
+
+@dataclass(frozen=True)
 class TrainingRunExecutionResult:
     """Result returned by ``execute_training_run_spec``."""
 
@@ -85,24 +98,41 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self,
         *,
         root: Path | str,
+        artifact_root: Path | str,
         run_spec: TrainingRunSpec,
         phase_program: Any,
         parent_lineage: Sequence[CheckpointLineageRef] = (),
     ) -> None:
         super().__init__()
         self.root = Path(root)
+        self.artifact_root = Path(artifact_root)
         self.run_spec = run_spec
         self.phase_program = phase_program
         self.parent_lineage = tuple(parent_lineage)
+        self._barrier_specs = {
+            barrier.name: barrier for barrier in phase_program.checkpoint_barriers
+        }
         self._writes: list[CheckpointWriteResult] = []
+        self._barrier_artifacts: list[ArtifactRef] = []
 
     @property
     def writes(self) -> tuple[CheckpointWriteResult, ...]:
         """Return successful custody writes in barrier firing order."""
         return tuple(self._writes)
 
+    @property
+    def barrier_artifacts(self) -> tuple[ArtifactRef, ...]:
+        """Return local artifacts captured from barrier sink slots."""
+        return tuple(self._barrier_artifacts)
+
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
         saved = super().save(checkpoint)
+        barrier_spec = self._barrier_specs[saved.barrier]
+        prepared_artifacts = _prepare_barrier_artifacts(
+            saved,
+            barrier_spec.artifact_sinks,
+            run_id=saved.coordinate.run_id,
+        )
         write = write_checkpoint_transaction(
             self.root,
             run_spec=self.run_spec,
@@ -116,6 +146,26 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             metadata={"barrier_visit_ordinal": saved.visit_ordinal},
         )
         self._writes.append(write)
+        for prepared in prepared_artifacts:
+            self._barrier_artifacts.append(
+                store_bytes_artifact(
+                    prepared.data,
+                    root=self.artifact_root,
+                    role=prepared.sink.role,
+                    logical_name=prepared.logical_name,
+                    media_type=prepared.media_type,
+                    suffix=prepared.suffix,
+                    metadata={
+                        **prepared.sink.metadata,
+                        "slot": prepared.sink.slot,
+                        "barrier": saved.barrier,
+                        "barrier_phase": barrier_spec.phase,
+                        "barrier_visit_ordinal": saved.visit_ordinal,
+                        "global_step": saved.coordinate.global_step,
+                        "checkpoint_transaction_id": write.manifest.transaction_id,
+                    },
+                )
+            )
         return saved
 
 
@@ -217,6 +267,7 @@ def execute_training_run_spec(
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
+        artifact_root=root_path,
         run_spec=run_spec,
         phase_program=program,
         parent_lineage=parent_lineage,
@@ -245,6 +296,7 @@ def execute_training_run_spec(
         ),
     )
     checkpoint_writes = checkpoint_store.writes
+    barrier_artifacts = checkpoint_store.barrier_artifacts
     history_events = (
         live_history_events
         if progress_callback is not None
@@ -263,6 +315,7 @@ def execute_training_run_spec(
         training_spec_payload_ref=training_spec_payload_ref,
         task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
         checkpoint_writes=checkpoint_writes,
+        barrier_artifacts=barrier_artifacts,
         history_events=history_events,
         final_metrics=final_metrics,
         issues=issues,
@@ -387,6 +440,101 @@ def _live_progress_callback(
     return emit
 
 
+def _prepare_barrier_artifacts(
+    checkpoint: PhaseCheckpoint,
+    artifact_sinks: Sequence[BarrierArtifactSinkSpec],
+    *,
+    run_id: str,
+) -> list[_PreparedBarrierArtifact]:
+    prepared: list[_PreparedBarrierArtifact] = []
+    for sink in artifact_sinks:
+        if sink.slot not in checkpoint.slots:
+            if sink.required:
+                raise TrainingRunExecutorError(
+                    f"/checkpoint_barriers/{checkpoint.barrier}/artifact_sinks/{sink.slot}: "
+                    "required artifact sink slot was not captured"
+                )
+            continue
+        data, media_type = _barrier_artifact_bytes(checkpoint.slots[sink.slot], sink)
+        suffix = _barrier_artifact_suffix(sink)
+        prepared.append(
+            _PreparedBarrierArtifact(
+                sink=sink,
+                data=data,
+                logical_name=_barrier_artifact_logical_name(
+                    run_id=run_id,
+                    barrier=checkpoint.barrier,
+                    visit_ordinal=checkpoint.visit_ordinal,
+                    sink=sink,
+                    suffix=suffix,
+                ),
+                media_type=media_type,
+                suffix=suffix,
+            )
+        )
+    return prepared
+
+
+def _barrier_artifact_bytes(
+    value: Any,
+    sink: BarrierArtifactSinkSpec,
+) -> tuple[bytes, str]:
+    if sink.encoding == "raw":
+        if isinstance(value, bytes):
+            return value, sink.media_type
+        if isinstance(value, bytearray):
+            return bytes(value), sink.media_type
+        if isinstance(value, memoryview):
+            return value.tobytes(), sink.media_type
+        raise TrainingRunExecutorError(
+            f"/artifact_sinks/{sink.slot}/encoding: raw artifact sinks require bytes-like "
+            f"slot values; found {type(value).__name__}"
+        )
+    if sink.encoding == "json":
+        media_type = (
+            "application/json"
+            if sink.media_type == "application/octet-stream"
+            else sink.media_type
+        )
+        return canonical_json_bytes(value), media_type
+    return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), sink.media_type
+
+
+def _barrier_artifact_suffix(sink: BarrierArtifactSinkSpec) -> str:
+    if sink.suffix is not None:
+        return sink.suffix
+    if sink.logical_name is not None:
+        suffix = Path(sink.logical_name).suffix
+        if suffix:
+            return suffix
+    if sink.encoding == "json":
+        return ".json"
+    if sink.encoding == "pickle":
+        return ".pkl"
+    return ""
+
+
+def _barrier_artifact_logical_name(
+    *,
+    run_id: str,
+    barrier: str,
+    visit_ordinal: int | None,
+    sink: BarrierArtifactSinkSpec,
+    suffix: str,
+) -> str:
+    source_name = sink.logical_name or sink.slot
+    stem = Path(source_name).stem if Path(source_name).suffix else source_name
+    visit = "unknown" if visit_ordinal is None else str(visit_ordinal)
+    parts = [
+        safe_manifest_key(run_id),
+        safe_manifest_key(barrier),
+        f"visit-{visit}",
+        safe_manifest_key(sink.slot),
+        safe_manifest_key(stem),
+    ]
+    return "_".join(parts) + suffix
+
+
 def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> dict[str, Any]:
     metrics = dict(coordinate.metrics)
     for key, value in slots.items():
@@ -412,11 +560,12 @@ def _build_manifest(
     training_spec_payload_ref: str | None,
     task_binding_spec: dict[str, Any] | None,
     checkpoint_writes: Sequence[CheckpointWriteResult],
+    barrier_artifacts: Sequence[ArtifactRef],
     history_events: list[dict[str, Any]],
     final_metrics: dict[str, Any],
     issues: Sequence[str] | None,
 ) -> TrainingRunManifest:
-    artifacts = []
+    artifacts = list(barrier_artifacts)
     if history_events:
         artifacts.append(
             store_json_artifact(

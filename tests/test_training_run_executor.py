@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import jax.numpy as jnp
 
-from feedbax.contracts.manifest import load_manifest
+from feedbax.contracts.manifest import load_manifest, sha256_bytes
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -27,7 +27,13 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.contracts.worker import MetricGuardSpec, PhaseTransitionSpec
+from feedbax.contracts.worker import (
+    BarrierArtifactSinkSpec,
+    CheckpointSlotSpec,
+    MetricGuardSpec,
+    PhaseTransitionSpec,
+    StateSlotSpec,
+)
 from feedbax.training.checkpoint_custody import load_latest_checkpoint
 from feedbax.training.executor import (
     ManifestEmissionConflictError,
@@ -94,10 +100,35 @@ def _chunked_registry(
     *,
     stop_after_global_step: int = 3,
     fail_on_global_step: int | None = None,
+    barrier_artifact_sink: bool = False,
 ) -> tuple[TrainingMethodRegistry, object]:
     contract = standard_supervised_method_contract()
     program = contract.phase_program.model_copy(deep=True)
-    phase = program.phases[0].model_copy(update={"legal_next": ["train_batch"]})
+    phase_writes = list(program.phases[0].writes)
+    step_writes = list(program.update_steps[0].writes)
+    checkpoint_slots = list(program.checkpoint_barriers[0].slots)
+    artifact_sinks = []
+    state_slots = list(contract.state_slots)
+    if barrier_artifact_sink:
+        phase_writes.append("history_chunk")
+        step_writes.append("history_chunk")
+        checkpoint_slots.append(CheckpointSlotSpec(slot="history_chunk"))
+        artifact_sinks.append(
+            BarrierArtifactSinkSpec(
+                slot="history_chunk",
+                role="training_history_chunk",
+                logical_name="history_chunk.bin",
+                media_type="application/octet-stream",
+            )
+        )
+        state_slots.append(StateSlotSpec(name="history_chunk", role="auxiliary", required=False))
+    phase = program.phases[0].model_copy(
+        update={"legal_next": ["train_batch"], "writes": phase_writes}
+    )
+    update_step = program.update_steps[0].model_copy(update={"writes": step_writes})
+    checkpoint_barrier = program.checkpoint_barriers[0].model_copy(
+        update={"slots": checkpoint_slots, "artifact_sinks": artifact_sinks}
+    )
     transition = PhaseTransitionSpec(
         source="train_batch",
         target="train_batch",
@@ -111,9 +142,11 @@ def _chunked_registry(
         update={
             "phases": [phase],
             "transitions": [transition],
+            "update_steps": [update_step],
+            "checkpoint_barriers": [checkpoint_barrier],
         }
     )
-    contract = contract.model_copy(update={"phase_program": program})
+    contract = contract.model_copy(update={"phase_program": program, "state_slots": state_slots})
     base_kernel = standard_supervised_update_kernels()[
         "feedbax.training.standard_supervised.gradient_update"
     ]
@@ -121,7 +154,10 @@ def _chunked_registry(
     def gradient_update(slots, coordinate, context):
         if fail_on_global_step is not None and coordinate.global_step >= fail_on_global_step:
             raise RuntimeError("simulated preemption after durable checkpoint")
-        return base_kernel(slots, coordinate, context)
+        updates = dict(base_kernel(slots, coordinate, context))
+        if barrier_artifact_sink:
+            updates["history_chunk"] = bytes([0, 255, coordinate.global_step])
+        return updates
 
     def continue_train_chunk(slots, coordinate, context):
         del slots, context
@@ -327,6 +363,52 @@ def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
     assert loaded.manifest.transaction_id == result.checkpoint_writes[-1].manifest.transaction_id
     assert loaded.manifest.completed_coordinate.global_step == 3
     assert loaded.slots["model"].tolist() == result.final_slots["model"].tolist()
+
+
+def test_repeated_barrier_visits_capture_binary_artifact_sinks(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(
+        stop_after_global_step=3,
+        barrier_artifact_sink=True,
+    )
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="chunked-sidecars",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+    )
+
+    artifacts = [
+        artifact
+        for artifact in result.manifest.artifacts
+        if artifact.role == "training_history_chunk"
+    ]
+    assert len(artifacts) == 3
+    assert [artifact.metadata["barrier_visit_ordinal"] for artifact in artifacts] == [0, 1, 2]
+    assert [artifact.metadata["global_step"] for artifact in artifacts] == [1, 2, 3]
+    assert all(artifact.metadata["barrier"] == "after_train_batch" for artifact in artifacts)
+    assert all(artifact.metadata["slot"] == "history_chunk" for artifact in artifacts)
+    assert all(artifact.metadata["checkpoint_transaction_id"] for artifact in artifacts)
+    assert len({artifact.logical_name for artifact in artifacts}) == 3
+
+    for index, artifact in enumerate(artifacts):
+        payload = bytes([0, 255, index])
+        assert artifact.media_type == "application/octet-stream"
+        assert artifact.size_bytes == len(payload)
+        assert artifact.sha256 == sha256_bytes(payload)
+        assert Path(artifact.uri).read_bytes() == payload
+
+    manifest = load_manifest(result.manifest_path)
+    persisted_artifacts = [
+        artifact for artifact in manifest.artifacts if artifact.role == "training_history_chunk"
+    ]
+    assert [artifact.sha256 for artifact in persisted_artifacts] == [
+        artifact.sha256 for artifact in artifacts
+    ]
 
 
 def test_partial_run_resume_matches_uninterrupted_chunked_execution(

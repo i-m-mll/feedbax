@@ -9,6 +9,7 @@ from feedbax.contracts.worker import (
     CONSISTENCY_PREDICATE_SCHEMA_VERSION,
     PPO_MAPPING_TABLE,
     AxisReducerSpec,
+    BarrierArtifactSinkSpec,
     CheckpointSlotManifest,
     CheckpointSlotRecord,
     MethodContractSpec,
@@ -300,6 +301,71 @@ def test_phase_executor_shares_jax_array_update_and_checkpoint_leaves() -> None:
         checkpoint.slots["controller_optimizer"]
         is not warmup.checkpoints["after_warmup"].slots["controller_optimizer"]
     )
+
+
+def test_checkpoint_barrier_artifact_sinks_validate_against_captured_slots() -> None:
+    contract = toy_minimax_method_contract()
+    barriers = list(contract.phase_program.checkpoint_barriers)
+    barriers[0] = barriers[0].model_copy(
+        update={
+            "artifact_sinks": [
+                BarrierArtifactSinkSpec(
+                    slot="rng",
+                    role="rng_sidecar",
+                    logical_name="rng.bin",
+                    media_type="application/octet-stream",
+                )
+            ]
+        }
+    )
+    contract = contract.model_copy(
+        update={
+            "phase_program": contract.phase_program.model_copy(
+                update={"checkpoint_barriers": barriers}
+            )
+        }
+    )
+
+    validate_worker_contract(
+        contract,
+        update_kernels=_toy_kernels(),
+        dry_run_shape_check=lambda _contract: DryRunShapeCheckResult(passed=True),
+    )
+
+    payload = toy_minimax_method_contract().model_dump(mode="json")
+    assert payload["phase_program"]["checkpoint_barriers"][0].get("artifact_sinks") == []
+    assert MethodContractSpec.model_validate(payload).phase_program.checkpoint_barriers[
+        0
+    ].artifact_sinks == []
+
+
+def test_checkpoint_barrier_artifact_sink_rejects_uncaptured_slot() -> None:
+    contract = toy_minimax_method_contract()
+    barriers = list(contract.phase_program.checkpoint_barriers)
+    barriers[0] = barriers[0].model_copy(
+        update={
+            "artifact_sinks": [
+                BarrierArtifactSinkSpec(
+                    slot="loss",
+                    role="loss_sidecar",
+                    logical_name="loss.bin",
+                )
+            ]
+        }
+    )
+    contract = contract.model_copy(
+        update={
+            "phase_program": contract.phase_program.model_copy(
+                update={"checkpoint_barriers": barriers}
+            )
+        }
+    )
+
+    with pytest.raises(WorkerContractValidationError) as exc:
+        validate_worker_contract(contract, update_kernels=_toy_kernels())
+
+    assert "/phase_program/checkpoint_barriers/0/artifact_sinks/0/slot" in str(exc.value)
+    assert "must be captured" in str(exc.value)
 
 
 def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
