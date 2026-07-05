@@ -33,6 +33,7 @@ try:
     )
     from .executor import (
         ManifestEmissionConflictError,
+        StreamingCheckpointStore,
         TrainingRunExecutionResult,
         TrainingRunExecutorError,
         execute_training_run_spec,
@@ -50,6 +51,7 @@ __all__ = [
     "CheckpointIntegrityError",
     "CheckpointWriteResult",
     "SimpleTrainer",
+    "StreamingCheckpointStore",
     "TaskTrainer",
     "TaskTrainerHistory",
     "ManifestEmissionConflictError",

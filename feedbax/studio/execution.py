@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import sys
 import uuid
@@ -596,6 +597,10 @@ def _build_execution_spec(
     if repos is None and request.backend != "local":
         repos = default_feedbax_sources(feedbax_ref=request.feedbax_ref or "develop")
     python_cmd = shlex.quote(sys.executable) if request.backend == "local" else "python"
+    repo_root = Path(__file__).resolve().parents[2]
+    pythonpath = str(repo_root)
+    if existing_pythonpath := os.environ.get("PYTHONPATH"):
+        pythonpath = os.pathsep.join([pythonpath, existing_pythonpath])
     metadata = {
         **request.metadata,
         "studio": {
@@ -660,6 +665,7 @@ def _build_execution_spec(
         ),
         issues=request.issues,
         env={
+            "PYTHONPATH": pythonpath,
             "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
             "FEEDBAX_STUDIO_WORKSPACE_ID": workspace.id,
             "FEEDBAX_STUDIO_STAGE_ID": stage.id,
