@@ -214,8 +214,12 @@ def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
 def test_execute_training_run_spec_propagates_progress_callback_errors(
     tmp_path: Path,
 ) -> None:
+    checkpoint_root = tmp_path / "checkpoint-custody"
+    callback_events: list[dict[str, object]] = []
+
     def fail_on_progress(event: dict[str, object]) -> None:
         assert event["type"] == "training_progress"
+        callback_events.append(event)
         raise RuntimeError("callback failed")
 
     with pytest.raises(RuntimeError, match="callback failed"):
@@ -224,8 +228,13 @@ def test_execute_training_run_spec_propagates_progress_callback_errors(
             run_id="callback-failure",
             initial_slots=_initial_slots(),
             manifest_root=tmp_path,
+            checkpoint_root=checkpoint_root,
             progress_callback=fail_on_progress,
         )
+
+    assert [event["coordinate"]["global_step"] for event in callback_events] == [1]
+    assert not list(checkpoint_root.glob("transactions/tx-*"))
+    assert not list((tmp_path / "manifests" / "training_runs").glob("*.json"))
 
 
 def test_execute_training_run_spec_resumes_through_checkpoint_custody(

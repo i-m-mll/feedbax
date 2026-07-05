@@ -18,6 +18,7 @@ from feedbax.training.worker_validation import (
 )
 
 UpdateKernel = Callable[[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], Mapping[str, Any]]
+ProgressCallback = Callable[[ProgressCoordinate], None]
 
 
 @dataclass
@@ -163,6 +164,7 @@ class PhaseProgramExecutor:
         resume_from_barrier: str | None = None,
         stop_after_barrier: str | None = None,
         context: Mapping[str, Any] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier."""
         progress: list[ProgressCoordinate] = []
@@ -216,6 +218,8 @@ class PhaseProgramExecutor:
                     }
                 )
                 progress.append(coordinate)
+                if progress_callback is not None:
+                    progress_callback(deepcopy(coordinate))
 
             if phase.checkpoint_barrier is not None:
                 saved_checkpoint = self._save_barrier(

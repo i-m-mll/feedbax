@@ -144,8 +144,8 @@ def execute_training_run_spec(
     """Validate, execute, checkpoint, and natively emit one training-run manifest.
 
     ``progress_callback`` is called once for each generated training-progress
-    history event, in history order, after execution completes and before
-    manifest emission. Callback payloads have the same shape as stored history
+    history event, in history order, as each progress coordinate is produced
+    during execution. Callback payloads have the same shape as stored history
     events. Exceptions raised by the callback propagate to the caller.
     """
     run_spec = _validate_spec(spec)
@@ -231,16 +231,25 @@ def execute_training_run_spec(
         checkpoint_store=checkpoint_store,
         state_slots=effective_phase.state_slots,
     )
+    live_history_events: list[dict[str, Any]] = []
     execution = executor.run(
         slots,
         run_id=resolved_run_id,
         resume_from_barrier=resume_barrier,
         stop_after_barrier=stop_after_barrier,
         context={"run_spec": run_spec, "method_payload": method_payload},
+        progress_callback=(
+            _live_progress_callback(progress_callback, live_history_events)
+            if progress_callback is not None
+            else None
+        ),
     )
     checkpoint_writes = checkpoint_store.writes
-    history_events = _history_events(execution.progress)
-    _emit_progress_callbacks(history_events, progress_callback)
+    history_events = (
+        live_history_events
+        if progress_callback is not None
+        else _history_events(execution.progress)
+    )
     final_metrics = _final_metrics(execution.slots, execution.coordinate)
     manifest = _build_manifest(
         run_spec,
@@ -354,24 +363,28 @@ def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:
 
 
 def _history_events(progress: Sequence[ProgressCoordinate]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "training_progress",
-            "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
-            "metrics": dict(coordinate.metrics),
-        }
-        for coordinate in progress
-    ]
+    return [_history_event(coordinate) for coordinate in progress]
 
 
-def _emit_progress_callbacks(
-    history_events: Sequence[Mapping[str, Any]],
+def _history_event(coordinate: ProgressCoordinate) -> dict[str, Any]:
+    return {
+        "type": "training_progress",
+        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
+        "metrics": dict(coordinate.metrics),
+    }
+
+
+def _live_progress_callback(
     progress_callback: ProgressCallback | None,
-) -> None:
-    if progress_callback is None:
-        return
-    for event in history_events:
-        progress_callback(deepcopy(dict(event)))
+    history_events: list[dict[str, Any]],
+) -> Callable[[ProgressCoordinate], None]:
+    def emit(coordinate: ProgressCoordinate) -> None:
+        event = _history_event(coordinate)
+        history_events.append(event)
+        if progress_callback is not None:
+            progress_callback(deepcopy(event))
+
+    return emit
 
 
 def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> dict[str, Any]:
