@@ -262,6 +262,81 @@ else
   no "expected 3 row .done files" "got $n_done; $(ls "$SDIR2" 2>/dev/null | tr '\n' ' ')"
 fi
 
+section "nonzero launch commands create failed sentinels only"
+
+F_SENT="$WORK/fail_sentinel"; mkdir -p "$F_SENT/stubs"
+F_REMOTE="$F_SENT/remote_fs"
+F_SDIR="$F_REMOTE/feedbax_runs/runpod-deploy/sentinels"
+mkdir -p "$F_REMOTE/rlrmp"
+cat > "$F_SENT/stubs/ssh" <<'STUB'
+#!/usr/bin/env bash
+cmd="${!#}"
+bash -c "$cmd"
+STUB
+chmod +x "$F_SENT/stubs/ssh"
+for tool in rsync curl runpodctl; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$F_SENT/stubs/$tool"
+  chmod +x "$F_SENT/stubs/$tool"
+done
+
+F_HARNESS="$F_SENT/fail_harness.sh"
+{
+  echo 'set -uo pipefail'
+  echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  cat <<'H'
+DRY_RUN=0
+RUNPOD_SSH_KEY="/dev/null"
+SSH_CONNECT_TIMEOUT=10
+log() { printf '==> %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
+remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+H
+  for fn in remote_nohup_sentinel launch_row; do
+    sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
+  done
+  cat <<'H'
+remote_nohup_sentinel "failing bootstrap" "$REMOTE_RLRMP_ROOT" "false" \
+  "$REMOTE_SENTINEL_DIR/bootstrap.done" "$REMOTE_SENTINEL_DIR/bootstrap.failed" \
+  "$REMOTE_RUN_DIR/logs/bootstrap.log"
+launch_row "row_fail" "$REMOTE_RLRMP_ROOT" "false"
+H
+} > "$F_HARNESS"
+
+set +e
+PATH="$F_SENT/stubs:$PATH" \
+REMOTE_RLRMP_ROOT="$F_REMOTE/rlrmp" \
+REMOTE_RUN_DIR="$F_REMOTE/feedbax_runs/runpod-deploy" \
+REMOTE_SENTINEL_DIR="$F_SDIR" \
+SSH_HOST=localhost SSH_PORT=22 \
+bash "$F_HARNESS" >"$F_SENT/out" 2>"$F_SENT/err"
+frc=$?
+set -e
+sleep 1
+
+if [ "$frc" -eq 0 ]; then
+  ok "failing commands launch asynchronously"
+else
+  no "failing command harness should launch asynchronously" "rc=$frc; $(cat "$F_SENT/err" | tr '\n' '|')"
+fi
+if [ -f "$F_SDIR/bootstrap.failed" ] && [ ! -f "$F_SDIR/bootstrap.done" ]; then
+  ok "bootstrap failure writes .failed without .done"
+else
+  no "bootstrap failure sentinel" "$(ls "$F_SDIR" 2>/dev/null | tr '\n' ' ')"
+fi
+if [ -f "$F_SDIR/row_fail.failed" ] && [ ! -f "$F_SDIR/row_fail.done" ]; then
+  ok "row failure writes .failed without .done"
+else
+  no "row failure sentinel" "$(ls "$F_SDIR" 2>/dev/null | tr '\n' ' ')"
+fi
+if [ -f "$F_REMOTE/feedbax_runs/runpod-deploy/logs/bootstrap.log" ] &&
+   [ -f "$F_REMOTE/feedbax_runs/runpod-deploy/logs/row_fail.log" ]; then
+  ok "failure logs are preserved"
+else
+  no "failure logs should be present" "$(find "$F_REMOTE/feedbax_runs/runpod-deploy" -maxdepth 2 -type f 2>/dev/null | tr '\n' ' ')"
+fi
+
 if grep -q 'launched 3 row(s)' "$WORK/launch.err"; then
   ok "launch_training reported 3 rows launched"
 else
