@@ -85,6 +85,37 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
     assert payload["web_modules"] == []
 
 
+def test_value_schema_contract_import_does_not_load_studio_package() -> None:
+    payload = _run_import_probe(
+        """
+        import importlib.util
+        import json
+        import sys
+
+        module_path = "feedbax/contracts/value_schema.py"
+        spec = importlib.util.spec_from_file_location(
+            "feedbax.contracts.value_schema",
+            module_path,
+        )
+        value_schema = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(value_schema)
+
+        studio_modules = sorted(
+            name for name in sys.modules
+            if name == "feedbax.studio" or name.startswith("feedbax.studio.")
+        )
+        print(json.dumps({
+            "studio_modules": studio_modules,
+            "ValueSchema": value_schema.ValueSchema.__module__,
+        }))
+        """
+    )
+
+    assert payload["studio_modules"] == []
+    assert payload["ValueSchema"] == "feedbax.contracts.value_schema"
+
+
 def test_task_objective_training_boundaries_use_canonical_modules() -> None:
     payload = _run_import_probe(
         """

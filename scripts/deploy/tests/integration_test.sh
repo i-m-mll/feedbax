@@ -344,6 +344,121 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "issue 63ae138 reused-pod probe failure clears and rebuilds venv"
+
+VENV_REMOTE="$WORK/venv_remote"
+VENV_SENTINELS="$VENV_REMOTE/feedbax_runs/runpod-deploy/sentinels"
+mkdir -p "$VENV_REMOTE/rlrmp" "$VENV_SENTINELS"
+STUBS_VENV="$WORK/stubs_venv"
+mkdir -p "$STUBS_VENV"
+UV_LOG="$WORK/uv.log"; : > "$UV_LOG"
+
+cat > "$STUBS_VENV/ssh" <<'STUB'
+#!/usr/bin/env bash
+cmd="${!#}"
+/bin/bash -c "$cmd"
+STUB
+chmod +x "$STUBS_VENV/ssh"
+
+cat > "$STUBS_VENV/bash" <<'STUB'
+#!/bin/bash
+if [ "${1:-}" = "-lc" ]; then
+  shift
+  exec /bin/bash -c "$@"
+fi
+exec /bin/bash "$@"
+STUB
+chmod +x "$STUBS_VENV/bash"
+
+cat > "$STUBS_VENV/uv" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$UV_LOG"
+if [ "\$1" = run ] && [ "\$2" = --no-sync ]; then
+  exit 9
+fi
+exit 0
+STUB
+chmod +x "$STUBS_VENV/uv"
+
+VENV_HARNESS="$WORK/venv_harness.sh"
+{
+  echo 'set -euo pipefail'
+  cat <<'H'
+DRY_RUN=0
+RUNPOD_SSH_KEY="/dev/null"
+SSH_CONNECT_TIMEOUT=10
+SENTINEL_TIMEOUT_SECONDS=10
+SENTINEL_POLL_SECONDS=1
+POD_CREATED_BY_US=0
+log() { printf '==> %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+print_cmd() { :; }
+run_cmd() { "$@"; }
+capture_cmd() { "$@"; }
+sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
+expand_path() { printf '%s\n' "$1"; }
+remote_cmd() {
+  local command=$1
+  ssh -i /dev/null -p 22 root@localhost "$command"
+}
+remote_capture() {
+  local command=$1
+  ssh -i /dev/null -p 22 root@localhost "$command"
+}
+H
+  for fn in remote_nohup_sentinel wait_for_sentinel wait_for_sentinel_result \
+            bootstrap_remote_env mark_bootstrap_branch clear_venv_probe_markers \
+            probe_reused_remote_env bootstrap_remote_env_for_pod; do
+    sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
+  done
+  echo 'bootstrap_remote_env_for_pod'
+} > "$VENV_HARNESS"
+
+set +e
+PATH="$STUBS_VENV:$PATH" \
+REMOTE_RLRMP_ROOT="$VENV_REMOTE/rlrmp" \
+REMOTE_RUN_DIR="$VENV_REMOTE/feedbax_runs/runpod-deploy" \
+REMOTE_SENTINEL_DIR="$VENV_SENTINELS" \
+SSH_HOST=localhost SSH_PORT=22 \
+/bin/bash "$VENV_HARNESS" >"$WORK/venv.out" 2>"$WORK/venv.err"
+vrc=$?
+set -e
+
+if [ "$vrc" -eq 0 ]; then
+  ok "rebuild branch completes after failed probe"
+else
+  no "rebuild branch should complete" "rc=$vrc; $(cat "$WORK/venv.err" | tr '\n' '|')"
+fi
+if [ -f "$VENV_SENTINELS/venv_probe.failed" ] &&
+   [ -f "$VENV_SENTINELS/probe_failed_rebuilding.done" ] &&
+   [ -f "$VENV_SENTINELS/uv_sync.done" ] &&
+   [ -f "$VENV_SENTINELS/jax_cuda.done" ] &&
+   [ -f "$VENV_SENTINELS/rebuild_done.done" ]; then
+  ok "rebuild branch wrote expected sentinels"
+else
+  no "rebuild branch sentinels missing" "$(ls "$VENV_SENTINELS" 2>/dev/null | tr '\n' ' ')"
+fi
+if [ ! -f "$VENV_SENTINELS/probe_ok.done" ]; then
+  ok "failed probe did not write probe_ok"
+else
+  no "failed probe must not write probe_ok" "$(ls "$VENV_SENTINELS" | tr '\n' ' ')"
+fi
+if grep -q '^run --no-sync python -c' "$UV_LOG" &&
+   grep -q '^venv --clear$' "$UV_LOG" &&
+   grep -q '^sync$' "$UV_LOG" &&
+   grep -q '^pip install -U jax\[cuda12\]$' "$UV_LOG"; then
+  ok "failed probe ran clear, sync, and CUDA-JAX reinstall"
+else
+  no "failed probe rebuild command sequence" "$(cat "$UV_LOG" | tr '\n' '|')"
+fi
+if grep -q 'venv_probe_branch=probe_failed_rebuilding' "$WORK/venv.err" &&
+   grep -q 'venv_probe_branch=rebuild_done' "$WORK/venv.err"; then
+  ok "rebuild branch emitted grep-friendly log lines"
+else
+  no "rebuild branch should log branch markers" "$(cat "$WORK/venv.err" | tr '\n' '|')"
+fi
+
+# ---------------------------------------------------------------------------
 section "FIX 1 name-based sweep tears down a pod created with an unparseable result"
 
 # Stub model: `pod create` ALWAYS records the requested --name in a fake pod

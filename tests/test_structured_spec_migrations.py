@@ -12,8 +12,30 @@ from feedbax.contracts.migrations import (
     default_spec_registry,
     migrate_studio_task_binding_spec,
 )
+from feedbax.contracts.descriptors import (
+    COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
+    COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
+    DESCRIPTOR_BASIS_SCHEMA_VERSION,
+    SELECTOR_FALLBACK_POLICY_SCHEMA_VERSION,
+    SELECTOR_ROLE_IDENTITY_SCHEMA_VERSION,
+    VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
+)
 from feedbax.contracts.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
-from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
+from feedbax.contracts.graph import (
+    GRAPH_SPEC_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_VERSION_V2,
+    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+)
+from feedbax.contracts.expressions import (
+    PATH_EXPRESSION_SCHEMA_ID,
+    PATH_EXPRESSION_SCHEMA_VERSION,
+)
+from feedbax.contracts.extraction import (
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
+)
+from feedbax.contracts.manifest import EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import validate_objective_spec
 
 
@@ -137,6 +159,19 @@ def test_structured_spec_registry_reports_unknown_family() -> None:
     assert "known families: DemoSpec" in message
 
 
+def test_default_registry_registers_evaluation_states_container_family() -> None:
+    family = default_spec_registry.resolve("EvaluationStatesContainer")
+
+    assert family.identity == "feedbax.manifest.evaluation_states_container"
+    assert family.current_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+    migrations = default_spec_registry.available_migrations("EvaluationStatesContainer")
+    assert [migration.migration_id for migration in migrations] == [
+        "evaluation-states-container-v1-to-v2"
+    ]
+
+
 def test_structured_spec_registry_reports_missing_migration_path() -> None:
     registry = _registry()
 
@@ -159,12 +194,53 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["GraphSpec"].current_version == GRAPH_SPEC_SCHEMA_VERSION
     assert families["PopulationStructureSpec"].identity == "feedbax.spec.population_structure"
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
+    assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
+    assert families["TrainingRunSpec"].current_version == "feedbax.spec.training_run.v1"
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
+    assert (
+        families["StandardSupervisedMethodPayload"].identity
+        == "feedbax.spec.training_method.standard_supervised_payload"
+    )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
     assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v2"
+    assert families["PathExpression"].identity == PATH_EXPRESSION_SCHEMA_ID
+    assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
+    assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID
+    assert (
+        families["ExtractionProductSpec"].current_version
+        == EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION
+    )
+    assert families["ReportSpec"].identity == "feedbax.spec.report"
+    assert families["ReportSpec"].current_version == "feedbax.spec.report.v1"
+    assert (
+        families["AnalysisDataProductRequirement"].identity
+        == "feedbax.spec.analysis_data_product_requirement"
+    )
+    assert (
+        families["AnalysisDataProduct"].identity
+        == "feedbax.manifest.analysis_data_product"
+    )
+    assert families["ExecutionSpec"].identity == "feedbax.spec.execution"
+    assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
+    assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
+    assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v3"
+    assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
+    assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v3"
     assert (
         families["StagedAnalysisBundleExecution"].identity
         == "feedbax.manifest.analysis_bundle_execution"
+    )
+    assert families["ValueSchema"].identity == "feedbax.spec.studio.schema.value"
+    assert families["VariableDescriptor"].identity == "feedbax.spec.descriptor.variable"
+    assert families["ComponentDescriptor"].identity == "feedbax.spec.descriptor.component"
+    assert families["DescriptorBasisIdentity"].identity == "feedbax.spec.descriptor.basis"
+    assert (
+        families["TrainingCheckpointTransactionManifest"].identity
+        == "feedbax.manifest.training_checkpoint_transaction"
+    )
+    assert (
+        families["TrainingRunManifest"].identity
+        == "feedbax.manifest.training_run"
     )
     assert families["RegenerationSpec"].identity == "feedbax.spec.regeneration"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
@@ -187,6 +263,10 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         "RegistrySnapshot": "feedbax.manifest.registry_snapshot",
         "SpecPayload": "feedbax.manifest.spec_payload",
         "StagedAnalysisBundleExecution": "feedbax.manifest.analysis_bundle_execution",
+        "TrainingCheckpointTransactionManifest": (
+            "feedbax.manifest.training_checkpoint_transaction"
+        ),
+        "TrainingRunManifest": "feedbax.manifest.training_run",
         "StudioPipelineMaterializationResult": (
             "feedbax.manifest.studio.pipeline_materialization_result"
         ),
@@ -204,6 +284,50 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
     families = {family.kind: family for family in default_spec_registry.families()}
 
     expected_policy_paths = {
+        "VariableDescriptor": (
+            "feedbax.contracts.descriptors",
+            ("GraphSpec/training/run metadata", "provider_manifest.schemas"),
+        ),
+        "ComponentDescriptor": (
+            "feedbax.contracts.descriptors",
+            ("VariableDescriptor components", "provider_manifest.schemas"),
+        ),
+        "DescriptorBasisIdentity": (
+            "feedbax.contracts.descriptors",
+            ("descriptor-bearing specs", "provider_manifest.schemas"),
+        ),
+        "AnalysisDataProductRequirement": (
+            "feedbax.contracts.graph",
+            ("AnalysisRunSpec.input_requirements", "provider_manifest.schemas"),
+        ),
+        "AnalysisDataProduct": (
+            "feedbax.contracts.manifest",
+            ("AnalysisRunManifest.produced_data", "provider_manifest.schemas"),
+        ),
+        "TrainingRunSpec": (
+            "feedbax.contracts.training",
+            ("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
+        ),
+        "TrainingRunManifest": (
+            "feedbax.contracts.manifest",
+            ("feedbax.contracts.manifest", "feedbax.integrations.provider"),
+        ),
+        "TrainingCheckpointTransactionManifest": (
+            "feedbax.contracts.checkpoints",
+            ("feedbax.training.checkpoint_custody",),
+        ),
+        "ExecutionSpec": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
+        "ExecutionPlan": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
+        "LocalExecutionResult": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
         "ArrayStorePayload": (
             "feedbax.contracts.artifact_schema",
             ("feedbax.contracts.artifact_schema", "provider_manifest.schemas"),
@@ -215,6 +339,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
         "ProviderManifest": (
             "feedbax.integrations.provider",
             ("feedbax.integrations.provider.provider_manifest",),
+        ),
+        "ValueSchema": (
+            "feedbax.contracts.value_schema",
+            ("feedbax.studio.schema", "feedbax.integrations.provider"),
         ),
         "StudioSchemaRegistry": (
             "feedbax.studio.schema",
@@ -233,16 +361,48 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
         assert policy.emitted_by == emitted_by
 
 
+def test_contract_value_schema_round_trips_without_payload_shape_change() -> None:
+    from feedbax.studio.schema import ValueSchema as StudioValueSchema
+
+    payload = {
+        "id": "node.output",
+        "label": "Node output",
+        "kind": "array",
+        "dtype": "float32",
+        "shape": [None, 2],
+        "rank": 2,
+        "units": "m",
+        "frame": "world",
+        "origin": "declared",
+        "metadata": {"source": "test"},
+    }
+
+    schema = ValueSchema.model_validate(payload)
+    dumped = schema.model_dump()
+
+    assert dumped == payload
+    assert ValueSchema.__module__ == "feedbax.contracts.value_schema"
+    assert StudioValueSchema is ValueSchema
+
+
 def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> None:
     spec_kinds = {
         "GraphSpec",
         "PopulationStructureSpec",
+        "TrainingRunSpec",
         "TrainingSpec",
         "TaskSpec",
+        "StandardSupervisedMethodPayload",
+        "AnalysisDataProductRequirement",
+        "VariableDescriptor",
+        "ComponentDescriptor",
+        "DescriptorBasisIdentity",
         "ObjectiveSpec",
         "EvaluationRunSpec",
         "AnalysisRunSpec",
         "AnalysisBundleSpec",
+        "PathExpression",
+        "ExtractionProductSpec",
         "ReportSpec",
         "RegenerationSpec",
         "ExecutionSpec",
@@ -256,6 +416,9 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ModelArtifactManifest",
         "ArrayStorePayload",
         "ArrayRecord",
+        "TrainingCheckpointTransactionManifest",
+        "TrainingRunManifest",
+        "AnalysisDataProduct",
         "ExecutionPlan",
         "LocalExecutionResult",
         "StagedAnalysisBundleExecution",
@@ -359,10 +522,18 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     task_binding_policy = default_spec_registry.resolve("StudioTaskBindingSpec").policy
     objective_policy = default_spec_registry.resolve("ObjectiveSpec").policy
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
+    execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
+    execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
+    local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
+    report_policy = default_spec_registry.resolve("ReportSpec").policy
+    extraction_policy = default_spec_registry.resolve("ExtractionProductSpec").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
-    assert graph_policy.supported_old_versions == (LEGACY_GRAPH_SPEC_SCHEMA_VERSION,)
+    assert graph_policy.supported_old_versions == (
+        LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+        GRAPH_SPEC_SCHEMA_VERSION_V2,
+    )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"
     assert task_binding_policy.supported_old_versions == (STUDIO_TASK_BINDING_LEGACY_V1,)
@@ -371,6 +542,26 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert objective_policy.stance == "reject"
     assert objective_policy.rejected_old_versions == ("feedbax.objective.v0",)
     assert population_policy is not None
+    assert execution_policy is not None
+    assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
+    assert report_policy is not None
+    assert report_policy.stance == "reject"
+    assert report_policy.rejected_old_versions == ("feedbax.spec.report.v0",)
+    assert extraction_policy is not None
+    assert extraction_policy.stance == "reject"
+    assert extraction_policy.rejected_old_versions == (
+        "feedbax.spec.extraction_product.v0",
+    )
+    assert execution_plan_policy is not None
+    assert execution_plan_policy.rejected_old_versions == (
+        "feedbax.manifest.execution.v2",
+        "feedbax.manifest.execution.v1",
+    )
+    assert local_execution_result_policy is not None
+    assert local_execution_result_policy.rejected_old_versions == (
+        "feedbax.manifest.execution.v2",
+        "feedbax.manifest.execution.v1",
+    )
     assert population_policy.stance == "reject"
     assert population_policy.rejected_old_versions == ("feedbax.population_structure.v1",)
 
@@ -442,3 +633,29 @@ def test_studio_task_binding_entrypoint_rejects_explicit_unsupported_version() -
 def test_objective_entrypoint_rejects_explicit_unsupported_version() -> None:
     with pytest.raises(UnsupportedSpecVersion, match="feedbax.objective.v0"):
         validate_objective_spec({"schema_version": "feedbax.objective.v0"})
+
+
+def test_descriptor_schema_families_reject_old_versions() -> None:
+    descriptor_versions = {
+        "VariableDescriptor": VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
+        "ComponentDescriptor": COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
+        "DescriptorBasisIdentity": DESCRIPTOR_BASIS_SCHEMA_VERSION,
+        "SelectorRoleIdentity": SELECTOR_ROLE_IDENTITY_SCHEMA_VERSION,
+        "ComponentSelectorSyntax": COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
+        "SelectorFallbackPolicyIdentity": SELECTOR_FALLBACK_POLICY_SCHEMA_VERSION,
+    }
+
+    for kind, current_version in descriptor_versions.items():
+        family = default_spec_registry.resolve(kind)
+        assert family.policy is not None
+        assert family.policy.stance == "reject"
+        assert "tests/test_descriptor_schema.py" in family.policy.required_tests
+
+        old_version = current_version.removesuffix(".v1") + ".v0"
+        with pytest.raises(UnsupportedSpecVersion) as excinfo:
+            default_spec_registry.migrate(kind, {"schema_version": old_version})
+
+        message = str(excinfo.value)
+        assert f"family='{kind}'" in message
+        assert f"source_version='{old_version}'" in message
+        assert "migration_intentionally_absent=yes" in message

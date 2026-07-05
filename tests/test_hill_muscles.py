@@ -33,8 +33,7 @@ from feedbax.mechanics.musculoskeletal import (
 from feedbax.runtime.graph import init_state_from_component
 
 
-# Enable 64-bit for numerical precision
-jax.config.update("jax_enable_x64", True)
+pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
 class TestForceLengthCurve:

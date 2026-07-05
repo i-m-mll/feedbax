@@ -3,24 +3,48 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import shlex
 import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from feedbax.contracts.manifest import ManifestStatus
+from feedbax.contracts.manifest import (
+    ArtifactRef,
+    ManifestStatus,
+    canonical_json_bytes,
+    sha256_bytes,
+    sha256_file,
+)
+from feedbax.contracts.training import (
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    TrainingRunSpec,
+)
 
 
-EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v1"
-EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v1"
+EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v2"
+EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
+LOCAL_EXECUTION_RESULT_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
-InstallMode = Literal["pypi", "github-ref", "local-rsync"]
+InstallMode = Literal["pypi", "github-ref", "local-rsync", "local-embed"]
 RepoRole = Literal["project", "dependency", "tooling"]
+
+DEFAULT_LOCAL_EMBED_IGNORE_PARTS = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    "_artifacts",
+    "worktrees",
+]
+DEFAULT_LOCAL_EMBED_IGNORE_SUFFIXES = [".assets"]
+DEFAULT_LOCAL_EMBED_REWRITE_FILES = ["pyproject.toml", "uv.lock"]
 
 
 class ExecutionModel(BaseModel):
@@ -41,7 +65,23 @@ class RepoSource(ExecutionModel):
     local_path: Optional[str] = None
     target_path: Optional[str] = None
     editable: bool = True
+    ignore_parts: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LOCAL_EMBED_IGNORE_PARTS)
+    )
+    ignore_suffixes: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LOCAL_EMBED_IGNORE_SUFFIXES)
+    )
+    extra_path_rewrites: dict[str, str] = Field(default_factory=dict)
+    rewrite_files: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LOCAL_EMBED_REWRITE_FILES)
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_local_embed(self) -> "RepoSource":
+        if self.install_mode == "local-embed" and not self.local_path:
+            raise ValueError("local-embed sources require local_path")
+        return self
 
     def remote_path(self, workspace: str) -> str:
         """Return the path where this source should live on a worker."""
@@ -66,6 +106,88 @@ class ArtifactPolicy(ExecutionModel):
     log_dir: str = "logs"
     sync_back: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingRunSpecSource(ExecutionModel):
+    """Inline or referenced source of truth for a training execution."""
+
+    kind: Literal["inline", "ref"] = "inline"
+    inline: Optional[TrainingRunSpec] = None
+    ref: Optional[str] = None
+    path: str = "training-run-spec.json"
+    identity: Optional[str] = None
+    schema_id: str = TRAINING_RUN_SPEC_SCHEMA_ID
+    schema_version: str = TRAINING_RUN_SPEC_SCHEMA_VERSION
+    content_sha256: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "TrainingRunSpecSource":
+        if self.schema_id != TRAINING_RUN_SPEC_SCHEMA_ID:
+            raise ValueError(
+                "training_run_spec.schema_id must be "
+                f"{TRAINING_RUN_SPEC_SCHEMA_ID!r}; found {self.schema_id!r}"
+            )
+        if self.schema_version != TRAINING_RUN_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                "training_run_spec.schema_version must be "
+                f"{TRAINING_RUN_SPEC_SCHEMA_VERSION!r}; found {self.schema_version!r}"
+            )
+        if self.kind == "inline":
+            if self.inline is None:
+                raise ValueError("training_run_spec.inline is required when kind='inline'")
+            expected_hash = self.resolved_content_sha256()
+            if self.content_sha256 is not None and self.content_sha256 != expected_hash:
+                raise ValueError(
+                    "training_run_spec.content_sha256 does not match inline TrainingRunSpec"
+                )
+            self.content_sha256 = expected_hash
+            return self
+        if self.ref is None:
+            raise ValueError("training_run_spec.ref is required when kind='ref'")
+        if self.inline is not None:
+            raise ValueError("training_run_spec.inline must be omitted when kind='ref'")
+        if self.content_sha256 is None:
+            raise ValueError("training_run_spec.content_sha256 is required when kind='ref'")
+        return self
+
+    def inline_payload(self) -> dict[str, Any] | None:
+        """Return the inline TrainingRunSpec payload, if this source embeds one."""
+        if self.inline is None:
+            return None
+        return self.inline.model_dump(mode="json", exclude_none=True)
+
+    def resolved_content_sha256(self) -> str:
+        """Return the canonical content hash for the referenced TrainingRunSpec."""
+        if self.inline is not None:
+            return sha256_bytes(canonical_json_bytes(self.inline_payload()))
+        if self.content_sha256 is None:
+            raise ValueError("training_run_spec.content_sha256 is required for ref sources")
+        return self.content_sha256
+
+    def resolved_identity(self) -> str:
+        """Return a stable human-readable identity for planning records."""
+        if self.identity:
+            return self.identity
+        if self.ref:
+            return self.ref
+        return f"sha256:{self.resolved_content_sha256()}"
+
+    def plan_record(self, *, path: str) -> dict[str, Any]:
+        """Return deterministic provenance fields for an execution plan."""
+        record: dict[str, Any] = {
+            "source_kind": self.kind,
+            "identity": self.resolved_identity(),
+            "content_sha256": self.resolved_content_sha256(),
+            "schema_id": self.schema_id,
+            "schema_version": self.schema_version,
+            "path": path,
+        }
+        if self.ref is not None:
+            record["ref"] = self.ref
+        if self.metadata:
+            record["metadata"] = self.metadata
+        return record
 
 
 class LocalBackendConfig(ExecutionModel):
@@ -183,6 +305,10 @@ class ModalBackendConfig(ExecutionModel):
     timeout_seconds: int = 6 * 60 * 60
     max_containers: Optional[int] = None
     use_spawn_map: bool = True
+    python_version: str = "3.12"
+    apt_packages: list[str] = Field(default_factory=lambda: ["git"])
+    extra_install_commands: list[str] = Field(default_factory=list)
+    workspace: str = "/workspace"
 
 
 class ExecutionSpec(ExecutionModel):
@@ -192,7 +318,8 @@ class ExecutionSpec(ExecutionModel):
     kind: ExecutionKind = "training"
     job_id: Optional[str] = None
     backend: ExecutionBackend = "local"
-    command: str
+    command: Optional[str] = None
+    training_run_spec: Optional[TrainingRunSpecSource] = None
     cells: list[ExecutionCell] = Field(default_factory=list)
     repos: list[RepoSource] = Field(default_factory=list)
     primary_repo: Optional[str] = None
@@ -206,6 +333,18 @@ class ExecutionSpec(ExecutionModel):
     modal: ModalBackendConfig = Field(default_factory=ModalBackendConfig)
     issues: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_execution_source(self) -> "ExecutionSpec":
+        if self.training_run_spec is not None and self.kind != "training":
+            raise ValueError("training_run_spec is only valid for kind='training'")
+        if self.kind == "training":
+            if self.training_run_spec is None and not self.command:
+                raise ValueError("training executions require command or training_run_spec")
+            return self
+        if not self.command:
+            raise ValueError(f"{self.kind!r} executions require command")
+        return self
 
     def resolved_job_id(self) -> str:
         return self.job_id or f"{self.kind}-{uuid.uuid4().hex[:12]}"
@@ -227,12 +366,100 @@ class HealthCheck(ExecutionModel):
     critical: bool = True
 
 
-class ArtifactRoute(ExecutionModel):
-    role: str
-    source: str
-    destination: Optional[str] = None
-    tracked: bool = False
-    description: str = ""
+def execution_artifact_ref(
+    *,
+    role: str,
+    logical_name: str,
+    uri: str,
+    media_type: str | None = None,
+    storage_backend: str = "feedbax-local",
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Return a prospective execution artifact route with deferred byte custody."""
+    artifact_metadata = {
+        "hash_status": "deferred_until_materialization",
+        "size_status": "deferred_until_materialization",
+        **(metadata or {}),
+    }
+    return ArtifactRef(
+        role=role,
+        logical_name=logical_name,
+        uri=uri,
+        media_type=media_type or _media_type_for_path(uri),
+        storage_backend=storage_backend,
+        metadata=artifact_metadata,
+    )
+
+
+def materialized_execution_artifact_ref(
+    path: Path | str,
+    *,
+    role: str,
+    logical_name: str | None = None,
+    media_type: str | None = None,
+    storage_backend: str = "feedbax-local",
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Return an ``ArtifactRef`` stamped with the current bytes for a local file."""
+    artifact_path = Path(path)
+    if not artifact_path.is_file():
+        raise FileNotFoundError(artifact_path)
+    stat = artifact_path.stat()
+    artifact_metadata = {"hash_status": "materialized", **(metadata or {})}
+    return ArtifactRef(
+        role=role,
+        logical_name=logical_name or artifact_path.name,
+        sha256=sha256_file(artifact_path),
+        media_type=media_type or _media_type_for_path(str(artifact_path)),
+        size_bytes=stat.st_size,
+        storage_backend=storage_backend,
+        uri=str(artifact_path),
+        metadata=artifact_metadata,
+    )
+
+
+def validate_materialized_execution_artifact(
+    ref: ArtifactRef,
+    *,
+    path: Path | str | None = None,
+    expected_role: str | None = None,
+) -> ArtifactRef:
+    """Validate that a materialized artifact ref still matches bytes and role."""
+    if expected_role is not None and ref.role != expected_role:
+        raise ValueError(
+            f"Artifact role mismatch: expected {expected_role!r}, found {ref.role!r}"
+        )
+    artifact_path = Path(path if path is not None else ref.uri or "")
+    if not artifact_path.is_file():
+        raise FileNotFoundError(artifact_path)
+    if ref.sha256 is None:
+        raise ValueError(
+            f"Artifact {ref.logical_name!r} has no sha256; materialized validation requires it"
+        )
+    actual_sha256 = sha256_file(artifact_path)
+    if actual_sha256 != ref.sha256:
+        raise ValueError(
+            f"Artifact sha256 mismatch for {ref.logical_name!r}: "
+            f"expected {ref.sha256}, found {actual_sha256}"
+        )
+    actual_size = artifact_path.stat().st_size
+    if ref.size_bytes is not None and actual_size != ref.size_bytes:
+        raise ValueError(
+            f"Artifact size mismatch for {ref.logical_name!r}: "
+            f"expected {ref.size_bytes}, found {actual_size}"
+        )
+    return ref
+
+
+def _media_type_for_path(path: str) -> str:
+    if path.endswith("/"):
+        return "inode/directory"
+    guessed, _ = mimetypes.guess_type(path)
+    if guessed is not None:
+        return guessed
+    if path.endswith(".log"):
+        return "text/plain"
+    return "application/octet-stream"
 
 
 class ExecutionPlan(ExecutionModel):
@@ -248,7 +475,7 @@ class ExecutionPlan(ExecutionModel):
     health_checks: list[HealthCheck]
     launch: PlanStep
     monitor: list[PlanStep] = Field(default_factory=list)
-    artifact_routes: list[ArtifactRoute] = Field(default_factory=list)
+    artifact_routes: list[ArtifactRef] = Field(default_factory=list)
     cloud_payload: dict[str, Any] = Field(default_factory=dict)
     reproducibility: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
@@ -257,11 +484,29 @@ class ExecutionPlan(ExecutionModel):
 class LocalExecutionResult(ExecutionModel):
     """Result from an explicitly local execution."""
 
+    kind: Literal["LocalExecutionResult"] = "LocalExecutionResult"
+    schema_version: Literal[LOCAL_EXECUTION_RESULT_SCHEMA_VERSION] = (
+        LOCAL_EXECUTION_RESULT_SCHEMA_VERSION
+    )
     job_id: str
     status: ManifestStatus
     return_code: int
-    stdout_path: str
-    stderr_path: str
-    manifest_path: str
+    stdout: ArtifactRef
+    stderr: ArtifactRef
+    manifest: ArtifactRef
+    execution_plan: ArtifactRef
+    produced_artifacts: list[ArtifactRef] = Field(default_factory=list)
     manifest_payload: dict[str, Any]
     plan: ExecutionPlan
+
+    @property
+    def stdout_path(self) -> str:
+        return self.stdout.uri or ""
+
+    @property
+    def stderr_path(self) -> str:
+        return self.stderr.uri or ""
+
+    @property
+    def manifest_path(self) -> str:
+        return self.manifest.uri or ""

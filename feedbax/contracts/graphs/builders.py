@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
@@ -31,6 +32,10 @@ from feedbax.runtime.components import (
     Spring,
     Sum,
 )
+from feedbax.runtime.affine_composer import (
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AffineValueComposer,
+)
 from feedbax.control.affine import build_affine_feedback_controller
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component
@@ -58,7 +63,13 @@ from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.models.networks import SimpleStagedNetwork, population_structure_from_spec
+from feedbax.models.networks import (
+    LeakyRNNCell,
+    SimpleStagedNetwork,
+    VanillaRNN,
+    population_structure_from_spec,
+)
+from feedbax.models.support import identity_func
 from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
@@ -79,13 +90,18 @@ _HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
     "Linear": eqx.nn.Linear,
     "GRU": eqx.nn.GRUCell,
     "LSTM": eqx.nn.LSTMCell,
+    "VanillaRNN": LeakyRNNCell,
+    "VanillaRNNCell": LeakyRNNCell,
+    "RNN": LeakyRNNCell,
+    "RNNCell": LeakyRNNCell,
+    "LeakyRNNCell": LeakyRNNCell,
 }
 _NONLINEARITIES: dict[str, Callable[[jax.Array], jax.Array]] = {
     "tanh": jnp.tanh,
     "relu": jax.nn.relu,
     "sigmoid": jax.nn.sigmoid,
     "softmax": jax.nn.softmax,
-    "identity": lambda x: x,
+    "identity": identity_func,
 }
 
 
@@ -105,10 +121,31 @@ def nonlinearity_name(fn: Callable[[jax.Array], jax.Array]) -> str:
     return name if name in _NONLINEARITIES else "identity"
 
 
+def _hidden_type_vocabulary() -> str:
+    return ", ".join(_HIDDEN_TYPES)
+
+
+def _resolve_hidden_type(name: object, *, path: str) -> Callable[..., eqx.Module]:
+    hidden_type_name = str(name)
+    try:
+        return _HIDDEN_TYPES[hidden_type_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown hidden_type at {path}: {hidden_type_name!r}. "
+            f"Supported values: {_hidden_type_vocabulary()}"
+        ) from exc
+
+
 def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
-    hidden_type = _HIDDEN_TYPES.get(str(params.get("hidden_type", "GRUCell"))) or eqx.nn.GRUCell
+    hidden_type = _resolve_hidden_type(
+        params.get("hidden_type", "GRUCell"),
+        path="Network.params.hidden_type",
+    )
     hidden_nonlinearity = resolve_nonlinearity(str(params.get("hidden_nonlinearity", "tanh")))
     out_nonlinearity = resolve_nonlinearity(str(params.get("out_nonlinearity", "tanh")))
+    if hidden_type is LeakyRNNCell:
+        hidden_type = partial(LeakyRNNCell, nonlinearity=hidden_nonlinearity)
+        hidden_nonlinearity = identity_func
     encoding_size = int(params.get("encoding_size", 0) or 0)
     encoding_size = encoding_size if encoding_size > 0 else None
     out_size = params.get("out_size", params.get("output_size"))
@@ -575,6 +612,20 @@ def _build_gru(params: Mapping[str, Any]) -> GRU:
     )
 
 
+def _build_vanilla_rnn(params: Mapping[str, Any]) -> VanillaRNN:
+    activation_name = str(params.get("activation", params.get("nonlinearity", "tanh")))
+    dtype = params.get("dtype", jnp.float32) or jnp.float32
+    return VanillaRNN(
+        input_size=int(params.get("input_size", 1)),
+        hidden_size=int(params.get("hidden_size", 1)),
+        activation_name=activation_name,
+        nonlinearity=resolve_nonlinearity(activation_name),
+        use_bias=bool(params.get("use_bias", True)),
+        dtype=dtype,
+        key=jr.PRNGKey(0),
+    )
+
+
 def _build_lstm(params: Mapping[str, Any]) -> LSTM:
     return LSTM(
         input_size=int(params.get("input_size", 1)),
@@ -659,6 +710,28 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
     )
 
 
+def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueComposer:
+    schema_version = str(
+        params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION)
+    )
+    if schema_version != AFFINE_VALUE_COMPOSER_SCHEMA_VERSION:
+        raise ValueError(
+            "AffineValueComposer unsupported schema_version "
+            f"{schema_version!r}; expected {AFFINE_VALUE_COMPOSER_SCHEMA_VERSION!r}"
+        )
+    return AffineValueComposer(
+        output_block_size=int(params.get("output_block_size", 1)),
+        feature_rules=params.get(
+            "feature_rules",
+            [{"kind": "identity", "state_slice": [0, 1]}],
+        ),
+        gain_init=params.get("gain_init"),
+        bias_init=params.get("bias_init"),
+        use_bias=bool(params.get("use_bias", True)),
+        label=str(params.get("label", "affine_value_composer")),
+    )
+
+
 _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Gain": _build_gain,
     "Sum": _build_sum,
@@ -677,6 +750,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Mux": _build_mux,
     "Demux": _build_demux,
     "GRU": _build_gru,
+    "VanillaRNN": _build_vanilla_rnn,
     "LSTM": _build_lstm,
     "Spring": _build_spring,
     "Damper": _build_damper,
@@ -691,6 +765,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "CurlField": _build_curl_field,
     "FixedField": _build_fixed_field,
     "DynamicsMatrixPerturb": _build_dynamics_matrix_perturb,
+    "AffineValueComposer": _build_affine_value_composer,
     "AddNoise": lambda params: AddNoise(
         params=AddNoiseParams(
             scale=float(params.get("scale", 1.0)),

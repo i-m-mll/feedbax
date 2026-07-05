@@ -28,9 +28,9 @@ from feedbax.web.app import create_app
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
-TOY_JOB_EVAL_TYPE = "feedbax_test_studio_job_eval"
-TOY_JOB_ANALYSIS_TYPE = "feedbax_test_studio_job_analysis"
-MISMATCHED_JOB_ANALYSIS_TYPE = "feedbax_test_studio_job_mismatched_analysis"
+TOY_JOB_EVAL_TYPE = "feedbax.test.studio_job_eval"
+TOY_JOB_ANALYSIS_TYPE = "feedbax.test.studio_job_analysis"
+MISMATCHED_JOB_ANALYSIS_TYPE = "feedbax.test.studio_job_mismatched_analysis"
 
 
 def _register_job_eval_recipe() -> None:

@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
 from feedbax.contracts.migrations import migrate_studio_workspace_spec
 from feedbax.contracts.manifest import SCHEMA_VERSION, utc_now
 from feedbax.studio.protocol import (
@@ -23,37 +24,21 @@ from feedbax.contracts.graphs.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
+from feedbax.contracts.graphs.prototypes import (
+    DerivedDimensionConflict,
+    DerivedDimensionError,
+    normalize_derived_dimensions,
+    prototypes_from_task_bindings,
+)
+from feedbax.runtime.task_bindings import COMPONENT_PARAMETER_ROLE, task_data_temporality
 from feedbax.contracts.component import PortType
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
-
-SchemaOrigin = Literal[
-    "declared",
-    "inferred_static",
-    "runtime_sample",
-    "curated_fallback",
-    "unknown",
-]
 
 
 class StudioSchemaModel(BaseModel):
     """Base model for static Studio schema records."""
 
     model_config = ConfigDict(extra="forbid")
-
-
-class ValueSchema(StudioSchemaModel):
-    """Provider-owned value type metadata for selectable Studio surfaces."""
-
-    id: str
-    label: str
-    kind: str
-    dtype: Optional[str] = None
-    shape: Optional[list[Any]] = None
-    rank: Optional[int] = None
-    units: Optional[str] = None
-    frame: Optional[str] = None
-    origin: SchemaOrigin = "unknown"
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PortSchema(StudioSchemaModel):
@@ -284,6 +269,10 @@ def enumerate_studio_schema_registry(
             authoring_graph,
             task_binding_spec,
         )
+        schema_graph = _normalize_derived_dimensions_for_schema(
+            schema_graph,
+            task_binding_spec,
+        )
         registry.ports = _enumerate_graph_ports(schema_graph, task_binding_spec)
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
         registry.selector_targets.extend(_graph_structural_selector_targets(schema_graph))
@@ -467,8 +456,72 @@ def validate_graph_connection_schema(
         )
 
     issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
+    issues.extend(_derived_dimension_issues(graph, task_binding_spec, base_path))
     issues.extend(_instant_cycle_issues(graph, base_path))
     return issues
+
+
+def _normalize_derived_dimensions_for_schema(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec],
+) -> GraphSpec:
+    if not graph.derived_dimensions and not graph.subgraphs:
+        return graph
+    try:
+        return normalize_derived_dimensions(
+            graph,
+            prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+        )
+    except DerivedDimensionError:
+        return graph
+
+
+def _derived_dimension_issues(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec],
+    base_path: str,
+) -> list[SchemaValidationIssue]:
+    if not graph.derived_dimensions and not graph.subgraphs:
+        return []
+    try:
+        normalize_derived_dimensions(
+            graph,
+            prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+        )
+    except DerivedDimensionConflict as exc:
+        return [
+            SchemaValidationIssue(
+                type="derived_dimension_conflict",
+                message=str(exc),
+                location={
+                    "path": f"{base_path}/derived_dimensions/{_derived_dimension_index(graph, exc)}",
+                    "node": exc.rule.node,
+                    "param": exc.rule.param,
+                    "declared": str(exc.declared),
+                    "derived": str(exc.derived),
+                },
+            )
+        ]
+    except DerivedDimensionError as exc:
+        return [
+            SchemaValidationIssue(
+                type="derived_dimension_unresolved",
+                message=str(exc),
+                location={
+                    "path": f"{base_path}/derived_dimensions/{_derived_dimension_index(graph, exc)}",
+                    "node": exc.rule.node,
+                    "param": exc.rule.param,
+                },
+            )
+        ]
+    return []
+
+
+def _derived_dimension_index(graph: GraphSpec, exc: DerivedDimensionError) -> int:
+    for index, rule in enumerate(graph.derived_dimensions):
+        if rule == exc.rule:
+            return index
+    return 0
 
 
 def _mux_connected_input_issues(
@@ -1326,6 +1379,19 @@ def validate_task_binding_schema(
                     location={"path": f"{binding_path}/source_data_id"},
                 )
             )
+        else:
+            role = task_data_role(data)
+            if binding.role != role:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="task_binding_role_mismatch",
+                        message=(
+                            f"Task binding role {binding.role!r} does not match source "
+                            f"task data role {role!r}"
+                        ),
+                        location={"path": f"{binding_path}/role"},
+                    )
+                )
 
         target_node = graph.nodes.get(binding.target_node_id)
         if target_node is None:
@@ -1360,6 +1426,15 @@ def validate_task_binding_schema(
                         source_label=data_schema.label,
                         target_label=port_schema.label,
                         issue_prefix="task_binding",
+                    )
+                )
+            if data is not None and task_data_role(data) == COMPONENT_PARAMETER_ROLE:
+                issues.extend(
+                    _component_parameter_binding_issues(
+                        data,
+                        target_node,
+                        binding,
+                        binding_path,
                     )
                 )
 
@@ -1401,7 +1476,8 @@ def _task_data_role_issues(
                 type="task_data_bindable_role_mismatch",
                 message=(
                     f"Task data {data.id!r} has protocol role {role!r}; only "
-                    "model_input/graph_input Task Data may be marked bindable"
+                    "model_input, graph_input, or component_parameter Task Data "
+                    "may be marked bindable"
                 ),
                 location={"path": f"{data_path}/bindable"},
             )
@@ -1414,7 +1490,7 @@ def _task_data_role_issues(
                 location={"path": f"{data_path}/bindable"},
             )
         )
-    if data.bindable and (
+    if role != COMPONENT_PARAMETER_ROLE and data.bindable and (
         data.kind in PROTOCOL_TASK_DATA_KINDS or task_data_uses_protocol_path(data)
     ):
         issues.append(
@@ -1429,6 +1505,78 @@ def _task_data_role_issues(
             )
         )
     return issues
+
+
+def _component_parameter_binding_issues(
+    data: Any,
+    target_node: Any,
+    binding: Any,
+    binding_path: str,
+) -> list[SchemaValidationIssue]:
+    issues: list[SchemaValidationIssue] = []
+    temporality = task_data_temporality(data)
+    if temporality == "constant":
+        labels = _static_task_parameter_labels(binding.target_node_id, target_node)
+        label = _task_parameter_label(binding)
+        if not labels:
+            issues.append(
+                SchemaValidationIssue(
+                    type="component_parameter_declaration_unknown",
+                    message=(
+                        f"Task binding {binding.id!r} is constant within trial, but "
+                        f"{binding.target_node_id!r} has no static task-parameter "
+                        "declaration visible to Studio validation"
+                    ),
+                    location={"path": binding_path},
+                )
+            )
+        elif label not in labels:
+            issues.append(
+                SchemaValidationIssue(
+                    type="component_parameter_label_unknown",
+                    message=(
+                        f"Task binding {binding.id!r} references task-parameter "
+                        f"label {label!r}; declared labels are {sorted(labels)!r}"
+                    ),
+                    location={"path": f"{binding_path}/metadata/task_parameter_label"},
+                )
+            )
+    elif binding.target_port == "params_override":
+        labels = _static_task_parameter_labels(binding.target_node_id, target_node)
+        if not labels:
+            issues.append(
+                SchemaValidationIssue(
+                    type="component_parameter_declaration_unknown",
+                    message=(
+                        f"Task binding {binding.id!r} targets params_override, but "
+                        f"{binding.target_node_id!r} has no static task-parameter "
+                        "declaration visible to Studio validation"
+                    ),
+                    location={"path": binding_path},
+                )
+            )
+    return issues
+
+
+def _task_parameter_label(binding: Any) -> str:
+    metadata = getattr(binding, "metadata", None)
+    if isinstance(metadata, dict):
+        label = metadata.get("task_parameter_label")
+        if isinstance(label, str) and label:
+            return label
+    return str(binding.source_data_id)
+
+
+def _static_task_parameter_labels(node_id: str, node: Any) -> set[str]:
+    if "label" not in getattr(node, "params", {}):
+        return set()
+    label = node.params.get("label") or node_id
+    if getattr(node, "type", None) == "AffineValueComposer":
+        labels = {f"{label}.gain"}
+        if bool(node.params.get("use_bias", True)):
+            labels.add(f"{label}.bias")
+        return {str(item) for item in labels}
+    return {str(label)}
 
 
 def validate_intervention_schema(

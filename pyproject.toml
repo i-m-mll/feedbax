@@ -94,7 +94,7 @@ documentation = "https://docs.lprt.ca/feedbax"
 config-settings = { editable-mode = "compat" }
 
 [tool.uv.sources]
-jax-cookbook = { git = "https://github.com/i-m-mll/jax-cookbook.git", rev = "779693475337d5275e20e6a5c1bacce448e444f3" }
+jax-cookbook = { git = "https://github.com/i-m-mll/jax-cookbook.git", rev = "9b40ab9dff124c982f77985f07bbd3776edb7283" }
 
 [build-system]
 requires = ["hatchling"]
@@ -114,6 +114,9 @@ packages = ["feedbax"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["feedbax"]
+
+[tool.hatch.build.force-include]
+"feedbax/models" = "feedbax/models"
 
 [tool.pyright]
 include = ["feedbax", "tests"]

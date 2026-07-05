@@ -29,6 +29,10 @@ from feedbax.runtime.components import (
     Spring,
     Sum,
 )
+from feedbax.runtime.affine_composer import (
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AffineValueComposer,
+)
 from feedbax.control.affine import AffineFeedbackController
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component, Graph, Wire
@@ -51,7 +55,7 @@ from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
-from feedbax.models.networks import SimpleStagedNetwork
+from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.components.penzai import PenzaiSubgraph
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
@@ -65,6 +69,7 @@ from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
 from feedbax.contracts.graphs.prototypes import (
+    normalize_derived_dimensions,
     normalize_stateful_prototypes,
     prototypes_from_task_bindings,
     shape_from_proto,
@@ -225,7 +230,17 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
         if isinstance(component, SimpleStagedNetwork):
             hidden_type_name = type(component.hidden).__name__
-            cell_type = "LSTM" if hidden_type_name == "LSTMCell" else "GRU"
+            if hidden_type_name == "LSTMCell":
+                cell_type = "LSTM"
+            elif isinstance(component.hidden, LeakyRNNCell):
+                cell_type = "VanillaRNN"
+            elif hidden_type_name == "GRUCell":
+                cell_type = "GRU"
+            else:
+                raise ValueError(
+                    f"Cannot serialize SimpleStagedNetwork {name!r}: unsupported hidden "
+                    f"cell type {hidden_type_name!r}"
+                )
             out_nonlinearity = nonlinearity_name(component.out_nonlinearity)
             template = recurrent_controller_template_graph(
                 input_size=component.input_size,
@@ -452,6 +467,18 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="GRU",
                 params={"input_size": component.input_size, "hidden_size": component.hidden_size},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, VanillaRNN):
+            nodes[name] = ComponentSpec(
+                type="VanillaRNN",
+                params={
+                    "input_size": component.input_size,
+                    "hidden_size": component.hidden_size,
+                    "activation": component.activation_name,
+                },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -713,6 +740,31 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             )
             continue
 
+        if isinstance(component, AffineValueComposer):
+            params = {
+                "schema_version": AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+                "output_block_size": component.output_block_size,
+                "feature_rules": [
+                    {
+                        key: list(value) if key.endswith("_slice") else value
+                        for key, value in rule.items()
+                    }
+                    for rule in component.feature_rules
+                ],
+                "gain_init": jnp.asarray(component.gain).tolist(),
+                "bias_init": jnp.asarray(component.bias).tolist(),
+                "use_bias": component.use_bias,
+                "label": component.label,
+            }
+            nodes[name] = ComponentSpec(
+                type="AffineValueComposer",
+                params=params,
+                param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
         if isinstance(component, AddNoise):
             params = {
                 "scale": component._initial_state.scale,
@@ -928,6 +980,11 @@ def spec_to_graph(
     migration = migrate_graph_spec(spec)
     spec = GraphSpec.model_validate(migration.payload)
     spec = materialize_additive_channel_adapters(spec)
+    spec = normalize_derived_dimensions(
+        spec,
+        input_prototypes,
+        component_registry=metadata_registry,
+    )
     spec = normalize_stateful_prototypes(
         spec,
         input_prototypes,

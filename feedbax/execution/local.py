@@ -8,7 +8,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
-from feedbax.execution.models import ExecutionSpec, LocalExecutionResult
+from feedbax.execution.models import (
+    ExecutionSpec,
+    LocalExecutionResult,
+    materialized_execution_artifact_ref,
+)
 from feedbax.execution.planning import prepare_execution_plan
 from feedbax.contracts.manifest import (
     EntrypointRef,
@@ -36,15 +40,36 @@ def run_local_execution(
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
     plan = prepare_execution_plan(ExecutionSpec(**{**spec.model_dump(), "job_id": job_id}))
-    (run_dir / "execution-plan.json").write_text(
+    plan_path = run_dir / "execution-plan.json"
+    plan_path.write_text(
         plan.model_dump_json(indent=2, exclude_none=True) + "\n",
         encoding="utf-8",
     )
+    materialized_specs = []
+    if spec.training_run_spec is not None:
+        inline_payload = spec.training_run_spec.inline_payload()
+        if inline_payload is not None:
+            source_record = plan.reproducibility["training_run_spec"]
+            source_path = Path(source_record["path"])
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(
+                json.dumps(inline_payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            materialized_specs.append(
+                materialized_execution_artifact_ref(
+                    source_path,
+                    role="training_run_spec",
+                    logical_name=source_path.name,
+                    media_type="application/json",
+                    metadata={"route": "training_run_spec"},
+                )
+            )
 
     cwd = Path(spec.local.cwd).expanduser() if spec.local.cwd else None
     env = {**os.environ, **spec.env}
     proc = subprocess.run(
-        [spec.local.shell, "-lc", spec.command],
+        [spec.local.shell, "-lc", plan.command],
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
@@ -111,7 +136,7 @@ def run_local_execution(
     provenance = Provenance(
         entrypoint=EntrypointRef(
             kind="feedbax-execution",
-            command=spec.command,
+            command=plan.command,
             metadata={"backend": "local", "return_code": proc.returncode},
         ),
         issues=list(spec.issues),
@@ -135,13 +160,50 @@ def run_local_execution(
         root=root_path,
         provenance=provenance,
     )
+    stdout_ref = materialized_execution_artifact_ref(
+        stdout_path,
+        role="execution_stdout",
+        logical_name="stdout.log",
+        media_type="text/plain",
+        metadata={"route": "execution_log"},
+    )
+    stderr_ref = materialized_execution_artifact_ref(
+        stderr_path,
+        role="execution_stderr",
+        logical_name="stderr.log",
+        media_type="text/plain",
+        metadata={"route": "execution_log"},
+    )
+    manifest_ref = materialized_execution_artifact_ref(
+        manifest_path,
+        role="training_run_manifest",
+        logical_name=manifest_path.name,
+        media_type="application/json",
+        metadata={"route": "training_run_manifest"},
+    )
+    plan_ref = materialized_execution_artifact_ref(
+        plan_path,
+        role="execution_plan",
+        logical_name="execution-plan.json",
+        media_type="application/json",
+        metadata={"route": "execution_plan"},
+    )
+    produced_artifacts = [
+        plan_ref,
+        stdout_ref,
+        stderr_ref,
+        manifest_ref,
+        *materialized_specs,
+    ]
     return LocalExecutionResult(
         job_id=job_id,
         status=status,
         return_code=proc.returncode,
-        stdout_path=str(stdout_path),
-        stderr_path=str(stderr_path),
-        manifest_path=str(manifest_path),
+        stdout=stdout_ref,
+        stderr=stderr_ref,
+        manifest=manifest_ref,
+        execution_plan=plan_ref,
+        produced_artifacts=produced_artifacts,
         manifest_payload=manifest.model_dump(mode="json", exclude_none=True),
         plan=plan,
     )

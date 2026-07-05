@@ -35,6 +35,49 @@ logger = logging.getLogger(__name__)
 POPULATION_STRUCTURE_SCHEMA_ID = "feedbax.spec.population_structure"
 POPULATION_STRUCTURE_SCHEMA_VERSION = "feedbax.spec.population_structure.v1"
 
+RECURRENT_CELL_TYPE_ALIASES = {
+    "GRU": "GRU",
+    "GRUCell": "GRU",
+    "LSTM": "LSTM",
+    "LSTMCell": "LSTM",
+    "VanillaRNN": "VanillaRNN",
+    "VanillaRNNCell": "VanillaRNN",
+    "RNN": "VanillaRNN",
+    "RNNCell": "VanillaRNN",
+    "LeakyRNNCell": "VanillaRNN",
+}
+
+
+def recurrent_cell_vocabulary() -> tuple[str, ...]:
+    """Return accepted recurrent-cell vocabulary names."""
+
+    return tuple(RECURRENT_CELL_TYPE_ALIASES)
+
+
+def normalize_recurrent_cell_type(cell_type: object, *, path: str = "cell_type") -> str:
+    """Normalize a recurrent-cell vocabulary name to its executable component type."""
+
+    name = str(cell_type)
+    try:
+        return RECURRENT_CELL_TYPE_ALIASES[name]
+    except KeyError as exc:
+        vocabulary = ", ".join(recurrent_cell_vocabulary())
+        raise ValueError(
+            f"Unknown recurrent cell type at {path}: {name!r}. "
+            f"Supported values: {vocabulary}"
+        ) from exc
+
+
+def recurrent_gate_count(cell_type: object, *, path: str = "cell_type") -> int:
+    """Return the input-kernel gate count for a recurrent-cell vocabulary name."""
+
+    normalized_cell_type = normalize_recurrent_cell_type(cell_type, path=path)
+    if normalized_cell_type == "LSTM":
+        return 4
+    if normalized_cell_type == "GRU":
+        return 3
+    return 1
+
 
 # class Layer(Protocol):
 #     def __init__(
@@ -485,8 +528,7 @@ def lower_population_constraints(
     """Lower high-level population connectivity to graph parameter constraints."""
 
     structure = population_structure_from_spec(hidden_size, population_structure)
-    normalized_cell_type = "LSTM" if cell_type in {"LSTM", "LSTMCell"} else "GRU"
-    gate_count = 4 if normalized_cell_type == "LSTM" else 3
+    gate_count = recurrent_gate_count(cell_type, path="population_constraints.cell_type")
     return (
         ParameterConstraintSpec(
             node=cell_node,
@@ -997,7 +1039,7 @@ class LeakyRNNCell(Module):
     noise_strength: float
     dt: float
     tau: float
-    nonlinearity: Callable
+    nonlinearity: Callable = field(static=True)
 
     @jax.named_scope("fbx.RNNCell")
     def __init__(
@@ -1010,10 +1052,12 @@ class LeakyRNNCell(Module):
         dt: float = 1.0,
         tau: float = 1.0,
         nonlinearity: Callable = jnp.tanh,
+        dtype: object = jnp.float32,
         *,  # this forces the user to pass the following as keyword arguments
         key: PRNGKeyArray,
         **kwargs,
     ):
+        dtype = dtype or jnp.float32
         ihkey, hhkey, bkey = jr.split(key, 3)
         lim = math.sqrt(1 / hidden_size)
 
@@ -1023,15 +1067,17 @@ class LeakyRNNCell(Module):
                 (hidden_size, input_size),
                 minval=-lim,
                 maxval=lim,
+                dtype=dtype,
             )
         else:
-            self.weight_ih = jnp.array(0)
+            self.weight_ih = jnp.array(0, dtype=dtype)
 
         self.weight_hh = jr.uniform(
             hhkey,
             (hidden_size, hidden_size),
             minval=-lim,
             maxval=lim,
+            dtype=dtype,
         )
 
         if use_bias:
@@ -1040,6 +1086,7 @@ class LeakyRNNCell(Module):
                 (hidden_size,),
                 minval=-lim,
                 maxval=lim,
+                dtype=dtype,
             )
         else:
             self.bias = None
@@ -1053,7 +1100,7 @@ class LeakyRNNCell(Module):
         self.tau = tau
         self.nonlinearity = nonlinearity
 
-    def __call__(self, input: Array, state: Array, key: PRNGKeyArray):
+    def __call__(self, input: Array, state: Array, key: PRNGKeyArray | None = None):
         """Vanilla RNN cell."""
         if self.use_bias:
             bias = self.bias
@@ -1061,6 +1108,8 @@ class LeakyRNNCell(Module):
             bias = 0
 
         if self.use_noise:
+            if key is None:
+                raise ValueError("LeakyRNNCell requires an RNG key when use_noise=True")
             noise = self.noise_std * jr.normal(key, state.shape)
         else:
             noise = 0
@@ -1075,12 +1124,72 @@ class LeakyRNNCell(Module):
     def alpha(self):
         return self.dt / self.tau
 
-    @cached_property  # type: ignore
-    def noise_std(self, noise_strength):
+    @cached_property
+    def noise_std(self):
         if self.use_noise:
-            return math.sqrt(2 / self.alpha) * noise_strength
+            return math.sqrt(2 / self.alpha) * self.noise_strength
         else:
             return None
+
+
+class VanillaRNNState(Module):
+    """State view for a leaf vanilla RNN cell."""
+
+    hidden: Array
+    output: Array
+
+
+class VanillaRNN(Component):
+    """Standalone vanilla RNN cell."""
+
+    input_ports = ("input", "hidden")
+    output_ports = ("output", "hidden")
+
+    cell: LeakyRNNCell
+    input_size: int = field(static=True)
+    hidden_size: int = field(static=True)
+    activation_name: str = field(static=True)
+    dtype: object = field(static=True)
+    state_index: StateIndex
+    _initial_state: VanillaRNNState = field(static=True)
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        *,
+        activation_name: str = "tanh",
+        nonlinearity: Callable = jnp.tanh,
+        use_bias: bool = True,
+        dtype: object = jnp.float32,
+        key: PRNGKeyArray,
+    ):
+        dtype = dtype or jnp.float32
+        self.input_size = int(input_size)
+        self.hidden_size = int(hidden_size)
+        self.activation_name = str(activation_name)
+        self.dtype = dtype
+        self.cell = LeakyRNNCell(
+            self.input_size,
+            self.hidden_size,
+            use_bias=use_bias,
+            nonlinearity=nonlinearity,
+            dtype=dtype,
+            key=key,
+        )
+        hidden = jnp.zeros(self.hidden_size, dtype=dtype)
+        self._initial_state = VanillaRNNState(hidden=hidden, output=hidden)
+        self.state_index = StateIndex(self._initial_state)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        current_state: VanillaRNNState = state.get(self.state_index)
+        hidden = inputs.get("hidden", current_state.hidden)
+        new_hidden = self.cell(inputs["input"], hidden, key=key)
+        state = state.set(
+            self.state_index,
+            VanillaRNNState(hidden=new_hidden, output=new_hidden),
+        )
+        return {"output": new_hidden, "hidden": new_hidden}, state
 
 
 def n_layer_linear(

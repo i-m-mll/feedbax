@@ -8,13 +8,47 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.graph import (
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_VERSION_V2,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
+from feedbax.contracts.checkpoints import (
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+)
+from feedbax.contracts.descriptors import (
+    COMPONENT_DESCRIPTOR_SCHEMA_ID,
+    COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
+    COMPONENT_SELECTOR_SYNTAX_SCHEMA_ID,
+    COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
+    DESCRIPTOR_BASIS_SCHEMA_ID,
+    DESCRIPTOR_BASIS_SCHEMA_VERSION,
+    SELECTOR_FALLBACK_POLICY_SCHEMA_ID,
+    SELECTOR_FALLBACK_POLICY_SCHEMA_VERSION,
+    SELECTOR_ROLE_IDENTITY_SCHEMA_ID,
+    SELECTOR_ROLE_IDENTITY_SCHEMA_VERSION,
+    VARIABLE_DESCRIPTOR_SCHEMA_ID,
+    VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
+)
+from feedbax.contracts.expressions import (
+    PATH_EXPRESSION_SCHEMA_ID,
+    PATH_EXPRESSION_SCHEMA_VERSION,
+)
+from feedbax.contracts.extraction import (
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
+    EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.manifest import (
+    ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     ArtifactMigrationRecord,
+    EVALUATION_STATES_CONTAINER_SCHEMA_ID,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
@@ -31,10 +65,20 @@ from feedbax.contracts.retention_artifact_schema import (
     RETENTION_POLICY_PLAN_SCHEMA_ID,
     RETENTION_POLICY_PLAN_SCHEMA_VERSION,
 )
+from feedbax.contracts.training import (
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.schema_namespace import (
     SchemaNamespaceKind,
     validate_schema_identity,
     validate_schema_version,
+)
+from feedbax.contracts.worker import (
+    WORKER_CONTRACT_SCHEMA_ID,
+    WORKER_CONTRACT_SCHEMA_VERSION,
 )
 
 
@@ -617,6 +661,13 @@ def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any
     return migrated
 
 
+def _migrate_graph_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
+    migrated.setdefault("derived_dimensions", [])
+    return migrated
+
+
 def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     if "exposed_outputs" in migrated and "exposed_data" not in migrated:
@@ -973,6 +1024,26 @@ def migrate_graph_project_payload(
     return migrated
 
 
+def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["storage_backend"] = "npz.v2"
+    migrated["leaves"] = [
+        {
+            "path": record.get("path"),
+            "kind": "array",
+            "storage_key": record.get("storage_key"),
+            "dtype": record.get("dtype"),
+            "shape": record.get("shape"),
+            "sha256": record.get("sha256"),
+        }
+        for record in list(payload.get("arrays") or [])
+        if isinstance(record, Mapping)
+    ]
+    migrated.pop("arrays", None)
+    migrated["metadata_sha256"] = None
+    return migrated
+
+
 def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     """Populate schema identities for emitted Feedbax spec families."""
     def _old(schema_id: str) -> str:
@@ -1061,7 +1132,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Canvas-authored executable graph specification.",
             stance="migrate",
-            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION,),
+            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_VERSION_V2),
             rejected_old_versions=(),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
         ),
@@ -1116,6 +1187,42 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Graph-embedded retained-observable request.",
         ),
         _family(
+            "TrainingRunSpec",
+            TRAINING_RUN_SPEC_SCHEMA_ID,
+            TRAINING_RUN_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
+            consumed_by=("training executor pre-launch validation", "downstream run-spec consumers"),
+            description=(
+                "Public durable request envelope for graph, task, objective, method, "
+                "worker, execution, artifact, checkpoint, and progress policy."
+            ),
+            required_tests=(
+                "tests/test_training_run_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "TrainingCheckpointTransactionManifest",
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoints",
+            emitted_by=("feedbax.training.checkpoint_custody",),
+            consumed_by=(
+                "Feedbax training resume loaders",
+                "cloud-backed training workers",
+                "downstream checkpoint adoption lanes",
+            ),
+            description=(
+                "Atomic multi-slot training checkpoint transaction manifest with "
+                "run-contract binding, slot ABI fingerprints, and content integrity."
+            ),
+            required_tests=(
+                "tests/test_checkpoint_custody.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "TrainingSpec",
             "feedbax.spec.training",
             "feedbax.spec.training.v1",
@@ -1141,6 +1248,24 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("TrainingSpec.loss", "provider_manifest.schemas"),
             consumed_by=("training loss lowering",),
             description="Legacy structured loss-term specification.",
+        ),
+        _family(
+            "StandardSupervisedMethodPayload",
+            STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=("TrainingRunSpec.method_payload",),
+            consumed_by=("TrainingRunSpec method registry dispatch",),
+            description=(
+                "Feedbax-owned payload schema for the standard supervised training method."
+            ),
+            rejected_old_versions=(
+                "feedbax.spec.training_method.standard_supervised_payload.v0",
+            ),
+            required_tests=(
+                "tests/test_training_run_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "ObjectiveSpec",
@@ -1171,6 +1296,97 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Declarative analysis run request.",
         ),
         _family(
+            "AnalysisDataProductRequirement",
+            ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+            ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("AnalysisRunSpec.input_requirements", "provider_manifest.schemas"),
+            consumed_by=("feedbax.integrations.provider.validate_analysis_spec",),
+            description="Typed analysis data-product input requirement.",
+            required_tests=(
+                "tests/test_analysis_data_products.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "SelectorRoleIdentity",
+            SELECTOR_ROLE_IDENTITY_SCHEMA_ID,
+            SELECTOR_ROLE_IDENTITY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.descriptors",
+            emitted_by=("VariableDescriptor.role", "provider_manifest.schemas"),
+            consumed_by=("descriptor resolution", "downstream selector validation"),
+            description="Namespaced selector-role identity used by descriptor consumers.",
+            required_tests=(
+                "tests/test_descriptor_schema.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ComponentSelectorSyntax",
+            COMPONENT_SELECTOR_SYNTAX_SCHEMA_ID,
+            COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.descriptors",
+            emitted_by=("VariableDescriptor.selector_syntax", "provider_manifest.schemas"),
+            consumed_by=("descriptor resolution", "downstream selector validation"),
+            description="Namespaced component-selector syntax identity.",
+            required_tests=(
+                "tests/test_descriptor_schema.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "SelectorFallbackPolicyIdentity",
+            SELECTOR_FALLBACK_POLICY_SCHEMA_ID,
+            SELECTOR_FALLBACK_POLICY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.descriptors",
+            emitted_by=("VariableDescriptor.fallback_policy", "provider_manifest.schemas"),
+            consumed_by=("descriptor resolution", "downstream selector validation"),
+            description="Namespaced selector fallback-policy identity.",
+            required_tests=(
+                "tests/test_descriptor_schema.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "VariableDescriptor",
+            VARIABLE_DESCRIPTOR_SCHEMA_ID,
+            VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.descriptors",
+            emitted_by=("GraphSpec/training/run metadata", "provider_manifest.schemas"),
+            consumed_by=("descriptor resolution", "downstream selector validation"),
+            description="Selectable variable descriptor contract.",
+            required_tests=(
+                "tests/test_descriptor_schema.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ComponentDescriptor",
+            COMPONENT_DESCRIPTOR_SCHEMA_ID,
+            COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.descriptors",
+            emitted_by=("VariableDescriptor components", "provider_manifest.schemas"),
+            consumed_by=("descriptor resolution", "downstream selector validation"),
+            description="Selectable scalar or slice component descriptor contract.",
+            required_tests=(
+                "tests/test_descriptor_schema.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "DescriptorBasisIdentity",
+            DESCRIPTOR_BASIS_SCHEMA_ID,
+            DESCRIPTOR_BASIS_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.descriptors",
+            emitted_by=("descriptor-bearing specs", "provider_manifest.schemas"),
+            consumed_by=("descriptor resolution", "analysis data-product basis pins"),
+            description="Whole descriptor-basis identity and hash contract.",
+            required_tests=(
+                "tests/test_descriptor_schema.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
             "feedbax.spec.analysis_bundle.v2",
@@ -1185,6 +1401,39 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_analysis_spec_bundles.py",),
         ),
         _family(
+            "PathExpression",
+            PATH_EXPRESSION_SCHEMA_ID,
+            PATH_EXPRESSION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.expressions",
+            emitted_by=("bundle conditions", "data-product extraction", "report predicates"),
+            consumed_by=(
+                "feedbax.contracts.expressions.evaluate_expr",
+                "feedbax.contracts.expressions.evaluate_query",
+            ),
+            description="Composable manifest path-expression and value-query AST.",
+            required_tests=(
+                "tests/test_path_expressions.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ExtractionProductSpec",
+            EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
+            EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.extraction",
+            emitted_by=("data-product extraction specs", "provider_manifest.schemas"),
+            consumed_by=(
+                "feedbax.contracts.extraction.materialize_extraction_product",
+                "feedbax.contracts.extraction.verify_extraction_product",
+            ),
+            description="Declarative source-to-analysis-data-product extraction spec.",
+            rejected_old_versions=("feedbax.spec.extraction_product.v0",),
+            required_tests=(
+                "tests/test_extraction_products.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "ReportSpec",
             "feedbax.spec.report",
             "feedbax.spec.report.v1",
@@ -1192,6 +1441,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("ReportManifest.report_spec", "provider_manifest.schemas"),
             consumed_by=("Studio report materialization",),
             description="Declarative report request.",
+            rejected_old_versions=("feedbax.spec.report.v0",),
         ),
         _family(
             "RegenerationSpec",
@@ -1218,6 +1468,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "ManifestPacket",
+            "feedbax.spec.manifest_packet",
+            "feedbax.spec.manifest_packet.v1",
+            owner_module="feedbax.contracts.manifest_packet",
+            emitted_by=("feedbax.contracts.manifest_packet", "feedbax.bin.packet"),
+            consumed_by=("feedbax.contracts.manifest_packet",),
+            description=(
+                "Directory packet index for identity-preserving manifest and artifact "
+                "import/export."
+            ),
+            required_tests=(
+                "tests/test_manifest_packets.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "CheckpointSelectionSpec",
             "feedbax.spec.checkpoint_selection",
             "feedbax.spec.checkpoint_selection.v1",
@@ -1225,6 +1491,35 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("CheckpointSelectionManifest.selection_spec", "provider_manifest.schemas"),
             consumed_by=("checkpoint-selection materializers", "downstream scorer plug-ins"),
             description="Declarative generic checkpoint-selection request.",
+        ),
+        _family(
+            "WorkerMethodContractSpec",
+            WORKER_CONTRACT_SCHEMA_ID,
+            WORKER_CONTRACT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.worker",
+            emitted_by=("method registry", "TrainingRunSpec.method_ref resolution"),
+            consumed_by=("feedbax.training.worker_validation", "training executor"),
+            description="Method-neutral worker axis/state/phase execution declaration.",
+            required_tests=(
+                "tests/test_worker_contract.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ObjectiveExecutionRequirements",
+            "feedbax.spec.objective.execution_requirements",
+            "feedbax.spec.objective.v1",
+            owner_module="feedbax.objective_spec",
+            emitted_by=("feedbax.objectives.service", "provider_manifest.schemas"),
+            consumed_by=("feedbax.training.worker_validation",),
+            description=(
+                "Axis and aggregation declaration emitted by objective lowering for "
+                "worker reducer validation."
+            ),
+            required_tests=(
+                "tests/test_loss_schedule_specs.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
     ]
 
@@ -1325,17 +1620,42 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "Durable checkpoint-selection manifest.",
         ),
         ("AnalysisRunManifest", "feedbax.manifest.analysis_run", "Durable analysis-run manifest."),
+        (
+            "AnalysisDataProduct",
+            ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
+            "Typed data product emitted from an analysis-run manifest.",
+        ),
         ("ReportManifest", "feedbax.manifest.report", "Durable report manifest."),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                MANIFEST_SCHEMA_VERSION,
+                (
+                    ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
+                    if kind == "AnalysisDataProduct"
+                    else MANIFEST_SCHEMA_VERSION
+                ),
                 owner_module="feedbax.contracts.manifest",
-                emitted_by=manifest_emitters,
-                consumed_by=("manifest load/write", "provider handoff"),
+                emitted_by=(
+                    ("AnalysisRunManifest.produced_data", "provider_manifest.schemas")
+                    if kind == "AnalysisDataProduct"
+                    else manifest_emitters
+                ),
+                consumed_by=(
+                    ("feedbax.integrations.provider.validate_analysis_spec",)
+                    if kind == "AnalysisDataProduct"
+                    else ("manifest load/write", "provider handoff")
+                ),
                 description=description,
+                required_tests=(
+                    (
+                        "tests/test_analysis_data_products.py",
+                        "tests/test_structured_spec_migrations.py",
+                    )
+                    if kind == "AnalysisDataProduct"
+                    else ("tests/test_structured_spec_migrations.py",)
+                ),
             )
         )
 
@@ -1417,24 +1737,39 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
         )
 
-    for kind, schema_id, description in (
-        ("ExecutionSpec", "feedbax.spec.execution", "Provider-neutral execution request."),
-        ("ExecutionPlan", "feedbax.manifest.execution_plan", "Inspectable concrete execution plan."),
-        ("LocalExecutionResult", "feedbax.manifest.local_execution_result", "Local execution result."),
+    for kind, schema_id, current_version, rejected_versions, description in (
+        (
+            "ExecutionSpec",
+            "feedbax.spec.execution",
+            "feedbax.spec.execution.v2",
+            ("feedbax.spec.execution.v1",),
+            "Provider-neutral execution request.",
+        ),
+        (
+            "ExecutionPlan",
+            "feedbax.manifest.execution_plan",
+            "feedbax.manifest.execution.v3",
+            ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
+            "Inspectable concrete execution plan.",
+        ),
+        (
+            "LocalExecutionResult",
+            "feedbax.manifest.local_execution_result",
+            "feedbax.manifest.execution.v3",
+            ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
+            "Local execution result.",
+        ),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                (
-                    "feedbax.spec.execution.v1"
-                    if kind == "ExecutionSpec"
-                    else "feedbax.manifest.execution.v1"
-                ),
+                current_version,
                 owner_module="feedbax.execution.models",
                 emitted_by=execution_emitters,
                 consumed_by=("execution planning", "Studio execution"),
                 description=description,
+                rejected_old_versions=rejected_versions,
             )
         )
 
@@ -1576,7 +1911,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 kind,
                 schema_id,
                 MANIFEST_SCHEMA_VERSION,
-                owner_module="feedbax.studio.schema",
+                owner_module=(
+                    "feedbax.contracts.value_schema"
+                    if kind == "ValueSchema"
+                    else "feedbax.studio.schema"
+                ),
                 emitted_by=studio_schema_emitters,
                 consumed_by=("Studio frontend", "provider HTTP API"),
                 durable=kind not in {
@@ -1655,15 +1994,40 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             True,
             "Analysis registry snapshot capability alias.",
         ),
+        (
+            "EvaluationStatesContainer",
+            EVALUATION_STATES_CONTAINER_SCHEMA_ID,
+            True,
+            "Governed NPZ custody envelope for evaluation-state pytrees.",
+        ),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                MANIFEST_SCHEMA_VERSION,
-                owner_module="feedbax.integrations.provider",
-                emitted_by=("feedbax.integrations.provider.provider_manifest",),
-                consumed_by=("Mandible provider integration",),
+                (
+                    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+                    if kind == "EvaluationStatesContainer"
+                    else MANIFEST_SCHEMA_VERSION
+                ),
+                owner_module=(
+                    "feedbax.contracts.evaluation_states"
+                    if kind == "EvaluationStatesContainer"
+                    else "feedbax.integrations.provider"
+                ),
+                emitted_by=(
+                    ("feedbax.analysis.evaluation.execute_evaluation_run_spec",)
+                    if kind == "EvaluationStatesContainer"
+                    else ("feedbax.integrations.provider.provider_manifest",)
+                ),
+                consumed_by=(
+                    (
+                        "feedbax.analysis.evaluation.load_evaluation_states",
+                        "feedbax.analysis.specs.resolve_analysis_inputs",
+                    )
+                    if kind == "EvaluationStatesContainer"
+                    else ("Mandible provider integration",)
+                ),
                 durable=durable,
                 description=description,
                 covers="RegistrySnapshot" if kind.endswith("RegistrySnapshot") else None,
@@ -1692,16 +2056,39 @@ default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
 default_spec_registry.register_migration(
+    "EvaluationStatesContainer",
+    SchemaMigration(
+        source_version=EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+        migration_id="evaluation-states-container-v1-to-v2",
+        migrate=_migrate_evaluation_states_container_v1,
+        description=(
+            "Promote array-only evaluation-state container metadata to the v2 "
+            "mixed array/JSON metadata leaf envelope."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
         source_version=LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V2,
         migration_id="graph-spec-legacy-v1-to-v2",
         migrate=_migrate_legacy_graph_spec_payload,
         description=(
             "Promote legacy GraphSpec payloads to the explicit schema identity and "
             "rename built-in node types and Network input ports."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=GRAPH_SPEC_SCHEMA_VERSION_V2,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-v2-to-v3-derived-dimensions",
+        migrate=_migrate_graph_spec_v2_to_v3_payload,
+        description="Add explicit derived_dimensions rules to GraphSpec.",
     ),
 )
 default_spec_registry.register_migration(

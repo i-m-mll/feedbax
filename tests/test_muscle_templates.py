@@ -12,7 +12,6 @@ Tests cover:
 """
 
 import jax
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import pytest
 
@@ -20,6 +19,8 @@ from feedbax.runtime.graph import init_state_from_component
 from feedbax.mechanics.muscles import ReluMuscle, RigidTendonHillMuscleThelen
 from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.mechanics.geometry import PointMassRadialGeometry
+
+pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
 # ============================================================================

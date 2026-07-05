@@ -15,6 +15,7 @@ from feedbax.contracts.graphs.templates import (
 )
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.models.networks import (
+    LeakyRNNCell,
     MaskedLinear,
     POPULATION_STRUCTURE_SCHEMA_ID,
     POPULATION_STRUCTURE_SCHEMA_VERSION,
@@ -300,6 +301,7 @@ def test_network_template_population_constraints_materialize_without_recurrent_m
     [
         (eqx.nn.GRUCell, "GRU", 3),
         (eqx.nn.LSTMCell, "LSTM", 4),
+        (LeakyRNNCell, "VanillaRNN", 1),
     ],
 )
 def test_population_constraints_match_simplestagednetwork_fixed_assignment(

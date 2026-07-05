@@ -17,6 +17,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, Wir
 from feedbax.models.networks import (
     PopulationStructure,
     lower_population_constraints,
+    normalize_recurrent_cell_type,
     population_structure_from_spec,
 )
 
@@ -50,6 +51,34 @@ def recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> 
     return initializer
 
 
+def recurrent_graph_input_initializer(source: str, *, state_slot: str) -> dict[str, Any]:
+    """Return a recurrent initializer supplied by an external graph input."""
+
+    return {
+        "kind": "graph-input",
+        "scope": "trial",
+        "source": str(source),
+        "state_slot": state_slot,
+    }
+
+
+def recurrent_node_output_initializer(
+    source_node: str,
+    source_port: str,
+    *,
+    state_slot: str,
+) -> dict[str, Any]:
+    """Return a recurrent initializer supplied by a same-graph node output."""
+
+    return {
+        "kind": "node-output",
+        "scope": "trial",
+        "source_node": str(source_node),
+        "source_port": str(source_port),
+        "state_slot": state_slot,
+    }
+
+
 def network_recurrent_wires(
     cell_type: str,
     hidden_size: int,
@@ -72,7 +101,11 @@ def network_recurrent_wires(
             ),
         )
     ]
-    if cell_type == "LSTM":
+    normalized_cell_type = normalize_recurrent_cell_type(
+        cell_type,
+        path="network_recurrent_wires.cell_type",
+    )
+    if normalized_cell_type == "LSTM":
         wires.append(
             WireSpec(
                 source_node="cell",
@@ -102,7 +135,10 @@ def recurrent_controller_template_graph(
 ) -> GraphSpec:
     """Build an explicit recurrent controller graph with ordinary nodes and wires."""
 
-    normalized_cell_type = "LSTM" if cell_type in {"LSTM", "LSTMCell"} else "GRU"
+    normalized_cell_type = normalize_recurrent_cell_type(
+        cell_type,
+        path="Recurrent Controller.params.cell_type",
+    )
     parameter_constraints = []
     if population_structure is not None:
         parameter_constraints = list(
@@ -203,7 +239,10 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
     hidden_size = int(params.get("hidden_size", 100))
     out_size = int(params.get("out_size", params.get("output_size", 2)))
     hidden_type = str(params.get("hidden_type", "GRUCell"))
-    cell_type = "LSTM" if hidden_type in {"LSTM", "LSTMCell"} else "GRU"
+    cell_type = normalize_recurrent_cell_type(
+        hidden_type,
+        path="Network.params.hidden_type",
+    )
     out_nonlinearity = str(params.get("out_nonlinearity", "identity"))
     raw_population_structure = params.get("population_structure")
     population_structure = None
@@ -391,6 +430,8 @@ __all__ = [
     "network_recurrent_wires",
     "network_template_graph",
     "recurrent_controller_template_graph",
+    "recurrent_graph_input_initializer",
+    "recurrent_node_output_initializer",
     "recurrent_zero_initializer",
     "simple_feedback_template_graph",
 ]

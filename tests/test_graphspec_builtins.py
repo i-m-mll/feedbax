@@ -13,9 +13,16 @@ import pytest
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel
 from feedbax.component_registry import ComponentRegistry
+from feedbax.runtime.affine_composer import AffineValueComposer
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec, WireSpec
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.task_bindings import (
+    apply_task_parameter_state_inits,
+    expose_task_bindings,
+    expose_task_inputs,
+)
+from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.intervene import (
     CurlField,
     CurlFieldParams,
@@ -28,7 +35,13 @@ from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import (
+    graph_to_spec,
+    prototypes_from_task_bindings,
+    spec_to_graph,
+)
+from feedbax.contracts.graphs.prototypes import output_prototypes_for_node
+from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState
 
 
@@ -180,6 +193,247 @@ def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
     assert params["baseline"] == [1.0, 1.0, 1.0]
     assert params["gain_init"] == [0.5, -1.0, 2.0]
     assert jnp.allclose(jnp.asarray(params["bias_init"]), jnp.array([0.1, 0.0, -0.2]))
+
+
+def test_task_data_reference_vector_composes_into_affine_controller_reference() -> None:
+    task_binding_spec = {
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "exposed_data": [
+            {
+                "id": "target_position",
+                "label": "Target position",
+                "kind": "signal",
+                "role": "model_input",
+                "path": "inputs.target_position",
+                "bindable": True,
+                "expected_shape": ["time", 2],
+                "dtype": "vector",
+                "metadata": {"temporal_support": "trajectory"},
+            }
+        ],
+        "bindings": [
+            {
+                "id": "task:target_position->reference_mux:in_0",
+                "source_data_id": "target_position",
+                "target_node_id": "reference_mux",
+                "target_port": "in_0",
+                "role": "model_input",
+                "metadata": {},
+            }
+        ],
+        "metadata": {},
+    }
+    spec = GraphSpec(
+        nodes={
+            "zero_velocity": ComponentSpec(
+                type="Constant",
+                params={"value": [0.0, 0.0]},
+                input_ports=[],
+                output_ports=["output"],
+            ),
+            "zero_feedback": ComponentSpec(
+                type="Constant",
+                params={"value": [0.0, 0.0, 0.0, 0.0]},
+                input_ports=[],
+                output_ports=["output"],
+            ),
+            "reference_mux": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            ),
+            "controller": ComponentSpec(
+                type="AffineFeedbackController",
+                params={
+                    "gain": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+                    "schedule_policy": "hold",
+                },
+                input_ports=["feedback", "reference", "feedforward"],
+                output_ports=["command"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="zero_velocity",
+                source_port="output",
+                target_node="reference_mux",
+                target_port="in_1",
+            ),
+            WireSpec(
+                source_node="zero_feedback",
+                source_port="output",
+                target_node="controller",
+                target_port="feedback",
+            ),
+            WireSpec(
+                source_node="reference_mux",
+                source_port="output",
+                target_node="controller",
+                target_port="reference",
+            ),
+        ],
+        output_ports=["command"],
+        output_bindings={"command": ("controller", "command")},
+    )
+
+    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+    graph, plans = expose_task_inputs(
+        graph,
+        StudioTaskBindingSpec.model_validate(task_binding_spec),
+    )
+    assert plans[0].graph_input == "task:target_position->reference_mux.in_0"
+
+    state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {plans[0].graph_input: jnp.asarray([1.5, -2.0], dtype=jnp.float32)},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+
+    assert jnp.allclose(outputs["command"], jnp.asarray([1.5, -2.0]))
+    roundtrip = graph_to_spec(graph)
+    assert roundtrip.nodes["zero_velocity"].type == "Constant"
+    assert roundtrip.nodes["controller"].type == "AffineFeedbackController"
+    assert roundtrip.input_bindings[plans[0].graph_input] == ("reference_mux", "in_0")
+
+
+def _derived_mux_gru_spec(declared_input_size: Any = "__missing__") -> GraphSpec:
+    cell_params: dict[str, Any] = {"hidden_size": 5}
+    if declared_input_size != "__missing__":
+        cell_params["input_size"] = declared_input_size
+    return GraphSpec(
+        nodes={
+            "input_mux": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            ),
+            "cell": ComponentSpec(
+                type="GRU",
+                params=cell_params,
+                input_ports=["input", "hidden"],
+                output_ports=["output", "hidden"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="input_mux",
+                source_port="output",
+                target_node="cell",
+                target_port="input",
+            )
+        ],
+        output_ports=["hidden"],
+        output_bindings={"hidden": ("cell", "hidden")},
+        derived_dimensions=[
+            {
+                "node": "cell",
+                "param": "input_size",
+                "port": "input",
+                "metadata": {"dimension_source": "mux_concat_inputs"},
+            }
+        ],
+    )
+
+
+def _derived_mux_task_bindings(
+    *,
+    second_role: str = "model_input",
+    first_shape: list[Any] | None = None,
+    second_shape: list[Any] | None = None,
+) -> StudioTaskBindingSpec:
+    first_shape = first_shape or ["time", 2]
+    second_shape = second_shape or ["time", 1]
+    return StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "kinematics",
+                    "label": "Kinematics",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.kinematics",
+                    "bindable": True,
+                    "expected_shape": first_shape,
+                    "dtype": "float32",
+                    "metadata": {"temporal_support": "trajectory"},
+                },
+                {
+                    "id": "gain_schedule",
+                    "label": "Gain schedule",
+                    "kind": "signal",
+                    "role": second_role,
+                    "path": "inputs.gain_schedule",
+                    "bindable": True,
+                    "expected_shape": second_shape,
+                    "dtype": "float32",
+                    "metadata": {"temporal_support": "trajectory"},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:kinematics->input_mux:in_0",
+                    "source_data_id": "kinematics",
+                    "target_node_id": "input_mux",
+                    "target_port": "in_0",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+                {
+                    "id": "task:gain_schedule->input_mux:in_1",
+                    "source_data_id": "gain_schedule",
+                    "target_node_id": "input_mux",
+                    "target_port": "in_1",
+                    "role": second_role,
+                    "metadata": {},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+
+def test_derived_dimension_rule_sets_gru_input_size_from_task_data_mux_fan_in() -> None:
+    spec = _derived_mux_gru_spec()
+    task_binding_spec = _derived_mux_task_bindings()
+
+    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+
+    assert graph.nodes["cell"].input_size == 3
+    spec_payload = spec.model_dump(mode="json", exclude_none=True)
+    assert "input_size" not in spec_payload["nodes"]["cell"]["params"]
+    assert "input_size_source" not in spec_payload["nodes"]["cell"]["params"]
+
+
+def test_derived_dimension_rule_counts_component_parameter_mux_fan_in() -> None:
+    spec = _derived_mux_gru_spec()
+    task_binding_spec = _derived_mux_task_bindings(
+        second_role="component_parameter",
+        second_shape=["time", 4],
+    )
+
+    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+
+    assert graph.nodes["cell"].input_size == 6
+
+
+def test_derived_dimension_rule_rejects_declared_conflict() -> None:
+    spec = _derived_mux_gru_spec(declared_input_size=7)
+    task_binding_spec = _derived_mux_task_bindings()
+
+    with pytest.raises(ValueError, match="Derived dimension conflict"):
+        spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+
+
+def test_derived_dimension_rule_rejects_null_declaration() -> None:
+    spec = _derived_mux_gru_spec(declared_input_size=None)
+    task_binding_spec = _derived_mux_task_bindings()
+
+    with pytest.raises(ValueError, match="declared null"):
+        spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
 
 
 def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
@@ -385,7 +639,9 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
     assert materialized.label == params["label"]
     assert tuple(input_ports) == materialized.input_ports
     assert materialized.output_ports == ("force",)
-    assert set(materialized.intervention_state_indices()) == {params["label"]}
+    assert set(materialized.task_parameter_state_indices()) == {params["label"]}
+    with pytest.deprecated_call(match="intervention_state_indices"):
+        assert set(materialized.intervention_state_indices()) == {params["label"]}
 
     direct_out = _call_component(direct_component, inputs)
     materialized_out = _call_component(materialized, inputs)
@@ -426,6 +682,535 @@ def test_force_field_registry_exposes_params_override_ports_and_builders() -> No
         if component_type == "DynamicsMatrixPerturb":
             assert "delta_A" in meta.default_params
             assert "mass" in meta.default_params
+
+
+@pytest.mark.parametrize(
+    ("component_type", "input_ports"),
+    [
+        ("FixedField", ["force", "params_override"]),
+        ("CurlField", ["effector", "force", "params_override"]),
+        ("DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+    ],
+)
+def test_force_field_output_prototypes_passthrough_force(
+    component_type: str,
+    input_ports: list[str],
+) -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    force_proto = jnp.zeros((2,), dtype=jnp.float32)
+    node_spec = ComponentSpec(
+        type=component_type,
+        params={},
+        input_ports=input_ports,
+        output_ports=["force"],
+    )
+
+    outputs = output_prototypes_for_node(
+        "field",
+        node_spec,
+        {("field", "force"): force_proto},
+        {},
+        registry,
+    )
+
+    assert outputs["force"] is force_proto
+
+
+@pytest.mark.parametrize(
+    ("component_type", "input_ports"),
+    [
+        ("FixedField", ["force", "params_override"]),
+        ("CurlField", ["effector", "force", "params_override"]),
+        ("DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+    ],
+)
+def test_force_field_output_prototypes_require_force_input(
+    component_type: str,
+    input_ports: list[str],
+) -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    node_spec = ComponentSpec(
+        type=component_type,
+        params={},
+        input_ports=input_ports,
+        output_ports=["force"],
+    )
+
+    with pytest.raises(ValueError, match="input prototype 'force'"):
+        output_prototypes_for_node("field", node_spec, {}, {}, registry)
+
+
+def _tree_shapes(proto: Any) -> tuple[tuple[int, ...], ...]:
+    return tuple(tuple(int(dim) for dim in leaf.shape) for leaf in jax.tree.leaves(proto))
+
+
+def _registered_outputs(
+    component_type: str,
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    *,
+    input_ports: list[str],
+    output_ports: list[str],
+) -> dict[str, Any]:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    node_spec = ComponentSpec(
+        type=component_type,
+        params=dict(params),
+        input_ports=input_ports,
+        output_ports=output_ports,
+    )
+    return output_prototypes_for_node(
+        "node",
+        node_spec,
+        {("node", port): proto for port, proto in inputs.items()},
+        {},
+        registry,
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {
+            "type": "Gain",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "Sum",
+            "inputs": {"a": jnp.zeros((2,))},
+            "input_ports": ["a", "b"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "Multiply",
+            "inputs": {"b": jnp.zeros((4,))},
+            "input_ports": ["a", "b"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "ElementwiseAffineModulator",
+            "params": {"signal_shape": [5]},
+            "inputs": {},
+            "input_ports": ["signal", "modulator", "scale", "bias"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((5,),)},
+        },
+        {
+            "type": "Constant",
+            "params": {"value": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Ramp",
+            "params": {"slope": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Sine",
+            "params": {"amplitude": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Pulse",
+            "params": {"amplitude": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Noise",
+            "params": {"shape": [2, 3]},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2, 3),)},
+        },
+        {
+            "type": "Saturation",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "DelayLine",
+            "params": {"input_shape": [2]},
+            "inputs": {},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "MLP",
+            "params": {"output_size": 7},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((7,),)},
+        },
+        {
+            "type": "Linear",
+            "params": {"output_size": 6},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((6,),)},
+        },
+        {
+            "type": "GRU",
+            "params": {"hidden_size": 4},
+            "input_ports": ["input", "hidden"],
+            "output_ports": ["output", "hidden"],
+            "shapes": {"output": ((4,),), "hidden": ((4,),)},
+        },
+        {
+            "type": "VanillaRNN",
+            "params": {"hidden_size": 4},
+            "input_ports": ["input", "hidden"],
+            "output_ports": ["output", "hidden"],
+            "shapes": {"output": ((4,),), "hidden": ((4,),)},
+        },
+        {
+            "type": "LSTM",
+            "params": {"hidden_size": 4},
+            "input_ports": ["input", "hidden", "cell"],
+            "output_ports": ["output", "hidden", "cell"],
+            "shapes": {"output": ((4,),), "hidden": ((4,),), "cell": ((4,),)},
+        },
+        {
+            "type": "Spring",
+            "inputs": {"displacement": jnp.zeros((2,))},
+            "input_ports": ["displacement"],
+            "output_ports": ["force"],
+            "shapes": {"force": ((2,),)},
+        },
+        {
+            "type": "Damper",
+            "inputs": {"velocity": jnp.zeros((2,))},
+            "input_ports": ["velocity"],
+            "output_ports": ["force"],
+            "shapes": {"force": ((2,),)},
+        },
+        {
+            "type": "Channel",
+            "params": {"input_shape": [3]},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "FeedbackChannels",
+            "params": {"input_shape": [[2], [3]]},
+            "input_ports": ["mechanics"],
+            "output_ports": ["feedback"],
+            "shapes": {"feedback": ((2,), (3,))},
+        },
+        {
+            "type": "FirstOrderFilter",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "AddNoise",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "NetworkClamp",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "ReluMuscle",
+            "input_ports": ["excitation"],
+            "output_ports": ["force", "activation"],
+            "shapes": {"force": ((),), "activation": ((),)},
+        },
+        {
+            "type": "NetworkConstantInput",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "ConstantInput",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "Integrator",
+            "params": {"n_dims": 3},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "Derivative",
+            "inputs": {"input": jnp.zeros((2,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "PID",
+            "params": {"n_dims": 2},
+            "input_ports": ["error"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "PIDDiscrete",
+            "inputs": {"error": jnp.zeros((5,))},
+            "input_ports": ["error"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((5,),)},
+        },
+        {
+            "type": "IntegratorDiscrete",
+            "params": {"n_dims": 2},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "UnitDelay",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "ZeroOrderHold",
+            "params": {"n_dims": 4},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "Mux",
+            "params": {"n_inputs": 3},
+            "inputs": {
+                "in_0": jnp.zeros((2,)),
+                "in_1": {"x": jnp.zeros((2, 2))},
+                "in_2": jnp.zeros(()),
+            },
+            "input_ports": ["in_0", "in_1", "in_2"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((7,),)},
+        },
+        {
+            "type": "Ravel",
+            "inputs": {"input": {"x": jnp.zeros((2, 3)), "y": jnp.zeros((1,))}},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((7,),)},
+        },
+        {
+            "type": "Switch",
+            "inputs": {
+                "true_input": jnp.zeros((3,)),
+                "false_input": jnp.zeros((3,)),
+            },
+            "input_ports": ["condition", "true_input", "false_input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "DeadZone",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "RateLimiter",
+            "params": {"n_dims": 2},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "HighPassFilter",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "BandPassFilter",
+            "params": {"n_dims": 2},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+    ],
+)
+def test_registered_builtin_output_prototypes(case: dict[str, Any]) -> None:
+    outputs = _registered_outputs(
+        case["type"],
+        case.get("params", {}),
+        case.get("inputs", {}),
+        input_ports=case["input_ports"],
+        output_ports=case["output_ports"],
+    )
+
+    for port, expected_shapes in case["shapes"].items():
+        assert _tree_shapes(outputs[port]) == expected_shapes
+
+
+@pytest.mark.parametrize("component_type", ["TwoLinkArm", "PointMass"])
+def test_registered_mechanics_state_output_prototypes(component_type: str) -> None:
+    outputs = _registered_outputs(
+        component_type,
+        {},
+        {},
+        input_ports=["force"],
+        output_ports=["effector", "state"],
+    )
+
+    assert isinstance(outputs["effector"], CartesianState)
+    assert outputs["state"] is outputs["effector"]
+
+
+def test_registered_linear_state_space_output_prototype() -> None:
+    outputs = _registered_outputs(
+        "LinearStateSpace",
+        {
+            "A": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "B": [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]],
+            "pos_slice": [0, 1],
+            "vel_slice": [1, 3],
+        },
+        {},
+        input_ports=["force", "epsilon"],
+        output_ports=["effector", "state"],
+    )
+
+    assert isinstance(outputs["effector"], CartesianState)
+    assert outputs["effector"].pos.shape == (1,)
+    assert outputs["effector"].vel.shape == (2,)
+    assert outputs["effector"].force.shape == (2,)
+    assert outputs["state"].shape == (3,)
+
+
+def test_demux_output_prototype_splits_input_final_dimension() -> None:
+    outputs = _registered_outputs(
+        "Demux",
+        {"sizes": [2, 1, 3]},
+        {"input": jnp.zeros((4, 6))},
+        input_ports=["input"],
+        output_ports=["out_0", "out_1", "out_2"],
+    )
+
+    assert outputs["out_0"].shape == (4, 2)
+    assert outputs["out_1"].shape == (4, 1)
+    assert outputs["out_2"].shape == (4, 3)
+
+
+def test_demux_output_prototype_requires_input_prototype() -> None:
+    with pytest.raises(ValueError, match="Demux output prototype requires input prototype 'input'"):
+        _registered_outputs(
+            "Demux",
+            {"sizes": [2, 1]},
+            {},
+            input_ports=["input"],
+            output_ports=["out_0", "out_1"],
+        )
+
+
+def test_demux_output_prototype_rejects_width_mismatch() -> None:
+    with pytest.raises(ValueError, match="Demux input final dimension 4.*sum\\(sizes\\) 5"):
+        _registered_outputs(
+            "Demux",
+            {"sizes": [2, 3]},
+            {"input": jnp.zeros((4,))},
+            input_ports=["input"],
+            output_ports=["out_0", "out_1"],
+        )
+
+
+def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    spec = GraphSpec(
+        nodes={
+            "join": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            ),
+            "split": ComponentSpec(
+                type="Demux",
+                params={"sizes": [2, 3]},
+                input_ports=["input"],
+                output_ports=["out_0", "out_1"],
+            ),
+            "left": ComponentSpec(
+                type="Gain",
+                params={"gain": 1.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "right": ComponentSpec(
+                type="Gain",
+                params={"gain": 1.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="split",
+                source_port="out_0",
+                target_node="left",
+                target_port="input",
+            ),
+            WireSpec(
+                source_node="split",
+                source_port="out_1",
+                target_node="right",
+                target_port="input",
+            ),
+            WireSpec(
+                source_node="join",
+                source_port="output",
+                target_node="split",
+                target_port="input",
+            ),
+        ],
+        input_ports=["a", "b"],
+        output_ports=["left", "right"],
+        input_bindings={"a": ("join", "in_0"), "b": ("join", "in_1")},
+        output_bindings={"left": ("left", "output"), "right": ("right", "output")},
+    )
+
+    inputs = infer_node_input_prototypes(
+        spec,
+        {("__graph__", "a"): jnp.zeros((2,)), ("__graph__", "b"): jnp.zeros((3,))},
+        {},
+        component_registry=registry,
+    )
+
+    assert inputs[("split", "input")].shape == (5,)
+    assert inputs[("left", "input")].shape == (2,)
+    assert inputs[("right", "input")].shape == (3,)
 
 
 def test_fixed_field_graphspec_preserves_params_override_semantics() -> None:
@@ -471,6 +1256,282 @@ def test_dynamics_matrix_perturb_graphspec_rejects_bad_delta_shape() -> None:
                 output_ports=["force"],
             )
         )
+
+
+def _affine_composer_params() -> dict[str, Any]:
+    return {
+        "schema_version": "feedbax.component.affine_value_composer.v1",
+        "output_block_size": 2,
+        "feature_rules": [
+            {
+                "kind": "target_relative_difference",
+                "state_slice": [0, 2],
+                "target_slice": [0, 2],
+            },
+            {"kind": "identity", "state_slice": [2, 4]},
+        ],
+        "gain_init": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 1.0, 0.0]],
+        "bias_init": [0.5, -0.5],
+        "use_bias": True,
+        "label": "composer_binding",
+    }
+
+
+def _affine_composer_inputs() -> dict[str, Any]:
+    return {
+        "base": jnp.array([10.0, 20.0], dtype=jnp.float32),
+        "state": jnp.array([3.0, 4.0, 5.0, 6.0], dtype=jnp.float32),
+        "target": jnp.array([1.0, 2.0], dtype=jnp.float32),
+    }
+
+
+def test_affine_value_composer_runtime_and_trainable_defaults() -> None:
+    params = _affine_composer_params()
+    component = AffineValueComposer(
+        output_block_size=2,
+        feature_rules=params["feature_rules"],
+        gain_init=params["gain_init"],
+        bias_init=params["bias_init"],
+        use_bias=True,
+        label="composer_binding",
+    )
+
+    outputs = _call_component(component, _affine_composer_inputs())
+
+    assert jnp.allclose(outputs["value"], jnp.array([12.5, 26.5], dtype=jnp.float32))
+
+    updated = eqx.tree_at(
+        lambda node: (node.gain, node.bias),
+        component,
+        (
+            jnp.array([[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=jnp.float32),
+            jnp.array([1.0, 2.0], dtype=jnp.float32),
+        ),
+    )
+    updated_outputs = _call_component(updated, _affine_composer_inputs())
+
+    assert jnp.allclose(updated_outputs["value"], jnp.array([16.0, 28.0], dtype=jnp.float32))
+
+
+def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides() -> None:
+    spec = _single_node_spec(
+        "AffineValueComposer",
+        _affine_composer_params(),
+        input_ports=["base", "state", "target", "gain", "bias"],
+        output_ports=["value"],
+    )
+
+    graph = spec_to_graph(spec)
+    component = graph.nodes["field"]
+
+    assert isinstance(component, AffineValueComposer)
+    assert component.output_block_size == 2
+    assert component.feature_dim == 4
+    assert set(component.task_parameter_state_indices()) == {
+        "composer_binding.gain",
+        "composer_binding.bias",
+    }
+
+    inputs = {
+        **_affine_composer_inputs(),
+        "gain": jnp.array([[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=jnp.float32),
+        "bias": jnp.array([2.0, 3.0], dtype=jnp.float32),
+    }
+    outputs = _call_component(component, inputs)
+    assert jnp.allclose(outputs["value"], jnp.array([14.0, 25.0], dtype=jnp.float32))
+
+    roundtrip = graph_to_spec(graph)
+    node = roundtrip.nodes["field"]
+    assert node.type == "AffineValueComposer"
+    assert node.param_schema_version == "feedbax.component.affine_value_composer.v1"
+    assert node.params["output_block_size"] == 2
+    assert node.params["feature_rules"] == _affine_composer_params()["feature_rules"]
+    assert jnp.allclose(
+        jnp.asarray(node.params["gain_init"]),
+        jnp.asarray(_affine_composer_params()["gain_init"]),
+    )
+    assert jnp.allclose(
+        jnp.asarray(node.params["bias_init"]),
+        jnp.asarray(_affine_composer_params()["bias_init"]),
+    )
+    assert node.params["label"] == "composer_binding"
+
+
+def test_affine_value_composer_component_parameter_binding_updates_state() -> None:
+    spec = GraphSpec(
+        nodes={
+            "field": ComponentSpec(
+                type="AffineValueComposer",
+                params=_affine_composer_params(),
+                input_ports=["base", "state", "target", "gain", "bias"],
+                output_ports=["value"],
+            )
+        },
+        input_ports=["base", "state", "target"],
+        output_ports=["value"],
+        input_bindings={
+            "base": ("field", "base"),
+            "state": ("field", "state"),
+            "target": ("field", "target"),
+        },
+        output_bindings={"value": ("field", "value")},
+    )
+    graph = spec_to_graph(spec)
+    binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "composer_gain",
+                    "label": "Composer gain",
+                    "kind": "intervention",
+                    "role": "component_parameter",
+                    "path": "intervene.composer_gain",
+                    "bindable": True,
+                    "dtype": "array",
+                    "value_spec": {
+                        "mode": "constant",
+                        "value": [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                    },
+                    "metadata": {"temporal_support": "constant"},
+                },
+                {
+                    "id": "composer_bias",
+                    "label": "Composer bias",
+                    "kind": "intervention",
+                    "role": "component_parameter",
+                    "path": "intervene.composer_bias",
+                    "bindable": True,
+                    "dtype": "vector",
+                    "value_spec": {
+                        "mode": "constant",
+                        "value": [1.0, 2.0],
+                    },
+                    "metadata": {"temporal_support": "constant"},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:composer_gain->field:gain",
+                    "source_data_id": "composer_gain",
+                    "target_node_id": "field",
+                    "target_port": "gain",
+                    "role": "component_parameter",
+                    "metadata": {"task_parameter_label": "composer_binding.gain"},
+                },
+                {
+                    "id": "task:composer_bias->field:bias",
+                    "source_data_id": "composer_bias",
+                    "target_node_id": "field",
+                    "target_port": "bias",
+                    "role": "component_parameter",
+                    "metadata": {"task_parameter_label": "composer_binding.bias"},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+    issues = validate_task_binding_schema(binding_spec, spec, "/task_binding_spec")
+    assert not [issue for issue in issues if issue.severity == "error"]
+    exposure = expose_task_bindings(graph, binding_spec)
+    assert exposure.input_plans == ()
+    assert {plan.target_label for plan in exposure.state_init_plans} == {
+        "composer_binding.gain",
+        "composer_binding.bias",
+    }
+
+    state = init_state_from_component(exposure.graph)
+    updated_state = apply_task_parameter_state_inits(
+        state,
+        exposure.graph,
+        exposure.state_init_plans,
+        {
+            "composer_gain": jnp.array(
+                [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                dtype=jnp.float32,
+            ),
+            "composer_bias": jnp.array([1.0, 2.0], dtype=jnp.float32),
+        },
+    )
+    component = exposure.graph.nodes["field"]
+    outputs, _ = component(_affine_composer_inputs(), updated_state, key=jr.PRNGKey(0))
+
+    assert jnp.allclose(outputs["value"], jnp.array([16.0, 28.0], dtype=jnp.float32))
+
+
+def test_affine_value_composer_output_prototypes_and_negative_validation() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    node_spec = ComponentSpec(
+        type="AffineValueComposer",
+        params=_affine_composer_params(),
+        input_ports=["base", "state", "target", "gain", "bias"],
+        output_ports=["value"],
+    )
+    inputs = {
+        ("field", "base"): jnp.zeros((2,), dtype=jnp.float32),
+        ("field", "state"): jnp.zeros((4,), dtype=jnp.float32),
+        ("field", "target"): jnp.zeros((2,), dtype=jnp.float32),
+    }
+
+    outputs = output_prototypes_for_node("field", node_spec, inputs, {}, registry)
+
+    assert outputs["value"] is inputs[("field", "base")]
+
+    with pytest.raises(ValueError, match="input prototype 'base'"):
+        output_prototypes_for_node(
+            "field",
+            node_spec,
+            {("field", "state"): jnp.zeros((4,), dtype=jnp.float32)},
+            {},
+            registry,
+        )
+    with pytest.raises(ValueError, match="input prototype 'state'"):
+        output_prototypes_for_node(
+            "field",
+            node_spec,
+            {("field", "base"): jnp.zeros((2,), dtype=jnp.float32)},
+            {},
+            registry,
+        )
+    with pytest.raises(ValueError, match="state_slice .* exceeds state size"):
+        output_prototypes_for_node(
+            "field",
+            node_spec.model_copy(
+                update={
+                    "params": {
+                        **_affine_composer_params(),
+                        "feature_rules": [{"kind": "identity", "state_slice": [3, 5]}],
+                    }
+                }
+            ),
+            inputs,
+            {},
+            registry,
+        )
+    with pytest.raises(ValueError, match="base prototype trailing dimension"):
+        output_prototypes_for_node(
+            "field",
+            node_spec.model_copy(
+                update={"params": {**_affine_composer_params(), "output_block_size": 3}}
+            ),
+            inputs,
+            {},
+            registry,
+        )
+
+
+def test_affine_value_composer_registry_metadata() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    meta = registry.get("AffineValueComposer")
+
+    assert meta is not None
+    assert meta.output_prototype_fn is not None
+    assert meta.param_schema_version == "feedbax.component.affine_value_composer.v1"
+    assert set(meta.input_ports) == {"base", "state", "target", "gain", "bias"}
+    assert meta.output_ports == ["value"]
+    assert meta.default_params["label"] == "affine_value_composer"
+    assert meta.default_params["schema_version"] == "feedbax.component.affine_value_composer.v1"
 
 
 def test_channel_rejects_unknown_noise_model() -> None:

@@ -25,6 +25,7 @@ from feedbax.contracts.retention_artifact_schema import (
     retention_artifact_metadata,
     retention_artifact_schema,
 )
+from feedbax.contracts.schema_namespace import validate_schema_identity
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -38,6 +39,15 @@ PROVIDER_VERSION = "feedbax-provider.v1"
 DEFAULT_MANIFEST_ROOT_ENV = "FEEDBAX_RUNS_DIR"
 REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
 REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
+ANALYSIS_DATA_PRODUCT_SCHEMA_ID = "feedbax.manifest.analysis_data_product"
+ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION = "feedbax.manifest.analysis_data_product.v1"
+EVALUATION_STATES_CONTAINER_SCHEMA_ID = "feedbax.manifest.evaluation_states_container"
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = (
+    "feedbax.manifest.evaluation_states_container.v1"
+)
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
+    "feedbax.manifest.evaluation_states_container.v2"
+)
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 
@@ -230,6 +240,84 @@ class RegenerationSpec(StrictModel):
         return self
 
 
+class DataProductParentRef(StrictModel):
+    """Parent manifest identity included in an analysis data-product envelope."""
+
+    kind: str
+    id: str
+    role: Optional[str] = None
+    manifest_hash: Optional[str] = None
+    uri: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalysisDataProduct(StrictModel):
+    """Typed semantic product emitted by an analysis or materialization step.
+
+    ``descriptor_basis_hash`` is an optional contract slot for issue 844acc6.
+    Producers set it when descriptor/component selector identity affects the
+    product values; this model only preserves and compares the hash.
+    """
+
+    schema_id: str = ANALYSIS_DATA_PRODUCT_SCHEMA_ID
+    schema_version: str = ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
+    product_schema_id: str
+    product_schema_version: str
+    role: str
+    logical_name: str
+    label: Optional[str] = None
+    producer_manifest_id: str
+    producer_manifest_hash: Optional[str] = None
+    parent_manifests: list[DataProductParentRef] = Field(default_factory=list)
+    checkpoint_policy: dict[str, Any] = Field(default_factory=dict)
+    rollout_policy: dict[str, Any] = Field(default_factory=dict)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    descriptor_basis_hash: Optional[str] = None
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
+    materialization: dict[str, Any] = Field(default_factory=dict)
+    regeneration: list[RegenerationSpec | ParentRef | ArtifactRef] = Field(default_factory=list)
+    product_identity_hash: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "AnalysisDataProduct":
+        if self.schema_id != ANALYSIS_DATA_PRODUCT_SCHEMA_ID:
+            raise ValueError(
+                "unsupported AnalysisDataProduct schema_id: "
+                f"{self.schema_id!r}, expected {ANALYSIS_DATA_PRODUCT_SCHEMA_ID!r}"
+            )
+        if self.schema_version != ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported AnalysisDataProduct schema_version: "
+                f"{self.schema_version!r}, expected {ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION!r}"
+            )
+        if not self.product_schema_id.strip():
+            raise ValueError("AnalysisDataProduct product_schema_id must not be empty")
+        if self.product_schema_id.startswith("feedbax."):
+            validate_schema_identity(
+                self.product_schema_id,
+                family="AnalysisDataProduct.product_schema_id",
+            )
+        if not self.product_schema_version.strip():
+            raise ValueError("AnalysisDataProduct product_schema_version must not be empty")
+        if not self.role.strip():
+            raise ValueError("AnalysisDataProduct role must not be empty")
+        if not self.logical_name.strip():
+            raise ValueError("AnalysisDataProduct logical_name must not be empty")
+        if not self.producer_manifest_id.strip():
+            raise ValueError("AnalysisDataProduct producer_manifest_id must not be empty")
+
+        expected_hash = analysis_data_product_identity_hash(self)
+        if self.product_identity_hash is not None and self.product_identity_hash != expected_hash:
+            raise ValueError(
+                "AnalysisDataProduct product_identity_hash does not match semantic "
+                f"envelope: product_identity_hash={self.product_identity_hash!r}, "
+                f"computed={expected_hash!r}"
+            )
+        self.product_identity_hash = expected_hash
+        return self
+
+
 class SpecPayload(StrictModel):
     """Inline spec payload plus optional stable reference metadata."""
 
@@ -301,6 +389,7 @@ class TrainingRunManifest(BaseManifest):
     training_spec: Optional[SpecPayload] = None
     task_spec: Optional[SpecPayload] = None
     task_binding_spec: Optional[SpecPayload] = None
+    checkpoint_custody: list[ParentRef | ArtifactRef] = Field(default_factory=list)
     overrides: list[OverridePatch] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -482,6 +571,7 @@ class AnalysisRunManifest(BaseManifest):
     regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
         default_factory=list
     )
+    produced_data: list[AnalysisDataProduct] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -536,6 +626,14 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "ReportManifest": ReportManifest,
 }
 
+
+def _manifest_model_for_kind(kind: str) -> type[BaseModel] | None:
+    if kind == "TrainingCheckpointTransactionManifest":
+        from feedbax.contracts.checkpoints import CheckpointTransactionManifest
+
+        return CheckpointTransactionManifest
+    return MANIFEST_MODELS.get(kind)
+
 SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     "GraphSpecManifest": ("graph_spec",),
     "ModelArtifactManifest": ("graph_spec",),
@@ -562,6 +660,58 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dict[str, Any]:
+    """Return the semantic envelope hashed into ``product_identity_hash``.
+
+    The envelope includes the typed product schema, role, logical name, producer
+    and parent manifest identities, checkpoint/rollout policies, value-affecting
+    parameters, optional descriptor basis, artifact byte identities, external
+    materialization metadata, and regeneration metadata. It intentionally
+    excludes human labels, arbitrary product metadata, and mutable local URIs.
+    """
+
+    def artifact_identity(artifact: ArtifactRef) -> dict[str, Any]:
+        return {
+            "role": artifact.role,
+            "logical_name": artifact.logical_name,
+            "artifact_id": artifact.artifact_id,
+            "sha256": artifact.sha256,
+            "media_type": artifact.media_type,
+            "size_bytes": artifact.size_bytes,
+            "storage_backend": artifact.storage_backend,
+            "metadata": artifact.metadata,
+        }
+
+    return {
+        "schema_id": product.schema_id,
+        "schema_version": product.schema_version,
+        "product_schema_id": product.product_schema_id,
+        "product_schema_version": product.product_schema_version,
+        "role": product.role,
+        "logical_name": product.logical_name,
+        "producer_manifest_id": product.producer_manifest_id,
+        "producer_manifest_hash": product.producer_manifest_hash,
+        "parent_manifests": [
+            parent.model_dump(mode="json", exclude_none=True)
+            for parent in product.parent_manifests
+        ],
+        "checkpoint_policy": product.checkpoint_policy,
+        "rollout_policy": product.rollout_policy,
+        "parameters": product.parameters,
+        "descriptor_basis_hash": product.descriptor_basis_hash,
+        "artifacts": [artifact_identity(artifact) for artifact in product.artifacts],
+        "materialization": product.materialization,
+        "regeneration": [
+            item.model_dump(mode="json", exclude_none=True) for item in product.regeneration
+        ],
+    }
+
+
+def analysis_data_product_identity_hash(product: AnalysisDataProduct) -> str:
+    """Hash the deterministic semantic envelope for an analysis data product."""
+    return sha256_bytes(canonical_json_bytes(analysis_data_product_identity_envelope(product)))
 
 
 def sha256_file(path: Path | str) -> str:
@@ -858,6 +1008,38 @@ def store_json_artifact(
     )
 
 
+def store_bytes_artifact(
+    data: bytes,
+    *,
+    root: Path | str | None = None,
+    role: str,
+    logical_name: str,
+    media_type: str = "application/octet-stream",
+    suffix: str = "",
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Write opaque bytes into the local content-addressed artifact store."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    digest = sha256_bytes(data)
+    dest = _artifact_path(root_path, digest, suffix)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        dest.write_bytes(data)
+    stat = dest.stat()
+    artifact_metadata = dict(metadata or {})
+    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
+    return ArtifactRef(
+        role=role,
+        logical_name=logical_name,
+        artifact_id=f"artifact://sha256/{digest}",
+        sha256=digest,
+        media_type=media_type,
+        size_bytes=stat.st_size,
+        uri=str(dest),
+        metadata=artifact_metadata,
+    )
+
+
 def _validate_retention_artifact_version(
     role: str,
     payload: dict[str, Any],
@@ -1004,7 +1186,21 @@ def _normalize_spec_payload_field(value: Any, *, path: str) -> Any:
             for index, item in enumerate(value)
         ]
     if isinstance(value, SpecPayload) or _is_spec_payload_data(value):
-        return migrate_spec_payload(value, path=path)
+        from feedbax.contracts.migrations import UnknownSpecFamily
+
+        try:
+            return migrate_spec_payload(value, path=path)
+        except UnknownSpecFamily:
+            payload = value if isinstance(value, SpecPayload) else SpecPayload.model_validate(value)
+            if payload.schema_id is None or payload.schema_version is None:
+                raise
+            if payload.schema_id.startswith("feedbax."):
+                raise
+            if payload.sha256 is None:
+                payload = payload.model_copy(
+                    update={"sha256": sha256_bytes(canonical_json_bytes(payload.inline))}
+                )
+            return payload
     return value
 
 
@@ -1118,6 +1314,12 @@ def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
     return f"feedbax-analysis-run:{digest[:32]}"
 
 
+def report_manifest_id(spec: ReportSpec) -> str:
+    """Return deterministic report identity for a report spec."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-report:{digest[:32]}"
+
+
 def checkpoint_selection_manifest_id(spec: CheckpointSelectionSpec) -> str:
     """Return deterministic identity for a checkpoint-selection spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))
@@ -1176,7 +1378,7 @@ def load_manifest(path: Path | str) -> AnyManifest:
     if not isinstance(raw_kind, str):
         raise ValueError(f"Unknown Feedbax manifest kind: {raw_kind!r}")
     kind = raw_kind
-    model = MANIFEST_MODELS.get(kind)
+    model = _manifest_model_for_kind(kind)
     if model is None:
         raise ValueError(f"Unknown Feedbax manifest kind: {kind!r}")
     return model.model_validate(data)  # type: ignore[return-value]

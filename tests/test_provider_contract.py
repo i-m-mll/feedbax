@@ -45,6 +45,7 @@ from feedbax.studio.schema import (
     RuntimeSampleLeafSchema,
     enumerate_studio_schema_registry,
     validate_graph_connection_schema,
+    validate_task_binding_schema,
 )
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
@@ -60,7 +61,7 @@ from feedbax.contracts.graph import (
     TapSpec,
     build_default_studio_workspace,
 )
-from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingRunSpec, TrainingSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.web.worker.app import (
@@ -270,6 +271,8 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
 
     assert manifest.provider == "feedbax"
     assert manifest.capabilities["validate_graph_spec"].input_schema == "GraphSpec"
+    assert manifest.capabilities["validate_training_spec"].input_schema == "TrainingRunSpec"
+    assert manifest.capabilities["start_training_run"].input_schema == "TrainingRunSpec"
     assert manifest.capabilities["start_training_run"].output_schema == "TrainingRunManifest"
     assert manifest.capabilities["start_training_run"].action == "execute"
     assert manifest.capabilities["start_training_run"].requires_review
@@ -281,6 +284,7 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "model_parameters" in manifest.artifact_roles
     assert "array_store" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
+    assert "TrainingRunSpec" in manifest.schemas
     assert "ModelArtifactManifest" in manifest.schemas
     assert "CheckpointSelectionManifest" in manifest.schemas
     assert "CheckpointSelectionSpec" in manifest.schemas
@@ -293,6 +297,43 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "RuntimeIntrospectionOptions" in manifest.schemas
     assert "RuntimeSampleLeafSchema" in manifest.schemas
     assert "MandibleManifestMapping" in manifest.schemas
+    assert "ExecutionPlan" in manifest.schemas
+    assert "LocalExecutionResult" in manifest.schemas
+
+
+def test_provider_manifest_exports_governed_execution_artifact_refs() -> None:
+    manifest = provider_manifest()
+    plan_schema = manifest.schemas["ExecutionPlan"]
+    result_schema = manifest.schemas["LocalExecutionResult"]
+
+    assert (
+        plan_schema["properties"]["artifact_routes"]["items"]["$ref"]
+        == "#/$defs/ArtifactRef"
+    )
+    for field in ("stdout", "stderr", "manifest", "execution_plan"):
+        assert result_schema["properties"][field]["$ref"] == "#/$defs/ArtifactRef"
+    assert (
+        result_schema["properties"]["produced_artifacts"]["items"]["$ref"]
+        == "#/$defs/ArtifactRef"
+    )
+
+    prepare_roles = set(manifest.capabilities["prepare_execution_plan"].artifact_roles)
+    assert {
+        "execution_plan",
+        "execution_log",
+        "training_run_spec",
+        "training_run_manifest",
+        "tracked_spec",
+        "bulk_output",
+    }.issubset(prepare_roles)
+    local_roles = set(manifest.capabilities["run_local_execution"].artifact_roles)
+    assert {
+        "execution_plan",
+        "execution_log",
+        "execution_stdout",
+        "execution_stderr",
+        "training_run_manifest",
+    }.issubset(local_roles)
 
 
 def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:
@@ -330,6 +371,8 @@ def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:
     assert "trajectory_dataset" in manifest.capabilities["execute_evaluation_run"].artifact_roles
     assert "analysis_table" in manifest.capabilities["execute_analysis_run"].artifact_roles
     assert "report" in manifest.capabilities["materialize_report"].artifact_roles
+    assert "report_render" in manifest.capabilities["materialize_report"].artifact_roles
+    assert "report_render" in manifest.capabilities["handoff_report_artifacts"].artifact_roles
     assert (
         "artifact_id fields are optional and local URIs remain valid"
         in manifest.capabilities["handoff_report_artifacts"].custody_expectations
@@ -343,6 +386,7 @@ def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
         "GraphSpec": GraphSpec,
         "LossTermSpec": LossTermSpec,
         "TaskSpec": TaskSpec,
+        "TrainingRunSpec": TrainingRunSpec,
         "TrainingSpec": TrainingSpec,
     }
 
@@ -1676,6 +1720,99 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() 
     assert "mux_needs_two_connected_inputs" not in {issue.type for issue in registry.issues}
 
 
+def test_studio_schema_reports_derived_dimension_conflict() -> None:
+    graph = GraphSpec(
+        nodes={
+            "mux": {
+                "type": "Mux",
+                "params": {"n_inputs": 2},
+                "input_ports": ["in_0", "in_1"],
+                "output_ports": ["output"],
+            },
+            "cell": {
+                "type": "GRU",
+                "params": {"input_size": 7, "hidden_size": 5},
+                "input_ports": ["input", "hidden"],
+                "output_ports": ["output", "hidden"],
+            },
+        },
+        wires=[
+            {
+                "source_node": "mux",
+                "source_port": "output",
+                "target_node": "cell",
+                "target_port": "input",
+            }
+        ],
+        derived_dimensions=[
+            {
+                "node": "cell",
+                "param": "input_size",
+                "port": "input",
+                "metadata": {"dimension_source": "mux_concat_inputs"},
+            }
+        ],
+    )
+    workspace = build_default_studio_workspace(label="Derived dimension conflict", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "position",
+                    "label": "Position",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.position",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 2],
+                    "metadata": {},
+                },
+                {
+                    "id": "cue",
+                    "label": "Cue",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.cue",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 1],
+                    "metadata": {},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:position->mux:in_0",
+                    "source_data_id": "position",
+                    "target_node_id": "mux",
+                    "target_port": "in_0",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+                {
+                    "id": "task:cue->mux:in_1",
+                    "source_data_id": "cue",
+                    "target_node_id": "mux",
+                    "target_port": "in_1",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    conflict = next(issue for issue in registry.issues if issue.type == "derived_dimension_conflict")
+
+    assert "declared 7" in conflict.message
+    assert "derived 3" in conflict.message
+    assert conflict.location["path"].endswith("/graph/derived_dimensions/0")
+
+
 def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
     child_graph = GraphSpec(
         nodes={
@@ -1932,6 +2069,95 @@ def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings(
     assert "task_data_bindable_role_mismatch" in issue_types
     assert "task_data_protocol_path_bindable" in issue_types
     assert "task_data_not_bindable" in issue_types
+
+
+def test_studio_schema_accepts_component_parameter_bindings_with_declared_label() -> None:
+    graph = GraphSpec(
+        nodes={
+            "field": {
+                "type": "FixedField",
+                "params": {
+                    "scale": 1.0,
+                    "amplitude": 1.0,
+                    "field": [0.0, 0.0],
+                    "active": False,
+                    "label": "perturb",
+                },
+                "input_ports": ["force", "params_override"],
+                "output_ports": ["force"],
+            }
+        },
+        input_ports=["force"],
+        output_ports=["force"],
+        input_bindings={"force": ("field", "force")},
+        output_bindings={"force": ("field", "force")},
+    )
+    task_binding = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "perturb",
+                    "label": "Perturbation params",
+                    "kind": "intervention",
+                    "role": "component_parameter",
+                    "path": "intervene.perturb",
+                    "bindable": True,
+                    "dtype": "object",
+                    "value_spec": {
+                        "mode": "constant",
+                        "value": {"scale": 2.0, "active": True},
+                    },
+                    "metadata": {"temporal_support": "constant"},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:perturb->field:params_override",
+                    "source_data_id": "perturb",
+                    "target_node_id": "field",
+                    "target_port": "params_override",
+                    "role": "component_parameter",
+                    "metadata": {"task_parameter_label": "perturb"},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    issues = validate_task_binding_schema(task_binding, graph, "/task_binding_spec")
+    assert not [issue for issue in issues if issue.severity == "error"]
+
+    task_binding.bindings[0].metadata["task_parameter_label"] = "missing"
+    issues = validate_task_binding_schema(task_binding, graph, "/task_binding_spec")
+    assert {issue.type for issue in issues} >= {"component_parameter_label_unknown"}
+
+    occupied_payload = graph.model_dump(mode="json", exclude_none=True)
+    occupied_payload.update(
+        {
+            "nodes": {
+                **occupied_payload["nodes"],
+                "params_source": {
+                    "type": "Constant",
+                    "params": {"value": {"active": True}},
+                    "input_ports": [],
+                    "output_ports": ["output"],
+                },
+            },
+            "wires": [
+                {
+                    "source_node": "params_source",
+                    "source_port": "output",
+                    "target_node": "field",
+                    "target_port": "params_override",
+                }
+            ],
+        }
+    )
+    occupied_graph = GraphSpec.model_validate(occupied_payload)
+    task_binding.bindings[0].metadata["task_parameter_label"] = "perturb"
+    issues = validate_task_binding_schema(task_binding, occupied_graph, "/task_binding_spec")
+    assert {issue.type for issue in issues} >= {"task_binding_target_occupied"}
 
 
 def test_studio_schema_enumeration_validates_intervention_targets() -> None:
@@ -2260,6 +2486,16 @@ def test_worker_training_cfg_uses_timeline_task_n_steps() -> None:
     )
 
     assert cfg.n_reach_steps == 150
+
+
+def test_worker_training_cfg_parses_grad_clip_absent_null_and_float() -> None:
+    absent_cfg = _extract_training_cfg({})
+    null_cfg = _extract_training_cfg({"grad_clip": None})
+    float_cfg = _extract_training_cfg({"grad_clip": "2.5"})
+
+    assert absent_cfg.grad_clip == 1.0
+    assert null_cfg.grad_clip is None
+    assert float_cfg.grad_clip == 2.5
 
 
 def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> None:

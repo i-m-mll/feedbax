@@ -28,12 +28,25 @@ from .specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
+from .reports import (
+    BUNDLE_SUMMARY_REPORT_TYPE,
+    REPORT_RENDER_ROLE,
+    STUDIO_REPORT_TYPE,
+    ReportRecipeResult,
+    execute_report_spec,
+    register_report_recipe,
+    registered_report_types,
+    unregister_report_recipe,
+)
 from .validation import (
     AnalysisRecipeProtocol,
     EvaluationRecipeProtocol,
+    ReportRecipeProtocol,
     RecipeValidationError,
+    validate_namespaced_type_key,
     validate_analysis_recipe,
     validate_evaluation_recipe,
+    validate_report_recipe,
 )
 
 __all__ = [
@@ -53,16 +66,27 @@ __all__ = [
     "GraphControllerStep",
     "MaterializationResult",
     "RecipeValidationError",
+    "ReportRecipeProtocol",
+    "ReportRecipeResult",
+    "REPORT_RENDER_ROLE",
+    "BUNDLE_SUMMARY_REPORT_TYPE",
+    "STUDIO_REPORT_TYPE",
     "StagedAnalysisBundleExecution",
     "execute_analysis_bundle",
     "execute_analysis_run_spec",
+    "execute_report_spec",
     "execute_staged_analysis_bundle",
     "feedbax_graph_controller",
     "graph_controller",
     "load_analysis_bundle",
     "materialization_metadata",
     "register_analysis_recipe",
+    "register_report_recipe",
+    "registered_report_types",
     "unregister_analysis_recipe",
+    "unregister_report_recipe",
+    "validate_namespaced_type_key",
     "validate_analysis_recipe",
     "validate_evaluation_recipe",
+    "validate_report_recipe",
 ]

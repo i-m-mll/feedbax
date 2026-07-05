@@ -107,11 +107,53 @@ def test_dry_run_prints_deterministic_deploy_commands(tmp_path: Path) -> None:
     assert "-0pi" in output
     assert "-e" in output
     assert "\\\\Q\\$ENV\\{PATCH_FROM\\}\\\\E" in output
-    normalized = output.replace("\\ ", " ")
+    normalized = (
+        output.replace("\\ ", " ")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\(", "(")
+        .replace("\\)", ")")
+    )
     assert "uv sync" in normalized
     assert "uv pip install -U" in normalized
     assert "jax\\[cuda12\\]" in output
     assert "uv run --no-sync python" in normalized
+
+
+def test_reused_pod_dry_run_probes_before_install_and_skips_on_success(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--ssh-host",
+        "198.51.100.10",
+        "--ssh-port",
+        "2222",
+        "--train-spec",
+        str(spec),
+        "--launch-command",
+        "uv run --no-sync python train.py",
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    normalized = (
+        output.replace("\\ ", " ")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\(", "(")
+        .replace("\\)", ")")
+    )
+    assert "starting venv consistency probe" in output
+    assert "uv run --no-sync python -c" in normalized
+    assert "import jax, jax.numpy; print(jax.devices())" in normalized
+    assert "venv_probe_branch=probe_ok" in output
+    assert "uv venv --clear" not in normalized
+    assert "uv pip install -U" not in normalized
 
 
 def test_acquire_only_dry_run_stops_before_deploy(tmp_path: Path) -> None:

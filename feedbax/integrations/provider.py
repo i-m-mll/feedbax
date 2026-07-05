@@ -10,7 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticVa
 
 import feedbax.analysis as analysis_pkg
 from feedbax.contracts.artifact_schema import ArrayRecord, ArrayStorePayload
+from feedbax.contracts.descriptors import (
+    ComponentDescriptor,
+    ComponentSelectorSyntax,
+    DescriptorBasisIdentity,
+    SelectorFallbackPolicyIdentity,
+    SelectorRoleIdentity,
+    VariableDescriptor,
+)
 from feedbax.contracts.manifest import (
+    AnalysisDataProduct,
     AnalysisRunManifest,
     AnalysisRunSpec,
     ArrayStoreRef,
@@ -76,13 +85,14 @@ from feedbax.studio.schema import (
 from feedbax.contracts.graph import (
     AdditiveGraphChannelAdapterSpec,
     AdditiveGraphChannelTargetSpec,
+    AnalysisDataProductRequirement,
     AnalysisInputRequirement,
     GraphSpec,
     StudioTaskBindingSpec,
     StudioWorkspaceSpec,
 )
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
-from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingRunSpec, TrainingSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.tasks.presets import apply_delayed_reaches_preset
 
@@ -204,6 +214,7 @@ class ValidationIssue(ProviderModel):
     type: str
     message: str
     location: Optional[dict[str, str]] = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderValidationResult(ProviderModel):
@@ -227,13 +238,22 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "AdditiveGraphChannelAdapterSpec": AdditiveGraphChannelAdapterSpec,
         "AdditiveGraphChannelTargetSpec": AdditiveGraphChannelTargetSpec,
         "AnalysisInputRequirement": AnalysisInputRequirement,
+        "AnalysisDataProductRequirement": AnalysisDataProductRequirement,
         "TrainingSpec": TrainingSpec,
+        "TrainingRunSpec": TrainingRunSpec,
         "TaskSpec": TaskSpec,
         "LossTermSpec": LossTermSpec,
         "EvaluationRunSpec": EvaluationRunSpec,
         "AnalysisRunSpec": AnalysisRunSpec,
         "ReportSpec": ReportSpec,
         "RegenerationSpec": RegenerationSpec,
+        "AnalysisDataProduct": AnalysisDataProduct,
+        "VariableDescriptor": VariableDescriptor,
+        "ComponentDescriptor": ComponentDescriptor,
+        "DescriptorBasisIdentity": DescriptorBasisIdentity,
+        "SelectorRoleIdentity": SelectorRoleIdentity,
+        "ComponentSelectorSyntax": ComponentSelectorSyntax,
+        "SelectorFallbackPolicyIdentity": SelectorFallbackPolicyIdentity,
         "CheckpointSelectionSpec": CheckpointSelectionSpec,
         "ArtifactRef": ArtifactRef,
         "ArrayRecord": ArrayRecord,
@@ -459,10 +479,23 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
                     role="regeneration_spec",
                     description="Replay spec refs for regenerating analysis artifacts.",
                 ),
+                MandibleArtifactMapping(
+                    source_field="produced_data[]",
+                    role="analysis_data_product",
+                    description=(
+                        "Typed semantic products emitted by analysis/materialization steps."
+                    ),
+                ),
             ],
-            spec_fields=["analysis_spec", "regeneration_specs[]"],
+            spec_fields=["analysis_spec", "regeneration_specs[]", "produced_data[]"],
             parent_ref_fields=["inputs", "provenance.parents"],
-            opaque_domain_fields=["analysis_spec.inline", "summary_metrics", "metadata"],
+            opaque_domain_fields=[
+                "analysis_spec.inline",
+                "produced_data[].parameters",
+                "produced_data[].materialization",
+                "summary_metrics",
+                "metadata",
+            ],
             actions=run_actions + ["publish_report"],
             related_issue_refs=["51832b9", "63c798f"],
         ),
@@ -502,10 +535,10 @@ def provider_manifest() -> ProviderManifest:
             selected_node_kinds=["feedbax.graph_spec"],
         ),
         "validate_training_spec": CapabilitySpec(
-            input_schema="TrainingSpec",
+            input_schema="TrainingRunSpec",
             output_schema="ProviderValidationResult",
             action="validate",
-            compatibility_predicates=["selected node has Feedbax training spec payload"],
+            compatibility_predicates=["selected node has Feedbax training run request payload"],
             selected_node_kinds=["feedbax.training_run", "feedbax.training_run_set"],
         ),
         "validate_task_spec": CapabilitySpec(
@@ -536,12 +569,12 @@ def provider_manifest() -> ProviderManifest:
             selected_node_kinds=["feedbax.report"],
         ),
         "start_training_run": CapabilitySpec(
-            input_schema="TrainingSpec",
+            input_schema="TrainingRunSpec",
             output_schema="TrainingRunManifest",
             requires_review=True,
             description="Start a local or configured worker training run.",
             action="execute",
-            compatibility_predicates=["graph and training specs validate through Feedbax"],
+            compatibility_predicates=["TrainingRunSpec validates through Feedbax"],
             mutates_state=True,
             may_launch_compute=True,
             artifact_roles=["training_checkpoint", "training_history", "execution_log"],
@@ -580,6 +613,7 @@ def provider_manifest() -> ProviderManifest:
             selected_node_kinds=["feedbax.evaluation_run", "feedbax.analysis_run"],
             custody_expectations=[
                 "Analysis artifacts remain Feedbax-local unless handed off.",
+                "Typed produced_data records carry semantic product identities.",
                 "Regeneration specs attach to manifest spec payloads and artifact refs.",
             ],
         ),
@@ -591,7 +625,7 @@ def provider_manifest() -> ProviderManifest:
             action="execute",
             compatibility_predicates=["report spec validates and input analysis products exist"],
             mutates_state=True,
-            artifact_roles=["report", "manifest"],
+            artifact_roles=["report", "report_render", "manifest"],
             selected_node_kinds=["feedbax.analysis_run", "feedbax.report"],
             custody_expectations=[
                 "Report bundles can carry optional Mandible artifact IDs after handoff."
@@ -618,7 +652,7 @@ def provider_manifest() -> ProviderManifest:
             output_schema="ReportManifest",
             description="Inspect report manifest lineage, specs, and artifact refs.",
             action="inspect",
-            artifact_roles=["report", "manifest"],
+            artifact_roles=["report", "report_render", "manifest"],
             selected_node_kinds=["feedbax.report"],
         ),
         "handoff_evaluation_artifacts": CapabilitySpec(
@@ -644,7 +678,7 @@ def provider_manifest() -> ProviderManifest:
             output_schema="ReportManifest",
             description="Attach optional external artifact custody IDs to report refs.",
             action="handoff",
-            artifact_roles=["report", "manifest"],
+            artifact_roles=["report", "report_render", "manifest"],
             selected_node_kinds=["feedbax.report"],
             custody_expectations=["artifact_id fields are optional and local URIs remain valid"],
         ),
@@ -654,7 +688,14 @@ def provider_manifest() -> ProviderManifest:
             description="Prepare a deterministic local, SSH, RunPod, or Modal execution plan.",
             action="validate",
             compatibility_predicates=["execution spec is provider-owned and backend-supported"],
-            artifact_roles=["execution_plan"],
+            artifact_roles=[
+                "execution_plan",
+                "execution_log",
+                "training_run_spec",
+                "training_run_manifest",
+                "tracked_spec",
+                "bulk_output",
+            ],
         ),
         "run_local_execution": CapabilitySpec(
             input_schema="ExecutionSpec",
@@ -665,7 +706,14 @@ def provider_manifest() -> ProviderManifest:
             compatibility_predicates=["execution spec backend is local"],
             mutates_state=True,
             may_launch_compute=True,
-            artifact_roles=["manifest", "execution_log"],
+            artifact_roles=[
+                "execution_plan",
+                "execution_log",
+                "execution_stdout",
+                "execution_stderr",
+                "manifest",
+                "training_run_manifest",
+            ],
             custody_expectations=[
                 "Local outputs remain usable without Mandible.",
                 "Mandible may ingest emitted manifest and artifacts later.",
@@ -714,7 +762,13 @@ def provider_manifest() -> ProviderManifest:
                 "selected Studio stage has compatible upstream manifest collection"
             ],
             mutates_state=True,
-            artifact_roles=["evaluation_result", "analysis_table", "report", "manifest"],
+            artifact_roles=[
+                "evaluation_result",
+                "analysis_table",
+                "report",
+                "report_render",
+                "manifest",
+            ],
             selected_node_kinds=[
                 "feedbax.studio_stage.eval",
                 "feedbax.studio_stage.analysis",
@@ -765,7 +819,9 @@ def provider_manifest() -> ProviderManifest:
             "analysis_table",
             "figure",
             "report",
+            "report_render",
             "regeneration_spec",
+            "analysis_data_product",
             "manifest",
             "execution_plan",
             "execution_log",
@@ -1300,6 +1356,26 @@ def validate_training_spec(
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 
+def validate_training_run_spec(payload: dict[str, Any] | TrainingRunSpec) -> ProviderValidationResult:
+    """Validate the public governed training-run request contract."""
+    try:
+        payload if isinstance(payload, TrainingRunSpec) else TrainingRunSpec.model_validate(payload)
+    except PydanticValidationError as exc:
+        return ProviderValidationResult(valid=False, errors=_pydantic_errors(exc))
+    except ValueError as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_training_run_spec",
+                    message=str(exc),
+                    location={"path": "/"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
 def validate_task_spec(payload: dict[str, Any] | TaskSpec) -> ProviderValidationResult:
     try:
         spec = payload if isinstance(payload, TaskSpec) else TaskSpec.model_validate(payload)
@@ -1624,10 +1700,298 @@ def validate_evaluation_spec(
     return ProviderValidationResult(valid=not errors, errors=errors)
 
 
+def _coerce_resolved_data_products(
+    resolved_manifests: list[dict[str, Any] | AnalysisRunManifest] | None,
+) -> tuple[list[AnalysisDataProduct], list[ValidationIssue]]:
+    if resolved_manifests is None:
+        return [], []
+
+    products: list[AnalysisDataProduct] = []
+    errors: list[ValidationIssue] = []
+    for manifest_index, manifest in enumerate(resolved_manifests):
+        manifest_payload = (
+            manifest.model_dump(mode="json", exclude_none=True)
+            if isinstance(manifest, AnalysisRunManifest)
+            else manifest
+        )
+        for product_index, product_payload in enumerate(manifest_payload.get("produced_data", [])):
+            try:
+                products.append(AnalysisDataProduct.model_validate(product_payload))
+            except PydanticValidationError as exc:
+                errors.append(
+                    ValidationIssue(
+                        type="invalid_analysis_data_product",
+                        message=str(exc),
+                        location={
+                            "path": (
+                                f"/resolved_manifests/{manifest_index}/"
+                                f"produced_data/{product_index}"
+                            )
+                        },
+                        details={"kind": "Mismatch", "mismatch_class": "invalid-product"},
+                    )
+                )
+    return products, errors
+
+
+def _validate_analysis_data_product_requirements(
+    spec: AnalysisRunSpec,
+    *,
+    products: list[AnalysisDataProduct],
+    has_resolved_manifests: bool,
+) -> list[ValidationIssue]:
+    errors: list[ValidationIssue] = []
+    for index, requirement in enumerate(spec.input_requirements):
+        if requirement.data_product is None:
+            continue
+        error = _resolve_analysis_data_product_requirement(
+            requirement.data_product,
+            products,
+            path=f"/input_requirements/{index}/data_product",
+            has_resolved_manifests=has_resolved_manifests,
+        )
+        if error is not None:
+            errors.append(error)
+    return errors
+
+
+def _resolve_analysis_data_product_requirement(
+    requirement: AnalysisDataProductRequirement,
+    products: list[AnalysisDataProduct],
+    *,
+    path: str,
+    has_resolved_manifests: bool,
+) -> ValidationIssue | None:
+    if not has_resolved_manifests:
+        return _data_product_missing_issue(
+            requirement,
+            path=path,
+            reason="no resolved manifests were supplied for data-product validation",
+        )
+
+    candidates = [
+        product
+        for product in products
+        if requirement.logical_name is None or product.logical_name == requirement.logical_name
+    ]
+    if not candidates:
+        return _data_product_missing_issue(
+            requirement,
+            path=path,
+            reason="no resolved product matched the required logical_name",
+        )
+
+    mismatches: list[tuple[str, str, AnalysisDataProduct]] = []
+    for product in candidates:
+        mismatch = _analysis_data_product_mismatch(requirement, product)
+        if mismatch is None:
+            return None
+        mismatches.append((*mismatch, product))
+
+    mismatch_class, message, product = _choose_data_product_mismatch(mismatches)
+    return ValidationIssue(
+        type="analysis_data_product_mismatch",
+        message=message,
+        location={"path": path},
+        details={
+            "kind": "Mismatch",
+            "mismatch_class": mismatch_class,
+            "required": _data_product_requirement_summary(requirement),
+            "actual": _data_product_summary(product),
+        },
+    )
+
+
+def _analysis_data_product_mismatch(
+    requirement: AnalysisDataProductRequirement,
+    product: AnalysisDataProduct,
+) -> tuple[str, str] | None:
+    if (
+        requirement.product_identity_hash is not None
+        and product.product_identity_hash != requirement.product_identity_hash
+    ):
+        return (
+            "product-identity",
+            "resolved analysis data product has the wrong product_identity_hash",
+        )
+    if product.product_schema_id != requirement.product_schema_id:
+        return ("schema", "resolved analysis data product has the wrong product schema")
+    if not _schema_version_satisfies(
+        product.product_schema_version,
+        exact=requirement.exact_product_schema_version,
+        minimum=requirement.min_product_schema_version,
+        maximum=requirement.max_product_schema_version,
+    ):
+        return (
+            "schema-version",
+            "resolved analysis data product has an incompatible product schema version",
+        )
+    if product.role != requirement.role:
+        return ("wrong-role", "resolved analysis data product has the wrong role")
+    if (
+        requirement.descriptor_basis_hash is not None
+        and product.descriptor_basis_hash != requirement.descriptor_basis_hash
+    ):
+        return (
+            "wrong-basis",
+            "resolved analysis data product has the wrong descriptor_basis_hash",
+        )
+    if (
+        requirement.producer_manifest_id is not None
+        and product.producer_manifest_id != requirement.producer_manifest_id
+    ):
+        return ("wrong-run", "resolved analysis data product came from the wrong run")
+    if (
+        requirement.producer_manifest_hash is not None
+        and product.producer_manifest_hash != requirement.producer_manifest_hash
+    ):
+        return ("wrong-run", "resolved analysis data product has the wrong producer hash")
+    product_parent_ids = {parent.id for parent in product.parent_manifests}
+    missing_parent_ids = [
+        parent_id
+        for parent_id in requirement.parent_manifest_ids
+        if parent_id not in product_parent_ids
+    ]
+    if missing_parent_ids:
+        return ("wrong-run", "resolved analysis data product has the wrong parent manifest")
+    product_parent_hashes = {
+        parent.manifest_hash
+        for parent in product.parent_manifests
+        if parent.manifest_hash is not None
+    }
+    missing_parent_hashes = [
+        parent_hash
+        for parent_hash in requirement.parent_manifest_hashes
+        if parent_hash not in product_parent_hashes
+    ]
+    if missing_parent_hashes:
+        return ("wrong-run", "resolved analysis data product has the wrong parent hash")
+    if (
+        requirement.checkpoint_policy is not None
+        and product.checkpoint_policy != requirement.checkpoint_policy
+    ):
+        return (
+            "wrong-checkpoint",
+            "resolved analysis data product has the wrong checkpoint policy",
+        )
+    if requirement.rollout_policy is not None and product.rollout_policy != requirement.rollout_policy:
+        return ("wrong-rollout", "resolved analysis data product has the wrong rollout policy")
+    for key, expected in requirement.parameters.items():
+        if product.parameters.get(key) != expected:
+            return ("parameters", "resolved analysis data product has incompatible parameters")
+    if requirement.artifact_sha256 is not None:
+        artifact_hashes = {artifact.sha256 for artifact in product.artifacts}
+        if requirement.artifact_sha256 not in artifact_hashes:
+            return (
+                "artifact-byte-hash",
+                "resolved analysis data product does not carry the pinned artifact hash",
+            )
+    return None
+
+
+def _schema_version_satisfies(
+    version: str,
+    *,
+    exact: str | None,
+    minimum: str | None,
+    maximum: str | None,
+) -> bool:
+    if exact is not None:
+        return version == exact
+    if minimum is not None and _schema_version_compare(version, minimum) < 0:
+        return False
+    if maximum is not None and _schema_version_compare(version, maximum) > 0:
+        return False
+    return True
+
+
+def _schema_version_compare(left: str, right: str) -> int:
+    left_prefix, left_number = _schema_version_parts(left)
+    right_prefix, right_number = _schema_version_parts(right)
+    if left_prefix != right_prefix:
+        return -1 if left < right else 1
+    return (left_number > right_number) - (left_number < right_number)
+
+
+def _schema_version_parts(version: str) -> tuple[str, int]:
+    prefix, separator, suffix = version.rpartition(".v")
+    if separator and suffix.isdigit():
+        return prefix, int(suffix)
+    return version, 0
+
+
+def _choose_data_product_mismatch(
+    mismatches: list[tuple[str, str, AnalysisDataProduct]],
+) -> tuple[str, str, AnalysisDataProduct]:
+    priority = {
+        "product-identity": 0,
+        "schema": 1,
+        "schema-version": 2,
+        "wrong-role": 3,
+        "wrong-basis": 4,
+        "wrong-run": 5,
+        "wrong-checkpoint": 6,
+        "wrong-rollout": 7,
+        "parameters": 8,
+        "artifact-byte-hash": 9,
+    }
+    return min(mismatches, key=lambda item: priority.get(item[0], 100))
+
+
+def _data_product_missing_issue(
+    requirement: AnalysisDataProductRequirement,
+    *,
+    path: str,
+    reason: str,
+) -> ValidationIssue:
+    return ValidationIssue(
+        type="analysis_data_product_missing",
+        message=f"required analysis data product is missing: {reason}",
+        location={"path": path},
+        details={
+            "kind": "Missing",
+            "mismatch_class": "missing-product",
+            "required": _data_product_requirement_summary(requirement),
+        },
+    )
+
+
+def _data_product_requirement_summary(
+    requirement: AnalysisDataProductRequirement,
+) -> dict[str, Any]:
+    return requirement.model_dump(mode="json", exclude_none=True)
+
+
+def _data_product_summary(product: AnalysisDataProduct) -> dict[str, Any]:
+    return {
+        "product_schema_id": product.product_schema_id,
+        "product_schema_version": product.product_schema_version,
+        "role": product.role,
+        "logical_name": product.logical_name,
+        "producer_manifest_id": product.producer_manifest_id,
+        "producer_manifest_hash": product.producer_manifest_hash,
+        "parent_manifest_ids": [parent.id for parent in product.parent_manifests],
+        "parent_manifest_hashes": [
+            parent.manifest_hash
+            for parent in product.parent_manifests
+            if parent.manifest_hash is not None
+        ],
+        "checkpoint_policy": product.checkpoint_policy,
+        "rollout_policy": product.rollout_policy,
+        "parameters": product.parameters,
+        "descriptor_basis_hash": product.descriptor_basis_hash,
+        "artifact_sha256": [
+            artifact.sha256 for artifact in product.artifacts if artifact.sha256 is not None
+        ],
+        "product_identity_hash": product.product_identity_hash,
+    }
+
+
 def validate_analysis_spec(
     payload: dict[str, Any] | AnalysisRunSpec,
     *,
     graph_spec: Optional[dict[str, Any] | GraphSpec] = None,
+    resolved_manifests: Optional[list[dict[str, Any] | AnalysisRunManifest]] = None,
 ) -> ProviderValidationResult:
     try:
         spec = (
@@ -1641,6 +2005,15 @@ def validate_analysis_spec(
 
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
+    products, product_errors = _coerce_resolved_data_products(resolved_manifests)
+    errors.extend(product_errors)
+    errors.extend(
+        _validate_analysis_data_product_requirements(
+            spec,
+            products=products,
+            has_resolved_manifests=resolved_manifests is not None,
+        )
+    )
     if not spec.analysis_type.strip():
         errors.append(
             ValidationIssue(
@@ -1710,6 +2083,8 @@ def validate_analysis_spec(
                 requirement.target if requirement.target is not None else requirement.selector
             )
             if selector_value is None:
+                if requirement.data_product is not None:
+                    continue
                 errors.append(
                     ValidationIssue(
                         type="invalid_analysis_input",
@@ -1829,6 +2204,8 @@ def validate_spec(
         return validate_graph_spec_manifest(payload)
     if kind == "training":
         return validate_training_spec(payload, graph_spec=graph_spec)
+    if kind == "training_run":
+        return validate_training_run_spec(payload)
     if kind == "task":
         return validate_task_spec(payload)
     if kind == "evaluation":

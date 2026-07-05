@@ -117,6 +117,12 @@ tears down any pod this script created on every non-acquired exit path.
 
 The training launch is refused unless --train-spec points to JSON containing
 `"user_confirmed": true`; failure prints the spec table and exits 2.
+
+On reused pods (--pod-id or provided SSH endpoint), deploy probes the existing
+remote `.venv` with `uv run --no-sync python -c 'import jax, jax.numpy; ...'`
+before any install step. Probe success skips environment installation; probe
+failure clears and rebuilds the venv, then reruns the normal sync/CUDA-JAX
+install sequence.
 USAGE
 }
 
@@ -612,6 +618,7 @@ create_pod_in_dc() {
 # the grace window only governs the still-RUNNING/no-endpoint case.
 wait_for_endpoint_or_dead() {
     [ "$DRY_RUN" -eq 1 ] && {
+        run_cmd runpodctl pod get "$POD_ID" --output json
         SSH_HOST="dry-run-host"; SSH_PORT="22"
         ENDPOINT_SOURCE="ssh_object"
         ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
@@ -999,8 +1006,9 @@ remote_nohup_sentinel() {
     local done_file=$4
     local failed_file=$5
     local log_file=$6
-    local remote
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && ( $command ) && touch $(sq "$done_file") || { rc=\$?; touch $(sq "$failed_file"); exit \$rc; }") >$(sq "$log_file") 2>&1 &"
+    local remote sentinel_command
+    sentinel_command="cd $(sq "$workdir") && { $command; rc=\$?; if [ \"\$rc\" -eq 0 ]; then touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \"\$rc\"; fi; }"
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "$sentinel_command") >$(sq "$log_file") 2>&1 &"
     log "starting $label"
     remote_cmd "$remote"
 }
@@ -1023,6 +1031,31 @@ wait_for_sentinel() {
         fi
         if remote_capture "test -f $(sq "$failed_file")"; then
             die "$label failed; inspect $REMOTE_RUN_DIR/logs"
+        fi
+        sleep "$SENTINEL_POLL_SECONDS"
+    done
+    die "timed out waiting for $label sentinel"
+}
+
+wait_for_sentinel_result() {
+    local label=$1
+    local done_file=$2
+    local failed_file=$3
+    if [ "$DRY_RUN" -eq 1 ]; then
+        remote_cmd "test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
+        return 0
+    fi
+
+    local deadline
+    deadline=$((SECONDS + SENTINEL_TIMEOUT_SECONDS))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if remote_capture "test -f $(sq "$done_file")"; then
+            log "$label complete"
+            return 0
+        fi
+        if remote_capture "test -f $(sq "$failed_file")"; then
+            log "$label failed"
+            return 1
         fi
         sleep "$SENTINEL_POLL_SECONDS"
     done
@@ -1062,13 +1095,53 @@ bootstrap_remote_env() {
     jax_failed="$REMOTE_SENTINEL_DIR/jax_cuda.failed"
 
     remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR/logs") $(sq "$REMOTE_SENTINEL_DIR")"
-    remote_nohup_sentinel "uv sync" "$REMOTE_RLRMP_ROOT" "uv sync" \
+    remote_nohup_sentinel "uv sync" "$REMOTE_RLRMP_ROOT" "${1:-uv sync}" \
         "$uv_done" "$uv_failed" "$REMOTE_RUN_DIR/logs/uv-sync.log"
     wait_for_sentinel "uv sync" "$uv_done" "$uv_failed"
     remote_nohup_sentinel "jax cuda install" "$REMOTE_RLRMP_ROOT" \
         "uv pip install -U \"jax[cuda12]\"" \
         "$jax_done" "$jax_failed" "$REMOTE_RUN_DIR/logs/jax-cuda-install.log"
     wait_for_sentinel "jax cuda install" "$jax_done" "$jax_failed"
+}
+
+mark_bootstrap_branch() {
+    local branch=$1
+    local marker_file="$REMOTE_SENTINEL_DIR/${branch}.done"
+    local line="venv_probe_branch=$branch"
+    log "$line"
+    remote_cmd "mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && printf '%s\n' $(sq "$line") >> $(sq "$REMOTE_RUN_DIR/logs/venv-probe.log") && touch $(sq "$marker_file")"
+}
+
+clear_venv_probe_markers() {
+    remote_cmd "rm -f $(sq "$REMOTE_SENTINEL_DIR/venv_probe.done") $(sq "$REMOTE_SENTINEL_DIR/venv_probe.failed") $(sq "$REMOTE_SENTINEL_DIR/probe_ok.done") $(sq "$REMOTE_SENTINEL_DIR/probe_failed_rebuilding.done") $(sq "$REMOTE_SENTINEL_DIR/rebuild_done.done")"
+}
+
+probe_reused_remote_env() {
+    local probe_done probe_failed
+    probe_done="$REMOTE_SENTINEL_DIR/venv_probe.done"
+    probe_failed="$REMOTE_SENTINEL_DIR/venv_probe.failed"
+    remote_nohup_sentinel "venv consistency probe" "$REMOTE_RLRMP_ROOT" \
+        "uv run --no-sync python -c 'import jax, jax.numpy; print(jax.devices())'" \
+        "$probe_done" "$probe_failed" "$REMOTE_RUN_DIR/logs/venv-probe.log"
+    wait_for_sentinel_result "venv consistency probe" "$probe_done" "$probe_failed"
+}
+
+bootstrap_remote_env_for_pod() {
+    remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR/logs") $(sq "$REMOTE_SENTINEL_DIR")"
+    if [ "$POD_CREATED_BY_US" -eq 1 ]; then
+        bootstrap_remote_env
+        return 0
+    fi
+
+    clear_venv_probe_markers
+    if probe_reused_remote_env; then
+        mark_bootstrap_branch "probe_ok"
+        return 0
+    fi
+
+    mark_bootstrap_branch "probe_failed_rebuilding"
+    bootstrap_remote_env "uv venv --clear && uv sync"
+    mark_bootstrap_branch "rebuild_done"
 }
 
 verify_remote_device() {
@@ -1237,7 +1310,7 @@ main() {
     sync_repos
     repair_remote_artifacts
     apply_path_patches
-    bootstrap_remote_env
+    bootstrap_remote_env_for_pod
     verify_remote_device
     sync_train_spec
     launch_training

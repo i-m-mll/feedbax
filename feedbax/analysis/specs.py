@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,9 +11,17 @@ import dill as pickle
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
-from feedbax.analysis.evaluation import execute_evaluation_run_spec
+from feedbax.analysis.evaluation import (
+    EvaluationStatesArtifactNotFound,
+    execute_evaluation_run_spec,
+    load_evaluation_states,
+)
 from feedbax.analysis.execution import run_analyses_with_context
-from feedbax.analysis.validation import AnalysisRecipeProtocol, validate_analysis_recipe
+from feedbax.analysis.validation import (
+    AnalysisRecipeProtocol,
+    validate_analysis_recipe,
+    validate_namespaced_type_key,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -51,6 +59,7 @@ class AnalysisRecipeResult:
 
 
 AnalysisRecipe = AnalysisRecipeProtocol
+AnalysisRecipeResultValidator = Callable[[str, AnalysisRecipeResult], None]
 
 _ANALYSIS_RECIPES: dict[str, AnalysisRecipe] = {}
 
@@ -74,8 +83,10 @@ def register_analysis_recipe(
     replace: bool = False,
 ) -> None:
     """Register an executable analysis recipe by stable type key."""
-    if not analysis_type.strip():
-        raise ValueError("analysis_type must not be empty")
+    analysis_type = validate_namespaced_type_key(
+        analysis_type,
+        field="analysis_type",
+    )
     if analysis_type in _ANALYSIS_RECIPES and not replace:
         raise ValueError(f"Analysis recipe {analysis_type!r} is already registered")
     _ANALYSIS_RECIPES[analysis_type] = validate_analysis_recipe(analysis_type, recipe)
@@ -146,9 +157,20 @@ def resolve_analysis_inputs(
         if ref.kind == "EvaluationRunManifest":
             states_path = evaluation_states_cache_path(ref.id, root=root_path)
             if not states_path.exists():
-                _rederive_evaluation_states(ref.id, manifest, root=root_path)
-            with states_path.open("rb") as stream:
-                states = pickle.load(stream)
+                if isinstance(manifest, EvaluationRunManifest):
+                    try:
+                        states = load_evaluation_states(manifest, root=root_path)
+                    except EvaluationStatesArtifactNotFound:
+                        _rederive_evaluation_states(ref.id, manifest, root=root_path)
+                    else:
+                        states_path.parent.mkdir(parents=True, exist_ok=True)
+                        with states_path.open("wb") as stream:
+                            pickle.dump(states, stream)
+                else:
+                    _rederive_evaluation_states(ref.id, manifest, root=root_path)
+            if states is None:
+                with states_path.open("rb") as stream:
+                    states = pickle.load(stream)
         resolved.append(
             ResolvedAnalysisInput(
                 ref=ref,
@@ -212,6 +234,7 @@ def execute_analysis_run_spec(
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    validate_result: AnalysisRecipeResultValidator | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
 ) -> tuple[AnalysisRunManifest, Path]:
@@ -234,6 +257,8 @@ def execute_analysis_run_spec(
         result = recipe(run_spec, root_path, resolved_inputs)
         if not result.analyses:
             raise ValueError(f"Analysis recipe {run_spec.analysis_type!r} returned no analyses")
+        if validate_result is not None:
+            validate_result(run_spec.analysis_type, result)
         run_analyses_with_context(
             result.analyses,
             result.data,

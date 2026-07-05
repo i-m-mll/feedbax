@@ -7,12 +7,34 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.graph import ComponentSpec, DerivedDimensionRuleSpec, GraphSpec
+from feedbax.component_registry.meta import MissingPrototypeInput
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
 
 STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
+
+
+class DerivedDimensionError(ValueError):
+    """Raised when a GraphSpec derived-dimension rule cannot be resolved."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        rule: DerivedDimensionRuleSpec,
+        declared: Any = None,
+        derived: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.rule = rule
+        self.declared = declared
+        self.derived = derived
+
+
+class DerivedDimensionConflict(DerivedDimensionError):
+    """Raised when a declared builder dimension contradicts the derived value."""
 
 
 def array_proto_from_shape(shape: Any) -> jax.Array | None:
@@ -98,6 +120,9 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         item = data_by_id.get(str(source_id))
         if item is None or target_node is None or target_port is None:
             continue
+        role = _field(binding, "role") or _field(item, "role")
+        if role == "component_parameter" and _task_data_temporality(item) == "constant":
+            continue
         expected_shape = (
             getattr(item, "expected_shape", None)
             if not isinstance(item, Mapping)
@@ -107,6 +132,34 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         if sample_shape is not None:
             prototypes[(str(target_node), str(target_port))] = jnp.zeros(tuple(sample_shape))
     return prototypes
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _metadata(value: Any) -> dict[str, Any]:
+    metadata = _field(value, "metadata", {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _task_data_temporality(data: Any) -> str:
+    metadata = _metadata(data)
+    explicit = metadata.get("temporality") or metadata.get("temporal_support")
+    if isinstance(explicit, str):
+        if explicit in {"trajectory", "materialized_trajectory", "epoch_masked_signal"}:
+            return "time_varying"
+        if explicit in {"constant", "trial_constant", "initial", "per_trial"}:
+            return "constant"
+    shape = _field(data, "expected_shape")
+    value_spec = _field(data, "value_spec")
+    if shape is None:
+        shape = _field(value_spec, "shape")
+    if isinstance(shape, (list, tuple)) and shape and shape[0] == "time":
+        return "time_varying"
+    return "constant"
 
 
 def explicit_proto(
@@ -224,6 +277,8 @@ def _registered_output_prototypes(
     node_spec: ComponentSpec,
     input_prototypes: Mapping[tuple[str, str], Any],
     component_registry: Any,
+    *,
+    strict: bool,
 ) -> dict[str, Any] | None:
     output_prototype_fn = _lookup_output_prototype_fn(component_registry, node_spec.type)
     if output_prototype_fn is None:
@@ -235,7 +290,10 @@ def _registered_output_prototypes(
     }
     params = _lookup_default_params(component_registry, node_spec.type)
     params.update(node_spec.params)
-    outputs = output_prototype_fn(params, node_inputs)
+    try:
+        outputs = output_prototype_fn(params, node_inputs)
+    except MissingPrototypeInput as exc:
+        return _defer_or_raise(str(exc), strict=strict)
     if not isinstance(outputs, Mapping):
         raise TypeError(
             f"Output prototype function for {node_spec.type!r} node {node_name!r} "
@@ -284,6 +342,7 @@ def output_prototypes_for_node(
         node_spec,
         input_prototypes,
         component_registry,
+        strict=strict,
     )
     if registered_outputs is not None:
         return registered_outputs
@@ -333,7 +392,7 @@ def output_prototypes_for_node(
         return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
     if node_type == "MLP":
         return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
-    if node_type == "GRU":
+    if node_type in {"GRU", "VanillaRNN"}:
         hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
         return {"output": hidden, "hidden": hidden}
     if node_type == "LSTM":
@@ -466,20 +525,52 @@ def infer_node_input_prototypes(
         if graph_proto is not None:
             input_prototypes[(node_name, node_port)] = graph_proto
 
-    for wire in spec.wires:
+    def initializer_prototype(wire: Any) -> Any | None:
         initializer = wire.recurrent_initializer
         if initializer is None:
-            continue
-        init_proto = None
+            return None
         if initializer.get("kind") == "zeros":
-            init_proto = array_proto_from_shape(initializer.get("shape"))
-        elif initializer.get("kind") == "constant" and "value" in initializer:
-            init_proto = proto_from_value(initializer["value"])
+            return array_proto_from_shape(initializer.get("shape"))
+        if initializer.get("kind") == "constant" and "value" in initializer:
+            return proto_from_value(initializer["value"])
+        if initializer.get("kind") == "graph-input":
+            source = initializer.get("source")
+            if isinstance(source, str):
+                return external_input_prototypes.get(("__graph__", source))
+            return None
+        if initializer.get("kind") == "node-output":
+            source_node = initializer.get("source_node")
+            source_port = initializer.get("source_port")
+            if not isinstance(source_node, str) or not isinstance(source_port, str):
+                return None
+            source_spec = spec.nodes.get(source_node)
+            if source_spec is None:
+                return None
+            outputs = output_prototypes_for_node(
+                source_node,
+                source_spec,
+                input_prototypes,
+                subgraphs,
+                component_registry=component_registry,
+                strict=False,
+            )
+            return outputs.get(source_port)
+        return None
+
+    for wire in spec.wires:
+        init_proto = initializer_prototype(wire)
         if init_proto is not None:
             input_prototypes[(wire.target_node, wire.target_port)] = init_proto
 
     for _ in range(max(1, len(spec.nodes) + len(spec.wires) + 1)):
         changed = False
+        for wire in spec.wires:
+            init_proto = initializer_prototype(wire)
+            key = (wire.target_node, wire.target_port)
+            if init_proto is None or key in input_prototypes:
+                continue
+            input_prototypes[key] = init_proto
+            changed = True
         for wire in spec.wires:
             source_spec = spec.nodes.get(wire.source_node)
             if source_spec is None:
@@ -578,6 +669,115 @@ def normalize_stateful_prototypes(
                 nested_inputs,
                 component_registry=component_registry,
             )
+
+    return spec.model_copy(
+        update={
+            "nodes": nodes,
+            "subgraphs": normalized_subgraphs or None,
+        }
+    )
+
+
+def normalize_derived_dimensions(
+    spec: GraphSpec,
+    input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+    component_registry: Any = None,
+) -> GraphSpec:
+    """Materialize declared derived builder dimensions into node parameters.
+
+    Rules read from the same prototype propagation path used by stateful shape
+    normalization. Missing parameters are filled from resolved graph structure;
+    explicit mismatches raise instead of being overwritten.
+    """
+
+    subgraphs = dict(spec.subgraphs or {})
+    node_inputs = infer_node_input_prototypes(
+        spec,
+        input_prototypes or {},
+        subgraphs,
+        component_registry=component_registry,
+    )
+    nodes = dict(spec.nodes)
+
+    for index, rule in enumerate(spec.derived_dimensions):
+        node = nodes.get(rule.node)
+        if node is None:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} targets missing node {rule.node!r}",
+                rule=rule,
+            )
+        if rule.source != "input_port":
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} uses unsupported source {rule.source!r}",
+                rule=rule,
+            )
+        if rule.port not in node.input_ports:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} targets missing input port "
+                f"{rule.node}.{rule.port}",
+                rule=rule,
+            )
+
+        shape = shape_from_proto(node_inputs.get((rule.node, rule.port)))
+        if shape is None:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} for {rule.node}.{rule.param} could not "
+                f"resolve a serializable prototype for input port {rule.port!r}",
+                rule=rule,
+            )
+        axis = rule.axis if rule.axis >= 0 else len(shape) + rule.axis
+        if axis < 0 or axis >= len(shape):
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} for {rule.node}.{rule.param} axis "
+                f"{rule.axis} is out of range for resolved shape {shape!r}",
+                rule=rule,
+            )
+        derived = int(shape[axis])
+        if derived <= 0:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} for {rule.node}.{rule.param} resolved "
+                f"non-positive dimension {derived}",
+                rule=rule,
+                derived=derived,
+            )
+
+        params = dict(node.params)
+        if rule.param in params:
+            declared = params[rule.param]
+            if declared is None:
+                raise DerivedDimensionConflict(
+                    f"Derived dimension conflict for {rule.node}.{rule.param}: declared "
+                    f"null but derived {derived} from {rule.node}.{rule.port} shape {shape!r}; "
+                    "omit the parameter when using derived_dimensions",
+                    rule=rule,
+                    declared=declared,
+                    derived=derived,
+                )
+            if not isinstance(declared, bool) and isinstance(declared, int) and declared == derived:
+                continue
+            raise DerivedDimensionConflict(
+                f"Derived dimension conflict for {rule.node}.{rule.param}: declared "
+                f"{declared!r} but derived {derived} from {rule.node}.{rule.port} "
+                f"shape {shape!r}",
+                rule=rule,
+                declared=declared,
+                derived=derived,
+            )
+        params[rule.param] = derived
+        nodes[rule.node] = node.model_copy(update={"params": params})
+
+    normalized_subgraphs: dict[str, GraphSpec] = {}
+    for node_name, subgraph in subgraphs.items():
+        nested_inputs = {
+            (node, port): node_inputs[(node_name, graph_port)]
+            for graph_port, (node, port) in subgraph.input_bindings.items()
+            if (node_name, graph_port) in node_inputs
+        }
+        normalized_subgraphs[node_name] = normalize_derived_dimensions(
+            subgraph,
+            nested_inputs,
+            component_registry=component_registry,
+        )
 
     return spec.model_copy(
         update={

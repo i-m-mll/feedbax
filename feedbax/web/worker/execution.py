@@ -18,6 +18,7 @@ import optax
 
 from feedbax.runtime.graph import Graph, GraphTraceRequest, init_state_from_component
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
+from feedbax.runtime.task_bindings import TaskInputPlan, expose_task_inputs
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.runtime.retained_observables import (
     LossTermPlan,
@@ -53,16 +54,14 @@ def _should_emit_training_progress(batch: int, total_batches: int, interval: int
     return batch == 1 or batch == total_batches or batch % interval == 0
 
 
-@dataclass(frozen=True)
-class TaskInputPlan:
-    """A task-data stream bound to one graph input port."""
-
-    data_id: str
-    data_path: str
-    graph_input: str
-    target_node: str
-    target_port: str
-    role: str
+def _build_optimizer(
+    learning_rate: float,
+    grad_clip: float | None,
+) -> optax.GradientTransformationExtraArgs:
+    """Return the worker optimizer, optionally including global-norm clipping."""
+    if grad_clip is None:
+        return optax.chain(optax.adam(learning_rate))
+    return optax.chain(optax.clip_by_global_norm(grad_clip), optax.adam(learning_rate))
 
 
 @dataclass
@@ -164,7 +163,7 @@ def compile_training_run(
             f"GraphSpec could not be instantiated for worker execution: {exc}"
         ) from exc
 
-    graph, task_inputs = _expose_task_inputs(graph, binding_model)
+    graph, task_inputs = expose_task_inputs(graph, binding_model)
     n_steps = int(getattr(cfg, "n_reach_steps", None) or training_model.n_batches or 1)
     task_data = _materialize_task_data(binding_model, task_spec, n_steps)
     try:
@@ -215,9 +214,10 @@ def run_training_graph(
     """Train an executable graph and stream Studio-compatible worker events."""
     graph = compiled.graph
     learning_rate = float(getattr(cfg, "learning_rate", 1e-3))
-    grad_clip = float(getattr(cfg, "grad_clip", 1.0))
+    raw_grad_clip = getattr(cfg, "grad_clip", 1.0)
+    grad_clip = None if raw_grad_clip is None else float(raw_grad_clip)
     snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
-    optimizer = optax.chain(optax.clip_by_global_norm(grad_clip), optax.adam(learning_rate))
+    optimizer = _build_optimizer(learning_rate, grad_clip)
 
     trainable, static = eqx.partition(graph, compiled.trainable_filter)
     opt_state = optimizer.init(trainable)
@@ -357,61 +357,6 @@ def rollout_graph(
         "task_data": compiled.task_data,
         "final_state": final_state,
     }
-
-
-def _expose_task_inputs(
-    graph: Graph,
-    task_binding_spec: StudioTaskBindingSpec,
-) -> tuple[Graph, tuple[TaskInputPlan, ...]]:
-    input_ports = list(graph.input_ports)
-    input_bindings = dict(graph.input_bindings)
-    plans: list[TaskInputPlan] = []
-    for binding in task_binding_spec.bindings:
-        target_key = (binding.target_node_id, binding.target_port)
-        if binding.target_node_id not in graph.nodes:
-            raise ValueError(
-                f"Task binding {binding.id!r} targets missing node {binding.target_node_id!r}"
-            )
-        if binding.target_port not in graph.nodes[binding.target_node_id].input_ports:
-            raise ValueError(
-                f"Task binding {binding.id!r} targets missing port "
-                f"{binding.target_node_id}.{binding.target_port}"
-            )
-        graph_input = next(
-            (name for name, bound in input_bindings.items() if tuple(bound) == target_key),
-            f"task:{binding.source_data_id}->{binding.target_node_id}.{binding.target_port}",
-        )
-        if graph_input not in input_ports:
-            input_ports.append(graph_input)
-        input_bindings[graph_input] = target_key
-        data = _task_data_by_id(task_binding_spec)[binding.source_data_id]
-        plans.append(
-            TaskInputPlan(
-                data_id=binding.source_data_id,
-                data_path=data.path,
-                graph_input=graph_input,
-                target_node=binding.target_node_id,
-                target_port=binding.target_port,
-                role=binding.role,
-            )
-        )
-
-    graph = eqx.tree_at(
-        lambda g: (g.input_ports, g.input_bindings),
-        graph,
-        (tuple(input_ports), input_bindings),
-    )
-    return graph, tuple(plans)
-
-
-def _task_data_by_id(spec: StudioTaskBindingSpec) -> dict[str, StudioTaskDataSpec]:
-    data = {item.id: item for item in spec.exposed_data}
-    missing = [
-        binding.source_data_id for binding in spec.bindings if binding.source_data_id not in data
-    ]
-    if missing:
-        raise ValueError(f"Task bindings reference unknown task data ids: {sorted(set(missing))}")
-    return data
 
 
 def _materialize_task_data(

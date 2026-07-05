@@ -1,0 +1,82 @@
+{
+  "schema_id": "feedbax.manifest.analysis_data_product",
+  "schema_version": "feedbax.manifest.analysis_data_product.v1",
+  "product_schema_id": "rlrmp.broad_epsilon_budget_anchors",
+  "product_schema_version": "rlrmp.broad_epsilon_budget_anchors.v1",
+  "role": "broad_epsilon_budget_anchors",
+  "logical_name": "cs_broad_epsilon_budget_anchors",
+  "producer_manifest_id": "rlrmp.data_products.broad_epsilon.build_broad_epsilon_budget_anchors_product",
+  "parent_manifests": [],
+  "checkpoint_policy": {},
+  "rollout_policy": {},
+  "parameters": {
+    "reference_reach_m": 0.15,
+    "levels": {
+      "moderate": {
+        "gamma_factor": 1.4,
+        "closed_loop_epsilon_energy_15cm": 1.518885046213267e-6,
+        "closed_loop_epsilon_l2_15cm": 0.0012324305441740995,
+        "delta_v_percent": 4.041729916548296,
+        "source_issue": "cb98e58",
+        "source_note": "results/cb98e58/notes/analytical_game_card_manifest.json",
+        "adoption": {
+          "source_manifest": "results/cb98e58/notes/analytical_game_card_manifest.json",
+          "source_pointer": "frontier[factor=1.4]",
+          "source_factor_key": "1p4",
+          "adopted_fields": {
+            "closed_loop_epsilon_energy_15cm": "closed_loop_epsilon_energy",
+            "closed_loop_epsilon_l2_15cm": "closed_loop_epsilon_l2",
+            "delta_v_percent": "delta_v_percent"
+          },
+          "adopted_values": {
+            "gamma_factor": 1.4,
+            "closed_loop_epsilon_energy_15cm": 1.518885046213267e-6,
+            "closed_loop_epsilon_l2_15cm": 0.0012324305441740995,
+            "delta_v_percent": 4.041729916548296,
+            "source_issue": "cb98e58",
+            "source_note": "results/cb98e58/notes/analytical_game_card_manifest.json"
+          },
+          "note": "Historical broad-epsilon runs used the identical baked values; the adoption record makes that provenance explicit and reproducible."
+        }
+      },
+      "strong": {
+        "gamma_factor": 1.05,
+        "closed_loop_epsilon_energy_15cm": 5.421868381615368e-6,
+        "closed_loop_epsilon_l2_15cm": 0.0023284905801002004,
+        "delta_v_percent": 7.460371202249536,
+        "source_issue": "a7dad8a",
+        "source_note": "results/a7dad8a/notes/adversary_equivalence_manifest.json",
+        "adoption": {
+          "source_manifest": "results/a7dad8a/notes/adversary_equivalence_manifest.json",
+          "source_pointer": "game_card_summary.frontier[factor=1.05]",
+          "source_factor_key": "1p05",
+          "adopted_fields": {
+            "closed_loop_epsilon_energy_15cm": "closed_loop_epsilon_energy",
+            "closed_loop_epsilon_l2_15cm": "closed_loop_epsilon_l2",
+            "delta_v_percent": "delta_v_percent"
+          },
+          "adopted_values": {
+            "gamma_factor": 1.05,
+            "closed_loop_epsilon_energy_15cm": 5.421868381615368e-6,
+            "closed_loop_epsilon_l2_15cm": 0.0023284905801002004,
+            "delta_v_percent": 7.460371202249536,
+            "source_issue": "a7dad8a",
+            "source_note": "results/a7dad8a/notes/adversary_equivalence_manifest.json"
+          },
+          "note": "Historical broad-epsilon runs used the identical baked values; the adoption record makes that provenance explicit and reproducible."
+        }
+      }
+    }
+  },
+  "artifacts": [],
+  "materialization": {
+    "materializer": "rlrmp.data_products.broad_epsilon.build_broad_epsilon_budget_anchors_product",
+    "adoption_mode": "read_analytical_frontier_entries"
+  },
+  "regeneration": [],
+  "product_identity_hash": "4e5d319c4848ef19d25ddf9dc8d21a6230cc0d336c5f565fe1a0b63516332542",
+  "metadata": {
+    "issue": "ea6ccb4",
+    "note": "Broad-epsilon per-level closed-loop epsilon budgets adopted from analytical game-card / adversary-equivalence manifests."
+  }
+}

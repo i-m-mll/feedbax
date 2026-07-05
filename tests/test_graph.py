@@ -1,4 +1,5 @@
 import pytest
+import equinox as eqx
 from equinox.nn import StateIndex
 import jax
 import jax.numpy as jnp
@@ -269,6 +270,24 @@ class _Scaler(Component):
         return {"y": self.factor * inputs["x"]}, state
 
 
+class _CountingScaler(Component):
+    """Scales its input and records eager calls through a static side channel."""
+
+    input_ports = ("x",)
+    output_ports = ("y",)
+
+    factor: jnp.ndarray
+    calls: list[str] = eqx.field(static=True)
+
+    def __init__(self, factor, calls):
+        self.factor = jnp.asarray(factor)
+        self.calls = calls
+
+    def __call__(self, inputs, state, *, key):
+        self.calls.append("call")
+        return {"y": self.factor * inputs["x"]}, state
+
+
 class _AddOne(Component):
     """Stateless add-one: out = in + 1."""
 
@@ -306,6 +325,64 @@ def _make_cyclic_graph():
         output_bindings={"out": ("b", "y")},
     )
     return graph
+
+
+def _make_graph_input_initialized_cycle():
+    return Graph(
+        nodes={"a": _Scaler(0.5), "b": _AddOne()},
+        wires=(
+            Wire("a", "y", "b", "x"),
+            Wire(
+                "b",
+                "y",
+                "a",
+                "x",
+                temporality="recurrent",
+                recurrent_initializer={
+                    "kind": "graph-input",
+                    "scope": "trial",
+                    "source": "seed",
+                    "state_slot": "x",
+                },
+            ),
+        ),
+        input_ports=("seed",),
+        output_ports=("out",),
+        input_bindings={},
+        output_bindings={"out": ("b", "y")},
+    )
+
+
+def _make_node_output_initialized_cycle(calls=None, *, encoder_factor=2.0):
+    encoder = (
+        _Scaler(encoder_factor)
+        if calls is None
+        else _CountingScaler(encoder_factor, calls)
+    )
+    return Graph(
+        nodes={"encoder": encoder, "a": _Scaler(0.5), "b": _AddOne()},
+        wires=(
+            Wire("a", "y", "b", "x"),
+            Wire(
+                "b",
+                "y",
+                "a",
+                "x",
+                temporality="recurrent",
+                recurrent_initializer={
+                    "kind": "node-output",
+                    "scope": "trial",
+                    "source_node": "encoder",
+                    "source_port": "y",
+                    "state_slot": "x",
+                },
+            ),
+        ),
+        input_ports=("context",),
+        output_ports=("out",),
+        input_bindings={"context": ("encoder", "x")},
+        output_bindings={"out": ("b", "y")},
+    )
 
 
 def test_graph_rejects_instant_cycles():
@@ -370,6 +447,84 @@ def test_graph_with_state_view_attaches_view_out_of_place() -> None:
     view = updated.state_view(state)
     assert set(view) == {"counter_value"}
     assert jnp.array_equal(view["counter_value"], jnp.array(0))
+
+
+class _RuntimeCallbackGraph(Graph):
+    pass
+
+
+def test_graph_with_state_view_preserves_fields_and_subclass() -> None:
+    constraint = object()
+
+    def state_view(node_states):
+        return node_states
+
+    def state_consistency(state):
+        return state
+
+    graph = _RuntimeCallbackGraph(
+        nodes={"counter": Counter()},
+        wires=(),
+        input_ports=("in",),
+        output_ports=("out",),
+        input_bindings={"in": ("counter", "input")},
+        output_bindings={"out": ("counter", "output")},
+        state_consistency_fn=state_consistency,
+        checkpoint=True,
+        parameter_constraints=(constraint,),
+    )
+
+    updated = graph.with_state_view(state_view)
+
+    assert type(updated) is type(graph)
+    assert updated is not graph
+    assert updated.nodes is graph.nodes
+    assert updated.wires is graph.wires
+    assert updated.input_ports is graph.input_ports
+    assert updated.output_ports is graph.output_ports
+    assert updated.input_bindings is graph.input_bindings
+    assert updated.output_bindings is graph.output_bindings
+    assert updated.state_view_fn is state_view
+    assert updated.state_consistency_fn is state_consistency
+    assert updated.checkpoint is graph.checkpoint
+    assert updated.parameter_constraints == (constraint,)
+
+
+def test_graph_with_state_consistency_preserves_fields_and_subclass() -> None:
+    constraint = object()
+
+    def state_view(node_states):
+        return node_states
+
+    def state_consistency(state):
+        return state
+
+    graph = _RuntimeCallbackGraph(
+        nodes={"counter": Counter()},
+        wires=(),
+        input_ports=("in",),
+        output_ports=("out",),
+        input_bindings={"in": ("counter", "input")},
+        output_bindings={"out": ("counter", "output")},
+        state_view_fn=state_view,
+        checkpoint=True,
+        parameter_constraints=(constraint,),
+    )
+
+    updated = graph.with_state_consistency(state_consistency)
+
+    assert type(updated) is type(graph)
+    assert updated is not graph
+    assert updated.nodes is graph.nodes
+    assert updated.wires is graph.wires
+    assert updated.input_ports is graph.input_ports
+    assert updated.output_ports is graph.output_ports
+    assert updated.input_bindings is graph.input_bindings
+    assert updated.output_bindings is graph.output_bindings
+    assert updated.state_view_fn is state_view
+    assert updated.state_consistency_fn is state_consistency
+    assert updated.checkpoint is graph.checkpoint
+    assert updated.parameter_constraints == (constraint,)
 
 
 def test_graph_step_acyclic_returns_empty_cycle_values():
@@ -499,6 +654,357 @@ def test_graph_step_cyclic_threads_cycle_values():
     )
     assert out3["out"] == jnp.array(2.0)
     assert cyc3[("a", "x")] == jnp.array(2.0)
+
+
+def test_graph_input_recurrent_initializer_seeds_call_once_from_trial_input() -> None:
+    graph = _make_graph_input_initialized_cycle()
+    state = init_state_from_component(graph)
+
+    initial_cycle = graph.initial_cycle_port_values(
+        state,
+        inputs={"seed": jnp.array([8.0, 10.0])},
+    )
+    assert jnp.allclose(initial_cycle[("a", "x")], jnp.array([8.0, 10.0]))
+
+    outputs, _ = graph(
+        {"seed": jnp.array([8.0, 10.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert jnp.allclose(
+        outputs["out"],
+        jnp.array([[5.0, 6.0], [3.5, 4.0], [2.75, 3.0]]),
+    )
+
+
+def test_graph_input_recurrent_initializer_step_uses_input_only_for_missing_carry() -> None:
+    graph = _make_graph_input_initialized_cycle()
+    state = init_state_from_component(graph)
+
+    out1, state, cycle = graph.step(
+        {"seed": jnp.array([8.0, 10.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+    out2, _, next_cycle = graph.step(
+        {"seed": jnp.array([100.0, 200.0])},
+        state,
+        cycle,
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert jnp.allclose(out1["out"], jnp.array([5.0, 6.0]))
+    assert jnp.allclose(cycle[("a", "x")], jnp.array([5.0, 6.0]))
+    assert jnp.allclose(out2["out"], jnp.array([3.5, 4.0]))
+    assert jnp.allclose(next_cycle[("a", "x")], jnp.array([3.5, 4.0]))
+
+
+def test_graph_input_recurrent_initializer_saved_cycle_restart_ignores_new_seed() -> None:
+    graph = _make_graph_input_initialized_cycle()
+    full_state = init_state_from_component(graph)
+    restart_state = init_state_from_component(graph)
+
+    full_outputs, _ = graph(
+        {"seed": jnp.array([8.0, 10.0])},
+        full_state,
+        key=jax.random.PRNGKey(0),
+        n_steps=4,
+    )
+    _, restart_state, saved_cycle = graph.step(
+        {"seed": jnp.array([8.0, 10.0])},
+        restart_state,
+        key=jax.random.PRNGKey(0),
+    )
+    resumed_outputs, _ = graph(
+        {"seed": jnp.array([100.0, 200.0])},
+        restart_state,
+        key=jax.random.PRNGKey(1),
+        n_steps=3,
+        cycle_init=saved_cycle,
+    )
+
+    assert jnp.allclose(resumed_outputs["out"], full_outputs["out"][1:])
+
+
+def test_graph_input_recurrent_initializer_flows_to_nested_graph_from_parent_input() -> None:
+    inner = _make_graph_input_initialized_cycle()
+    parent = Graph(
+        nodes={"inner": inner},
+        wires=(),
+        input_ports=("seed",),
+        output_ports=("out",),
+        input_bindings={"seed": ("inner", "seed")},
+        output_bindings={"out": ("inner", "out")},
+    )
+    state = init_state_from_component(parent)
+
+    outputs, _ = parent(
+        {"seed": jnp.array([8.0, 10.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert jnp.allclose(
+        outputs["out"],
+        jnp.array([[5.0, 6.0], [3.5, 4.0], [2.75, 3.0]]),
+    )
+
+
+def test_node_output_recurrent_initializer_seeds_call_once_from_trial_node() -> None:
+    calls: list[str] = []
+    graph = _make_node_output_initialized_cycle(calls)
+    state = init_state_from_component(graph)
+
+    outputs, _ = graph(
+        {"context": jnp.array(3.0)},
+        state,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert calls == ["call"]
+    assert jnp.allclose(outputs["out"], jnp.array([4.0, 3.0, 2.5]))
+
+
+def test_node_output_recurrent_initializer_step_uses_source_only_for_missing_carry() -> None:
+    calls: list[str] = []
+    graph = _make_node_output_initialized_cycle(calls)
+    state = init_state_from_component(graph)
+
+    out1, state, cycle = graph.step(
+        {"context": jnp.array(3.0)},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+    out2, _, next_cycle = graph.step(
+        {"context": jnp.array(100.0)},
+        state,
+        cycle,
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert calls == ["call"]
+    assert out1["out"] == jnp.array(4.0)
+    assert cycle[("a", "x")] == jnp.array(4.0)
+    assert out2["out"] == jnp.array(3.0)
+    assert next_cycle[("a", "x")] == jnp.array(3.0)
+
+
+def test_node_output_recurrent_initializer_saved_cycle_restart_does_not_rerun() -> None:
+    calls: list[str] = []
+    graph = _make_node_output_initialized_cycle(calls)
+    full_state = init_state_from_component(graph)
+    restart_state = init_state_from_component(graph)
+
+    full_outputs, _ = graph(
+        {"context": jnp.array(3.0)},
+        full_state,
+        key=jax.random.PRNGKey(0),
+        n_steps=4,
+    )
+    _, restart_state, saved_cycle = graph.step(
+        {"context": jnp.array(3.0)},
+        restart_state,
+        key=jax.random.PRNGKey(0),
+    )
+    calls_after_saved_cycle = list(calls)
+    resumed_outputs, _ = graph(
+        {"context": jnp.array(100.0)},
+        restart_state,
+        key=jax.random.PRNGKey(1),
+        n_steps=3,
+        cycle_init=saved_cycle,
+    )
+
+    assert calls == calls_after_saved_cycle
+    assert jnp.allclose(resumed_outputs["out"], full_outputs["out"][1:])
+
+
+def test_node_output_recurrent_initializer_rejects_recurrent_target_dependency() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"node-output.*source seed\.y depends on recurrent target a\.x",
+    ):
+        Graph(
+            nodes={"a": _Scaler(0.5), "b": _AddOne(), "seed": _Scaler(2.0)},
+            wires=(
+                Wire("a", "y", "seed", "x"),
+                Wire("seed", "y", "b", "x"),
+                Wire(
+                    "b",
+                    "y",
+                    "a",
+                    "x",
+                    temporality="recurrent",
+                    recurrent_initializer={
+                        "kind": "node-output",
+                        "scope": "trial",
+                        "source_node": "seed",
+                        "source_port": "y",
+                        "state_slot": "x",
+                    },
+                ),
+            ),
+            input_ports=(),
+            output_ports=("out",),
+            input_bindings={},
+            output_bindings={"out": ("b", "y")},
+        )
+
+
+def test_node_output_recurrent_initializer_gradient_flows_to_source_parameters() -> None:
+    graph = _make_node_output_initialized_cycle(encoder_factor=2.0)
+
+    def loss_fn(model):
+        outputs, _ = model(
+            {"context": jnp.array(3.0)},
+            init_state_from_component(model),
+            key=jax.random.PRNGKey(0),
+            n_steps=2,
+        )
+        return jnp.sum(outputs["out"])
+
+    loss, grads = eqx.filter_value_and_grad(loss_fn)(graph)
+
+    assert loss == jnp.array(7.0)
+    assert jnp.allclose(grads.nodes["encoder"].factor, jnp.array(2.25))
+
+
+def test_zero_constant_and_graph_input_recurrent_initializer_behavior_is_unchanged() -> None:
+    zero_graph = Graph(
+        nodes={"a": _Scaler(0.5), "b": _AddOne()},
+        wires=(
+            Wire("a", "y", "b", "x"),
+            Wire(
+                "b",
+                "y",
+                "a",
+                "x",
+                temporality="recurrent",
+                recurrent_initializer={"kind": "zeros", "shape": []},
+            ),
+        ),
+        input_ports=(),
+        output_ports=("out",),
+        input_bindings={},
+        output_bindings={"out": ("b", "y")},
+    )
+    constant_graph = Graph(
+        nodes={"a": _Scaler(0.5), "b": _AddOne()},
+        wires=(
+            Wire("a", "y", "b", "x"),
+            Wire(
+                "b",
+                "y",
+                "a",
+                "x",
+                temporality="recurrent",
+                recurrent_initializer={"kind": "constant", "value": 8.0},
+            ),
+        ),
+        input_ports=(),
+        output_ports=("out",),
+        input_bindings={},
+        output_bindings={"out": ("b", "y")},
+    )
+
+    zero_outputs, _ = zero_graph(
+        {},
+        init_state_from_component(zero_graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=2,
+    )
+    constant_outputs, _ = constant_graph(
+        {},
+        init_state_from_component(constant_graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=2,
+    )
+    graph_input = _make_graph_input_initialized_cycle()
+    graph_input_outputs, _ = graph_input(
+        {"seed": jnp.array([8.0, 10.0])},
+        init_state_from_component(graph_input),
+        key=jax.random.PRNGKey(0),
+        n_steps=2,
+    )
+
+    assert jnp.allclose(zero_outputs["out"], jnp.array([1.0, 1.5]))
+    assert jnp.allclose(constant_outputs["out"], jnp.array([5.0, 3.5]))
+    assert jnp.allclose(graph_input_outputs["out"], jnp.array([[5.0, 6.0], [3.5, 4.0]]))
+
+
+def test_constant_recurrent_initializer_honors_dtype_key_under_x64(enable_jax_x64) -> None:
+    graph = _make_cyclic_graph()
+
+    typed_wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={
+            "kind": "constant",
+            "value": [1.0, 2.0, 3.0],
+            "dtype": "float32",
+        },
+    )
+    typed_value = graph._initial_value_from_recurrent_initializer(typed_wire)
+    assert typed_value.dtype == jnp.float32
+    assert jnp.array_equal(typed_value, jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32))
+
+    # Without the dtype key, the same JSON-native list promotes to float64 under
+    # globally-enabled x64 — the exact mismatch the dtype key exists to prevent.
+    untyped_wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={"kind": "constant", "value": [1.0, 2.0, 3.0]},
+    )
+    untyped_value = graph._initial_value_from_recurrent_initializer(untyped_wire)
+    assert untyped_value.dtype == jnp.float64
+
+
+def test_constant_recurrent_initializer_without_dtype_is_unchanged() -> None:
+    graph = _make_cyclic_graph()
+    value = [4.0, 5.0]
+
+    wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={"kind": "constant", "value": value},
+    )
+    result = graph._initial_value_from_recurrent_initializer(wire)
+    expected = jnp.asarray(value)
+
+    assert result.dtype == expected.dtype
+    assert jnp.array_equal(result, expected)
+
+
+def test_constant_recurrent_initializer_rejects_invalid_dtype() -> None:
+    graph = _make_cyclic_graph()
+
+    wire = Wire(
+        "b",
+        "y",
+        "a",
+        "x",
+        temporality="recurrent",
+        recurrent_initializer={
+            "kind": "constant",
+            "value": [1.0],
+            "dtype": "not_a_dtype",
+        },
+    )
+    with pytest.raises(ValueError, match="invalid dtype"):
+        graph._initial_value_from_recurrent_initializer(wire)
 
 
 def test_recurrent_cycle_init_error_names_wire_and_reason() -> None:

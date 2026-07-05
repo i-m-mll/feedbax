@@ -152,11 +152,11 @@ def studio_default_eval_recipe():
             artifacts=[artifact],
         )
 
-    register_evaluation_recipe("studio_default_eval", recipe, replace=True)
+    register_evaluation_recipe("feedbax.studio.default_eval", recipe, replace=True)
     try:
         yield
     finally:
-        unregister_evaluation_recipe("studio_default_eval")
+        unregister_evaluation_recipe("feedbax.studio.default_eval")
 
 
 @pytest.fixture
@@ -224,7 +224,7 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
     assert set(prepared.execution_spec.metadata["studio"]["graph_spec"]["nodes"]) == {"network"}
     assert prepared.plan.job_id == "studio-plan"
     assert prepared.plan.run_directory == "/tmp/feedbax-studio/feedbax_runs/studio-plan"
-    assert any(route.source == "training-spec.json" for route in prepared.plan.artifact_routes)
+    assert any(route.uri == "training-spec.json" for route in prepared.plan.artifact_routes)
     assert any("real JAX training runner" in warning for warning in prepared.plan.warnings)
 
     train_stage = next(stage for stage in prepared.workspace.stages if stage.kind == "train")
@@ -419,7 +419,7 @@ def test_materialize_studio_pipeline_requires_registered_eval_recipe(tmp_path: P
         )
     )
 
-    with pytest.raises(ValueError, match="studio_default_eval.*not registered"):
+    with pytest.raises(ValueError, match="feedbax\\.studio\\.default_eval.*not registered"):
         materialize_studio_pipeline(
             StudioPipelineMaterializationRequest(
                 workspace=training.workspace,
@@ -511,7 +511,9 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
         Path(materialized.manifest_paths["stage:analysis"]).read_text()
     )
     assert eval_manifest["status"] == "completed"
-    assert eval_manifest["evaluation_spec"]["inline"]["evaluation_type"] == "studio_default_eval"
+    assert eval_manifest["evaluation_spec"]["inline"]["evaluation_type"] == (
+        "feedbax.studio.default_eval"
+    )
     assert eval_manifest["summary_metrics"]["toy_rollouts"] == 1
     assert eval_manifest["provenance"]["parents"][0]["id"].startswith("feedbax-training-run:")
     assert "cache/states" in eval_manifest["metadata"]["cache"]["states_path"]

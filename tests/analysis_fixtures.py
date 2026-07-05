@@ -20,7 +20,7 @@ from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace
 
 
-TOY_EVALUATION_TYPE = "feedbax_test_toy_eval"
+TOY_EVALUATION_TYPE = "feedbax.test.toy_eval"
 ARTIFACT_PRODUCER_CALLS = {"count": 0}
 
 

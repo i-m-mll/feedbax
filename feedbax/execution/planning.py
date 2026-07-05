@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 from typing import Any, Optional
@@ -13,15 +14,16 @@ from feedbax.execution.backends import (
     rsync_transport,
     ssh_prefix_for_backend,
 )
+from feedbax.contracts.manifest import ArtifactRef, utc_now
+from feedbax.execution.container import collect_source_provenance
 from feedbax.execution.models import (
-    ArtifactRoute,
     ExecutionPlan,
     ExecutionSpec,
     HealthCheck,
     PlanStep,
     RepoSource,
+    execution_artifact_ref,
 )
-from feedbax.contracts.manifest import utc_now
 
 
 def default_feedbax_sources(feedbax_ref: str = "develop") -> list[RepoSource]:
@@ -51,12 +53,17 @@ def prepare_execution_plan(spec: ExecutionSpec) -> ExecutionPlan:
     job_id = spec.resolved_job_id()
     workspace = _workspace_for_backend(spec)
     run_directory = f"{workspace.rstrip('/')}/{spec.artifact_policy.manifest_root}/{job_id}"
-    command = _remote_command(spec, spec.command)
-    bootstrap = _bootstrap_steps(spec, workspace)
+    base_command = _execution_command(spec, job_id=job_id, run_directory=run_directory)
+    command = _remote_command(spec, base_command)
+    bootstrap = _bootstrap_steps(spec, workspace, run_directory)
     health_checks = _health_checks(spec)
     launch = _launch_step(spec, command, run_directory)
     payload = cloud_payload(spec, job_id)
-    warnings = _warnings(spec)
+    training_record = _training_run_spec_record(spec, run_directory)
+    if training_record is not None and payload:
+        payload = {**payload, "training_run_spec": training_record}
+    reproducibility = _reproducibility(spec, run_directory)
+    warnings = _warnings(spec, reproducibility)
     return ExecutionPlan(
         job_id=job_id,
         backend=spec.backend,
@@ -68,7 +75,7 @@ def prepare_execution_plan(spec: ExecutionSpec) -> ExecutionPlan:
         monitor=_monitor_steps(spec, run_directory),
         artifact_routes=_artifact_routes(spec, run_directory),
         cloud_payload=payload,
-        reproducibility=_reproducibility(spec),
+        reproducibility=reproducibility,
         warnings=warnings,
     )
 
@@ -93,7 +100,58 @@ def _remote_command(
     return f"{env_prefix} {command}".strip()
 
 
-def _bootstrap_steps(spec: ExecutionSpec, workspace: str) -> list[PlanStep]:
+def _execution_command(spec: ExecutionSpec, *, job_id: str, run_directory: str) -> str:
+    if spec.training_run_spec is None:
+        if spec.command is None:
+            raise ValueError("ExecutionSpec.command is required without training_run_spec")
+        return spec.command
+    spec_path = _training_run_spec_path(spec, run_directory)
+    return shlex.join(
+        [
+            "python",
+            "-m",
+            "feedbax",
+            "execute-training-run-spec",
+            spec_path,
+            "--manifest-root",
+            run_directory,
+            "--checkpoint-root",
+            f"{run_directory.rstrip('/')}/checkpoints",
+            "--run-id",
+            job_id,
+        ]
+    )
+
+
+def _training_run_spec_path(spec: ExecutionSpec, run_directory: str) -> str:
+    if spec.training_run_spec is None:
+        raise ValueError("training_run_spec is required")
+    path = spec.training_run_spec.path
+    if Path(path).is_absolute():
+        return path
+    return f"{run_directory.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _training_manifest_path(job_id: str, run_directory: str) -> str:
+    return f"{run_directory.rstrip('/')}/manifests/training_runs/feedbax-training-run_{job_id}.json"
+
+
+def _training_run_spec_record(
+    spec: ExecutionSpec,
+    run_directory: str,
+) -> dict[str, Any] | None:
+    if spec.training_run_spec is None:
+        return None
+    return spec.training_run_spec.plan_record(
+        path=_training_run_spec_path(spec, run_directory)
+    )
+
+
+def _bootstrap_steps(
+    spec: ExecutionSpec,
+    workspace: str,
+    run_directory: str,
+) -> list[PlanStep]:
     if spec.backend == "modal":
         return modal_bootstrap_steps(spec)
 
@@ -106,6 +164,18 @@ def _bootstrap_steps(spec: ExecutionSpec, workspace: str) -> list[PlanStep]:
     ]
     for source in spec.repos:
         steps.extend(_repo_steps(source, workspace, spec))
+    if spec.training_run_spec is not None and spec.training_run_spec.inline is not None:
+        steps.append(
+            PlanStep(
+                id="materialize-training-run-spec",
+                title="Materialize TrainingRunSpec",
+                command=_materialize_training_run_spec_command(spec, run_directory),
+                description=(
+                    "Writes the inline TrainingRunSpec consumed by "
+                    "python -m feedbax execute-training-run-spec."
+                ),
+            )
+        )
     primary = spec.primary_repo or _primary_repo(spec)
     if primary:
         primary_path = _repo_by_name(spec, primary).remote_path(workspace)
@@ -114,10 +184,30 @@ def _bootstrap_steps(spec: ExecutionSpec, workspace: str) -> list[PlanStep]:
                 id="sync-primary-environment",
                 title="Install primary project environment",
                 command=f"cd {shlex.quote(primary_path)} && uv sync",
-                description="Run once before CUDA/JAX wheel overrides; later runs should use uv run --no-sync.",
+                description=(
+                    "Run once before CUDA/JAX wheel overrides; later runs should use "
+                    "uv run --no-sync."
+                ),
             )
         )
     return steps
+
+
+def _materialize_training_run_spec_command(spec: ExecutionSpec, run_directory: str) -> str:
+    if spec.training_run_spec is None:
+        raise ValueError("training_run_spec is required")
+    payload = spec.training_run_spec.inline_payload()
+    if payload is None:
+        raise ValueError("inline TrainingRunSpec payload is required")
+    spec_path = _training_run_spec_path(spec, run_directory)
+    spec_dir = str(Path(spec_path).parent)
+    body = json.dumps(payload, indent=2, sort_keys=True)
+    return (
+        f"mkdir -p {shlex.quote(spec_dir)} && "
+        f"cat > {shlex.quote(spec_path)} <<'JSON'\n"
+        f"{body}\n"
+        "JSON"
+    )
 
 
 def _repo_steps(
@@ -169,6 +259,18 @@ def _repo_steps(
                 title=f"Sync local {source.name}",
                 command=command,
                 description="Development override; record as non-reproducible until committed.",
+            )
+        ]
+    if source.install_mode == "local-embed":
+        return [
+            PlanStep(
+                id=f"embed-{source.name}",
+                title=f"Embed local {source.name}",
+                description=(
+                    "local-embed is implemented by the Modal renderer at image-build time; "
+                    "use local-rsync for SSH or RunPod workers."
+                ),
+                critical=spec.backend == "modal",
             )
         ]
     clone = (
@@ -252,7 +354,10 @@ def _launch_step(spec: ExecutionSpec, command: str, run_directory: str) -> PlanS
             id="modal-submit",
             title="Submit Modal execution",
             command=submit,
-            description="Generated Modal app runs the command in a function with configured GPU/image/volume.",
+            description=(
+                "Generated Modal app runs the command in a function with configured "
+                "GPU/image/volume."
+            ),
         )
     log_dir = f"{run_directory.rstrip('/')}/{spec.artifact_policy.log_dir}"
     if spec.cells:
@@ -302,8 +407,13 @@ def _cell_launcher_script(spec: ExecutionSpec, log_dir: str, run_directory: str)
         f"mkdir -p {shlex.quote(cell_dir)} {shlex.quote(run_directory)}",
         "pids=''",
     ]
+    base_command = _execution_command(
+        spec,
+        job_id=run_directory.rstrip("/").rsplit("/", 1)[-1],
+        run_directory=run_directory,
+    )
     for cell in spec.cells:
-        cell_command = _remote_command(spec, cell.command or spec.command, cell.env)
+        cell_command = _remote_command(spec, cell.command or base_command, cell.env)
         safe_id = shlex.quote(cell.id)
         prefix = f"{cell_dir.rstrip('/')}/{cell.id}"
         fragments.append(
@@ -358,43 +468,117 @@ def _monitor_steps(spec: ExecutionSpec, run_directory: str) -> list[PlanStep]:
     ]
 
 
-def _artifact_routes(spec: ExecutionSpec, run_directory: str) -> list[ArtifactRoute]:
+def _artifact_routes(spec: ExecutionSpec, run_directory: str) -> list[ArtifactRef]:
     routes = [
-        ArtifactRoute(
+        execution_artifact_ref(
             role="execution_log",
-            source=f"{run_directory.rstrip('/')}/{spec.artifact_policy.log_dir}/",
-            tracked=False,
-            description="Bulk logs are artifact-store data, not tracked source.",
+            logical_name=spec.artifact_policy.log_dir,
+            uri=f"{run_directory.rstrip('/')}/{spec.artifact_policy.log_dir}/",
+            media_type="inode/directory",
+            metadata={
+                "tracked": False,
+                "description": "Bulk logs are artifact-store data, not tracked source.",
+            },
         )
     ]
+    if spec.training_run_spec is not None:
+        routes.extend(
+            [
+                execution_artifact_ref(
+                    role="training_run_spec",
+                    logical_name=Path(_training_run_spec_path(spec, run_directory)).name,
+                    uri=_training_run_spec_path(spec, run_directory),
+                    media_type="application/json",
+                    metadata={
+                        "tracked": True,
+                        "description": (
+                            "Source TrainingRunSpec consumed by the generic Feedbax executor."
+                        ),
+                    },
+                ),
+                execution_artifact_ref(
+                    role="training_run_manifest",
+                    logical_name=(
+                        f"feedbax-training-run_"
+                        f"{run_directory.rstrip('/').rsplit('/', 1)[-1]}.json"
+                    ),
+                    uri=_training_manifest_path(
+                        run_directory.rstrip("/").rsplit("/", 1)[-1],
+                        run_directory,
+                    ),
+                    media_type="application/json",
+                    metadata={
+                        "tracked": True,
+                        "description": (
+                            "Native TrainingRunManifest emitted by execute-training-run-spec."
+                        ),
+                    },
+                ),
+            ]
+        )
     for path in spec.artifact_policy.tracked_paths:
         routes.append(
-            ArtifactRoute(
+            execution_artifact_ref(
                 role="tracked_spec",
-                source=path,
-                tracked=True,
-                description="Small specs/narratives that may be committed to git.",
+                logical_name=Path(path).name or path.rstrip("/"),
+                uri=path,
+                metadata={
+                    "tracked": True,
+                    "description": "Small specs/narratives that may be committed to git.",
+                },
             )
         )
     for path in spec.artifact_policy.bulk_paths:
         routes.append(
-            ArtifactRoute(
+            execution_artifact_ref(
                 role="bulk_output",
-                source=path,
-                tracked=False,
-                description="Checkpoints, histories, trajectories, figures, and large outputs.",
+                logical_name=Path(path).name or path.rstrip("/"),
+                uri=path,
+                metadata={
+                    "tracked": False,
+                    "description": (
+                        "Checkpoints, histories, trajectories, figures, and large outputs."
+                    ),
+                },
             )
         )
     return routes
 
 
-def _warnings(spec: ExecutionSpec) -> list[str]:
+def _warnings(
+    spec: ExecutionSpec,
+    reproducibility: dict[str, Any],
+) -> list[str]:
     warnings: list[str] = []
+    if spec.training_run_spec is not None and spec.command is not None:
+        warnings.append(
+            "TrainingRunSpec-driven executions ignore command and derive the runner invocation "
+            "from python -m feedbax execute-training-run-spec."
+        )
+    if spec.training_run_spec is not None:
+        for cell in spec.cells:
+            if cell.command is not None:
+                warnings.append(
+                    f"{cell.id}: cell.command overrides the TrainingRunSpec-derived command; "
+                    "prefer env/params for training cells."
+                )
     for source in spec.repos:
         if source.install_mode == "local-rsync":
             warnings.append(
                 f"{source.name}: local-rsync is a development override; prefer github-ref "
                 "or pypi for reproducible runs."
+            )
+        if source.install_mode == "local-embed":
+            source_records = {
+                record["name"]: record
+                for record in reproducibility.get("local_embed_sources", [])
+            }
+            record = source_records.get(source.name, {})
+            warnings.append(
+                f"{source.name}: local-embed is a development mode; the image reflects "
+                "the working tree at render time "
+                f"(commit {record.get('commit')}, dirty={record.get('dirty')}). "
+                "Use github-ref or pypi for content-pinned runs."
             )
         if source.install_mode == "github-ref" and not source.git_ref:
             warnings.append(f"{source.name}: github-ref source has no explicit git_ref.")
@@ -405,13 +589,14 @@ def _warnings(spec: ExecutionSpec) -> list[str]:
             )
     if spec.backend == "modal" and spec.cells and spec.modal.volume_name:
         warnings.append(
-            "Modal cells must write to disjoint output paths or explicitly coordinate volume commits."
+            "Modal cells must write to disjoint output paths or explicitly coordinate "
+            "volume commits."
         )
     return warnings
 
 
-def _reproducibility(spec: ExecutionSpec) -> dict[str, Any]:
-    return {
+def _reproducibility(spec: ExecutionSpec, run_directory: str) -> dict[str, Any]:
+    record: dict[str, Any] = {
         "install_modes": {source.name: source.install_mode for source in spec.repos},
         "repo_refs": {
             source.name: {
@@ -425,6 +610,34 @@ def _reproducibility(spec: ExecutionSpec) -> dict[str, Any]:
         "env": spec.env,
         "issues": spec.issues,
         "generated_at": utc_now().isoformat(),
+    }
+    training_source = _training_run_spec_record(spec, run_directory)
+    if training_source is not None:
+        record["training_run_spec"] = training_source
+    local_embed_sources = [
+        _local_embed_source_record(source)
+        for source in spec.repos
+        if source.install_mode == "local-embed"
+    ]
+    if local_embed_sources:
+        record["local_embed_sources"] = local_embed_sources
+    return record
+
+
+def _local_embed_source_record(source: RepoSource) -> dict[str, Any]:
+    local_path = source.local_path
+    provenance = (
+        collect_source_provenance(Path(local_path).expanduser())
+        if local_path is not None
+        else {}
+    )
+    status_short = provenance.get("status_short")
+    return {
+        "name": source.name,
+        "local_path": local_path,
+        "commit": provenance.get("commit"),
+        "branch": provenance.get("branch"),
+        "dirty": bool(status_short) if status_short is not None else None,
     }
 
 

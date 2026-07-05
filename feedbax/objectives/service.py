@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
+import jax.numpy as jnp
+
 from feedbax.contracts.graph import GraphSpec
-from feedbax.contracts.training import LossTermSpec, TimeAggregationSpec
+from feedbax.contracts.training import LossTermSpec, ObjectiveSlotSpec, TimeAggregationSpec
+from feedbax.objectives.loss import AbstractLoss, CompositeLoss
+from feedbax.objectives.spec import (
+    ConstantScheduleSpec,
+    EpochMaskSpec,
+    FiniteDifferenceLossSpec,
+    MatrixQuadraticLossSpec,
+    MovementEpochRampScheduleSpec,
+    ObjectiveExecutionRequirements,
+    ObjectiveSpec,
+    ObjectiveTermSpec,
+    PowerLawScheduleSpec,
+    ReductionSpec,
+    TargetStateLossSpec,
+    TargetValueSpec,
+    TaskTimelineSpec,
+    validate_objective_spec,
+)
 
 
 @dataclass
@@ -47,6 +67,89 @@ NORM_FUNCTIONS: Dict[str, str] = {
     "l1": "feedbax.loss.norms.l1",
     "huber": "feedbax.loss.norms.huber",
 }
+
+
+class ObjectiveLoweringError(ValueError):
+    """Path-addressed objective lowering failure."""
+
+    def __init__(self, path: str, message: str):
+        self.path = path
+        self.detail = message
+        super().__init__(f"{path}: {message}")
+
+
+@dataclass(frozen=True)
+class LoweredObjective:
+    """Executable objective bundle emitted by the shared lowering service."""
+
+    loss: AbstractLoss
+    requirements: ObjectiveExecutionRequirements
+    source_kind: Literal["loss_term", "objective_spec"]
+
+
+class SelectorObjectiveLoss(AbstractLoss):
+    """Executable selector-addressed loss term lowered from durable specs."""
+
+    label: str
+    selector: str
+    target_selector: str | None
+    target_value: Any
+    norm: str
+    matrix: Any
+    matrix_kind: Literal["dense", "diagonal"] | None
+    time_agg: TimeAggregationSpec | None
+    reduction: ReductionSpec | None
+    mask: EpochMaskSpec | None
+    schedule: ConstantScheduleSpec | PowerLawScheduleSpec | MovementEpochRampScheduleSpec | None
+    timeline: TaskTimelineSpec | None
+    difference_order: int
+    path: str
+
+    def term(self, states: Any, trial_specs: Any, model: Any) -> Any:
+        source = _select_runtime_value(
+            states,
+            trial_specs,
+            model,
+            self.selector,
+            path=f"{self.path}/selector",
+        )
+        if self.target_selector is not None:
+            target = _select_runtime_value(
+                states,
+                trial_specs,
+                model,
+                self.target_selector,
+                path=f"{self.path}/target_selector",
+            )
+        else:
+            target = _resolve_target_value(
+                self.target_value,
+                trial_specs,
+                path=f"{self.path}/target",
+            )
+
+        diff = jnp.asarray(source) - jnp.asarray(target)
+        if self.difference_order:
+            diff = jnp.diff(diff, n=self.difference_order, axis=1)
+        values = _metric_values(
+            diff,
+            norm=self.norm,
+            matrix=self.matrix,
+            matrix_kind=self.matrix_kind,
+            path=self.path,
+        )
+        if self.reduction is None:
+            values = _legacy_reduce_feature_metric(values, self.norm)
+        values = _apply_time_weights(
+            values,
+            mask=self.mask,
+            schedule=self.schedule,
+            timeline=self.timeline,
+            path=self.path,
+        )
+        if self.reduction is not None:
+            return _reduce_objective_values(values, self.reduction, path=f"{self.path}/reduction")
+        return _reduce_legacy_values(values, self.time_agg, path=f"{self.path}/time_agg")
 
 
 class LossService:
@@ -369,6 +472,509 @@ class LossService:
             }
 
         return config
+
+    def lower_objective_slot(
+        self,
+        slot: ObjectiveSlotSpec,
+        *,
+        graph: GraphSpec | None = None,
+        trial_axis: str = "batch",
+        path: str = "/objective",
+    ) -> LoweredObjective:
+        """Lower a training-run objective slot through the shared service."""
+
+        if slot.kind == "loss_term":
+            if slot.loss is None:
+                raise ObjectiveLoweringError(f"{path}/loss", "loss_term slot is missing loss")
+            return self.lower_loss_term_spec(
+                slot.loss,
+                graph=graph,
+                trial_axis=trial_axis,
+                path=f"{path}/loss",
+            )
+        if slot.kind == "objective_spec":
+            if slot.payload is None:
+                raise ObjectiveLoweringError(f"{path}/payload", "objective_spec slot is missing payload")
+            return self.lower_objective_spec(
+                slot.payload,
+                trial_axis=trial_axis,
+                path=f"{path}/payload",
+            )
+        raise ObjectiveLoweringError(
+            path,
+            f"objective kind {slot.kind!r} is external and cannot be lowered by Feedbax",
+        )
+
+    def lower_loss_term_spec(
+        self,
+        spec: LossTermSpec,
+        *,
+        graph: GraphSpec | None = None,
+        trial_axis: str = "batch",
+        path: str = "/loss",
+    ) -> LoweredObjective:
+        """Lower a legacy ``LossTermSpec`` to an executable loss object."""
+
+        if graph is not None:
+            errors = self.validate_loss_spec(spec, graph)
+            if errors:
+                first = errors[0]
+                error_path = _join_path(path, *(str(part) for part in first["path"]))
+                raise ObjectiveLoweringError(
+                    f"{error_path}/{first['field']}",
+                    first["message"],
+                )
+        loss = self._lower_loss_term(spec, path=path)
+        requirements = _requirements_from_reductions(
+            (spec.time_agg.mode if spec.time_agg is not None else "all",),
+            trial_axis=trial_axis,
+        )
+        return LoweredObjective(loss=loss, requirements=requirements, source_kind="loss_term")
+
+    def lower_objective_spec(
+        self,
+        spec: ObjectiveSpec | dict[str, Any],
+        *,
+        trial_axis: str = "batch",
+        path: str = "/objective",
+    ) -> LoweredObjective:
+        """Lower a durable ``ObjectiveSpec`` to an executable composite loss."""
+
+        objective = validate_objective_spec(spec)
+        terms: dict[str, AbstractLoss] = {}
+        weights: dict[str, float] = {}
+        trial_reductions: list[str] = []
+        for index, term in enumerate(objective.terms):
+            term_path = f"{path}/terms/{index}"
+            terms[term.label] = self._lower_objective_term(
+                term,
+                timeline=objective.timeline,
+                path=term_path,
+            )
+            weights[term.label] = term.weight
+            trial_reductions.append(term.reduction.trial)
+
+        loss: AbstractLoss
+        if not terms:
+            raise ObjectiveLoweringError(f"{path}/terms", "objective must contain at least one term")
+        if len(terms) == 1:
+            loss = CompositeLoss(terms=terms, weights=weights, label="objective")
+        else:
+            loss = CompositeLoss(terms=terms, weights=weights, label="objective")
+        requirements = _requirements_from_reductions(trial_reductions, trial_axis=trial_axis)
+        return LoweredObjective(loss=loss, requirements=requirements, source_kind="objective_spec")
+
+    def _lower_loss_term(self, term: LossTermSpec, *, path: str) -> AbstractLoss:
+        if term.children:
+            terms = {
+                key: self._lower_loss_term(child, path=f"{path}/children/{key}")
+                for key, child in term.children.items()
+            }
+            weights = {key: child.weight for key, child in term.children.items()}
+            return CompositeLoss(terms=terms, weights=weights, label=term.label)
+        if not term.selector:
+            raise ObjectiveLoweringError(f"{path}/selector", f"loss leaf {term.label!r} requires selector")
+        if term.target_selector is not None and term.target_value is not None:
+            raise ObjectiveLoweringError(
+                path,
+                "loss leaf cannot specify both target_selector and target_value",
+            )
+        if term.type not in {"TargetStateLoss", "target_state", "MatrixQuadraticLoss", "matrix_quadratic"}:
+            raise ObjectiveLoweringError(f"{path}/type", f"unknown loss term type {term.type!r}")
+        _validate_matrix_payload(term.matrix, term.matrix_kind, path=path)
+        return SelectorObjectiveLoss(
+            label=term.label,
+            selector=term.selector,
+            target_selector=term.target_selector,
+            target_value=0.0 if term.target_value is None else term.target_value,
+            norm=term.norm or "squared_l2",
+            matrix=term.matrix,
+            matrix_kind=term.matrix_kind,
+            time_agg=term.time_agg or TimeAggregationSpec(mode="mean"),
+            reduction=None,
+            mask=None,
+            schedule=None,
+            timeline=None,
+            difference_order=0,
+            path=path,
+        )
+
+    def _lower_objective_term(
+        self,
+        term: ObjectiveTermSpec,
+        *,
+        timeline: TaskTimelineSpec | None,
+        path: str,
+    ) -> AbstractLoss:
+        if not isinstance(term, (TargetStateLossSpec, MatrixQuadraticLossSpec, FiniteDifferenceLossSpec)):
+            raise ObjectiveLoweringError(f"{path}/type", f"unknown objective term {type(term).__name__}")
+
+        target = term.target if isinstance(term, (TargetStateLossSpec, MatrixQuadraticLossSpec)) else None
+        target_selector, target_value = _objective_target_payload(target, path=path)
+        matrix = term.matrix.value if isinstance(term, MatrixQuadraticLossSpec) else None
+        matrix_kind = term.matrix.kind if isinstance(term, MatrixQuadraticLossSpec) else None
+        _validate_matrix_payload(matrix, matrix_kind, path=path)
+        if isinstance(term.schedule, PowerLawScheduleSpec) and term.schedule.window == "epoch":
+            raise ObjectiveLoweringError(
+                f"{path}/schedule",
+                "epoch power-law schedule requires executor timeline binding",
+            )
+        return SelectorObjectiveLoss(
+            label=term.label,
+            selector=term.selector.selector,
+            target_selector=target_selector,
+            target_value=target_value,
+            norm=term.metric.kind,
+            matrix=matrix,
+            matrix_kind=matrix_kind,
+            time_agg=None,
+            reduction=term.reduction,
+            mask=term.mask,
+            schedule=term.schedule,
+            timeline=timeline,
+            difference_order=term.order if isinstance(term, FiniteDifferenceLossSpec) else 0,
+            path=path,
+        )
+
+
+def _join_path(base: str, *parts: str) -> str:
+    suffix = "/".join(part for part in parts if part)
+    return f"{base}/{suffix}" if suffix else base
+
+
+def _requirements_from_reductions(
+    reductions: tuple[str, ...] | list[str],
+    *,
+    trial_axis: str,
+) -> ObjectiveExecutionRequirements:
+    semantics = {reduction for reduction in reductions if reduction not in {"all", "none"}}
+    if not semantics:
+        return ObjectiveExecutionRequirements()
+    if len(semantics) > 1:
+        raise ObjectiveLoweringError(
+            "/objective/reduction/trial",
+            f"objective terms disagree on trial-axis aggregation semantics {sorted(semantics)!r}",
+        )
+    semantic = semantics.pop()
+    return ObjectiveExecutionRequirements(
+        requires_axes=[trial_axis],
+        aggregation_semantics={trial_axis: semantic},
+    )
+
+
+def _objective_target_payload(target: TargetValueSpec | None, *, path: str) -> tuple[str | None, Any]:
+    if target is None:
+        return None, 0.0
+    if target.kind == "constant":
+        return None, target.value
+    if target.kind == "selector":
+        if target.selector is None:
+            raise ObjectiveLoweringError(f"{path}/target/selector", "selector target is missing selector")
+        return target.selector.selector, None
+    if target.kind == "task_target":
+        return f"trial_specs.targets.{target.target_key}", None
+    raise ObjectiveLoweringError(f"{path}/target/kind", f"unsupported target kind {target.kind!r}")
+
+
+def _select_runtime_value(states: Any, trial_specs: Any, model: Any, selector: str, *, path: str) -> Any:
+    root: Any
+    parts: list[str]
+    if selector.startswith("state."):
+        root = states
+        parts = selector.split(".")[1:]
+    elif selector.startswith("states."):
+        root = states
+        parts = selector.split(".")[1:]
+    elif selector.startswith("trial_specs."):
+        root = trial_specs
+        parts = selector.split(".")[1:]
+    elif selector.startswith("task_data."):
+        root = trial_specs
+        parts = selector.split(".")
+    elif selector.startswith("model."):
+        root = model
+        parts = selector.split(".")[1:]
+    elif selector.startswith("path:"):
+        root = states
+        parts = selector[5:].split(".")
+    elif selector.startswith("port:") or selector.startswith("probe:"):
+        raise ObjectiveLoweringError(
+            path,
+            f"selector {selector!r} requires retained-observable executor binding",
+        )
+    else:
+        root = states
+        parts = selector.split(".")
+
+    value = root
+    for part in parts:
+        if part == "":
+            continue
+        if isinstance(value, dict):
+            if part not in value:
+                raise ObjectiveLoweringError(path, f"selector {selector!r} missing key {part!r}")
+            value = value[part]
+        else:
+            try:
+                value = getattr(value, part)
+            except AttributeError as exc:
+                raise ObjectiveLoweringError(
+                    path,
+                    f"selector {selector!r} missing attribute {part!r}",
+                ) from exc
+    return value
+
+
+def _resolve_target_value(target: Any, trial_specs: Any, *, path: str) -> Any:
+    if isinstance(target, str) and target.startswith("trial_specs."):
+        return _select_runtime_value(None, trial_specs, None, target, path=path)
+    if hasattr(target, "value"):
+        return target.value
+    return target
+
+
+def _metric_values(
+    values: Any,
+    *,
+    norm: str,
+    matrix: Any,
+    matrix_kind: Literal["dense", "diagonal"] | None,
+    path: str,
+) -> Any:
+    arr = jnp.asarray(values)
+    if matrix is not None:
+        return _matrix_quadratic_values(arr, matrix, matrix_kind or "dense", path=f"{path}/matrix")
+    if norm in {"squared_l2", "squared"}:
+        return jnp.square(arr)
+    if norm in {"l1", "absolute"}:
+        return jnp.abs(arr)
+    if norm == "l2":
+        return jnp.abs(arr)
+    if norm == "huber":
+        abs_arr = jnp.abs(arr)
+        return jnp.where(abs_arr <= 1.0, 0.5 * jnp.square(arr), abs_arr - 0.5)
+    raise ObjectiveLoweringError(f"{path}/metric", f"unsupported norm {norm!r}")
+
+
+def _legacy_reduce_feature_metric(values: Any, norm: str) -> Any:
+    arr = jnp.asarray(values)
+    if arr.ndim < 3:
+        return arr
+    if norm == "l2":
+        return jnp.sqrt(jnp.sum(jnp.square(arr), axis=-1))
+    return jnp.sum(arr, axis=-1)
+
+
+def _matrix_quadratic_values(
+    arr: Any,
+    matrix: Any,
+    matrix_kind: Literal["dense", "diagonal"],
+    *,
+    path: str,
+) -> Any:
+    mat = jnp.asarray(matrix)
+    if arr.ndim == 0:
+        if mat.ndim != 0:
+            raise ObjectiveLoweringError(path, "scalar quadratic requires scalar matrix")
+        return mat * jnp.square(arr)
+    if matrix_kind == "diagonal":
+        if mat.ndim != 1:
+            raise ObjectiveLoweringError(path, "diagonal matrix must be rank 1")
+        if mat.shape[0] != arr.shape[-1]:
+            raise ObjectiveLoweringError(
+                path,
+                "diagonal matrix length must match selected feature dimension",
+            )
+        return jnp.sum(jnp.square(arr) * mat, axis=-1)
+    if matrix_kind == "dense":
+        if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:
+            raise ObjectiveLoweringError(path, "dense matrix must be square rank 2")
+        if mat.shape[0] != arr.shape[-1]:
+            raise ObjectiveLoweringError(
+                path,
+                "dense matrix shape must match selected feature dimension",
+            )
+        return jnp.einsum("...i,ij,...j->...", arr, mat, arr)
+    raise ObjectiveLoweringError(path, f"unsupported matrix kind {matrix_kind!r}")
+
+
+def _validate_matrix_payload(matrix: Any, matrix_kind: str | None, *, path: str) -> None:
+    if matrix is None:
+        return
+    mat = jnp.asarray(matrix)
+    kind = matrix_kind or "dense"
+    if kind == "dense" and (mat.ndim != 2 or mat.shape[0] != mat.shape[1]):
+        raise ObjectiveLoweringError(f"{path}/matrix", "dense matrix must be square rank 2")
+    if kind == "diagonal" and mat.ndim != 1:
+        raise ObjectiveLoweringError(f"{path}/matrix", "diagonal matrix must be rank 1")
+    if kind not in {"dense", "diagonal"}:
+        raise ObjectiveLoweringError(f"{path}/matrix_kind", f"unsupported matrix kind {kind!r}")
+
+
+def _apply_time_weights(
+    values: Any,
+    *,
+    mask: EpochMaskSpec | None,
+    schedule: ConstantScheduleSpec | PowerLawScheduleSpec | MovementEpochRampScheduleSpec | None,
+    timeline: TaskTimelineSpec | None,
+    path: str,
+) -> Any:
+    arr = jnp.asarray(values)
+    if arr.ndim < 2:
+        if mask is not None or not isinstance(schedule, (type(None), ConstantScheduleSpec)):
+            raise ObjectiveLoweringError(path, "time masks and schedules require a time axis")
+        return arr
+    weights = jnp.ones((arr.shape[1],), dtype=arr.dtype)
+    if mask is not None:
+        weights = weights * _timeline_mask(mask, timeline, arr.shape[1], path=f"{path}/mask")
+    if schedule is not None:
+        weights = weights * _schedule_weights(schedule, timeline, arr.shape[1], path=f"{path}/schedule")
+    shape = [1] * arr.ndim
+    shape[1] = arr.shape[1]
+    return arr * weights.reshape(shape)
+
+
+def _timeline_mask(
+    mask: EpochMaskSpec,
+    timeline: TaskTimelineSpec | None,
+    n_steps: int,
+    *,
+    path: str,
+) -> Any:
+    if timeline is None:
+        raise ObjectiveLoweringError(path, "epoch mask requires objective timeline")
+    epoch_by_name = {epoch.name: epoch for epoch in timeline.epochs}
+    weights = jnp.zeros((n_steps,), dtype=bool)
+    for epoch_name in mask.epochs:
+        epoch = epoch_by_name.get(epoch_name)
+        if epoch is None:
+            raise ObjectiveLoweringError(path, f"unknown epoch {epoch_name!r}")
+        if epoch.length_range is None:
+            raise ObjectiveLoweringError(
+                path,
+                f"epoch {epoch_name!r} requires length_range for static lowering",
+            )
+        start = sum((item.length_range or (0, 0))[0] for item in timeline.epochs[:epoch.index])
+        end = min(start + epoch.length_range[0], n_steps)
+        weights = weights.at[start:end].set(True)
+    return weights if mask.mode == "include" else jnp.logical_not(weights)
+
+
+def _schedule_weights(
+    schedule: ConstantScheduleSpec | PowerLawScheduleSpec | MovementEpochRampScheduleSpec,
+    timeline: TaskTimelineSpec | None,
+    n_steps: int,
+    *,
+    path: str,
+) -> Any:
+    if isinstance(schedule, ConstantScheduleSpec):
+        return jnp.full((n_steps,), schedule.value)
+    if isinstance(schedule, PowerLawScheduleSpec):
+        if schedule.window == "epoch":
+            raise ObjectiveLoweringError(path, "epoch power-law schedule requires executor timeline binding")
+        x = jnp.linspace(0.0, 1.0, n_steps)
+        curve = x ** schedule.exponent
+        return schedule.start_value + (schedule.end_value - schedule.start_value) * curve
+    if isinstance(schedule, MovementEpochRampScheduleSpec):
+        if timeline is None:
+            raise ObjectiveLoweringError(path, "movement_epoch_ramp requires objective timeline")
+        epoch_by_name = {epoch.name: epoch for epoch in timeline.epochs}
+        epoch = epoch_by_name.get(schedule.anchor_epoch)
+        if epoch is None or epoch.length_range is None:
+            raise ObjectiveLoweringError(
+                path,
+                f"movement ramp anchor {schedule.anchor_epoch!r} needs length_range",
+            )
+        start = sum((item.length_range or (0, 0))[0] for item in timeline.epochs[:epoch.index])
+        local = jnp.clip((jnp.arange(n_steps) - start) / schedule.duration_steps, 0.0, 1.0)
+        if schedule.shape == "linear":
+            curve = local
+        elif schedule.shape == "cosine":
+            curve = 0.5 - 0.5 * jnp.cos(jnp.pi * local)
+        elif schedule.shape == "power":
+            curve = local ** float(schedule.power)
+        else:
+            raise ObjectiveLoweringError(path, f"unsupported ramp shape {schedule.shape!r}")
+        if not schedule.hold_after:
+            curve = jnp.where(jnp.arange(n_steps) <= start + schedule.duration_steps, curve, 0.0)
+        return schedule.start_value + (schedule.end_value - schedule.start_value) * curve
+    raise ObjectiveLoweringError(path, f"unsupported schedule {type(schedule).__name__}")
+
+
+def _reduce_objective_values(values: Any, reduction: ReductionSpec, *, path: str) -> Any:
+    arr = jnp.asarray(values)
+    if arr.ndim >= 3:
+        arr = _apply_reduction(
+            arr,
+            axis=-1,
+            kind=reduction.feature,
+            tail_fraction=reduction.tail_fraction,
+            path=f"{path}/feature",
+        )
+    if arr.ndim >= 2:
+        if reduction.time == "final":
+            arr = jnp.take(arr, -1, axis=1)
+        else:
+            arr = _apply_reduction(
+                arr,
+                axis=1,
+                kind=reduction.time,
+                tail_fraction=reduction.tail_fraction,
+                path=f"{path}/time",
+            )
+    if arr.ndim >= 1:
+        arr = _apply_reduction(
+            arr,
+            axis=0,
+            kind=reduction.trial,
+            tail_fraction=reduction.tail_fraction,
+            path=f"{path}/trial",
+        )
+    return arr
+
+
+def _reduce_legacy_values(values: Any, time_agg: TimeAggregationSpec | None, *, path: str) -> Any:
+    arr = jnp.asarray(values)
+    if arr.ndim >= 2:
+        mode = "mean" if time_agg is None else time_agg.mode
+        if mode in {"all", "mean"}:
+            arr = jnp.mean(arr, axis=1)
+        elif mode == "sum":
+            arr = jnp.sum(arr, axis=1)
+        elif mode == "final":
+            arr = jnp.take(arr, -1, axis=1)
+        elif mode == "range":
+            if time_agg is None or time_agg.start is None or time_agg.end is None:
+                raise ObjectiveLoweringError(path, "range reduction requires start and end")
+            arr = jnp.mean(arr[:, time_agg.start:time_agg.end], axis=1)
+        else:
+            raise ObjectiveLoweringError(path, f"unsupported time aggregation {mode!r}")
+    return jnp.mean(arr)
+
+
+def _apply_reduction(
+    values: Any,
+    *,
+    axis: int,
+    kind: str,
+    tail_fraction: float,
+    path: str,
+) -> Any:
+    if kind == "none":
+        return values
+    if kind == "mean":
+        return jnp.mean(values, axis=axis)
+    if kind == "sum":
+        return jnp.sum(values, axis=axis)
+    if kind == "tail":
+        size = values.shape[axis]
+        if size <= 0:
+            raise ObjectiveLoweringError(path, "tail reduction requires non-empty axis")
+        k = max(1, math.ceil(size * tail_fraction))
+        sorted_values = jnp.sort(values, axis=axis)
+        tail = jnp.take(sorted_values, jnp.arange(size - k, size), axis=axis)
+        return jnp.mean(tail, axis=axis)
+    raise ObjectiveLoweringError(path, f"unsupported reduction {kind!r}")
 
 
 # Singleton instance
