@@ -73,6 +73,10 @@ class SourceBinding(StrictModel):
     uri: str
     payload_query: ValueExpr | None = None
     adoption_note: str | None = None
+    # SourceBinding is not part of expression_hash; the bool default is explicit
+    # extraction-layer state and does not affect path-expression hash stability.
+    optional: bool = False
+    missing_payload: Any | None = None
 
     @model_validator(mode="after")
     def _validate_source(self) -> "SourceBinding":
@@ -84,6 +88,11 @@ class SourceBinding(StrictModel):
             raise ValueError("SourceBinding uri must not be empty")
         if Path(self.uri).is_absolute():
             raise ValueError("SourceBinding uri must be repo-relative")
+        has_missing_payload = "missing_payload" in self.model_fields_set
+        if self.optional and not has_missing_payload:
+            raise ValueError("SourceBinding missing_payload is required when optional=True")
+        if not self.optional and has_missing_payload:
+            raise ValueError("SourceBinding missing_payload is only allowed when optional=True")
         return self
 
 
@@ -93,6 +102,7 @@ class FieldMapping(StrictModel):
     output_path: str
     query: ValueExpr
     adopts_source_field: str | None = None
+    residual_exclude: list[str] | None = None
 
     @model_validator(mode="after")
     def _validate_output_path(self) -> "FieldMapping":
@@ -102,6 +112,10 @@ class FieldMapping(StrictModel):
             raise ValueError(
                 "FieldMapping output_path is not dotted-path-like: "
                 f"{self.output_path!r}"
+            )
+        if self.residual_exclude is not None and self.adopts_source_field is not None:
+            raise ValueError(
+                "FieldMapping residual_exclude is incompatible with adopts_source_field"
             )
         return self
 
@@ -161,6 +175,18 @@ def materialize_extraction_product(
 
     for field in spec.fields:
         value = evaluate_query(field.query, ctx)
+        if field.residual_exclude is not None:
+            if not isinstance(value, Mapping):
+                raise ValueError(
+                    "FieldMapping residual_exclude requires a Mapping query result: "
+                    f"output_path={field.output_path!r}, got {type(value).__name__}"
+                )
+            excluded = set(field.residual_exclude)
+            value = {
+                key: deepcopy(child_value)
+                for key, child_value in value.items()
+                if key not in excluded
+            }
         _set_path(parameters, field.output_path, value)
 
     _add_adoption_records(spec, ctx, parameters)
@@ -220,7 +246,13 @@ def verify_extraction_product(
 def _load_expression_context(spec: ExtractionProductSpec, repo_root: Path) -> ExpressionContext:
     items: dict[str, ContextItem] = {}
     for source in spec.sources:
-        payload = _read_source_payload(repo_root, source.uri)
+        try:
+            payload = _read_source_payload(repo_root, source.uri)
+        except FileNotFoundError:
+            if not source.optional:
+                raise
+            items[source.alias] = ContextItem(kind=source.kind, payload=deepcopy(source.missing_payload))
+            continue
         if source.payload_query is not None:
             payload = evaluate_query(
                 source.payload_query,
