@@ -76,6 +76,47 @@ class TrainingRunExecutionResult:
     history_events: tuple[dict[str, Any], ...]
 
 
+class StreamingCheckpointStore(InMemoryCheckpointStore):
+    """Checkpoint store that writes custody transactions at barrier time."""
+
+    def __init__(
+        self,
+        *,
+        root: Path | str,
+        run_spec: TrainingRunSpec,
+        phase_program: Any,
+        parent_lineage: Sequence[CheckpointLineageRef] = (),
+    ) -> None:
+        super().__init__()
+        self.root = Path(root)
+        self.run_spec = run_spec
+        self.phase_program = phase_program
+        self.parent_lineage = tuple(parent_lineage)
+        self._writes: list[CheckpointWriteResult] = []
+
+    @property
+    def writes(self) -> tuple[CheckpointWriteResult, ...]:
+        """Return successful custody writes in barrier firing order."""
+        return tuple(self._writes)
+
+    def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        saved = super().save(checkpoint)
+        write = write_checkpoint_transaction(
+            self.root,
+            run_spec=self.run_spec,
+            phase_program=self.phase_program,
+            barrier_name=saved.barrier,
+            coordinate=saved.coordinate,
+            slots=saved.slots,
+            status="partial",
+            parent_lineage=self.parent_lineage,
+            history_availability={"progress": True},
+            metadata={"barrier_visit_ordinal": saved.visit_ordinal},
+        )
+        self._writes.append(write)
+        return saved
+
+
 def execute_training_run_spec(
     spec: TrainingRunSpec | Mapping[str, Any],
     *,
@@ -137,9 +178,9 @@ def execute_training_run_spec(
         configured_root=checkpoint_root or run_spec.artifacts.artifact_root,
         run_id=resolved_run_id,
     )
-    checkpoint_store = InMemoryCheckpointStore()
     resume_barrier: str | None = None
     parent_lineage: list[CheckpointLineageRef] = []
+    loaded_resume_checkpoint: PhaseCheckpoint | None = None
     if resume:
         loaded = load_latest_checkpoint(
             custody_root,
@@ -147,15 +188,13 @@ def execute_training_run_spec(
             expected_phase_program=program,
             expected_slots=slots,
         )
-        checkpoint_store.save(
-            PhaseCheckpoint(
-                barrier=loaded.manifest.barrier,
-                coordinate=loaded.manifest.completed_coordinate,
-                slots=loaded.slots,
-            )
+        loaded_resume_checkpoint = PhaseCheckpoint(
+            barrier=loaded.manifest.barrier,
+            coordinate=loaded.manifest.completed_coordinate,
+            slots=loaded.slots,
+            visit_ordinal=_checkpoint_visit_ordinal(loaded.manifest.metadata),
         )
         resume_barrier = loaded.manifest.barrier
-        resume_coordinate = loaded.manifest.completed_coordinate
         parent_lineage.append(
             CheckpointLineageRef(
                 transaction_id=loaded.manifest.transaction_id,
@@ -166,6 +205,15 @@ def execute_training_run_spec(
                 ),
             )
         )
+
+    checkpoint_store = StreamingCheckpointStore(
+        root=custody_root,
+        run_spec=run_spec,
+        phase_program=program,
+        parent_lineage=parent_lineage,
+    )
+    if loaded_resume_checkpoint is not None:
+        checkpoint_store.remember(loaded_resume_checkpoint)
 
     executor = PhaseProgramExecutor(
         program,
@@ -180,16 +228,7 @@ def execute_training_run_spec(
         stop_after_barrier=stop_after_barrier,
         context={"run_spec": run_spec, "method_payload": method_payload},
     )
-    checkpoint_writes = _write_checkpoint_custody(
-        custody_root,
-        run_spec=run_spec,
-        program=program,
-        checkpoints=execution.checkpoints,
-        loaded_resume_checkpoint=(
-            (resume_barrier, resume_coordinate) if resume_barrier is not None else None
-        ),
-        parent_lineage=parent_lineage,
-    )
+    checkpoint_writes = checkpoint_store.writes
     history_events = _history_events(execution.progress)
     final_metrics = _final_metrics(execution.slots, execution.coordinate)
     manifest = _build_manifest(
@@ -298,39 +337,9 @@ def _checkpoint_root(
     return root_path / "checkpoints" / run_id
 
 
-def _write_checkpoint_custody(
-    root: Path,
-    *,
-    run_spec: TrainingRunSpec,
-    program: Any,
-    checkpoints: Mapping[str, PhaseCheckpoint],
-    loaded_resume_checkpoint: tuple[str, ProgressCoordinate] | None,
-    parent_lineage: Sequence[CheckpointLineageRef],
-) -> tuple[CheckpointWriteResult, ...]:
-    writes: list[CheckpointWriteResult] = []
-    writable_checkpoints = [
-        (barrier, checkpoint)
-        for barrier, checkpoint in checkpoints.items()
-        if loaded_resume_checkpoint is None
-        or barrier != loaded_resume_checkpoint[0]
-        or checkpoint.coordinate != loaded_resume_checkpoint[1]
-    ]
-    for index, (barrier, checkpoint) in enumerate(writable_checkpoints):
-        status = "final" if index == len(writable_checkpoints) - 1 else "partial"
-        writes.append(
-            write_checkpoint_transaction(
-                root,
-                run_spec=run_spec,
-                phase_program=program,
-                barrier_name=barrier,
-                coordinate=checkpoint.coordinate,
-                slots=checkpoint.slots,
-                status=status,
-                parent_lineage=parent_lineage,
-                history_availability={"progress": True},
-            )
-        )
-    return tuple(writes)
+def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:
+    value = metadata.get("barrier_visit_ordinal")
+    return value if isinstance(value, int) and value >= 0 else None
 
 
 def _history_events(progress: Sequence[ProgressCoordinate]) -> list[dict[str, Any]]:

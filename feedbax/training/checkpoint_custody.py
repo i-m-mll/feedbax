@@ -122,6 +122,7 @@ def write_checkpoint_transaction(
     population_member_ids: Mapping[str, Sequence[str]] | None = None,
     history_availability: Mapping[str, bool] | None = None,
     parent_lineage: Sequence[CheckpointLineageRef] | None = None,
+    metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
 ) -> CheckpointWriteResult:
     """Write one atomic multi-slot checkpoint transaction and publish latest.
@@ -193,6 +194,8 @@ def write_checkpoint_transaction(
             slot_records=slot_records,
         )
         transaction_root = _transaction_root_sha256(slot_digests)
+        manifest_metadata = {"phase": barrier.phase}
+        manifest_metadata.update(dict(metadata or {}))
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
             run_id=coordinate.run_id,
@@ -208,7 +211,7 @@ def write_checkpoint_transaction(
             ),
             history_availability=dict(history_availability or {}),
             parent_lineage=list(parent_lineage or ()),
-            metadata={"phase": barrier.phase},
+            metadata=manifest_metadata,
         )
         manifest_path = tmp_dir / MANIFEST_NAME
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))

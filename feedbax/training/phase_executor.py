@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from feedbax.contracts.worker import (
     PhaseProgramSpec,
@@ -26,6 +26,7 @@ class PhaseCheckpoint:
     barrier: str
     coordinate: ProgressCoordinate
     slots: dict[str, Any]
+    visit_ordinal: int | None = None
 
 
 @dataclass
@@ -36,29 +37,92 @@ class PhaseExecutionResult:
     coordinate: ProgressCoordinate
     progress: list[ProgressCoordinate] = field(default_factory=list)
     checkpoints: dict[str, PhaseCheckpoint] = field(default_factory=dict)
+    checkpoint_visits: tuple[PhaseCheckpoint, ...] = ()
+
+
+class PhaseCheckpointStore(Protocol):
+    """Minimal checkpoint-store contract consumed by ``PhaseProgramExecutor``."""
+
+    def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        """Persist one checkpoint visit and return the stored checkpoint."""
+
+    def remember(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        """Record a pre-existing checkpoint visit without publishing side effects."""
+
+    def load(self, barrier: str) -> PhaseCheckpoint:
+        """Return the latest checkpoint visit for ``barrier``."""
+
+    def as_dict(self) -> dict[str, PhaseCheckpoint]:
+        """Return the latest checkpoint for each barrier."""
+
+    def visits(self, barrier: str | None = None) -> tuple[PhaseCheckpoint, ...]:
+        """Return stored checkpoint visits in append order."""
 
 
 class InMemoryCheckpointStore:
-    """Simple checkpoint store used by the generic phase executor."""
+    """Append-only checkpoint store used by the generic phase executor.
+
+    Repeated visits to the same barrier are retained with per-barrier visit
+    ordinals. ``load()`` and ``as_dict()`` expose the latest visit for resume and
+    legacy callers.
+    """
 
     def __init__(self) -> None:
-        self._checkpoints: dict[str, PhaseCheckpoint] = {}
+        self._checkpoints: dict[str, list[PhaseCheckpoint]] = {}
+        self._visit_log: list[PhaseCheckpoint] = []
+        self._next_visit_ordinal: dict[str, int] = {}
 
-    def save(self, checkpoint: PhaseCheckpoint) -> None:
-        self._checkpoints[checkpoint.barrier] = deepcopy(checkpoint)
+    def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        return self.remember(checkpoint)
+
+    def remember(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        saved = self._checkpoint_with_visit_ordinal(checkpoint)
+        self._checkpoints.setdefault(saved.barrier, []).append(saved)
+        self._visit_log.append(saved)
+        return deepcopy(saved)
 
     def load(self, barrier: str) -> PhaseCheckpoint:
         try:
-            return deepcopy(self._checkpoints[barrier])
-        except KeyError as exc:
+            return deepcopy(self._checkpoints[barrier][-1])
+        except (KeyError, IndexError) as exc:
             raise WorkerContractValidationError(
                 f"/checkpoint_store/{barrier}",
                 f"unknown checkpoint barrier {barrier!r}",
             ) from exc
 
     def as_dict(self) -> dict[str, PhaseCheckpoint]:
-        """Return a defensive copy of all stored checkpoints."""
-        return deepcopy(self._checkpoints)
+        """Return a defensive copy of the latest checkpoint for each barrier."""
+        return {
+            barrier: deepcopy(checkpoints[-1])
+            for barrier, checkpoints in self._checkpoints.items()
+            if checkpoints
+        }
+
+    def visits(self, barrier: str | None = None) -> tuple[PhaseCheckpoint, ...]:
+        """Return defensive copies of checkpoint visits in append order."""
+        visits: Sequence[PhaseCheckpoint]
+        if barrier is None:
+            visits = self._visit_log
+        else:
+            visits = self._checkpoints.get(barrier, ())
+        return tuple(deepcopy(visit) for visit in visits)
+
+    def _checkpoint_with_visit_ordinal(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        next_ordinal = self._next_visit_ordinal.get(checkpoint.barrier, 0)
+        visit_ordinal = (
+            next_ordinal
+            if checkpoint.visit_ordinal is None
+            else max(checkpoint.visit_ordinal, next_ordinal)
+        )
+        self._next_visit_ordinal[checkpoint.barrier] = visit_ordinal + 1
+        return deepcopy(
+            PhaseCheckpoint(
+                barrier=checkpoint.barrier,
+                coordinate=checkpoint.coordinate,
+                slots=checkpoint.slots,
+                visit_ordinal=visit_ordinal,
+            )
+        )
 
 
 class PhaseProgramExecutor:
@@ -70,7 +134,7 @@ class PhaseProgramExecutor:
         kernels: Mapping[str, UpdateKernel],
         *,
         guard_predicates: Mapping[str, UpdateKernel] | None = None,
-        checkpoint_store: InMemoryCheckpointStore | None = None,
+        checkpoint_store: PhaseCheckpointStore | None = None,
     ) -> None:
         self.program = program
         self.kernels = dict(kernels)
@@ -148,9 +212,13 @@ class PhaseProgramExecutor:
                 progress.append(coordinate)
 
             if phase.checkpoint_barrier is not None:
-                self._save_barrier(phase.checkpoint_barrier, coordinate, current_slots)
+                saved_checkpoint = self._save_barrier(
+                    phase.checkpoint_barrier,
+                    coordinate,
+                    current_slots,
+                )
                 coordinate = coordinate.model_copy(
-                    update={"completed_barrier": phase.checkpoint_barrier}
+                    update={"completed_barrier": saved_checkpoint.barrier}
                 )
                 if stop_after_barrier == phase.checkpoint_barrier:
                     return PhaseExecutionResult(
@@ -158,6 +226,7 @@ class PhaseProgramExecutor:
                         coordinate=coordinate,
                         progress=progress,
                         checkpoints=self.checkpoint_store.as_dict(),
+                        checkpoint_visits=self.checkpoint_store.visits(),
                     )
 
             phase_name = self._next_phase(
@@ -172,6 +241,7 @@ class PhaseProgramExecutor:
             coordinate=coordinate,
             progress=progress,
             checkpoints=self.checkpoint_store.as_dict(),
+            checkpoint_visits=self.checkpoint_store.visits(),
         )
 
     def _save_barrier(
@@ -179,7 +249,7 @@ class PhaseProgramExecutor:
         barrier_name: str,
         coordinate: ProgressCoordinate,
         slots: Mapping[str, Any],
-    ) -> None:
+    ) -> PhaseCheckpoint:
         barrier = self._barriers[barrier_name]
         captured = {
             slot.slot: deepcopy(slots[slot.slot])
@@ -192,7 +262,7 @@ class PhaseProgramExecutor:
                 f"/checkpoint_barriers/{barrier_name}/slots",
                 f"missing required checkpoint slots {missing!r}",
             )
-        self.checkpoint_store.save(
+        return self.checkpoint_store.save(
             PhaseCheckpoint(
                 barrier=barrier_name,
                 coordinate=coordinate.model_copy(update={"completed_barrier": barrier_name}),
