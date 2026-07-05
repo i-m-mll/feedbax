@@ -29,9 +29,7 @@ _GENERATOR_SOURCE = (
     "slot-init-read-write+lifetime+optimizer-bindings+objective-reads+"
     "measurement-control+metric-guards"
 )
-CONSISTENCY_PREDICATE_GENERATOR_HASH = hashlib.sha256(
-    _GENERATOR_SOURCE.encode("utf-8")
-).hexdigest()
+CONSISTENCY_PREDICATE_GENERATOR_HASH = hashlib.sha256(_GENERATOR_SOURCE.encode("utf-8")).hexdigest()
 
 AxisRole = Literal[
     "authored_sweep",
@@ -180,8 +178,7 @@ class UpdateKernelSpec(StrictModel):
             )
         if self.signature != FIXED_UPDATE_KERNEL_SIGNATURE:
             raise ValueError(
-                "update kernel signature must be exactly "
-                f"{FIXED_UPDATE_KERNEL_SIGNATURE!r}"
+                f"update kernel signature must be exactly {FIXED_UPDATE_KERNEL_SIGNATURE!r}"
             )
         return self
 
@@ -291,12 +288,43 @@ class CheckpointSlotSpec(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class BarrierArtifactSinkSpec(StrictModel):
+    """One slot materialized as a local artifact each time a barrier fires."""
+
+    slot: str
+    role: str = "barrier_artifact"
+    logical_name: str | None = None
+    media_type: str = "application/octet-stream"
+    encoding: Literal["raw", "json", "pickle"] = "raw"
+    suffix: str | None = None
+    required: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("slot")
+    @classmethod
+    def _validate_slot(cls, value: str) -> str:
+        return validate_worker_identifier(value, path="artifact_sink.slot")
+
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, value: str) -> str:
+        return validate_worker_identifier(value, path="artifact_sink.role")
+
+    @field_validator("logical_name")
+    @classmethod
+    def _validate_logical_name(cls, value: str | None) -> str | None:
+        if value is not None and not value:
+            raise ValueError("artifact sink logical_name must be non-empty when provided")
+        return value
+
+
 class CheckpointBarrierSpec(StrictModel):
     """Checkpoint barrier and the slots it captures."""
 
     name: str
     phase: str
     slots: list[CheckpointSlotSpec]
+    artifact_sinks: list[BarrierArtifactSinkSpec] = Field(default_factory=list)
     resume_coordinate: ResumeCoordinateSpec | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 

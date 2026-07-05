@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import jax.numpy as jnp
 import pytest
 from pydantic import ValidationError
 
@@ -8,6 +9,7 @@ from feedbax.contracts.worker import (
     CONSISTENCY_PREDICATE_SCHEMA_VERSION,
     PPO_MAPPING_TABLE,
     AxisReducerSpec,
+    BarrierArtifactSinkSpec,
     CheckpointSlotManifest,
     CheckpointSlotRecord,
     MethodContractSpec,
@@ -245,6 +247,130 @@ def test_toy_minimax_executes_and_resumes_at_warmup_barrier() -> None:
     assert resumed.coordinate.completed_barrier == "after_adversarial"
 
 
+def test_phase_executor_shares_jax_array_update_and_checkpoint_leaves() -> None:
+    contract = toy_minimax_method_contract()
+    controller_update = jnp.array([1.0, 2.0])
+    rng_update = jnp.array([3, 4], dtype=jnp.uint32)
+    optimizer_update = {"history": [1]}
+
+    def warmup_update(slots, coordinate, context):
+        del slots, coordinate, context
+        return {
+            "controller": controller_update,
+            "controller_optimizer": optimizer_update,
+            "rng": rng_update,
+            "loss": 1.0,
+        }
+
+    store = InMemoryCheckpointStore()
+    executor = PhaseProgramExecutor(
+        contract.phase_program,
+        {
+            **_toy_kernels(),
+            "toy_minimax.warmup_update": warmup_update,
+        },
+        checkpoint_store=store,
+    )
+
+    warmup = executor.run(
+        {
+            "controller": jnp.array([0.0, 0.0]),
+            "controller_optimizer": {"history": [0]},
+            "adversary_population": [jnp.array([10.0]), jnp.array([20.0])],
+            "adversary_optimizer": {"history": [0]},
+            "rng": jnp.array([0, 1], dtype=jnp.uint32),
+        },
+        run_id="array-copy-policy",
+        stop_after_barrier="after_warmup",
+    )
+
+    assert warmup.slots["controller"] is controller_update
+    assert warmup.slots["rng"] is rng_update
+    assert warmup.checkpoints["after_warmup"].slots["controller"] is controller_update
+    assert warmup.checkpoints["after_warmup"].slots["rng"] is rng_update
+
+    assert warmup.slots["controller_optimizer"] == {"history": [1]}
+    assert warmup.slots["controller_optimizer"] is not optimizer_update
+    optimizer_update["history"].append(2)
+    assert warmup.slots["controller_optimizer"] == {"history": [1]}
+
+    checkpoint = store.load("after_warmup")
+    assert checkpoint.slots["controller"] is controller_update
+    assert checkpoint.slots["controller_optimizer"] == {"history": [1]}
+    assert (
+        checkpoint.slots["controller_optimizer"]
+        is not warmup.checkpoints["after_warmup"].slots["controller_optimizer"]
+    )
+
+
+def test_checkpoint_barrier_artifact_sinks_validate_against_captured_slots() -> None:
+    contract = toy_minimax_method_contract()
+    barriers = list(contract.phase_program.checkpoint_barriers)
+    barriers[0] = barriers[0].model_copy(
+        update={
+            "artifact_sinks": [
+                BarrierArtifactSinkSpec(
+                    slot="rng",
+                    role="rng_sidecar",
+                    logical_name="rng.bin",
+                    media_type="application/octet-stream",
+                )
+            ]
+        }
+    )
+    contract = contract.model_copy(
+        update={
+            "phase_program": contract.phase_program.model_copy(
+                update={"checkpoint_barriers": barriers}
+            )
+        }
+    )
+
+    validate_worker_contract(
+        contract,
+        update_kernels=_toy_kernels(),
+        dry_run_shape_check=lambda _contract: DryRunShapeCheckResult(passed=True),
+    )
+
+    payload = toy_minimax_method_contract().model_dump(mode="json")
+    assert payload["phase_program"]["checkpoint_barriers"][0].get("artifact_sinks") == []
+    assert (
+        MethodContractSpec.model_validate(payload)
+        .phase_program.checkpoint_barriers[0]
+        .artifact_sinks
+        == []
+    )
+
+
+def test_checkpoint_barrier_artifact_sink_rejects_uncaptured_slot() -> None:
+    contract = toy_minimax_method_contract()
+    barriers = list(contract.phase_program.checkpoint_barriers)
+    barriers[0] = barriers[0].model_copy(
+        update={
+            "artifact_sinks": [
+                BarrierArtifactSinkSpec(
+                    slot="loss",
+                    role="loss_sidecar",
+                    logical_name="loss.bin",
+                )
+            ]
+        }
+    )
+    contract = contract.model_copy(
+        update={
+            "phase_program": contract.phase_program.model_copy(
+                update={"checkpoint_barriers": barriers}
+            )
+        }
+    )
+
+    with pytest.raises(WorkerContractValidationError) as exc:
+        validate_worker_contract(contract, update_kernels=_toy_kernels())
+
+    assert "/phase_program/checkpoint_barriers/0/artifact_sinks/0/slot" in str(exc.value)
+    assert "must be captured" in str(exc.value)
+
+
 def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
     contract = toy_adaptive_curriculum_method_contract()
     validate_worker_contract(
@@ -258,6 +384,7 @@ def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
         _toy_adaptive_kernels(),
         guard_predicates=_toy_adaptive_guards(),
         checkpoint_store=store,
+        state_slots=contract.state_slots,
     )
     slots = {
         "controller": 7,
@@ -275,6 +402,7 @@ def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
     assert first.slots["guard_counter"] == 1
     assert first.slots["adaptive_lambda"] == 1
     assert first.coordinate.schedule_origin_step == 0
+    assert [coordinate.metrics for coordinate in first.progress] == [{"heldout_metric": 1.0}]
 
     resumed = executor.run(
         {},
@@ -286,6 +414,10 @@ def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
     assert resumed.slots["controller"] == 7
     assert resumed.slots["guard_counter"] == 2
     assert resumed.slots["adaptive_lambda"] == 3
+    assert [coordinate.metrics for coordinate in resumed.progress] == [
+        {"heldout_metric": 1.0},
+        {"heldout_metric": 1.0},
+    ]
 
 
 def test_population_length_mismatch_is_rejected_at_load() -> None:
@@ -307,7 +439,9 @@ def test_cross_slot_checkpoint_pairing_is_rejected() -> None:
     manifest = CheckpointSlotManifest(
         slots=[
             CheckpointSlotRecord(slot="controller", barrier="after_adversarial", global_step=2),
-            CheckpointSlotRecord(slot="adversary_population", barrier="after_adversarial", global_step=1),
+            CheckpointSlotRecord(
+                slot="adversary_population", barrier="after_adversarial", global_step=1
+            ),
         ]
     )
 

@@ -7,16 +7,53 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import jax
+import jax.tree as jt
+
 from feedbax.contracts.worker import (
     PhaseProgramSpec,
     ProgressCoordinate,
+    StateSlotSpec,
 )
 from feedbax.training.worker_validation import (
     WorkerContractValidationError,
     validate_update_kernel_callable,
 )
 
-UpdateKernel = Callable[[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], Mapping[str, Any]]
+UpdateKernel = Callable[
+    [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], Mapping[str, Any]
+]
+ProgressCallback = Callable[[ProgressCoordinate], None]
+
+
+def _is_shareable_jax_array(value: Any) -> bool:
+    return isinstance(value, jax.Array)
+
+
+def _copy_executor_value(value: Any) -> Any:
+    """Copy executor pytrees while sharing immutable JAX array leaves."""
+    return jt.map(
+        lambda leaf: leaf if _is_shareable_jax_array(leaf) else deepcopy(leaf),
+        value,
+        is_leaf=_is_shareable_jax_array,
+    )
+
+
+def _copy_executor_mapping(mapping: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: _copy_executor_value(value) for key, value in mapping.items()}
+
+
+def _copy_phase_checkpoint(checkpoint: "PhaseCheckpoint") -> "PhaseCheckpoint":
+    return PhaseCheckpoint(
+        barrier=checkpoint.barrier,
+        coordinate=deepcopy(checkpoint.coordinate),
+        slots=_copy_executor_mapping(checkpoint.slots),
+        visit_ordinal=checkpoint.visit_ordinal,
+    )
+
+
+def _copy_progress_coordinate(coordinate: ProgressCoordinate) -> ProgressCoordinate:
+    return coordinate.model_copy(update={"metrics": _copy_executor_mapping(coordinate.metrics)})
 
 
 @dataclass
@@ -79,11 +116,11 @@ class InMemoryCheckpointStore:
         saved = self._checkpoint_with_visit_ordinal(checkpoint)
         self._checkpoints.setdefault(saved.barrier, []).append(saved)
         self._visit_log.append(saved)
-        return deepcopy(saved)
+        return _copy_phase_checkpoint(saved)
 
     def load(self, barrier: str) -> PhaseCheckpoint:
         try:
-            return deepcopy(self._checkpoints[barrier][-1])
+            return _copy_phase_checkpoint(self._checkpoints[barrier][-1])
         except (KeyError, IndexError) as exc:
             raise WorkerContractValidationError(
                 f"/checkpoint_store/{barrier}",
@@ -93,7 +130,7 @@ class InMemoryCheckpointStore:
     def as_dict(self) -> dict[str, PhaseCheckpoint]:
         """Return a defensive copy of the latest checkpoint for each barrier."""
         return {
-            barrier: deepcopy(checkpoints[-1])
+            barrier: _copy_phase_checkpoint(checkpoints[-1])
             for barrier, checkpoints in self._checkpoints.items()
             if checkpoints
         }
@@ -105,7 +142,7 @@ class InMemoryCheckpointStore:
             visits = self._visit_log
         else:
             visits = self._checkpoints.get(barrier, ())
-        return tuple(deepcopy(visit) for visit in visits)
+        return tuple(_copy_phase_checkpoint(visit) for visit in visits)
 
     def _checkpoint_with_visit_ordinal(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
         next_ordinal = self._next_visit_ordinal.get(checkpoint.barrier, 0)
@@ -115,7 +152,7 @@ class InMemoryCheckpointStore:
             else max(checkpoint.visit_ordinal, next_ordinal)
         )
         self._next_visit_ordinal[checkpoint.barrier] = visit_ordinal + 1
-        return deepcopy(
+        return _copy_phase_checkpoint(
             PhaseCheckpoint(
                 barrier=checkpoint.barrier,
                 coordinate=checkpoint.coordinate,
@@ -135,16 +172,17 @@ class PhaseProgramExecutor:
         *,
         guard_predicates: Mapping[str, UpdateKernel] | None = None,
         checkpoint_store: PhaseCheckpointStore | None = None,
+        state_slots: Sequence[StateSlotSpec] = (),
     ) -> None:
         self.program = program
         self.kernels = dict(kernels)
         self.guard_predicates = dict(guard_predicates or {})
         self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
+        self._metric_slots = tuple(slot.name for slot in state_slots if slot.role == "metric")
         self._phases = {phase.name: phase for phase in program.phases}
         self._steps = {step.name: step for step in program.update_steps}
         self._transitions = {
-            (transition.source, transition.target): transition
-            for transition in program.transitions
+            (transition.source, transition.target): transition for transition in program.transitions
         }
         self._barriers = {barrier.name: barrier for barrier in program.checkpoint_barriers}
         for kernel_ref, kernel in self.kernels.items():
@@ -160,6 +198,7 @@ class PhaseProgramExecutor:
         resume_from_barrier: str | None = None,
         stop_after_barrier: str | None = None,
         context: Mapping[str, Any] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier."""
         progress: list[ProgressCoordinate] = []
@@ -175,7 +214,7 @@ class PhaseProgramExecutor:
                 completed_barrier=resume_from_barrier,
             )
         else:
-            current_slots = dict(deepcopy(slots))
+            current_slots = _copy_executor_mapping(slots)
             start_phase = self.program.initial_phase
             coordinate = ProgressCoordinate(run_id=run_id, phase=start_phase)
 
@@ -205,11 +244,16 @@ class PhaseProgramExecutor:
                             f"/phase_program/update_steps/{step_name}/writes",
                             f"kernel returned undeclared writes {unknown!r}",
                         )
-                    current_slots.update(deepcopy(dict(updates)))
+                    current_slots.update(_copy_executor_mapping(updates))
                 coordinate = coordinate.model_copy(
-                    update={"global_step": coordinate.global_step + 1}
+                    update={
+                        "global_step": coordinate.global_step + 1,
+                        "metrics": self._progress_metrics(current_slots),
+                    }
                 )
                 progress.append(coordinate)
+                if progress_callback is not None:
+                    progress_callback(_copy_progress_coordinate(coordinate))
 
             if phase.checkpoint_barrier is not None:
                 saved_checkpoint = self._save_barrier(
@@ -252,11 +296,13 @@ class PhaseProgramExecutor:
     ) -> PhaseCheckpoint:
         barrier = self._barriers[barrier_name]
         captured = {
-            slot.slot: deepcopy(slots[slot.slot])
+            slot.slot: _copy_executor_value(slots[slot.slot])
             for slot in barrier.slots
             if slot.slot in slots
         }
-        missing = [slot.slot for slot in barrier.slots if slot.required and slot.slot not in captured]
+        missing = [
+            slot.slot for slot in barrier.slots if slot.required and slot.slot not in captured
+        ]
         if missing:
             raise WorkerContractValidationError(
                 f"/checkpoint_barriers/{barrier_name}/slots",
@@ -269,6 +315,11 @@ class PhaseProgramExecutor:
                 slots=captured,
             )
         )
+
+    def _progress_metrics(self, slots: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            slot: _copy_executor_value(slots[slot]) for slot in self._metric_slots if slot in slots
+        }
 
     def _resume_phase_for_barrier(self, barrier_name: str) -> str:
         barrier = self._barriers.get(barrier_name)
