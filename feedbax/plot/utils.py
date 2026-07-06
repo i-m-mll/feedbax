@@ -19,6 +19,7 @@ import pyperclip as clip
 from jax_cookbook import is_type
 
 from feedbax.config import STRINGS
+from feedbax.plot.lifecycle import close_figure
 pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
 
 
@@ -414,39 +415,44 @@ def savefig(
     transparent=True,
     metadata: Optional[dict[str, Any]] = None,
     logger: Optional[logging.Logger] = None,
+    close: bool = False,
     **kwargs,
 ):
-    path = str(fig_dir / f"{label}") + ".{ext}"
+    try:
+        path = str(fig_dir / f"{label}") + ".{ext}"
 
-    if isinstance(fig, mplf.Figure):
-        for ext in image_formats:
-            fig.savefig(
-                path.format(ext=ext),
-                transparent=transparent,
-                **kwargs,
-            )
+        if isinstance(fig, mplf.Figure):
+            for ext in image_formats:
+                fig.savefig(
+                    path.format(ext=ext),
+                    transparent=transparent,
+                    **kwargs,
+                )
 
-    elif isinstance(fig, go.Figure):
-        fig.update_layout(meta=metadata)
+        elif isinstance(fig, go.Figure):
+            fig.update_layout(meta=metadata)
 
-        for ext in image_formats:
-            path_i = path.format(ext=ext)
-            if ext == "html":
-                fig.write_html(path_i, **kwargs)
-            elif ext == "json":
-                fig.write_json(path_i, engine="auto", **kwargs)
-            else:
-                width = getattr(fig.layout, "width", None)
-                height = getattr(fig.layout, "height", None)
-                fig.write_image(path_i, scale=2, width=width, height=height, **kwargs)
+            for ext in image_formats:
+                path_i = path.format(ext=ext)
+                if ext == "html":
+                    fig.write_html(path_i, **kwargs)
+                elif ext == "json":
+                    fig.write_json(path_i, engine="auto", **kwargs)
+                else:
+                    width = getattr(fig.layout, "width", None)
+                    height = getattr(fig.layout, "height", None)
+                    fig.write_image(path_i, scale=2, width=width, height=height, **kwargs)
 
-                if metadata is not None and ext in EXTS_WITH_EXIF:
-                    try:
-                        img = pyexiv2.Image(path_i)
-                        metadata_xmp = {f"Xmp.custom.{k}": v for k, v in metadata.items()}
-                        metadata_xmp["Xmp.dc.description"] = json.dumps(metadata, indent=2)
-                        img.modify_xmp(metadata_xmp)
-                        img.close()
-                    except Exception as e:
-                        raise (e)
-                        logger.error(f"Failed to save metadata for image at {path_i}: {e}")
+                    if metadata is not None and ext in EXTS_WITH_EXIF:
+                        try:
+                            img = pyexiv2.Image(path_i)
+                            metadata_xmp = {f"Xmp.custom.{k}": v for k, v in metadata.items()}
+                            metadata_xmp["Xmp.dc.description"] = json.dumps(metadata, indent=2)
+                            img.modify_xmp(metadata_xmp)
+                            img.close()
+                        except Exception as e:
+                            raise (e)
+                            logger.error(f"Failed to save metadata for image at {path_i}: {e}")
+    finally:
+        if close:
+            close_figure(fig)

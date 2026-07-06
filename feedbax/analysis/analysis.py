@@ -54,6 +54,7 @@ from feedbax.config.namespace import TreeNamespace
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.config.utils import deep_merge
 from feedbax.persistence.database import EvaluationRecord, add_evaluation_figure
+from feedbax.plot.lifecycle import close_figure
 from feedbax.analysis.support import (
     camel_to_snake,
     field_names,
@@ -1378,19 +1379,23 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 else:
                     filename = f"{self.name}_{self.md5_str}_{i}"
 
-                savefig(fig, filename, dump_path, dump_formats, metadata=params)
-
-                # Save parameters as YAML
-                yaml = get_yaml_loader(typ="safe")
-                params_path = dump_path / f"{filename}.yaml"
                 try:
-                    with open(params_path, "w") as f:
-                        yaml.dump(params, f)
-                except Exception as e:
-                    logger.error(
-                        f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True
-                    )
-                    raise e
+                    savefig(fig, filename, dump_path, dump_formats, metadata=params)
+
+                    # Save parameters as YAML
+                    yaml = get_yaml_loader(typ="safe")
+                    params_path = dump_path / f"{filename}.yaml"
+                    try:
+                        with open(params_path, "w") as f:
+                            yaml.dump(params, f)
+                    except Exception as e:
+                        logger.error(
+                            f"Error saving fig dump parameters to {params_path}: {e}",
+                            exc_info=True,
+                        )
+                        raise e
+                finally:
+                    close_figure(fig)
 
     def save_outputs(
         self,

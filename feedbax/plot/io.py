@@ -9,12 +9,23 @@ import importlib.metadata
 import json
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+
+from feedbax.plot.lifecycle import close_figure
 
 logger = logging.getLogger(__name__)
+
+_RENDER_EXTENSIONS = {
+    "json": "fig.json",
+    "html": "html",
+    "png": "png",
+    "svg": "svg",
+    "pdf": "pdf",
+}
 
 # ---------------------------------------------------------------------------
 # Editable-install guard
@@ -144,6 +155,7 @@ def save_figure_with_spec(
     save_render: bool = True,
     render_format: str = "json",
     extra_packages: Optional[list[str]] = None,
+    close: bool = False,
 ) -> tuple[Path, Optional[Path]]:
     """Save a figure and a JSON reproducibility spec to *dst_dir*.
 
@@ -173,6 +185,8 @@ def save_figure_with_spec(
             ``"png"``, ``"svg"``, or ``"pdf"``.
         extra_packages: Additional package names to include in
             ``spec["versions"]``.
+        close: If ``True``, close Matplotlib figures after saving. Plotly
+            figures are unaffected.
 
     Returns:
         A ``(spec_path, render_path)`` tuple.  *render_path* is ``None`` when
@@ -185,49 +199,53 @@ def save_figure_with_spec(
         FileNotFoundError: If any path listed in ``spec["inputs"]`` does not
             exist when computing its SHA-256 digest.
     """
-    dst_dir = Path(dst_dir)
-    dst_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        dst_dir = Path(dst_dir)
+        dst_dir.mkdir(parents=True, exist_ok=True)
 
-    if name is None:
-        name = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        if name is None:
+            name = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    # ------------------------------------------------------------------
-    # Enrich the spec: resolve SHA-256 digests, add versions + timestamp
-    # ------------------------------------------------------------------
-    enriched: dict[str, Any] = dict(spec)  # shallow copy — do not mutate caller's dict
+        # ------------------------------------------------------------------
+        # Enrich the spec: resolve SHA-256 digests, add versions + timestamp
+        # ------------------------------------------------------------------
+        enriched: dict[str, Any] = dict(spec)  # shallow copy — do not mutate caller's dict
 
-    # Resolve sha256 for each input artifact
-    inputs = enriched.get("inputs", [])
-    resolved_inputs = []
-    for entry in inputs:
-        entry = dict(entry)  # copy so we don't mutate
-        path = Path(entry["path"])
-        if "sha256" not in entry:
-            entry["sha256"] = _sha256(path)
-        entry["path"] = str(path)  # normalise to str for JSON serialisation
-        resolved_inputs.append(entry)
-    enriched["inputs"] = resolved_inputs
+        # Resolve sha256 for each input artifact
+        inputs = enriched.get("inputs", [])
+        resolved_inputs = []
+        for entry in inputs:
+            entry = dict(entry)  # copy so we don't mutate
+            path = Path(entry["path"])
+            if "sha256" not in entry:
+                entry["sha256"] = _sha256(path)
+            entry["path"] = str(path)  # normalise to str for JSON serialisation
+            resolved_inputs.append(entry)
+        enriched["inputs"] = resolved_inputs
 
-    # Always overwrite versions and timestamp
-    enriched["versions"] = _build_versions(extra_packages)
-    enriched["timestamp"] = datetime.now(tz=timezone.utc).isoformat()
+        # Always overwrite versions and timestamp
+        enriched["versions"] = _build_versions(extra_packages)
+        enriched["timestamp"] = datetime.now(tz=timezone.utc).isoformat()
 
-    # ------------------------------------------------------------------
-    # Write spec JSON
-    # ------------------------------------------------------------------
-    spec_path = dst_dir / f"{name}.json"
-    with open(spec_path, "w", encoding="utf-8") as f:
-        json.dump(enriched, f, indent=2, sort_keys=True)
-    logger.info("Wrote figure spec to %s", spec_path)
+        # ------------------------------------------------------------------
+        # Write spec JSON
+        # ------------------------------------------------------------------
+        spec_path = dst_dir / f"{name}.json"
+        with open(spec_path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, indent=2, sort_keys=True)
+        logger.info("Wrote figure spec to %s", spec_path)
 
-    # ------------------------------------------------------------------
-    # Write figure render (optional)
-    # ------------------------------------------------------------------
-    render_path: Optional[Path] = None
-    if save_render:
-        render_path = _write_figure(fig, dst_dir, name, render_format)
+        # ------------------------------------------------------------------
+        # Write figure render (optional)
+        # ------------------------------------------------------------------
+        render_path: Optional[Path] = None
+        if save_render:
+            render_path = _write_figure(fig, dst_dir, name, render_format)
 
-    return spec_path, render_path
+        return spec_path, render_path
+    finally:
+        if close:
+            close_figure(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +260,7 @@ def save_figure(
     experiment: str,
     topic: str,
     extra_packages: Optional[list[str]] = None,
+    close: bool = False,
 ) -> dict[str, Optional[Path]]:
     """Save a figure using project-defined routing from the package registry.
 
@@ -267,6 +286,8 @@ def save_figure(
             (e.g. ``"adversarial_losses"``).
         extra_packages: Additional package names to include in
             ``spec["versions"]``.
+        close: If ``True``, close Matplotlib figures after saving. Plotly
+            figures are unaffected.
 
     Returns:
         A dict with keys:
@@ -322,10 +343,6 @@ def save_figure(
     render_format: str = figure_routing.get("render_format", "html")
     create_symlink: bool = figure_routing.get("create_symlink_in_spec_dir", False)
 
-    # Determine figure filename extension
-    ext = _render_extension(render_format)
-    figure_filename = f"figure.{ext}"
-
     # Write spec + render using the existing helper
     spec_path, render_path = save_figure_with_spec(
         fig,
@@ -335,31 +352,24 @@ def save_figure(
         save_render=True,
         render_format=render_format,
         extra_packages=extra_packages,
+        close=close,
     )
 
     # The spec JSON lives in spec_dir, not render_dir; move it there.
     spec_dir.mkdir(parents=True, exist_ok=True)
     spec_dest = spec_dir / "spec.json"
-    if render_path is not None:
-        # spec_path currently lives in render_dir as "figure.json" (from name="figure")
-        # but we actually want the spec separate.  save_figure_with_spec wrote both to
-        # render_dir; move only the spec JSON out.
-        import shutil
-        shutil.move(str(spec_path), str(spec_dest))
-        spec_path = spec_dest
-    else:
-        import shutil
-        shutil.move(str(spec_path), str(spec_dest))
-        spec_path = spec_dest
+    # spec_path currently lives in render_dir as "figure.json" (from name="figure")
+    # but we actually want the spec separate. save_figure_with_spec wrote both to
+    # render_dir; move only the spec JSON out.
+    spec_path.replace(spec_dest)
+    spec_path = spec_dest
 
     # Create relative symlink in spec_dir pointing at the render file
     symlink_path: Optional[Path] = None
     if create_symlink and render_path is not None:
-        symlink_path = spec_dir / figure_filename
+        symlink_path = spec_dir / render_path.name
         rel_target = os.path.relpath(render_path, spec_dir)
-        if symlink_path.is_symlink() or symlink_path.exists():
-            symlink_path.unlink()
-        symlink_path.symlink_to(rel_target)
+        _replace_symlink(symlink_path, rel_target)
         logger.info("Created symlink %s -> %s", symlink_path, rel_target)
 
     return {
@@ -371,20 +381,36 @@ def save_figure(
 
 def _render_extension(render_format: str) -> str:
     """Return the file extension for a given render format."""
-    _ext_map = {
-        "json": "fig.json",
-        "html": "html",
-        "png": "png",
-        "svg": "svg",
-        "pdf": "pdf",
-    }
     try:
-        return _ext_map[render_format]
+        return _RENDER_EXTENSIONS[render_format]
     except KeyError as exc:
-        supported = ", ".join(sorted(_ext_map))
+        supported = ", ".join(sorted(_RENDER_EXTENSIONS))
         raise ValueError(
             f"Unsupported render_format {render_format!r}; expected one of: {supported}"
         ) from exc
+
+
+def _figure_render_filename(
+    name: str,
+    render_format: str,
+    backend: Literal["plotly", "matplotlib"],
+) -> str:
+    """Return the render filename produced by a figure backend."""
+    ext = _render_extension(render_format)
+    if backend == "matplotlib" and render_format == "json":
+        ext = "png"
+    return f"{name}.{ext}"
+
+
+def _replace_symlink(link_path: Path, target: str) -> None:
+    """Atomically replace *link_path* with a symlink to *target*."""
+    tmp_path = link_path.with_name(f".{link_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp_path.symlink_to(target)
+        os.replace(tmp_path, link_path)
+    finally:
+        if tmp_path.is_symlink() or tmp_path.exists():
+            tmp_path.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -424,15 +450,12 @@ def _write_figure(
 
 def _write_plotly(fig: Any, dst_dir: Path, name: str, render_format: str) -> Path:
     """Write a Plotly figure to disk."""
-    _render_extension(render_format)
+    path = dst_dir / _figure_render_filename(name, render_format, "plotly")
     if render_format == "json":
-        path = dst_dir / f"{name}.fig.json"
         fig.write_json(str(path))
     elif render_format == "html":
-        path = dst_dir / f"{name}.html"
         fig.write_html(str(path))
     else:
-        path = dst_dir / f"{name}.{render_format}"
         fig.write_image(str(path))
     logger.info("Wrote Plotly figure to %s", path)
     return path
@@ -440,9 +463,7 @@ def _write_plotly(fig: Any, dst_dir: Path, name: str, render_format: str) -> Pat
 
 def _write_matplotlib(fig: Any, dst_dir: Path, name: str, render_format: str) -> Path:
     """Write a Matplotlib figure to disk."""
-    _render_extension(render_format)
-    ext = "png" if render_format == "json" else render_format
-    path = dst_dir / f"{name}.{ext}"
+    path = dst_dir / _figure_render_filename(name, render_format, "matplotlib")
     fig.savefig(str(path))
     logger.info("Wrote Matplotlib figure to %s", path)
     return path

@@ -33,6 +33,7 @@ from feedbax.contracts.manifest import (
     store_json_artifact,
     write_manifest,
 )
+from feedbax.plot.lifecycle import close_figure
 from feedbax.plot.utils import savefig
 from jax_cookbook import arrays_to_lists
 
@@ -288,41 +289,44 @@ class AnalysisRunContext:
         figure_dir = self._figure_dir(dump_path)
         figure_dir.mkdir(parents=True, exist_ok=True)
         filename = self._figure_filename(analysis_name, analysis_label, ordinal)
-        savefig(fig, filename, figure_dir, formats, metadata=params)
-        routing_projection = self._route_figure_projection(
-            fig=fig,
-            analysis_name=analysis_name,
-            analysis_label=analysis_label,
-            ordinal=ordinal,
-            params=params,
-            filename=filename,
-        )
-
-        artifacts = []
-        safe_label = _safe_name(analysis_label or analysis_name)
-        for ext in formats:
-            path = figure_dir / f"{filename}.{ext}"
-            if not path.exists():
-                continue
-            metadata = {
-                "analysis_name": analysis_name,
-                "analysis_label": analysis_label,
-                "format": ext,
-                "ordinal": ordinal,
-                "params": arrays_to_lists(params),
-            }
-            if routing_projection is not None:
-                metadata[_FIGURE_ROUTING_KEY] = routing_projection
-            artifact = store_artifact(
-                path,
-                root=self.root_path,
-                role="figure",
-                logical_name=f"{safe_label}/{path.name}",
-                media_type=_MEDIA_TYPES.get(ext, "application/octet-stream"),
-                metadata=metadata,
+        try:
+            savefig(fig, filename, figure_dir, formats, metadata=params)
+            routing_projection = self._route_figure_projection(
+                fig=fig,
+                analysis_name=analysis_name,
+                analysis_label=analysis_label,
+                ordinal=ordinal,
+                params=params,
+                filename=filename,
             )
-            artifacts.append(artifact)
-        return list(self.record_artifact_refs(artifacts))
+
+            artifacts = []
+            safe_label = _safe_name(analysis_label or analysis_name)
+            for ext in formats:
+                path = figure_dir / f"{filename}.{ext}"
+                if not path.exists():
+                    continue
+                metadata = {
+                    "analysis_name": analysis_name,
+                    "analysis_label": analysis_label,
+                    "format": ext,
+                    "ordinal": ordinal,
+                    "params": arrays_to_lists(params),
+                }
+                if routing_projection is not None:
+                    metadata[_FIGURE_ROUTING_KEY] = routing_projection
+                artifact = store_artifact(
+                    path,
+                    root=self.root_path,
+                    role="figure",
+                    logical_name=f"{safe_label}/{path.name}",
+                    media_type=_MEDIA_TYPES.get(ext, "application/octet-stream"),
+                    metadata=metadata,
+                )
+                artifacts.append(artifact)
+            return list(self.record_artifact_refs(artifacts))
+        finally:
+            close_figure(fig)
 
     def finalize(
         self,

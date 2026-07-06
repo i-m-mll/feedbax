@@ -1,5 +1,6 @@
 import math
 import re
+import warnings
 from collections.abc import Mapping, Sequence
 from functools import partial
 from typing import Callable, Literal, Optional
@@ -616,7 +617,8 @@ def plot_traj_and_fp_pcs_3D(
     trajs_pcs = pca.transform(np.array(trajs).reshape(-1, trajs.shape[-1])).reshape(
         *trajs.shape[:-1], pca.n_components
     )  # type: ignore
-    fig = fbp.trajectories_3D(trajs_pcs, colors=colors, fig=fig)
+    traj_fig = fbp.trajectories_3D(trajs_pcs, colors=colors)
+    fig.add_traces(traj_fig.data)
 
     return fig
 
@@ -740,7 +742,7 @@ def _calculate_axis_bounds(
     return subplot_indices, final_ranges
 
 
-def set_axis_bounds_equal(
+def set_single_axis_bounds_equal(
     axis: Literal["x", "y"],
     figs: PyTree,
     padding_factor: float = 0.1,
@@ -788,6 +790,29 @@ def set_axis_bounds_equal(
 
     # Corrected: Use jt.map
     return jt.map(_update_leaf_single_axis, figs)
+
+
+def set_axis_bounds_equal(
+    axis: Literal["x", "y"],
+    figs: PyTree,
+    padding_factor: float = 0.1,
+    trace_selector: Callable = lambda trace: True,
+    **kwargs,
+) -> PyTree:
+    """Deprecated alias for :func:`set_single_axis_bounds_equal`."""
+    warnings.warn(
+        "`set_axis_bounds_equal` is deprecated; use `set_single_axis_bounds_equal` "
+        "for one-axis synchronization or `set_axes_bounds_equal` for x/y synchronization.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return set_single_axis_bounds_equal(
+        axis,
+        figs,
+        padding_factor=padding_factor,
+        trace_selector=trace_selector,
+        **kwargs,
+    )
 
 
 #! On preliminary tests this isn't actually very useful for anchored axes;
