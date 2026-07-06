@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import textwrap
 from pathlib import Path
 from typing import Any
 
-from feedbax.execution.container import collect_source_provenance
-from feedbax.execution.models import ExecutionCell, ExecutionSpec, PlanStep, RepoSource
+from feedbax.execution.commands import (
+    execution_command,
+    expand_local_path,
+    source_provenance_record,
+    training_run_spec_path,
+)
+from feedbax.execution.models import (
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+    ExecutionCell,
+    ExecutionSpec,
+    PlanStep,
+    RepoSource,
+)
 
 
 def modal_bootstrap_steps(spec: ExecutionSpec) -> list[PlanStep]:
@@ -51,7 +62,7 @@ def modal_bootstrap_steps(spec: ExecutionSpec) -> list[PlanStep]:
         elif source.install_mode == "pypi":
             description = f"{source.name} is installed into the Modal image from PyPI."
         elif source.install_mode == "local-embed":
-            provenance = _source_provenance_record(source)
+            provenance = source_provenance_record(source)
             description = (
                 f"{source.name} is embedded into the Modal image from "
                 f"{source.local_path} at commit {provenance.get('commit') or 'unknown'}; "
@@ -100,13 +111,11 @@ def rsync_remote(spec: ExecutionSpec, target: str) -> str:
     return f"{spec.ssh.user}@{spec.ssh.host or '<host>'}:{target.rstrip('/')}/"
 
 
-def expand_local_path(path: str) -> str:
-    return str(Path(os.path.expandvars(path)).expanduser())
-
-
 def cloud_payload(spec: ExecutionSpec, job_id: str) -> dict[str, Any]:
     if spec.backend == "runpod":
         return {
+            "schema_id": EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+            "schema_version": EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
             "provider": "runpod",
             "api": "REST /v1/pods",
             "api_key_env": spec.runpod.api_key_env,
@@ -126,21 +135,10 @@ def cloud_payload(spec: ExecutionSpec, job_id: str) -> dict[str, Any]:
             ],
         }
     if spec.backend == "modal":
-        default_command = _execution_command(spec, job_id=job_id)
-        cells = spec.cells or [ExecutionCell(id="main", command=default_command)]
-        if _local_embed_sources(spec):
-            cell_records = [
-                {
-                    **cell.model_dump(mode="json", exclude_none=True),
-                    "command": _uv_run_command(cell.command or default_command),
-                }
-                for cell in cells
-            ]
-        else:
-            cell_records = [
-                cell.model_dump(mode="json", exclude_none=True) for cell in cells
-            ]
+        cell_records = modal_cell_payloads(spec, job_id=job_id)
         return {
+            "schema_id": EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+            "schema_version": EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
             "provider": "modal",
             "app_name": spec.modal.app_name,
             "image_packages": spec.modal.image_packages,
@@ -170,7 +168,11 @@ def cloud_payload(spec: ExecutionSpec, job_id: str) -> dict[str, Any]:
                 "run_function": "run_cell",
             },
         }
-    return {}
+    return {
+        "schema_id": EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+        "schema_version": EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+        "provider": "none",
+    }
 
 def render_modal_app(spec: ExecutionSpec) -> str:
     """Render a Modal app script for a Modal execution spec."""
@@ -190,17 +192,8 @@ def _json_loads_literal(payload: Any, *, sort_keys: bool = False) -> str:
 def _render_modal_app_pip_install(spec: ExecutionSpec) -> str:
     """Render the legacy pip-install Modal app path."""
     job_id = spec.resolved_job_id()
-    default_command = _execution_command(spec, job_id=job_id)
-    cells = spec.cells or [ExecutionCell(id="main", command=default_command)]
-    cell_payload = [
-        {
-            "id": cell.id,
-            "command": cell.command or default_command,
-            "env": cell.env,
-            "params": cell.params,
-        }
-        for cell in cells
-    ]
+    default_command = modal_execution_command(spec, job_id=job_id)
+    cell_payload = modal_cell_payloads(spec, job_id=job_id)
     packages = _json_loads_literal(modal_image_packages(spec))
     secrets = _json_loads_literal(spec.modal.secrets)
     gpu = _json_loads_literal(spec.modal.gpu)
@@ -220,7 +213,7 @@ def _render_modal_app_pip_install(spec: ExecutionSpec) -> str:
         sort_keys=True,
     )
     training_run_spec_path = _json_loads_literal(
-        _training_run_spec_path(spec, job_id=job_id)
+        modal_training_run_spec_path(spec, job_id=job_id)
         if spec.training_run_spec is not None
         else None
     )
@@ -347,17 +340,8 @@ def _render_modal_app_pip_install(spec: ExecutionSpec) -> str:
 
 def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
     job_id = spec.resolved_job_id()
-    default_command = _execution_command(spec, job_id=job_id)
-    cells = spec.cells or [ExecutionCell(id="main", command=default_command)]
-    cell_payload = [
-        {
-            "id": cell.id,
-            "command": _uv_run_command(cell.command or default_command),
-            "env": cell.env,
-            "params": cell.params,
-        }
-        for cell in cells
-    ]
+    default_command = modal_execution_command(spec, job_id=job_id)
+    cell_payload = modal_cell_payloads(spec, job_id=job_id)
     embedded_sources = _local_embed_sources(spec)
     primary_source = _primary_repo_source(spec, embedded_sources)
     primary_remote_path = primary_source.remote_path(spec.modal.workspace)
@@ -404,7 +388,7 @@ def _render_modal_app_local_embed(spec: ExecutionSpec) -> str:
         sort_keys=True,
     )
     training_run_spec_path = _json_loads_literal(
-        _training_run_spec_path(spec, job_id=job_id)
+        modal_training_run_spec_path(spec, job_id=job_id)
         if spec.training_run_spec is not None
         else None
     )
@@ -594,27 +578,12 @@ def write_modal_app(spec: ExecutionSpec, path: Path | str) -> Path:
     return output
 
 
-def _execution_command(spec: ExecutionSpec, *, job_id: str) -> str:
-    if spec.training_run_spec is None:
-        if spec.command is None:
-            raise ValueError("ExecutionSpec.command is required without training_run_spec")
-        return spec.command
-    run_directory = _modal_run_directory(spec, job_id=job_id)
-    spec_path = _training_run_spec_path(spec, job_id=job_id)
-    return shlex.join(
-        [
-            "python",
-            "-m",
-            "feedbax",
-            "execute-training-run-spec",
-            spec_path,
-            "--manifest-root",
-            run_directory,
-            "--checkpoint-root",
-            f"{run_directory.rstrip('/')}/checkpoints",
-            "--run-id",
-            job_id,
-        ]
+def modal_execution_command(spec: ExecutionSpec, *, job_id: str) -> str:
+    """Return the command rendered into Modal apps and Modal cloud payloads."""
+    return execution_command(
+        spec,
+        job_id=job_id,
+        run_directory=_modal_run_directory(spec, job_id=job_id),
     )
 
 
@@ -625,14 +594,35 @@ def _modal_run_directory(spec: ExecutionSpec, *, job_id: str) -> str:
     )
 
 
-def _training_run_spec_path(spec: ExecutionSpec, *, job_id: str) -> str:
-    if spec.training_run_spec is None:
-        raise ValueError("training_run_spec is required")
-    run_directory = _modal_run_directory(spec, job_id=job_id)
-    spec_path = spec.training_run_spec.path
-    if not Path(spec_path).is_absolute():
-        return f"{run_directory.rstrip('/')}/{spec_path.lstrip('/')}"
-    return spec_path
+def modal_training_run_spec_path(spec: ExecutionSpec, *, job_id: str) -> str:
+    """Return the Modal worker path for a TrainingRunSpec source."""
+    return training_run_spec_path(
+        spec,
+        _modal_run_directory(spec, job_id=job_id),
+    )
+
+
+def modal_cell_payloads(spec: ExecutionSpec, *, job_id: str) -> list[dict[str, Any]]:
+    """Return Modal cell payloads shared by plan JSON and generated app globals."""
+    default_command = modal_execution_command(spec, job_id=job_id)
+    cells = spec.cells or [ExecutionCell(id="main", command=default_command)]
+    if _local_embed_sources(spec):
+        return [
+            {
+                **cell.model_dump(mode="json", exclude_none=True),
+                "command": _uv_run_command(cell.command or default_command),
+            }
+            for cell in cells
+        ]
+    return [
+        {
+            "id": cell.id,
+            "command": cell.command or default_command,
+            "env": cell.env,
+            "params": cell.params,
+        }
+        for cell in cells
+    ]
 
 
 def _local_embed_sources(spec: ExecutionSpec) -> list[RepoSource]:
@@ -683,25 +673,8 @@ def _local_embed_rewrite_files(
     return files
 
 
-def _source_provenance_record(source: RepoSource) -> dict[str, Any]:
-    local_path = source.local_path
-    provenance = (
-        collect_source_provenance(Path(expand_local_path(local_path)))
-        if local_path is not None
-        else {}
-    )
-    status_short = provenance.get("status_short")
-    return {
-        "name": source.name,
-        "local_path": local_path,
-        "commit": provenance.get("commit"),
-        "branch": provenance.get("branch"),
-        "dirty": bool(status_short) if status_short is not None else None,
-    }
-
-
 def _local_embed_source_provenance(sources: list[RepoSource]) -> dict[str, dict[str, Any]]:
-    records = [_source_provenance_record(source) for source in sources]
+    records = [source_provenance_record(source) for source in sources]
     return {record["name"]: record for record in records}
 
 

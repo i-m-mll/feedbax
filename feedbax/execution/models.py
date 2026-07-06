@@ -29,6 +29,10 @@ from feedbax.contracts.training import (
 EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v2"
 EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
 LOCAL_EXECUTION_RESULT_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
+EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID = "feedbax.manifest.execution_cloud_payload"
+EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION = "feedbax.manifest.execution_cloud_payload.v1"
+EXECUTION_REPRODUCIBILITY_SCHEMA_ID = "feedbax.manifest.execution_reproducibility"
+EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION = "feedbax.manifest.execution_reproducibility.v1"
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
@@ -366,6 +370,112 @@ class HealthCheck(ExecutionModel):
     critical: bool = True
 
 
+class MappingModel(ExecutionModel):
+    """Small mapping compatibility layer for existing plan consumers."""
+
+    def __getitem__(self, key: str) -> Any:
+        return self.model_dump(mode="json", exclude_none=True)[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.model_dump(mode="json", exclude_none=True).get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.model_dump(mode="json", exclude_none=True)
+
+
+class ExecutionCloudPayload(MappingModel):
+    """Versioned cloud-provider payload embedded in an execution plan."""
+
+    schema_id: Literal[EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID] = EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID
+    schema_version: Literal[EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION] = (
+        EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
+    )
+    provider: Literal["none", "runpod", "modal"] = "none"
+    api: Optional[str] = None
+    api_key_env: Optional[str] = None
+    pod_request: Optional[dict[str, Any]] = None
+    runpodctl_create: Optional[str] = None
+    worker_transport: Optional[dict[str, Any]] = None
+    readiness: list[str] = Field(default_factory=list)
+    app_name: Optional[str] = None
+    image_packages: list[str] = Field(default_factory=list)
+    computed_image_packages: list[str] = Field(default_factory=list)
+    gpu: Optional[str | list[str]] = None
+    secrets: list[str] = Field(default_factory=list)
+    volume: Optional[dict[str, Any]] = None
+    timeout_seconds: Optional[int] = None
+    max_containers: Optional[int] = None
+    parallel_submission: Optional[Literal["spawn_map", "map"]] = None
+    cells: list[dict[str, Any]] = Field(default_factory=list)
+    generated_app: Optional[dict[str, Any]] = None
+    training_run_spec: Optional[dict[str, Any]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_explicit_schema_identity(cls, data: Any) -> Any:
+        if isinstance(data, dict) and (
+            "schema_id" not in data or "schema_version" not in data
+        ):
+            raise ValueError(
+                "ExecutionCloudPayload requires explicit schema_id and schema_version"
+            )
+        return data
+
+    def __bool__(self) -> bool:
+        return self.provider != "none"
+
+    @model_validator(mode="after")
+    def _validate_provider_shape(self) -> "ExecutionCloudPayload":
+        if self.provider == "none":
+            return self
+        if self.provider == "runpod":
+            required = {
+                "api": self.api,
+                "api_key_env": self.api_key_env,
+                "pod_request": self.pod_request,
+                "runpodctl_create": self.runpodctl_create,
+                "worker_transport": self.worker_transport,
+            }
+            missing = [key for key, value in required.items() if value in (None, "", {})]
+            if missing:
+                raise ValueError(f"runpod cloud payload missing required fields: {missing}")
+            return self
+        if self.generated_app is None:
+            raise ValueError("modal cloud payload requires generated_app")
+        if self.parallel_submission is None:
+            raise ValueError("modal cloud payload requires parallel_submission")
+        return self
+
+
+class ExecutionReproducibility(MappingModel):
+    """Versioned reproducibility payload embedded in an execution plan."""
+
+    schema_id: Literal[EXECUTION_REPRODUCIBILITY_SCHEMA_ID] = (
+        EXECUTION_REPRODUCIBILITY_SCHEMA_ID
+    )
+    schema_version: Literal[EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION] = (
+        EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
+    )
+    install_modes: dict[str, InstallMode] = Field(default_factory=dict)
+    repo_refs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+    issues: list[str] = Field(default_factory=list)
+    generated_at: str = ""
+    training_run_spec: Optional[dict[str, Any]] = None
+    local_embed_sources: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_explicit_schema_identity(cls, data: Any) -> Any:
+        if isinstance(data, dict) and (
+            "schema_id" not in data or "schema_version" not in data
+        ):
+            raise ValueError(
+                "ExecutionReproducibility requires explicit schema_id and schema_version"
+            )
+        return data
+
+
 def execution_artifact_ref(
     *,
     role: str,
@@ -476,8 +586,8 @@ class ExecutionPlan(ExecutionModel):
     launch: PlanStep
     monitor: list[PlanStep] = Field(default_factory=list)
     artifact_routes: list[ArtifactRef] = Field(default_factory=list)
-    cloud_payload: dict[str, Any] = Field(default_factory=dict)
-    reproducibility: dict[str, Any] = Field(default_factory=dict)
+    cloud_payload: ExecutionCloudPayload = Field(default_factory=ExecutionCloudPayload)
+    reproducibility: ExecutionReproducibility = Field(default_factory=ExecutionReproducibility)
     warnings: list[str] = Field(default_factory=list)
 
 

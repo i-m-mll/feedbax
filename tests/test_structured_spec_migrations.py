@@ -38,7 +38,17 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.manifest import EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+from feedbax.contracts.studio_api import (
+    STUDIO_API_TRANSPORT_SCHEMA_ID,
+    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+)
 from feedbax.contracts.value_schema import ValueSchema
+from feedbax.execution.models import (
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+)
 from feedbax.objectives.spec import validate_objective_spec
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
@@ -237,6 +247,19 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
     assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
     assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v3"
+    assert families["ExecutionCloudPayload"].identity == EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID
+    assert (
+        families["ExecutionCloudPayload"].current_version
+        == EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
+    )
+    assert (
+        families["ExecutionReproducibility"].identity
+        == EXECUTION_REPRODUCIBILITY_SCHEMA_ID
+    )
+    assert (
+        families["ExecutionReproducibility"].current_version
+        == EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
+    )
     assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
     assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v3"
     assert (
@@ -244,6 +267,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.manifest.analysis_bundle_execution"
     )
     assert families["ValueSchema"].identity == "feedbax.spec.studio.schema.value"
+    assert families["StudioApiTransport"].identity == STUDIO_API_TRANSPORT_SCHEMA_ID
+    assert families["StudioApiTransport"].current_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
     assert families["VariableDescriptor"].identity == "feedbax.spec.descriptor.variable"
     assert families["ComponentDescriptor"].identity == "feedbax.spec.descriptor.component"
     assert families["DescriptorBasisIdentity"].identity == "feedbax.spec.descriptor.basis"
@@ -280,6 +305,8 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
             "feedbax.manifest.training_checkpoint_transaction"
         ),
         "TrainingRunManifest": "feedbax.manifest.training_run",
+        "ExecutionCloudPayload": EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+        "ExecutionReproducibility": EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
         "StudioPipelineMaterializationResult": (
             "feedbax.manifest.studio.pipeline_materialization_result"
         ),
@@ -337,6 +364,14 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.execution.models",
             ("feedbax.execution.models", "feedbax.integrations.provider"),
         ),
+        "ExecutionCloudPayload": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
+        "ExecutionReproducibility": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
         "LocalExecutionResult": (
             "feedbax.execution.models",
             ("feedbax.execution.models", "feedbax.integrations.provider"),
@@ -364,6 +399,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
         "StudioTrainingExecutionRequest": (
             "feedbax.studio.execution",
             ("feedbax.studio.execution", "feedbax.integrations.provider"),
+        ),
+        "StudioApiTransport": (
+            "feedbax.contracts.studio_api",
+            ("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
         ),
     }
 
@@ -419,6 +458,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ReportSpec",
         "RegenerationSpec",
         "ExecutionSpec",
+        "StudioApiTransport",
         "StudioWorkspaceSpec",
         "StudioTaskBindingSpec",
         "StudioPipelineMaterializationRequest",
@@ -433,6 +473,8 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "TrainingRunManifest",
         "AnalysisDataProduct",
         "ExecutionPlan",
+        "ExecutionCloudPayload",
+        "ExecutionReproducibility",
         "LocalExecutionResult",
         "StagedAnalysisBundleExecution",
         "ProviderManifest",
@@ -537,7 +579,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
     execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
     execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
+    cloud_payload_policy = default_spec_registry.resolve("ExecutionCloudPayload").policy
+    reproducibility_policy = default_spec_registry.resolve("ExecutionReproducibility").policy
     local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
+    studio_api_policy = default_spec_registry.resolve("StudioApiTransport").policy
     report_policy = default_spec_registry.resolve("ReportSpec").policy
     extraction_policy = default_spec_registry.resolve("ExtractionProductSpec").policy
 
@@ -570,10 +615,22 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         "feedbax.manifest.execution.v2",
         "feedbax.manifest.execution.v1",
     )
+    assert cloud_payload_policy is not None
+    assert cloud_payload_policy.rejected_old_versions == (
+        "feedbax.manifest.execution_cloud_payload.v0",
+    )
+    assert reproducibility_policy is not None
+    assert reproducibility_policy.rejected_old_versions == (
+        "feedbax.manifest.execution_reproducibility.v0",
+    )
     assert local_execution_result_policy is not None
     assert local_execution_result_policy.rejected_old_versions == (
         "feedbax.manifest.execution.v2",
         "feedbax.manifest.execution.v1",
+    )
+    assert studio_api_policy is not None
+    assert studio_api_policy.rejected_old_versions == (
+        "feedbax.spec.studio.api_transport.v0",
     )
     assert population_policy.stance == "reject"
     assert population_policy.rejected_old_versions == ("feedbax.population_structure.v1",)

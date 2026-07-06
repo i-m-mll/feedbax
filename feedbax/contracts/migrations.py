@@ -80,6 +80,19 @@ from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
     WORKER_CONTRACT_SCHEMA_VERSION,
 )
+from feedbax.contracts.studio_api import (
+    STUDIO_API_TRANSPORT_SCHEMA_ID,
+    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+)
+from feedbax.execution.models import (
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+    EXECUTION_PLAN_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+    EXECUTION_SPEC_SCHEMA_VERSION,
+    LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
+)
 
 
 MigrationPayload = Mapping[str, Any]
@@ -1795,21 +1808,35 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         (
             "ExecutionSpec",
             "feedbax.spec.execution",
-            "feedbax.spec.execution.v2",
+            EXECUTION_SPEC_SCHEMA_VERSION,
             ("feedbax.spec.execution.v1",),
             "Provider-neutral execution request.",
         ),
         (
             "ExecutionPlan",
             "feedbax.manifest.execution_plan",
-            "feedbax.manifest.execution.v3",
+            EXECUTION_PLAN_SCHEMA_VERSION,
             ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
             "Inspectable concrete execution plan.",
         ),
         (
+            "ExecutionCloudPayload",
+            EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+            EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+            ("feedbax.manifest.execution_cloud_payload.v0",),
+            "Typed provider payload embedded in an execution plan.",
+        ),
+        (
+            "ExecutionReproducibility",
+            EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+            EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+            ("feedbax.manifest.execution_reproducibility.v0",),
+            "Typed reproducibility payload embedded in an execution plan.",
+        ),
+        (
             "LocalExecutionResult",
             "feedbax.manifest.local_execution_result",
-            "feedbax.manifest.execution.v3",
+            LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
             ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
             "Local execution result.",
         ),
@@ -1826,6 +1853,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 rejected_old_versions=rejected_versions,
             )
         )
+
+    families.append(
+        _family(
+            "StudioApiTransport",
+            STUDIO_API_TRANSPORT_SCHEMA_ID,
+            STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.studio_api",
+            emitted_by=("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
+            consumed_by=("Studio frontend", "provider HTTP API"),
+            description="Shared schema identity for Studio HTTP/WebSocket transport models.",
+            rejected_old_versions=("feedbax.spec.studio.api_transport.v0",),
+            required_tests=(
+                "tests/test_studio_api_contracts.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        )
+    )
 
     for kind, schema_id, description in (
         (

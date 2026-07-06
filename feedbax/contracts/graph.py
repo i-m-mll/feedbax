@@ -27,6 +27,8 @@ ParamValue = Union[int, float, str, bool, None, List[Any], Dict[str, Any]]
 class ParamSchema(BaseModel):
     """Schema for a component parameter."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     type: Literal["int", "float", "bool", "str", "enum", "array", "object", "bounds2d"]
     default: Optional[ParamValue] = None
@@ -41,6 +43,8 @@ class ParamSchema(BaseModel):
 
 class ComponentSpec(BaseModel):
     """Specification for a component instance in a graph."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: str
     params: Dict[str, ParamValue] = Field(default_factory=dict)
@@ -65,6 +69,8 @@ class ParameterConstraintSpec(BaseModel):
 
 class WireSpec(BaseModel):
     """Specification for a wire connecting two ports."""
+
+    model_config = ConfigDict(extra="forbid")
 
     source_node: str
     source_port: str
@@ -290,6 +296,8 @@ class AnalysisInputRequirement(BaseModel):
 class GraphMetadata(BaseModel):
     """Metadata for a graph."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: Optional[str] = None
     created_at: str
@@ -301,6 +309,8 @@ class GraphMetadata(BaseModel):
 
 class GraphSpec(BaseModel):
     """Complete specification for a computation graph."""
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_id: str = Field(
         default=GRAPH_SPEC_SCHEMA_ID,

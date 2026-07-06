@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 import feedbax.contracts.graphs.serialization as serialization
 from feedbax.contracts.graph import (
@@ -9,7 +10,10 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     ComponentSpec,
+    GraphMetadata,
     GraphSpec,
+    ParamSchema,
+    WireSpec,
 )
 from feedbax.contracts.manifest import (
     ArtifactMigrationRecord,
@@ -58,6 +62,46 @@ def test_graph_spec_schema_identity_survives_json_round_trip() -> None:
     assert payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
     assert round_tripped.schema_id == GRAPH_SPEC_SCHEMA_ID
     assert round_tripped.schema_version == GRAPH_SPEC_SCHEMA_VERSION
+
+
+def test_graph_spec_strict_models_accept_generated_current_fixture() -> None:
+    payload = _current_graph_payload()
+
+    round_tripped = GraphSpec.model_validate(payload)
+
+    assert round_tripped.model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (ParamSchema, {"name": "gain", "type": "float", "unknown": True}),
+        (ComponentSpec, {"type": "Gain", "unknown": True}),
+        (
+            WireSpec,
+            {
+                "source_node": "a",
+                "source_port": "output",
+                "target_node": "b",
+                "target_port": "input",
+                "unknown": True,
+            },
+        ),
+        (
+            GraphMetadata,
+            {
+                "name": "g",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "unknown": True,
+            },
+        ),
+        (GraphSpec, {"nodes": {}, "wires": [], "unknown": True}),
+    ],
+)
+def test_graph_spec_core_models_reject_unknown_extra_fields(model, payload) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        model.model_validate(payload)
 
 
 def test_graph_spec_migration_stamps_versionless_current_payload() -> None:

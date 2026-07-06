@@ -15,8 +15,16 @@ from feedbax.execution.backends import (
     ssh_prefix_for_backend,
 )
 from feedbax.contracts.manifest import ArtifactRef, utc_now
-from feedbax.execution.container import collect_source_provenance
+from feedbax.execution.commands import (
+    execution_command,
+    remote_command,
+    source_provenance_record,
+    training_run_spec_path,
+    training_run_spec_record,
+)
 from feedbax.execution.models import (
+    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
     ExecutionPlan,
     ExecutionSpec,
     HealthCheck,
@@ -53,13 +61,13 @@ def prepare_execution_plan(spec: ExecutionSpec) -> ExecutionPlan:
     job_id = spec.resolved_job_id()
     workspace = _workspace_for_backend(spec)
     run_directory = f"{workspace.rstrip('/')}/{spec.artifact_policy.manifest_root}/{job_id}"
-    base_command = _execution_command(spec, job_id=job_id, run_directory=run_directory)
-    command = _remote_command(spec, base_command)
+    base_command = execution_command(spec, job_id=job_id, run_directory=run_directory)
+    command = remote_command(spec, base_command)
     bootstrap = _bootstrap_steps(spec, workspace, run_directory)
     health_checks = _health_checks(spec)
     launch = _launch_step(spec, command, run_directory)
     payload = cloud_payload(spec, job_id)
-    training_record = _training_run_spec_record(spec, run_directory)
+    training_record = training_run_spec_record(spec, run_directory)
     if training_record is not None and payload:
         payload = {**payload, "training_run_spec": training_record}
     reproducibility = _reproducibility(spec, run_directory)
@@ -90,61 +98,8 @@ def _workspace_for_backend(spec: ExecutionSpec) -> str:
     return str(Path(spec.local.cwd).expanduser()) if spec.local.cwd else str(Path.cwd())
 
 
-def _remote_command(
-    spec: ExecutionSpec,
-    command: str,
-    extra_env: Optional[dict[str, str]] = None,
-) -> str:
-    env = {**spec.env, **(extra_env or {})}
-    env_prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in sorted(env.items()))
-    return f"{env_prefix} {command}".strip()
-
-
-def _execution_command(spec: ExecutionSpec, *, job_id: str, run_directory: str) -> str:
-    if spec.training_run_spec is None:
-        if spec.command is None:
-            raise ValueError("ExecutionSpec.command is required without training_run_spec")
-        return spec.command
-    spec_path = _training_run_spec_path(spec, run_directory)
-    return shlex.join(
-        [
-            "python",
-            "-m",
-            "feedbax",
-            "execute-training-run-spec",
-            spec_path,
-            "--manifest-root",
-            run_directory,
-            "--checkpoint-root",
-            f"{run_directory.rstrip('/')}/checkpoints",
-            "--run-id",
-            job_id,
-        ]
-    )
-
-
-def _training_run_spec_path(spec: ExecutionSpec, run_directory: str) -> str:
-    if spec.training_run_spec is None:
-        raise ValueError("training_run_spec is required")
-    path = spec.training_run_spec.path
-    if Path(path).is_absolute():
-        return path
-    return f"{run_directory.rstrip('/')}/{path.lstrip('/')}"
-
-
 def _training_manifest_path(job_id: str, run_directory: str) -> str:
     return f"{run_directory.rstrip('/')}/manifests/training_runs/feedbax-training-run_{job_id}.json"
-
-
-def _training_run_spec_record(
-    spec: ExecutionSpec,
-    run_directory: str,
-) -> dict[str, Any] | None:
-    if spec.training_run_spec is None:
-        return None
-    return spec.training_run_spec.plan_record(
-        path=_training_run_spec_path(spec, run_directory)
-    )
 
 
 def _bootstrap_steps(
@@ -199,7 +154,7 @@ def _materialize_training_run_spec_command(spec: ExecutionSpec, run_directory: s
     payload = spec.training_run_spec.inline_payload()
     if payload is None:
         raise ValueError("inline TrainingRunSpec payload is required")
-    spec_path = _training_run_spec_path(spec, run_directory)
+    spec_path = training_run_spec_path(spec, run_directory)
     spec_dir = str(Path(spec_path).parent)
     body = json.dumps(payload, indent=2, sort_keys=True)
     return (
@@ -407,13 +362,13 @@ def _cell_launcher_script(spec: ExecutionSpec, log_dir: str, run_directory: str)
         f"mkdir -p {shlex.quote(cell_dir)} {shlex.quote(run_directory)}",
         "pids=''",
     ]
-    base_command = _execution_command(
+    base_command = execution_command(
         spec,
         job_id=run_directory.rstrip("/").rsplit("/", 1)[-1],
         run_directory=run_directory,
     )
     for cell in spec.cells:
-        cell_command = _remote_command(spec, cell.command or base_command, cell.env)
+        cell_command = remote_command(spec, cell.command or base_command, cell.env)
         safe_id = shlex.quote(cell.id)
         prefix = f"{cell_dir.rstrip('/')}/{cell.id}"
         fragments.append(
@@ -486,8 +441,8 @@ def _artifact_routes(spec: ExecutionSpec, run_directory: str) -> list[ArtifactRe
             [
                 execution_artifact_ref(
                     role="training_run_spec",
-                    logical_name=Path(_training_run_spec_path(spec, run_directory)).name,
-                    uri=_training_run_spec_path(spec, run_directory),
+                    logical_name=Path(training_run_spec_path(spec, run_directory)).name,
+                    uri=training_run_spec_path(spec, run_directory),
                     media_type="application/json",
                     metadata={
                         "tracked": True,
@@ -597,6 +552,8 @@ def _warnings(
 
 def _reproducibility(spec: ExecutionSpec, run_directory: str) -> dict[str, Any]:
     record: dict[str, Any] = {
+        "schema_id": EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+        "schema_version": EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
         "install_modes": {source.name: source.install_mode for source in spec.repos},
         "repo_refs": {
             source.name: {
@@ -611,34 +568,17 @@ def _reproducibility(spec: ExecutionSpec, run_directory: str) -> dict[str, Any]:
         "issues": spec.issues,
         "generated_at": utc_now().isoformat(),
     }
-    training_source = _training_run_spec_record(spec, run_directory)
+    training_source = training_run_spec_record(spec, run_directory)
     if training_source is not None:
         record["training_run_spec"] = training_source
     local_embed_sources = [
-        _local_embed_source_record(source)
+        source_provenance_record(source)
         for source in spec.repos
         if source.install_mode == "local-embed"
     ]
     if local_embed_sources:
         record["local_embed_sources"] = local_embed_sources
     return record
-
-
-def _local_embed_source_record(source: RepoSource) -> dict[str, Any]:
-    local_path = source.local_path
-    provenance = (
-        collect_source_provenance(Path(local_path).expanduser())
-        if local_path is not None
-        else {}
-    )
-    status_short = provenance.get("status_short")
-    return {
-        "name": source.name,
-        "local_path": local_path,
-        "commit": provenance.get("commit"),
-        "branch": provenance.get("branch"),
-        "dirty": bool(status_short) if status_short is not None else None,
-    }
 
 
 def _primary_repo(spec: ExecutionSpec) -> Optional[str]:
