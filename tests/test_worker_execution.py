@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 import threading
 
@@ -371,6 +372,19 @@ def test_run_training_graph_trains_tiny_full_graph() -> None:
     assert "graph_output:output" in result.retained_observables["outputs"]
     assert "task_data:model_input" in result.retained_observables["task_data"]
     assert "task_data:inputs.model" in result.retained_observables["task_data"]
+
+
+def test_worker_checkpoint_cleanup_removes_managed_tempdir(tmp_path: Path) -> None:
+    from feedbax.web.worker.app import _cleanup_checkpoint_path
+
+    checkpoint_dir = tmp_path / "feedbax_ckpt_demo"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "job.eqx"
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    _cleanup_checkpoint_path(str(checkpoint_path))
+
+    assert not checkpoint_dir.exists()
 
 
 def test_run_training_graph_emits_progress_on_snapshot_cadence() -> None:

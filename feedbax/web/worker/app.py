@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import os
 import queue
+import shutil
 import threading
 import time
 import uuid
@@ -127,6 +129,16 @@ def _job_checkpoint_payload(job: _Job) -> dict[str, Any]:
             "weights_available": job.checkpoint_path is not None,
             "job_id": job.job_id,
         }
+
+
+def _cleanup_checkpoint_path(path: str | None) -> None:
+    """Remove a managed worker checkpoint tempdir when a job is evicted."""
+    if path is None:
+        return
+    checkpoint_dir = os.path.dirname(path)
+    if not os.path.basename(checkpoint_dir).startswith("feedbax_ckpt_"):
+        return
+    shutil.rmtree(checkpoint_dir, ignore_errors=True)
 
 
 def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
@@ -458,7 +470,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         if overflow <= 0:
             return
         for _, job_id in sorted(terminal_jobs)[:overflow]:
-            del _jobs[job_id]
+            job = _jobs.pop(job_id)
+            with job._state_lock:
+                checkpoint_path = job.checkpoint_path
+            _cleanup_checkpoint_path(checkpoint_path)
 
     def _running_job_id_locked() -> Optional[str]:
         """Return the active job id if the single-worker slot is occupied."""
@@ -614,8 +629,6 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     @app.get("/jobs/{job_id}/checkpoint/download", dependencies=[_auth_dep])
     def checkpoint_download(job_id: str):
         """Download the serialized checkpoint file for a job."""
-        import os
-
         job = _get_job(job_id)
         with job._state_lock:
             checkpoint_path = job.checkpoint_path

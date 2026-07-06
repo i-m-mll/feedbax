@@ -156,14 +156,33 @@ class TrainingService:
 
     def _terminate_worker(self) -> None:
         """Terminate the worker subprocess if it is running."""
-        if self._process is not None:
+        process = self._process
+        self._process = None
+        self._base_url = None
+        self._port = None
+        self._remote = False
+        self._auth_token = None
+
+        if process is not None:
             try:
-                self._process.terminate()
+                process.terminate()
             except OSError:
                 pass
-            self._process = None
-            self._base_url = None
-            self._port = None
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+            try:
+                process.communicate(timeout=0.1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
     # ------------------------------------------------------------------
     # Public interface (mirrors the old TrainingService API)
