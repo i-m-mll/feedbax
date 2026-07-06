@@ -318,8 +318,17 @@ def load_latest_checkpoint(
             ) from exc
     _validate_manifest_structural_abi(manifest, loaded_slots)
     if resume_slot_transform is not None:
-        loaded_slots = dict(resume_slot_transform(loaded_slots))
-        _validate_required_slots(tuple(barrier.slots), loaded_slots)
+        try:
+            loaded_slots = dict(resume_slot_transform(loaded_slots))
+        except CheckpointCustodyError:
+            raise
+        except Exception as exc:
+            raise CheckpointCompatibilityError("resume_slot_transform failed") from exc
+        _validate_required_slots(
+            tuple(barrier.slots),
+            loaded_slots,
+            error_cls=CheckpointCompatibilityError,
+        )
     _validate_structural_abi(manifest, expected_slots, loaded_slots)
 
     return CheckpointResumeResult(
@@ -387,10 +396,12 @@ def structural_abi_fingerprint(value: Any) -> StructuralAbiFingerprint:
 def _validate_required_slots(
     slot_specs: tuple[CheckpointSlotSpec, ...],
     slots: Mapping[str, Any],
+    *,
+    error_cls: type[CheckpointCustodyError] = CheckpointCustodyError,
 ) -> None:
     missing = [spec.slot for spec in slot_specs if spec.required and spec.slot not in slots]
     if missing:
-        raise CheckpointCustodyError(f"missing required checkpoint slots: {missing!r}")
+        raise error_cls(f"missing required checkpoint slots: {missing!r}")
 
 
 def _validate_expected_slot_set(
