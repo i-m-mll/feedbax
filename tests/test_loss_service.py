@@ -463,6 +463,43 @@ class TestExecutableLowering:
         assert lowered.requirements.requires_axes == ["batch"]
         assert lowered.requirements.aggregation_semantics == {"batch": "mean"}
 
+    def test_loss_term_l2_uses_euclidean_feature_norm(self) -> None:
+        spec = LossTermSpec(
+            type="target_state",
+            label="output",
+            selector="state.output",
+            target_value=[1.0, 0.0],
+            norm="l2",
+            time_agg=TimeAggregationSpec(mode="sum"),
+        )
+
+        lowered = LossService().lower_loss_term_spec(spec)
+        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
+        expected = jnp.mean(jnp.sum(jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1)), axis=1))
+        assert jnp.allclose(value, expected)
+
+    def test_objective_spec_l2_uses_euclidean_feature_norm(self) -> None:
+        spec = ObjectiveSpec(
+            terms=[
+                TargetStateLossSpec(
+                    label="output_l2",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[1.0, 0.0]),
+                    metric={"kind": "l2"},
+                    reduction=ReductionSpec(time="sum", trial="mean", feature="sum"),
+                )
+            ],
+        )
+
+        lowered = LossService().lower_objective_spec(spec)
+        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
+        expected = jnp.mean(jnp.sum(jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1)), axis=1))
+        assert jnp.allclose(value, expected)
+
     def test_objective_spec_lowers_matrix_mask_and_schedule_terms(self) -> None:
         spec = ObjectiveSpec(
             timeline=_timeline(),

@@ -39,6 +39,19 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _worker_stderr_excerpt(process: subprocess.Popen, *, limit: int = 4000) -> str:
+    """Return captured stderr for an exited worker process."""
+    if process.poll() is None or process.stderr is None:
+        return ""
+    try:
+        _stdout, stderr = process.communicate(timeout=0.1)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if not isinstance(stderr, str):
+        stderr = stderr.decode(errors="replace") if stderr else ""
+    return stderr.strip()[-limit:]
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -128,10 +141,17 @@ class TrainingService:
             self._process = subprocess.Popen(
                 [sys.executable, "-m", "feedbax.web.worker", "--port", str(port)],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
             )
 
-            await worker_client.wait_for_health(self._base_url, timeout=5.0, interval=0.1)
+            try:
+                await worker_client.wait_for_health(self._base_url, timeout=5.0, interval=0.1)
+            except Exception as exc:
+                stderr = _worker_stderr_excerpt(self._process)
+                self._terminate_worker()
+                detail = f": {stderr}" if stderr else ""
+                raise RuntimeError(f"Worker subprocess failed health check{detail}") from exc
             return self._base_url
 
     def _terminate_worker(self) -> None:

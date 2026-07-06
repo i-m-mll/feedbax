@@ -111,7 +111,6 @@ class RigidTendonMusculoskeletalArm(Component):
 
     # Integration
     dt: float
-    solver: dfx.AbstractSolver = field(static=True)
     state_index: StateIndex
     _initial_state: MusculoskeletalState = field(static=True)
 
@@ -131,7 +130,7 @@ class RigidTendonMusculoskeletalArm(Component):
         arm_s=(0.11, 0.16),
         arm_B=((0.05, 0.025), (0.025, 0.05)),
         dt: float = 0.01,
-        solver_type: Type[dfx.AbstractSolver] = dfx.Kvaerno3,
+        solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):
@@ -144,9 +143,17 @@ class RigidTendonMusculoskeletalArm(Component):
             geometry: Muscle geometry. If None, uses default 6-muscle geometry.
             arm_l, arm_m, arm_I, arm_s, arm_B: Arm physical parameters.
             dt: Integration timestep.
-            solver_type: Diffrax solver type.
+            solver_type: Diffrax solver type. Only ``dfx.Euler`` is supported
+                by this explicit rigid-tendon integrator.
             key: PRNG key.
         """
+        if solver_type is not dfx.Euler:
+            raise ValueError(
+                "RigidTendonMusculoskeletalArm uses an explicit Euler update; "
+                f"solver_type={solver_type.__name__} is not supported. Use dfx.Euler "
+                "or switch to a DAE-based component for implicit integration."
+            )
+
         # Store arm parameters
         self.arm_l = jnp.asarray(arm_l)
         self.arm_m = jnp.asarray(arm_m)
@@ -189,7 +196,6 @@ class RigidTendonMusculoskeletalArm(Component):
 
         # Integration
         self.dt = dt
-        self.solver = solver_type()
 
         if key is None:
             key = jax.random.PRNGKey(0)
@@ -220,12 +226,6 @@ class RigidTendonMusculoskeletalArm(Component):
             self.arm_m[1] * self.arm_l[0] * self.arm_s[1],
             self.arm_I[1],
         )
-
-    @cached_property
-    def _term(self) -> dfx.ODETerm:
-        """ODE term for integration."""
-        # Type mismatch: diffrax uses RealScalarLike, we use jaxtyping.Scalar
-        return dfx.ODETerm(self._vector_field)  # type: ignore[arg-type]
 
     @property
     def n_muscles(self) -> int:
@@ -300,7 +300,6 @@ class RigidTendonMusculoskeletalArm(Component):
         )
 
         # Muscle geometry
-        mt_lengths = self.geometry.musculotendon_lengths(angle)
         mt_velocities = self.geometry.musculotendon_velocities(angle, d_angle)
         moment_arms = self.geometry.moment_arms(angle)
 
@@ -369,8 +368,7 @@ class RigidTendonMusculoskeletalArm(Component):
         ms_state: MusculoskeletalState = state.get(self.state_index)
         excitations = inputs.get("excitations", jnp.zeros(self.n_muscles))
 
-        # Integrate one step
-        # For simplicity, use Euler step here
+        # Integrate one explicit Euler step.
         derivatives = self._vector_field(jnp.array(0.0), ms_state, excitations)
 
         new_arm = TwoLinkArmState(
@@ -734,7 +732,6 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     def init_system_state(self, *, key: PRNGKeyArray) -> MusculoskeletalState:
         """Initialize at rest position."""
         init_arm = TwoLinkArmState()
-        mt_lengths = self.geometry.musculotendon_lengths(init_arm.angle)
 
         init_fiber_lengths = jnp.array([
             mp.optimal_fiber_length for mp in self.muscle_params

@@ -8,6 +8,7 @@ and musculoskeletal arm integration.
 """
 
 import pytest
+import diffrax as dfx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -288,6 +289,26 @@ class TestCompliantTendonMuscle:
         assert "state" in outputs
         assert jnp.isfinite(outputs["force"])
 
+    def test_extract_outputs_rejects_state_only_force_contract(self, muscle):
+        dae_state = init_state_from_component(muscle).get(muscle.state_index)
+
+        with pytest.raises(NotImplementedError, match="musculotendon_length"):
+            muscle.extract_outputs(dae_state.system)
+
+    def test_single_step_force_uses_tendon_length_not_zero_placeholder(self, muscle):
+        state = init_state_from_component(muscle)
+        outputs, _ = muscle(
+            {
+                "excitation": jnp.array(0.5),
+                "musculotendon_length": jnp.array(0.30),
+                "musculotendon_velocity": jnp.array(0.0),
+            },
+            state,
+            key=jr.PRNGKey(11),
+        )
+
+        assert outputs["force"] > 0.0
+
     def test_constraint_residual_small(self, muscle):
         """Test that integration runs without errors."""
         state = init_state_from_component(muscle)
@@ -409,6 +430,14 @@ class TestRigidTendonMusculoskeletalArm:
         """Test arm initializes correctly."""
         assert arm.n_muscles == 6
         assert arm.dt == 0.01
+
+    def test_non_euler_solver_rejected(self):
+        with pytest.raises(ValueError, match="solver_type=Kvaerno3 is not supported"):
+            RigidTendonMusculoskeletalArm(
+                dt=0.01,
+                solver_type=dfx.Kvaerno3,
+                key=jr.PRNGKey(0),
+            )
 
     def test_single_step(self, arm):
         """Test single integration step."""

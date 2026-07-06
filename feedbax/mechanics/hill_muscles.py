@@ -20,12 +20,10 @@ Key references:
 from __future__ import annotations
 
 from abc import abstractmethod
-from functools import cached_property
 import logging
 from typing import Optional, Type
 
 import diffrax as dfx
-import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State
 import jax
@@ -716,11 +714,11 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         )
 
     def extract_outputs(self, state: CompliantTendonState) -> dict[str, Array]:
-        """Extract force output from muscle state."""
-        # For outputs, we need to compute force given current state
-        # This requires MT length which isn't in the state...
-        # Return a placeholder; actual force is computed in __call__
-        return {"force": jnp.zeros(())}
+        """Compliant tendon force requires current musculotendon length input."""
+        raise NotImplementedError(
+            "CompliantTendonHillMuscle cannot extract force from state alone; "
+            "call the component with musculotendon_length so tendon force can be computed."
+        )
 
     def _get_zero_input(self) -> tuple[Array, Array, Array]:
         """Zero input tuple."""
@@ -752,29 +750,34 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         mt_length = inputs.get("musculotendon_length", jnp.zeros(()))
         mt_velocity = inputs.get("musculotendon_velocity", jnp.zeros(()))
 
-        # Pack inputs for DAE
         input_tuple = (excitation, mt_length, mt_velocity)
-        modified_inputs = {"input": input_tuple}
-
-        outputs, state = super().__call__(modified_inputs, state, key=key)
-
-        # Apply activation bounds clamping after integration
         dae_state = state.get(self.state_index)
-        muscle_state = dae_state.system
+        muscle_state, _, _, new_solver_state, _ = self.solver.step(
+            self._term,
+            0.0,
+            self.dt,
+            dae_state.system,
+            input_tuple,
+            dae_state.solver,
+            made_jump=False,
+        )
+
         clamped_activation = jnp.clip(muscle_state.activation, 0.0, 1.0)
         muscle_state = CompliantTendonState(
             activation=clamped_activation,
             fiber_length=muscle_state.fiber_length,
         )
         from feedbax.mechanics.dae import DAEState
-        dae_state = DAEState(system=muscle_state, solver=dae_state.solver)
+        dae_state = DAEState(system=muscle_state, solver=new_solver_state)
         state = state.set(self.state_index, dae_state)
 
-        # Compute actual force from updated state
         tendon_length = self.compute_tendon_length(muscle_state.fiber_length, mt_length)
         force = self.compute_tendon_force(tendon_length)
 
-        outputs["force"] = force
+        outputs = {
+            "force": force,
+            "state": muscle_state,
+        }
         return outputs, state
 
     def compute_constraint_residual(
