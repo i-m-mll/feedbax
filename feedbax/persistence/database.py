@@ -46,6 +46,7 @@ from sqlalchemy import (
     inspect,
     literal,
     or_,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import array as dbarray
@@ -90,6 +91,12 @@ logger.setLevel(logging.DEBUG)
 logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
 
 CURRENT_MODEL_HASH_VERSION = "v2"
+CURRENT_PERSISTENCE_SCHEMA_VERSION = 1
+PERSISTENCE_SCHEMA_STATE_TABLE = "_feedbax_persistence_schema"
+
+
+class PersistenceSchemaMigrationError(RuntimeError):
+    """Raised when an existing persistence database cannot be safely reconciled."""
 
 
 class RecordBase(DeclarativeBase):
@@ -307,15 +314,162 @@ def _json_serializer(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+def _ensure_schema_state_table(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE IF NOT EXISTS {PERSISTENCE_SCHEMA_STATE_TABLE} (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    version INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+
+
+def _stamp_schema_version(engine) -> None:
+    _ensure_schema_state_table(engine)
+    with engine.begin() as conn:
+        conn.execute(text(f"DELETE FROM {PERSISTENCE_SCHEMA_STATE_TABLE} WHERE id = 1"))
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO {PERSISTENCE_SCHEMA_STATE_TABLE} (id, version)
+                VALUES (1, :version)
+                """
+            ),
+            {"version": CURRENT_PERSISTENCE_SCHEMA_VERSION},
+        )
+
+
+def _server_default_for_missing_column(table_name: str, column: Column) -> str | None:
+    if table_name == ModelRecord.__tablename__ and column.name == "hash_version":
+        return CURRENT_MODEL_HASH_VERSION
+
+    default = column.default
+    if default is None or default.is_callable:
+        return None
+
+    value = default.arg
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float, str)):
+        return str(value)
+    return None
+
+
+def _migration_column(table_name: str, column: Column) -> Column:
+    server_default = _server_default_for_missing_column(table_name, column)
+    nullable = column.nullable or server_default is None
+    return Column(
+        column.name,
+        column.type.copy(),
+        nullable=nullable,
+        server_default=server_default,
+    )
+
+
+def _add_missing_declared_columns(engine, table_name: str, model_class: type[RecordBase]) -> None:
+    inspector = inspect(engine)
+    existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+    missing_columns = [
+        column
+        for column in model_class.__table__.columns
+        if column.name not in existing_columns and not column.primary_key
+    ]
+    if not missing_columns:
+        return
+
+    with engine.begin() as conn:
+        context = MigrationContext.configure(conn)
+        op = Operations(context)
+        for column in missing_columns:
+            op.add_column(table_name, _migration_column(table_name, column))
+
+
+def _backfill_declared_schema(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if ModelRecord.__tablename__ in table_names:
+        model_columns = {col["name"] for col in inspector.get_columns(ModelRecord.__tablename__)}
+        if "hash_version" in model_columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"""
+                        UPDATE {ModelRecord.__tablename__}
+                        SET hash_version = :hash_version
+                        WHERE hash_version IS NULL
+                        """
+                    ),
+                    {"hash_version": CURRENT_MODEL_HASH_VERSION},
+                )
+
+
+def _create_declared_indexes(engine) -> None:
+    for model_class in TABLE_NAME_TO_MODEL.values():
+        if not inspect(engine).has_table(model_class.__tablename__):
+            continue
+        for index in model_class.__table__.indexes:
+            index.create(bind=engine, checkfirst=True)
+
+
+def _validate_declared_schema(engine) -> None:
+    inspector = inspect(engine)
+    if ModelRecord.__tablename__ not in inspector.get_table_names():
+        return
+
+    model_columns = {col["name"] for col in inspector.get_columns(ModelRecord.__tablename__)}
+    if "hash_version" not in model_columns:
+        raise PersistenceSchemaMigrationError(
+            "Existing persistence database is missing required models.hash_version column."
+        )
+
+    with engine.connect() as conn:
+        unsupported = conn.execute(
+            text(
+                f"""
+                SELECT hash, hash_version
+                FROM {ModelRecord.__tablename__}
+                WHERE hash_version IS NULL OR hash_version != :hash_version
+                LIMIT 1
+                """
+            ),
+            {"hash_version": CURRENT_MODEL_HASH_VERSION},
+        ).first()
+    if unsupported is not None:
+        raise PersistenceSchemaMigrationError(
+            "Existing persistence database contains model records with unsupported "
+            f"hash_version {unsupported.hash_version!r} for model {unsupported.hash!r}; "
+            f"expected {CURRENT_MODEL_HASH_VERSION!r}."
+        )
+
+
 def _sync_declared_schema(engine) -> None:
-    """Create declared tables/indices and reflect existing dynamic columns."""
+    """Create or reconcile declared tables/indices and reflect dynamic columns."""
+    table_names = set(inspect(engine).get_table_names())
+    has_existing_record_tables = bool(table_names & set(TABLE_NAME_TO_MODEL))
+
+    if has_existing_record_tables:
+        for table_name, model_class in TABLE_NAME_TO_MODEL.items():
+            if table_name in table_names:
+                _add_missing_declared_columns(engine, table_name, model_class)
+
     RecordBase.metadata.create_all(engine, checkfirst=True)
+    _backfill_declared_schema(engine)
+    _create_declared_indexes(engine)
+    _validate_declared_schema(engine)
+    _stamp_schema_version(engine)
 
     inspector = inspect(engine)
     for table_name in inspector.get_table_names():
         existing_columns = inspector.get_columns(table_name)
 
-        model = TABLE_NAME_TO_MODEL[table_name]
+        model = TABLE_NAME_TO_MODEL.get(table_name)
+        if model is None:
+            continue
 
         for col in existing_columns:
             try:
