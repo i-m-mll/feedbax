@@ -32,6 +32,10 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
 from feedbax.mechanics.dae import DAEComponent, DAEParams
+from feedbax.mechanics.units import (
+    DEFAULT_MUSCLE_VMAX,
+    ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -136,7 +140,8 @@ class ForceVelocityCurve(Module):
 
         Args:
             norm_velocity: Fiber velocity / (vmax * optimal_length).
-                Range roughly [-1, +0.1] where -1 = max shortening, +0.1 = max lengthening.
+                Range roughly ``[-1, ECCENTRIC_VELOCITY_LIMIT_FRACTION]`` where
+                -1 = max shortening and positive values are lengthening.
                 Negative = shortening, positive = lengthening.
 
         Returns:
@@ -149,7 +154,8 @@ class ForceVelocityCurve(Module):
         concentric = (1.0 + norm_velocity / a) / (1.0 - norm_velocity / a)
 
         # Eccentric (lengthening): different hyperbola branch
-        # Linear transition from 1.0 at v=0 to eccentric_force_max at v=0.1
+        # Linear transition from 1.0 at rest to eccentric_force_max at the
+        # shared normalized lengthening-speed limit.
         b = self.eccentric_curvature
         fmax = self.eccentric_force_max
         # Formulation: fv = fmax - (fmax-1) * (1 - v/b) / (1 + v/b)
@@ -235,7 +241,7 @@ class HillMuscleParams(DAEParams):
     pennation_angle: float = 0.0
     tau_activation: float = 0.01
     tau_deactivation: float = 0.04
-    vmax: float = 10.0
+    vmax: float = DEFAULT_MUSCLE_VMAX
 
 
 # ============================================================================
@@ -696,8 +702,10 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         # Select based on fv_required
         norm_velocity = jnp.where(fv_required < 1.0, concentric_vel, eccentric_vel)
 
-        # Clamp to reasonable range: -1 (max shortening) to ~0.1 (max lengthening)
-        norm_velocity = jnp.clip(norm_velocity, -1.0, 0.1)
+        # Clamp to the shared normalized velocity convention.
+        norm_velocity = jnp.clip(
+            norm_velocity, -1.0, ECCENTRIC_VELOCITY_LIMIT_FRACTION
+        )
 
         d_fiber_length = norm_velocity * self.muscle_params.vmax * self.muscle_params.optimal_fiber_length
 

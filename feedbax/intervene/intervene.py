@@ -15,6 +15,7 @@ import jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
+from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.noise import Normal
 
 
@@ -205,20 +206,25 @@ class DynamicsMatrixPerturb(Component):
     params_index: StateIndex
     _initial_state: DynamicsMatrixPerturbParams = field(static=True)
     label: str = field(default="dynamics_matrix_perturb", static=True)
-    mass: float = field(default=1.0, static=True)
+    mass: float = field(static=True)
 
     def __init__(
         self,
         params: Optional[DynamicsMatrixPerturbParams] = None,
         label: str = "dynamics_matrix_perturb",
-        mass: float = 1.0,
+        mass: float | None = None,
     ):
+        if mass is None:
+            raise ValueError(
+                "DynamicsMatrixPerturb requires an explicit positive mass matching "
+                "the wired plant; pass mass=<plant mass> at graph construction."
+            )
         if params is None:
             params = DynamicsMatrixPerturbParams(active=False)
         self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
-        self.mass = mass
+        self.mass = require_positive_finite("DynamicsMatrixPerturb.mass", mass)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: DynamicsMatrixPerturbParams = state.get(self.params_index)

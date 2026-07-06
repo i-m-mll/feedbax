@@ -10,6 +10,7 @@ import equinox as eqx
 from equinox.nn import State
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from feedbax.intervene import (
     AddNoise,
@@ -41,7 +42,7 @@ def _call(
 
 class TestDynamicsMatrixPerturb:
     def test_inactive_passes_force_through(self):
-        comp = DynamicsMatrixPerturb()
+        comp = DynamicsMatrixPerturb(mass=1.0)
         eff = CartesianState(pos=jnp.array([0.5, -0.3]), vel=jnp.array([1.0, 0.7]))
         f_in = jnp.array([0.1, 0.2])
         # delta_A is non-trivial but active=False ⇒ no perturbation
@@ -56,7 +57,7 @@ class TestDynamicsMatrixPerturb:
         assert jnp.allclose(f_out, f_in)
 
     def test_zero_delta_A_zero_perturbation(self):
-        comp = DynamicsMatrixPerturb()
+        comp = DynamicsMatrixPerturb(mass=1.0)
         eff = CartesianState(pos=jnp.array([1.0, 2.0]), vel=jnp.array([3.0, 4.0]))
         f_in = jnp.array([0.5, -0.5])
         params = DynamicsMatrixPerturbParams(
@@ -112,6 +113,12 @@ class TestDynamicsMatrixPerturb:
 
         f_out = run(eff, f_in, params)
         assert f_out.shape == (2,)
+
+    def test_mass_must_be_explicit_and_positive(self):
+        with pytest.raises(ValueError, match="requires an explicit positive mass"):
+            DynamicsMatrixPerturb()
+        with pytest.raises(ValueError, match="must be finite and positive"):
+            DynamicsMatrixPerturb(mass=0.0)
 
 
 def test_add_noise_splits_key_per_signal_leaf() -> None:
