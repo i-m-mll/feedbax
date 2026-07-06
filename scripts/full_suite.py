@@ -80,6 +80,13 @@ def shared_cache_root(repo_root: Path) -> Path:
     return common_dir / "feedbax_test_cache"
 
 
+def configure_jax_cache_env(cache_root: Path) -> None:
+    """Expose the shared test-cache root without forcing one exact JAX cache dir."""
+    if "FEEDBAX_JAX_COMPILATION_CACHE_DIR" in os.environ:
+        return
+    os.environ.setdefault("FEEDBAX_JAX_TEST_CACHE_ROOT", str(cache_root))
+
+
 def clean_tree_hash(repo_root: Path) -> tuple[str | None, tuple[str, ...]]:
     status = run_command(
         ["git", "status", "--porcelain", "--untracked-files=all"],
@@ -206,10 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     memo_dir = args.memo_dir or Path(
         os.environ.get("FEEDBAX_FULL_SUITE_MEMO_DIR", str(cache_root / "full_suite_memo"))
     )
-    os.environ.setdefault(
-        "FEEDBAX_JAX_COMPILATION_CACHE_DIR",
-        str(cache_root / "jax_compilation"),
-    )
+    configure_jax_cache_env(cache_root)
 
     fingerprint = build_fingerprint(repo_root)
     command = pytest_command(passthrough)

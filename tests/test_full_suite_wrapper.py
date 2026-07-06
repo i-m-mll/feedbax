@@ -92,3 +92,29 @@ def test_pytest_command_uses_xdist_by_default(monkeypatch) -> None:
     command = full_suite.pytest_command(["-q"])
 
     assert command[2:] == ["pytest", "tests", "-n", "auto", "-q"]
+
+
+def test_jax_cache_env_exposes_base_root_without_exact_cache_dir(monkeypatch, tmp_path) -> None:
+    full_suite = load_full_suite_module()
+    cache_root = tmp_path / "cache"
+
+    monkeypatch.delenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", raising=False)
+    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
+
+    full_suite.configure_jax_cache_env(cache_root)
+
+    assert "FEEDBAX_JAX_COMPILATION_CACHE_DIR" not in full_suite.os.environ
+    assert full_suite.os.environ["FEEDBAX_JAX_TEST_CACHE_ROOT"] == str(cache_root)
+
+
+def test_jax_cache_env_preserves_explicit_exact_cache_dir(monkeypatch, tmp_path) -> None:
+    full_suite = load_full_suite_module()
+    cache_root = tmp_path / "cache"
+
+    monkeypatch.setenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", "/explicit/jax-cache")
+    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
+
+    full_suite.configure_jax_cache_env(cache_root)
+
+    assert full_suite.os.environ["FEEDBAX_JAX_COMPILATION_CACHE_DIR"] == "/explicit/jax-cache"
+    assert "FEEDBAX_JAX_TEST_CACHE_ROOT" not in full_suite.os.environ

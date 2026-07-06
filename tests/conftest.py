@@ -52,10 +52,11 @@ def _cache_invocation_namespace() -> str:
     return os.environ.get("FEEDBAX_JAX_CACHE_INVOCATION_ID", f"pid-{os.getpid()}")
 
 
-def _repo_cache_root(repo_root: Path | None = None) -> Path:
-    """Return a test-invocation cache root grouped by tracked source state."""
-    if repo_root is None:
-        repo_root = Path(__file__).resolve().parents[1]
+def _shared_test_cache_root(repo_root: Path) -> Path:
+    override = os.environ.get("FEEDBAX_JAX_TEST_CACHE_ROOT")
+    if override:
+        return Path(override).expanduser()
+
     result = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=repo_root,
@@ -65,21 +66,18 @@ def _repo_cache_root(repo_root: Path | None = None) -> Path:
         env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
     )
     if result.returncode != 0:
-        return (
-            repo_root
-            / ".git"
-            / "feedbax_test_cache"
-            / "unknown-source"
-            / _cache_invocation_namespace()
-        )
+        return repo_root / ".git" / "feedbax_test_cache"
 
     common_dir = Path(result.stdout.strip()).resolve()
-    return (
-        common_dir
-        / "feedbax_test_cache"
-        / _source_cache_namespace(repo_root)
-        / _cache_invocation_namespace()
-    )
+    return common_dir / "feedbax_test_cache"
+
+
+def _repo_cache_root(repo_root: Path | None = None) -> Path:
+    """Return a test-invocation cache root grouped by tracked source state."""
+    if repo_root is None:
+        repo_root = Path(__file__).resolve().parents[1]
+    shared_root = _shared_test_cache_root(repo_root)
+    return shared_root / _source_cache_namespace(repo_root) / _cache_invocation_namespace()
 
 
 def _configure_jax_persistent_cache() -> None:
