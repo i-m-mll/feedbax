@@ -27,7 +27,7 @@ from plotly.subplots import make_subplots
 # pyright: reportMissingTypeStubs=false
 from plotly.colors import convert_colors_to_same_type
 
-from feedbax.objectives.loss import AbstractLoss, TermTree
+from feedbax.objectives.loss import TermTree
 from feedbax.plot.colors import DEFAULT_COLORS, color_add_alpha
 from feedbax.plot.misc import columns_mean_std, errorbars
 
@@ -294,7 +294,7 @@ def loss_history_compare(
     """Compare labelled training histories on shared loss-term axes.
 
     Args:
-        histories: Mapping from run label to `TaskTrainerHistory`-like objects.
+        histories: Mapping from run label to history-like objects.
             Values may also be raw loss trees/arrays, matching `loss_history`.
         loss_context: Whether to plot `history.loss` or `history.loss_validation`.
         terms: Which term axes to include. `"shared"` plots the terms present in

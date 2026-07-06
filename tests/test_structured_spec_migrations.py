@@ -14,6 +14,11 @@ from feedbax.contracts.migrations import (
     migrate_studio_scenario_spec,
     migrate_studio_stage_spec,
     migrate_studio_task_binding_spec,
+    migrate_structured_spec_payload,
+)
+from feedbax.contracts.training import (
+    LOSS_TERM_SPEC_SCHEMA_VERSION,
+    LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -38,7 +43,17 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.manifest import EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+from feedbax.contracts.studio_api import (
+    STUDIO_API_TRANSPORT_SCHEMA_ID,
+    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+)
 from feedbax.contracts.value_schema import ValueSchema
+from feedbax.execution.models import (
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+)
 from feedbax.objectives.spec import validate_objective_spec
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
@@ -210,6 +225,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
     assert families["TrainingRunSpec"].current_version == "feedbax.spec.training_run.v1"
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
+    assert families["LossTermSpec"].identity == "feedbax.spec.training.loss_term"
+    assert families["LossTermSpec"].current_version == LOSS_TERM_SPEC_SCHEMA_VERSION
     assert (
         families["StandardSupervisedMethodPayload"].identity
         == "feedbax.spec.training_method.standard_supervised_payload"
@@ -237,6 +254,19 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
     assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
     assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v3"
+    assert families["ExecutionCloudPayload"].identity == EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID
+    assert (
+        families["ExecutionCloudPayload"].current_version
+        == EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
+    )
+    assert (
+        families["ExecutionReproducibility"].identity
+        == EXECUTION_REPRODUCIBILITY_SCHEMA_ID
+    )
+    assert (
+        families["ExecutionReproducibility"].current_version
+        == EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
+    )
     assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
     assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v3"
     assert (
@@ -244,6 +274,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.manifest.analysis_bundle_execution"
     )
     assert families["ValueSchema"].identity == "feedbax.spec.studio.schema.value"
+    assert families["StudioApiTransport"].identity == STUDIO_API_TRANSPORT_SCHEMA_ID
+    assert families["StudioApiTransport"].current_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
     assert families["VariableDescriptor"].identity == "feedbax.spec.descriptor.variable"
     assert families["ComponentDescriptor"].identity == "feedbax.spec.descriptor.component"
     assert families["DescriptorBasisIdentity"].identity == "feedbax.spec.descriptor.basis"
@@ -264,6 +296,62 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert not families["StudioSchemaRegistry"].durable
 
 
+def test_loss_term_spec_v1_migrates_to_v2_schema_identity() -> None:
+    result = migrate_structured_spec_payload(
+        "LossTermSpec",
+        {
+            "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+            "type": "TargetStateLoss",
+            "label": "position",
+            "selector": "state.output",
+            "target_value": [1.0, 0.0],
+            "norm": "huber",
+            "time_agg": {"mode": "final"},
+        },
+        path="loss",
+    )
+
+    assert result.target_version == LOSS_TERM_SPEC_SCHEMA_VERSION
+    assert result.payload["schema_id"] == "feedbax.spec.training.loss_term"
+    assert result.payload["schema_version"] == LOSS_TERM_SPEC_SCHEMA_VERSION
+    assert result.payload["type"] == "TargetStateLoss"
+    assert [record.migration_id for record in result.migration_records] == [
+        "loss-term-spec-v1-to-v2-objective-adapter"
+    ]
+
+
+def test_loss_term_spec_current_version_accepts_without_migration() -> None:
+    payload = {
+        "schema_id": "feedbax.spec.training.loss_term",
+        "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION,
+        "type": "TargetStateLoss",
+        "label": "position",
+        "selector": "state.output",
+        "target_value": [1.0, 0.0],
+    }
+
+    result = migrate_structured_spec_payload("LossTermSpec", payload, path="loss")
+
+    assert result.payload == payload
+    assert not result.migrated
+
+
+def test_loss_term_spec_v1_migration_rejects_unmapped_range_mode() -> None:
+    with pytest.raises(ValueError, match="no ObjectiveSpec equivalent"):
+        migrate_structured_spec_payload(
+            "LossTermSpec",
+            {
+                "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+                "type": "TargetStateLoss",
+                "label": "position",
+                "selector": "state.output",
+                "target_value": [1.0, 0.0],
+                "time_agg": {"mode": "range", "start": 0, "end": 2},
+            },
+            path="loss",
+        )
+
+
 def test_manifest_schema_identities_survive_contract_package_move() -> None:
     families = {family.kind: family for family in default_spec_registry.families()}
 
@@ -280,6 +368,8 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
             "feedbax.manifest.training_checkpoint_transaction"
         ),
         "TrainingRunManifest": "feedbax.manifest.training_run",
+        "ExecutionCloudPayload": EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+        "ExecutionReproducibility": EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
         "StudioPipelineMaterializationResult": (
             "feedbax.manifest.studio.pipeline_materialization_result"
         ),
@@ -337,6 +427,14 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.execution.models",
             ("feedbax.execution.models", "feedbax.integrations.provider"),
         ),
+        "ExecutionCloudPayload": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
+        "ExecutionReproducibility": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
         "LocalExecutionResult": (
             "feedbax.execution.models",
             ("feedbax.execution.models", "feedbax.integrations.provider"),
@@ -364,6 +462,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
         "StudioTrainingExecutionRequest": (
             "feedbax.studio.execution",
             ("feedbax.studio.execution", "feedbax.integrations.provider"),
+        ),
+        "StudioApiTransport": (
+            "feedbax.contracts.studio_api",
+            ("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
         ),
     }
 
@@ -419,6 +521,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ReportSpec",
         "RegenerationSpec",
         "ExecutionSpec",
+        "StudioApiTransport",
         "StudioWorkspaceSpec",
         "StudioTaskBindingSpec",
         "StudioPipelineMaterializationRequest",
@@ -433,6 +536,8 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "TrainingRunManifest",
         "AnalysisDataProduct",
         "ExecutionPlan",
+        "ExecutionCloudPayload",
+        "ExecutionReproducibility",
         "LocalExecutionResult",
         "StagedAnalysisBundleExecution",
         "ProviderManifest",
@@ -537,7 +642,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
     execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
     execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
+    cloud_payload_policy = default_spec_registry.resolve("ExecutionCloudPayload").policy
+    reproducibility_policy = default_spec_registry.resolve("ExecutionReproducibility").policy
     local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
+    studio_api_policy = default_spec_registry.resolve("StudioApiTransport").policy
     report_policy = default_spec_registry.resolve("ReportSpec").policy
     extraction_policy = default_spec_registry.resolve("ExtractionProductSpec").policy
 
@@ -570,10 +678,22 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         "feedbax.manifest.execution.v2",
         "feedbax.manifest.execution.v1",
     )
+    assert cloud_payload_policy is not None
+    assert cloud_payload_policy.rejected_old_versions == (
+        "feedbax.manifest.execution_cloud_payload.v0",
+    )
+    assert reproducibility_policy is not None
+    assert reproducibility_policy.rejected_old_versions == (
+        "feedbax.manifest.execution_reproducibility.v0",
+    )
     assert local_execution_result_policy is not None
     assert local_execution_result_policy.rejected_old_versions == (
         "feedbax.manifest.execution.v2",
         "feedbax.manifest.execution.v1",
+    )
+    assert studio_api_policy is not None
+    assert studio_api_policy.rejected_old_versions == (
+        "feedbax.spec.studio.api_transport.v0",
     )
     assert population_policy.stance == "reject"
     assert population_policy.rejected_old_versions == ("feedbax.population_structure.v1",)

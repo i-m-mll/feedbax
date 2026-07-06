@@ -13,7 +13,7 @@ import logging
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -42,9 +42,6 @@ from feedbax.mechanics.geometry import corners_2d
 from feedbax.runtime.state import CartesianState
 from feedbax.tasks import TaskTrialSpec
 from feedbax.plot._effector import resolve_effector_endpoints, resolve_effector_trajectory_vars
-
-if TYPE_CHECKING:
-    from feedbax.training.trainer import TaskTrainerHistory
 
 logger = logging.getLogger(__name__)
 
@@ -1201,7 +1198,7 @@ def circular_hist(
         radius = n
 
     # Plot data on ax
-    patches = ax.bar(
+    ax.bar(
         bins[:-1],
         radius,
         zorder=1,

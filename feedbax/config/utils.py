@@ -10,13 +10,18 @@ def deep_merge(
     over: Mapping[str, Any],
     ignore_none: bool = True,
 ) -> dict[str, Any]:
+    """Return ``base`` recursively updated by ``over``.
+
+    By default, ``None`` in ``over`` means "leave the existing value alone".
+    Pass ``ignore_none=False`` when ``None`` is an intentional replacement.
+    """
     out: dict[str, Any] = dict(base)
     for k, v in over.items():
         if v is None and ignore_none:
             continue
         bv = out.get(k)
         if isinstance(v, Mapping) and isinstance(bv, Mapping):
-            out[k] = deep_merge(bv, v)
+            out[k] = deep_merge(bv, v, ignore_none=ignore_none)
         else:
             out[k] = v
     return out

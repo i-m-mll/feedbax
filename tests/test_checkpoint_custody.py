@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 import jax.numpy as jnp
-import optax
 import pytest
 
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
@@ -38,7 +37,6 @@ from feedbax.training.checkpoint_custody import (
     load_latest_checkpoint,
     write_checkpoint_transaction,
 )
-from feedbax.training.trainer import TaskTrainer
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -547,21 +545,18 @@ def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
     assert resumed["prng"].tolist() == continuous["prng"].tolist()
 
 
-def test_task_trainer_checkpoint_custody_disables_model_only_writer(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="only active checkpoint writer"):
-        TaskTrainer(
-            optax.sgd(0.1),
-            checkpointing=True,
-            checkpoint_custody=True,
-            chkpt_dir=tmp_path / "legacy",
+def test_legacy_task_trainer_checkpoint_files_reject_with_clear_error(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "last_batch.txt").write_text("7")
+    (tmp_path / "ckpt_7.eqx").write_bytes(b"legacy eqx.tree_serialise_leaves payload")
+    run_spec = _run_spec()
+    program = run_spec.worker_execution.method_contract.phase_program
+
+    with pytest.raises(CheckpointCompatibilityError, match="schema identity"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
         )
-
-    trainer = TaskTrainer(
-        optax.sgd(0.1),
-        checkpointing=False,
-        checkpoint_custody=True,
-        chkpt_dir=tmp_path / "legacy",
-    )
-
-    assert trainer.checkpoint_custody
-    assert not (tmp_path / "legacy").exists()

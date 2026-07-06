@@ -66,6 +66,10 @@ from feedbax.contracts.retention_artifact_schema import (
     RETENTION_POLICY_PLAN_SCHEMA_VERSION,
 )
 from feedbax.contracts.training import (
+    LOSS_TERM_SPEC_SCHEMA_ID,
+    LOSS_TERM_SPEC_SCHEMA_VERSION,
+    LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+    LossTermSpec,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_ID,
@@ -79,6 +83,19 @@ from feedbax.contracts.schema_namespace import (
 from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
     WORKER_CONTRACT_SCHEMA_VERSION,
+)
+from feedbax.contracts.studio_api import (
+    STUDIO_API_TRANSPORT_SCHEMA_ID,
+    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+)
+from feedbax.execution.models import (
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+    EXECUTION_PLAN_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+    EXECUTION_SPEC_SCHEMA_VERSION,
+    LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
 )
 
 
@@ -661,6 +678,27 @@ def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any
     migrated["wires"] = wires
     migrated["input_bindings"] = input_bindings
     migrated.setdefault("output_bindings", dict(payload.get("output_bindings") or {}))
+    return migrated
+
+
+def _migrate_loss_term_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    from feedbax.objectives.service import loss_term_spec_to_objective_spec
+
+    legacy_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"schema_id", "schema_version"}
+    }
+    if "type" not in legacy_payload and "label" not in legacy_payload:
+        return {
+            "schema_id": LOSS_TERM_SPEC_SCHEMA_ID,
+            "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION,
+        }
+    loss_term = LossTermSpec.model_validate(legacy_payload)
+    loss_term_spec_to_objective_spec(loss_term, path="/loss")
+    migrated = loss_term.model_dump(mode="json", exclude_none=True)
+    migrated["schema_id"] = LOSS_TERM_SPEC_SCHEMA_ID
+    migrated["schema_version"] = LOSS_TERM_SPEC_SCHEMA_VERSION
     return migrated
 
 
@@ -1296,12 +1334,18 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "LossTermSpec",
-            "feedbax.spec.training.loss_term",
-            "feedbax.spec.training.loss_term.v1",
+            LOSS_TERM_SPEC_SCHEMA_ID,
+            LOSS_TERM_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.training",
             emitted_by=("TrainingSpec.loss", "provider_manifest.schemas"),
             consumed_by=("training loss lowering",),
             description="Legacy structured loss-term specification.",
+            stance="migrate",
+            supported_old_versions=(LOSS_TERM_SPEC_SCHEMA_VERSION_V1,),
+            required_tests=(
+                "tests/test_loss_service.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "StandardSupervisedMethodPayload",
@@ -1795,21 +1839,35 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         (
             "ExecutionSpec",
             "feedbax.spec.execution",
-            "feedbax.spec.execution.v2",
+            EXECUTION_SPEC_SCHEMA_VERSION,
             ("feedbax.spec.execution.v1",),
             "Provider-neutral execution request.",
         ),
         (
             "ExecutionPlan",
             "feedbax.manifest.execution_plan",
-            "feedbax.manifest.execution.v3",
+            EXECUTION_PLAN_SCHEMA_VERSION,
             ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
             "Inspectable concrete execution plan.",
         ),
         (
+            "ExecutionCloudPayload",
+            EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+            EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
+            ("feedbax.manifest.execution_cloud_payload.v0",),
+            "Typed provider payload embedded in an execution plan.",
+        ),
+        (
+            "ExecutionReproducibility",
+            EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+            EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+            ("feedbax.manifest.execution_reproducibility.v0",),
+            "Typed reproducibility payload embedded in an execution plan.",
+        ),
+        (
             "LocalExecutionResult",
             "feedbax.manifest.local_execution_result",
-            "feedbax.manifest.execution.v3",
+            LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
             ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
             "Local execution result.",
         ),
@@ -1826,6 +1884,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 rejected_old_versions=rejected_versions,
             )
         )
+
+    families.append(
+        _family(
+            "StudioApiTransport",
+            STUDIO_API_TRANSPORT_SCHEMA_ID,
+            STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.studio_api",
+            emitted_by=("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
+            consumed_by=("Studio frontend", "provider HTTP API"),
+            description="Shared schema identity for Studio HTTP/WebSocket transport models.",
+            rejected_old_versions=("feedbax.spec.studio.api_transport.v0",),
+            required_tests=(
+                "tests/test_studio_api_contracts.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        )
+    )
 
     for kind, schema_id, description in (
         (
@@ -2109,6 +2184,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "LossTermSpec",
+    SchemaMigration(
+        source_version=LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+        target_version=LOSS_TERM_SPEC_SCHEMA_VERSION,
+        migration_id="loss-term-spec-v1-to-v2-objective-adapter",
+        migrate=_migrate_loss_term_spec_v1_to_v2_payload,
+        description=(
+            "Stamp legacy loss-term payloads with schema identity after verifying "
+            "they route through ObjectiveSpec/ReductionSpec lowering."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "EvaluationStatesContainer",
     SchemaMigration(

@@ -16,7 +16,7 @@ from feedbax.contracts.worker import (
     ReducerRequirement,
     StateSlotSpec,
     UpdateKernelSpec,
-    supervised_task_trainer_mapping,
+    supervised_executor_mapping,
     toy_adaptive_curriculum_method_contract,
     toy_minimax_method_contract,
 )
@@ -90,13 +90,13 @@ def _toy_adaptive_guards():
     }
 
 
-def test_task_trainer_and_ppo_map_to_worker_vocabulary() -> None:
-    supervised = supervised_task_trainer_mapping()
+def test_supervised_executor_and_ppo_map_to_worker_vocabulary() -> None:
+    supervised = supervised_executor_mapping()
 
     assert supervised[0].phase == "train_batch"
     assert "batch" in supervised[0].axes
     assert "task_optimizer_to_model" in supervised[0].optimizer_bindings
-    assert "checkpoint" in (supervised[0].checkpoint_transaction or "")
+    assert "checkpoint transaction" in (supervised[0].checkpoint_transaction or "")
 
     ppo_phases = {row.phase for row in PPO_MAPPING_TABLE}
     assert {

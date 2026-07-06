@@ -825,7 +825,7 @@ import threading
 import queue
 
 import jax
-from feedbax.training.trainer import TaskTrainer
+from feedbax.training.executor import execute_training_run_spec
 from feedbax.runtime.graph import Graph
 
 class TrainingStatus(Enum):
@@ -2468,7 +2468,9 @@ module.exports = {
 
 ### 16.1 Analysis Integration
 
-The existing Dash-based dashboard will eventually be absorbed into this application as additional views:
+Studio owns the analysis browser surface. The legacy Dash-based dashboard was retired in
+2026 after Studio superseded its figure-review workflow, so future analysis views should be
+built as Studio routes/tabs instead of reviving the old Dash app:
 
 - **Figures view**: Display and filter analysis figures (existing functionality)
 - **Experiment browser**: Navigate saved experiments and models
@@ -2479,7 +2481,7 @@ These would be separate routes/tabs in the same application, sharing the compone
 ### 16.2 Meta-Canvas View
 
 A higher-level view showing the relationship between:
-- TaskTrainer
+- Training executor
 - Model (Graph)
 - Task
 - Analysis pipelines
@@ -2522,7 +2524,7 @@ For team/production use:
 | **Port** | A named input or output on a component |
 | **StateIndex** | Equinox pattern for managing persistent state in JAX |
 | **TermTree** | Hierarchical loss function structure |
-| **TaskTrainer** | Orchestrator for training loops |
+| **Training executor** | Orchestrator for structured training run specs |
 | **Intervention** | Modification to model behavior (e.g., force field, perturbation) |
 
 ---

@@ -21,7 +21,7 @@ import sqlite3
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Set, Tuple, Any, Optional
+from typing import Dict, List, Set, Any
 import logging
 
 # Configure logging
@@ -29,10 +29,24 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 
+def quote_identifier(identifier: str) -> str:
+    """Return a safely quoted SQLite identifier."""
+    if "\x00" in identifier:
+        raise ValueError("SQLite identifiers cannot contain NUL bytes")
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def quote_declared_type(declared_type: str) -> str:
+    """Validate a SQLite declared type before embedding it in DDL."""
+    if "\x00" in declared_type or '"' in declared_type or ";" in declared_type:
+        raise ValueError(f"Unsafe SQLite declared type {declared_type!r}")
+    return declared_type
+
+
 def get_table_schema(db_path: str, table_name: str) -> List[Dict[str, Any]]:
     """Get schema information for a specific table."""
     with sqlite3.connect(db_path) as conn:
-        cursor = conn.execute(f"PRAGMA table_info({table_name})")
+        cursor = conn.execute(f"PRAGMA table_info({quote_identifier(table_name)})")
         columns = []
         for row in cursor:
             columns.append({
@@ -87,7 +101,10 @@ def add_missing_columns(output_db: str, table_name: str, missing_columns: List[D
         for col in missing_columns:
             # Default to JSON type to match template database pattern
             col_type = 'JSON' if col['type'] in ['INTEGER', 'FLOAT', 'VARCHAR'] else col['type']
-            sql = f"ALTER TABLE {table_name} ADD COLUMN {col['name']} {col_type}"
+            sql = (
+                f"ALTER TABLE {quote_identifier(table_name)} "
+                f"ADD COLUMN {quote_identifier(col['name'])} {quote_declared_type(col_type)}"
+            )
             try:
                 conn.execute(sql)
                 logger.info(f"Added column {col['name']} ({col_type}) to {table_name}")
@@ -98,8 +115,7 @@ def add_missing_columns(output_db: str, table_name: str, missing_columns: List[D
 
 def generate_cast_expression(column_name: str, source_type: str, target_type: str) -> str:
     """Generate SQL expression for casting between types."""
-    # Quote column name if it's a SQL keyword
-    quoted_name = f'"{column_name}"' if column_name in ['where', 'order', 'group'] else column_name
+    quoted_name = quote_identifier(column_name)
     
     if target_type == 'JSON' and source_type in ['INTEGER', 'FLOAT', 'VARCHAR']:
         return f"CASE WHEN {quoted_name} IS NOT NULL THEN json_quote({quoted_name}) ELSE NULL END"
@@ -120,11 +136,14 @@ def insert_models_records(output_db: str, source_db: str, schema_info: Dict):
     select_expressions = []
     
     for col_name in sorted(all_cols):
-        quoted_col = f'"{col_name}"' if col_name in ['where', 'order', 'group'] else col_name
+        quoted_col = quote_identifier(col_name)
         
         if col_name == 'id':
             # Generate new IDs
-            select_expressions.append("(SELECT COALESCE(MAX(id), 0) FROM models) + ROW_NUMBER() OVER (ORDER BY id) as id")
+            select_expressions.append(
+                "(SELECT COALESCE(MAX(\"id\"), 0) FROM \"models\") "
+                "+ ROW_NUMBER() OVER (ORDER BY \"id\") AS \"id\""
+            )
             insert_columns.append(quoted_col)
         elif col_name in source_cols and col_name in template_cols:
             # Column exists in both, may need casting
@@ -144,17 +163,21 @@ def insert_models_records(output_db: str, source_db: str, schema_info: Dict):
             select_expressions.append('NULL')
             insert_columns.append(quoted_col)
     
-    sql = f"""
-    ATTACH DATABASE '{source_db}' AS source;
-    INSERT INTO models ({', '.join(insert_columns)})
-    SELECT {', '.join(select_expressions)}
-    FROM source.models
-    WHERE hash NOT IN (SELECT hash FROM models);
-    DETACH DATABASE source;
-    """
-    
     with sqlite3.connect(output_db) as conn:
-        conn.executescript(sql)
+        conn.execute("ATTACH DATABASE ? AS source", (source_db,))
+        try:
+            conn.execute(
+                f"""
+                INSERT INTO {quote_identifier('models')} ({', '.join(insert_columns)})
+                SELECT {', '.join(select_expressions)}
+                FROM source.{quote_identifier('models')}
+                WHERE {quote_identifier('hash')} NOT IN (
+                    SELECT {quote_identifier('hash')} FROM {quote_identifier('models')}
+                )
+                """
+            )
+        finally:
+            conn.execute("DETACH DATABASE source")
         logger.info(f"Inserted models records from {source_db}")
 
 
@@ -172,10 +195,13 @@ def insert_evaluations_records(output_db: str, source_db: str, schema_info: Dict
     select_expressions = []
     
     for col_name in sorted(all_cols):
-        quoted_col = f'"{col_name}"' if col_name in ['where', 'order', 'group'] else col_name
+        quoted_col = quote_identifier(col_name)
         
         if col_name == 'id':
-            select_expressions.append("(SELECT COALESCE(MAX(id), 0) FROM evaluations) + ROW_NUMBER() OVER (ORDER BY id) as id")
+            select_expressions.append(
+                "(SELECT COALESCE(MAX(\"id\"), 0) FROM \"evaluations\") "
+                "+ ROW_NUMBER() OVER (ORDER BY \"id\") AS \"id\""
+            )
             insert_columns.append(quoted_col)
         elif col_name in source_cols and col_name in template_cols:
             source_type = source_cols[col_name]['type']
@@ -192,25 +218,29 @@ def insert_evaluations_records(output_db: str, source_db: str, schema_info: Dict
             select_expressions.append('NULL')  
             insert_columns.append(quoted_col)
     
-    sql = f"""
-    ATTACH DATABASE '{source_db}' AS source;
-    INSERT INTO evaluations ({', '.join(insert_columns)})
-    SELECT {', '.join(select_expressions)}
-    FROM source.evaluations 
-    WHERE expt_name IS NULL 
-    AND hash NOT IN (SELECT hash FROM evaluations);
-    DETACH DATABASE source;
-    """
-    
     with sqlite3.connect(output_db) as conn:
-        conn.executescript(sql)
+        conn.execute("ATTACH DATABASE ? AS source", (source_db,))
+        try:
+            conn.execute(
+                f"""
+                INSERT INTO {quote_identifier('evaluations')} ({', '.join(insert_columns)})
+                SELECT {', '.join(select_expressions)}
+                FROM source.{quote_identifier('evaluations')}
+                WHERE {quote_identifier('expt_name')} IS NULL
+                AND {quote_identifier('hash')} NOT IN (
+                    SELECT {quote_identifier('hash')} FROM {quote_identifier('evaluations')}
+                )
+                """
+            )
+        finally:
+            conn.execute("DETACH DATABASE source")
         logger.info(f"Inserted evaluations records (expt_name IS NULL) from {source_db}")
 
 
 def clear_figures_table(output_db: str):
     """Clear all records from figures table while preserving structure."""
     with sqlite3.connect(output_db) as conn:
-        conn.execute("DELETE FROM figures")
+        conn.execute(f"DELETE FROM {quote_identifier('figures')}")
         logger.info("Cleared figures table data")
 
 

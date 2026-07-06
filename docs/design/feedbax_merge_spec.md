@@ -76,9 +76,6 @@ feedbax/
 │   ├── strings.py                # STRINGS singleton
 │   └── yaml.py                   # YAML loader utilities
 │
-├── dashboard/                    # FROM: feedbax_experiments.dashboard (optional extra)
-│   └── ...
-│
 ├── plugins/                      # FROM: feedbax_experiments.plugins
 │   ├── __init__.py
 │   ├── registry.py
@@ -126,7 +123,7 @@ feedbax/
 | `analysis/fps_tmp2.py`, `tmp-map.py`, `nn_utils.py` | DELETE | Dead code |
 | `database.py` | Split → `database/{models,session,operations}.py` | 1600 lines → ~3 files |
 | `config/` | `config/` | Direct move |
-| `dashboard/` | `dashboard/` | Direct move, optional extra |
+| `dashboard/` | Retired | Legacy Dash figure-review app removed in 2026 after Studio superseded it |
 | `plugins/` | `plugins/` | Direct move |
 | `types.py` | Merge → `types.py` | Combine with existing feedbax.types |
 | `tree_utils.py` | `tree_utils.py` | Direct move |
@@ -169,7 +166,7 @@ class Iterator(AbstractIterator):
 **Migration:** 
 - Add `n_steps` to `AbstractTask` (already there)
 - Move `lax.scan` logic from `Iterator.__call__` to `AbstractTask.eval`
-- Update `TaskTrainer` to work with non-Iterator models
+- Update supervised training to work with non-Iterator models
 - Grep for `model.step.` and update to `model.`
 
 ### 2. Split analysis/analysis.py
@@ -256,10 +253,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dashboard = [
-    "dash>=2.14.0",
-    "dash-bootstrap-components>=1.5.0",
-]
 notebook = [
     "ipyfilechooser>=0.6.0",
     "ipywidgets>=8.1.5",
@@ -326,10 +319,10 @@ def mock_db_session():
 5. [ ] Split analysis.py into multiple files
 6. [ ] Split database.py into multiple files
 7. [ ] Update pyproject.toml dependencies
-8. [ ] Add optional extras (dashboard, notebook)
+8. [ ] Add optional extras (notebook)
 9. [ ] Deprecate Iterator class
 10. [ ] Refactor task.eval to handle iteration
-11. [ ] Update TaskTrainer for non-Iterator models
+11. [ ] Update supervised training for non-Iterator models
 12. [ ] Delete dead code (fps_tmp2, tmp-map, empty nn_utils)
 13. [ ] Run existing tests, fix breakage
 14. [ ] Add new tests per priority list

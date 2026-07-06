@@ -63,6 +63,29 @@ class TestConstruction:
     def test_readout_shape(self, net):
         assert net.readout.weight.shape == (OUT_SIZE, HIDDEN_DIM)
 
+    def test_preserves_explicit_dtype(self, key):
+        with jax.experimental.enable_x64():
+            net = CDENetwork(
+                obs_dim=OBS_DIM,
+                hidden_dim=HIDDEN_DIM,
+                out_size=OUT_SIZE,
+                dtype=jnp.float64,
+                key=key,
+            )
+            state = init_state_from_component(net)
+            outputs, new_state = net(
+                {"input": jnp.ones((OBS_DIM,), dtype=jnp.float32)},
+                state,
+                key=key,
+            )
+            net_state: CDENetworkState = new_state.get(net.state_index)
+
+            assert net.vector_field.layers[0].weight.dtype == jnp.float64
+            assert net.readout.weight.dtype == jnp.float64
+            assert net.h0.dtype == jnp.float64
+            assert outputs["output"].dtype == jnp.float64
+            assert net_state.input.dtype == jnp.float64
+
     def test_vector_field_output_size(self, net):
         """Vector field MLP should output hidden_dim * obs_dim."""
         h_dummy = jnp.zeros(HIDDEN_DIM)

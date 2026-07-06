@@ -3,17 +3,14 @@ from __future__ import annotations
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import optax
 import pytest
 
-from feedbax.config.mapping import WhereDict
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.runtime.graph import Graph
 from feedbax.contracts.graphs.templates import (
     network_template_graph,
     recurrent_controller_template_graph,
 )
-from feedbax.objectives.loss import AbstractLoss
 from feedbax.models.networks import (
     LeakyRNNCell,
     MaskedLinear,
@@ -29,15 +26,6 @@ from feedbax.models.networks import (
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.contracts.graphs import builders as graph_builders
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
-from feedbax.tasks import AbstractTask, TaskInterventionSpecs, TaskTrialSpec, TrialSpecDependency
-from feedbax.training.trainer import TaskTrainer
-
-
-class _WeightSumLoss(AbstractLoss):
-    label: str = "weight_sum"
-
-    def term(self, states, trial_specs, model):
-        return jnp.ones((1,)) * jnp.sum(model.nodes["readout"].layer.weight)
 
 
 def _floating_leaf_dtypes(tree) -> set[jnp.dtype]:
@@ -71,35 +59,6 @@ def test_compat_builders_preserve_legacy_default_dtype_under_x64(tmp_path) -> No
             assert _floating_leaf_dtypes(legacy) == {jnp.dtype(jnp.float64)}
             assert _floating_leaf_dtypes(loaded) == {jnp.dtype(jnp.float64)}
             assert _floating_leaf_dtypes(explicit) == {jnp.dtype(jnp.float32)}
-
-
-class _TinyTask(AbstractTask):
-    loss_func: AbstractLoss = _WeightSumLoss()
-    n_steps: int = 2
-    seed_validation: int = 0
-    intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
-    input_dependencies: dict[str, TrialSpecDependency] = eqx.field(default_factory=dict)
-
-    def get_train_trial(self, key, batch_info=None):
-        return TaskTrialSpec(
-            inits=WhereDict(),
-            targets=WhereDict(),
-            inputs=jnp.ones((self.n_steps, 1)),
-        )
-
-    def get_validation_trials(self, key):
-        return TaskTrialSpec(
-            inits=WhereDict(),
-            targets=WhereDict(),
-            inputs=jnp.ones((self.n_validation_trials, self.n_steps, 1)),
-        )
-
-    def validation_plots(self, states, trial_specs=None):
-        return {}
-
-    @property
-    def n_validation_trials(self) -> int:
-        return 1
 
 
 def _linear_constraint_spec(mask) -> GraphSpec:
@@ -591,40 +550,6 @@ def test_population_constraints_round_trip_from_legacy_network_serialization() -
 def test_parameter_constraints_reject_incompatible_mask_shape() -> None:
     with pytest.raises(ValueError, match="mask shape"):
         spec_to_graph(_linear_constraint_spec([[1, 0, 1]]))
-
-
-def test_task_trainer_projects_constraints_after_optimizer_update() -> None:
-    spec = GraphSpec(
-        nodes={
-            "readout": ComponentSpec(
-                type="Linear",
-                params={"input_size": 1, "output_size": 1, "activation": "identity"},
-                input_ports=["input"],
-                output_ports=["output"],
-            )
-        },
-        input_ports=["input"],
-        output_ports=["output"],
-        input_bindings={"input": ("readout", "input")},
-        output_bindings={"output": ("readout", "output")},
-        parameter_constraints=[
-            ParameterConstraintSpec(node="readout", role="weight", mask=[[0]], value=0.0)
-        ],
-    )
-    model = spec_to_graph(spec)
-    trainer = TaskTrainer(optimizer=optax.sgd(1.0), checkpointing=False)
-
-    trained, _, _ = trainer(
-        _TinyTask(),
-        model,
-        n_batches=1,
-        batch_size=1,
-        where_train=lambda graph: graph.nodes["readout"],
-        disable_progress=True,
-        key=jax.random.PRNGKey(0),
-    )
-
-    assert trained.nodes["readout"].layer.weight[0, 0] == 0.0
 
 
 def test_apply_parameter_constraints_rejects_unsupported_role() -> None:

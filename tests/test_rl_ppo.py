@@ -1,11 +1,15 @@
 """Tests for feedbax.training.rl.ppo."""
 
+import ast
+import inspect
+
 import jax
 import jax.numpy as jnp
 import pytest
 
+import feedbax.training.rl.ppo as ppo
 from feedbax.training.rl.policy import ActorCritic, BetaParams
-from feedbax.training.rl.ppo import PPOConfig, Rollout, compute_gae_scan
+from feedbax.training.rl.ppo import compute_gae_scan
 
 
 @pytest.fixture
@@ -58,9 +62,7 @@ class TestGAE:
             gae = delta + gamma * lam * mask * gae
             ref_adv = ref_adv.at[t].set(gae)
 
-        advantages, _ = compute_gae_scan(
-            rewards, values, dones, last_values, gamma, lam
-        )
+        advantages, _ = compute_gae_scan(rewards, values, dones, last_values, gamma, lam)
         assert jnp.allclose(advantages, ref_adv, atol=1e-5)
 
 
@@ -114,3 +116,29 @@ class TestBetaParams:
         s = dist.sample(jax.random.PRNGKey(0))
         assert s.shape == (1,)
         assert float(s[0]) > 0 and float(s[0]) < 1
+
+
+class TestPPOConsolidation:
+    def test_public_training_api_is_batched_only(self):
+        assert hasattr(ppo, "train_ppo_batched")
+        assert not hasattr(ppo, "train_ppo")
+        assert not hasattr(ppo, "train_ppo_batched_extended")
+
+    def test_update_body_uses_lax_loop_without_host_scalar_syncs(self):
+        source = inspect.getsource(ppo._update_one)
+        tree = ast.parse(source)
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        called_attrs = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "jax.lax.fori_loop" in source
+        assert "float" not in called_names
+        assert "int" not in called_names
+        assert "item" not in called_attrs
+        assert "device_get" not in called_attrs

@@ -136,6 +136,12 @@ def _resolve_hidden_type(name: object, *, path: str) -> Callable[..., eqx.Module
         ) from exc
 
 
+def _compat_dtype(params: Mapping[str, Any]) -> object:
+    if "dtype" in params:
+        return params["dtype"]
+    return jnp.asarray(0.0).dtype
+
+
 def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
     hidden_type = _resolve_hidden_type(
         params.get("hidden_type", "GRUCell"),
@@ -173,7 +179,7 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
         hidden_noise_std=hidden_noise_std,
         population_structure=population_structure,
         population_mask_mode=str(params.get("population_mask_mode", "legacy_masked")),
-        dtype=params.get("dtype", None),
+        dtype=_compat_dtype(params),
         key=jr.PRNGKey(0),
     )
 
@@ -576,7 +582,7 @@ def _build_mlp(params: Mapping[str, Any]) -> MLP:
         hidden_sizes=hidden_sizes,
         activation=str(params.get("activation", "relu")),
         final_activation=str(params.get("final_activation", "identity")),
-        dtype=params.get("dtype", None),
+        dtype=_compat_dtype(params),
         key=jr.PRNGKey(0),
     )
 
@@ -587,7 +593,7 @@ def _build_linear(params: Mapping[str, Any]) -> Linear:
         output_size=int(params.get("output_size", 1)),
         use_bias=bool(params.get("use_bias", True)),
         activation=str(params.get("activation", "identity")),
-        dtype=params.get("dtype", None),
+        dtype=_compat_dtype(params),
         key=jr.PRNGKey(0),
     )
 
@@ -607,7 +613,7 @@ def _build_gru(params: Mapping[str, Any]) -> GRU:
     return GRU(
         input_size=int(params.get("input_size", 1)),
         hidden_size=int(params.get("hidden_size", 1)),
-        dtype=params.get("dtype", None),
+        dtype=_compat_dtype(params),
         key=jr.PRNGKey(0),
     )
 
@@ -630,7 +636,7 @@ def _build_lstm(params: Mapping[str, Any]) -> LSTM:
     return LSTM(
         input_size=int(params.get("input_size", 1)),
         hidden_size=int(params.get("hidden_size", 1)),
-        dtype=params.get("dtype", None),
+        dtype=_compat_dtype(params),
         key=jr.PRNGKey(0),
     )
 

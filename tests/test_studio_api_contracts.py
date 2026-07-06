@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.routing import APIRoute
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.studio_api import (
     AnalysisPackagesResponse,
     AnalysisPackagesPayload,
     GraphListResponse,
     GraphListPayload,
+    STUDIO_API_TRANSPORT_SCHEMA_ID,
+    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+    StudioApiModel,
     TrainingProgressEvent,
     TrainingStartResponse,
     TrainingStartPayload,
 )
+from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.web.app import create_app
-from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES
+from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES, OUTPUT, generate
 
 
 GENERATED_STUDIO_PREFIXES = (
@@ -38,15 +43,20 @@ def test_studio_api_openapi_uses_plural_analysis_jobs_route() -> None:
 
 
 def test_studio_api_envelopes_are_data_wrapped() -> None:
-    assert GraphListResponse(data=GraphListPayload(graphs=[])).model_dump() == {
-        "data": {"graphs": []}
-    }
-    assert TrainingStartResponse(data=TrainingStartPayload(job_id="job-1")).model_dump() == {
-        "data": {"job_id": "job-1"}
-    }
-    assert AnalysisPackagesResponse(data=AnalysisPackagesPayload(packages=[])).model_dump() == {
-        "data": {"packages": []}
-    }
+    graph_list = GraphListResponse(data=GraphListPayload(graphs=[])).model_dump()
+    training_start = TrainingStartResponse(
+        data=TrainingStartPayload(job_id="job-1")
+    ).model_dump()
+    analysis_packages = AnalysisPackagesResponse(
+        data=AnalysisPackagesPayload(packages=[])
+    ).model_dump()
+
+    assert graph_list["data"]["graphs"] == []
+    assert training_start["data"]["job_id"] == "job-1"
+    assert analysis_packages["data"]["packages"] == []
+    assert graph_list["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
+    assert graph_list["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+    assert graph_list["data"]["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
 
 
 def test_training_progress_event_contract_accepts_worker_shape() -> None:
@@ -67,6 +77,32 @@ def test_training_progress_event_contract_accepts_worker_shape() -> None:
 
     assert event.job_id == "job-1"
     assert event.loss_terms["position"] == 0.4
+    assert event.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+
+
+def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() -> None:
+    with pytest.raises(ValidationError, match="literal_error"):
+        TrainingStartPayload.model_validate(
+            {
+                "schema_id": STUDIO_API_TRANSPORT_SCHEMA_ID,
+                "schema_version": "feedbax.spec.studio.api_transport.v0",
+                "job_id": "job-1",
+            }
+        )
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        TrainingStartPayload.model_validate({"job_id": "job-1", "unexpected": True})
+
+    family = default_spec_registry.resolve("StudioApiTransport")
+    assert family.identity == STUDIO_API_TRANSPORT_SCHEMA_ID
+    assert family.current_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+    with pytest.raises(UnsupportedSpecVersion, match="api_transport.v0"):
+        default_spec_registry.migrate(
+            "StudioApiTransport",
+            {"schema_version": "feedbax.spec.studio.api_transport.v0"},
+        )
+
+    assert issubclass(TrainingProgressEvent, StudioApiModel)
 
 
 def test_generated_studio_contracts_cover_route_response_models() -> None:
@@ -96,3 +132,7 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
             missing.append(f"{route.path} contractSchemas missing {model_name}")
 
     assert missing == []
+
+
+def test_generated_studio_contracts_are_current() -> None:
+    assert OUTPUT.read_text(encoding="utf-8") == generate()
