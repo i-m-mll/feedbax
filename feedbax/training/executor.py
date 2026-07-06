@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import jax
+import jax.numpy as jnp
+import jax.tree as jt
 from pydantic import ValidationError
 
 from feedbax.contracts.checkpoints import CheckpointLineageRef
@@ -50,6 +53,7 @@ from feedbax.training.phase_executor import (
     InMemoryCheckpointStore,
     PhaseCheckpoint,
     PhaseProgramExecutor,
+    StepGuardResult,
 )
 from feedbax.training.worker_validation import (
     WorkerExecutabilityEnvironment,
@@ -317,6 +321,13 @@ def execute_training_run_spec(
             if progress_callback is not None
             else None
         ),
+        step_guard=_executor_nan_guard(
+            run_spec=run_spec,
+            custody_root=custody_root,
+            program=program,
+            expected_slots=slots,
+            resume_slot_transform=resume_slot_transform,
+        ),
     )
     checkpoint_writes = checkpoint_store.writes
     barrier_artifacts = checkpoint_store.barrier_artifacts
@@ -420,6 +431,84 @@ def _initial_slots(
     slots = dict(initial_slots)
     slots.setdefault("objective", lowered_objective)
     return slots
+
+
+def _executor_nan_guard(
+    *,
+    run_spec: TrainingRunSpec,
+    custody_root: Path,
+    program: Any,
+    expected_slots: Mapping[str, Any],
+    resume_slot_transform: ResumeSlotTransform | None,
+) -> Callable[[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], StepGuardResult | None]:
+    def guard(
+        slots: Mapping[str, Any],
+        coordinate: ProgressCoordinate,
+        _context: Mapping[str, Any],
+    ) -> StepGuardResult | None:
+        nan_metrics = _nan_metric_names(coordinate.metrics)
+        if not nan_metrics:
+            return None
+
+        batch = coordinate.global_step
+        step = coordinate.inner_step
+        message = (
+            f"NaN detected after batch {batch} step {step}; "
+            f"metrics={nan_metrics!r}; on_nan={run_spec.on_nan!r}"
+        )
+        if run_spec.on_nan == "raise":
+            raise FloatingPointError(message)
+
+        try:
+            loaded = load_latest_checkpoint(
+                custody_root,
+                expected_run_spec=run_spec,
+                expected_phase_program=program,
+                expected_slots=expected_slots,
+                resume_slot_transform=resume_slot_transform,
+            )
+        except Exception as exc:
+            raise FloatingPointError(
+                f"{message}; no custody-consistent checkpoint could be restored"
+            ) from exc
+
+        metric_slots = set(coordinate.metrics)
+        restored_slots = {
+            slot: value
+            for slot, value in slots.items()
+            if slot not in loaded.slots and slot not in metric_slots
+        }
+        restored_slots.update(loaded.slots)
+        return StepGuardResult(
+            halt=True,
+            slots=restored_slots,
+            coordinate=loaded.manifest.completed_coordinate,
+        )
+
+    return guard
+
+
+def _nan_metric_names(metrics: Mapping[str, Any]) -> list[str]:
+    return sorted(name for name, value in metrics.items() if _tree_has_nan(value))
+
+
+def _tree_has_nan(value: Any) -> bool:
+    for leaf in jt.leaves(value, is_leaf=lambda item: item is None):
+        if _leaf_has_nan(leaf):
+            return True
+    return False
+
+
+def _leaf_has_nan(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        array = jnp.asarray(value)
+        if not jnp.issubdtype(array.dtype, jnp.number):
+            return False
+        return bool(jax.device_get(jnp.any(jnp.isnan(array))))
+    except (TypeError, ValueError):
+        return False
 
 
 def _checkpoint_root(

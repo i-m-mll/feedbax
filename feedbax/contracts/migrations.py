@@ -74,6 +74,7 @@ from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.schema_namespace import (
     SchemaNamespaceKind,
@@ -702,6 +703,13 @@ def _migrate_loss_term_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[st
     return migrated
 
 
+def _migrate_training_run_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", TRAINING_RUN_SPEC_SCHEMA_ID)
+    migrated.setdefault("on_nan", "raise")
+    return migrated
+
+
 def _migrate_graph_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
@@ -1289,6 +1297,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Public durable request envelope for graph, task, objective, method, "
                 "worker, execution, artifact, checkpoint, and progress policy."
             ),
+            stance="migrate",
+            supported_old_versions=(TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,),
+            rejected_old_versions=("feedbax.spec.training_run.v0",),
             required_tests=(
                 "tests/test_training_run_spec.py",
                 "tests/test_structured_spec_migrations.py",
@@ -2184,6 +2195,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "TrainingRunSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-spec-v1-to-v2-nan-policy",
+        migrate=_migrate_training_run_spec_v1_to_v2_payload,
+        description="Add fail-loud executor NaN policy to durable training run specs.",
+    ),
+)
 default_spec_registry.register_migration(
     "LossTermSpec",
     SchemaMigration(

@@ -30,7 +30,8 @@ from feedbax.contracts.worker import (
 
 
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
-TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v1"
+TRAINING_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run.v1"
+TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v2"
 LOSS_TERM_SPEC_SCHEMA_ID = "feedbax.spec.training.loss_term"
 LOSS_TERM_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training.loss_term.v1"
 LOSS_TERM_SPEC_SCHEMA_VERSION = "feedbax.spec.training.loss_term.v2"
@@ -514,6 +515,7 @@ class TrainingRunSpec(TrainingRunContractModel):
 
     schema_id: str = TRAINING_RUN_SPEC_SCHEMA_ID
     schema_version: str = TRAINING_RUN_SPEC_SCHEMA_VERSION
+    on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
     graph: GraphTopologySourceSpec
     task: TaskSpec
     training_config: TrainingConfig
