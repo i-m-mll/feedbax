@@ -13,6 +13,7 @@ from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_REF,
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
     LossTermSpec,
     ObjectiveSlotSpec,
     TaskSpec,
@@ -75,6 +76,7 @@ def test_training_run_spec_current_version_round_trips_and_embeds_in_manifest() 
 
     assert spec.schema_id == TRAINING_RUN_SPEC_SCHEMA_ID
     assert spec.schema_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    assert spec.on_nan == "raise"
     assert spec.method_ref.key == STANDARD_SUPERVISED_METHOD_REF
     assert round_tripped == spec
     assert registry_result.payload == payload
@@ -106,6 +108,23 @@ def test_training_run_spec_old_version_rejection_policy_is_explicit() -> None:
     assert "family='TrainingRunSpec'" in message
     assert "schema_id='feedbax.spec.training_run'" in message
     assert "migration_intentionally_absent=yes" in message
+
+
+def test_training_run_spec_v1_migrates_to_v2_with_fail_loud_nan_policy() -> None:
+    payload = _training_run_payload()
+    payload.pop("on_nan")
+    payload["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V1
+
+    result = default_spec_registry.migrate("TrainingRunSpec", payload)
+
+    assert result.source_version == TRAINING_RUN_SPEC_SCHEMA_VERSION_V1
+    assert result.target_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    assert result.payload["schema_version"] == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    assert result.payload["on_nan"] == "raise"
+    assert [record.migration_id for record in result.migration_records] == [
+        "training-run-spec-v1-to-v2-nan-policy"
+    ]
+    assert TrainingRunSpec.model_validate(result.payload).on_nan == "raise"
 
 
 def test_standard_supervised_method_payload_validates_and_round_trips() -> None:

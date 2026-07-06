@@ -24,6 +24,9 @@ UpdateKernel = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], Mapping[str, Any]
 ]
 ProgressCallback = Callable[[ProgressCoordinate], None]
+StepGuard = Callable[
+    [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], "StepGuardResult | None"
+]
 
 
 def _is_shareable_jax_array(value: Any) -> bool:
@@ -75,6 +78,15 @@ class PhaseExecutionResult:
     progress: list[ProgressCoordinate] = field(default_factory=list)
     checkpoints: dict[str, PhaseCheckpoint] = field(default_factory=dict)
     checkpoint_visits: tuple[PhaseCheckpoint, ...] = ()
+
+
+@dataclass(frozen=True)
+class StepGuardResult:
+    """Optional method-neutral control decision after one executor step."""
+
+    halt: bool = False
+    slots: Mapping[str, Any] | None = None
+    coordinate: ProgressCoordinate | None = None
 
 
 class PhaseCheckpointStore(Protocol):
@@ -199,6 +211,7 @@ class PhaseProgramExecutor:
         stop_after_barrier: str | None = None,
         context: Mapping[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
+        step_guard: StepGuard | None = None,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier."""
         progress: list[ProgressCoordinate] = []
@@ -251,6 +264,20 @@ class PhaseProgramExecutor:
                         "metrics": self._progress_metrics(current_slots),
                     }
                 )
+                if step_guard is not None:
+                    guard_result = step_guard(current_slots, coordinate, checkpoint_context)
+                    if guard_result is not None and guard_result.halt:
+                        halted_slots = (
+                            current_slots if guard_result.slots is None else guard_result.slots
+                        )
+                        halted_coordinate = guard_result.coordinate or coordinate
+                        return PhaseExecutionResult(
+                            slots=_copy_executor_mapping(halted_slots),
+                            coordinate=halted_coordinate,
+                            progress=progress,
+                            checkpoints=self.checkpoint_store.as_dict(),
+                            checkpoint_visits=self.checkpoint_store.visits(),
+                        )
                 progress.append(coordinate)
                 if progress_callback is not None:
                     progress_callback(_copy_progress_coordinate(coordinate))

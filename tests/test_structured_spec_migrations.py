@@ -19,6 +19,8 @@ from feedbax.contracts.migrations import (
 from feedbax.contracts.training import (
     LOSS_TERM_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -223,7 +225,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["PopulationStructureSpec"].identity == "feedbax.spec.population_structure"
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
-    assert families["TrainingRunSpec"].current_version == "feedbax.spec.training_run.v1"
+    assert families["TrainingRunSpec"].current_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
     assert families["LossTermSpec"].identity == "feedbax.spec.training.loss_term"
     assert families["LossTermSpec"].current_version == LOSS_TERM_SPEC_SCHEMA_VERSION
@@ -663,6 +665,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert objective_policy.stance == "reject"
     assert objective_policy.rejected_old_versions == ("feedbax.objective.v0",)
     assert population_policy is not None
+    training_run_policy = default_spec_registry.resolve("TrainingRunSpec").policy
+    assert training_run_policy is not None
+    assert training_run_policy.stance == "migrate"
+    assert training_run_policy.supported_old_versions == (TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,)
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
     assert report_policy is not None
