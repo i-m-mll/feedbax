@@ -89,4 +89,3 @@ def source_provenance_record(source: RepoSource) -> dict[str, Any]:
         "branch": provenance.get("branch"),
         "dirty": bool(status_short) if status_short is not None else None,
     }
-
