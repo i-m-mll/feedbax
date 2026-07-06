@@ -286,7 +286,12 @@ class ComponentRegistry:
         return sorted(self._components)
 
     def executable_names(self) -> List[str]:
-        return sorted(name for name, meta in self._components.items() if meta.builder is not None)
+        return sorted(
+            name
+            for name, meta in self._components.items()
+            if meta.builder is not None
+            and not getattr(meta.builder, "_feedbax_unsupported_builder", False)
+        )
 
     def list_all(self) -> List[ComponentDefinition]:
         return [self._to_definition(meta) for meta in self._components.values()]

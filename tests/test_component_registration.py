@@ -17,6 +17,7 @@ from feedbax.component_registry import (
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.contracts.graphs.builders import build_component
 from feedbax.runtime.graph import Component
 from feedbax.contracts.graphs.serialization import spec_to_graph
 
@@ -148,6 +149,30 @@ def test_feedbax_component_meta_rejects_output_prototype_mutation() -> None:
         meta.output_prototype_fn = lambda params, inputs: {"force": inputs["force"]}
 
     assert meta.output_prototype_fn is original
+
+
+def test_builtin_registry_has_explicit_builders_and_consistent_port_metadata() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    for name in registry.names():
+        meta = registry.get(name)
+        assert meta is not None
+        assert callable(meta.builder), f"{name} has no explicit builder contract"
+        if meta.port_types is not None:
+            assert set(meta.port_types.inputs) == set(meta.input_ports), name
+            assert set(meta.port_types.outputs) == set(meta.output_ports), name
+
+
+def test_unsupported_builtin_builder_contract_fails_clearly() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    meta = registry.get("MomentArmProjection")
+    assert meta is not None
+    assert callable(meta.builder)
+    assert getattr(meta.builder, "_feedbax_unsupported_builder", False)
+    assert "MomentArmProjection" not in registry.executable_names()
+
+    with pytest.raises(NotImplementedError, match="display-only abstraction"):
+        build_component("projection", "MomentArmProjection", {}, component_registry=registry)
 
 
 def test_entry_point_component_registration_records_package_provenance() -> None:

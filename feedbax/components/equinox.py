@@ -21,7 +21,16 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 from feedbax.runtime.graph import Component
 
 
+EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v2"
+EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
+EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
+
+
 __all__ = [
+    "EQUINOX_WRAPPER_SCHEMA_VERSION",
+    "EQUINOX_WRAPPER_GENERATOR",
+    "EQUINOX_WRAPPER_EQUINOX_VERSION",
+    "EQUINOX_WRAPPER_CONTRACTS",
     "Linear",
     "Identity",
     "MLP",
@@ -55,6 +64,235 @@ __all__ = [
     "Dropout",
     "PReLU",
 ]
+EQUINOX_WRAPPER_CONTRACTS = {
+    "Linear": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "Identity": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "MLP": {"call_kind": "single_input", "state_handling": "stateless", "key_handling": "ignored"},
+    "Conv1d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "Conv2d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "Conv3d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "ConvTranspose1d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "ConvTranspose2d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "ConvTranspose3d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "GRUCell": {"call_kind": "gru_cell", "state_handling": "stateless", "key_handling": "ignored"},
+    "LSTMCell": {
+        "call_kind": "lstm_cell",
+        "state_handling": "stateless",
+        "key_handling": "forwarded",
+    },
+    "LayerNorm": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "RMSNorm": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "GroupNorm": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "BatchNorm": {
+        "call_kind": "batch_norm",
+        "state_handling": "threads_eqx_state",
+        "key_handling": "optional_forwarded",
+    },
+    "MaxPool1d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "MaxPool2d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "MaxPool3d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AvgPool1d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AvgPool2d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AvgPool3d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AdaptiveMaxPool1d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AdaptiveMaxPool2d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AdaptiveMaxPool3d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AdaptiveAvgPool1d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AdaptiveAvgPool2d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "AdaptiveAvgPool3d": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "MultiheadAttention": {
+        "call_kind": "multihead_attention",
+        "state_handling": "stateless",
+        "key_handling": "forwarded",
+    },
+    "RotaryPositionalEmbedding": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "Embedding": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+    "Dropout": {
+        "call_kind": "single_input_keyed",
+        "state_handling": "stateless",
+        "key_handling": "forwarded",
+    },
+    "PReLU": {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    },
+}
+
+
+def _call_single_input_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output = component.layer(inputs["input"])
+    return {"output": output}, state
+
+
+def _call_single_input_keyed_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output = component.layer(inputs["input"], key=key)
+    return {"output": output}, state
+
+
+def _call_batch_norm_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output, state = component.layer(inputs["input"], state, key=key)
+    return {"output": output}, state
+
+
+def _call_gru_cell_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    hidden = inputs["hidden"]
+    new_hidden = component.layer(inputs["input"], hidden)
+    return {"output": new_hidden, "hidden": new_hidden}, state
+
+
+def _call_lstm_cell_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    hidden = inputs["hidden"]
+    cell_state = inputs["cell"]
+    new_hidden, new_cell = component.layer(inputs["input"], (hidden, cell_state), key=key)
+    return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
+
+
+def _call_multihead_attention_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output = component.layer(
+        query=inputs["query"],
+        key_=inputs["key_"],
+        value=inputs["value"],
+        key=key,
+    )
+    return {"output": output}, state
+
 
 # ============================================================
 # LINEAR LAYERS
@@ -66,6 +304,13 @@ class Linear(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.Linear
     in_features: Union[int, Literal["scalar"]]
@@ -101,8 +346,7 @@ class Linear(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class Identity(Component):
@@ -110,6 +354,13 @@ class Identity(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.Identity
 
@@ -123,8 +374,7 @@ class Identity(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class MLP(Component):
@@ -132,6 +382,13 @@ class MLP(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.MLP
     in_size: Union[int, Literal["scalar"]]
@@ -187,8 +444,7 @@ class MLP(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 # ============================================================
@@ -201,6 +457,13 @@ class Conv1d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.Conv1d
     in_channels: int
@@ -260,8 +523,7 @@ class Conv1d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class Conv2d(Component):
@@ -269,6 +531,13 @@ class Conv2d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.Conv2d
     in_channels: int
@@ -328,8 +597,7 @@ class Conv2d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class Conv3d(Component):
@@ -337,6 +605,13 @@ class Conv3d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.Conv3d
     in_channels: int
@@ -396,8 +671,7 @@ class Conv3d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class ConvTranspose1d(Component):
@@ -405,6 +679,13 @@ class ConvTranspose1d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.ConvTranspose1d
     in_channels: int
@@ -468,8 +749,7 @@ class ConvTranspose1d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class ConvTranspose2d(Component):
@@ -477,6 +757,13 @@ class ConvTranspose2d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.ConvTranspose2d
     in_channels: int
@@ -540,8 +827,7 @@ class ConvTranspose2d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class ConvTranspose3d(Component):
@@ -549,6 +835,13 @@ class ConvTranspose3d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.ConvTranspose3d
     in_channels: int
@@ -612,8 +905,7 @@ class ConvTranspose3d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 # ============================================================
@@ -626,6 +918,13 @@ class GRUCell(Component):
 
     input_ports = ("input", "hidden")
     output_ports = ("output", "hidden")
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "gru_cell",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.GRUCell
     input_size: int
@@ -657,9 +956,7 @@ class GRUCell(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        hidden = inputs["hidden"]
-        new_hidden = self.layer(inputs["input"], hidden)
-        return {"output": new_hidden, "hidden": new_hidden}, state
+        return _call_gru_cell_layer(self, inputs, state, key=key)
 
 
 class LSTMCell(Component):
@@ -667,6 +964,13 @@ class LSTMCell(Component):
 
     input_ports = ("input", "hidden", "cell")
     output_ports = ("output", "hidden", "cell")
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "lstm_cell",
+        "state_handling": "stateless",
+        "key_handling": "forwarded",
+    }
 
     layer: eqx.nn.LSTMCell
     input_size: int
@@ -698,10 +1002,7 @@ class LSTMCell(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        hidden = inputs["hidden"]
-        cell_state = inputs["cell"]
-        new_hidden, new_cell = self.layer(inputs["input"], (hidden, cell_state), key=key)
-        return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
+        return _call_lstm_cell_layer(self, inputs, state, key=key)
 
 
 # ============================================================
@@ -714,6 +1015,13 @@ class LayerNorm(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.LayerNorm
     shape: Union[int, Sequence[int]]
@@ -754,8 +1062,7 @@ class LayerNorm(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class RMSNorm(Component):
@@ -763,6 +1070,13 @@ class RMSNorm(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.RMSNorm
     shape: Union[int, Sequence[int]]
@@ -795,8 +1109,7 @@ class RMSNorm(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class GroupNorm(Component):
@@ -804,6 +1117,13 @@ class GroupNorm(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.GroupNorm
     groups: int
@@ -840,15 +1160,21 @@ class GroupNorm(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class BatchNorm(Component):
-    """Batch normalization. Uses inference mode by default in graph execution."""
+    """Batch normalization with explicit Equinox State threading."""
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "batch_norm",
+        "state_handling": "threads_eqx_state",
+        "key_handling": "optional_forwarded",
+    }
 
     layer: eqx.nn.BatchNorm
     input_size: int
@@ -893,8 +1219,7 @@ class BatchNorm(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = eqx.nn.inference_mode(self.layer)(inputs["input"])
-        return {"output": output}, state
+        return _call_batch_norm_layer(self, inputs, state, key=key)
 
 
 # ============================================================
@@ -907,6 +1232,13 @@ class MaxPool1d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.MaxPool1d
     kernel_size: Union[int, Sequence[int]]
@@ -936,8 +1268,7 @@ class MaxPool1d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class MaxPool2d(Component):
@@ -945,6 +1276,13 @@ class MaxPool2d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.MaxPool2d
     kernel_size: Union[int, Sequence[int]]
@@ -974,8 +1312,7 @@ class MaxPool2d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class MaxPool3d(Component):
@@ -983,6 +1320,13 @@ class MaxPool3d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.MaxPool3d
     kernel_size: Union[int, Sequence[int]]
@@ -1012,8 +1356,7 @@ class MaxPool3d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AvgPool1d(Component):
@@ -1021,6 +1364,13 @@ class AvgPool1d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AvgPool1d
     kernel_size: Union[int, Sequence[int]]
@@ -1050,8 +1400,7 @@ class AvgPool1d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AvgPool2d(Component):
@@ -1059,6 +1408,13 @@ class AvgPool2d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AvgPool2d
     kernel_size: Union[int, Sequence[int]]
@@ -1088,8 +1444,7 @@ class AvgPool2d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AvgPool3d(Component):
@@ -1097,6 +1452,13 @@ class AvgPool3d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AvgPool3d
     kernel_size: Union[int, Sequence[int]]
@@ -1126,8 +1488,7 @@ class AvgPool3d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AdaptiveMaxPool1d(Component):
@@ -1135,6 +1496,13 @@ class AdaptiveMaxPool1d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AdaptiveMaxPool1d
     target_shape: Union[int, Sequence[int]]
@@ -1150,8 +1518,7 @@ class AdaptiveMaxPool1d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AdaptiveMaxPool2d(Component):
@@ -1159,6 +1526,13 @@ class AdaptiveMaxPool2d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AdaptiveMaxPool2d
     target_shape: Union[int, Sequence[int]]
@@ -1174,8 +1548,7 @@ class AdaptiveMaxPool2d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AdaptiveMaxPool3d(Component):
@@ -1183,6 +1556,13 @@ class AdaptiveMaxPool3d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AdaptiveMaxPool3d
     target_shape: Union[int, Sequence[int]]
@@ -1198,8 +1578,7 @@ class AdaptiveMaxPool3d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AdaptiveAvgPool1d(Component):
@@ -1207,6 +1586,13 @@ class AdaptiveAvgPool1d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AdaptiveAvgPool1d
     target_shape: Union[int, Sequence[int]]
@@ -1222,8 +1608,7 @@ class AdaptiveAvgPool1d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AdaptiveAvgPool2d(Component):
@@ -1231,6 +1616,13 @@ class AdaptiveAvgPool2d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AdaptiveAvgPool2d
     target_shape: Union[int, Sequence[int]]
@@ -1246,8 +1638,7 @@ class AdaptiveAvgPool2d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class AdaptiveAvgPool3d(Component):
@@ -1255,6 +1646,13 @@ class AdaptiveAvgPool3d(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.AdaptiveAvgPool3d
     target_shape: Union[int, Sequence[int]]
@@ -1270,8 +1668,7 @@ class AdaptiveAvgPool3d(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 # ============================================================
@@ -1284,6 +1681,13 @@ class MultiheadAttention(Component):
 
     input_ports = ("query", "key_", "value")
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "multihead_attention",
+        "state_handling": "stateless",
+        "key_handling": "forwarded",
+    }
 
     layer: eqx.nn.MultiheadAttention
     num_heads: int
@@ -1359,12 +1763,7 @@ class MultiheadAttention(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(
-            query=inputs["query"],
-            key_=inputs["key_"],
-            value=inputs["value"],
-        )
-        return {"output": output}, state
+        return _call_multihead_attention_layer(self, inputs, state, key=key)
 
 
 class RotaryPositionalEmbedding(Component):
@@ -1372,6 +1771,13 @@ class RotaryPositionalEmbedding(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.RotaryPositionalEmbedding
     embedding_size: int
@@ -1393,8 +1799,7 @@ class RotaryPositionalEmbedding(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 # ============================================================
@@ -1407,6 +1812,13 @@ class Embedding(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.Embedding
     num_embeddings: Optional[int]
@@ -1442,15 +1854,21 @@ class Embedding(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
 
 
 class Dropout(Component):
-    """Dropout layer. Disabled by default in graph execution (inference mode)."""
+    """Dropout layer that honors its configured inference/deterministic settings."""
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input_keyed",
+        "state_handling": "stateless",
+        "key_handling": "forwarded",
+    }
 
     layer: eqx.nn.Dropout
     p: float
@@ -1472,8 +1890,7 @@ class Dropout(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = eqx.nn.inference_mode(self.layer)(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_keyed_layer(self, inputs, state, key=key)
 
 
 class PReLU(Component):
@@ -1481,6 +1898,13 @@ class PReLU(Component):
 
     input_ports = ("input",)
     output_ports = ("output",)
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {
+        "call_kind": "single_input",
+        "state_handling": "stateless",
+        "key_handling": "ignored",
+    }
 
     layer: eqx.nn.PReLU
     init_alpha: Union[float, Array, None]
@@ -1496,5 +1920,4 @@ class PReLU(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        output = self.layer(inputs["input"])
-        return {"output": output}, state
+        return _call_single_input_layer(self, inputs, state, key=key)
