@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -7,21 +8,78 @@ import jax
 import pytest
 
 
-def _repo_cache_root() -> Path:
-    """Return a cache root shared by Git worktrees for this checkout."""
-    repo_root = Path(__file__).resolve().parents[1]
+_CACHE_SOURCE_PATHS = ("feedbax", "tests", "pyproject.toml", "uv.lock")
+_CACHE_NAMESPACE_VERSION = b"source-fingerprint-v1"
+
+
+def _git_output(repo_root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
+def _source_cache_namespace(repo_root: Path) -> str:
+    """Return a short namespace for compiled artifacts tied to tracked source state."""
+    head = _git_output(repo_root, "rev-parse", "--verify", "HEAD")
+    if head.returncode != 0:
+        return "unknown-source"
+
+    diff = _git_output(
+        repo_root,
+        "diff",
+        "--no-ext-diff",
+        "--binary",
+        "HEAD",
+        "--",
+        *_CACHE_SOURCE_PATHS,
+    )
+    diff_bytes = diff.stdout if diff.returncode == 0 else b""
+    head_bytes = head.stdout.strip()
+    digest = hashlib.sha256(
+        _CACHE_NAMESPACE_VERSION + b"\0" + head_bytes + b"\0" + diff_bytes
+    ).hexdigest()[:16]
+    head_prefix = head_bytes.decode(errors="replace")[:12]
+    return f"{head_prefix}-{digest}"
+
+
+def _cache_invocation_namespace() -> str:
+    return os.environ.get("FEEDBAX_JAX_CACHE_INVOCATION_ID", f"pid-{os.getpid()}")
+
+
+def _repo_cache_root(repo_root: Path | None = None) -> Path:
+    """Return a test-invocation cache root grouped by tracked source state."""
+    if repo_root is None:
+        repo_root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
     )
     if result.returncode != 0:
-        return repo_root / ".git" / "feedbax_test_cache"
+        return (
+            repo_root
+            / ".git"
+            / "feedbax_test_cache"
+            / "unknown-source"
+            / _cache_invocation_namespace()
+        )
 
     common_dir = Path(result.stdout.strip()).resolve()
-    return common_dir / "feedbax_test_cache"
+    return (
+        common_dir
+        / "feedbax_test_cache"
+        / _source_cache_namespace(repo_root)
+        / _cache_invocation_namespace()
+    )
 
 
 def _configure_jax_persistent_cache() -> None:
