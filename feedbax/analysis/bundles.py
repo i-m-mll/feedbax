@@ -44,7 +44,10 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
-from feedbax.persistence.manifest_index import iter_manifest_files
+from feedbax.persistence.manifest_index import (
+    iter_indexed_manifest_paths_by_kind,
+    iter_manifest_files,
+)
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
 
@@ -318,7 +321,10 @@ def iter_candidate_manifests(
     """Load candidate run manifests of one kind from a manifest root."""
     root_path = Path(root) if root is not None else default_manifest_root()
     manifests: list[AnyManifest] = []
-    for manifest_path in iter_manifest_files(root_path):
+    manifest_paths = iter_indexed_manifest_paths_by_kind(manifest_kind, root=root_path)
+    if not manifest_paths:
+        manifest_paths = iter_manifest_files(root_path)
+    for manifest_path in manifest_paths:
         manifest = load_manifest(manifest_path)
         if manifest.kind == manifest_kind:
             manifests.append(manifest)
@@ -730,7 +736,6 @@ def _execute_evaluation_stage(
                     "schema_version": bundle.schema_version,
                 }
             },
-            force=True,
         )
         products.append(
             StageMaterialization(

@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -12,7 +15,12 @@ from feedbax.analysis.context import (
     AnalysisRunContext,
     parent_ref_from_evaluation_manifest,
 )
-from feedbax.analysis.execution import run_analyses_with_context
+from feedbax.analysis.analysis import IdentityNode, SinglePort
+from feedbax.analysis.execution import (
+    AnalysisModuleTransformSpec,
+    run_analyses_with_context,
+    run_evaluation,
+)
 from feedbax.analysis.materialization import (
     AnalysisArtifactGroup,
     ContextMaterializationPending,
@@ -31,9 +39,11 @@ from feedbax.contracts.manifest import (
     load_manifest,
 )
 from feedbax.persistence.manifest_index import rebuild_manifest_index
+from feedbax.analysis.types import AnalysisInputData
 from tests.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
     ToyAnalysis,
+    ToyArtifactProducer,
     build_toy_artifact_analyses,
     build_toy_analysis_data,
     execute_toy_evaluation,
@@ -115,6 +125,77 @@ def test_headless_analysis_context_writes_manifest_figures_and_rebuildable_index
     assert manifest_row == ("AnalysisRunManifest", "completed")
     assert edge_row == ("EvaluationRunManifest", eval_manifest.id, "evaluation_run")
     assert artifact_row == ("figure", "toy/toy_toy_analysis_0.json", "application/json")
+
+
+def test_analysis_result_cache_corruption_recomputes_with_versioned_payload(
+    tmp_path: Path,
+) -> None:
+    reset_artifact_producer_calls()
+    spec = AnalysisRunSpec(
+        analysis_type="toy_artifact_analysis",
+        params={"outputs": ["artifact_producer"]},
+    )
+    context = AnalysisRunContext(spec=spec, root=tmp_path)
+
+    run_analyses_with_context(
+        {"artifact_producer": ToyArtifactProducer(variant="toy", cache_result=True)},
+        build_toy_analysis_data(),
+        context,
+        requested_outputs={"artifact_producer"},
+    )
+
+    cache_files = list(context.results_cache_dir.glob("*.pkl"))
+    assert len(cache_files) == 1
+    cache_files[0].write_bytes(b"not a valid result cache")
+
+    rerun_context = AnalysisRunContext(spec=spec, root=tmp_path)
+    _all_analyses, cached_results, _all_figs = run_analyses_with_context(
+        {"artifact_producer": ToyArtifactProducer(variant="toy", cache_result=True)},
+        build_toy_analysis_data(),
+        rerun_context,
+        requested_outputs={"artifact_producer"},
+    )
+
+    assert ARTIFACT_PRODUCER_CALLS["count"] == 2
+    assert cached_results["artifact_producer"]["value"] == 4
+    assert b"schema_version" in cache_files[0].read_bytes()
+
+
+def test_analysis_md5_identity_includes_dependency_wiring() -> None:
+    left = IdentityNode(inputs=SinglePort(input="left_dependency"))
+    right = IdentityNode(inputs=SinglePort(input="right_dependency"))
+
+    assert left.md5_str != right.md5_str
+
+
+def test_legacy_evaluation_state_cache_key_includes_prng_key(tmp_path: Path) -> None:
+    def eval_fn(key, hps, model, task):
+        del hps, model, task
+        return jnp.asarray(key[1])
+
+    data = AnalysisInputData(
+        models={"toy": jnp.asarray(1)},
+        tasks={"toy": jnp.asarray(1)},
+        states=None,
+        hps={"toy": SimpleNamespace()},
+        extras={},
+    )
+
+    values = []
+    for seed in (0, 1):
+        result = run_evaluation(
+            SimpleNamespace(eval_fn=eval_fn),
+            data,
+            common_inputs={},
+            transforms=AnalysisModuleTransformSpec(),
+            eval_info=SimpleNamespace(hash="same-eval-hash"),
+            states_pkl_dir=tmp_path,
+            key=jax.random.PRNGKey(seed),
+        )
+        values.append(int(result.states["toy"]))
+
+    assert values == [0, 1]
+    assert len(list(tmp_path.glob("same-eval-hash_*.pkl"))) == 2
 
 
 def test_requested_outputs_empty_intersection_raises_clear_error(

@@ -7,14 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import dill as pickle
-
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.evaluation import (
     EvaluationStatesArtifactNotFound,
     execute_evaluation_run_spec,
     load_evaluation_states,
+    load_evaluation_states_cache,
+    write_evaluation_states_cache,
 )
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.validation import (
@@ -31,10 +31,11 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     default_manifest_root,
+    analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
 )
-from feedbax.persistence.manifest_index import iter_manifest_files
+from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
 
 
@@ -128,10 +129,26 @@ def find_manifest_by_id(manifest_id: str, *, root: Path | str | None = None) -> 
     """Find one manifest by ID under a manifest root."""
     root_path = Path(root) if root is not None else default_manifest_root()
     matches: list[tuple[AnyManifest, Path]] = []
+    indexed_paths = find_manifest_paths_by_id(manifest_id, root=root_path)
+    for manifest_path in indexed_paths:
+        manifest = load_manifest(manifest_path)
+        if manifest.id == manifest_id:
+            matches.append((manifest, manifest_path))
+    if matches:
+        return _single_manifest_match(manifest_id, root_path, matches)
+
     for manifest_path in iter_manifest_files(root_path):
         manifest = load_manifest(manifest_path)
         if manifest.id == manifest_id:
             matches.append((manifest, manifest_path))
+    return _single_manifest_match(manifest_id, root_path, matches)
+
+
+def _single_manifest_match(
+    manifest_id: str,
+    root_path: Path,
+    matches: list[tuple[AnyManifest, Path]],
+) -> tuple[AnyManifest, Path]:
     if not matches:
         raise FileNotFoundError(f"Manifest {manifest_id!r} not found under {root_path}")
     if len(matches) > 1:
@@ -164,13 +181,15 @@ def resolve_analysis_inputs(
                         _rederive_evaluation_states(ref.id, manifest, root=root_path)
                     else:
                         states_path.parent.mkdir(parents=True, exist_ok=True)
-                        with states_path.open("wb") as stream:
-                            pickle.dump(states, stream)
+                        write_evaluation_states_cache(
+                            states_path,
+                            manifest_id=ref.id,
+                            states=states,
+                        )
                 else:
                     _rederive_evaluation_states(ref.id, manifest, root=root_path)
             if states is None:
-                with states_path.open("rb") as stream:
-                    states = pickle.load(stream)
+                states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
         resolved.append(
             ResolvedAnalysisInput(
                 ref=ref,
@@ -237,11 +256,26 @@ def execute_analysis_run_spec(
     validate_result: AnalysisRecipeResultValidator | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
+    use_cache: bool = True,
+    force: bool = False,
 ) -> tuple[AnalysisRunManifest, Path]:
     """Execute a serialized analysis spec and write an ``AnalysisRunManifest``."""
     run_spec = coerce_analysis_run_spec(spec)
     recipe = get_analysis_recipe(run_spec.analysis_type)
     root_path = Path(root) if root is not None else default_manifest_root()
+    manifest_id = analysis_run_manifest_id(run_spec)
+    if use_cache and not force:
+        try:
+            existing_manifest, existing_path = find_manifest_by_id(manifest_id, root=root_path)
+        except FileNotFoundError:
+            pass
+        else:
+            if (
+                isinstance(existing_manifest, AnalysisRunManifest)
+                and existing_manifest.status == "completed"
+            ):
+                return existing_manifest, existing_path
+
     context = AnalysisRunContext(
         spec=run_spec,
         root=root_path,
