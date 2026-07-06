@@ -20,11 +20,11 @@ import logging
 from typing import ClassVar, Optional, Type, TypeVar, Generic
 
 import diffrax as dfx
-import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
@@ -115,10 +115,9 @@ class DAEComponent(Component, Generic[StateT]):
         system_state = self.init_system_state(key=key)
 
         # Force strong dtypes to avoid weak dtype issues with StateIndex
-        import jax.tree as jt
         def make_strong_dtype(x):
             if isinstance(x, jax.Array):
-                # Convert to numpy and back to remove weak type
+                # Rewrap the array with its dtype so JAX drops weak scalar typing.
                 return jnp.asarray(x.astype(x.dtype))
             return x
         system_state = jt.map(make_strong_dtype, system_state)

@@ -31,6 +31,7 @@ from feedbax.mechanics.musculoskeletal import (
     RigidTendonMusculoskeletalArm,
     CompliantTendonMusculoskeletalArm,
 )
+from feedbax.mechanics.units import DEFAULT_MUSCLE_VMAX
 from feedbax.runtime.graph import init_state_from_component
 
 
@@ -192,7 +193,7 @@ class TestRigidTendonHillMuscle:
             pennation_angle=0.0,
             tau_activation=0.01,
             tau_deactivation=0.04,
-            vmax=10.0,
+            vmax=DEFAULT_MUSCLE_VMAX,
         )
 
     @pytest.fixture
@@ -256,7 +257,7 @@ class TestCompliantTendonMuscle:
             pennation_angle=0.0,
             tau_activation=0.01,
             tau_deactivation=0.04,
-            vmax=10.0,
+            vmax=DEFAULT_MUSCLE_VMAX,
         )
 
     @pytest.fixture
@@ -439,6 +440,34 @@ class TestRigidTendonMusculoskeletalArm:
                 key=jr.PRNGKey(0),
             )
 
+    def test_invalid_arm_parameter_shape_rejected(self):
+        with pytest.raises(ValueError, match="arm_l must have shape"):
+            RigidTendonMusculoskeletalArm(
+                arm_l=(0.30,),
+                dt=0.01,
+                key=jr.PRNGKey(0),
+            )
+
+    def test_invalid_timestep_rejected(self):
+        with pytest.raises(ValueError, match="dt must be finite and positive"):
+            RigidTendonMusculoskeletalArm(dt=0.0, key=jr.PRNGKey(0))
+
+    def test_muscle_params_must_match_geometry(self):
+        params = tuple(
+            HillMuscleParams(
+                max_isometric_force=500.0,
+                optimal_fiber_length=0.08,
+                tendon_slack_length=0.12,
+            )
+            for _ in range(5)
+        )
+        with pytest.raises(ValueError, match="muscle_params length must match"):
+            RigidTendonMusculoskeletalArm(
+                muscle_params=params,
+                dt=0.01,
+                key=jr.PRNGKey(0),
+            )
+
     def test_single_step(self, arm):
         """Test single integration step."""
         state = init_state_from_component(arm)
@@ -523,6 +552,10 @@ class TestCompliantTendonMusculoskeletalArm:
         """Test initialization."""
         assert arm.n_muscles == 6
         assert arm.dt == 0.001
+
+    def test_invalid_timestep_rejected(self):
+        with pytest.raises(ValueError, match="dt must be finite and positive"):
+            CompliantTendonMusculoskeletalArm(dt=0.0, key=jr.PRNGKey(0))
 
     def test_single_step(self, arm):
         """Test single step works."""

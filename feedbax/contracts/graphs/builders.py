@@ -694,6 +694,10 @@ def _build_fixed_field(params: Mapping[str, Any]) -> FixedField:
 
 
 def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
+    if "mass" not in params or params["mass"] is None:
+        raise ValueError(
+            "DynamicsMatrixPerturb requires explicit mass matching the wired plant"
+        )
     delta_A = jnp.asarray(params.get("delta_A", [[0.0, 0.0, 0.0, 0.0]] * 2))
     if delta_A.ndim != 2:
         raise ValueError("DynamicsMatrixPerturb delta_A must be a rank-2 array")
@@ -706,7 +710,7 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
             delta_A=delta_A,
         ),
         label=str(params.get("label", "dynamics_matrix_perturb")),
-        mass=float(params.get("mass", 1.0)),
+        mass=float(params["mass"]),
     )
 
 

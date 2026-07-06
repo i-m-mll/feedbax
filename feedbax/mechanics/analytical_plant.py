@@ -32,10 +32,15 @@ from feedbax.mechanics.hill_muscles import (
     ForceVelocityCurve,
     PassiveForceLengthCurve,
 )
-from feedbax.mechanics.muscle_config import MuscleTopology
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
-from feedbax.runtime.state import CartesianState, StateBounds
+from feedbax.mechanics.units import (
+    DEFAULT_MUSCLE_VMAX,
+    ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+    require_positive_finite,
+    require_positive_array,
+)
+from feedbax.runtime.state import StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -147,15 +152,27 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         """
         self.skeleton = skeleton
         self.clip_states = clip_states
-        self.segment_lengths = jnp.asarray(segment_lengths)
+        self.segment_lengths = require_positive_array("segment_lengths", segment_lengths, (2,))
         self.moment_arms = jnp.asarray(moment_arms)
-        self.muscle_gear = jnp.asarray(muscle_gear)
-        self.optimal_fiber_length = jnp.asarray(optimal_fiber_length)
-        self.tendon_slack_length = jnp.asarray(tendon_slack_length)
-        self.mt_reference_length = jnp.asarray(mt_reference_length)
-        self.vmax = jnp.asarray(vmax)
-        self.tau_act = tau_act
-        self.tau_deact = tau_deact
+        if self.moment_arms.ndim != 2 or self.moment_arms.shape[1] != 2:
+            raise ValueError(
+                "moment_arms must have shape (n_muscles, 2), "
+                f"got {self.moment_arms.shape}"
+            )
+        n_muscles = self.moment_arms.shape[0]
+        self.muscle_gear = require_positive_array("muscle_gear", muscle_gear, (n_muscles,))
+        self.optimal_fiber_length = require_positive_array(
+            "optimal_fiber_length", optimal_fiber_length, (n_muscles,)
+        )
+        self.tendon_slack_length = require_positive_array(
+            "tendon_slack_length", tendon_slack_length, (n_muscles,)
+        )
+        self.mt_reference_length = require_positive_array(
+            "mt_reference_length", mt_reference_length, (n_muscles,)
+        )
+        self.vmax = require_positive_array("vmax", vmax, (n_muscles,))
+        self.tau_act = require_positive_finite("tau_act", tau_act)
+        self.tau_deact = require_positive_finite("tau_deact", tau_deact)
         self.force_length = ForceLengthCurve()
         self.passive_force_length = PassiveForceLengthCurve()
         self.force_velocity = ForceVelocityCurve()
@@ -258,7 +275,9 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         # Clamp velocity to reasonable range.
         max_vel = self.vmax * self.optimal_fiber_length
         clamped_velocity = jnp.clip(
-            fiber_velocities, -max_vel, max_vel * 0.1,
+            fiber_velocities,
+            -max_vel,
+            max_vel * ECCENTRIC_VELOCITY_LIMIT_FRACTION,
         )
         norm_velocity = clamped_velocity / (
             self.vmax * self.optimal_fiber_length
@@ -565,8 +584,8 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         tsl = jnp.asarray(preset.muscle_tendon_slack_length)
         mt_ref = ofl + tsl
 
-        # Default vmax: 10 optimal lengths per second (standard value).
-        vmax = jnp.full_like(ofl, 10.0)
+        # Default vmax: standard normalized shortening-speed convention.
+        vmax = jnp.full_like(ofl, DEFAULT_MUSCLE_VMAX)
 
         return cls(
             skeleton=skeleton,

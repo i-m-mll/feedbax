@@ -313,24 +313,7 @@ def _make_vector_field(
 
     # ---- Pre-compute index maps (all plain Python ints) -----------------
 
-    # var_name -> how to look it up at runtime
-    # Each entry is one of:
-    #   ("state", int)        -- read from y[i]
-    #   ("ground", None)      -- always 0
-    #   ("input", int)        -- read from input_vals[i]
-    #   ("param", int)        -- read from param_vals[i]
-    #   ("alias", str)        -- resolve to another var first
-    var_lookup: dict[str, tuple[str, object]] = {}
-
-    for vname in diff_vars:
-        var_lookup[vname] = ("state", diff_vars.index(vname))
-    for vname in grounded:
-        var_lookup[vname] = ("ground", None)
-    for vname, idx in input_vars.items():
-        var_lookup[vname] = ("input", idx)
-
-    # Through vars that are not in diff/grounded/input are computed on the fly
-    # -- they get resolved later during VF evaluation.
+    diff_var_indices = {vname: idx for idx, vname in enumerate(diff_vars)}
 
     # Collect sorted param keys
     params_keys = sorted(
@@ -425,7 +408,7 @@ def _make_vector_field(
             if canon_vel not in diff_vars:
                 continue  # grounded or eliminated
 
-            vel_idx = diff_vars.index(canon_vel)
+            vel_idx = diff_var_indices[canon_vel]
 
             # Find the position var too
             pos_slot = port.across_vars[0]
@@ -491,7 +474,7 @@ def _make_vector_field(
             canon_vel = _resolve(vel_fqn, eliminated)
             if canon_pos in diff_vars and canon_vel in diff_vars:
                 pos_vel_pairs.append(
-                    (diff_vars.index(canon_pos), diff_vars.index(canon_vel))
+                    (diff_var_indices[canon_pos], diff_var_indices[canon_vel])
                 )
             elif canon_pos in grounded:
                 pass  # grounded pos, no derivative needed
@@ -730,6 +713,10 @@ def _topo_sort_through_eqs(
     """
     by_lhs: dict[str, AcausalEquation] = {}
     for eq in equations:
+        if eq.lhs_var in by_lhs:
+            raise ValueError(
+                f"Duplicate through-variable definition for {eq.lhs_var!r}"
+            )
         by_lhs[eq.lhs_var] = eq
 
     through_vars = set(by_lhs.keys())
@@ -754,7 +741,7 @@ def _topo_sort_through_eqs(
         visited.add(var)
         order.append(eq)
 
-    for var in through_vars:
+    for var in sorted(through_vars):
         visit(var)
 
     return order
