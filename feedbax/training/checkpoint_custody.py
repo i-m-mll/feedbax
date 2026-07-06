@@ -10,7 +10,7 @@ import platform
 import shutil
 import tempfile
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,9 @@ class CheckpointWriteResult:
     latest_pointer_path: Path
     manifest: CheckpointTransactionManifest
     latest_pointer: CheckpointLatestPointer
+
+
+ResumeSlotTransform = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 def checkpoint_barrier(program: PhaseProgramSpec, barrier_name: str) -> CheckpointBarrierSpec:
@@ -253,6 +256,7 @@ def load_latest_checkpoint(
     expected_phase_program: PhaseProgramSpec,
     expected_slots: Mapping[str, Any],
     expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
+    resume_slot_transform: ResumeSlotTransform | None = None,
     allow_new_lineage_override: bool = False,
 ) -> CheckpointResumeResult:
     """Load and validate the latest published transaction before resume."""
@@ -296,7 +300,6 @@ def load_latest_checkpoint(
     slots_by_name = {slot.slot: slot for slot in manifest.slots}
     _validate_required_slots(tuple(barrier.slots), slots_by_name)
     _validate_expected_slot_set(barrier, expected_slots)
-    _validate_structural_abi(manifest, expected_slots)
     _validate_population_identities(
         manifest,
         expected_population_member_ids or {},
@@ -313,6 +316,11 @@ def load_latest_checkpoint(
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} could not be deserialized"
             ) from exc
+    _validate_manifest_structural_abi(manifest, loaded_slots)
+    if resume_slot_transform is not None:
+        loaded_slots = dict(resume_slot_transform(loaded_slots))
+        _validate_required_slots(tuple(barrier.slots), loaded_slots)
+    _validate_structural_abi(manifest, expected_slots, loaded_slots)
 
     return CheckpointResumeResult(
         manifest=manifest,
@@ -401,14 +409,36 @@ def _validate_expected_slot_set(
 def _validate_structural_abi(
     manifest: CheckpointTransactionManifest,
     expected_slots: Mapping[str, Any],
+    loaded_slots: Mapping[str, Any],
 ) -> None:
     for slot in manifest.slots:
         if slot.slot not in expected_slots:
             continue
+        if slot.slot not in loaded_slots:
+            continue
+        loaded = loaded_slots[slot.slot]
+        loaded_fingerprint = structural_abi_fingerprint(loaded)
         expected = structural_abi_fingerprint(expected_slots[slot.slot])
-        if slot.structural_abi_fingerprint.fingerprint_sha256 != expected.fingerprint_sha256:
+        if loaded_fingerprint.fingerprint_sha256 != expected.fingerprint_sha256:
             raise CheckpointCompatibilityError(
                 f"checkpoint slot {slot.slot!r} structural ABI mismatch"
+            )
+
+
+def _validate_manifest_structural_abi(
+    manifest: CheckpointTransactionManifest,
+    loaded_slots: Mapping[str, Any],
+) -> None:
+    for slot in manifest.slots:
+        if slot.slot not in loaded_slots:
+            continue
+        loaded_fingerprint = structural_abi_fingerprint(loaded_slots[slot.slot])
+        if (
+            loaded_fingerprint.fingerprint_sha256
+            != slot.structural_abi_fingerprint.fingerprint_sha256
+        ):
+            raise CheckpointIntegrityError(
+                f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale"
             )
 
 

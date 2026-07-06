@@ -42,6 +42,7 @@ from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
+    ResumeSlotTransform,
     load_latest_checkpoint,
     write_checkpoint_transaction,
 )
@@ -187,6 +188,7 @@ def execute_training_run_spec(
     training_spec_payload_ref: str | None = None,
     task_binding_spec: Mapping[str, Any] | None = None,
     resume: bool = False,
+    resume_slot_transform: ResumeSlotTransform | None = None,
     stop_after_barrier: str | None = None,
     manifest_conflict_policy: ManifestConflictPolicy = "error",
     issues: Sequence[str] | None = None,
@@ -251,6 +253,7 @@ def execute_training_run_spec(
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=slots,
+            resume_slot_transform=resume_slot_transform,
         )
         loaded_resume_checkpoint = PhaseCheckpoint(
             barrier=loaded.manifest.barrier,
