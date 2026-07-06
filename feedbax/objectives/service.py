@@ -67,6 +67,7 @@ NORM_FUNCTIONS: Dict[str, str] = {
     "l1": "feedbax.loss.norms.l1",
     "huber": "feedbax.loss.norms.huber",
 }
+_TARGET_REQUIRED_LOSS_TYPES = {"TargetStateLoss", "target_state"}
 
 
 class ObjectiveLoweringError(ValueError):
@@ -586,12 +587,23 @@ class LossService:
             )
         if term.type not in {"TargetStateLoss", "target_state", "MatrixQuadraticLoss", "matrix_quadratic"}:
             raise ObjectiveLoweringError(f"{path}/type", f"unknown loss term type {term.type!r}")
+        if term.type in _TARGET_REQUIRED_LOSS_TYPES and term.target_selector is None and term.target_value is None:
+            raise ObjectiveLoweringError(
+                path,
+                "loss leaf requires either target_selector or target_value",
+            )
         _validate_matrix_payload(term.matrix, term.matrix_kind, path=path)
+        target_value = (
+            0.0
+            if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}
+            and term.target_value is None
+            else term.target_value
+        )
         return SelectorObjectiveLoss(
             label=term.label,
             selector=term.selector,
             target_selector=term.target_selector,
-            target_value=0.0 if term.target_value is None else term.target_value,
+            target_value=target_value,
             norm=term.norm or "squared_l2",
             matrix=term.matrix,
             matrix_kind=term.matrix_kind,

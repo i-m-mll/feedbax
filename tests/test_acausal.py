@@ -29,14 +29,35 @@ from feedbax.acausal import (
 from feedbax.acausal.rotational import (
     GearRatio,
     Inertia,
-    RotationalDamper,
     RotationalGround,
     TorqueSource,
     TorsionalSpring,
 )
+from feedbax.acausal.assembly import _topo_sort_through_eqs
+from feedbax.acausal.base import AcausalEquation
 from feedbax.mechanics.dae import DAEState
 
-pytestmark = pytest.mark.usefixtures("enable_jax_x64")
+pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_contract]
+
+
+def test_through_equation_cycle_rejected() -> None:
+    equations = [
+        AcausalEquation(
+            lhs_var="a.force",
+            rhs_fn=lambda vals: vals["b.force"],
+            depends_on=("b.force",),
+            is_through_def=True,
+        ),
+        AcausalEquation(
+            lhs_var="b.force",
+            rhs_fn=lambda vals: vals["a.force"],
+            depends_on=("a.force",),
+            is_through_def=True,
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="Cyclic through-variable dependency"):
+        _topo_sort_through_eqs(equations)
 
 
 # =========================================================================

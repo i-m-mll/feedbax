@@ -8,6 +8,10 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+pytestmark = pytest.mark.feedbax_contract
+
 
 def _run_import_probe(source: str) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[1]

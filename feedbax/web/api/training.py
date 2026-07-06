@@ -67,9 +67,7 @@ class TrainingRequest(BaseModel):
     training_spec: TrainingSpec
     task_spec: TaskSpec
     task_binding_spec: Optional[dict] = None
-    # Optional structured config for Phase 6 real JAX training.
-    # When present, passed to the worker which runs actual JAX training.
-    # When absent, the worker falls back to the synthetic stub.
+    # Structured config forwarded to the worker for real JAX training.
     training_config: Optional[TrainingConfig] = None
     # Optional graph spec forwarded to the worker for config inference.
     graph_spec: Optional[dict] = None

@@ -203,8 +203,7 @@ class TrainingService:
             total_batches: Number of training steps.
             training_config: Optional dict forwarded to the worker as the
                 ``training_config`` key in the ``/start`` request body.
-                When present, the worker runs real JAX training; when ``None``
-                it falls back to the synthetic stub.
+                Required by the worker for real JAX training.
             training_spec: Optional spec dict with optimizer/loss settings;
                 forwarded to the worker for spec-driven configuration.
             task_spec: Optional task spec dict with task parameters;

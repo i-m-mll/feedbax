@@ -170,8 +170,7 @@ def save_figure_with_spec(
             ``None`` the current UTC timestamp is used.
         save_render: Whether to also write the figure itself to disk.
         render_format: ``"json"`` (Plotly JSON; default), ``"html"``,
-            ``"png"``, ``"svg"``, or any format accepted by
-            ``fig.write_image`` / ``fig.savefig``.
+            ``"png"``, ``"svg"``, or ``"pdf"``.
         extra_packages: Additional package names to include in
             ``spec["versions"]``.
 
@@ -182,6 +181,7 @@ def save_figure_with_spec(
     Raises:
         TypeError: If *fig* is not a recognised figure type and *save_render*
             is ``True``.
+        ValueError: If *render_format* is not one of the supported formats.
         FileNotFoundError: If any path listed in ``spec["inputs"]`` does not
             exist when computing its SHA-256 digest.
     """
@@ -378,7 +378,13 @@ def _render_extension(render_format: str) -> str:
         "svg": "svg",
         "pdf": "pdf",
     }
-    return _ext_map.get(render_format, render_format)
+    try:
+        return _ext_map[render_format]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_ext_map))
+        raise ValueError(
+            f"Unsupported render_format {render_format!r}; expected one of: {supported}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +424,7 @@ def _write_figure(
 
 def _write_plotly(fig: Any, dst_dir: Path, name: str, render_format: str) -> Path:
     """Write a Plotly figure to disk."""
+    _render_extension(render_format)
     if render_format == "json":
         path = dst_dir / f"{name}.fig.json"
         fig.write_json(str(path))
@@ -433,6 +440,7 @@ def _write_plotly(fig: Any, dst_dir: Path, name: str, render_format: str) -> Pat
 
 def _write_matplotlib(fig: Any, dst_dir: Path, name: str, render_format: str) -> Path:
     """Write a Matplotlib figure to disk."""
+    _render_extension(render_format)
     ext = "png" if render_format == "json" else render_format
     path = dst_dir / f"{name}.{ext}"
     fig.savefig(str(path))

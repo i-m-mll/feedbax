@@ -14,6 +14,8 @@ import pytest
 
 from feedbax.plot.io import _sha256, save_figure_with_spec
 
+pytestmark = pytest.mark.feedbax_contract
+
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +181,18 @@ def test_plotly_json_render_written(tmp_path: Path, simple_fig: go.Figure) -> No
     assert render_path is not None
     assert render_path.exists()
     assert render_path.name == "test.fig.json"
+
+
+def test_unknown_render_format_rejected(tmp_path: Path, simple_fig: go.Figure) -> None:
+    with pytest.raises(ValueError, match="Unsupported render_format"):
+        save_figure_with_spec(
+            simple_fig,
+            {},
+            tmp_path,
+            name="test",
+            save_render=True,
+            render_format="figg",
+        )
 
 
 def test_save_render_false_returns_none_render(

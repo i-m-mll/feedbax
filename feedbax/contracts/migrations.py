@@ -446,22 +446,25 @@ class SpecSchemaRegistry:
         *,
         source_version: str | None = None,
         target_version: str | None = None,
+        assume_current: bool = False,
     ) -> SpecMigrationResult:
         """Accept or migrate a structured spec payload for ``kind``.
 
-        If neither ``source_version`` nor ``payload["schema_version"]`` is
-        present, the payload is treated as current and returned unchanged. This
-        preserves existing versionless in-memory specs while still allowing
-        durable callers to opt into explicit version checks.
+        Versionless payloads fail closed unless ``assume_current`` is set by a
+        caller that is deliberately stamping a new current spec payload.
         """
         family = self.resolve(kind)
         payload_dict = dict(payload)
-        resolved_source = (
-            source_version
-            or _payload_schema_version(payload_dict)
-            or family.current_version
-        )
         resolved_target = target_version or family.current_version
+        resolved_source = source_version or _payload_schema_version(payload_dict)
+        if resolved_source is None:
+            if not assume_current:
+                raise UnsupportedSpecVersion(
+                    "Structured spec payload is missing schema_version: "
+                    f"kind={family.kind!r}, schema_id={family.identity!r}, "
+                    f"target_version={resolved_target!r}"
+                )
+            resolved_source = family.current_version
 
         if resolved_source == resolved_target:
             return SpecMigrationResult(
@@ -791,6 +794,7 @@ def migrate_structured_spec_payload(
     *,
     source_version: str | None = None,
     target_version: str | None = None,
+    assume_current: bool = False,
     path: str = "spec",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
@@ -817,6 +821,7 @@ def migrate_structured_spec_payload(
         payload,
         source_version=source_version,
         target_version=target_version,
+        assume_current=assume_current,
     )
     return SpecMigrationResult(
         kind=result.kind,
@@ -845,6 +850,7 @@ def migrate_studio_scenario_spec(
     *,
     source_version: str | None = None,
     target_version: str | None = None,
+    assume_current: bool = False,
     path: str = "scenario",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
@@ -855,6 +861,7 @@ def migrate_studio_scenario_spec(
         payload,
         source_version=source_version,
         target_version=target_version,
+        assume_current=assume_current,
     )
     migrated_payload = dict(result.payload)
     records = [_record_with_spec_path(record, path) for record in result.migration_records]
@@ -885,6 +892,7 @@ def migrate_studio_scenario_spec(
             field_result = migrate_structured_spec_payload(
                 kind,
                 field_payload,
+                assume_current=assume_current,
                 path=f"{path}/{field_name}",
                 registry=registry,
             )
@@ -901,6 +909,7 @@ def migrate_studio_scenario_spec(
             probe_result = migrate_structured_spec_payload(
                 "RetainedObservableSpec",
                 probe_payload,
+                assume_current=assume_current,
                 path=f"{path}/probe_specs/{index}",
                 registry=registry,
             )
@@ -923,6 +932,7 @@ def migrate_studio_stage_spec(
     *,
     source_version: str | None = None,
     target_version: str | None = None,
+    assume_current: bool = False,
     path: str = "stage",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
@@ -932,6 +942,7 @@ def migrate_studio_stage_spec(
         payload,
         source_version=source_version,
         target_version=target_version,
+        assume_current=assume_current,
         path=path,
         registry=registry,
     )
@@ -966,6 +977,7 @@ def migrate_studio_workspace_spec(
                 continue
             scenario_result = migrate_studio_scenario_spec(
                 scenario_payload,
+                assume_current=True,
                 path=f"{path}/scenarios/{scenario_id}",
                 registry=registry,
             )
@@ -982,6 +994,7 @@ def migrate_studio_workspace_spec(
                 continue
             stage_result = migrate_studio_stage_spec(
                 stage_payload,
+                assume_current=True,
                 path=f"{path}/stages/{index}",
                 registry=registry,
             )

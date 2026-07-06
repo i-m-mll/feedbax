@@ -662,6 +662,7 @@ def _training_spec_payload(
         schema_version=schema_version,
         ref=ref,
         sha256=sha256_bytes(canonical_json_bytes(inline)),
+        metadata={"external": True},
     )
 
 

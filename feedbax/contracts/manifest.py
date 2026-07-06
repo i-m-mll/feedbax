@@ -813,6 +813,7 @@ def migrate_spec_payload(
     *,
     path: str = "spec",
     registry: Any | None = None,
+    assume_current: bool = False,
 ) -> SpecPayload:
     """Accept or migrate one manifest-embedded structured spec payload.
 
@@ -835,6 +836,23 @@ def migrate_spec_payload(
     try:
         family = active_registry.resolve(spec_payload_obj.kind)
     except UnknownSpecFamily as exc:
+        if spec_payload_obj.metadata.get("external") is True:
+            if spec_payload_obj.schema_id is None or spec_payload_obj.schema_version is None:
+                raise UnknownSpecFamily(
+                    "External embedded SpecPayload requires schema_id and schema_version: "
+                    f"path={path!r}, kind={spec_payload_obj.kind!r}"
+                ) from exc
+            if spec_payload_obj.schema_id.startswith("feedbax."):
+                raise UnknownSpecFamily(
+                    "Unknown Feedbax embedded SpecPayload family cannot be marked external: "
+                    f"path={path!r}, kind={spec_payload_obj.kind!r}, "
+                    f"schema_id={spec_payload_obj.schema_id!r}"
+                ) from exc
+            if spec_payload_obj.sha256 is None:
+                source_sha256 = _ensure_spec_payload_hash(spec_payload_obj, path=path)
+                return spec_payload_obj.model_copy(update={"sha256": source_sha256})
+            _ensure_spec_payload_hash(spec_payload_obj, path=path)
+            return spec_payload_obj
         raise UnknownSpecFamily(
             "Unknown embedded SpecPayload family: "
             f"path={path!r}, kind={spec_payload_obj.kind!r}; {exc}"
@@ -876,6 +894,7 @@ def migrate_spec_payload(
                 spec_payload_obj.kind,
                 spec_payload_obj.inline,
                 source_version=source_version,
+                assume_current=assume_current,
             )
     except UnsupportedSpecVersion as exc:
         raise UnsupportedSpecVersion(
@@ -908,7 +927,7 @@ def migrate_spec_payload(
 def spec_payload(kind: str, inline: dict[str, Any], ref: Optional[str] = None) -> SpecPayload:
     """Build a registry-stamped spec payload hashed after inline migration."""
     payload = SpecPayload(kind=kind, inline=inline, ref=ref)
-    return migrate_spec_payload(payload, path=kind)
+    return migrate_spec_payload(payload, path=kind, assume_current=True)
 
 
 def collect_git_provenance(cwd: Path | str | None = None) -> Provenance:
@@ -1186,21 +1205,7 @@ def _normalize_spec_payload_field(value: Any, *, path: str) -> Any:
             for index, item in enumerate(value)
         ]
     if isinstance(value, SpecPayload) or _is_spec_payload_data(value):
-        from feedbax.contracts.migrations import UnknownSpecFamily
-
-        try:
-            return migrate_spec_payload(value, path=path)
-        except UnknownSpecFamily:
-            payload = value if isinstance(value, SpecPayload) else SpecPayload.model_validate(value)
-            if payload.schema_id is None or payload.schema_version is None:
-                raise
-            if payload.schema_id.startswith("feedbax."):
-                raise
-            if payload.sha256 is None:
-                payload = payload.model_copy(
-                    update={"sha256": sha256_bytes(canonical_json_bytes(payload.inline))}
-                )
-            return payload
+        return migrate_spec_payload(value, path=path)
     return value
 
 
