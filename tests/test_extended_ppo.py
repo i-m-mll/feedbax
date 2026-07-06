@@ -1,6 +1,5 @@
-"""Tests for train_ppo_batched_extended with all training enhancements."""
+"""Tests for train_ppo_batched with all training enhancements."""
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
@@ -14,11 +13,10 @@ from feedbax.training.rl.ppo import (
     PPOConfig,
     TrainingEnhancements,
     train_ppo_batched,
-    train_ppo_batched_extended,
 )
 
 
-B = 2   # number of bodies in test batch
+B = 2  # number of bodies in test batch
 N = 64  # parallel envs (small for CPU tests)
 TOTAL_STEPS = N * 16 * 3  # 3 PPO updates
 
@@ -60,7 +58,10 @@ def presets(key):
 @pytest.fixture
 def batched_plant(presets, chain_config, sim_config):
     return MJXPlant.build_batch(
-        presets, chain_config, sim_config, clip_states=False,
+        presets,
+        chain_config,
+        sim_config,
+        clip_states=False,
     )
 
 
@@ -82,14 +83,18 @@ class TestExtendedBaseline:
     def test_runs_without_error(self, batched_plant, env_config, ppo_config, key):
         """Extended training with no enhancements produces valid output."""
         enhancements = TrainingEnhancements()  # all disabled
-        policy, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        policy, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
 
         # Check output shapes
-        leaves = [l for l in jt.leaves(policy) if isinstance(l, jnp.ndarray)]
-        assert all(l.shape[0] == B for l in leaves), "Leading dim should be B"
+        leaves = [leaf for leaf in jt.leaves(policy) if isinstance(leaf, jnp.ndarray)]
+        assert all(leaf.shape[0] == B for leaf in leaves), "Leading dim should be B"
 
         # Check metrics
         assert metrics["updates"] >= 1
@@ -99,9 +104,13 @@ class TestExtendedBaseline:
     def test_returns_are_finite(self, batched_plant, env_config, ppo_config, key):
         """Returns should not be NaN or Inf."""
         enhancements = TrainingEnhancements()
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         for r in metrics["per_body_mean_return"]:
             assert jnp.all(jnp.isfinite(r)), "Non-finite per-body returns"
@@ -109,19 +118,28 @@ class TestExtendedBaseline:
     def test_shapes_match_batched(self, batched_plant, env_config, ppo_config, key):
         """Output policy shapes should match train_ppo_batched."""
         enhancements = TrainingEnhancements()
-        extended_policy, _ = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        extended_policy, _ = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         batched_policy, _ = train_ppo_batched(
-            batched_plant, env_config, ppo_config, key,
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
             n_envs=N,
         )
 
-        ext_shapes = [l.shape for l in jt.leaves(extended_policy)
-                      if isinstance(l, jnp.ndarray)]
-        bat_shapes = [l.shape for l in jt.leaves(batched_policy)
-                      if isinstance(l, jnp.ndarray)]
+        ext_shapes = [
+            leaf.shape for leaf in jt.leaves(extended_policy) if isinstance(leaf, jnp.ndarray)
+        ]
+        bat_shapes = [
+            leaf.shape for leaf in jt.leaves(batched_policy) if isinstance(leaf, jnp.ndarray)
+        ]
         assert ext_shapes == bat_shapes
 
 
@@ -131,18 +149,26 @@ class TestExtendedObsNorm:
     def test_obs_norm_runs(self, batched_plant, env_config, ppo_config, key):
         """obs_norm=True should complete without errors."""
         enhancements = TrainingEnhancements(obs_norm=True)
-        policy, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        policy, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         assert metrics["updates"] >= 1
 
     def test_obs_norm_mean_populated(self, batched_plant, env_config, ppo_config, key):
         """obs_norm_mean should be set in metrics after training."""
         enhancements = TrainingEnhancements(obs_norm=True)
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         assert metrics["obs_norm_mean"] is not None
         # Shape: (B, obs_dim)
@@ -152,9 +178,13 @@ class TestExtendedObsNorm:
     def test_obs_norm_mean_finite(self, batched_plant, env_config, ppo_config, key):
         """Running mean should be finite after warmup."""
         enhancements = TrainingEnhancements(obs_norm=True)
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         assert jnp.all(jnp.isfinite(metrics["obs_norm_mean"]))
 
@@ -165,18 +195,26 @@ class TestExtendedLattice:
     def test_lattice_runs(self, batched_plant, env_config, ppo_config, key):
         """lattice_noise=True should complete without errors."""
         enhancements = TrainingEnhancements(lattice_noise=True)
-        policy, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        policy, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         assert metrics["updates"] >= 1
 
     def test_lattice_returns_finite(self, batched_plant, env_config, ppo_config, key):
         """Returns should remain finite with LATTICE noise."""
         enhancements = TrainingEnhancements(lattice_noise=True)
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         for r in metrics["per_body_mean_return"]:
             assert jnp.all(jnp.isfinite(r)), "Non-finite returns with LATTICE"
@@ -188,22 +226,32 @@ class TestExtendedCurriculum:
     def test_curriculum_runs(self, batched_plant, env_config, ppo_config, key):
         """curriculum=True should complete without errors."""
         enhancements = TrainingEnhancements(
-            curriculum=True, curriculum_arm_reach=0.5,
+            curriculum=True,
+            curriculum_arm_reach=0.5,
         )
-        policy, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        policy, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         assert metrics["updates"] >= 1
 
     def test_curriculum_stages_tracked(self, batched_plant, env_config, ppo_config, key):
         """curriculum_stages metric should be populated per update."""
         enhancements = TrainingEnhancements(
-            curriculum=True, curriculum_arm_reach=0.5,
+            curriculum=True,
+            curriculum_arm_reach=0.5,
         )
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         assert "curriculum_stages" in metrics
         assert len(metrics["curriculum_stages"]) == metrics["updates"]
@@ -214,11 +262,16 @@ class TestExtendedCurriculum:
     def test_curriculum_initial_stage_zero(self, batched_plant, env_config, ppo_config, key):
         """All bodies should start at curriculum stage 0."""
         enhancements = TrainingEnhancements(
-            curriculum=True, curriculum_arm_reach=0.5,
+            curriculum=True,
+            curriculum_arm_reach=0.5,
         )
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         # First update's stages should be >= 0 (may have advanced from 0)
         first_stages = metrics["curriculum_stages"][0]
@@ -238,9 +291,13 @@ class TestExtendedAll:
             reward_annealing=True,
             annealing_start_fraction=0.3,  # Low so annealing activates in short test
         )
-        policy, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        policy, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         assert metrics["updates"] >= 1
 
@@ -253,13 +310,17 @@ class TestExtendedAll:
             curriculum_arm_reach=0.5,
             reward_annealing=True,
         )
-        policy, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        policy, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         # Policy should have (B,) leading dimension
-        leaves = [l for l in jt.leaves(policy) if isinstance(l, jnp.ndarray)]
-        assert all(l.shape[0] == B for l in leaves)
+        leaves = [leaf for leaf in jt.leaves(policy) if isinstance(leaf, jnp.ndarray)]
+        assert all(leaf.shape[0] == B for leaf in leaves)
 
         # Metrics should have all enhancement-specific data
         assert metrics["obs_norm_mean"] is not None
@@ -276,9 +337,13 @@ class TestExtendedAll:
             curriculum_arm_reach=0.5,
             reward_annealing=True,
         )
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         for r in metrics["per_body_mean_return"]:
             assert jnp.all(jnp.isfinite(r)), "Non-finite returns with all enhancements"
@@ -289,9 +354,13 @@ class TestExtendedAll:
             reward_annealing=True,
             annealing_start_fraction=0.0,  # Start immediately
         )
-        _, metrics = train_ppo_batched_extended(
-            batched_plant, env_config, ppo_config, key,
-            n_envs=N, enhancements=enhancements,
+        _, metrics = train_ppo_batched(
+            batched_plant,
+            env_config,
+            ppo_config,
+            key,
+            n_envs=N,
+            enhancements=enhancements,
         )
         schedule = metrics["distance_weight_schedule"]
         assert len(schedule) >= 2
