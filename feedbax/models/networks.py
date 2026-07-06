@@ -348,13 +348,26 @@ class PopulationStructure(Module):
 
 def validate_population_structure_spec(spec: Mapping[str, object]) -> dict[str, object]:
     """Validate a serialized population-structure spec against the schema registry."""
-    from feedbax.contracts.migrations import default_spec_registry
+    from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 
     schema_id = spec.get("schema_id")
     if schema_id is not None and schema_id != POPULATION_STRUCTURE_SCHEMA_ID:
         raise ValueError(
             "Unsupported PopulationStructureSpec schema_id: "
             f"schema_id={schema_id!r}, expected={POPULATION_STRUCTURE_SCHEMA_ID!r}"
+        )
+    schema_version = spec.get("schema_version")
+    if (
+        isinstance(schema_version, str)
+        and schema_version.startswith(f"{POPULATION_STRUCTURE_SCHEMA_ID}.v")
+        and schema_version != POPULATION_STRUCTURE_SCHEMA_VERSION
+    ):
+        raise UnsupportedSpecVersion(
+            "Unsupported PopulationStructureSpec schema_version: "
+            f"schema_id={POPULATION_STRUCTURE_SCHEMA_ID!r}, "
+            f"source_version={schema_version!r}, "
+            f"current_version={POPULATION_STRUCTURE_SCHEMA_VERSION!r}; "
+            "future population-structure versions must register an explicit migration"
         )
     result = default_spec_registry.migrate(
         "PopulationStructureSpec",

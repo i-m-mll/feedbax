@@ -347,6 +347,7 @@ def validate_graph_connection_schema(
         occupied[(binding[0], binding[1])] = -1
 
     issues: list[SchemaValidationIssue] = _missing_subgraph_issues(graph, base_path)
+    issues.extend(_dynamic_port_arity_issues(graph, task_binding_spec, base_path))
     for index, wire in enumerate(graph.wires):
         wire_path = f"{base_path}/wires/{index}"
         source = by_node_port_direction.get((wire.source_node, wire.source_port, "output"))
@@ -770,57 +771,117 @@ def _mux_input_index(port_name: str) -> Optional[int]:
     return int(suffix)
 
 
+def _dynamic_port_arity_issues(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec],
+    base_path: str,
+) -> list[SchemaValidationIssue]:
+    issues: list[SchemaValidationIssue] = []
+    graph_input_targets = {
+        tuple(binding) for binding in graph.input_bindings.values()
+    }
+    for node_id, node in graph.nodes.items():
+        if node.type == "Mux":
+            n_inputs = node.params.get("n_inputs", 2)
+            if isinstance(n_inputs, bool) or not isinstance(n_inputs, int) or n_inputs < 1:
+                continue
+            expected = [f"in_{index}" for index in range(n_inputs)]
+            if node.input_ports != expected:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="dynamic_port_arity_mismatch",
+                        message=(
+                            f"Mux node {node_id!r} declares input_ports {node.input_ports!r} "
+                            f"but n_inputs={n_inputs} requires {expected!r}"
+                        ),
+                        location={"path": f"{base_path}/nodes/{node_id}/input_ports"},
+                    )
+                )
+            referenced = {
+                port
+                for target_node, port in graph_input_targets
+                if target_node == node_id
+            }
+            referenced.update(
+                wire.target_port for wire in graph.wires if wire.target_node == node_id
+            )
+            if task_binding_spec is not None:
+                referenced.update(
+                    binding.target_port
+                    for binding in task_binding_spec.bindings
+                    if binding.target_node_id == node_id
+                )
+            for port in sorted(referenced):
+                if _mux_input_index(port) is not None and port not in expected:
+                    issues.append(
+                        SchemaValidationIssue(
+                            type="dynamic_port_arity_mismatch",
+                            message=(
+                                f"Mux node {node_id!r} received a connection to {port!r} "
+                                f"outside declared n_inputs={n_inputs}; update n_inputs and "
+                                "input_ports explicitly"
+                            ),
+                            location={"path": f"{base_path}/nodes/{node_id}/input_ports"},
+                        )
+                    )
+        elif node.type == "Demux":
+            sizes = node.params.get("sizes")
+            if not (
+                isinstance(sizes, list)
+                and all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in sizes)
+            ):
+                continue
+            expected_outputs = [f"out_{index}" for index in range(len(sizes))]
+            if node.input_ports != ["input"] or node.output_ports != expected_outputs:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="dynamic_port_arity_mismatch",
+                        message=(
+                            f"Demux node {node_id!r} declares input_ports {node.input_ports!r} "
+                            f"and output_ports {node.output_ports!r}, but sizes={sizes!r} "
+                            f"requires input_ports ['input'] and output_ports {expected_outputs!r}"
+                        ),
+                        location={"path": f"{base_path}/nodes/{node_id}/output_ports"},
+                    )
+                )
+            referenced_outputs = {
+                port
+                for output_node, port in graph.output_bindings.values()
+                if output_node == node_id
+            }
+            referenced_outputs.update(
+                wire.source_port for wire in graph.wires if wire.source_node == node_id
+            )
+            for port in sorted(referenced_outputs):
+                if (
+                    port.startswith("out_")
+                    and port.removeprefix("out_").isdigit()
+                    and port not in expected_outputs
+                ):
+                    issues.append(
+                        SchemaValidationIssue(
+                            type="dynamic_port_arity_mismatch",
+                            message=(
+                                f"Demux node {node_id!r} exposes {port!r} outside declared "
+                                f"sizes={sizes!r}; update sizes and output_ports explicitly"
+                            ),
+                            location={"path": f"{base_path}/nodes/{node_id}/output_ports"},
+                        )
+                    )
+    return issues
+
+
 def _normalize_dynamic_graph_ports(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
 ) -> GraphSpec:
-    changed = False
-    nodes = dict(graph.nodes)
-    for node_id, node in graph.nodes.items():
-        if node.type == "Demux":
-            sizes = node.params.get("sizes")
-            if isinstance(sizes, list) and all(isinstance(size, int) and size > 0 for size in sizes):
-                output_ports = [f"out_{index}" for index in range(len(sizes))]
-                if node.input_ports == ["input"] and node.output_ports == output_ports:
-                    continue
-                nodes[node_id] = node.model_copy(
-                    update={
-                        "input_ports": node.input_ports or ["input"],
-                        "output_ports": output_ports,
-                    }
-                )
-                changed = True
-            continue
-        if node.type != "Mux":
-            continue
-        max_index = -1
-        for wire in graph.wires:
-            if wire.target_node != node_id:
-                continue
-            index = _mux_input_index(wire.target_port)
-            if index is not None:
-                max_index = max(max_index, index)
-        for binding in task_binding_spec.bindings if task_binding_spec is not None else []:
-            if binding.target_node_id != node_id:
-                continue
-            index = _mux_input_index(binding.target_port)
-            if index is not None:
-                max_index = max(max_index, index)
-        required_count = max(2, max_index + 1)
-        input_ports = [f"in_{index}" for index in range(required_count)]
-        if node.input_ports == input_ports and node.params.get("n_inputs") == required_count:
-            continue
-        params = dict(node.params)
-        params["n_inputs"] = required_count
-        nodes[node_id] = node.model_copy(
-            update={
-                "params": params,
-                "input_ports": input_ports,
-                "output_ports": node.output_ports or ["output"],
-            }
-        )
-        changed = True
-    return graph.model_copy(update={"nodes": nodes}) if changed else graph
+    """Preserve declared dynamic ports for validation.
+
+    Mux and Demux arity is part of the graph contract. Studio used to project
+    incidental wiring into ``n_inputs``/``sizes``-derived ports here; validation
+    now reports those mismatches instead.
+    """
+    return graph
 
 
 def _enumerate_graph_ports(

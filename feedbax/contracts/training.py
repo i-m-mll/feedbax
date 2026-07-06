@@ -119,7 +119,9 @@ class TrainingConfig(BaseModel):
 
     Attributes:
         n_batches: Number of training steps.
-        batch_size: Trials per gradient update.
+        batch_size: Trials per gradient update. The current generic graph worker
+            supports only ``batch_size=1`` and rejects larger values at compile
+            time instead of silently ignoring them.
         learning_rate: AdamW learning rate.
         grad_clip: Global gradient clipping norm. The schema default remains 1.0;
             set explicitly to None to disable gradient clipping.

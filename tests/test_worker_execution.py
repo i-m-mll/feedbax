@@ -666,7 +666,7 @@ def test_worker_rejects_degenerate_single_input_mux_before_materialization() -> 
 
 
 def test_compile_training_run_rejects_batch_size_larger_than_one() -> None:
-    with pytest.raises(ValueError, match="supports batch_size=1"):
+    with pytest.raises(ValueError, match="supports batch_size=1") as excinfo:
         compile_training_run(
             graph_spec=_linear_graph_spec(),
             training_spec=_training_spec(batch_size=2),
@@ -674,6 +674,7 @@ def test_compile_training_run_rejects_batch_size_larger_than_one() -> None:
             task_binding_spec=_task_binding_spec(),
             cfg=_cfg(),
         )
+    assert "got batch_size=2" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("mode", ["stream", "window"])
