@@ -89,6 +89,74 @@ logger = logging.getLogger(__name__)
 
 PARAM_SEQ_LEN_TRUNCATE = 9
 RESULTS_CACHE_SUBDIR = "results"
+ANALYSIS_RESULT_CACHE_SCHEMA_VERSION = "feedbax.analysis.result-cache.v1"
+
+_CACHE_LOAD_ERRORS = (
+    OSError,
+    EOFError,
+    pickle.UnpicklingError,
+    AttributeError,
+    ImportError,
+    TypeError,
+    ValueError,
+)
+_CACHE_SAVE_ERRORS = (OSError, pickle.PicklingError, TypeError, ValueError)
+
+
+class AnalysisResultCacheCorruption(RuntimeError):
+    """Raised when an analysis-result cache file cannot be trusted."""
+
+
+def _load_analysis_result_cache(
+    cache_path: Path,
+    *,
+    analysis_id: str,
+    inputs_hash: str,
+) -> Any:
+    try:
+        with open(cache_path, "rb") as f:
+            payload = pickle.load(f)
+    except _CACHE_LOAD_ERRORS as exc:
+        raise AnalysisResultCacheCorruption(str(exc)) from exc
+
+    if not isinstance(payload, Mapping):
+        raise AnalysisResultCacheCorruption("missing versioned payload envelope")
+    schema_version = payload.get("schema_version")
+    if schema_version != ANALYSIS_RESULT_CACHE_SCHEMA_VERSION:
+        raise AnalysisResultCacheCorruption(
+            f"schema_version={schema_version!r}, "
+            f"expected {ANALYSIS_RESULT_CACHE_SCHEMA_VERSION!r}"
+        )
+    if payload.get("analysis_id") != analysis_id:
+        raise AnalysisResultCacheCorruption(
+            f"analysis_id={payload.get('analysis_id')!r}, expected {analysis_id!r}"
+        )
+    if payload.get("inputs_hash") != inputs_hash:
+        raise AnalysisResultCacheCorruption(
+            f"inputs_hash={payload.get('inputs_hash')!r}, expected {inputs_hash!r}"
+        )
+    if "result" not in payload:
+        raise AnalysisResultCacheCorruption("missing result payload")
+    return payload["result"]
+
+
+def _write_analysis_result_cache(
+    cache_path: Path,
+    *,
+    analysis_id: str,
+    inputs_hash: str,
+    result: Any,
+) -> None:
+    with open(cache_path, "wb") as f:
+        pickle.dump(
+            {
+                "schema_version": ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
+                "analysis_id": analysis_id,
+                "inputs_hash": inputs_hash,
+                "result": result,
+            },
+            f,
+        )
 
 
 @dataclass(frozen=True)
@@ -954,24 +1022,29 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
             try:
                 inputs_hash = _hash_pytree((prepped_data, prepped_kwargs))
-            except Exception as e:
+            except TypeError as e:
                 logger.error(
                     f"Failed to hash inputs for caching of {self.name}: {e}", exc_info=True
                 )
                 # Fallback: disable caching for this invocation
                 return None, None
 
-            cache_fname = f"{self.name}_{self.md5_str}_{inputs_hash}.pkl"
+            analysis_id = self.md5_str
+            cache_fname = f"{self.name}_{analysis_id}_{inputs_hash}.pkl"
             cache_path = cache_root / cache_fname
 
             if cache_path.exists():
                 try:
                     logger.info(f"Loading cached result for {self.name}")
-                    with open(cache_path, "rb") as f:
-                        return None, pickle.load(f)
-                except Exception as e:
+                    return None, _load_analysis_result_cache(
+                        cache_path,
+                        analysis_id=analysis_id,
+                        inputs_hash=inputs_hash,
+                    )
+                except AnalysisResultCacheCorruption as e:
                     logger.warning(
-                        f"Could not load cached result for {self.name} (will recompute): {e}"
+                        f"Ignoring invalid cached result for {self.name} at "
+                        f"{cache_path} (will recompute): {e}"
                     )
 
             return cache_path, None
@@ -987,10 +1060,14 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         if self.cache_result and cache_path is not None:
             try:
-                with open(cache_path, "wb") as f:
-                    pickle.dump(result, f)
+                _write_analysis_result_cache(
+                    cache_path,
+                    analysis_id=self.md5_str,
+                    inputs_hash=_hash_pytree((prepped_data, prepped_kwargs)),
+                    result=result,
+                )
                 logger.info(f"Saved cache for {self.name} to {cache_path}")
-            except Exception as e:
+            except _CACHE_SAVE_ERRORS as e:
                 logger.warning(f"Could not save cache for {self.name}: {e}")
 
         result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
@@ -1106,7 +1183,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         """Determine if a leaf is a valid analysis input type."""
         return isinstance(leaf, self._input_leaf_types())
 
-    @property
+    @cached_property
     def _flattened_inputs(self) -> dict[str, list]:
         """Get flattened dependency sources for each input name.
 
@@ -1132,7 +1209,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             flattened[name] = leaves
         return flattened
 
-    @property
+    @cached_property
     def _input_treedefs(self) -> dict[str, Any]:
         """Get tree definitions for reconstructing PyTree inputs.
 
@@ -1141,6 +1218,61 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         """
         return {
             name: jt.structure(source, is_leaf=self.is_analysis_input_leaf)
+            for name, source in chain(self.inputs.items(), self._extra_inputs.items())
+        }
+
+    def _hashable_input_value(self, value: Any) -> Any:
+        """Project dependency wiring into a stable hash payload."""
+        if isinstance(value, AbstractAnalysis):
+            return {"analysis": value.md5_str}
+        if isinstance(value, AnalysisRef):
+            return {
+                "analysis_ref": self._hashable_input_value(value.target),
+            }
+        if isinstance(value, _DataField):
+            return {
+                "data_field": value.attr,
+                "where": value.where,
+                "is_leaf": value.is_leaf,
+            }
+        if isinstance(value, LiteralInput):
+            return {"literal": value.value}
+        if isinstance(value, ExpandTo):
+            return {
+                "expand_to": {
+                    "target": self._hashable_input_value(value.target),
+                    "source": self._hashable_input_value(value.source),
+                    "where": value.where,
+                    "is_leaf": value.is_leaf,
+                    "is_leaf_prefix": value.is_leaf_prefix,
+                }
+            }
+        if isinstance(value, Transformed):
+            return {
+                "transformed": {
+                    "source": self._hashable_input_value(value.source),
+                    "transform": value.transform,
+                }
+            }
+        if isinstance(value, Mapping):
+            return {
+                str(key): self._hashable_input_value(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        if isinstance(value, tuple):
+            return tuple(self._hashable_input_value(item) for item in value)
+        if isinstance(value, list):
+            return [self._hashable_input_value(item) for item in value]
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            return {
+                field_.name: self._hashable_input_value(getattr(value, field_.name))
+                for field_ in dataclasses.fields(value)
+            }
+        return value
+
+    def _hashable_inputs(self) -> dict[str, Any]:
+        return {
+            name: self._hashable_input_value(source)
             for name, source in chain(self.inputs.items(), self._extra_inputs.items())
         }
 
@@ -2521,10 +2653,11 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # ? different ops)
         ops_params = self._extract_ops_info()
 
-        params = dict(cls_name=self.__class__.__name__) | ops_params | self._field_params
-
-        #! TODO: add leaves from `self.inputs` and make sure any referenced `AbstractAnalysis`
-        #! instances are resolved to their own `md5_str`.
+        params = (
+            dict(cls_name=self.__class__.__name__, inputs=self._hashable_inputs())
+            | ops_params
+            | self._field_params
+        )
 
         params = hash_callable_leaves(
             params,
@@ -3037,8 +3170,6 @@ class IdentityNode(AbstractAnalysis[SinglePort[Any]]):
     inputs: SinglePort[Any] = eqx.field(
         default_factory=SinglePort[Any], converter=SinglePort[Any].converter
     )
-    #! Remove after we hash `inputs`
-    tmp_label: str = "foo"
 
     def compute(self, data: AnalysisInputData, *, input, **kwargs) -> Any:
         return input

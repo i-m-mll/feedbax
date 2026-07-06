@@ -71,6 +71,7 @@ class EvaluationRecipeResult:
 
 EvaluationRecipe = EvaluationRecipeProtocol
 STATES_SCHEMA_METADATA_KEY = "states_schema"
+EVALUATION_STATES_CACHE_SCHEMA_VERSION = "feedbax.analysis.evaluation-states-cache.v1"
 
 _EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
 
@@ -89,6 +90,57 @@ class EvaluationRecipeExecutionError(RuntimeError):
 
 class EvaluationStatesArtifactNotFound(LookupError):
     """Raised when a manifest has no durable evaluation-states artifact."""
+
+
+class EvaluationStatesCacheCorruption(RuntimeError):
+    """Raised when a states cache payload cannot be trusted."""
+
+
+def _cache_corruption(path: Path, reason: str) -> EvaluationStatesCacheCorruption:
+    return EvaluationStatesCacheCorruption(
+        f"Evaluation states cache {path} is corrupt or unsupported: {reason}"
+    )
+
+
+def load_evaluation_states_cache(path: Path, *, manifest_id: str) -> Any:
+    """Load a versioned evaluation-states cache payload."""
+    try:
+        with path.open("rb") as stream:
+            payload = pickle.load(stream)
+    except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError) as exc:
+        raise _cache_corruption(path, str(exc)) from exc
+
+    if not isinstance(payload, Mapping):
+        raise _cache_corruption(path, "missing versioned payload envelope")
+    schema_version = payload.get("schema_version")
+    if schema_version != EVALUATION_STATES_CACHE_SCHEMA_VERSION:
+        raise _cache_corruption(
+            path,
+            f"schema_version={schema_version!r}, "
+            f"expected {EVALUATION_STATES_CACHE_SCHEMA_VERSION!r}",
+        )
+    cached_manifest_id = payload.get("manifest_id")
+    if cached_manifest_id != manifest_id:
+        raise _cache_corruption(
+            path,
+            f"manifest_id={cached_manifest_id!r}, expected {manifest_id!r}",
+        )
+    if "states" not in payload:
+        raise _cache_corruption(path, "missing states payload")
+    return payload["states"]
+
+
+def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) -> None:
+    """Write a versioned evaluation-states cache payload."""
+    with path.open("wb") as stream:
+        pickle.dump(
+            {
+                "schema_version": EVALUATION_STATES_CACHE_SCHEMA_VERSION,
+                "manifest_id": manifest_id,
+                "states": states,
+            },
+            stream,
+        )
 
 
 def register_evaluation_recipe(
@@ -184,8 +236,7 @@ def execute_evaluation_run_spec(
     try:
         cache_hit = False
         if use_cache and not force and states_path.exists():
-            with states_path.open("rb") as stream:
-                states = pickle.load(stream)
+            states = load_evaluation_states_cache(states_path, manifest_id=manifest_id)
             previous_manifest = _load_completed_evaluation_manifest(manifest_path, manifest_id)
             summary_metrics = dict(previous_manifest.summary_metrics) if previous_manifest else {}
             artifacts = list(previous_manifest.artifacts) if previous_manifest else []
@@ -203,8 +254,11 @@ def execute_evaluation_run_spec(
         else:
             result = recipe(run_spec, root_path, states_path)
             if use_cache and result.states is not None:
-                with states_path.open("wb") as stream:
-                    pickle.dump(result.states, stream)
+                write_evaluation_states_cache(
+                    states_path,
+                    manifest_id=manifest_id,
+                    states=result.states,
+                )
                 cache_metadata["states_cache_saved"] = True
         if states_custody == "durable":
             result = _with_durable_states_artifact(

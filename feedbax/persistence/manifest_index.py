@@ -152,6 +152,50 @@ def index_manifest_file(
         conn.close()
 
 
+def find_manifest_paths_by_id(
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+    db_path: Path | str | None = None,
+) -> list[Path]:
+    """Return indexed manifest paths for a deterministic manifest ID."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    conn_path = Path(db_path) if db_path is not None else default_index_path(root_path)
+    if not conn_path.exists():
+        return []
+    conn = connect_index(conn_path)
+    try:
+        rows = conn.execute(
+            "SELECT path FROM manifests WHERE id = ? ORDER BY path",
+            (manifest_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [Path(row[0]) for row in rows]
+
+
+def iter_indexed_manifest_paths_by_kind(
+    manifest_kind: str,
+    *,
+    root: Path | str | None = None,
+    db_path: Path | str | None = None,
+) -> list[Path]:
+    """Return indexed manifest paths for one manifest kind."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    conn_path = Path(db_path) if db_path is not None else default_index_path(root_path)
+    if not conn_path.exists():
+        return []
+    conn = connect_index(conn_path)
+    try:
+        rows = conn.execute(
+            "SELECT path FROM manifests WHERE kind = ? ORDER BY created_at, path",
+            (manifest_kind,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [Path(row[0]) for row in rows]
+
+
 def iter_manifest_files(root: Path | str | None = None) -> list[Path]:
     root_path = Path(root) if root is not None else default_manifest_root()
     manifests_dir = root_path / "manifests"
