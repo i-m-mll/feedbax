@@ -319,7 +319,7 @@ def mock_db_session():
 5. [ ] Split analysis.py into multiple files
 6. [ ] Split database.py into multiple files
 7. [ ] Update pyproject.toml dependencies
-8. [ ] Add optional extras (dashboard, notebook)
+8. [ ] Add optional extras (notebook)
 9. [ ] Deprecate Iterator class
 10. [ ] Refactor task.eval to handle iteration
 11. [ ] Update TaskTrainer for non-Iterator models
