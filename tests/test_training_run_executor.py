@@ -29,7 +29,6 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.worker import (
     BarrierArtifactSinkSpec,
-    CheckpointSlotSpec,
     MetricGuardSpec,
     PhaseTransitionSpec,
     StateSlotSpec,
@@ -112,7 +111,6 @@ def _chunked_registry(
     if barrier_artifact_sink:
         phase_writes.append("history_chunk")
         step_writes.append("history_chunk")
-        checkpoint_slots.append(CheckpointSlotSpec(slot="history_chunk"))
         artifact_sinks.append(
             BarrierArtifactSinkSpec(
                 slot="history_chunk",
@@ -219,6 +217,64 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert Path(manifest.checkpoint_custody[0].uri).is_file()
     assert manifest.summary_metrics["train_loss"] == 1.0
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
+
+
+def test_execute_training_run_spec_kernel_context_reaches_kernels_and_guards(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(stop_after_global_step=99)
+    events: list[tuple[str, object]] = []
+
+    base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
+    base_kernel = standard_supervised_update_kernels()[
+        "feedbax.training.standard_supervised.gradient_update"
+    ]
+
+    def gradient_update(slots, coordinate, context):
+        events.append(("kernel", context["runtime_token"]))
+        updates = dict(base_kernel(slots, coordinate, context))
+        updates["model"] = updates["model"] + context["model_increment"]
+        return updates
+
+    def continue_train_chunk(slots, coordinate, context):
+        del slots
+        events.append(("guard", context["runtime_token"]))
+        return coordinate.global_step < context["stop_after_global_step"]
+
+    registration = TrainingMethodRegistration(
+        method_ref="feedbax/standard_supervised/v1",
+        payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+        payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+        payload_model=StandardSupervisedMethodPayload,
+        contract_factory=base_registration.contract_factory,
+        update_kernels_factory=lambda _payload: {
+            "feedbax.training.standard_supervised.gradient_update": gradient_update
+        },
+        guard_predicates_factory=lambda _payload: {
+            "tests.continue_train_chunk": continue_train_chunk
+        },
+        owner="tests.test_training_run_executor",
+        package="feedbax",
+    )
+    runtime_registry = TrainingMethodRegistry()
+    runtime_registry.register(registration)
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="runtime-context",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path,
+        registry=runtime_registry,
+        kernel_context={
+            "runtime_token": "injected",
+            "model_increment": jnp.array([10.0]),
+            "stop_after_global_step": 1,
+        },
+    )
+
+    assert result.final_slots["model"].tolist() == [11.0]
+    assert ("kernel", "injected") in events
+    assert ("guard", "injected") in events
 
 
 def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
@@ -411,6 +467,18 @@ def test_repeated_barrier_visits_capture_binary_artifact_sinks(
     assert [artifact.sha256 for artifact in persisted_artifacts] == [
         artifact.sha256 for artifact in artifacts
     ]
+    assert all(
+        "history_chunk" not in {slot.slot for slot in write.manifest.slots}
+        for write in result.checkpoint_writes
+    )
+
+    loaded = load_latest_checkpoint(
+        tmp_path / "checkpoints",
+        expected_run_spec=_run_spec(),
+        expected_phase_program=_program,
+        expected_slots=_initial_slots(arrays=True),
+    )
+    assert "history_chunk" not in loaded.slots
 
 
 def test_partial_run_resume_matches_uninterrupted_chunked_execution(

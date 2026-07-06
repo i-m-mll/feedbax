@@ -174,6 +174,7 @@ def execute_training_run_spec(
     *,
     run_id: str | None = None,
     initial_slots: Mapping[str, Any] | None = None,
+    kernel_context: Mapping[str, Any] | None = None,
     manifest_root: Path | str | None = None,
     checkpoint_root: Path | str | None = None,
     registry: TrainingMethodRegistry | None = None,
@@ -287,12 +288,17 @@ def execute_training_run_spec(
         state_slots=effective_phase.state_slots,
     )
     live_history_events: list[dict[str, Any]] = []
+    executor_context = {
+        **dict(kernel_context or {}),
+        "run_spec": run_spec,
+        "method_payload": method_payload,
+    }
     execution = executor.run(
         slots,
         run_id=resolved_run_id,
         resume_from_barrier=resume_barrier,
         stop_after_barrier=stop_after_barrier,
-        context={"run_spec": run_spec, "method_payload": method_payload},
+        context=executor_context,
         progress_callback=(
             _live_progress_callback(progress_callback, live_history_events)
             if progress_callback is not None

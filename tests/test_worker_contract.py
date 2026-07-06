@@ -303,16 +303,16 @@ def test_phase_executor_shares_jax_array_update_and_checkpoint_leaves() -> None:
     )
 
 
-def test_checkpoint_barrier_artifact_sinks_validate_against_captured_slots() -> None:
+def test_checkpoint_barrier_artifact_sinks_validate_against_declared_state_slots() -> None:
     contract = toy_minimax_method_contract()
     barriers = list(contract.phase_program.checkpoint_barriers)
     barriers[0] = barriers[0].model_copy(
         update={
             "artifact_sinks": [
                 BarrierArtifactSinkSpec(
-                    slot="rng",
-                    role="rng_sidecar",
-                    logical_name="rng.bin",
+                    slot="loss",
+                    role="loss_sidecar",
+                    logical_name="loss.bin",
                     media_type="application/octet-stream",
                 )
             ]
@@ -342,16 +342,16 @@ def test_checkpoint_barrier_artifact_sinks_validate_against_captured_slots() -> 
     )
 
 
-def test_checkpoint_barrier_artifact_sink_rejects_uncaptured_slot() -> None:
+def test_checkpoint_barrier_artifact_sink_rejects_unknown_slot() -> None:
     contract = toy_minimax_method_contract()
     barriers = list(contract.phase_program.checkpoint_barriers)
     barriers[0] = barriers[0].model_copy(
         update={
             "artifact_sinks": [
                 BarrierArtifactSinkSpec(
-                    slot="loss",
-                    role="loss_sidecar",
-                    logical_name="loss.bin",
+                    slot="missing_sidecar",
+                    role="missing_sidecar",
+                    logical_name="missing.bin",
                 )
             ]
         }
@@ -368,7 +368,7 @@ def test_checkpoint_barrier_artifact_sink_rejects_uncaptured_slot() -> None:
         validate_worker_contract(contract, update_kernels=_toy_kernels())
 
     assert "/phase_program/checkpoint_barriers/0/artifact_sinks/0/slot" in str(exc.value)
-    assert "must be captured" in str(exc.value)
+    assert "declared state slot" in str(exc.value)
 
 
 def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:

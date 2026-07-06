@@ -295,18 +295,30 @@ class PhaseProgramExecutor:
         slots: Mapping[str, Any],
     ) -> PhaseCheckpoint:
         barrier = self._barriers[barrier_name]
+        capture_slots = [slot.slot for slot in barrier.slots]
+        capture_slots.extend(
+            sink.slot for sink in barrier.artifact_sinks if sink.slot not in capture_slots
+        )
         captured = {
-            slot.slot: _copy_executor_value(slots[slot.slot])
-            for slot in barrier.slots
-            if slot.slot in slots
+            slot: _copy_executor_value(slots[slot]) for slot in capture_slots if slot in slots
         }
         missing = [
             slot.slot for slot in barrier.slots if slot.required and slot.slot not in captured
+        ]
+        missing_artifact_sinks = [
+            sink.slot
+            for sink in barrier.artifact_sinks
+            if sink.required and sink.slot not in captured
         ]
         if missing:
             raise WorkerContractValidationError(
                 f"/checkpoint_barriers/{barrier_name}/slots",
                 f"missing required checkpoint slots {missing!r}",
+            )
+        if missing_artifact_sinks:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{barrier_name}/artifact_sinks",
+                f"missing required artifact sink slots {missing_artifact_sinks!r}",
             )
         return self.checkpoint_store.save(
             PhaseCheckpoint(
