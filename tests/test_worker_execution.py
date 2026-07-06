@@ -318,6 +318,29 @@ def test_trainable_nodes_come_from_registry_metadata_and_explicit_overrides() ->
     assert _derive_trainable_nodes(graph_spec) == ("default_readout", "explicit_gain")
 
 
+def test_default_trainable_nodes_include_neural_and_executable_template_components() -> None:
+    graph_spec = GraphSpec(
+        nodes={
+            "linear": ComponentSpec(type="Linear", params={}),
+            "mlp": ComponentSpec(type="MLP", params={}),
+            "gru": ComponentSpec(type="GRU", params={}),
+            "lstm": ComponentSpec(type="LSTM", params={}),
+            "recurrent_controller": ComponentSpec(type="Recurrent Controller", params={}),
+            "simple_feedback_loop": ComponentSpec(type="Simple Feedback Loop", params={}),
+            "gain": ComponentSpec(type="Gain", params={}),
+        }
+    )
+
+    assert _derive_trainable_nodes(graph_spec) == (
+        "linear",
+        "mlp",
+        "gru",
+        "lstm",
+        "recurrent_controller",
+        "simple_feedback_loop",
+    )
+
+
 def test_rollout_graph_threads_network_template_recurrence() -> None:
     graph_spec = network_template_graph(
         {"input_size": 2, "hidden_size": 3, "out_size": 1}

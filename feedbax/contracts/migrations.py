@@ -975,9 +975,13 @@ def migrate_studio_workspace_spec(
             if not isinstance(scenario_payload, Mapping):
                 migrated_scenarios[str(scenario_id)] = scenario_payload
                 continue
+            scenario_payload = _stamp_parent_carried_nested_schema_version(
+                "StudioScenarioSpec",
+                scenario_payload,
+                registry=registry,
+            )
             scenario_result = migrate_studio_scenario_spec(
                 scenario_payload,
-                assume_current=True,
                 path=f"{path}/scenarios/{scenario_id}",
                 registry=registry,
             )
@@ -992,9 +996,13 @@ def migrate_studio_workspace_spec(
             if not isinstance(stage_payload, Mapping):
                 migrated_stages.append(stage_payload)
                 continue
+            stage_payload = _stamp_parent_carried_nested_schema_version(
+                "StudioStageSpec",
+                stage_payload,
+                registry=registry,
+            )
             stage_result = migrate_studio_stage_spec(
                 stage_payload,
-                assume_current=True,
                 path=f"{path}/stages/{index}",
                 registry=registry,
             )
@@ -1010,6 +1018,27 @@ def migrate_studio_workspace_spec(
         payload=migrated_payload,
         migration_records=records,
     )
+
+
+def _stamp_parent_carried_nested_schema_version(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    registry: SpecSchemaRegistry,
+) -> dict[str, Any]:
+    """Return a copy stamped when current workspace schema carries nested identity.
+
+    Studio workspace v1 is authoritative for direct scenario/stage child shapes
+    emitted before those children were stamped independently. Durable load then
+    passes explicit nested schema versions into the normal structured migration
+    path instead of silently accepting versionless children.
+    """
+    payload_dict = dict(payload)
+    if _payload_schema_version(payload) is not None:
+        return payload_dict
+    family = registry.resolve(kind)
+    payload_dict["schema_version"] = family.current_version
+    return payload_dict
 
 
 def migrate_graph_project_payload(

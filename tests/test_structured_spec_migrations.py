@@ -11,6 +11,8 @@ from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     default_spec_registry,
     migrate_studio_workspace_spec,
+    migrate_studio_scenario_spec,
+    migrate_studio_stage_spec,
     migrate_studio_task_binding_spec,
 )
 from feedbax.contracts.descriptors import (
@@ -641,29 +643,81 @@ def test_studio_task_binding_entrypoint_rejects_explicit_unsupported_version() -
         migrate_studio_task_binding_spec({"schema_version": "feedbax.studio.task_bindings.v0"})
 
 
-def test_studio_workspace_explicitly_accepts_current_versionless_scenario_specs() -> None:
+def test_fresh_studio_scenario_can_opt_into_current_versionless_specs() -> None:
     payload = {
+        "id": "scenario:train",
+        "label": "Train",
+        "objective_spec": {
+            "terms": [
+                {
+                    "selector": "task_data:targets",
+                    "label": "Target tracking",
+                }
+            ]
+        },
+    }
+
+    result = migrate_studio_scenario_spec(payload, assume_current=True)
+
+    objective_spec = result.payload["objective_spec"]
+    assert objective_spec == payload["objective_spec"]
+    assert "schema_version" not in objective_spec
+
+
+def test_studio_workspace_stamps_versionless_nested_scenario_specs() -> None:
+    payload = {
+        "id": "workspace:durable",
+        "label": "Durable",
         "schema_version": default_spec_registry.resolve("StudioWorkspaceSpec").current_version,
         "scenarios": {
-            "train": {
+            "scenario:train": {
+                "id": "scenario:train",
                 "label": "Train",
-                "objective_spec": {
-                    "terms": [
-                        {
-                            "selector": "task_data:targets",
-                            "label": "Target tracking",
-                        }
-                    ]
-                },
             }
         },
     }
 
     result = migrate_studio_workspace_spec(payload)
 
-    objective_spec = result.payload["scenarios"]["train"]["objective_spec"]
-    assert objective_spec == payload["scenarios"]["train"]["objective_spec"]
-    assert "schema_version" not in objective_spec
+    assert result.payload["scenarios"]["scenario:train"]["schema_version"] == (
+        default_spec_registry.resolve("StudioScenarioSpec").current_version
+    )
+    assert "schema_version" not in payload["scenarios"]["scenario:train"]
+
+
+def test_studio_workspace_stamps_versionless_nested_stage_specs() -> None:
+    payload = {
+        "id": "workspace:durable",
+        "label": "Durable",
+        "schema_version": default_spec_registry.resolve("StudioWorkspaceSpec").current_version,
+        "stages": [
+            {
+                "id": "stage:train",
+                "kind": "train",
+                "label": "Train",
+            }
+        ],
+    }
+
+    result = migrate_studio_workspace_spec(payload)
+
+    assert result.payload["stages"][0]["schema_version"] == (
+        default_spec_registry.resolve("StudioStageSpec").current_version
+    )
+    assert "schema_version" not in payload["stages"][0]
+
+
+def test_fresh_studio_stage_can_opt_into_current_versionless_spec() -> None:
+    payload = {
+        "id": "stage:train",
+        "kind": "train",
+        "label": "Train",
+    }
+
+    result = migrate_studio_stage_spec(payload, assume_current=True)
+
+    assert result.payload == payload
+    assert result.source_version == default_spec_registry.resolve("StudioStageSpec").current_version
 
 
 def test_objective_entrypoint_rejects_explicit_unsupported_version() -> None:
