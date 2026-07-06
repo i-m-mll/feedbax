@@ -8,11 +8,14 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from types import ModuleType
 
+import matplotlib.pyplot as plt
 import plotly.graph_objs as go
 import pytest
 
-from feedbax.plot.io import _sha256, save_figure_with_spec
+from feedbax.plot.io import _figure_render_filename, _sha256, save_figure, save_figure_with_spec
+from feedbax.plugins.registry import ExperimentRegistry
 
 pytestmark = pytest.mark.feedbax_contract
 
@@ -181,6 +184,75 @@ def test_plotly_json_render_written(tmp_path: Path, simple_fig: go.Figure) -> No
     assert render_path is not None
     assert render_path.exists()
     assert render_path.name == "test.fig.json"
+
+
+def test_render_filename_helper_matches_written_plotly_file(
+    tmp_path: Path, simple_fig: go.Figure
+) -> None:
+    """Render filename derivation must round-trip through the actual writer."""
+    _, render_path = save_figure_with_spec(
+        simple_fig, {}, tmp_path, name="test", save_render=True, render_format="json"
+    )
+    assert render_path is not None
+    assert render_path.name == _figure_render_filename("test", "json", "plotly")
+
+
+def test_save_figure_atomic_symlink_replaces_stale_target(
+    tmp_path: Path, simple_fig: go.Figure, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Routed figure saves replace an existing symlink with the actual render name."""
+    package_root = tmp_path / "toy_plot_pkg"
+    package_root.mkdir()
+    (package_root / ".git").mkdir()
+    package_file = package_root / "__init__.py"
+    package_file.write_text("", encoding="utf-8")
+
+    package = ModuleType("toy_plot_pkg")
+    package.__file__ = str(package_file)
+
+    registry = ExperimentRegistry()
+    registry.register_package(
+        "toy",
+        package,
+        parts=[],
+        analysis_module_root="analysis",
+        training_module_root="training",
+        config_resource_root="config",
+        figure_routing={
+            "spec_dir_template": "results/{experiment}/figures/{topic}",
+            "render_dir_template": "_artifacts/{experiment}/figures/{topic}",
+            "render_format": "json",
+            "create_symlink_in_spec_dir": True,
+        },
+    )
+
+    import feedbax.plugins as plugins
+
+    monkeypatch.setattr(plugins, "EXPERIMENT_REGISTRY", registry)
+    spec_dir = package_root / "results" / "exp" / "figures" / "topic"
+    spec_dir.mkdir(parents=True)
+    stale_target = spec_dir / "stale.fig.json"
+    stale_target.write_text("{}", encoding="utf-8")
+    symlink_path = spec_dir / "figure.fig.json"
+    symlink_path.symlink_to(stale_target.name)
+
+    result = save_figure(simple_fig, {}, package="toy", experiment="exp", topic="topic")
+
+    assert result["symlink_path"] == symlink_path
+    assert symlink_path.is_symlink()
+    assert symlink_path.resolve() == result["render_path"]
+    assert not list(spec_dir.glob(".figure.fig.json.*.tmp"))
+
+
+def test_save_figure_with_spec_close_closes_matplotlib_figures(tmp_path: Path) -> None:
+    """Saving with close=True leaves no Matplotlib figures open."""
+    plt.close("all")
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+
+    save_figure_with_spec(fig, {}, tmp_path, name="mpl", render_format="png", close=True)
+
+    assert plt.get_fignums() == []
 
 
 def test_unknown_render_format_rejected(tmp_path: Path, simple_fig: go.Figure) -> None:

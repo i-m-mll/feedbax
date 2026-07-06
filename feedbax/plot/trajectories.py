@@ -14,7 +14,7 @@ from plotly.colors import convert_colors_to_same_type, sample_colorscale
 from plotly.subplots import make_subplots
 
 from feedbax.models.feedback import SimpleFeedbackState
-from feedbax.config.selectors import where_func_to_attr_str_tree
+from feedbax.plot._effector import resolve_effector_endpoints, resolve_effector_trajectory_vars
 from feedbax.plot.colors import _compute_colors, arr_to_rgb
 from feedbax.plot.misc import (
     AxesLabels,
@@ -100,26 +100,7 @@ def effector_trajectories(
         control_labels: A tuple giving the labels for the title, x-axis, and y-axis
             of the final (controller output/force) plot. Overrides `control_label_type`.
     """
-    var_labels_ = var_labels
-
-    vars_tuple: tuple[Shaped[Array, "*batch trial time xy=2"], ...]
-    if where_data is not None:
-        vars_tuple = tuple(where_data(states))
-        if var_labels is None:
-            var_labels = where_func_to_attr_str_tree(where_data)
-
-    elif isinstance(states, SimpleFeedbackState):
-        vars_tuple = (
-            states.mechanics.effector.pos,
-            states.mechanics.effector.vel,
-            states.efferent.output,
-        )
-        if var_labels is None:
-            var_labels_ = ("Position", "Velocity", "Force")
-    else:
-        raise ValueError(
-            "If `states` is not a `SimpleFeedbackState`, `where_data` must be provided."
-        )
+    vars_tuple, var_labels_ = resolve_effector_trajectory_vars(states, where_data, var_labels)
 
     if len(vars_tuple[0].shape) > 3:
         # Collapse to a single batch dimension
@@ -195,19 +176,7 @@ def effector_trajectories(
     if endpoints is not None:
         endpoints_arr = np.array(endpoints)  # type: ignore
     else:
-        if trial_specs is not None:
-            target_specs = trial_specs.targets["mechanics.effector.pos"]
-            if target_specs.value is not None:
-                endpoints_arr = np.array(  # type: ignore
-                    [
-                        trial_specs.inits["mechanics.effector"].pos,
-                        target_specs.value[:, -1],
-                    ]
-                )
-            else:
-                endpoints_arr = None
-        else:
-            endpoints_arr = None
+        endpoints_arr = resolve_effector_endpoints(trial_specs)
 
     if endpoints_arr is not None:
         colors = [d.marker.color for d in fig.data[::n_vars]]

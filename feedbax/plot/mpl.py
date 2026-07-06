@@ -41,6 +41,7 @@ from feedbax.objectives.loss import TermTree
 from feedbax.mechanics.geometry import corners_2d
 from feedbax.runtime.state import CartesianState
 from feedbax.tasks import TaskTrialSpec
+from feedbax.plot._effector import resolve_effector_endpoints, resolve_effector_trajectory_vars
 
 if TYPE_CHECKING:
     from feedbax.training.trainer import TaskTrainerHistory
@@ -337,18 +338,7 @@ def effector_trajectories(
         control_labels: A tuple giving the labels for the title, x-axis, and y-axis
             of the final (controller output/force) plot. Overrides `control_label_type`.
     """
-    if isinstance(states, SimpleFeedbackState):
-        positions, velocities, controls = (
-            states.mechanics.effector.pos,
-            states.mechanics.effector.vel,
-            states.efferent.output,
-        )
-    elif where_data is None:
-        raise ValueError(
-            "If `states` is not a `SimpleFeedbackState`, `where_data` must be provided."
-        )
-    else:
-        positions, velocities, controls = where_data(states)
+    positions, velocities, controls = resolve_effector_trajectory_vars(states, where_data)[0]
 
     if cmap_name is None:
         if positions.shape[0] < 10:
@@ -359,22 +349,7 @@ def effector_trajectories(
     if endpoints is not None:
         endpoints_arr = np.array(endpoints)  # type: ignore
     else:
-        if trial_specs is not None:
-            target_specs = trial_specs.targets["mechanics.effector.pos"]
-            if isinstance(target_specs, Mapping):
-                # Assumes goal position is the first target specified
-                target_specs = next(iter(target_specs.values()))
-            if target_specs.value is not None:
-                endpoints_arr = np.array(  # type: ignore
-                    [
-                        trial_specs.inits["mechanics.effector"].pos,
-                        target_specs.value[:, -1],
-                    ]
-                )
-            else:
-                endpoints_arr = None
-        else:
-            endpoints_arr = None
+        endpoints_arr = resolve_effector_endpoints(trial_specs)
 
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
