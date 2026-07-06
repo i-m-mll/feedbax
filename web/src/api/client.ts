@@ -306,6 +306,16 @@ export interface OrchestrationStatusResponse {
   internal_ip: string | null;
   external_ip: string | null;
   error: string | null;
+  orphaned_instance: string | null;
+  worker_health_failures: number;
+}
+
+export interface FeedbaxInstallSpec {
+  schema_version?: 'feedbax.orchestration.install.v1';
+  source?: 'git';
+  repository?: 'https://github.com/mlll-io/feedbax.git';
+  ref?: string;
+  extras?: string[];
 }
 
 export interface LaunchInstanceRequest {
@@ -316,7 +326,10 @@ export interface LaunchInstanceRequest {
   worker_port?: number;
   auth_token?: string | null;
   ts_auth_key?: string | null;
-  feedbax_install_cmd?: string;
+  install_spec?: FeedbaxInstallSpec;
+  confirm_billable_launch: boolean;
+  confirmation_token: string;
+  max_hourly_cost_usd: number;
 }
 
 export async function launchInstance(params: LaunchInstanceRequest) {

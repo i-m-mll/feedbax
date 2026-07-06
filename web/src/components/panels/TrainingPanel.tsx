@@ -115,6 +115,8 @@ export function TrainingPanel() {
   const [cloudWorkerPort, setCloudWorkerPort] = useState(8765);
   const [cloudAuthToken, setCloudAuthToken] = useState('');
   const [cloudTsAuthKey, setCloudTsAuthKey] = useState('');
+  const [cloudMaxHourlyCost, setCloudMaxHourlyCost] = useState(1);
+  const [cloudConfirmBillable, setCloudConfirmBillable] = useState(false);
   const [planPreparing, setPlanPreparing] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [localRunRunning, setLocalRunRunning] = useState(false);
@@ -547,6 +549,26 @@ export function TrainingPanel() {
                 />
                 <span className="text-xs text-slate-400">worker port</span>
               </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={cloudMaxHourlyCost}
+                  onChange={(e) => setCloudMaxHourlyCost(Number(e.target.value))}
+                  className="w-24 rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+                />
+                <span className="text-xs text-slate-400">max USD/hour</span>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={cloudConfirmBillable}
+                  onChange={(e) => setCloudConfirmBillable(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <span className="text-sm text-slate-600">Confirm billable launch</span>
+              </label>
               <input
                 type="password"
                 placeholder="Auth token (optional)"
@@ -572,7 +594,15 @@ export function TrainingPanel() {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  disabled={cloudLaunching || cloudStatus === 'creating' || cloudStatus === 'connecting' || !cloudProject.trim()}
+                  disabled={
+                    cloudLaunching ||
+                    cloudStatus === 'creating' ||
+                    cloudStatus === 'connecting' ||
+                    !cloudProject.trim() ||
+                    !cloudConfirmBillable ||
+                    !Number.isFinite(cloudMaxHourlyCost) ||
+                    cloudMaxHourlyCost <= 0
+                  }
                   onClick={() =>
                     cloudLaunch({
                       project: cloudProject.trim(),
@@ -582,6 +612,9 @@ export function TrainingPanel() {
                       worker_port: cloudWorkerPort,
                       auth_token: cloudAuthToken.trim() || null,
                       ts_auth_key: cloudTsAuthKey.trim() || null,
+                      confirm_billable_launch: cloudConfirmBillable,
+                      confirmation_token: 'launch-billable-gcp-worker',
+                      max_hourly_cost_usd: cloudMaxHourlyCost,
                     })
                   }
                   className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500 py-1.5 text-xs font-semibold text-white disabled:opacity-50 hover:bg-emerald-600 transition-colors"

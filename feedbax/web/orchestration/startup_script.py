@@ -1,24 +1,91 @@
 """Worker startup script injected as GCP instance metadata."""
 
+from __future__ import annotations
+
+import re
+import shlex
+from dataclasses import dataclass, field
+from typing import Any
+
+
+INSTALL_SPEC_SCHEMA_VERSION = "feedbax.orchestration.install.v1"
+DEFAULT_FEEDBAX_REPOSITORY = "https://github.com/mlll-io/feedbax.git"
+DEFAULT_FEEDBAX_REF = "develop"
+
+_SAFE_REF = re.compile(r"^[A-Za-z0-9._/@+-]{1,128}$")
+_SAFE_EXTRA = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+@dataclass(frozen=True)
+class FeedbaxInstallSpec:
+    """Structured worker install request for cloud startup scripts."""
+
+    schema_version: str = INSTALL_SPEC_SCHEMA_VERSION
+    source: str = "git"
+    repository: str = DEFAULT_FEEDBAX_REPOSITORY
+    ref: str = DEFAULT_FEEDBAX_REF
+    extras: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != INSTALL_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported install spec schema_version {self.schema_version!r}"
+            )
+        if self.source != "git":
+            raise ValueError("install spec source must be 'git'")
+        if self.repository != DEFAULT_FEEDBAX_REPOSITORY:
+            raise ValueError(
+                "install spec repository must be "
+                f"{DEFAULT_FEEDBAX_REPOSITORY!r}"
+            )
+        if not _SAFE_REF.fullmatch(self.ref):
+            raise ValueError(
+                "install spec ref may contain only letters, numbers, '.', '_', '/', "
+                "'@', '+', and '-'"
+            )
+        bad_extras = [extra for extra in self.extras if not _SAFE_EXTRA.fullmatch(extra)]
+        if bad_extras:
+            raise ValueError(f"invalid install spec extras: {bad_extras!r}")
+
+    @classmethod
+    def from_mapping(cls, payload: dict[str, Any] | None) -> "FeedbaxInstallSpec":
+        """Build and validate an install spec from a JSON-like payload."""
+        if payload is None:
+            return cls()
+        extras = payload.get("extras", ())
+        if extras is None:
+            extras = ()
+        return cls(
+            schema_version=str(payload.get("schema_version", INSTALL_SPEC_SCHEMA_VERSION)),
+            source=str(payload.get("source", "git")),
+            repository=str(payload.get("repository", DEFAULT_FEEDBAX_REPOSITORY)),
+            ref=str(payload.get("ref", DEFAULT_FEEDBAX_REF)),
+            extras=tuple(str(extra) for extra in extras),
+        )
+
+    def to_pip_target(self) -> str:
+        """Return the validated PEP 508 target passed as one pip argument."""
+        extras = f"[{','.join(self.extras)}]" if self.extras else ""
+        return f"feedbax{extras} @ git+{self.repository}@{self.ref}"
+
 
 def make_startup_script(
-    feedbax_install_cmd: str = "pip install feedbax",
+    install_spec: FeedbaxInstallSpec | None = None,
 ) -> str:
     """Generate the GCP instance startup script.
 
     Args:
-        feedbax_install_cmd: Shell command used to install feedbax on the
-            instance.  Defaults to ``pip install feedbax`` for backwards
-            compatibility; callers should pass a git-install command pointing
-            at the desired branch/ref.
+        install_spec: Validated structured install request.
 
     Returns:
         A bash script string suitable for use as GCP instance metadata.
     """
+    spec = install_spec or FeedbaxInstallSpec()
+    feedbax_target = shlex.quote(spec.to_pip_target())
     return f"""#!/bin/bash
 set -euo pipefail
-{feedbax_install_cmd}
-pip install uvicorn httpx fastapi 2>&1 | tail -5
+python -m pip install --upgrade {feedbax_target}
+python -m pip install --upgrade uvicorn httpx fastapi 2>&1 | tail -5
 
 # Install and start Tailscale (if TS_AUTH_KEY is set)
 if [[ -n "${{TS_AUTH_KEY:-}}" ]]; then
@@ -26,15 +93,41 @@ if [[ -n "${{TS_AUTH_KEY:-}}" ]]; then
   tailscale up --authkey="${{TS_AUTH_KEY}}" --hostname="feedbax-worker-$(hostname)" 2>&1
 fi
 
-# Start the worker in the background
-nohup python -m feedbax.web.worker \\
-  --host 0.0.0.0 --port ${{WORKER_PORT:-8765}} \\
-  ${{AUTH_TOKEN:+--auth-token "$AUTH_TOKEN"}} \\
-  >> /var/log/feedbax-worker.log 2>&1 &
-echo "Worker started on port ${{WORKER_PORT:-8765}}"
+worker_port_arg="$(printf '%q' "${{WORKER_PORT:-8765}}")"
+auth_token_arg=""
+if [[ -n "${{AUTH_TOKEN:-}}" ]]; then
+  auth_token_arg=" --auth-token $(printf '%q' "$AUTH_TOKEN")"
+fi
+
+cat >/usr/local/bin/feedbax-worker-start <<WORKER
+#!/bin/bash
+set -euo pipefail
+exec python -m feedbax.web.worker --host 0.0.0.0 --port ${{worker_port_arg}}${{auth_token_arg}}
+WORKER
+chmod 0755 /usr/local/bin/feedbax-worker-start
+
+cat >/etc/systemd/system/feedbax-worker.service <<'UNIT'
+[Unit]
+Description=Feedbax training worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/feedbax-worker-start
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/feedbax-worker.log
+StandardError=append:/var/log/feedbax-worker.log
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now feedbax-worker.service
+echo "Feedbax worker service started on port ${{WORKER_PORT:-8765}}"
 """
 
 
-# Backwards-compat constant: any direct import of STARTUP_SCRIPT continues to
-# work unchanged (uses the PyPI install default).
 STARTUP_SCRIPT = make_startup_script()

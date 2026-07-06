@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from feedbax.web.orchestration.startup_script import make_startup_script
+from feedbax.web.orchestration.startup_script import (
+    FeedbaxInstallSpec,
+    make_startup_script,
+)
 
 
 class InstanceStatus(str, Enum):
@@ -47,6 +50,7 @@ class InstanceConfig:
         worker_port: Port the Feedbax worker will bind to.
         auth_token: Optional shared secret for the worker's auth middleware.
         ts_auth_key: Optional Tailscale auth key for network provisioning.
+        install_spec: Structured Feedbax install request for the startup script.
     """
 
     project: str
@@ -58,9 +62,7 @@ class InstanceConfig:
     worker_port: int = 8765
     auth_token: Optional[str] = None
     ts_auth_key: Optional[str] = None
-    feedbax_install_cmd: str = (
-        "pip install 'git+https://github.com/mlll-io/feedbax.git@develop'"
-    )
+    install_spec: FeedbaxInstallSpec = field(default_factory=FeedbaxInstallSpec)
 
 
 @dataclass
@@ -180,7 +182,7 @@ async def create_instance(config: InstanceConfig, instance_name: str) -> Instanc
     Raises:
         RuntimeError: If ``gcloud`` fails.
     """
-    metadata_parts = [f"startup-script={make_startup_script(config.feedbax_install_cmd)}"]
+    metadata_parts = [f"startup-script={make_startup_script(config.install_spec)}"]
     if config.ts_auth_key:
         metadata_parts.append(f"TS_AUTH_KEY={config.ts_auth_key}")
     metadata_parts.append(f"WORKER_PORT={config.worker_port}")
