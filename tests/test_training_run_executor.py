@@ -277,6 +277,21 @@ def test_execute_training_run_spec_kernel_context_reaches_kernels_and_guards(
     assert ("guard", "injected") in events
 
 
+@pytest.mark.parametrize("reserved_key", ["run_spec", "method_payload"])
+def test_execute_training_run_spec_rejects_reserved_kernel_context_keys(
+    tmp_path: Path,
+    reserved_key: str,
+) -> None:
+    with pytest.raises(TrainingRunExecutorError, match="executor-reserved keys"):
+        execute_training_run_spec(
+            _run_spec(),
+            run_id="reserved-context",
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path,
+            kernel_context={reserved_key: object()},
+        )
+
+
 def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
     tmp_path: Path,
 ) -> None:

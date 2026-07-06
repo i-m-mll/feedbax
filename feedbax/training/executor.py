@@ -59,6 +59,7 @@ from feedbax.training.worker_validation import (
 
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
+_RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
 
 
 class TrainingRunExecutorError(ValueError):
@@ -291,8 +292,17 @@ def execute_training_run_spec(
         state_slots=effective_phase.state_slots,
     )
     live_history_events: list[dict[str, Any]] = []
+    caller_kernel_context = dict(kernel_context or {})
+    reserved_context_keys = sorted(
+        set(caller_kernel_context).intersection(_RESERVED_KERNEL_CONTEXT_KEYS)
+    )
+    if reserved_context_keys:
+        raise TrainingRunExecutorError(
+            "kernel_context contains executor-reserved keys: "
+            f"{reserved_context_keys!r}"
+        )
     executor_context = {
-        **dict(kernel_context or {}),
+        **caller_kernel_context,
         "run_spec": run_spec,
         "method_payload": method_payload,
     }
