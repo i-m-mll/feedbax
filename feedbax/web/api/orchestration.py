@@ -14,21 +14,75 @@ DELETE /api/orchestration/instance
 from __future__ import annotations
 
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from feedbax.web.orchestration.gcp import InstanceConfig
 from feedbax.web.orchestration.manager import orchestration_manager
+from feedbax.web.orchestration.startup_script import (
+    DEFAULT_FEEDBAX_REF,
+    DEFAULT_FEEDBAX_REPOSITORY,
+    INSTALL_SPEC_SCHEMA_VERSION,
+    FeedbaxInstallSpec,
+)
 from feedbax.web.services.training_service import training_service
 
 router = APIRouter()
+
+_BILLABLE_CONFIRMATION_TOKEN = "launch-billable-gcp-worker"
+_MACHINE_TYPE_ESTIMATES_USD = {
+    "n1-standard-4": 0.20,
+    "n1-standard-8": 0.40,
+    "n2-standard-4": 0.22,
+    "n2-standard-8": 0.44,
+}
+_PREEMPTIBLE_DISCOUNT = 0.30
 
 
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
+
+
+class LaunchCostEstimate(BaseModel):
+    currency: Literal["USD"] = "USD"
+    hourly_estimate: float
+    machine_type: str
+    preemptible: bool
+    basis: str
+
+
+class InstallSpecRequest(BaseModel):
+    schema_version: Literal["feedbax.orchestration.install.v1"] = INSTALL_SPEC_SCHEMA_VERSION
+    source: Literal["git"] = "git"
+    repository: Literal["https://github.com/mlll-io/feedbax.git"] = (
+        DEFAULT_FEEDBAX_REPOSITORY
+    )
+    ref: str = DEFAULT_FEEDBAX_REF
+    extras: tuple[str, ...] = ()
+
+    @field_validator("ref")
+    @classmethod
+    def _validate_ref(cls, value: str) -> str:
+        FeedbaxInstallSpec(ref=value)
+        return value
+
+    @field_validator("extras")
+    @classmethod
+    def _validate_extras(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        FeedbaxInstallSpec(extras=value)
+        return value
+
+    def to_domain(self) -> FeedbaxInstallSpec:
+        return FeedbaxInstallSpec(
+            schema_version=self.schema_version,
+            source=self.source,
+            repository=self.repository,
+            ref=self.ref,
+            extras=self.extras,
+        )
 
 
 class LaunchRequest(BaseModel):
@@ -39,13 +93,17 @@ class LaunchRequest(BaseModel):
     worker_port: int = 8765
     auth_token: Optional[str] = None
     ts_auth_key: Optional[str] = None
-    feedbax_install_cmd: Optional[str] = None
+    install_spec: InstallSpecRequest = Field(default_factory=InstallSpecRequest)
+    confirm_billable_launch: bool = False
+    confirmation_token: Optional[str] = None
+    max_hourly_cost_usd: Optional[float] = None
 
 
 class LaunchResponse(BaseModel):
     status: str
     instance_name: Optional[str] = None
     worker_url: Optional[str] = None
+    cost_estimate: Optional[LaunchCostEstimate] = None
 
 
 class StatusResponse(BaseModel):
@@ -56,6 +114,7 @@ class StatusResponse(BaseModel):
     external_ip: Optional[str] = None
     error: Optional[str] = None
     orphaned_instance: Optional[str] = None
+    worker_health_failures: int = 0
 
 
 class TerminateResponse(BaseModel):
@@ -69,7 +128,68 @@ class TerminateResponse(BaseModel):
 
 async def _launch_background(config: InstanceConfig, instance_name: str) -> None:
     """Background coroutine that drives the full instance launch sequence."""
-    await orchestration_manager.launch(config, training_service, instance_name)
+    await orchestration_manager.launch(
+        config,
+        training_service,
+        instance_name,
+        reserved=True,
+    )
+
+
+def _estimate_launch_cost(payload: LaunchRequest) -> LaunchCostEstimate:
+    """Return a deterministic launch cost surface for confirmation."""
+    base = _MACHINE_TYPE_ESTIMATES_USD.get(payload.machine_type)
+    basis = "static machine-type estimate"
+    if base is None:
+        base = 0.05
+        basis = "fallback vCPU estimate"
+        pieces = payload.machine_type.rsplit("-", 1)
+        if len(pieces) == 2 and pieces[1].isdigit():
+            base *= int(pieces[1])
+        else:
+            base *= 4
+    hourly = base * (_PREEMPTIBLE_DISCOUNT if payload.preemptible else 1.0)
+    return LaunchCostEstimate(
+        hourly_estimate=round(hourly, 4),
+        machine_type=payload.machine_type,
+        preemptible=payload.preemptible,
+        basis=basis,
+    )
+
+
+def _require_launch_confirmation(payload: LaunchRequest) -> LaunchCostEstimate:
+    """Reject billable launches unless the caller acknowledged cost and cap."""
+    estimate = _estimate_launch_cost(payload)
+    if (
+        not payload.confirm_billable_launch
+        or payload.confirmation_token != _BILLABLE_CONFIRMATION_TOKEN
+    ):
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "error": "billable_launch_confirmation_required",
+                "required_confirmation_token": _BILLABLE_CONFIRMATION_TOKEN,
+                "cost_estimate": estimate.model_dump(),
+            },
+        )
+    if payload.max_hourly_cost_usd is None:
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "error": "max_hourly_cost_usd_required",
+                "cost_estimate": estimate.model_dump(),
+            },
+        )
+    if payload.max_hourly_cost_usd < estimate.hourly_estimate:
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "error": "max_hourly_cost_usd_below_estimate",
+                "cost_estimate": estimate.model_dump(),
+                "max_hourly_cost_usd": payload.max_hourly_cost_usd,
+            },
+        )
+    return estimate
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +214,8 @@ async def launch_instance(payload: LaunchRequest, background_tasks: BackgroundTa
         auth_token: Optional bearer token for the worker.
         ts_auth_key: Optional Tailscale auth key.
     """
+    cost_estimate = _require_launch_confirmation(payload)
+
     config = InstanceConfig(
         project=payload.project,
         zone=payload.zone,
@@ -102,18 +224,24 @@ async def launch_instance(payload: LaunchRequest, background_tasks: BackgroundTa
         worker_port=payload.worker_port,
         auth_token=payload.auth_token,
         ts_auth_key=payload.ts_auth_key,
-        feedbax_install_cmd=(
-            payload.feedbax_install_cmd
-            or "pip install 'git+https://github.com/mlll-io/feedbax.git@develop'"
-        ),
+        install_spec=payload.install_spec.to_domain(),
     )
 
     short_id = uuid.uuid4().hex[:6]
     instance_name = f"feedbax-worker-{short_id}"
 
+    try:
+        await orchestration_manager.reserve_launch(config, instance_name)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     background_tasks.add_task(_launch_background, config, instance_name)
 
-    return LaunchResponse(status="creating", instance_name=instance_name)
+    return LaunchResponse(
+        status="creating",
+        instance_name=instance_name,
+        cost_estimate=cost_estimate,
+    )
 
 
 @router.get("/status", response_model=StatusResponse)
@@ -141,6 +269,7 @@ async def get_orchestration_status():
         external_ip=instance.external_ip if instance else None,
         error=state.error,
         orphaned_instance=state.orphaned_instance,
+        worker_health_failures=state.worker_health_failures,
     )
 
 

@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from functools import partial, wraps
 from pathlib import Path
-from typing import Any, Optional, Tuple, TypeAlias
+from typing import Any, Literal, Optional, Tuple, TypeAlias
 
 import equinox as eqx
 import jax
@@ -63,6 +63,15 @@ logger = logging.getLogger(__name__)
 
 def _as_host_scalar(value: Array) -> float:
     return float(jax.device_get(value))
+
+
+def _training_key_for_batch(
+    keys: PRNGKeyArray,
+    batch: int | Array,
+    idx_start: int,
+) -> PRNGKeyArray:
+    """Select a per-run PRNG key using the batch index local to this run."""
+    return keys[int(batch - idx_start)]
 
 
 def _cast_to_state_dtypes(new_value, current_value):
@@ -138,6 +147,7 @@ class TaskTrainer(eqx.Module):
     optimizer: optax.GradientTransformation
     checkpointing: bool
     checkpoint_custody: bool
+    on_nan: Literal["raise", "restore_checkpoint"]
     chkpt_dir: Path
     writer: Optional[SummaryWriter]
     model_update_funcs: PyTree[Callable]
@@ -148,6 +158,7 @@ class TaskTrainer(eqx.Module):
         optimizer: optax.GradientTransformation,
         checkpointing: bool = True,
         checkpoint_custody: bool = False,
+        on_nan: Literal["raise", "restore_checkpoint"] = "raise",
         chkpt_dir: str | Path = "/tmp/feedbax-checkpoints",
         enable_tensorboard: bool = False,
         tensorboard_logdir: str | Path = "/tmp/feedbax-tensorboard",
@@ -160,6 +171,9 @@ class TaskTrainer(eqx.Module):
             checkpoint_custody: Whether an external Feedbax checkpoint-custody
                 writer owns checkpoint transactions for this run. When enabled,
                 the legacy model-only writer must be disabled.
+            on_nan: Policy for NaN training loss. The default raises a clear
+                error; ``"restore_checkpoint"`` opts into legacy checkpoint
+                substitution.
             chkpt_dir: The directory in which to save model checkpoints.
             enable_tensorboard: Whether to keep logs for Tensorboard.
             tensorboard_logdir: The directory in which to save Tensorboard logs.
@@ -175,9 +189,12 @@ class TaskTrainer(eqx.Module):
                 "checkpointing=True; Feedbax checkpoint custody must be the only "
                 "active checkpoint writer for a run."
             )
+        if on_nan not in {"raise", "restore_checkpoint"}:
+            raise ValueError("on_nan must be 'raise' or 'restore_checkpoint'")
         self.optimizer = optimizer
         self.model_update_funcs = model_update_funcs
         self.checkpoint_custody = checkpoint_custody
+        self.on_nan = on_nan
 
         self._use_tb = enable_tensorboard
         if self._use_tb:
@@ -601,9 +618,11 @@ class TaskTrainer(eqx.Module):
         with progress_context as (batches, update_pbar):
             # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
             for batch in batches:
-                key_train, key_eval = jr.split(keys[batch], 2)
-
                 batch_local = int(batch - idx_start)
+                key_train, key_eval = jr.split(
+                    _training_key_for_batch(keys, batch, idx_start),
+                    2,
+                )
 
                 if batch_local in where_train_local:
                     where_train_func = where_train_local[batch_local]
@@ -744,9 +763,13 @@ class TaskTrainer(eqx.Module):
                     model = jtu.tree_unflatten(treedef_model, flat_model)
                     # opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
-                    # TODO: Should probably not return a checkpoint automatically unless the user
-                    # has explicitly requested it.
                     msg = f"NaN loss at batch {batch}! "
+                    if self.on_nan == "raise":
+                        raise FloatingPointError(
+                            msg
+                            + "Set on_nan='restore_checkpoint' to explicitly restore "
+                            "the last checkpoint instead."
+                        )
                     if (
                         checkpoint := self._load_last_checkpoint(model, opt_state, history)
                     ) is not None:
@@ -996,6 +1019,7 @@ class TaskTrainer(eqx.Module):
         optimizer: optax.GradientTransformation,
         checkpointing: bool = True,
         checkpoint_custody: bool = False,
+        on_nan: Literal["raise", "restore_checkpoint"] = "raise",
         chkpt_dir: str | Path = "/tmp/feedbax-checkpoints",
         enable_tensorboard: bool = False,
         tensorboard_logdir: str | Path = "/tmp/feedbax-tensorboard",
@@ -1050,6 +1074,7 @@ class TaskTrainer(eqx.Module):
             optimizer=optimizer,
             checkpointing=checkpointing,
             checkpoint_custody=checkpoint_custody,
+            on_nan=on_nan,
             chkpt_dir=chkpt_dir,
             enable_tensorboard=enable_tensorboard,
             tensorboard_logdir=tensorboard_logdir,

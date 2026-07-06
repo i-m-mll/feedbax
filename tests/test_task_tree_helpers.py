@@ -4,6 +4,7 @@ import jax.random as jr
 import jax_cookbook.tree as jtree
 
 from feedbax.config.mapping import WhereDict
+from feedbax.intervene.schedule import evaluate_intervenor_params
 from feedbax.objectives.loss import TermTree
 from feedbax.tasks._tree import is_marked_shared, mark_shared, tree_call_with_keys
 
@@ -63,7 +64,9 @@ def test_tree_call_with_keys_honors_shared_key_markers() -> None:
     def make_value(*, key):
         return jr.uniform(key, ())
 
-    callables = mark_shared({"shared": make_value, "split": make_value}, lambda item: item["shared"])
+    callables = mark_shared(
+        {"shared": make_value, "split": make_value}, lambda item: item["shared"]
+    )
     shared_key = jr.PRNGKey(101)
 
     values = tree_call_with_keys(
@@ -75,6 +78,21 @@ def test_tree_call_with_keys_honors_shared_key_markers() -> None:
 
     assert values["shared"] == make_value(key=shared_key)
     assert values["split"] != make_value(key=shared_key)
+
+
+def test_intervenor_param_evaluator_splits_callable_leaf_keys() -> None:
+    def make_value(trial_spec, batch_info, *, key):
+        del trial_spec, batch_info
+        return jr.uniform(key, ())
+
+    values = evaluate_intervenor_params(
+        {"left": make_value, "right": make_value},
+        trial_spec=None,
+        batch_info=None,
+        key=jr.PRNGKey(0),
+    )
+
+    assert values["left"] != values["right"]
 
 
 def test_wheredict_string_and_callable_keys_match() -> None:

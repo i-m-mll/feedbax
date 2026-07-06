@@ -1,15 +1,13 @@
 import hashlib
-import inspect
 import json
 import logging
-import math
 import re
 import types
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, KeysView, Mapping, Sequence
 from functools import partial
-from types import EllipsisType, SimpleNamespace
-from typing import Any, Optional, Sequence, TypeVar, overload
+from types import EllipsisType
+from typing import Any, Optional, TypeVar, overload
 
 import equinox as eqx
 import jax as jax
@@ -17,7 +15,6 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
 import jax_cookbook.tree as jtree
-import numpy as np
 import plotly.graph_objects as go
 from feedbax.intervene import is_intervenor
 from jax_cookbook import (
@@ -25,15 +22,12 @@ from jax_cookbook import (
     LDictConstructor,
     anyf,
     hash_callable,
-    is_module,
-    is_none,
     is_type,
 )
 from jax_cookbook._func import falsef
-from jaxtyping import Array, ArrayLike, PyTree, PyTreeDef
+from jaxtyping import Array, PyTree
 
 from feedbax.config import STRINGS
-from feedbax.config.utils import deep_merge
 from feedbax.config.namespace import TreeNamespace, _Wrapped
 
 T = TypeVar("T")
@@ -933,16 +927,16 @@ def _expand_missing_levels(
                             f"for expanding level '{level}'"
                         )
                         break
-                except:
+                except Exception:
                     continue
 
-        # If no reference found, use a default single key
         if keys_to_use is None:
-            logger.warning(
-                f"No reference found for LDict level '{level}', "
-                f"expanding with single default key '_'"
+            searched = ", ".join(reference_trees) if reference_trees else "no reference trees"
+            raise ValueError(
+                "Cannot expand missing LDict level "
+                f"{level!r}: no reference tree supplied real keys "
+                f"(searched {searched})."
             )
-            keys_to_use = ["_"]
 
         # Expand tree by wrapping in LDict with discovered keys
         if len(keys_to_use) == 1:

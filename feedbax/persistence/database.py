@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, Literal, Optional, TypeVar
 
@@ -45,6 +46,7 @@ from sqlalchemy import (
     inspect,
     literal,
     or_,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import array as dbarray
@@ -88,6 +90,14 @@ logger.setLevel(logging.DEBUG)
 # Prevent alembic from polluting the console with routine migration logs
 logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
 
+CURRENT_MODEL_HASH_VERSION = "v2"
+CURRENT_PERSISTENCE_SCHEMA_VERSION = 1
+PERSISTENCE_SCHEMA_STATE_TABLE = "_feedbax_persistence_schema"
+
+
+class PersistenceSchemaMigrationError(RuntimeError):
+    """Raised when an existing persistence database cannot be safely reconciled."""
+
 
 class RecordBase(DeclarativeBase):
     type_annotation_map = {
@@ -101,6 +111,16 @@ class RecordBase(DeclarativeBase):
 
 
 BaseT = TypeVar("BaseT", bound=RecordBase)
+FileOperation = Callable[[], dict[Path, bool]]
+
+
+def validate_model_hash_version(record: "ModelRecord") -> None:
+    """Reject records whose hash refers to an unsupported serialization scheme."""
+    if record.hash_version != CURRENT_MODEL_HASH_VERSION:
+        raise ValueError(
+            f"Unsupported model hash_version {record.hash_version!r} for model "
+            f"{record.hash!r}; expected {CURRENT_MODEL_HASH_VERSION!r}."
+        )
 
 
 class ModelRecord(RecordBase):
@@ -108,30 +128,37 @@ class ModelRecord(RecordBase):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    hash_version: Mapped[str] = mapped_column(String, default="v2")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    is_path_defunct: Mapped[bool] = mapped_column(default=False)
+    hash_version: Mapped[str] = mapped_column(
+        String,
+        default=CURRENT_MODEL_HASH_VERSION,
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    is_path_defunct: Mapped[bool] = mapped_column(default=False, index=True)
     version_info: Mapped[Optional[dict[str, str]]]
 
-    postprocessed: Mapped[bool] = mapped_column(default=False)
-    has_replicate_info: Mapped[bool]
-    expt_name: Mapped[str]
+    postprocessed: Mapped[bool] = mapped_column(default=False, index=True)
+    has_replicate_info: Mapped[bool] = mapped_column(index=True)
+    expt_name: Mapped[str] = mapped_column(index=True)
 
     # Explicitly define some parameter columns to avoid typing issues, though our dynamic column
     # migration would handle whatever parameters the user happens to pass, without this.
     model__n_replicates: Mapped[int]
-    pert__type: Mapped[str]
-    pert__std: Mapped[float]
+    pert__type: Mapped[str] = mapped_column(index=True)
+    pert__std: Mapped[float] = mapped_column(index=True)
     where: Mapped[dict[str, Sequence[str]]]
     n_batches: Mapped[int]
     save_model_parameters: Mapped[Sequence[int]]
 
     @hybrid_property
     def path(self):
+        validate_model_hash_version(self)
         return get_hash_path(PATHS.models, self.hash)
 
     @hybrid_property
     def replicate_info_path(self):
+        validate_model_hash_version(self)
         if self.has_replicate_info:
             return get_hash_path(
                 PATHS.models, self.hash, suffix=STRINGS.file_suffixes.replicate_info
@@ -141,6 +168,7 @@ class ModelRecord(RecordBase):
 
     @hybrid_property
     def train_history_path(self):
+        validate_model_hash_version(self)
         return get_hash_path(PATHS.models, self.hash, suffix=STRINGS.file_suffixes.train_history)
 
     @hybrid_property
@@ -169,13 +197,13 @@ class EvaluationRecord(RecordBase):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hash: Mapped[str] = mapped_column(unique=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    modified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    expt_name: Mapped[Optional[str]]
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    modified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    expt_name: Mapped[Optional[str]] = mapped_column(index=True)
     # model_hash: Mapped[Optional[str]] = mapped_column(ForeignKey(f'{MODELS_TABLE_NAME}.hash'))
     model_hashes: Mapped[Optional[Sequence[str]]] = mapped_column(nullable=True)
-    archived: Mapped[bool] = mapped_column(default=False)
-    archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    archived: Mapped[bool] = mapped_column(default=False, index=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, index=True)
     version_info_eval: Mapped[Optional[dict[str, str]]]
 
     # Evaluation setup metadata — stores the configuration used to set up the
@@ -209,22 +237,23 @@ class FigureRecord(RecordBase):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hash: Mapped[str] = mapped_column(unique=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    modified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    modified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
     evaluation_hash: Mapped[str] = mapped_column(
-        ForeignKey(f"{STRINGS.db_table_names.evaluations}.hash")
+        ForeignKey(f"{STRINGS.db_table_names.evaluations}.hash"),
+        index=True,
     )
-    identifier: Mapped[str]
-    figure_type: Mapped[str]
+    identifier: Mapped[str] = mapped_column(index=True)
+    figure_type: Mapped[str] = mapped_column(index=True)
     saved_formats: Mapped[Sequence[str]]
-    archived: Mapped[bool] = mapped_column(default=False)
-    archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    archived: Mapped[bool] = mapped_column(default=False, index=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, index=True)
 
     model_hashes: Mapped[Optional[Sequence[str]]] = mapped_column(nullable=True)
 
     # These are also redundant, and can be inferred from `evaluation_hash`
-    pert__type: Mapped[str] = mapped_column(nullable=True)
-    pert__std: Mapped[float] = mapped_column(nullable=True)
+    pert__type: Mapped[str] = mapped_column(nullable=True, index=True)
+    pert__std: Mapped[float] = mapped_column(nullable=True, index=True)
     # pert__stds: Mapped[Sequence[float]] = mapped_column(nullable=True)
 
     def get_path(self, format: str = "png") -> Path:
@@ -278,11 +307,191 @@ def update_table_schema(engine, table_name: str, columns: Dict[str, Any], all_js
             setattr(model_class, key, column)
             op.add_column(table_name, column)
 
-    RecordBase.metadata.clear()  # Clear SQLAlchemy's cached schema
-    RecordBase.metadata.create_all(engine)  # Recreate tables with new schema
+    RecordBase.metadata.create_all(engine, checkfirst=True)
 
 
-def init_db_session(db_path: str = "sqlite:///models.db"):
+def _json_serializer(value: Any) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
+def _ensure_schema_state_table(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE IF NOT EXISTS {PERSISTENCE_SCHEMA_STATE_TABLE} (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    version INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+
+
+def _stamp_schema_version(engine) -> None:
+    _ensure_schema_state_table(engine)
+    with engine.begin() as conn:
+        conn.execute(text(f"DELETE FROM {PERSISTENCE_SCHEMA_STATE_TABLE} WHERE id = 1"))
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO {PERSISTENCE_SCHEMA_STATE_TABLE} (id, version)
+                VALUES (1, :version)
+                """
+            ),
+            {"version": CURRENT_PERSISTENCE_SCHEMA_VERSION},
+        )
+
+
+def _server_default_for_missing_column(table_name: str, column: Column) -> str | None:
+    if table_name == ModelRecord.__tablename__ and column.name == "hash_version":
+        return CURRENT_MODEL_HASH_VERSION
+
+    default = column.default
+    if default is None or default.is_callable:
+        return None
+
+    value = default.arg
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float, str)):
+        return str(value)
+    return None
+
+
+def _migration_column(table_name: str, column: Column) -> Column:
+    server_default = _server_default_for_missing_column(table_name, column)
+    nullable = column.nullable or server_default is None
+    return Column(
+        column.name,
+        column.type.copy(),
+        nullable=nullable,
+        server_default=server_default,
+    )
+
+
+def _add_missing_declared_columns(engine, table_name: str, model_class: type[RecordBase]) -> None:
+    inspector = inspect(engine)
+    existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+    missing_columns = [
+        column
+        for column in model_class.__table__.columns
+        if column.name not in existing_columns and not column.primary_key
+    ]
+    if not missing_columns:
+        return
+
+    with engine.begin() as conn:
+        context = MigrationContext.configure(conn)
+        op = Operations(context)
+        for column in missing_columns:
+            op.add_column(table_name, _migration_column(table_name, column))
+
+
+def _backfill_declared_schema(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if ModelRecord.__tablename__ in table_names:
+        model_columns = {col["name"] for col in inspector.get_columns(ModelRecord.__tablename__)}
+        if "hash_version" in model_columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"""
+                        UPDATE {ModelRecord.__tablename__}
+                        SET hash_version = :hash_version
+                        WHERE hash_version IS NULL
+                        """
+                    ),
+                    {"hash_version": CURRENT_MODEL_HASH_VERSION},
+                )
+
+
+def _create_declared_indexes(engine) -> None:
+    for model_class in TABLE_NAME_TO_MODEL.values():
+        if not inspect(engine).has_table(model_class.__tablename__):
+            continue
+        for index in model_class.__table__.indexes:
+            index.create(bind=engine, checkfirst=True)
+
+
+def _validate_declared_schema(engine) -> None:
+    inspector = inspect(engine)
+    if ModelRecord.__tablename__ not in inspector.get_table_names():
+        return
+
+    model_columns = {col["name"] for col in inspector.get_columns(ModelRecord.__tablename__)}
+    if "hash_version" not in model_columns:
+        raise PersistenceSchemaMigrationError(
+            "Existing persistence database is missing required models.hash_version column."
+        )
+
+    with engine.connect() as conn:
+        unsupported = conn.execute(
+            text(
+                f"""
+                SELECT hash, hash_version
+                FROM {ModelRecord.__tablename__}
+                WHERE hash_version IS NULL OR hash_version != :hash_version
+                LIMIT 1
+                """
+            ),
+            {"hash_version": CURRENT_MODEL_HASH_VERSION},
+        ).first()
+    if unsupported is not None:
+        raise PersistenceSchemaMigrationError(
+            "Existing persistence database contains model records with unsupported "
+            f"hash_version {unsupported.hash_version!r} for model {unsupported.hash!r}; "
+            f"expected {CURRENT_MODEL_HASH_VERSION!r}."
+        )
+
+
+def _sync_declared_schema(engine) -> None:
+    """Create or reconcile declared tables/indices and reflect dynamic columns."""
+    table_names = set(inspect(engine).get_table_names())
+    has_existing_record_tables = bool(table_names & set(TABLE_NAME_TO_MODEL))
+
+    if has_existing_record_tables:
+        for table_name, model_class in TABLE_NAME_TO_MODEL.items():
+            if table_name in table_names:
+                _add_missing_declared_columns(engine, table_name, model_class)
+
+    RecordBase.metadata.create_all(engine, checkfirst=True)
+    _backfill_declared_schema(engine)
+    _create_declared_indexes(engine)
+    _validate_declared_schema(engine)
+    _stamp_schema_version(engine)
+
+    inspector = inspect(engine)
+    for table_name in inspector.get_table_names():
+        existing_columns = inspector.get_columns(table_name)
+
+        model = TABLE_NAME_TO_MODEL.get(table_name)
+        if model is None:
+            continue
+
+        for col in existing_columns:
+            try:
+                getattr(model, col["name"])
+            except AttributeError:
+                setattr(
+                    model,
+                    col["name"],
+                    Column(col["name"], col["type"], nullable=col["nullable"]),
+                )
+
+    RecordBase.metadata.create_all(engine, checkfirst=True)
+
+
+@lru_cache(maxsize=None)
+def _session_factory(db_path: str) -> sessionmaker[Session]:
+    engine = create_engine(db_path, json_serializer=_json_serializer)
+    _sync_declared_schema(engine)
+    return sessionmaker(bind=engine)
+
+
+def init_db_session(db_path: str = "sqlite:///models.db") -> Session:
     """Opens a session to an SQLite database.
 
     If the database/file does not exist, it will be created.
@@ -303,39 +512,29 @@ def init_db_session(db_path: str = "sqlite:///models.db"):
         TODO: Still, the list of known columns is at this point pretty static for this project,
         so I could explicitly add all of them to the model classes.
     """
-    engine = create_engine(db_path)
-    RecordBase.metadata.create_all(engine)
-
-    # Dynamically add missing columns to the table record classes
-    inspector = inspect(engine)
-    for table_name in inspector.get_table_names():
-        existing_columns = inspector.get_columns(table_name)
-
-        model = TABLE_NAME_TO_MODEL[table_name]
-
-        for col in existing_columns:
-            try:
-                getattr(model, col["name"])
-            except AttributeError:
-                setattr(
-                    model,
-                    col["name"],
-                    Column(col["name"], col["type"], nullable=col["nullable"]),
-                )
-
-    RecordBase.metadata.clear()  # Clear SQLAlchemy's cached schema
-    RecordBase.metadata.create_all(engine)  # Recreate tables with new schema
-
-    return sessionmaker(bind=engine)()
+    return _session_factory(db_path)()
 
 
-def get_db_session(name: str = "main"):
+def clear_db_session_cache() -> None:
+    """Clear cached SQLAlchemy session factories.
+
+    This is mainly useful for tests that monkeypatch database paths or engine construction.
+    """
+    _session_factory.cache_clear()
+
+
+def get_db_session(name: str = "main") -> Session:
     """Create a database session for the project database with the given name."""
     return init_db_session(f"sqlite:///{PATHS.db}/{name}.db")
 
 
 @contextmanager
-def db_session(name: str = "main", autocommit: bool = True) -> Iterator[Session]:
+def db_session(
+    name: str = "main",
+    autocommit: bool = True,
+    verify_files: bool = False,
+    clean_orphaned_files: Literal["no", "delete", "archive"] = "no",
+) -> Iterator[Session]:
     """
     Usage:
         with db_session("main") as db:
@@ -346,15 +545,26 @@ def db_session(name: str = "main", autocommit: bool = True) -> Iterator[Session]
             db.add(obj)
             db.commit()  # you control commits
     """
-    db = get_db_session(name)  # your existing factory
-    check_model_files(db)
+    db = get_db_session(name)
     try:
         if autocommit:
             # opens a transaction; commits on success, rolls back on error
             with db.begin():
+                if verify_files:
+                    check_model_files(
+                        db,
+                        clean_orphaned_files=clean_orphaned_files,
+                        commit=False,
+                    )
                 yield db
         else:
             # manual control: you call db.commit() / db.rollback()
+            if verify_files:
+                check_model_files(
+                    db,
+                    clean_orphaned_files=clean_orphaned_files,
+                    commit=False,
+                )
             yield db
     except Exception:
         if not autocommit:
@@ -410,16 +620,13 @@ def _make_filter_condition(
     model_class: type["BaseT"], key: str, value: Any
 ) -> ColumnElement | bool:
     """
-    Return a SQLAlchemy filter expression for `model_class.key == value`,
-    JSON-dumping `value` if needed, or `False` if the column doesn’t exist.
+    Return a SQLAlchemy filter expression for `model_class.key == value`, or
+    `False` if the column doesn't exist.
     """
     column = getattr(model_class, key, None)
     if column is None:
         # no such column → always-false
         return False
-
-    if isinstance(column.type, JSON):
-        value = json.dumps(value)
 
     return column == value
 
@@ -470,13 +677,6 @@ def _column_for(model_class, key: str):
 
 
 def _prepared_value(column, value):
-    # mirror your _make_filter_condition JSON behavior
-    from sqlalchemy import JSON
-
-    if isinstance(column.type, JSON):
-        import json as _json
-
-        return _json.dumps(value)
     return value
 
 
@@ -792,51 +992,52 @@ def get_hash_path(
 def check_model_files(
     session: Session,
     clean_orphaned_files: Literal["no", "delete", "archive"] = "no",
+    commit: bool = True,
 ) -> None:
     """Check model files and update availability status."""
     logger.debug("Checking availability of model files...")
 
-    try:
-        records = session.query(ModelRecord).all()
-        known_hashes = {record.hash for record in records}
+    records = session.query(ModelRecord).all()
+    known_hashes = {record.hash for record in records}
 
-        for record in records:
+    for record in records:
+        try:
             model_file_exists = get_hash_path(PATHS.models, record.hash).exists()
             replicate_info_file_exists = get_hash_path(
                 PATHS.models,
                 record.hash,
                 suffix=STRINGS.file_suffixes.replicate_info,
             ).exists()
+        except OSError:
+            session.rollback()
+            logger.exception("Error checking model files for record %s", record.hash)
+            raise
 
-            if record.is_path_defunct and model_file_exists:
-                logger.info(f"File found for defunct model record {record.hash}; restored")
-            elif not record.is_path_defunct and not model_file_exists:
-                logger.info(f"File missing for model {record.hash}; marked as defunct")
+        if record.is_path_defunct and model_file_exists:
+            logger.info(f"File found for defunct model record {record.hash}; restored")
+        elif not record.is_path_defunct and not model_file_exists:
+            logger.info(f"File missing for model {record.hash}; marked as defunct")
 
-            record.is_path_defunct = not model_file_exists
-            record.has_replicate_info = replicate_info_file_exists
+        record.is_path_defunct = not model_file_exists
+        record.has_replicate_info = replicate_info_file_exists
 
-        if clean_orphaned_files != "no":
-            archive_dir = PATHS.models.parent / f"{PATHS.models.name}_archive"
-            archive_dir.mkdir(exist_ok=True)
-            for file_path in PATHS.models.glob("*.eqx"):
-                # Take hash as the first part of the filename (i.e. ignore "replicate_info" etc.)
-                file_hash = file_path.stem.split("_")[0]
-                if file_hash not in known_hashes:
-                    if clean_orphaned_files == "delete":
-                        logger.info(f"Deleting orphaned file: {file_path}")
-                        file_path.unlink()
-                    elif clean_orphaned_files == "archive":
-                        logger.info(f"Moving orphaned file to archive: {file_path}")
-                        file_path.rename(archive_dir / file_path.name)
+    if clean_orphaned_files != "no":
+        archive_dir = PATHS.models.parent / f"{PATHS.models.name}_archive"
+        archive_dir.mkdir(exist_ok=True)
+        for file_path in PATHS.models.glob("*.eqx"):
+            # Take hash as the first part of the filename (i.e. ignore "replicate_info" etc.)
+            file_hash = file_path.stem.split("_")[0]
+            if file_hash not in known_hashes:
+                if clean_orphaned_files == "delete":
+                    logger.info(f"Deleting orphaned file: {file_path}")
+                    file_path.unlink()
+                elif clean_orphaned_files == "archive":
+                    logger.info(f"Moving orphaned file to archive: {file_path}")
+                    file_path.rename(archive_dir / file_path.name)
 
+    if commit:
         session.commit()
-        logger.debug("Finished checking model files")
-
-    except Exception as e:
-        session.rollback()
-        logger.error(f"Error checking model files: {e}")
-        raise e
+    logger.debug("Finished checking model files")
 
 
 def replace_in_column(
@@ -964,6 +1165,37 @@ def save_tree(
     return file_hash, final_path
 
 
+def _path_existence_snapshot(paths: Iterable[Path]) -> dict[Path, bool]:
+    return {path: path.exists() for path in paths}
+
+
+def _cleanup_new_paths(snapshot: dict[Path, bool]) -> None:
+    for path, existed_before in snapshot.items():
+        if not existed_before and path.exists():
+            path.unlink()
+
+
+def _write_with_cleanup(paths: Iterable[Path], writer: Callable[[], None]) -> dict[Path, bool]:
+    snapshot = _path_existence_snapshot(paths)
+    try:
+        writer()
+    except Exception:
+        _cleanup_new_paths(snapshot)
+        raise
+    return snapshot
+
+
+def _run_file_operations(operations: Iterable[FileOperation]) -> dict[Path, bool]:
+    snapshot: dict[Path, bool] = {}
+    try:
+        for operation in operations:
+            snapshot.update(operation())
+    except Exception:
+        _cleanup_new_paths(snapshot)
+        raise
+    return snapshot
+
+
 def _read_until_special(file, special_char):
     result = []
     for line in file:
@@ -1061,22 +1293,29 @@ def save_model_and_add_record(
     model_hash = hash_pytree(model, hps_train)
 
     # Prepare file save operations
-    def save_files():
-        # Save model with known hash
-        save_tree(model, PATHS.models, hps_train, hash_=model_hash)
-        # Save associated files if provided
-        for tree, suffix in (
-            (train_history, STRINGS.file_suffixes.train_history),
-            (replicate_info, STRINGS.file_suffixes.replicate_info),
-        ):
-            if tree is not None:
-                save_tree(tree, PATHS.models, hps_train, hash_=model_hash, suffix=suffix)
+    def save_files() -> dict[Path, bool]:
+        file_paths = [get_hash_path(PATHS.models, model_hash)]
+        file_paths.extend(
+            get_hash_path(PATHS.models, model_hash, suffix=suffix)
+            for tree, suffix in (
+                (train_history, STRINGS.file_suffixes.train_history),
+                (replicate_info, STRINGS.file_suffixes.replicate_info),
+            )
+            if tree is not None
+        )
 
-    # Either defer or execute immediately
-    if deferred_ops is not None:
-        deferred_ops.append(save_files)
-    else:
-        save_files()
+        def write() -> None:
+            # Save model with known hash
+            save_tree(model, PATHS.models, hps_train, hash_=model_hash)
+            # Save associated files if provided
+            for tree, suffix in (
+                (train_history, STRINGS.file_suffixes.train_history),
+                (replicate_info, STRINGS.file_suffixes.replicate_info),
+            ):
+                if tree is not None:
+                    save_tree(tree, PATHS.models, hps_train, hash_=model_hash, suffix=suffix)
+
+        return _write_with_cleanup(file_paths, write)
 
     update_table_schema(
         session.bind,
@@ -1088,7 +1327,7 @@ def save_model_and_add_record(
     # Create database record
     model_record = ModelRecord(
         hash=model_hash,
-        hash_version="v2",
+        hash_version=CURRENT_MODEL_HASH_VERSION,
         is_path_defunct=False,
         has_replicate_info=replicate_info is not None,
         **record_params,
@@ -1098,13 +1337,25 @@ def save_model_and_add_record(
     existing_record = get_record(session, ModelRecord, hash=model_hash)
     if existing_record is not None:
         session.delete(existing_record)
-        if commit:
-            session.commit()
+        session.flush()
         logger.debug(f"Replacing existing model record with hash {model_hash}")
 
     session.add(model_record)
-    if commit:
-        session.commit()
+    session.flush()
+
+    saved_paths: dict[Path, bool] = {}
+    try:
+        if deferred_ops is not None:
+            deferred_ops.append(save_files)
+        else:
+            saved_paths = _run_file_operations([save_files])
+
+        if commit:
+            session.commit()
+    except Exception:
+        session.rollback()
+        _cleanup_new_paths(saved_paths)
+        raise
     return model_record
 
 
@@ -1302,16 +1553,18 @@ def add_evaluation_figure(
         figure_type = "plotly"
 
     # Prepare file save operations
-    def save_files():
-        # Save figure in subdirectory with same hash as evaluation
-        eval_record.figure_dir.mkdir(exist_ok=True)
-        savefig(figure, figure_hash, eval_record.figure_dir, list(save_formats_set))
+    def save_files() -> dict[Path, bool]:
+        file_paths = [
+            eval_record.figure_dir / f"{figure_hash}.{format_}"
+            for format_ in save_formats_set
+        ]
 
-    # Either defer or execute immediately
-    if deferred_ops is not None:
-        deferred_ops.append(save_files)
-    else:
-        save_files()
+        def write() -> None:
+            # Save figure in subdirectory with same hash as evaluation
+            eval_record.figure_dir.mkdir(exist_ok=True, parents=True)
+            savefig(figure, figure_hash, eval_record.figure_dir, list(save_formats_set))
+
+        return _write_with_cleanup(file_paths, write)
 
     # Update schema with new parameters
     if not skip_schema_update:
@@ -1344,13 +1597,25 @@ def add_evaluation_figure(
     existing_record = get_record(session, FigureRecord, hash=figure_hash)
     if existing_record is not None:
         session.delete(existing_record)
-        if commit:
-            session.commit()
+        session.flush()
         logger.debug(f"Replacing existing figure record with hash {figure_hash}")
 
     session.add(figure_record)
-    if commit:
-        session.commit()
+    session.flush()
+
+    saved_paths: dict[Path, bool] = {}
+    try:
+        if deferred_ops is not None:
+            deferred_ops.append(save_files)
+        else:
+            saved_paths = _run_file_operations([save_files])
+
+        if commit:
+            session.commit()
+    except Exception:
+        session.rollback()
+        _cleanup_new_paths(saved_paths)
+        raise
     return figure_record
 
 

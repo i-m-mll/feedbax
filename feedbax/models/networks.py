@@ -63,8 +63,7 @@ def normalize_recurrent_cell_type(cell_type: object, *, path: str = "cell_type")
     except KeyError as exc:
         vocabulary = ", ".join(recurrent_cell_vocabulary())
         raise ValueError(
-            f"Unknown recurrent cell type at {path}: {name!r}. "
-            f"Supported values: {vocabulary}"
+            f"Unknown recurrent cell type at {path}: {name!r}. Supported values: {vocabulary}"
         ) from exc
 
 
@@ -77,6 +76,13 @@ def recurrent_gate_count(cell_type: object, *, path: str = "cell_type") -> int:
     if normalized_cell_type == "GRU":
         return 3
     return 1
+
+
+def _accepts_key_argument(func: Callable) -> bool:
+    params = inspect.signature(func).parameters.values()
+    return any(
+        param.name == "key" or param.kind == inspect.Parameter.VAR_KEYWORD for param in params
+    )
 
 
 # class Layer(Protocol):
@@ -350,7 +356,11 @@ def validate_population_structure_spec(spec: Mapping[str, object]) -> dict[str, 
             "Unsupported PopulationStructureSpec schema_id: "
             f"schema_id={schema_id!r}, expected={POPULATION_STRUCTURE_SCHEMA_ID!r}"
         )
-    result = default_spec_registry.migrate("PopulationStructureSpec", spec)
+    result = default_spec_registry.migrate(
+        "PopulationStructureSpec",
+        spec,
+        assume_current=True,
+    )
     return result.payload
 
 
@@ -972,14 +982,22 @@ class SimpleStagedNetwork(Component):
         else:
             x_hidden = x
 
+        key_hidden, key_hidden_noise = jr.split(key)
+
         if n_positional_args(self.hidden) == 1:  # type: ignore
-            hidden = self.hidden(x_hidden)  # type: ignore
+            if _accepts_key_argument(self.hidden):  # type: ignore
+                hidden = self.hidden(x_hidden, key=key_hidden)  # type: ignore
+            else:
+                hidden = self.hidden(x_hidden)  # type: ignore
         else:
-            hidden = self.hidden(x_hidden, net_state.hidden)  # type: ignore
+            if _accepts_key_argument(self.hidden):  # type: ignore
+                hidden = self.hidden(x_hidden, net_state.hidden, key=key_hidden)  # type: ignore
+            else:
+                hidden = self.hidden(x_hidden, net_state.hidden)  # type: ignore
 
         hidden = self.hidden_nonlinearity(hidden)
         if self.hidden_noise_std is not None:
-            hidden = self._add_hidden_noise(None, hidden, key=key)
+            hidden = self._add_hidden_noise(None, hidden, key=key_hidden_noise)
 
         # Apply multiplicative SISU gain modulation: h * (1 + alpha * sisu)
         if sisu_value is not None:

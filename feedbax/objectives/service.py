@@ -67,6 +67,7 @@ NORM_FUNCTIONS: Dict[str, str] = {
     "l1": "feedbax.loss.norms.l1",
     "huber": "feedbax.loss.norms.huber",
 }
+_TARGET_REQUIRED_LOSS_TYPES = {"TargetStateLoss", "target_state"}
 
 
 class ObjectiveLoweringError(ValueError):
@@ -148,7 +149,12 @@ class SelectorObjectiveLoss(AbstractLoss):
             path=self.path,
         )
         if self.reduction is not None:
-            return _reduce_objective_values(values, self.reduction, path=f"{self.path}/reduction")
+            return _reduce_objective_values(
+                values,
+                self.reduction,
+                norm=self.norm,
+                path=f"{self.path}/reduction",
+            )
         return _reduce_legacy_values(values, self.time_agg, path=f"{self.path}/time_agg")
 
 
@@ -581,12 +587,23 @@ class LossService:
             )
         if term.type not in {"TargetStateLoss", "target_state", "MatrixQuadraticLoss", "matrix_quadratic"}:
             raise ObjectiveLoweringError(f"{path}/type", f"unknown loss term type {term.type!r}")
+        if term.type in _TARGET_REQUIRED_LOSS_TYPES and term.target_selector is None and term.target_value is None:
+            raise ObjectiveLoweringError(
+                path,
+                "loss leaf requires either target_selector or target_value",
+            )
         _validate_matrix_payload(term.matrix, term.matrix_kind, path=path)
+        target_value = (
+            0.0
+            if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}
+            and term.target_value is None
+            else term.target_value
+        )
         return SelectorObjectiveLoss(
             label=term.label,
             selector=term.selector,
             target_selector=term.target_selector,
-            target_value=0.0 if term.target_value is None else term.target_value,
+            target_value=target_value,
             norm=term.norm or "squared_l2",
             matrix=term.matrix,
             matrix_kind=term.matrix_kind,
@@ -749,7 +766,7 @@ def _metric_values(
     if norm in {"l1", "absolute"}:
         return jnp.abs(arr)
     if norm == "l2":
-        return jnp.abs(arr)
+        return jnp.square(arr)
     if norm == "huber":
         abs_arr = jnp.abs(arr)
         return jnp.where(abs_arr <= 1.0, 0.5 * jnp.square(arr), abs_arr - 0.5)
@@ -759,9 +776,11 @@ def _metric_values(
 def _legacy_reduce_feature_metric(values: Any, norm: str) -> Any:
     arr = jnp.asarray(values)
     if arr.ndim < 3:
+        if norm == "l2":
+            return jnp.sqrt(arr)
         return arr
     if norm == "l2":
-        return jnp.sqrt(jnp.sum(jnp.square(arr), axis=-1))
+        return jnp.sqrt(jnp.sum(arr, axis=-1))
     return jnp.sum(arr, axis=-1)
 
 
@@ -901,7 +920,13 @@ def _schedule_weights(
     raise ObjectiveLoweringError(path, f"unsupported schedule {type(schedule).__name__}")
 
 
-def _reduce_objective_values(values: Any, reduction: ReductionSpec, *, path: str) -> Any:
+def _reduce_objective_values(
+    values: Any,
+    reduction: ReductionSpec,
+    *,
+    norm: str,
+    path: str,
+) -> Any:
     arr = jnp.asarray(values)
     if arr.ndim >= 3:
         arr = _apply_reduction(
@@ -911,6 +936,10 @@ def _reduce_objective_values(values: Any, reduction: ReductionSpec, *, path: str
             tail_fraction=reduction.tail_fraction,
             path=f"{path}/feature",
         )
+        if norm == "l2":
+            arr = jnp.sqrt(arr)
+    elif norm == "l2":
+        arr = jnp.sqrt(arr)
     if arr.ndim >= 2:
         if reduction.time == "final":
             arr = jnp.take(arr, -1, axis=1)

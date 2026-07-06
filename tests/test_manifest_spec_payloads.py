@@ -22,8 +22,11 @@ from feedbax.contracts.migrations import (
     SchemaMigration,
     SpecSchemaFamily,
     SpecSchemaRegistry,
+    UnknownSpecFamily,
     UnsupportedSpecVersion,
 )
+
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
 
 
 def _legacy_graph_spec_inline() -> dict[str, object]:
@@ -129,6 +132,47 @@ def test_spec_payload_writer_stamps_non_graph_family_and_hashes_current_inline()
     assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
     assert payload.source_sha256 is None
     assert payload.migration_records == []
+
+
+def test_migrate_spec_payload_rejects_unknown_external_family() -> None:
+    with pytest.raises(UnknownSpecFamily, match="ExternalDemo"):
+        migrate_spec_payload(
+            SpecPayload(
+                kind="ExternalDemo",
+                schema_id="external.demo",
+                schema_version="external.demo.v1",
+                inline={"schema_version": "external.demo.v1"},
+            )
+        )
+
+
+def test_migrate_spec_payload_rejects_unknown_feedbax_family_marked_external() -> None:
+    with pytest.raises(UnknownSpecFamily, match="cannot be marked external"):
+        migrate_spec_payload(
+            SpecPayload(
+                kind="FeedbaxDemo",
+                schema_id="feedbax.spec.demo",
+                schema_version="feedbax.spec.demo.v1",
+                inline={"schema_version": "feedbax.spec.demo.v1"},
+                metadata={"external": True},
+            )
+        )
+
+
+def test_migrate_spec_payload_accepts_explicit_external_family() -> None:
+    payload = migrate_spec_payload(
+        SpecPayload(
+            kind="ExternalDemo",
+            schema_id="external.demo",
+            schema_version="external.demo.v1",
+            inline={"schema_version": "external.demo.v1"},
+            metadata={"external": True},
+        )
+    )
+
+    assert payload.schema_id == "external.demo"
+    assert payload.schema_version == "external.demo.v1"
+    assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
 
 
 def test_generic_spec_payload_migration_records_non_graph_source_hash() -> None:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,17 +21,32 @@ from feedbax.web.api import (
     training,
     trajectories,
 )
+from feedbax.web.orchestration.manager import orchestration_manager
+from feedbax.web.services.training_service import training_service
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
 
 STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        try:
+            await orchestration_manager.reconcile_from_provider()
+        except Exception:
+            logger.exception("Failed to reconcile orchestration state during startup")
+        try:
+            yield
+        finally:
+            training_service._terminate_worker()
+
     app = FastAPI(
         title="Feedbax Web API",
         version="0.1.0",
         description="API for Feedbax model construction and training",
+        lifespan=_lifespan,
     )
 
     app.add_middleware(

@@ -209,6 +209,29 @@ describe('projectStudioSchema', () => {
     expect(issueTypes).toContain('task_binding_target_occupied');
   });
 
+  it('reports missing subgraphs for composite network nodes', () => {
+    const parentGraph: GraphSpec = {
+      ...graph,
+      nodes: {
+        network: {
+          type: 'Network',
+          params: { input_size: 4, hidden_size: 100, out_size: 2 },
+          input_ports: ['input', 'hidden'],
+          output_ports: ['output', 'hidden'],
+        },
+      },
+      input_ports: ['input'],
+      output_ports: ['output'],
+      input_bindings: { input: ['network', 'input'] },
+      output_bindings: { output: ['network', 'output'] },
+    };
+    const registry = projectStudioSchema(parentGraph, components);
+    const validation = validateGraph(parentGraph, registry);
+
+    expect(registry.issues.map((issue) => issue.type)).toContain('missing_subgraph');
+    expect(validation.errors.map((issue) => issue.type)).toContain('missing_subgraph');
+  });
+
   it('validates task binding identity as part of the binding contract', () => {
     const spec = taskBindingSpec();
     spec.bindings = [

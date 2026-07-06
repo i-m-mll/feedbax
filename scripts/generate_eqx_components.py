@@ -13,6 +13,7 @@ The generated file will be written to feedbax/components/equinox.py
 from __future__ import annotations
 
 import inspect
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -33,20 +34,24 @@ class ComponentSpec:
     # For RNN cells that need hidden state ports
     extra_input_ports: tuple[str, ...] = ()
     extra_output_ports: tuple[str, ...] = ()
-    # Whether this is a stateful layer (RNN cell)
-    is_rnn_cell: bool = False
-    # For LSTM which has both hidden and cell state
-    has_cell_state: bool = False
     # Category for organization
     category: Literal["linear", "conv", "rnn", "norm", "pool", "attention", "other"] = "other"
     # Custom docstring
     docstring: str | None = None
     # Parameters to exclude from __init__ (handled specially)
     exclude_params: tuple[str, ...] = ()
-    # Whether the layer needs inference_mode handling (like Dropout, BatchNorm)
-    needs_inference_mode: bool = False
-    # Custom call logic (if None, uses standard pattern)
-    custom_call: str | None = None
+    # How the wrapper calls the underlying layer.
+    call_kind: Literal[
+        "single_input",
+        "single_input_keyed",
+        "batch_norm",
+        "multihead_attention",
+        "gru_cell",
+        "lstm_cell",
+    ] = "single_input"
+    # Runtime contract metadata emitted on the generated class.
+    state_handling: str = "stateless"
+    key_handling: str = "ignored"
 
 
 # Define specs for all Equinox classes we want to wrap
@@ -103,7 +108,7 @@ COMPONENT_SPECS: list[ComponentSpec] = [
         "GRUCell",
         input_ports=("input", "hidden"),
         output_ports=("output", "hidden"),
-        is_rnn_cell=True,
+        call_kind="gru_cell",
         category="rnn",
         docstring="Gated Recurrent Unit cell.",
     ),
@@ -111,8 +116,8 @@ COMPONENT_SPECS: list[ComponentSpec] = [
         "LSTMCell",
         input_ports=("input", "hidden", "cell"),
         output_ports=("output", "hidden", "cell"),
-        is_rnn_cell=True,
-        has_cell_state=True,
+        call_kind="lstm_cell",
+        key_handling="forwarded",
         category="rnn",
         docstring="Long Short-Term Memory cell.",
     ),
@@ -135,8 +140,10 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     ComponentSpec(
         "BatchNorm",
         category="norm",
-        needs_inference_mode=True,
-        docstring="Batch normalization. Uses inference mode by default in graph execution.",
+        call_kind="batch_norm",
+        state_handling="threads_eqx_state",
+        key_handling="optional_forwarded",
+        docstring="Batch normalization with explicit Equinox State threading.",
     ),
     # === Pooling layers ===
     ComponentSpec(
@@ -204,6 +211,8 @@ COMPONENT_SPECS: list[ComponentSpec] = [
         "MultiheadAttention",
         input_ports=("query", "key_", "value"),
         output_ports=("output",),
+        call_kind="multihead_attention",
+        key_handling="forwarded",
         category="attention",
         docstring="Multi-head attention layer.",
     ),
@@ -220,9 +229,10 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     ),
     ComponentSpec(
         "Dropout",
-        needs_inference_mode=True,
+        call_kind="single_input_keyed",
+        key_handling="forwarded",
         category="other",
-        docstring="Dropout layer. Disabled by default in graph execution (inference mode).",
+        docstring="Dropout layer that honors its configured inference/deterministic settings.",
     ),
     ComponentSpec(
         "PReLU",
@@ -406,40 +416,16 @@ def generate_component_class(spec: ComponentSpec) -> str:
         else:
             layer_call_args = "key=key"
 
-    # Build __call__ method based on layer type
-    if spec.is_rnn_cell:
-        if spec.has_cell_state:
-            # LSTM cell
-            call_body = """
-        hidden = inputs["hidden"]
-        cell_state = inputs["cell"]
-        new_hidden, new_cell = self.layer(inputs["input"], (hidden, cell_state), key=key)
-        return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state"""
-        else:
-            # GRU cell
-            call_body = """
-        hidden = inputs["hidden"]
-        new_hidden = self.layer(inputs["input"], hidden)
-        return {"output": new_hidden, "hidden": new_hidden}, state"""
-    elif spec.needs_inference_mode:
-        # Dropout, BatchNorm - use inference_mode
-        call_body = """
-        output = eqx.nn.inference_mode(self.layer)(inputs["input"])
-        return {"output": output}, state"""
-    elif spec.eqx_class_name == "MultiheadAttention":
-        # Attention has special input handling
-        call_body = """
-        output = self.layer(
-            query=inputs["query"],
-            key_=inputs["key_"],
-            value=inputs["value"],
-        )
-        return {"output": output}, state"""
-    else:
-        # Standard stateless layer
-        call_body = """
-        output = self.layer(inputs["input"])
-        return {"output": output}, state"""
+    call_helpers = {
+        "single_input": "_call_single_input_layer",
+        "single_input_keyed": "_call_single_input_keyed_layer",
+        "batch_norm": "_call_batch_norm_layer",
+        "multihead_attention": "_call_multihead_attention_layer",
+        "gru_cell": "_call_gru_cell_layer",
+        "lstm_cell": "_call_lstm_cell_layer",
+    }
+    call_body = f"""
+        return {call_helpers[spec.call_kind]}(self, inputs, state, key=key)"""
 
     # Generate attribute declarations for stored params
     attr_declarations = []
@@ -454,6 +440,13 @@ def generate_component_class(spec: ComponentSpec) -> str:
     docstring = spec.docstring or f"Component wrapper for eqx.nn.{spec.eqx_class_name}."
     input_ports_str = repr(spec.input_ports)
     output_ports_str = repr(spec.output_ports)
+    contract_expr = (
+        "{"
+        f"'call_kind': {spec.call_kind!r}, "
+        f"'state_handling': {spec.state_handling!r}, "
+        f"'key_handling': {spec.key_handling!r}"
+        "}"
+    )
 
     class_code = f'''
 class {spec.eqx_class_name}(Component):
@@ -461,6 +454,9 @@ class {spec.eqx_class_name}(Component):
 
     input_ports = {input_ports_str}
     output_ports = {output_ports_str}
+    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+    generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
+    wrapper_contract = {contract_expr}
 
     layer: eqx.nn.{spec.eqx_class_name}
 {chr(10).join(attr_declarations) if attr_declarations else ""}
@@ -512,11 +508,117 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 from feedbax.runtime.graph import Component
 
 
+EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v2"
+EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
+EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
+
+
 '''
 
     # Generate __all__
-    all_names = [spec.eqx_class_name for spec in COMPONENT_SPECS]
+    all_names = [
+        "EQUINOX_WRAPPER_SCHEMA_VERSION",
+        "EQUINOX_WRAPPER_GENERATOR",
+        "EQUINOX_WRAPPER_EQUINOX_VERSION",
+        "EQUINOX_WRAPPER_CONTRACTS",
+        *[spec.eqx_class_name for spec in COMPONENT_SPECS],
+    ]
     all_str = "__all__ = [\n" + ",\n".join(f'    "{name}"' for name in all_names) + ",\n]\n"
+
+    contracts = (
+        "EQUINOX_WRAPPER_CONTRACTS = {\n"
+        + "".join(
+            "    "
+            + repr(spec.eqx_class_name)
+            + ": "
+            + repr(
+                {
+                    "call_kind": spec.call_kind,
+                    "state_handling": spec.state_handling,
+                    "key_handling": spec.key_handling,
+                }
+            )
+            + ",\n"
+            for spec in COMPONENT_SPECS
+        )
+        + "}\n"
+    )
+
+    helpers = """
+
+def _call_single_input_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output = component.layer(inputs["input"])
+    return {"output": output}, state
+
+
+def _call_single_input_keyed_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output = component.layer(inputs["input"], key=key)
+    return {"output": output}, state
+
+
+def _call_batch_norm_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output, state = component.layer(inputs["input"], state, key=key)
+    return {"output": output}, state
+
+
+def _call_gru_cell_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    hidden = inputs["hidden"]
+    new_hidden = component.layer(inputs["input"], hidden)
+    return {"output": new_hidden, "hidden": new_hidden}, state
+
+
+def _call_lstm_cell_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    hidden = inputs["hidden"]
+    cell_state = inputs["cell"]
+    new_hidden, new_cell = component.layer(inputs["input"], (hidden, cell_state), key=key)
+    return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
+
+
+def _call_multihead_attention_layer(
+    component: Component,
+    inputs: dict[str, PyTree],
+    state: State,
+    *,
+    key: PRNGKeyArray,
+) -> tuple[dict[str, PyTree], State]:
+    output = component.layer(
+        query=inputs["query"],
+        key_=inputs["key_"],
+        value=inputs["value"],
+        key=key,
+    )
+    return {"output": output}, state
+"""
 
     # Generate classes grouped by category
     body_parts = []
@@ -533,7 +635,7 @@ from feedbax.runtime.graph import Component
             except Exception as e:
                 print(f"Warning: Failed to generate {spec.eqx_class_name}: {e}")
 
-    return header + all_str + "".join(body_parts)
+    return header + all_str + contracts + helpers + "".join(body_parts)
 
 
 def main():
@@ -544,6 +646,10 @@ def main():
     content = generate_all_components()
 
     output_path.write_text(content)
+    try:
+        subprocess.run(["ruff", "format", str(output_path)], check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        print(f"Warning: could not format generated file with ruff: {exc}")
     print(f"Written to: {output_path}")
 
     # Count generated classes

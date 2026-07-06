@@ -62,6 +62,15 @@ export interface AdditiveGraphChannelAdapterSpec {
   metadata?: Record<string, unknown>;
 }
 
+export interface DerivedDimensionRuleSpec {
+  node: string;
+  param: string;
+  source?: "input_port";
+  port: string;
+  axis?: number;
+  metadata?: Record<string, unknown>;
+}
+
 export interface UserPortSpec {
   inputs?: string[];
   outputs?: string[];
@@ -129,6 +138,30 @@ export interface AnalysisInputConsumerSpec {
   metadata?: Record<string, unknown>;
 }
 
+export interface AnalysisDataProductRequirement {
+  schema_id?: string;
+  schema_version?: string;
+  role: string;
+  product_schema_id: string;
+  exact_product_schema_version?: string | null;
+  min_product_schema_version?: string | null;
+  max_product_schema_version?: string | null;
+  logical_name?: string | null;
+  descriptor_selector_requirements?: Record<string, unknown>;
+  descriptor_basis_hash?: string | null;
+  product_identity_hash?: string | null;
+  artifact_sha256?: string | null;
+  producer_manifest_id?: string | null;
+  producer_manifest_hash?: string | null;
+  parent_manifest_ids?: string[];
+  parent_manifest_hashes?: string[];
+  checkpoint_policy?: Record<string, unknown> | null;
+  rollout_policy?: Record<string, unknown> | null;
+  parameters?: Record<string, unknown>;
+  fallback_policy?: "forbid" | "allow_declared";
+  metadata?: Record<string, unknown>;
+}
+
 export interface AnalysisInputRequirement {
   id?: string;
   label?: string | null;
@@ -136,6 +169,7 @@ export interface AnalysisInputRequirement {
   target?: RetainedObservableTargetSpec | null;
   retention?: RetentionPolicySpec;
   value_schema?: Record<string, unknown> | null;
+  data_product?: AnalysisDataProductRequirement | null;
   consumer?: AnalysisInputConsumerSpec;
   metadata?: Record<string, unknown>;
 }
@@ -161,6 +195,7 @@ export interface GraphSpec {
   input_bindings?: Record<string, [string, string]>;
   output_bindings?: Record<string, [string, string]>;
   subgraphs?: Record<string, GraphSpec> | null;
+  derived_dimensions?: DerivedDimensionRuleSpec[];
   barnacles?: Record<string, BarnacleSpec[]> | null;
   user_ports?: Record<string, UserPortSpec> | null;
   taps?: TapSpec[] | null;
@@ -508,6 +543,7 @@ export interface ComponentDefinition {
   param_schema_version?: string;
   supported_param_schema_versions?: string[];
   migrations?: ComponentMigrationInfo[];
+  trainable_by_default?: boolean;
 }
 
 export interface OptimizerSpec {
@@ -534,6 +570,8 @@ export interface LossTermSpec {
   target_value?: unknown | null;
   retention?: RetentionPolicySpec | null;
   norm?: "squared_l2" | "l2" | "l1" | "huber" | null;
+  matrix?: unknown | null;
+  matrix_kind?: "dense" | "diagonal" | null;
   time_agg?: TimeAggregationSpec | null;
   children?: Record<string, LossTermSpec> | null;
 }
@@ -564,7 +602,7 @@ export interface TrainingConfig {
   n_batches?: number;
   batch_size?: number;
   learning_rate?: number;
-  grad_clip?: number;
+  grad_clip?: number | null;
   hidden_dim?: number;
   network_type?: string;
   n_reach_steps?: number;
@@ -878,6 +916,19 @@ export const AdditiveGraphChannelAdapterSpecSchema: z.ZodType<AdditiveGraphChann
     .strict()
 ) as unknown as z.ZodType<AdditiveGraphChannelAdapterSpec>;
 
+export const DerivedDimensionRuleSpecSchema: z.ZodType<DerivedDimensionRuleSpec> = z.lazy(() =>
+  z
+    .object({
+      "node": z.string(),
+      "param": z.string(),
+      "source": z.literal("input_port").optional(),
+      "port": z.string(),
+      "axis": z.number().int().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DerivedDimensionRuleSpec>;
+
 export const UserPortSpecSchema: z.ZodType<UserPortSpec> = z.lazy(() =>
   z
     .object({
@@ -977,6 +1028,34 @@ export const AnalysisInputConsumerSpecSchema: z.ZodType<AnalysisInputConsumerSpe
     .strict()
 ) as unknown as z.ZodType<AnalysisInputConsumerSpec>;
 
+export const AnalysisDataProductRequirementSchema: z.ZodType<AnalysisDataProductRequirement> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.string().optional(),
+      "schema_version": z.string().optional(),
+      "role": z.string(),
+      "product_schema_id": z.string(),
+      "exact_product_schema_version": z.string().nullable().optional(),
+      "min_product_schema_version": z.string().nullable().optional(),
+      "max_product_schema_version": z.string().nullable().optional(),
+      "logical_name": z.string().nullable().optional(),
+      "descriptor_selector_requirements": z.record(z.string(), z.unknown()).optional(),
+      "descriptor_basis_hash": z.string().nullable().optional(),
+      "product_identity_hash": z.string().nullable().optional(),
+      "artifact_sha256": z.string().nullable().optional(),
+      "producer_manifest_id": z.string().nullable().optional(),
+      "producer_manifest_hash": z.string().nullable().optional(),
+      "parent_manifest_ids": z.array(z.string()).optional(),
+      "parent_manifest_hashes": z.array(z.string()).optional(),
+      "checkpoint_policy": z.record(z.string(), z.unknown()).nullable().optional(),
+      "rollout_policy": z.record(z.string(), z.unknown()).nullable().optional(),
+      "parameters": z.record(z.string(), z.unknown()).optional(),
+      "fallback_policy": z.union([z.literal("forbid"), z.literal("allow_declared")]).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisDataProductRequirement>;
+
 export const AnalysisInputRequirementSchema: z.ZodType<AnalysisInputRequirement> = z.lazy(() =>
   z
     .object({
@@ -986,6 +1065,7 @@ export const AnalysisInputRequirementSchema: z.ZodType<AnalysisInputRequirement>
       "target": RetainedObservableTargetSpecSchema.nullable().optional(),
       "retention": RetentionPolicySpecSchema.optional(),
       "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
+      "data_product": AnalysisDataProductRequirementSchema.nullable().optional(),
       "consumer": AnalysisInputConsumerSpecSchema.optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
@@ -1019,6 +1099,7 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
       "input_bindings": z.record(z.string(), z.tuple([z.string(), z.string()])).optional(),
       "output_bindings": z.record(z.string(), z.tuple([z.string(), z.string()])).optional(),
       "subgraphs": z.record(z.string(), GraphSpecSchema).nullable().optional(),
+      "derived_dimensions": z.array(DerivedDimensionRuleSpecSchema).optional(),
       "barnacles": z.record(z.string(), z.array(BarnacleSpecSchema)).nullable().optional(),
       "user_ports": z.record(z.string(), UserPortSpecSchema).nullable().optional(),
       "taps": z.array(TapSpecSchema).nullable().optional(),
@@ -1506,6 +1587,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "param_schema_version": z.string().optional(),
       "supported_param_schema_versions": z.array(z.string()).optional(),
       "migrations": z.array(ComponentMigrationInfoSchema).optional(),
+      "trainable_by_default": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;
@@ -1544,6 +1626,8 @@ export const LossTermSpecSchema: z.ZodType<LossTermSpec> = z.lazy(() =>
       "target_value": z.unknown().nullable().optional(),
       "retention": RetentionPolicySpecSchema.nullable().optional(),
       "norm": z.union([z.literal("squared_l2"), z.literal("l2"), z.literal("l1"), z.literal("huber")]).nullable().optional(),
+      "matrix": z.unknown().nullable().optional(),
+      "matrix_kind": z.union([z.literal("dense"), z.literal("diagonal")]).nullable().optional(),
       "time_agg": TimeAggregationSpecSchema.nullable().optional(),
       "children": z.record(z.string(), LossTermSpecSchema).nullable().optional(),
     })
@@ -1590,7 +1674,7 @@ export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
       "n_batches": z.number().int().optional(),
       "batch_size": z.number().int().optional(),
       "learning_rate": z.number().optional(),
-      "grad_clip": z.number().optional(),
+      "grad_clip": z.number().nullable().optional(),
       "hidden_dim": z.number().int().optional(),
       "network_type": z.string().optional(),
       "n_reach_steps": z.number().int().optional(),

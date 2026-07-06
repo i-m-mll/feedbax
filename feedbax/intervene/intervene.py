@@ -11,9 +11,11 @@ from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+import jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
+from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.noise import Normal
 
 
@@ -55,12 +57,14 @@ def _strong_typed(params: InterventionParams) -> InterventionParams:
     To ensure compatibility, the StateIndex initial values must also be
     strong-typed.
     """
+
     def _convert(x):
         if isinstance(x, jnp.ndarray):
             return jnp.asarray(x, dtype=jnp.result_type(x))
         if isinstance(x, bool | int | float):
             return jnp.asarray(x, dtype=jnp.result_type(x))
         return x
+
     return jt.map(_convert, params)
 
 
@@ -87,13 +91,10 @@ class DynamicsMatrixPerturbParams(InterventionParams):
             velocity row's added derivative. Defaults to a 2D zero matrix.
     """
 
-    delta_A: Array = field(
-        default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32)
-    )
+    delta_A: Array = field(default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32))
 
 
-class AddNoiseParams(InterventionParams):
-    ...
+class AddNoiseParams(InterventionParams): ...
 
 
 class NetworkIntervenorParams(InterventionParams):
@@ -104,8 +105,7 @@ class ConstantInputParams(InterventionParams):
     arrays: Optional[PyTree] = None
 
 
-class CopyParams(InterventionParams):
-    ...
+class CopyParams(InterventionParams): ...
 
 
 class CurlField(Component):
@@ -206,20 +206,25 @@ class DynamicsMatrixPerturb(Component):
     params_index: StateIndex
     _initial_state: DynamicsMatrixPerturbParams = field(static=True)
     label: str = field(default="dynamics_matrix_perturb", static=True)
-    mass: float = field(default=1.0, static=True)
+    mass: float = field(static=True)
 
     def __init__(
         self,
         params: Optional[DynamicsMatrixPerturbParams] = None,
         label: str = "dynamics_matrix_perturb",
-        mass: float = 1.0,
+        mass: float | None = None,
     ):
+        if mass is None:
+            raise ValueError(
+                "DynamicsMatrixPerturb requires an explicit positive mass matching "
+                "the wired plant; pass mass=<plant mass> at graph construction."
+            )
         if params is None:
             params = DynamicsMatrixPerturbParams(active=False)
         self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
-        self.mass = mass
+        self.mass = require_positive_finite("DynamicsMatrixPerturb.mass", mass)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: DynamicsMatrixPerturbParams = state.get(self.params_index)
@@ -250,19 +255,21 @@ class AddNoise(Component):
     input_ports = ("input",)
     output_ports = ("output",)
 
-    noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal()
+    noise_func: Callable[[PRNGKeyArray, Array], Array] = field(default_factory=Normal)
     params_index: StateIndex
     _initial_state: AddNoiseParams = field(static=True)
     label: str = field(default="add_noise", static=True)
 
     def __init__(
         self,
-        noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal(),
+        noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = None,
         params: Optional[AddNoiseParams] = None,
         label: str = "add_noise",
     ):
         if params is None:
             params = AddNoiseParams(active=False)
+        if noise_func is None:
+            noise_func = Normal()
         self.noise_func = noise_func
         self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
@@ -273,7 +280,8 @@ class AddNoise(Component):
         signal = inputs["input"]
 
         def apply_noise():
-            noise = jt.map(lambda x: self.noise_func(key, x), signal)
+            keys = jtree.random_split_like_tree(key, signal)
+            noise = jt.map(lambda x, leaf_key: self.noise_func(leaf_key, x), signal, keys)
             return jt.map(lambda x, n: x + params.scale * n, signal, noise)
 
         output = jax.lax.cond(params.active, apply_noise, lambda: signal)

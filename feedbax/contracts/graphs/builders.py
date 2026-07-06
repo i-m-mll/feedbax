@@ -694,6 +694,10 @@ def _build_fixed_field(params: Mapping[str, Any]) -> FixedField:
 
 
 def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
+    if "mass" not in params or params["mass"] is None:
+        raise ValueError(
+            "DynamicsMatrixPerturb requires explicit mass matching the wired plant"
+        )
     delta_A = jnp.asarray(params.get("delta_A", [[0.0, 0.0, 0.0, 0.0]] * 2))
     if delta_A.ndim != 2:
         raise ValueError("DynamicsMatrixPerturb delta_A must be a rank-2 array")
@@ -706,14 +710,12 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
             delta_A=delta_A,
         ),
         label=str(params.get("label", "dynamics_matrix_perturb")),
-        mass=float(params.get("mass", 1.0)),
+        mass=float(params["mass"]),
     )
 
 
 def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueComposer:
-    schema_version = str(
-        params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION)
-    )
+    schema_version = str(params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION))
     if schema_version != AFFINE_VALUE_COMPOSER_SCHEMA_VERSION:
         raise ValueError(
             "AffineValueComposer unsupported schema_version "
@@ -818,9 +820,93 @@ _DISPLAY_ONLY_MESSAGES: dict[str, str] = {
 }
 
 
+def _unsupported_component_builder(component_type: str) -> Callable[[Mapping[str, Any]], Component]:
+    message = _DISPLAY_ONLY_MESSAGES.get(
+        component_type,
+        f"Component type {component_type!r} is registered for metadata but has no "
+        "executable builder.",
+    )
+
+    def _builder(params: Mapping[str, Any]) -> Component:
+        del params
+        raise NotImplementedError(message.format(node_name="<unknown>"))
+
+    _builder._feedbax_unsupported_builder = True  # type: ignore[attr-defined]
+    _builder._feedbax_unsupported_builder_message = message  # type: ignore[attr-defined]
+    return _builder
+
+
+_UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {
+    "Input": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "Graph inputs must be represented by GraphSpec input_bindings, not display-only "
+        "placeholder nodes. CDE templates are currently display-only and fail closed; "
+        "real subgraph-to-builder construction is future work tracked by issue 2f8dd61."
+    ),
+    "Subtract": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
+    ),
+    "Reshape": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
+    ),
+    "MatMul": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
+    ),
+    "Scale": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
+    ),
+    "Sigmoid": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
+    ),
+}
+
+
+def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
+    if getattr(meta, "template_graph", None) is None:
+        return None
+    template_builder_issues = getattr(component_registry, "template_builder_issues", None)
+    if not callable(template_builder_issues):
+        return None
+    issues = template_builder_issues(meta)
+    if not issues:
+        return None
+    details = "; ".join(issue.summary for issue in issues[:6])
+    if len(issues) > 6:
+        details += f"; and {len(issues) - 6} more"
+    message = (
+        f"Component template {meta.name!r} is not executable because its template graph "
+        f"contains node types without registered builders: {details}"
+    )
+    template_id = getattr(meta, "template_id", "") or ""
+    if template_id.startswith("feedbax.templates.cde_"):
+        message += (
+            ". CDE templates are currently display-only and fail closed; real "
+            "subgraph-to-builder construction is future work tracked by issue 2f8dd61."
+        )
+    return message
+
+
 def register_builtin_component_builders(registry: Any) -> None:
     for name, builder in _BUILDERS.items():
         registry.register_builder(name, builder, provenance="feedbax")
+    for name in registry.names():
+        meta = registry.get(name)
+        if meta is not None and meta.builder is None:
+            registry.register_builder(
+                name,
+                _unsupported_component_builder(name),
+                provenance="feedbax",
+            )
 
 
 def build_component(
@@ -838,16 +924,30 @@ def build_component(
         component_registry = get_component_registry()
     meta = component_registry.get(node_type)
     if meta is None:
+        message = _UNREGISTERED_TEMPLATE_MESSAGES.get(node_type)
+        if message is not None:
+            raise NotImplementedError(
+                message.format(node_type=node_type, node_name=node_name)
+            )
         known = ", ".join(component_registry.names())
         raise ValueError(
             f"Unsupported component type {node_type!r} for node {node_name!r}. "
             f"Known component types: {known}"
         )
-    if meta.builder is None:
-        message = _DISPLAY_ONLY_MESSAGES.get(
-            node_type,
-            f"Component type {node_type!r} for node {node_name!r} is registered "
-            "for metadata but has no executable builder.",
+    unsupported_message = (
+        None
+        if meta.builder is None
+        else getattr(meta.builder, "_feedbax_unsupported_builder_message", None)
+    )
+    if meta.builder is None or unsupported_message is not None:
+        message = (
+            _template_builder_error(meta, component_registry)
+            or unsupported_message
+            or _DISPLAY_ONLY_MESSAGES.get(
+                node_type,
+                f"Component type {node_type!r} for node {node_name!r} is registered "
+                "for metadata but has no executable builder.",
+            )
         )
         raise NotImplementedError(message.format(node_name=node_name))
     try:

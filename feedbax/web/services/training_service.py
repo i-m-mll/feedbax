@@ -39,6 +39,19 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _worker_stderr_excerpt(process: subprocess.Popen, *, limit: int = 4000) -> str:
+    """Return captured stderr for an exited worker process."""
+    if process.poll() is None or process.stderr is None:
+        return ""
+    try:
+        _stdout, stderr = process.communicate(timeout=0.1)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if not isinstance(stderr, str):
+        stderr = stderr.decode(errors="replace") if stderr else ""
+    return stderr.strip()[-limit:]
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -128,22 +141,48 @@ class TrainingService:
             self._process = subprocess.Popen(
                 [sys.executable, "-m", "feedbax.web.worker", "--port", str(port)],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
             )
 
-            await worker_client.wait_for_health(self._base_url, timeout=5.0, interval=0.1)
+            try:
+                await worker_client.wait_for_health(self._base_url, timeout=5.0, interval=0.1)
+            except Exception as exc:
+                stderr = _worker_stderr_excerpt(self._process)
+                self._terminate_worker()
+                detail = f": {stderr}" if stderr else ""
+                raise RuntimeError(f"Worker subprocess failed health check{detail}") from exc
             return self._base_url
 
     def _terminate_worker(self) -> None:
         """Terminate the worker subprocess if it is running."""
-        if self._process is not None:
+        process = self._process
+        self._process = None
+        self._base_url = None
+        self._port = None
+        self._remote = False
+        self._auth_token = None
+
+        if process is not None:
             try:
-                self._process.terminate()
+                process.terminate()
             except OSError:
                 pass
-            self._process = None
-            self._base_url = None
-            self._port = None
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+            try:
+                process.communicate(timeout=0.1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
     # ------------------------------------------------------------------
     # Public interface (mirrors the old TrainingService API)
@@ -164,8 +203,7 @@ class TrainingService:
             total_batches: Number of training steps.
             training_config: Optional dict forwarded to the worker as the
                 ``training_config`` key in the ``/start`` request body.
-                When present, the worker runs real JAX training; when ``None``
-                it falls back to the synthetic stub.
+                Required by the worker for real JAX training.
             training_spec: Optional spec dict with optimizer/loss settings;
                 forwarded to the worker for spec-driven configuration.
             task_spec: Optional task spec dict with task parameters;

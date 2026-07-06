@@ -57,8 +57,7 @@ def _require_penzai() -> None:
     """Raise ImportError if penzai is not available."""
     if not PENZAI_AVAILABLE:
         raise ImportError(
-            "penzai is required for PenzaiSubgraph. "
-            "Install it with: pip install penzai"
+            "penzai is required for PenzaiSubgraph. Install it with: pip install penzai"
         )
 
 
@@ -66,8 +65,7 @@ def _require_treescope() -> None:
     """Raise ImportError if treescope is not available."""
     if not TREESCOPE_AVAILABLE:
         raise ImportError(
-            "treescope is required for HTML rendering. "
-            "Install it with: pip install treescope"
+            "treescope is required for HTML rendering. Install it with: pip install treescope"
         )
 
 
@@ -283,8 +281,16 @@ class PenzaiStateManager(Module):
 
         walk_tree((), pz_model)
 
-        # Create initial state as a dict mapping paths to values
-        initial_state: dict[tuple[Any, ...], Any] = {path: value for path, value in state_vars}
+        if state_vars:
+            paths = ", ".join(".".join(str(part) for part in path) for path, _ in state_vars)
+            raise NotImplementedError(
+                "PenzaiSubgraph does not yet support stateful Penzai models. "
+                "StateVariable paths were found at "
+                f"{paths}; implement explicit Penzai state rebinding before using this model."
+            )
+
+        # Create initial state as a dict mapping paths to values.
+        initial_state: dict[tuple[Any, ...], Any] = {}
 
         return cls(
             state_index=StateIndex(initial_state),
@@ -317,10 +323,11 @@ class PenzaiStateManager(Module):
         if not state_values:
             return pz_model
 
-        # Use penzai's variable binding mechanism
-        # This assumes the model has LocalVariableEffect or similar
-        # For simplicity, we return the model as-is if no special handling needed
-        return pz_model
+        raise NotImplementedError(
+            "PenzaiStateManager.bind_state cannot safely rebind Penzai StateVariable "
+            "values yet. Stateful Penzai models are rejected at construction; this "
+            "manager received stored state values at call time, so execution is unsafe."
+        )
 
     def unbind_state(self, pz_model: PyTree, state: State) -> tuple[PyTree, State]:
         """Extract state values from model and store in feedbax State.
@@ -446,8 +453,7 @@ class PenzaiSubgraph(Component):
         self.input_mapping = input_mapping
         self.output_mapping = output_mapping
         self.state_manager = (
-            state_manager if state_manager is not None
-            else PenzaiStateManager.from_model(pz_model)
+            state_manager if state_manager is not None else PenzaiStateManager.from_model(pz_model)
         )
         self.builder_name = builder_name
         self.input_ports = tuple(spec.port_name for spec in input_mapping.port_specs)
@@ -541,13 +547,14 @@ class PenzaiSubgraph(Component):
         # Bind state variables into model
         bound_model = self.state_manager.bind_state(self.pz_model, state)
 
-        # Execute the Penzai model
-        # Penzai layers are callable: layer(input)
-        if callable(bound_model):
-            layer_output = bound_model(layer_input)
-        else:
-            # For non-callable models, try to find a __call__ method
-            layer_output = layer_input
+        if not callable(bound_model):
+            raise TypeError(
+                "PenzaiSubgraph requires the wrapped model to be callable; "
+                f"got {type(bound_model).__name__}. Non-callable models cannot "
+                "be treated as identity nodes."
+            )
+
+        layer_output = bound_model(layer_input)
 
         # Unbind state variables and update feedbax state
         _, state = self.state_manager.unbind_state(bound_model, state)
@@ -695,8 +702,7 @@ def build_penzai_subgraph(
     builder_info = get_penzai_builder(builder_name)
     if builder_info is None:
         raise ValueError(
-            f"Unknown Penzai builder '{builder_name}'. "
-            f"Available builders: {list_penzai_builders()}"
+            f"Unknown Penzai builder '{builder_name}'. Available builders: {list_penzai_builders()}"
         )
 
     builder_fn, default_params = builder_info

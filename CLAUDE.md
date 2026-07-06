@@ -14,10 +14,9 @@
 ## Repository Structure
 
 - **Python library**: `feedbax/` — core JAX/Equinox components, graph execution engine, networks
-  - CDE network: `feedbax/nn_cde.py`
-  - Other networks (SimpleStagedNetwork, LeakyRNNCell): `feedbax/nn.py`
-  - Graph execution: `feedbax/graph.py`
-  - Component base: `feedbax/components.py`
+  - CDE network: `feedbax/models/cde.py`
+  - Other networks (SimpleStagedNetwork, LeakyRNNCell): `feedbax/models/networks.py`
+  - Graph execution and Component base: `feedbax/runtime/graph.py`
 - **Studio backend** (FastAPI): `feedbax/web/`
   - Training service (stub): `feedbax/web/services/training_service.py`
   - WebSocket handlers: `feedbax/web/ws/`

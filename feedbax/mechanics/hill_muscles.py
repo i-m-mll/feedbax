@@ -20,12 +20,10 @@ Key references:
 from __future__ import annotations
 
 from abc import abstractmethod
-from functools import cached_property
 import logging
 from typing import Optional, Type
 
 import diffrax as dfx
-import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State
 import jax
@@ -34,6 +32,10 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
 from feedbax.mechanics.dae import DAEComponent, DAEParams
+from feedbax.mechanics.units import (
+    DEFAULT_MUSCLE_VMAX,
+    ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -138,7 +140,8 @@ class ForceVelocityCurve(Module):
 
         Args:
             norm_velocity: Fiber velocity / (vmax * optimal_length).
-                Range roughly [-1, +0.1] where -1 = max shortening, +0.1 = max lengthening.
+                Range roughly ``[-1, ECCENTRIC_VELOCITY_LIMIT_FRACTION]`` where
+                -1 = max shortening and positive values are lengthening.
                 Negative = shortening, positive = lengthening.
 
         Returns:
@@ -151,7 +154,8 @@ class ForceVelocityCurve(Module):
         concentric = (1.0 + norm_velocity / a) / (1.0 - norm_velocity / a)
 
         # Eccentric (lengthening): different hyperbola branch
-        # Linear transition from 1.0 at v=0 to eccentric_force_max at v=0.1
+        # Linear transition from 1.0 at rest to eccentric_force_max at the
+        # shared normalized lengthening-speed limit.
         b = self.eccentric_curvature
         fmax = self.eccentric_force_max
         # Formulation: fv = fmax - (fmax-1) * (1 - v/b) / (1 + v/b)
@@ -237,7 +241,7 @@ class HillMuscleParams(DAEParams):
     pennation_angle: float = 0.0
     tau_activation: float = 0.01
     tau_deactivation: float = 0.04
-    vmax: float = 10.0
+    vmax: float = DEFAULT_MUSCLE_VMAX
 
 
 # ============================================================================
@@ -698,8 +702,10 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         # Select based on fv_required
         norm_velocity = jnp.where(fv_required < 1.0, concentric_vel, eccentric_vel)
 
-        # Clamp to reasonable range: -1 (max shortening) to ~0.1 (max lengthening)
-        norm_velocity = jnp.clip(norm_velocity, -1.0, 0.1)
+        # Clamp to the shared normalized velocity convention.
+        norm_velocity = jnp.clip(
+            norm_velocity, -1.0, ECCENTRIC_VELOCITY_LIMIT_FRACTION
+        )
 
         d_fiber_length = norm_velocity * self.muscle_params.vmax * self.muscle_params.optimal_fiber_length
 
@@ -716,11 +722,11 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         )
 
     def extract_outputs(self, state: CompliantTendonState) -> dict[str, Array]:
-        """Extract force output from muscle state."""
-        # For outputs, we need to compute force given current state
-        # This requires MT length which isn't in the state...
-        # Return a placeholder; actual force is computed in __call__
-        return {"force": jnp.zeros(())}
+        """Compliant tendon force requires current musculotendon length input."""
+        raise NotImplementedError(
+            "CompliantTendonHillMuscle cannot extract force from state alone; "
+            "call the component with musculotendon_length so tendon force can be computed."
+        )
 
     def _get_zero_input(self) -> tuple[Array, Array, Array]:
         """Zero input tuple."""
@@ -752,29 +758,34 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         mt_length = inputs.get("musculotendon_length", jnp.zeros(()))
         mt_velocity = inputs.get("musculotendon_velocity", jnp.zeros(()))
 
-        # Pack inputs for DAE
         input_tuple = (excitation, mt_length, mt_velocity)
-        modified_inputs = {"input": input_tuple}
-
-        outputs, state = super().__call__(modified_inputs, state, key=key)
-
-        # Apply activation bounds clamping after integration
         dae_state = state.get(self.state_index)
-        muscle_state = dae_state.system
+        muscle_state, _, _, new_solver_state, _ = self.solver.step(
+            self._term,
+            0.0,
+            self.dt,
+            dae_state.system,
+            input_tuple,
+            dae_state.solver,
+            made_jump=False,
+        )
+
         clamped_activation = jnp.clip(muscle_state.activation, 0.0, 1.0)
         muscle_state = CompliantTendonState(
             activation=clamped_activation,
             fiber_length=muscle_state.fiber_length,
         )
         from feedbax.mechanics.dae import DAEState
-        dae_state = DAEState(system=muscle_state, solver=dae_state.solver)
+        dae_state = DAEState(system=muscle_state, solver=new_solver_state)
         state = state.set(self.state_index, dae_state)
 
-        # Compute actual force from updated state
         tendon_length = self.compute_tendon_length(muscle_state.fiber_length, mt_length)
         force = self.compute_tendon_force(tendon_length)
 
-        outputs["force"] = force
+        outputs = {
+            "force": force,
+            "state": muscle_state,
+        }
         return outputs, state
 
     def compute_constraint_residual(

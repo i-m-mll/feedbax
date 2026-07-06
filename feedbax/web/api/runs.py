@@ -239,8 +239,7 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
     given parameters.  The actual evaluation computation is triggered
     separately (via ``POST /api/analyses/jobs``).
 
-    If the database supports it, a new ``EvaluationRecord`` is created.
-    Otherwise a stub response is returned so the frontend can proceed.
+    A new ``EvaluationRecord`` is created before the endpoint reports success.
     """
     import hashlib
     import json
@@ -260,7 +259,6 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
     now = datetime.utcnow()
     description = _summarize_perturbation_config(payload.eval_params)
 
-    # Try to persist in the database if EvaluationRecord supports it
     try:
         with db_session() as session:
             record = EvaluationRecord(
@@ -277,9 +275,11 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
             payload.training_run_id,
         )
     except Exception as exc:
-        logger.warning(
-            "Could not persist eval run to DB (proceeding with stub): %s", exc,
-        )
+        logger.exception("Could not persist eval run %s to DB", run_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not persist evaluation run {run_id!r}",
+        ) from exc
 
     return EvalRunInfo(
         id=run_id,

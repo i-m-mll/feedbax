@@ -26,7 +26,9 @@ from feedbax.analysis.bundles import (
 )
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeExecutionError as EvaluationRunExecutionError,
     EvaluationRecipeResult,
+    EvaluationStatesCacheCorruption,
     execute_evaluation_run_spec,
     register_evaluation_recipe,
     unregister_evaluation_recipe,
@@ -36,6 +38,7 @@ from feedbax.analysis.specs import (
     AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
     execute_analysis_run_spec,
+    find_manifest_by_id,
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
@@ -46,12 +49,15 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
     TrainingRunManifest,
+    analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
     write_manifest,
 )
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
+
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
 
 
 TOY_ANALYSIS_TYPE = "feedbax.test.toy_analysis"
@@ -341,6 +347,60 @@ def test_analysis_run_spec_executes_registered_recipe_and_records_manifest(tmp_p
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 
+def test_analysis_run_spec_reuses_completed_manifest_without_recipe_call(tmp_path: Path):
+    _register_toy_evaluation_recipe()
+    calls: list[int] = []
+
+    def recipe(spec: AnalysisRunSpec, _root: Path, inputs):
+        calls.append(int(inputs[0].states["value"]))
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=int(inputs[0].states["value"])),
+        )
+
+    register_analysis_recipe(TOY_ANALYSIS_TYPE, recipe, replace=True)
+    try:
+        eval_manifest, eval_path = _execute_toy_eval(tmp_path, n_trials=2, method="minimax")
+        spec = AnalysisRunSpec(
+            analysis_type=TOY_ANALYSIS_TYPE,
+            inputs=[
+                ParentRef(
+                    kind="EvaluationRunManifest",
+                    id=eval_manifest.id,
+                    role="evaluation_run",
+                    uri=str(eval_path),
+                )
+            ],
+            params={"requested_outputs": ["toy"]},
+        )
+
+        manifest, path = execute_analysis_run_spec(
+            spec,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+        )
+        with patch("feedbax.analysis.specs.iter_manifest_files") as iter_files:
+            iter_files.side_effect = AssertionError("filesystem fallback should not run")
+            rerun_manifest, rerun_path = execute_analysis_run_spec(
+                spec,
+                root=tmp_path,
+                fig_dump_formats=("json",),
+            )
+            indexed_manifest, indexed_path = find_manifest_by_id(
+                analysis_run_manifest_id(spec),
+                root=tmp_path,
+            )
+
+        assert calls == [2]
+        assert rerun_manifest.id == manifest.id
+        assert rerun_path == path
+        assert indexed_manifest.id == manifest.id
+        assert indexed_path == path
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
 def test_analysis_run_spec_rederives_missing_evaluation_states_cache(tmp_path: Path):
     _register_toy_evaluation_recipe()
     _register_toy_analysis_recipe()
@@ -378,6 +438,34 @@ def test_analysis_run_spec_rederives_missing_evaluation_states_cache(tmp_path: P
         assert load_manifest(eval_path).summary_metrics["n_trials"] == 5
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_evaluation_states_cache_corruption_fails_closed(tmp_path: Path):
+    _register_toy_evaluation_recipe()
+    try:
+        parent = ParentRef(
+            kind="TrainingRunManifest",
+            id="feedbax-training-run:corrupt-states-cache",
+            role="training_run",
+        )
+        spec = EvaluationRunSpec(
+            evaluation_type=TOY_EVALUATION_TYPE,
+            inputs=[parent],
+            params={"n_trials": 4},
+        )
+        manifest, _path = execute_evaluation_run_spec(spec, root=tmp_path)
+        states_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
+        states_path.write_bytes(b"not a pickle payload")
+
+        with pytest.raises(EvaluationRunExecutionError) as excinfo:
+            execute_evaluation_run_spec(spec, root=tmp_path)
+
+        assert isinstance(excinfo.value.__cause__, EvaluationStatesCacheCorruption)
+        failed = load_manifest(excinfo.value.path)
+        assert failed.status == "failed"
+        assert "EvaluationStatesCacheCorruption" in failed.metadata["error"]["type"]
+    finally:
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 
@@ -717,6 +805,74 @@ def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs
         assert analysis_manifest.provenance.parents == comparison_stage.inputs
     finally:
         unregister_analysis_recipe(paired_analysis_type)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(tmp_path: Path) -> None:
+    eval_calls: list[int] = []
+    analysis_calls: list[int] = []
+
+    def eval_recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+        n_trials = int(run_spec.params["n_trials"])
+        eval_calls.append(n_trials)
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(n_trials, dtype=np.int32)},
+            summary_metrics={"n_trials": n_trials},
+        )
+
+    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs):
+        value = int(inputs[0].states["value"])
+        analysis_calls.append(value)
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=value),
+        )
+
+    register_evaluation_recipe(TOY_EVALUATION_TYPE, eval_recipe, replace=True)
+    register_analysis_recipe(TOY_ANALYSIS_TYPE, analysis_recipe, replace=True)
+    try:
+        _write_toy_training(tmp_path, method="minimax")
+        bundle = AnalysisBundleSpec(
+            name="toy_cache_reuse",
+            predicate=ManifestPredicate(
+                manifest_kind="TrainingRunManifest",
+                metadata_equals={"method": "minimax"},
+            ),
+            stages=[
+                BundleStageSpec(
+                    name="eval",
+                    kind="evaluation",
+                    evaluation_type=TOY_EVALUATION_TYPE,
+                    params={"n_trials": 7},
+                ),
+                BundleStageSpec(
+                    name="summary",
+                    kind="analysis",
+                    depends_on=["eval"],
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                    requested_outputs=["toy"],
+                    outputs=[BundleStageOutputSpec(role="manifest")],
+                ),
+            ],
+        )
+
+        first = execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+        )
+        second = execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+        )
+
+        assert eval_calls == [7]
+        assert analysis_calls == [7]
+        assert second.stages[0].manifest_refs == first.stages[0].manifest_refs
+        assert second.stages[1].manifest_refs == first.stages[1].manifest_refs
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 

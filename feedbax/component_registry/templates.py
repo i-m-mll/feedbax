@@ -57,6 +57,7 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
             ),
             template_id=network_meta.id,
             template_kind=network_meta.kind,
+            trainable_by_default=True,
         )
     )
 
@@ -90,5 +91,6 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
             ),
             template_id=feedback_meta.id,
             template_kind=feedback_meta.kind,
+            trainable_by_default=True,
         )
     )

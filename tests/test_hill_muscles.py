@@ -8,6 +8,7 @@ and musculoskeletal arm integration.
 """
 
 import pytest
+import diffrax as dfx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -30,6 +31,7 @@ from feedbax.mechanics.musculoskeletal import (
     RigidTendonMusculoskeletalArm,
     CompliantTendonMusculoskeletalArm,
 )
+from feedbax.mechanics.units import DEFAULT_MUSCLE_VMAX
 from feedbax.runtime.graph import init_state_from_component
 
 
@@ -191,7 +193,7 @@ class TestRigidTendonHillMuscle:
             pennation_angle=0.0,
             tau_activation=0.01,
             tau_deactivation=0.04,
-            vmax=10.0,
+            vmax=DEFAULT_MUSCLE_VMAX,
         )
 
     @pytest.fixture
@@ -255,7 +257,7 @@ class TestCompliantTendonMuscle:
             pennation_angle=0.0,
             tau_activation=0.01,
             tau_deactivation=0.04,
-            vmax=10.0,
+            vmax=DEFAULT_MUSCLE_VMAX,
         )
 
     @pytest.fixture
@@ -287,6 +289,26 @@ class TestCompliantTendonMuscle:
         assert "force" in outputs
         assert "state" in outputs
         assert jnp.isfinite(outputs["force"])
+
+    def test_extract_outputs_rejects_state_only_force_contract(self, muscle):
+        dae_state = init_state_from_component(muscle).get(muscle.state_index)
+
+        with pytest.raises(NotImplementedError, match="musculotendon_length"):
+            muscle.extract_outputs(dae_state.system)
+
+    def test_single_step_force_uses_tendon_length_not_zero_placeholder(self, muscle):
+        state = init_state_from_component(muscle)
+        outputs, _ = muscle(
+            {
+                "excitation": jnp.array(0.5),
+                "musculotendon_length": jnp.array(0.30),
+                "musculotendon_velocity": jnp.array(0.0),
+            },
+            state,
+            key=jr.PRNGKey(11),
+        )
+
+        assert outputs["force"] > 0.0
 
     def test_constraint_residual_small(self, muscle):
         """Test that integration runs without errors."""
@@ -410,6 +432,42 @@ class TestRigidTendonMusculoskeletalArm:
         assert arm.n_muscles == 6
         assert arm.dt == 0.01
 
+    def test_non_euler_solver_rejected(self):
+        with pytest.raises(ValueError, match="solver_type=Kvaerno3 is not supported"):
+            RigidTendonMusculoskeletalArm(
+                dt=0.01,
+                solver_type=dfx.Kvaerno3,
+                key=jr.PRNGKey(0),
+            )
+
+    def test_invalid_arm_parameter_shape_rejected(self):
+        with pytest.raises(ValueError, match="arm_l must have shape"):
+            RigidTendonMusculoskeletalArm(
+                arm_l=(0.30,),
+                dt=0.01,
+                key=jr.PRNGKey(0),
+            )
+
+    def test_invalid_timestep_rejected(self):
+        with pytest.raises(ValueError, match="dt must be finite and positive"):
+            RigidTendonMusculoskeletalArm(dt=0.0, key=jr.PRNGKey(0))
+
+    def test_muscle_params_must_match_geometry(self):
+        params = tuple(
+            HillMuscleParams(
+                max_isometric_force=500.0,
+                optimal_fiber_length=0.08,
+                tendon_slack_length=0.12,
+            )
+            for _ in range(5)
+        )
+        with pytest.raises(ValueError, match="muscle_params length must match"):
+            RigidTendonMusculoskeletalArm(
+                muscle_params=params,
+                dt=0.01,
+                key=jr.PRNGKey(0),
+            )
+
     def test_single_step(self, arm):
         """Test single integration step."""
         state = init_state_from_component(arm)
@@ -494,6 +552,10 @@ class TestCompliantTendonMusculoskeletalArm:
         """Test initialization."""
         assert arm.n_muscles == 6
         assert arm.dt == 0.001
+
+    def test_invalid_timestep_rejected(self):
+        with pytest.raises(ValueError, match="dt must be finite and positive"):
+            CompliantTendonMusculoskeletalArm(dt=0.0, key=jr.PRNGKey(0))
 
     def test_single_step(self, arm):
         """Test single step works."""

@@ -172,10 +172,12 @@ class TestOutputMapping:
 
     def test_structured_output(self):
         """Test extracting fields from structured output."""
-        mapping = OutputMapping.structured([
-            PortSpec("x", key_path=("x",)),
-            PortSpec("y", key_path=("y",)),
-        ])
+        mapping = OutputMapping.structured(
+            [
+                PortSpec("x", key_path=("x",)),
+                PortSpec("y", key_path=("y",)),
+            ]
+        )
         layer_output = {"x": jnp.array([1.0]), "y": jnp.array([2.0])}
 
         result = mapping(layer_output)
@@ -236,6 +238,7 @@ class TestPenzaiSubgraph:
 
         # Mock penzai availability check
         import feedbax.components.penzai as pc
+
         original_require = pc._require_penzai
 
         # Temporarily bypass penzai requirement for mock testing
@@ -248,7 +251,9 @@ class TestPenzaiSubgraph:
             assert component.output_ports == ("y",)
 
             inputs = {"x": jnp.array([1.0, 0.0])}
-            outputs, _ = component(inputs, init_state_from_component(component), key=jax.random.PRNGKey(0))
+            outputs, _ = component(
+                inputs, init_state_from_component(component), key=jax.random.PRNGKey(0)
+            )
 
             assert "y" in outputs
             assert (outputs["y"] == jnp.array([2.0, 1.0])).all()  # [1,0] + [1,1]
@@ -291,7 +296,9 @@ class TestPenzaiSubgraph:
         )
 
         inputs = {"a": jnp.array([2.0]), "b": jnp.array([3.0])}
-        outputs, _ = component(inputs, init_state_from_component(component), key=jax.random.PRNGKey(0))
+        outputs, _ = component(
+            inputs, init_state_from_component(component), key=jax.random.PRNGKey(0)
+        )
 
         assert "sum" in outputs
         assert "prod" in outputs
@@ -345,6 +352,21 @@ class TestPenzaiSubgraph:
         assert "input_ports" in repr_str
         assert "output_ports" in repr_str
 
+    def test_non_callable_model_raises_instead_of_identity_fallback(self):
+        """Non-callable models must not silently pass inputs through."""
+        component = _make_penzai_subgraph(
+            pz_model={"not": "callable"},
+            input_mapping=InputMapping.single("input"),
+            output_mapping=OutputMapping.single("output"),
+        )
+
+        with pytest.raises(TypeError, match="requires the wrapped model to be callable"):
+            component(
+                {"input": jnp.array([1.0, 2.0])},
+                init_state_from_component(component),
+                key=jax.random.PRNGKey(0),
+            )
+
 
 # =============================================================================
 # PenzaiStateManager Tests
@@ -375,6 +397,38 @@ class TestPenzaiStateManager:
         # State should be initialized (may be empty dict for stateless models)
         assert state is not None
 
+    def test_stateful_penzai_model_raises_until_rebinding_contract_exists(self, monkeypatch):
+        """StateVariable discovery must fail closed instead of installing a no-op manager."""
+        import feedbax.components.penzai as pc
+
+        class FakeStateVariable:
+            def __init__(self, value):
+                self.value = value
+
+        class FakeModel:
+            def __init__(self):
+                self.running = FakeStateVariable(jnp.array([1.0]))
+
+        monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
+        monkeypatch.setattr(pc, "StateVariable", FakeStateVariable)
+
+        with pytest.raises(NotImplementedError, match="does not yet support stateful Penzai"):
+            PenzaiStateManager.from_model(FakeModel())
+
+    def test_bind_state_raises_if_stored_state_reaches_call_boundary(self, monkeypatch):
+        """bind_state must not discard already-stored Penzai state values."""
+        import feedbax.components.penzai as pc
+
+        monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
+        manager = PenzaiStateManager(
+            state_index=StateIndex({("running",): jnp.array([1.0])}),
+            _initial_state={("running",): jnp.array([1.0])},
+        )
+        state = State(manager).set(manager.state_index, manager._initial_state)
+
+        with pytest.raises(NotImplementedError, match="cannot safely rebind"):
+            manager.bind_state(MockPenzaiLayer(jnp.eye(1), jnp.zeros(1)), state)
+
 
 # =============================================================================
 # Factory Registry Tests
@@ -393,6 +447,7 @@ class TestFactoryRegistry:
         pc._require_penzai = lambda: None
 
         try:
+
             def mock_builder(params):
                 return MockPenzaiLayer(
                     weight=jnp.eye(params["size"]),
@@ -452,6 +507,7 @@ class TestFactoryRegistry:
         pc._require_penzai = lambda: None
 
         try:
+
             def mock_builder(params):
                 return MockPenzaiLayer(
                     weight=jnp.eye(params["size"]),
@@ -569,7 +625,9 @@ class TestJAXTransformations:
 
         def loss_fn(x):
             inputs = {"input": x}
-            outputs, _ = component(inputs, init_state_from_component(component), key=jax.random.PRNGKey(0))
+            outputs, _ = component(
+                inputs, init_state_from_component(component), key=jax.random.PRNGKey(0)
+            )
             return jnp.sum(outputs["output"] ** 2)
 
         x = jnp.array([1.0, 2.0])

@@ -1251,7 +1251,24 @@ def test_dynamics_matrix_perturb_graphspec_rejects_bad_delta_shape() -> None:
         spec_to_graph(
             _single_node_spec(
                 "DynamicsMatrixPerturb",
-                {"scale": 1.0, "delta_A": [[1.0, 2.0, 3.0]], "active": True},
+                {
+                    "scale": 1.0,
+                    "delta_A": [[1.0, 2.0, 3.0]],
+                    "active": True,
+                    "mass": 1.0,
+                },
+                input_ports=["effector", "force", "params_override"],
+                output_ports=["force"],
+            )
+        )
+
+
+def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
+    with pytest.raises(ValueError, match="missing required parameter.*'mass'"):
+        spec_to_graph(
+            _single_node_spec(
+                "DynamicsMatrixPerturb",
+                {"scale": 1.0, "delta_A": [[1.0, 0.0], [0.0, 1.0]], "active": True},
                 input_ports=["effector", "force", "params_override"],
                 output_ports=["force"],
             )

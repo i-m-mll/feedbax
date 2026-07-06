@@ -39,16 +39,6 @@ from feedbax.contracts.training import TrainingSpec
 from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings, spec_to_graph
 
 
-_DEFAULT_TRAINABLE_COMPONENT_TYPES = {
-    "Linear",
-    "MLP",
-    "GRU",
-    "LSTM",
-    "Recurrent Controller",
-    "Simple Feedback Loop",
-}
-
-
 def _should_emit_training_progress(batch: int, total_batches: int, interval: int) -> bool:
     """Return whether a one-based training batch should synchronize progress scalars."""
     return batch == 1 or batch == total_batches or batch % interval == 0
@@ -533,12 +523,19 @@ def _state_path_from_selector(selector: str) -> str:
 
 
 def _derive_trainable_nodes(graph_spec: GraphSpec) -> tuple[str, ...]:
+    from feedbax.component_registry import get_component_registry
+
+    registry = get_component_registry()
     trainable: list[str] = []
     for node_id, node in graph_spec.nodes.items():
         raw = node.params.get("trainable")
         if raw is False:
             continue
-        if raw is True or node.type in _DEFAULT_TRAINABLE_COMPONENT_TYPES:
+        meta = registry.get(node.type)
+        trainable_by_default = bool(
+            getattr(meta, "trainable_by_default", False) if meta is not None else False
+        )
+        if raw is True or trainable_by_default:
             trainable.append(node_id)
     return tuple(trainable)
 

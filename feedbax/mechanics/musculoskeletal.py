@@ -38,6 +38,13 @@ from feedbax.mechanics.hill_muscles import (
     TendonForceLengthCurve,
 )
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
+from feedbax.mechanics.units import (
+    DEFAULT_MUSCLE_VMAX,
+    ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+    require_array_shape,
+    require_positive_finite,
+    require_positive_array,
+)
 from feedbax.runtime.state import CartesianState
 
 
@@ -111,7 +118,6 @@ class RigidTendonMusculoskeletalArm(Component):
 
     # Integration
     dt: float
-    solver: dfx.AbstractSolver = field(static=True)
     state_index: StateIndex
     _initial_state: MusculoskeletalState = field(static=True)
 
@@ -131,7 +137,7 @@ class RigidTendonMusculoskeletalArm(Component):
         arm_s=(0.11, 0.16),
         arm_B=((0.05, 0.025), (0.025, 0.05)),
         dt: float = 0.01,
-        solver_type: Type[dfx.AbstractSolver] = dfx.Kvaerno3,
+        solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):
@@ -144,15 +150,23 @@ class RigidTendonMusculoskeletalArm(Component):
             geometry: Muscle geometry. If None, uses default 6-muscle geometry.
             arm_l, arm_m, arm_I, arm_s, arm_B: Arm physical parameters.
             dt: Integration timestep.
-            solver_type: Diffrax solver type.
+            solver_type: Diffrax solver type. Only ``dfx.Euler`` is supported
+                by this explicit rigid-tendon integrator.
             key: PRNG key.
         """
-        # Store arm parameters
-        self.arm_l = jnp.asarray(arm_l)
-        self.arm_m = jnp.asarray(arm_m)
-        self.arm_I = jnp.asarray(arm_I)
-        self.arm_s = jnp.asarray(arm_s)
-        self.arm_B = jnp.asarray(arm_B)
+        if solver_type is not dfx.Euler:
+            raise ValueError(
+                "RigidTendonMusculoskeletalArm uses an explicit Euler update; "
+                f"solver_type={solver_type.__name__} is not supported. Use dfx.Euler "
+                "or switch to a DAE-based component for implicit integration."
+            )
+
+        # Store arm parameters. Units are SI: metres, kg, kg*m^2, seconds.
+        self.arm_l = require_positive_array("arm_l", arm_l, (2,))
+        self.arm_m = require_positive_array("arm_m", arm_m, (2,))
+        self.arm_I = require_positive_array("arm_I", arm_I, (2,))
+        self.arm_s = require_positive_array("arm_s", arm_s, (2,))
+        self.arm_B = require_array_shape("arm_B", arm_B, (2, 2))
 
         # Default geometry
         if geometry is None:
@@ -170,9 +184,14 @@ class RigidTendonMusculoskeletalArm(Component):
                     pennation_angle=0.0,
                     tau_activation=0.01,
                     tau_deactivation=0.04,
-                    vmax=10.0,
+                    vmax=DEFAULT_MUSCLE_VMAX,
                 )
                 for _ in range(actual_n_muscles)
+            )
+        if len(muscle_params) != actual_n_muscles:
+            raise ValueError(
+                "muscle_params length must match geometry.n_muscles: "
+                f"{len(muscle_params)} != {actual_n_muscles}"
             )
         self.muscle_params = muscle_params
 
@@ -188,8 +207,7 @@ class RigidTendonMusculoskeletalArm(Component):
         self.force_velocity = ForceVelocityCurve()
 
         # Integration
-        self.dt = dt
-        self.solver = solver_type()
+        self.dt = require_positive_finite("RigidTendonMusculoskeletalArm.dt", dt)
 
         if key is None:
             key = jax.random.PRNGKey(0)
@@ -220,12 +238,6 @@ class RigidTendonMusculoskeletalArm(Component):
             self.arm_m[1] * self.arm_l[0] * self.arm_s[1],
             self.arm_I[1],
         )
-
-    @cached_property
-    def _term(self) -> dfx.ODETerm:
-        """ODE term for integration."""
-        # Type mismatch: diffrax uses RealScalarLike, we use jaxtyping.Scalar
-        return dfx.ODETerm(self._vector_field)  # type: ignore[arg-type]
 
     @property
     def n_muscles(self) -> int:
@@ -260,7 +272,11 @@ class RigidTendonMusculoskeletalArm(Component):
 
             # Clamp velocity to reasonable range
             max_vel = mp.vmax * mp.optimal_fiber_length
-            clamped_velocity = jnp.clip(fiber_velocities[i], -max_vel, max_vel * 0.1)
+            clamped_velocity = jnp.clip(
+                fiber_velocities[i],
+                -max_vel,
+                max_vel * ECCENTRIC_VELOCITY_LIMIT_FRACTION,
+            )
             norm_velocity = clamped_velocity / (mp.vmax * mp.optimal_fiber_length)
 
             # Force-length-velocity
@@ -300,7 +316,6 @@ class RigidTendonMusculoskeletalArm(Component):
         )
 
         # Muscle geometry
-        mt_lengths = self.geometry.musculotendon_lengths(angle)
         mt_velocities = self.geometry.musculotendon_velocities(angle, d_angle)
         moment_arms = self.geometry.moment_arms(angle)
 
@@ -369,8 +384,7 @@ class RigidTendonMusculoskeletalArm(Component):
         ms_state: MusculoskeletalState = state.get(self.state_index)
         excitations = inputs.get("excitations", jnp.zeros(self.n_muscles))
 
-        # Integrate one step
-        # For simplicity, use Euler step here
+        # Integrate one explicit Euler step.
         derivatives = self._vector_field(jnp.array(0.0), ms_state, excitations)
 
         new_arm = TwoLinkArmState(
@@ -511,12 +525,12 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             root_finder: Root finder with tight tolerances (only for implicit solvers).
             key: PRNG key.
         """
-        # Store arm parameters
-        self.arm_l = jnp.asarray(arm_l)
-        self.arm_m = jnp.asarray(arm_m)
-        self.arm_I = jnp.asarray(arm_I)
-        self.arm_s = jnp.asarray(arm_s)
-        self.arm_B = jnp.asarray(arm_B)
+        # Store arm parameters. Units are SI: metres, kg, kg*m^2, seconds.
+        self.arm_l = require_positive_array("arm_l", arm_l, (2,))
+        self.arm_m = require_positive_array("arm_m", arm_m, (2,))
+        self.arm_I = require_positive_array("arm_I", arm_I, (2,))
+        self.arm_s = require_positive_array("arm_s", arm_s, (2,))
+        self.arm_B = require_array_shape("arm_B", arm_B, (2, 2))
 
         # Geometry
         if geometry is None:
@@ -533,9 +547,14 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
                     pennation_angle=0.0,
                     tau_activation=0.01,
                     tau_deactivation=0.04,
-                    vmax=10.0,
+                    vmax=DEFAULT_MUSCLE_VMAX,
                 )
                 for _ in range(geometry.n_muscles)
+            )
+        if len(muscle_params) != geometry.n_muscles:
+            raise ValueError(
+                "muscle_params length must match geometry.n_muscles: "
+                f"{len(muscle_params)} != {geometry.n_muscles}"
             )
         self.muscle_params = muscle_params
 
@@ -549,7 +568,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             root_finder = optx.Newton(rtol=1e-8, atol=1e-8)
 
         super().__init__(
-            dt=dt,
+            dt=require_positive_finite("CompliantTendonMusculoskeletalArm.dt", dt),
             solver_type=solver_type,
             root_finder=root_finder,
             key=key,
@@ -643,8 +662,10 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         # Select based on fv_required
         norm_velocity = jnp.where(fv_required < 1.0, concentric_vel, eccentric_vel)
 
-        # Clamp to reasonable range: -1 (max shortening) to ~0.1 (max lengthening)
-        norm_velocity = jnp.clip(norm_velocity, -1.0, 0.1)
+        # Clamp to the shared normalized velocity convention.
+        norm_velocity = jnp.clip(
+            norm_velocity, -1.0, ECCENTRIC_VELOCITY_LIMIT_FRACTION
+        )
 
         return norm_velocity * mp.vmax * mp.optimal_fiber_length
 
@@ -734,7 +755,6 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     def init_system_state(self, *, key: PRNGKeyArray) -> MusculoskeletalState:
         """Initialize at rest position."""
         init_arm = TwoLinkArmState()
-        mt_lengths = self.geometry.musculotendon_lengths(init_arm.angle)
 
         init_fiber_lengths = jnp.array([
             mp.optimal_fiber_length for mp in self.muscle_params

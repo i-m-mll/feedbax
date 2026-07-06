@@ -16,6 +16,8 @@ from feedbax.testing.evaluation_contract import (
     evaluation_params_schema_family_id,
 )
 
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
+
 
 EVALUATION_TYPE = "testpkg.dummy_eval"
 STATES_SCHEMA = "testpkg.states.dummy_eval.v1"

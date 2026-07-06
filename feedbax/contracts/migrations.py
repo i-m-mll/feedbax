@@ -446,22 +446,25 @@ class SpecSchemaRegistry:
         *,
         source_version: str | None = None,
         target_version: str | None = None,
+        assume_current: bool = False,
     ) -> SpecMigrationResult:
         """Accept or migrate a structured spec payload for ``kind``.
 
-        If neither ``source_version`` nor ``payload["schema_version"]`` is
-        present, the payload is treated as current and returned unchanged. This
-        preserves existing versionless in-memory specs while still allowing
-        durable callers to opt into explicit version checks.
+        Versionless payloads fail closed unless ``assume_current`` is set by a
+        caller that is deliberately stamping a new current spec payload.
         """
         family = self.resolve(kind)
         payload_dict = dict(payload)
-        resolved_source = (
-            source_version
-            or _payload_schema_version(payload_dict)
-            or family.current_version
-        )
         resolved_target = target_version or family.current_version
+        resolved_source = source_version or _payload_schema_version(payload_dict)
+        if resolved_source is None:
+            if not assume_current:
+                raise UnsupportedSpecVersion(
+                    "Structured spec payload is missing schema_version: "
+                    f"kind={family.kind!r}, schema_id={family.identity!r}, "
+                    f"target_version={resolved_target!r}"
+                )
+            resolved_source = family.current_version
 
         if resolved_source == resolved_target:
             return SpecMigrationResult(
@@ -791,6 +794,7 @@ def migrate_structured_spec_payload(
     *,
     source_version: str | None = None,
     target_version: str | None = None,
+    assume_current: bool = False,
     path: str = "spec",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
@@ -817,6 +821,7 @@ def migrate_structured_spec_payload(
         payload,
         source_version=source_version,
         target_version=target_version,
+        assume_current=assume_current,
     )
     return SpecMigrationResult(
         kind=result.kind,
@@ -845,6 +850,7 @@ def migrate_studio_scenario_spec(
     *,
     source_version: str | None = None,
     target_version: str | None = None,
+    assume_current: bool = False,
     path: str = "scenario",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
@@ -855,6 +861,7 @@ def migrate_studio_scenario_spec(
         payload,
         source_version=source_version,
         target_version=target_version,
+        assume_current=assume_current,
     )
     migrated_payload = dict(result.payload)
     records = [_record_with_spec_path(record, path) for record in result.migration_records]
@@ -882,9 +889,16 @@ def migrate_studio_scenario_spec(
     for field_name, kind in _SCENARIO_STRUCTURED_FIELDS.items():
         field_payload = migrated_payload.get(field_name)
         if isinstance(field_payload, Mapping):
+            if not assume_current:
+                field_payload = _stamp_parent_carried_nested_schema_version(
+                    kind,
+                    field_payload,
+                    registry=registry,
+                )
             field_result = migrate_structured_spec_payload(
                 kind,
                 field_payload,
+                assume_current=assume_current,
                 path=f"{path}/{field_name}",
                 registry=registry,
             )
@@ -898,9 +912,16 @@ def migrate_studio_scenario_spec(
             if not isinstance(probe_payload, Mapping):
                 migrated_probes.append(probe_payload)
                 continue
+            if not assume_current:
+                probe_payload = _stamp_parent_carried_nested_schema_version(
+                    "RetainedObservableSpec",
+                    probe_payload,
+                    registry=registry,
+                )
             probe_result = migrate_structured_spec_payload(
                 "RetainedObservableSpec",
                 probe_payload,
+                assume_current=assume_current,
                 path=f"{path}/probe_specs/{index}",
                 registry=registry,
             )
@@ -923,6 +944,7 @@ def migrate_studio_stage_spec(
     *,
     source_version: str | None = None,
     target_version: str | None = None,
+    assume_current: bool = False,
     path: str = "stage",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
@@ -932,6 +954,7 @@ def migrate_studio_stage_spec(
         payload,
         source_version=source_version,
         target_version=target_version,
+        assume_current=assume_current,
         path=path,
         registry=registry,
     )
@@ -964,6 +987,11 @@ def migrate_studio_workspace_spec(
             if not isinstance(scenario_payload, Mapping):
                 migrated_scenarios[str(scenario_id)] = scenario_payload
                 continue
+            scenario_payload = _stamp_parent_carried_nested_schema_version(
+                "StudioScenarioSpec",
+                scenario_payload,
+                registry=registry,
+            )
             scenario_result = migrate_studio_scenario_spec(
                 scenario_payload,
                 path=f"{path}/scenarios/{scenario_id}",
@@ -980,6 +1008,11 @@ def migrate_studio_workspace_spec(
             if not isinstance(stage_payload, Mapping):
                 migrated_stages.append(stage_payload)
                 continue
+            stage_payload = _stamp_parent_carried_nested_schema_version(
+                "StudioStageSpec",
+                stage_payload,
+                registry=registry,
+            )
             stage_result = migrate_studio_stage_spec(
                 stage_payload,
                 path=f"{path}/stages/{index}",
@@ -997,6 +1030,27 @@ def migrate_studio_workspace_spec(
         payload=migrated_payload,
         migration_records=records,
     )
+
+
+def _stamp_parent_carried_nested_schema_version(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    registry: SpecSchemaRegistry,
+) -> dict[str, Any]:
+    """Return a copy stamped when current workspace schema carries nested identity.
+
+    Studio workspace v1 is authoritative for direct scenario/stage child shapes
+    emitted before those children were stamped independently. Durable load then
+    passes explicit nested schema versions into the normal structured migration
+    path instead of silently accepting versionless children.
+    """
+    payload_dict = dict(payload)
+    if _payload_schema_version(payload) is not None:
+        return payload_dict
+    family = registry.resolve(kind)
+    payload_dict["schema_version"] = family.current_version
+    return payload_dict
 
 
 def migrate_graph_project_payload(

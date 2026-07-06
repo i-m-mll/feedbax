@@ -71,3 +71,4 @@ class ComponentDefinition(BaseModel):
     param_schema_version: str = "1"
     supported_param_schema_versions: List[str] = Field(default_factory=lambda: ["1"])
     migrations: List[ComponentMigrationInfo] = Field(default_factory=list)
+    trainable_by_default: bool = False

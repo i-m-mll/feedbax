@@ -675,6 +675,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector')},
             ),
             output_prototype_fn=linear_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -702,6 +703,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector')},
             ),
             output_prototype_fn=linear_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -721,6 +723,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
             ),
             output_prototype_fn=recurrent_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -748,6 +751,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
             ),
             output_prototype_fn=recurrent_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -775,6 +779,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
             ),
             output_prototype_fn=lstm_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -1241,7 +1246,14 @@ def register_builtin_components(registry: _Registry) -> None:
                     default='dynamics_matrix_perturb',
                     required=False,
                 ),
-                ParamSchema(name='mass', type='float', default=1.0, min=0.0, required=False),
+                ParamSchema(
+                    name='mass',
+                    type='float',
+                    default=None,
+                    min=0.0,
+                    required=True,
+                    description='Effector mass in kg; must match the wired plant.',
+                ),
             ],
             input_ports=['effector', 'force', 'params_override'],
             output_ports=['force'],

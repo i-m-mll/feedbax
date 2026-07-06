@@ -6,7 +6,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, List, Literal, Optional, Union
 
-import dill as pickle
 import equinox as eqx
 import feedbax
 import jax
@@ -30,6 +29,11 @@ from feedbax.analysis.analysis import (
     logger,
 )
 from feedbax.analysis.context import AnalysisRunContext, parent_ref_from_evaluation_manifest
+from feedbax.analysis.evaluation import (
+    EvaluationStatesCacheCorruption,
+    load_evaluation_states_cache,
+    write_evaluation_states_cache,
+)
 from feedbax.plot.color_setup import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
@@ -60,7 +64,7 @@ from feedbax.contracts.manifest import AnalysisRunSpec, evaluation_states_cache_
 from feedbax.training.support import log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.analysis.setup import query_and_load_model
-from feedbax.config.tree import tree_level_labels
+from feedbax.config.tree import _hash_pytree, tree_level_labels
 from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace, namespace_to_dict
 
@@ -733,20 +737,26 @@ def run_evaluation(
         return computed_states
 
     if evaluation_manifest_id is None:
-        states_pickle_path = states_pkl_dir / f"{eval_info.hash}.pkl"
+        key_hash = _hash_pytree(key)
+        states_pickle_path = states_pkl_dir / f"{eval_info.hash}_{key_hash}.pkl"
+        states_cache_manifest_id = f"legacy-evaluation:{eval_info.hash}:{key_hash}"
+    else:
+        states_cache_manifest_id = evaluation_manifest_id
 
     loaded_from_pickle = False
     if not no_pickle and states_pickle_path.exists():
         logger.info(f"Loading states from {states_pickle_path}...")
         try:
-            with open(states_pickle_path, "rb") as f:
-                states = pickle.load(f)
+            states = load_evaluation_states_cache(
+                states_pickle_path,
+                manifest_id=states_cache_manifest_id,
+            )
             logger.debug(
                 "Loaded pickled states with PyTree structure: "
                 f"{tree_level_labels(states, is_leaf=is_module)}"
             )
             loaded_from_pickle = True
-        except Exception as e:
+        except EvaluationStatesCacheCorruption as e:
             logger.error(f"Failed to load pickled states: {e}")
             logger.info("Computing states from scratch instead...")
             states = _compute_states_and_log_memory_estimate()
@@ -757,8 +767,11 @@ def run_evaluation(
 
     # Save states if we didn't use --no-pickle and we didn't successfully load from pickle
     if not no_pickle and not loaded_from_pickle:
-        with open(states_pickle_path, "wb") as f:
-            pickle.dump(states, f)
+        write_evaluation_states_cache(
+            states_pickle_path,
+            manifest_id=states_cache_manifest_id,
+            states=states,
+        )
         logger.info(f"Saved evaluated states to {states_pickle_path}")
 
     # Apply post-eval transformations if present

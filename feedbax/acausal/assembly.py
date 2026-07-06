@@ -24,7 +24,7 @@ Algorithm outline
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Callable, Iterable
 
 import jax.numpy as jnp
 
@@ -313,24 +313,7 @@ def _make_vector_field(
 
     # ---- Pre-compute index maps (all plain Python ints) -----------------
 
-    # var_name -> how to look it up at runtime
-    # Each entry is one of:
-    #   ("state", int)        -- read from y[i]
-    #   ("ground", None)      -- always 0
-    #   ("input", int)        -- read from input_vals[i]
-    #   ("param", int)        -- read from param_vals[i]
-    #   ("alias", str)        -- resolve to another var first
-    var_lookup: dict[str, tuple[str, object]] = {}
-
-    for vname in diff_vars:
-        var_lookup[vname] = ("state", diff_vars.index(vname))
-    for vname in grounded:
-        var_lookup[vname] = ("ground", None)
-    for vname, idx in input_vars.items():
-        var_lookup[vname] = ("input", idx)
-
-    # Through vars that are not in diff/grounded/input are computed on the fly
-    # -- they get resolved later during VF evaluation.
+    diff_var_indices = {vname: idx for idx, vname in enumerate(diff_vars)}
 
     # Collect sorted param keys
     params_keys = sorted(
@@ -343,6 +326,20 @@ def _make_vector_field(
         for eq in elem.equations:
             if eq.is_through_def:
                 through_eqs.append(eq)
+
+    mass_through_vars: set[str] = set()
+    sensor_through_vars: set[str] = set()
+    for elem in elements.values():
+        if elem.element_type == "mass":
+            for port in elem.ports.values():
+                mass_through_vars.add(
+                    f"{elem.name}.{port.name}.{port.through_var}"
+                )
+        elif elem.element_type == "sensor":
+            for port in elem.ports.values():
+                sensor_through_vars.add(
+                    f"{elem.name}.{port.name}.{port.through_var}"
+                )
 
     # Gear torque transmission via node-B force balance + power conservation.
     # At node B (massless): sum of non-gear through vars = -gear.flange_b.torque
@@ -367,14 +364,21 @@ def _make_vector_field(
                 node_b_through.extend(tvars)
         # Exclude the gear's own flange_b through var
         node_b_sources = tuple(
-            sorted(set(tv for tv in node_b_through if tv != tau_b))
+            sorted(
+                set(
+                    tv for tv in node_b_through
+                    if tv != tau_b
+                    and tv not in mass_through_vars
+                    and tv not in sensor_through_vars
+                )
+            )
         )
 
         # tau_b = -(sum of other through vars at node B)
         through_eqs.append(AcausalEquation(
             lhs_var=tau_b,
             rhs_fn=lambda vals, _tvars=node_b_sources: (
-                -sum((vals.get(tv, 0.0) for tv in _tvars), 0.0)
+                -sum((vals[tv] for tv in _tvars), 0.0)
             ),
             depends_on=node_b_sources,
             is_through_def=True,
@@ -404,7 +408,7 @@ def _make_vector_field(
             if canon_vel not in diff_vars:
                 continue  # grounded or eliminated
 
-            vel_idx = diff_vars.index(canon_vel)
+            vel_idx = diff_var_indices[canon_vel]
 
             # Find the position var too
             pos_slot = port.across_vars[0]
@@ -445,7 +449,8 @@ def _make_vector_field(
             # Remove duplicates and the mass element's own through var
             # (it does not contribute force to itself)
             through_sources = [
-                tv for tv in set(connected_through) if tv != own_through
+                tv for tv in set(connected_through)
+                if tv != own_through and tv not in sensor_through_vars
             ]
 
             mass_infos.append({
@@ -469,7 +474,7 @@ def _make_vector_field(
             canon_vel = _resolve(vel_fqn, eliminated)
             if canon_pos in diff_vars and canon_vel in diff_vars:
                 pos_vel_pairs.append(
-                    (diff_vars.index(canon_pos), diff_vars.index(canon_vel))
+                    (diff_var_indices[canon_pos], diff_var_indices[canon_vel])
                 )
             elif canon_pos in grounded:
                 pass  # grounded pos, no derivative needed
@@ -505,16 +510,29 @@ def _make_vector_field(
             if canon_b != canon_a:
                 gear_ratio_scale[canon_b] = (canon_a, ratio_key)
 
-    # ---- Sensor evaluation info ----------------------------------------
-    mass_through_vars: set[str] = set()
-    for elem in elements.values():
-        if elem.element_type != "mass":
-            continue
-        for port in elem.ports.values():
-            mass_through_vars.add(
-                f"{elem.name}.{port.name}.{port.through_var}"
+    through_lhs = {eq.lhs_var for eq in through_eqs}
+    available_vars = set(diff_vars) | set(grounded) | set(input_vars) | set(params_keys) | through_lhs
+
+    def _is_available(var_name: str) -> bool:
+        if var_name in available_vars:
+            return True
+        try:
+            resolved = _resolve(var_name, eliminated)
+        except RuntimeError:
+            return False
+        return resolved in available_vars or var_name in gear_ratio_scale
+
+    def _require_available(var_names: Iterable[str], *, context: str) -> None:
+        missing = sorted({var_name for var_name in var_names if not _is_available(var_name)})
+        if missing:
+            raise ValueError(
+                f"Unresolved acausal through-variable dependency in {context}: {missing}"
             )
 
+    for eq in through_eq_order:
+        _require_available(eq.depends_on, context=f"through equation {eq.lhs_var!r}")
+
+    # ---- Sensor evaluation info ----------------------------------------
     sensor_eval_infos: list[dict] = []
     for label, var_fqn in layout._outputs.items():
         canon = _resolve(var_fqn, eliminated)
@@ -557,6 +575,10 @@ def _make_vector_field(
     # Convert mass_infos through_sources to index-based lookups
     for mi in mass_infos:
         mi["through_sources_frozen"] = tuple(mi["through_sources"])
+        _require_available(
+            mi["through_sources_frozen"],
+            context=f"force balance for {mi['elem_name']!r}",
+        )
 
     pos_vel_pairs_frozen = tuple(pos_vel_pairs)
     mass_infos_frozen = tuple(
@@ -565,6 +587,10 @@ def _make_vector_field(
     through_eval_frozen = tuple(through_eval_infos)
     eliminated_items = tuple(eliminated.items())
     sensor_eval_frozen = tuple(sensor_eval_infos)
+    for info in sensor_eval_frozen:
+        sum_vars = info["sum_vars"]
+        if sum_vars is not None:
+            _require_available(sum_vars, context=f"sensor output {info['label']!r}")
 
     # ---- The actual vector field ----------------------------------------
 
@@ -637,6 +663,8 @@ def _make_vector_field(
                     net_force = net_force + vals[resolved]
                 elif tv_name in vals:
                     net_force = net_force + vals[tv_name]
+                else:
+                    raise KeyError(f"Unresolved through-variable contribution {tv_name!r}")
             dy = dy.at[vel_idx].set(net_force / mass_val)
 
         return dy
@@ -662,6 +690,8 @@ def _make_vector_field(
                     total = total + vals[resolved]
                 elif tv_name in vals:
                     total = total + vals[tv_name]
+                else:
+                    raise KeyError(f"Unresolved sensor through-variable contribution {tv_name!r}")
             outputs[label] = total
         return outputs
 
@@ -683,25 +713,35 @@ def _topo_sort_through_eqs(
     """
     by_lhs: dict[str, AcausalEquation] = {}
     for eq in equations:
+        if eq.lhs_var in by_lhs:
+            raise ValueError(
+                f"Duplicate through-variable definition for {eq.lhs_var!r}"
+            )
         by_lhs[eq.lhs_var] = eq
 
     through_vars = set(by_lhs.keys())
     visited: set[str] = set()
+    in_progress: set[str] = set()
     order: list[AcausalEquation] = []
 
     def visit(var: str) -> None:
         if var in visited:
             return
-        visited.add(var)
+        if var in in_progress:
+            raise ValueError(f"Cyclic through-variable dependency involving {var!r}")
+        in_progress.add(var)
         eq = by_lhs.get(var)
         if eq is None:
+            in_progress.remove(var)
             return
         for dep in eq.depends_on:
             if dep in through_vars:
                 visit(dep)
+        in_progress.remove(var)
+        visited.add(var)
         order.append(eq)
 
-    for var in through_vars:
+    for var in sorted(through_vars):
         visit(var)
 
     return order

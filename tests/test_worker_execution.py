@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 import threading
 
@@ -19,6 +20,7 @@ from feedbax.contracts.graph import (
 )
 from feedbax.web.worker.execution import (
     _build_optimizer,
+    _derive_trainable_nodes,
     compile_training_run,
     rollout_graph,
     run_training_graph,
@@ -289,6 +291,56 @@ def test_compile_training_run_uses_array_leaf_trainability_for_network_template(
     )
 
 
+def test_trainable_nodes_come_from_registry_metadata_and_explicit_overrides() -> None:
+    graph_spec = GraphSpec(
+        nodes={
+            "default_readout": ComponentSpec(
+                type="Linear",
+                params={"input_size": 1, "output_size": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "disabled_readout": ComponentSpec(
+                type="Linear",
+                params={"input_size": 1, "output_size": 1, "trainable": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "explicit_gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 1.0, "trainable": True},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        }
+    )
+
+    assert _derive_trainable_nodes(graph_spec) == ("default_readout", "explicit_gain")
+
+
+def test_default_trainable_nodes_include_neural_and_executable_template_components() -> None:
+    graph_spec = GraphSpec(
+        nodes={
+            "linear": ComponentSpec(type="Linear", params={}),
+            "mlp": ComponentSpec(type="MLP", params={}),
+            "gru": ComponentSpec(type="GRU", params={}),
+            "lstm": ComponentSpec(type="LSTM", params={}),
+            "recurrent_controller": ComponentSpec(type="Recurrent Controller", params={}),
+            "simple_feedback_loop": ComponentSpec(type="Simple Feedback Loop", params={}),
+            "gain": ComponentSpec(type="Gain", params={}),
+        }
+    )
+
+    assert _derive_trainable_nodes(graph_spec) == (
+        "linear",
+        "mlp",
+        "gru",
+        "lstm",
+        "recurrent_controller",
+        "simple_feedback_loop",
+    )
+
+
 def test_rollout_graph_threads_network_template_recurrence() -> None:
     graph_spec = network_template_graph(
         {"input_size": 2, "hidden_size": 3, "out_size": 1}
@@ -343,6 +395,19 @@ def test_run_training_graph_trains_tiny_full_graph() -> None:
     assert "graph_output:output" in result.retained_observables["outputs"]
     assert "task_data:model_input" in result.retained_observables["task_data"]
     assert "task_data:inputs.model" in result.retained_observables["task_data"]
+
+
+def test_worker_checkpoint_cleanup_removes_managed_tempdir(tmp_path: Path) -> None:
+    from feedbax.web.worker.app import _cleanup_checkpoint_path
+
+    checkpoint_dir = tmp_path / "feedbax_ckpt_demo"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "job.eqx"
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    _cleanup_checkpoint_path(str(checkpoint_path))
+
+    assert not checkpoint_dir.exists()
 
 
 def test_run_training_graph_emits_progress_on_snapshot_cadence() -> None:
@@ -439,6 +504,40 @@ def test_compile_training_run_fails_unsupported_display_only_component() -> None
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
             task_binding_spec=_task_binding_spec(),
+            cfg=_cfg(),
+        )
+
+
+def test_compile_training_run_rejects_network_without_subgraph_during_validation() -> None:
+    graph_spec = GraphSpec(
+        nodes={
+            "network": ComponentSpec(
+                type="Network",
+                params={"input_size": 1, "hidden_size": 3, "out_size": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("network", "output")},
+    ).model_dump(mode="json", exclude_none=True)
+
+    with pytest.raises(ValueError, match="missing_subgraph"):
+        compile_training_run(
+            graph_spec=graph_spec,
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec={
+                **_task_binding_spec(),
+                "bindings": [
+                    {
+                        **_task_binding_spec()["bindings"][0],
+                        "id": "task:model_input->network:input",
+                        "target_node_id": "network",
+                        "target_port": "input",
+                    }
+                ],
+            },
             cfg=_cfg(),
         )
 

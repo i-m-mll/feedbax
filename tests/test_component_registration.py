@@ -17,6 +17,7 @@ from feedbax.component_registry import (
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.contracts.graphs.builders import build_component
 from feedbax.runtime.graph import Component
 from feedbax.contracts.graphs.serialization import spec_to_graph
 
@@ -150,6 +151,30 @@ def test_feedbax_component_meta_rejects_output_prototype_mutation() -> None:
     assert meta.output_prototype_fn is original
 
 
+def test_builtin_registry_has_explicit_builders_and_consistent_port_metadata() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    for name in registry.names():
+        meta = registry.get(name)
+        assert meta is not None
+        assert callable(meta.builder), f"{name} has no explicit builder contract"
+        if meta.port_types is not None:
+            assert set(meta.port_types.inputs) == set(meta.input_ports), name
+            assert set(meta.port_types.outputs) == set(meta.output_ports), name
+
+
+def test_unsupported_builtin_builder_contract_fails_clearly() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    meta = registry.get("MomentArmProjection")
+    assert meta is not None
+    assert callable(meta.builder)
+    assert getattr(meta.builder, "_feedbax_unsupported_builder", False)
+    assert "MomentArmProjection" not in registry.executable_names()
+
+    with pytest.raises(NotImplementedError, match="display-only abstraction"):
+        build_component("projection", "MomentArmProjection", {}, component_registry=registry)
+
+
 def test_entry_point_component_registration_records_package_provenance() -> None:
     def registrar(component_registry: ComponentRegistry) -> None:
         component_registry.register_component_type(
@@ -239,6 +264,65 @@ def test_unknown_component_error_names_type_and_known_registry_contents() -> Non
     assert "DefinitelyUnknownComponent" in message
     assert "Known component types:" in message
     assert "Gain" in message
+
+
+def test_cde_templates_report_non_executable_template_nodes() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    cde_meta = registry.get("CDE Standard")
+    assert cde_meta is not None
+    assert cde_meta.template_kind == "display"
+
+    issues = registry.template_builder_issues(cde_meta)
+    issue_types = {issue.node_type for issue in issues}
+
+    assert {"Input", "Subtract", "Reshape", "MatMul", "Sigmoid"} <= issue_types
+    assert all(issue.template_id == "feedbax.templates.cde_standard" for issue in issues)
+
+
+def test_all_cde_templates_are_display_only_and_fail_closed() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
+        meta = registry.get(template_name)
+        assert meta is not None
+        assert meta.template_kind == "display"
+        assert meta.template_id is not None
+        assert meta.template_id.startswith("feedbax.templates.cde_")
+        assert registry.template_builder_issues(meta), template_name
+        assert template_name not in registry.executable_names()
+
+
+def test_executable_builtin_templates_have_complete_builders() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    for template_name in ("Recurrent Controller", "Simple Feedback Loop"):
+        meta = registry.get(template_name)
+        assert meta is not None
+        assert registry.template_builder_issues(meta) == []
+
+
+def test_building_cde_template_component_fails_with_template_builder_report() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    with pytest.raises(NotImplementedError) as exc_info:
+        build_component("controller", "CDE Standard", {}, component_registry=registry)
+
+    message = str(exc_info.value)
+    assert "Component template 'CDE Standard' is not executable" in message
+    assert "display-only and fail closed" in message
+    assert "issue 2f8dd61" in message
+    assert "Input" in message
+
+
+def test_unregistered_cde_template_primitive_fails_with_specific_message() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    with pytest.raises(NotImplementedError) as exc_info:
+        build_component("obs_in", "Input", {}, component_registry=registry)
+
+    message = str(exc_info.value)
+    assert "Graph inputs must be represented" in message
+    assert "display-only and fail closed" in message
+    assert "issue 2f8dd61" in message
 
 
 def test_builtin_component_rename_migration_materializes_registered_target() -> None:

@@ -3,11 +3,11 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+import importlib
 import importlib.metadata
 import logging
 import os
 
-from feedbax.config.mapping import WhereDict
 from feedbax.runtime.selectors import Selection, select
 from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.contracts.graphs.templates import (
@@ -18,28 +18,31 @@ from feedbax.contracts.graphs.templates import (
     simple_feedback_template_graph,
 )
 from feedbax.models.cde import CDENetwork, CDENetworkState
-from feedbax.intervene import is_intervenor
-from feedbax.objectives.loss import is_termtree
-from feedbax.tasks import (
-    AbstractTask,
-    DelayedReaches,
-    DelayedReachTaskInputs,
-    SimpleReaches,
-    TaskTrialSpec,
-    TrialTimeline,
-    _forceless_task_inputs as forceless_task_inputs,
-    _pos_only_states as pos_only_states,
-    centreout_endpoints,
-    gen_epoch_lengths,
-    get_masks,
-    get_masked_seqs,
-    get_scalar_epoch_seq,
-    prepare_trial,
-)
-from feedbax.tasks.presets import (
-    DELAYED_CENTER_OUT_PRESET,
-    delayed_center_out_reaches_params,
-)
+
+_LAZY_EXPORTS = {
+    "AbstractTask": ("feedbax.tasks", "AbstractTask"),
+    "DELAYED_CENTER_OUT_PRESET": ("feedbax.tasks.presets", "DELAYED_CENTER_OUT_PRESET"),
+    "DelayedReaches": ("feedbax.tasks", "DelayedReaches"),
+    "DelayedReachTaskInputs": ("feedbax.tasks", "DelayedReachTaskInputs"),
+    "SimpleReaches": ("feedbax.tasks", "SimpleReaches"),
+    "TaskTrialSpec": ("feedbax.tasks", "TaskTrialSpec"),
+    "TrialTimeline": ("feedbax.tasks", "TrialTimeline"),
+    "WhereDict": ("feedbax.config.mapping", "WhereDict"),
+    "centreout_endpoints": ("feedbax.tasks", "centreout_endpoints"),
+    "delayed_center_out_reaches_params": (
+        "feedbax.tasks.presets",
+        "delayed_center_out_reaches_params",
+    ),
+    "forceless_task_inputs": ("feedbax.tasks", "_forceless_task_inputs"),
+    "gen_epoch_lengths": ("feedbax.tasks", "gen_epoch_lengths"),
+    "get_masks": ("feedbax.tasks", "get_masks"),
+    "get_masked_seqs": ("feedbax.tasks", "get_masked_seqs"),
+    "get_scalar_epoch_seq": ("feedbax.tasks", "get_scalar_epoch_seq"),
+    "is_intervenor": ("feedbax.intervene", "is_intervenor"),
+    "is_termtree": ("feedbax.objectives.loss", "is_termtree"),
+    "pos_only_states": ("feedbax.tasks", "_pos_only_states"),
+    "prepare_trial": ("feedbax.tasks", "prepare_trial"),
+}
 
 # from feedbax.config.logging import enable_logging_handlers
 
@@ -96,3 +99,14 @@ LOG_LEVEL = os.environ.get("FEEDBAX_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
 
 logger = logging.getLogger(__package__)
 logger.addHandler(logging.NullHandler())
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _LAZY_EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    value = getattr(importlib.import_module(module_name), attr_name)
+    globals()[name] = value
+    return value

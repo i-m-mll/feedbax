@@ -29,14 +29,81 @@ from feedbax.acausal import (
 from feedbax.acausal.rotational import (
     GearRatio,
     Inertia,
-    RotationalDamper,
     RotationalGround,
     TorqueSource,
     TorsionalSpring,
 )
+from feedbax.acausal.assembly import _topo_sort_through_eqs
+from feedbax.acausal.base import (
+    AcausalElement,
+    AcausalEquation,
+    AcausalPort,
+    Domain,
+)
 from feedbax.mechanics.dae import DAEState
 
-pytestmark = pytest.mark.usefixtures("enable_jax_x64")
+pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_contract]
+
+
+def test_through_equation_cycle_rejected() -> None:
+    equations = [
+        AcausalEquation(
+            lhs_var="a.force",
+            rhs_fn=lambda vals: vals["b.force"],
+            depends_on=("b.force",),
+            is_through_def=True,
+        ),
+        AcausalEquation(
+            lhs_var="b.force",
+            rhs_fn=lambda vals: vals["a.force"],
+            depends_on=("a.force",),
+            is_through_def=True,
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="Cyclic through-variable dependency"):
+        _topo_sort_through_eqs(equations)
+
+
+def test_duplicate_through_equation_definition_rejected() -> None:
+    equations = [
+        AcausalEquation(
+            lhs_var="a.force",
+            rhs_fn=lambda vals: vals["x"],
+            depends_on=("x",),
+            is_through_def=True,
+        ),
+        AcausalEquation(
+            lhs_var="a.force",
+            rhs_fn=lambda vals: vals["y"],
+            depends_on=("y",),
+            is_through_def=True,
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate through-variable definition"):
+        _topo_sort_through_eqs(equations)
+
+
+def test_unresolved_through_dependency_rejected_during_assembly() -> None:
+    broken = AcausalElement(name="broken")
+    broken.ports["flange"] = AcausalPort(
+        name="flange",
+        domain=Domain.TRANSLATIONAL,
+        across_vars=("pos", "vel"),
+        through_var="force",
+    )
+    broken.equations.append(
+        AcausalEquation(
+            lhs_var="broken.flange.force",
+            rhs_fn=lambda vals: vals["missing.flange.force"],
+            depends_on=("missing.flange.force",),
+            is_through_def=True,
+        )
+    )
+
+    with pytest.raises(ValueError, match="Unresolved acausal through-variable dependency"):
+        AcausalSystem(elements={"broken": broken}, connections=[])
 
 
 # =========================================================================
