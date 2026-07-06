@@ -43,11 +43,10 @@ The class [`CompositeLoss`][feedbax.objectives.loss.CompositeLoss] is used to ag
 
 ## Training
 
-A [`TaskTrainer`][feedbax.training.trainer.TaskTrainer] is used to [train](/feedbax/examples/1_train#training-the-model) a model to perform a task, over a sequence of many batches of training trials provided by an `AbstractTask`.
-
-At the end of a training run, a `TaskTrainer` returns not just the trained model, but also a [`TaskTrainerHistory`][feedbax.training.trainer.TaskTrainerHistory] object. Normally this contains the value of the loss over all the batches. However, depending on the arguments given to `TaskTrainer`, it may also contain other information, like 1) the trial specifications on which the model was trained, or 2) the history of the model's trained parameters.
-
-A `TaskTrainer` may also be used to train a set of [model replicates](/feedbax/examples/4_vmap) in parallel.
+Training runs are described by structured executor specs and run through
+`feedbax.training.executor`. The executor owns phase progress, checkpoint
+custody, and manifest emission so training state can be resumed and audited
+through the same contract surfaces used by workers.
 
 ## Interventions
 

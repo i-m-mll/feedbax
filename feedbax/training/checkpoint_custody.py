@@ -535,12 +535,22 @@ def _read_blob(slot: CheckpointSlotBlobRef, path: Path) -> bytes:
 def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
     path = root / LATEST_POINTER_NAME
     if not path.is_file():
+        _reject_legacy_supervised_checkpoint(root)
         raise CheckpointIntegrityError("checkpoint latest pointer is missing")
     try:
         payload = json.loads(path.read_text())
         return CheckpointLatestPointer.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValidationError) as exc:
         raise CheckpointIntegrityError("checkpoint latest pointer is corrupt") from exc
+
+
+def _reject_legacy_supervised_checkpoint(root: Path) -> None:
+    if (root / "last_batch.txt").is_file() or any(root.glob("ckpt_*.eqx")):
+        raise CheckpointCompatibilityError(
+            "legacy supervised trainer checkpoints cannot be loaded by executor "
+            "checkpoint custody because they do not contain a schema identity, "
+            "slot manifest, or run-contract binding"
+        )
 
 
 def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:

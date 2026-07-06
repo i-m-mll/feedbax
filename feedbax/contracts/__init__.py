@@ -208,7 +208,7 @@ from feedbax.contracts.worker import (
     UpdateStepSpec,
     WorkerMappingRow,
     derive_consistency_predicate,
-    supervised_task_trainer_mapping,
+    supervised_executor_mapping,
     toy_adaptive_curriculum_method_contract,
     toy_minimax_method_contract,
 )
@@ -419,7 +419,7 @@ __all__ = [
     "evaluate_query",
     "expression_hash",
     "materialize_extraction_product",
-    "supervised_task_trainer_mapping",
+    "supervised_executor_mapping",
     "standard_supervised_effective_phase_spec",
     "standard_supervised_method_contract",
     "standard_supervised_method_payload",

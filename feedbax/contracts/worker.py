@@ -551,18 +551,18 @@ def derive_consistency_predicate(program: PhaseProgramSpec) -> ConsistencyPredic
     )
 
 
-def supervised_task_trainer_mapping() -> tuple[WorkerMappingRow, ...]:
-    """Map the existing supervised ``TaskTrainer`` loop to worker vocabulary."""
+def supervised_executor_mapping() -> tuple[WorkerMappingRow, ...]:
+    """Map the standard supervised executor loop to worker vocabulary."""
     return (
         WorkerMappingRow(
-            source="feedbax.training.trainer.TaskTrainer.__call__",
+            source="feedbax.training.executor.execute_training_run_spec",
             phase="train_batch",
             axes=["batch"],
             state_slots=["model", "optimizer", "prng", "trial_specs", "auxiliary_losses"],
             optimizer_bindings=["task_optimizer_to_model"],
             progress_coordinate="run_id/phase/global_step",
-            checkpoint_transaction="model+optimizer+prng at checkpoint interval",
-            notes="One optimizer update per batch followed by component-parameter projection.",
+            checkpoint_transaction="manifested multi-slot checkpoint transaction",
+            notes="Executor-owned phase step using declared kernels and checkpoint custody.",
         ),
     )
 
