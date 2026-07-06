@@ -2468,7 +2468,9 @@ module.exports = {
 
 ### 16.1 Analysis Integration
 
-The existing Dash-based dashboard will eventually be absorbed into this application as additional views:
+Studio owns the analysis browser surface. The legacy Dash-based dashboard was retired in
+2026 after Studio superseded its figure-review workflow, so future analysis views should be
+built as Studio routes/tabs instead of reviving the old Dash app:
 
 - **Figures view**: Display and filter analysis figures (existing functionality)
 - **Experiment browser**: Navigate saved experiments and models
