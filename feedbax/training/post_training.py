@@ -37,6 +37,7 @@ from feedbax.persistence.database import (
     MODEL_RECORD_BASE_ATTRS,
     EvaluationRecord,
     ModelRecord,
+    _cleanup_new_paths,
     add_evaluation,
     add_evaluation_figure,
     check_model_files,
@@ -747,12 +748,16 @@ def process_model_post_training(
                 deferred_ops=deferred_ops,
             )
 
-        # Execute all file operations now that database commit succeeded
+        file_snapshots = {}
         for operation in deferred_ops:
-            operation()
+            file_snapshots.update(operation())
         logger.debug(f"File operations completed for model {model_record.hash}")
         # Commit all database changes atomically
-        session.commit()
+        try:
+            session.commit()
+        except Exception:
+            _cleanup_new_paths(file_snapshots)
+            raise
         logger.debug(f"Database commit successful for model {model_record.hash}")
 
     except Exception as e:
