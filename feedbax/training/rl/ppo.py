@@ -120,6 +120,23 @@ class Rollout(NamedTuple):
     dones: Float[Array, "T N"]
 
 
+class _PPOTrainCarry(NamedTuple):
+    key: PRNGKeyArray
+    dynamic_policy: ActorCritic
+    opt_state: optax.OptState
+    states: RLEnvState
+    obs_norm: ObsNormState
+    lattice: LatticeNoiseState
+    curriculum: CurriculumState
+
+
+class _PPOTrainHistory(NamedTuple):
+    per_body_mean_return: Float[Array, " B"]
+    per_body_success_rate: Float[Array, " B"]
+    curriculum_stage: Int[Array, " B"]
+    distance_weight: Float[Array, ""]
+
+
 def compute_gae_scan(
     rewards: Float[Array, "T N"],
     values: Float[Array, "T N"],
@@ -820,6 +837,139 @@ def _update_curriculum_batched(
     return eqx.filter_vmap(update_curriculum)(curric_st, success_rates)
 
 
+@eqx.filter_jit
+def _run_ppo_updates(
+    batched_plant: AbstractPlant,
+    env_config: RLEnvConfig,
+    carry: _PPOTrainCarry,
+    static_policy: ActorCritic,
+    optimizer: optax.GradientTransformation,
+    total_updates: int,
+    n_steps: int,
+    n_envs: int,
+    n_minibatches: int,
+    n_train_iters: int,
+    gamma: float,
+    gae_lambda: float,
+    clip_eps: float,
+    vf_coef: float,
+    ent_coef: float,
+    lattice_resample_interval: int,
+    curriculum_arm_reach: float,
+    annealing_start_fraction: float,
+    use_obs_norm: Bool[Array, ""],
+    use_lattice: Bool[Array, ""],
+    use_curriculum: Bool[Array, ""],
+    task_type: Int[Array, ""],
+    single_task: Bool[Array, ""],
+) -> tuple[_PPOTrainCarry, _PPOTrainHistory]:
+    """Run the PPO outer update loop as one compiled JAX scan.
+
+    The host formats final metrics after this returns; rollout collection,
+    updates, and enhancement-state transitions all stay inside the compiled
+    loop.
+    """
+
+    def scan_step(carry: _PPOTrainCarry, update_index: Int[Array, ""]):
+        key, collect_key, update_key = jax.random.split(carry.key, 3)
+        policy = eqx.combine(carry.dynamic_policy, static_policy)
+        collect_result = _batched_collect_rollouts_extended(
+            batched_plant,
+            env_config,
+            policy,
+            carry.states,
+            collect_key,
+            carry.obs_norm,
+            carry.lattice,
+            carry.curriculum,
+            n_steps,
+            n_envs,
+            lattice_resample_interval,
+            curriculum_arm_reach,
+            use_obs_norm,
+            use_lattice,
+            use_curriculum,
+            task_type,
+            single_task,
+        )
+
+        states = collect_result[0]
+        rollout = collect_result[1]
+        last_values = collect_result[2]
+        returned_lattice = collect_result[4]
+        lattice = jt.map(
+            lambda old, new: jnp.where(use_lattice, new, old),
+            carry.lattice,
+            returned_lattice,
+        )
+
+        policy, opt_state, per_body_rewards = _batched_update(
+            policy,
+            carry.opt_state,
+            rollout,
+            last_values,
+            update_key,
+            optimizer,
+            gamma,
+            gae_lambda,
+            clip_eps,
+            vf_coef,
+            ent_coef,
+            n_minibatches,
+            n_train_iters,
+        )
+
+        n_bodies = rollout.obs.shape[0]
+        obs_dim = rollout.obs.shape[-1]
+        all_obs = rollout.obs.reshape(n_bodies, -1, obs_dim)
+        updated_obs_norm = _update_obs_norm_batched(carry.obs_norm, all_obs)
+        obs_norm = jt.map(
+            lambda old, new: jnp.where(use_obs_norm, new, old),
+            carry.obs_norm,
+            updated_obs_norm,
+        )
+
+        per_body_success = jnp.mean(rollout.dones, axis=(1, 2))
+        updated_curriculum = _update_curriculum_batched(
+            carry.curriculum,
+            per_body_success,
+        )
+        curriculum = jt.map(
+            lambda old, new: jnp.where(use_curriculum, new, old),
+            carry.curriculum,
+            updated_curriculum,
+        )
+
+        progress = (update_index + 1) / jnp.maximum(jnp.asarray(total_updates), 1)
+        raw_distance_weight = 1.0 - (
+            (progress - annealing_start_fraction) / (1.0 - annealing_start_fraction)
+        )
+        distance_weight = jnp.where(
+            progress > annealing_start_fraction,
+            jnp.maximum(raw_distance_weight, 0.0),
+            1.0,
+        )
+
+        next_carry = _PPOTrainCarry(
+            key=key,
+            dynamic_policy=eqx.filter(policy, eqx.is_array),
+            opt_state=opt_state,
+            states=states,
+            obs_norm=obs_norm,
+            lattice=lattice,
+            curriculum=curriculum,
+        )
+        history = _PPOTrainHistory(
+            per_body_mean_return=per_body_rewards * env_config.n_steps,
+            per_body_success_rate=per_body_success,
+            curriculum_stage=curriculum.stage,
+            distance_weight=distance_weight,
+        )
+        return next_carry, history
+
+    return jax.lax.scan(scan_step, carry, jnp.arange(total_updates))
+
+
 def train_ppo_batched(
     batched_plant: AbstractPlant,
     env_config: RLEnvConfig,
@@ -868,7 +1018,7 @@ def train_ppo_batched(
     timesteps_per_update = n_steps * n_envs
     n_train_iters = n_epochs * n_minibatches
 
-    total_updates = total_timesteps // timesteps_per_update
+    total_updates = (total_timesteps + timesteps_per_update - 1) // timesteps_per_update
 
     # B independent policies
     key, init_key, env_key = jax.random.split(key, 3)
@@ -930,129 +1080,59 @@ def train_ppo_batched(
     task_type = jnp.asarray(task_type, dtype=jnp.int32)
     single_task = jnp.asarray(single_task)
 
-    # --- Training loop ---
+    dynamic_policy, static_policy = eqx.partition(batched_policy, eqx.is_array)
+    carry = _PPOTrainCarry(
+        key=key,
+        dynamic_policy=dynamic_policy,
+        opt_state=batched_opt_state,
+        states=batched_states,
+        obs_norm=batched_obs_norm,
+        lattice=batched_lattice,
+        curriculum=batched_curriculum,
+    )
+    carry, history = _run_ppo_updates(
+        batched_plant,
+        env_config,
+        carry,
+        static_policy,
+        optimizer,
+        total_updates,
+        n_steps,
+        n_envs,
+        n_minibatches,
+        n_train_iters,
+        gamma,
+        gae_lambda,
+        clip_eps,
+        vf_coef,
+        ent_coef,
+        enhancements.lattice_resample_interval,
+        enhancements.curriculum_arm_reach,
+        enhancements.annealing_start_fraction,
+        use_obs_norm,
+        use_lattice,
+        use_curriculum,
+        task_type,
+        single_task,
+    )
+    batched_policy = eqx.combine(carry.dynamic_policy, static_policy)
+    batched_obs_norm = carry.obs_norm
+
     metrics: dict[str, object] = {
-        "updates": 0,
-        "timesteps": 0,
-        "per_body_mean_return": [],
-        "per_body_success_rate": [],
+        "updates": total_updates,
+        "timesteps": total_updates * timesteps_per_update,
+        "per_body_mean_return": list(history.per_body_mean_return),
+        "per_body_success_rate": list(history.per_body_success_rate),
     }
     if enhancements.curriculum:
-        metrics["curriculum_stages"] = []
-    if enhancements.obs_norm:
-        metrics["obs_norm_mean"] = None
-
-    update_count = 0
-
-    while metrics["timesteps"] < total_timesteps:
-        key, collect_key, update_key = jax.random.split(key, 3)
-
-        # --- Collect rollouts with enhancements ---
-        collect_result = _batched_collect_rollouts_extended(
-            batched_plant,
-            env_config,
-            batched_policy,
-            batched_states,
-            collect_key,
-            batched_obs_norm,
-            batched_lattice,
-            batched_curriculum,
-            n_steps,
-            n_envs,
-            enhancements.lattice_resample_interval,
-            enhancements.curriculum_arm_reach,
-            use_obs_norm,
-            use_lattice,
-            use_curriculum,
-            task_type,
-            single_task,
-        )
-
-        # Unpack: 5-tuple (states, rollout, last_values, key, lattice_state)
-        batched_states = collect_result[0]
-        batched_rollout = collect_result[1]
-        batched_last_values = collect_result[2]
-        # collect_result[3] is the updated key (per-body), we use our own
-        returned_lattice = collect_result[4]
-
-        batched_lattice = jt.map(
-            lambda old, new: jnp.where(use_lattice, new, old),
-            batched_lattice,
-            returned_lattice,
-        )
-
-        metrics["timesteps"] = int(metrics["timesteps"]) + timesteps_per_update
-
-        # --- PPO update ---
-        batched_policy, batched_opt_state, per_body_rewards = _batched_update(
-            batched_policy,
-            batched_opt_state,
-            batched_rollout,
-            batched_last_values,
-            update_key,
-            optimizer,
-            gamma,
-            gae_lambda,
-            clip_eps,
-            vf_coef,
-            ent_coef,
-            n_minibatches,
-            n_train_iters,
-        )
-
-        metrics["updates"] = int(metrics["updates"]) + 1
-        per_body_returns = per_body_rewards * env_config.n_steps
-        metrics["per_body_mean_return"].append(per_body_returns)
-
-        # --- Post-update enhancement hooks ---
-        update_count += 1
-
-        # Obs norm: update running stats with collected observations
-        # batched_rollout.obs: (B, T, N, obs_dim)
-        # Reshape to (B, T*N, obs_dim) for batch update
-        all_obs = batched_rollout.obs.reshape(n_bodies, -1, obs_dim)
-        updated_obs_norm = _update_obs_norm_batched(batched_obs_norm, all_obs)
-        batched_obs_norm = jt.map(
-            lambda old, new: jnp.where(use_obs_norm, new, old),
-            batched_obs_norm,
-            updated_obs_norm,
-        )
-
-        # Per-body success rate
-        # batched_rollout.dones: (B, T, N)
-        per_body_success = jnp.mean(batched_rollout.dones, axis=(1, 2))
-        metrics["per_body_success_rate"].append(per_body_success)
-
-        # Curriculum: update per-body stages
-        updated_curriculum = _update_curriculum_batched(
-            batched_curriculum,
-            per_body_success,
-        )
-        batched_curriculum = jt.map(
-            lambda old, new: jnp.where(use_curriculum, new, old),
-            batched_curriculum,
-            updated_curriculum,
-        )
-        if enhancements.curriculum:
-            metrics["curriculum_stages"].append(batched_curriculum.stage)
-
+        metrics["curriculum_stages"] = list(history.curriculum_stage)
+    if enhancements.reward_annealing:
         # Bug: 2055433 -- Linear distance_weight annealing from 1.0 to 0.0.
         # The distance_weight conceptually scales the -distance term in
         # compute_reward. Since modifying the reward function mid-training
         # would cause JIT re-tracing, we record the annealing schedule here
         # for the caller to apply externally if needed.
-        if enhancements.reward_annealing:
-            progress = update_count / max(total_updates, 1)
-            start_frac = enhancements.annealing_start_fraction
-            if progress > start_frac:
-                distance_weight = 1.0 - (progress - start_frac) / (1.0 - start_frac)
-                distance_weight = max(distance_weight, 0.0)
-            else:
-                distance_weight = 1.0
-            metrics.setdefault("distance_weight_schedule", [])
-            metrics["distance_weight_schedule"].append(distance_weight)
-
-    # Store final obs norm mean
+        metrics["distance_weight_schedule"] = list(history.distance_weight)
     if enhancements.obs_norm:
         metrics["obs_norm_mean"] = batched_obs_norm.mean
 

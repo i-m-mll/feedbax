@@ -579,16 +579,15 @@ def reducer_opnorm_power_bidiag(*, iters: int = 40, tol: float = 1e-6):
         v, sigma = one_step(v)
 
         def cond(carry):
-            v_prev, sigma_prev, k = carry
-            v_next, sigma_new = one_step(v_prev)
-            return jnp.logical_and(k < iters, jnp.abs(sigma_new - sigma_prev) > tol)
+            _, _, k, delta = carry
+            return jnp.logical_and(k < iters, delta > tol)
 
         def body(carry):
-            v_prev, sigma_prev, k = carry
+            v_prev, sigma_prev, k, _ = carry
             v_next, sigma_new = one_step(v_prev)
-            return (v_next, sigma_new, k + 1)
+            return (v_next, sigma_new, k + 1, jnp.abs(sigma_new - sigma_prev))
 
-        _, sigma, _ = jax.lax.while_loop(cond, body, (v, sigma, 0))
+        _, sigma, _, _ = jax.lax.while_loop(cond, body, (v, sigma, 0, jnp.inf))
         return sigma
 
     return reduce

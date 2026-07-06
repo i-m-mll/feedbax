@@ -9,6 +9,7 @@ import pytest
 from feedbax.analysis.grad import (
     _compute_grads,
     reducer_frobenius_hutchinson,
+    reducer_opnorm_power_bidiag,
     reducer_trace_hutchinson,
 )
 
@@ -72,3 +73,22 @@ def test_hutchinson_reducers_are_deterministic_for_same_key() -> None:
     assert trace(identity, like) == reducer_trace_hutchinson(key=jr.PRNGKey(1), samples=8)(
         identity, like
     )
+
+
+def test_power_iteration_while_condition_reuses_cached_step_delta() -> None:
+    calls = {"mv": 0, "mtv": 0}
+    like = jnp.ones((2,), dtype=jnp.float32)
+
+    def mv(v):
+        calls["mv"] += 1
+        return v
+
+    def mtv(u):
+        calls["mtv"] += 1
+        return u
+
+    reducer = reducer_opnorm_power_bidiag(iters=3, tol=-1.0)
+    sigma = reducer(mv, mtv, like, like)
+
+    assert float(sigma) == pytest.approx(1.0)
+    assert calls == {"mv": 2, "mtv": 2}

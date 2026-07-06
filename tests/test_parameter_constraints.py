@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
+from feedbax.contracts.migrations import UnsupportedSpecVersion
 from feedbax.runtime.graph import Graph
 from feedbax.contracts.graphs.templates import (
     network_template_graph,
@@ -173,6 +174,18 @@ def test_population_structure_from_spec_rejects_old_or_unknown_schema_versions(
 
     with pytest.raises(ValueError, match="PopulationStructureSpec"):
         population_structure_from_spec(4, spec)
+
+
+def test_population_structure_from_spec_rejects_future_schema_version_explicitly() -> None:
+    spec = _fixed_population_structure().to_spec()
+    spec["schema_version"] = f"{POPULATION_STRUCTURE_SCHEMA_ID}.v2"
+
+    with pytest.raises(UnsupportedSpecVersion) as excinfo:
+        population_structure_from_spec(4, spec)
+
+    message = str(excinfo.value)
+    assert "future population-structure versions" in message
+    assert f"current_version='{POPULATION_STRUCTURE_SCHEMA_VERSION}'" in message
 
 
 def test_population_structure_from_spec_rejects_wrong_schema_id() -> None:

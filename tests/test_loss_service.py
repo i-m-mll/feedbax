@@ -27,6 +27,7 @@ from feedbax.objectives.spec import (
     EpochMaskSpec,
     MatrixPayloadSpec,
     MatrixQuadraticLossSpec,
+    MetricSpec,
     MovementEpochRampScheduleSpec,
     ObjectiveSpec,
     PowerLawScheduleSpec,
@@ -589,6 +590,9 @@ class TestExecutableLowering:
         expected_terms = jnp.where(abs_diff <= 0.5, 0.5 * jnp.square(diff), 0.5 * (abs_diff - 0.25))
         expected = jnp.mean(jnp.mean(jnp.sum(expected_terms, axis=-1), axis=1))
         assert jnp.allclose(value, expected)
+
+    def test_metric_spec_docstring_records_huber_delta_issue_reference(self) -> None:
+        assert "dd224bf" in (MetricSpec.__doc__ or "")
 
     def test_objective_selector_value_dtype_casts_selected_value(self) -> None:
         spec = ObjectiveSpec(

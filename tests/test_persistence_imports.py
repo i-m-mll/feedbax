@@ -265,6 +265,14 @@ def test_existing_persistence_db_rejects_unsupported_hash_version(tmp_path: Path
     clear_db_session_cache()
 
 
+def test_persistence_database_doc_records_runtime_schema_reconciliation_decision() -> None:
+    doc = database.__doc__ or ""
+
+    assert "runtime" in doc
+    assert "_sync_declared_schema" in doc
+    assert "accepted migration mechanism" in doc
+
+
 def test_json_filters_use_canonical_serializer(tmp_path: Path) -> None:
     clear_db_session_cache()
     session = init_db_session(f"sqlite:///{tmp_path / 'models.db'}")
