@@ -16,8 +16,9 @@ def register_cde_templates(registry: _Registry) -> None:
 
     # NOTE: CDE template graphs use several display-only node types (Input, Subtract,
     # Reshape, MatMul, Scale, Sigmoid) that are not registered as Studio primitives.
-    # These are used for visual architecture documentation in the nested subgraph preview.
-    # Full executability requires registering those primitives (future work).
+    # These templates are visual architecture documentation for the nested subgraph
+    # preview and intentionally fail closed when materialized as Python components.
+    # The real subgraph-to-builder path is future work tracked by issue 2f8dd61.
 
     _cde_port_types = PortTypeSpec(
         inputs={
@@ -321,4 +322,3 @@ def register_cde_templates(registry: _Registry) -> None:
         template_id='feedbax.templates.cde_hybrid_v9b',
         template_kind='display',
     ))
-
