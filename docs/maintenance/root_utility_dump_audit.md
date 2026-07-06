@@ -37,8 +37,8 @@ old-version rejection.
 
 The highest-coupling roots are `misc.py`, `database.py`, `_tree.py`,
 `tree_utils.py`, `types.py`, and the execution-spec modules. These are not dead
-files. They are used by tests, training, analysis, dashboard/web APIs, runtime
-components, and CLI entrypoints.
+files. They are used by tests, training, analysis, web APIs, runtime components,
+and CLI entrypoints.
 
 ## JAX Cookbook Relationship
 
@@ -129,7 +129,7 @@ cleanup, the umbrella should reassign it explicitly before editing.
    - Separate SQLAlchemy models, dynamic table migration, model tree save/load,
      figure persistence, and record-to-hyperparameter reconstruction.
    - Add focused tests around dynamic schema updates, hash paths, legacy
-     load/save, dashboard/web API imports, and figure record retrieval.
+     load/save, web API imports, and figure record retrieval.
 
 3. **Plot and notebook integration split**
    - Move `colors.py` and `plot_utils.py` into `feedbax.plot.*`.
