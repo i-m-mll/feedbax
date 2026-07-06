@@ -357,6 +357,44 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
     assert resumed.checkpoint_writes[0].manifest.parent_lineage
 
 
+def test_execute_training_run_spec_applies_resume_slot_transform(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(stop_after_global_step=2)
+    checkpoint_root = tmp_path / "checkpoint-custody"
+    execute_training_run_spec(
+        _run_spec(),
+        run_id="interrupted",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=checkpoint_root,
+        registry=registry,
+        stop_after_barrier="after_train_batch",
+    )
+
+    def resize_model(slots):
+        transformed = dict(slots)
+        transformed["model"] = jnp.pad(transformed["model"], (0, 1))
+        return transformed
+
+    resized_initial_slots = _initial_slots(arrays=True)
+    resized_initial_slots["model"] = jnp.array([0.0, 0.0])
+    resumed = execute_training_run_spec(
+        _run_spec(),
+        run_id="resumed",
+        initial_slots=resized_initial_slots,
+        manifest_root=tmp_path / "resume-runs",
+        checkpoint_root=checkpoint_root,
+        registry=registry,
+        resume=True,
+        resume_slot_transform=resize_model,
+    )
+
+    assert resumed.final_slots["model"].shape == (2,)
+    assert resumed.final_slots["model"].tolist() == [3.0, 2.0]
+    assert resumed.final_coordinate.global_step == 2
+
+
 def test_execute_training_run_spec_writes_checkpoint_before_later_failure(
     tmp_path: Path,
 ) -> None:

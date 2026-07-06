@@ -241,6 +241,38 @@ def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
         )
 
 
+def test_resume_slot_transform_runs_before_structural_abi_validation(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.array([1.0, 2.0, 0.0])
+
+    def resize_controller(slots):
+        transformed = dict(slots)
+        transformed["controller"] = jnp.pad(transformed["controller"], (0, 1))
+        return transformed
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+        resume_slot_transform=resize_controller,
+    )
+
+    assert loaded.slots["controller"].tolist() == [1.0, 2.0, 0.0]
+
+
 def test_population_coordinate_mismatch_under_population_predicate_rejects_on_resume(
     tmp_path: Path,
 ) -> None:
