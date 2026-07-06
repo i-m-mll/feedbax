@@ -350,7 +350,11 @@ def validate_population_structure_spec(spec: Mapping[str, object]) -> dict[str, 
             "Unsupported PopulationStructureSpec schema_id: "
             f"schema_id={schema_id!r}, expected={POPULATION_STRUCTURE_SCHEMA_ID!r}"
         )
-    result = default_spec_registry.migrate("PopulationStructureSpec", spec)
+    result = default_spec_registry.migrate(
+        "PopulationStructureSpec",
+        spec,
+        assume_current=True,
+    )
     return result.payload
 
 

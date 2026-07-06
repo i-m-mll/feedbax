@@ -56,6 +56,7 @@ _RETENTION_RANK: dict[RetentionMode, int] = {
     "window": 1,
     "trajectory": 2,
 }
+_TARGET_REQUIRED_LOSS_TYPES = {"TargetStateLoss", "target_state"}
 
 
 @dataclass(frozen=True)
@@ -317,7 +318,11 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
     elif term.target_value is not None:
         target = term.target_value
     else:
-        target = 0.0
+        raise RetentionPlanError(
+            "Loss leaf requires either target_selector or target_value",
+            path=f"/loss/{term.key}",
+            selector=term.source.selector,
+        )
 
     diff = jnp.asarray(source) - jnp.asarray(target)
     if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}:
@@ -525,6 +530,12 @@ def _lower_loss_terms(
             path=path,
             selector=term.selector,
         )
+    if term.type in _TARGET_REQUIRED_LOSS_TYPES and term.target_selector is None and term.target_value is None:
+        raise RetentionPlanError(
+            "Loss leaf requires either target_selector or target_value",
+            path=path,
+            selector=term.selector,
+        )
     if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}:
         _validate_matrix_loss_term(term, path)
     time_agg = term.time_agg or TimeAggregationSpec(mode="all")
@@ -569,7 +580,12 @@ def _lower_loss_terms(
             weight=term.weight,
             source=source,
             target=target,
-            target_value=term.target_value,
+            target_value=(
+                0.0
+                if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}
+                and term.target_value is None
+                else term.target_value
+            ),
             norm=term.norm or "squared_l2",
             matrix=term.matrix,
             matrix_kind=term.matrix_kind or "dense",

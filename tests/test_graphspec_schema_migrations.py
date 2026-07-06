@@ -24,6 +24,8 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.migrations import SpecMigrationResult, UnsupportedSpecVersion, migrate_graph_spec
 from feedbax.integrations.provider import validate_graph_spec_manifest, validate_spec
 
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.graph_spec_contract, pytest.mark.migration_contract]
+
 
 def _legacy_metadata() -> dict[str, str]:
     return {

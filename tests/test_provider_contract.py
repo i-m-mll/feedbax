@@ -74,6 +74,8 @@ from feedbax.web.worker.app import (
     _write_job_manifest,
 )
 
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.provider_contract]
+
 
 def _minimal_graph_spec() -> dict:
     return {

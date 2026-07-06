@@ -41,6 +41,8 @@ from feedbax.contracts.training import (
     TrainingSpec,
 )
 
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.graph_spec_contract]
+
 
 def _graph() -> GraphSpec:
     return GraphSpec(
@@ -435,6 +437,22 @@ def test_loss_rejects_both_target_selector_and_target_value() -> None:
 
     assert exc_info.value.path == "/loss"
     assert "cannot specify both" in str(exc_info.value)
+
+
+def test_loss_rejects_missing_target_during_lowering() -> None:
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Missing target",
+            selector="graph_output:effector",
+        )
+    )
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(_graph(), training)
+
+    assert exc_info.value.path == "/loss"
+    assert "requires either target_selector or target_value" in str(exc_info.value)
 
 
 def test_segment_time_aggregation_rejected_during_lowering() -> None:

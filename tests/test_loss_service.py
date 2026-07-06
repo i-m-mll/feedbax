@@ -38,6 +38,8 @@ from feedbax.training.worker_validation import (
     validate_worker_contract,
 )
 
+pytestmark = [pytest.mark.feedbax_contract]
+
 
 @pytest.fixture
 def loss_service():
@@ -576,6 +578,15 @@ class TestExecutableLowering:
 
         with pytest.raises(ObjectiveLoweringError, match="/loss/type"):
             LossService().lower_loss_term_spec(spec)
+
+    def test_loss_term_missing_target_error_names_path(self) -> None:
+        spec = LossTermSpec(type="target_state", label="bad", selector="state.output")
+
+        with pytest.raises(ObjectiveLoweringError) as excinfo:
+            LossService().lower_loss_term_spec(spec)
+
+        assert "/loss" in str(excinfo.value)
+        assert "requires either target_selector or target_value" in str(excinfo.value)
 
     def test_matrix_shape_error_names_offending_path(self) -> None:
         spec = LossTermSpec(

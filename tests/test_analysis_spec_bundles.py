@@ -53,6 +53,8 @@ from feedbax.contracts.manifest import (
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
 
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
+
 
 TOY_ANALYSIS_TYPE = "feedbax.test.toy_analysis"
 TOY_EVALUATION_TYPE = "feedbax.test.bundle_eval"

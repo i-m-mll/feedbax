@@ -31,6 +31,8 @@ from feedbax.training.worker_validation import (
     validate_worker_contract,
 )
 
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.worker_contract]
+
 
 def _warmup_update(slots, coordinate, context):
     return {

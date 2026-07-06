@@ -139,6 +139,13 @@ testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
     "slow: tests that are too expensive for every local or CI pass",
+    "feedbax_contract: Feedbax contract-surface tests for downstream consumers",
+    "graph_spec_contract: GraphSpec schema, migration, and runtime contract tests",
+    "provider_contract: provider API and manifest contract tests",
+    "worker_contract: worker method, phase, checkpoint, and execution contract tests",
+    "migration_contract: durable structured-spec migration and rejection tests",
+    "analysis_recipe_contract: analysis, evaluation, report, and regeneration contract tests",
+    "no_silent_substitution_contract: structural gate for silent default/fallback patterns",
 ]
 
 [tool.ruff]

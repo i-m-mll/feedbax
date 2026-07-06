@@ -10,6 +10,7 @@ from feedbax.contracts.migrations import (
     UnknownSpecFamily,
     UnsupportedSpecVersion,
     default_spec_registry,
+    migrate_studio_workspace_spec,
     migrate_studio_task_binding_spec,
 )
 from feedbax.contracts.descriptors import (
@@ -37,6 +38,8 @@ from feedbax.contracts.extraction import (
 from feedbax.contracts.manifest import EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import validate_objective_spec
+
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
 
 
 def _registry() -> SpecSchemaRegistry:
@@ -84,11 +87,19 @@ def test_structured_spec_registry_accepts_current_version_without_migration() ->
     assert not result.migrated
 
 
-def test_structured_spec_registry_treats_versionless_payload_as_current() -> None:
+def test_structured_spec_registry_rejects_versionless_payload_without_opt_in() -> None:
     registry = _registry()
     payload = {"value": 3}
 
-    result = registry.migrate("DemoSpec", payload)
+    with pytest.raises(UnsupportedSpecVersion, match="missing schema_version"):
+        registry.migrate("DemoSpec", payload)
+
+
+def test_structured_spec_registry_requires_explicit_current_version_opt_in() -> None:
+    registry = _registry()
+    payload = {"value": 3}
+
+    result = registry.migrate("DemoSpec", payload, assume_current=True)
 
     assert result.source_version == "feedbax.spec.demo.v2"
     assert result.target_version == "feedbax.spec.demo.v2"
@@ -628,6 +639,31 @@ def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:
 def test_studio_task_binding_entrypoint_rejects_explicit_unsupported_version() -> None:
     with pytest.raises(UnsupportedSpecVersion, match="task_bindings.v0"):
         migrate_studio_task_binding_spec({"schema_version": "feedbax.studio.task_bindings.v0"})
+
+
+def test_studio_workspace_explicitly_accepts_current_versionless_scenario_specs() -> None:
+    payload = {
+        "schema_version": default_spec_registry.resolve("StudioWorkspaceSpec").current_version,
+        "scenarios": {
+            "train": {
+                "label": "Train",
+                "objective_spec": {
+                    "terms": [
+                        {
+                            "selector": "task_data:targets",
+                            "label": "Target tracking",
+                        }
+                    ]
+                },
+            }
+        },
+    }
+
+    result = migrate_studio_workspace_spec(payload)
+
+    objective_spec = result.payload["scenarios"]["train"]["objective_spec"]
+    assert objective_spec == payload["scenarios"]["train"]["objective_spec"]
+    assert "schema_version" not in objective_spec
 
 
 def test_objective_entrypoint_rejects_explicit_unsupported_version() -> None:
