@@ -114,14 +114,25 @@ class TreeNamespace(SimpleNamespace):
 
         return _update_none_leaves(self, other)
 
-    def __or__(self, other: "TreeNamespace | dict") -> "TreeNamespace":
-        """Merge namespaces recursively, with values from ``other`` taking precedence."""
+    def merge(
+        self,
+        other: "TreeNamespace | dict",
+        *,
+        ignore_none: bool = True,
+    ) -> "TreeNamespace":
+        """Merge namespaces recursively, matching ``deep_merge`` ``None`` semantics.
+
+        By default, ``None`` in ``other`` means "leave the existing value alone".
+        Pass ``ignore_none=False`` when ``None`` is an intentional replacement.
+        """
         result = deepcopy(self)
 
         if isinstance(other, dict):
             other = dict_to_namespace(other, to_type=type(self), exclude=is_type(LDict))
 
         for attr_name, other_value in vars(other).items():
+            if other_value is None and ignore_none:
+                continue
             self_value = getattr(result, attr_name, None)
 
             if isinstance(self_value, TreeNamespace):
@@ -132,11 +143,20 @@ class TreeNamespace(SimpleNamespace):
                         exclude=is_type(LDict),
                     )
                 if isinstance(other_value, TreeNamespace):
-                    setattr(result, attr_name, self_value | other_value)
+                    setattr(
+                        result,
+                        attr_name,
+                        self_value.merge(other_value, ignore_none=ignore_none),
+                    )
+                else:
+                    setattr(result, attr_name, other_value)
             else:
                 setattr(result, attr_name, other_value)
 
         return result
+
+    def __or__(self, other: "TreeNamespace | dict") -> "TreeNamespace":
+        return self.merge(other)
 
     def __ror__(self, other: dict) -> dict:
         return other | namespace_to_dict(self)

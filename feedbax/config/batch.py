@@ -2,12 +2,7 @@ from importlib import resources
 from itertools import product
 from typing import Any, Dict, List, Literal, Optional, cast
 
-import jax.tree as jt
-import jax.tree_util as jtu
-from jax_cookbook import is_type
 from jax_cookbook.tree import expand_split_keys
-from jaxtyping import PyTree
-from ruamel.yaml import YAML
 
 from feedbax.config.yaml import _YamlLiteral, get_yaml_loader
 from feedbax.config.utils import deep_merge
@@ -207,7 +202,7 @@ def load_batch_config(
                     try:
                         if resources.files(root).joinpath(f"{config_key}.yml").is_file():
                             matches.append(pkg_name)
-                    except Exception:
+                    except (FileNotFoundError, ModuleNotFoundError):
                         pass
                 if not matches:
                     raise FileNotFoundError(

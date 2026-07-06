@@ -15,7 +15,6 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
 import jax_cookbook.tree as jtree
-import plotly.graph_objects as go
 from feedbax.intervene import is_intervenor
 from jax_cookbook import (
     LDict,
@@ -29,6 +28,11 @@ from jaxtyping import Array, PyTree
 
 from feedbax.config import STRINGS
 from feedbax.config.namespace import TreeNamespace, _Wrapped
+
+try:
+    from plotly.graph_objects import Figure as PlotlyFigure
+except ModuleNotFoundError:
+    PlotlyFigure = ()
 
 T = TypeVar("T")
 M = TypeVar("M", bound=Mapping)
@@ -554,7 +558,7 @@ def index_multi(obj, *idxs):
     return index_multi(obj[idxs[0]], *idxs[1:])
 
 
-_is_leaf = anyf(is_type(go.Figure, TreeNamespace))
+_is_leaf = anyf(lambda x: isinstance(x, PlotlyFigure), is_type(TreeNamespace))
 first_leaf = partial(jtree.first_leaf, is_leaf=_is_leaf)
 
 
@@ -927,7 +931,13 @@ def _expand_missing_levels(
                             f"for expanding level '{level}'"
                         )
                         break
-                except Exception:
+                except Exception as exc:
+                    logger.debug(
+                        "Skipping reference tree %s while expanding LDict level %r: %s",
+                        ref_name,
+                        level,
+                        exc,
+                    )
                     continue
 
         if keys_to_use is None:
