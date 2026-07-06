@@ -1,14 +1,11 @@
 import dataclasses
-import functools
-import inspect
 import logging
 import pprint
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from functools import cached_property, partial, wraps
 from itertools import chain
 from pathlib import Path
-from types import EllipsisType, MappingProxyType, SimpleNamespace
+from types import EllipsisType, MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -16,19 +13,15 @@ from typing import (
     Dict,
     Generic,
     Literal,
-    NamedTuple,
     Optional,
     Self,
     TypeAlias,
-    TypeVar,
     Union,
 )
 
-import dill as pickle
 import equinox as eqx
 import jax.numpy as jnp
 import jax.tree as jt
-import jax.tree_util as jtu
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
@@ -76,6 +69,47 @@ from feedbax.config.tree import (
     tree_level_labels,
 )
 from feedbax.analysis.types import AnalysisInputData
+from feedbax.analysis.fig_ops import (
+    FigIterCtx,
+    FigureSaveTask,
+    _AnalysisVmapSpec,
+    _FinalOp,
+    _FinalOpKeyType,
+    _FigOp,
+    _PrepOp,
+    _apply_fig_ops,
+    _apply_final_ops,
+    _axis_items_fn,
+    _axis_slice_fn,
+    _call_fig_params_fn,
+    _combine_figures,
+    _level_items_fn,
+    _level_slice_fn,
+    _reconstruct_ldict_aggregator,
+)
+from feedbax.analysis.inputs import (
+    AbstractAnalysisPorts,
+    AnalysisRef,
+    CallWithDeps,
+    Data,
+    ExpandTo,
+    InputOf,
+    LiteralInput,
+    NoPorts,
+    PortsType,
+    SinglePort,
+    Transformed,
+    _DataField,
+)
+from feedbax.analysis.result_cache import (
+    ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
+    RESULTS_CACHE_SUBDIR,
+    AnalysisResultCacheCorruption,
+    _CACHE_LOAD_ERRORS,
+    _CACHE_SAVE_ERRORS,
+    _load_analysis_result_cache,
+    _write_analysis_result_cache,
+)
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
@@ -87,436 +121,45 @@ else:
 
 logger = logging.getLogger(__name__)
 
-
-PARAM_SEQ_LEN_TRUNCATE = 9
-RESULTS_CACHE_SUBDIR = "results"
-ANALYSIS_RESULT_CACHE_SCHEMA_VERSION = "feedbax.analysis.result-cache.v1"
-
-_CACHE_LOAD_ERRORS = (
-    OSError,
-    EOFError,
-    pickle.UnpicklingError,
-    AttributeError,
-    ImportError,
-    TypeError,
-    ValueError,
-)
-_CACHE_SAVE_ERRORS = (OSError, pickle.PicklingError, TypeError, ValueError)
-
-
-class AnalysisResultCacheCorruption(RuntimeError):
-    """Raised when an analysis-result cache file cannot be trusted."""
-
-
-def _load_analysis_result_cache(
-    cache_path: Path,
-    *,
-    analysis_id: str,
-    inputs_hash: str,
-) -> Any:
-    try:
-        with open(cache_path, "rb") as f:
-            payload = pickle.load(f)
-    except _CACHE_LOAD_ERRORS as exc:
-        raise AnalysisResultCacheCorruption(str(exc)) from exc
-
-    if not isinstance(payload, Mapping):
-        raise AnalysisResultCacheCorruption("missing versioned payload envelope")
-    schema_version = payload.get("schema_version")
-    if schema_version != ANALYSIS_RESULT_CACHE_SCHEMA_VERSION:
-        raise AnalysisResultCacheCorruption(
-            f"schema_version={schema_version!r}, "
-            f"expected {ANALYSIS_RESULT_CACHE_SCHEMA_VERSION!r}"
-        )
-    if payload.get("analysis_id") != analysis_id:
-        raise AnalysisResultCacheCorruption(
-            f"analysis_id={payload.get('analysis_id')!r}, expected {analysis_id!r}"
-        )
-    if payload.get("inputs_hash") != inputs_hash:
-        raise AnalysisResultCacheCorruption(
-            f"inputs_hash={payload.get('inputs_hash')!r}, expected {inputs_hash!r}"
-        )
-    if "result" not in payload:
-        raise AnalysisResultCacheCorruption("missing result payload")
-    return payload["result"]
-
-
-def _write_analysis_result_cache(
-    cache_path: Path,
-    *,
-    analysis_id: str,
-    inputs_hash: str,
-    result: Any,
-) -> None:
-    with open(cache_path, "wb") as f:
-        pickle.dump(
-            {
-                "schema_version": ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
-                "analysis_id": analysis_id,
-                "inputs_hash": inputs_hash,
-                "result": result,
-            },
-            f,
-        )
-
-
-@dataclass(frozen=True)
-class AnalysisRef[T]:
-    """A thin, typed pointer to something that will yield a PyTree[T]."""
-
-    target: Union[str, "AbstractAnalysis"]  # name or instance
-
-
-# The user asked for AbstractAnalysis without a type parameter in InputOf.
-# We leave it raw here – static tools won't check graph consistency, only help
-# with autocomplete / annotations.
-type InputOf[T] = Union[
-    AnalysisRef[PyTree[T]],
-    str,
-    AbstractAnalysis,  # intentionally un-parameterised
-    _DataField,
-    Transformed,
-    ExpandTo,
-    LiteralInput,
+__all__ = [
+    "AbstractAnalysis",
+    "AbstractAnalysisPorts",
+    "AnalysisRef",
+    "AnalysisResultCacheCorruption",
+    "ANALYSIS_RESULT_CACHE_SCHEMA_VERSION",
+    "CallWithDeps",
+    "Data",
+    "DummyNode",
+    "ExpandTo",
+    "FigIterCtx",
+    "FigureSaveTask",
+    "IdentityNode",
+    "InputOf",
+    "InputType",
+    "LiteralInput",
+    "NoPorts",
+    "PortsType",
+    "RESULTS_CACHE_SUBDIR",
+    "SinglePort",
+    "Transformed",
+    "_AnalysisVmapSpec",
+    "_CACHE_LOAD_ERRORS",
+    "_CACHE_SAVE_ERRORS",
+    "_DataField",
+    "_FigOp",
+    "_FinalOp",
+    "_FinalOpKeyType",
+    "_PrepOp",
+    "_apply_fig_ops",
+    "_apply_final_ops",
+    "_call_fig_params_fn",
+    "_load_analysis_result_cache",
+    "_write_analysis_result_cache",
+    "get_validation_trial_specs",
 ]
 
 
-class AbstractAnalysisPorts(Module, Mapping):
-    """Base class for typed analysis input ports."""
-
-    @classmethod
-    def converter(cls, inputs: Self | Mapping[str, Any]) -> Self:
-        """Convert inputs to the appropriate format."""
-        if isinstance(inputs, Mapping):
-            return cls(**inputs)
-        else:
-            return inputs
-
-    def __getitem__(self, key: str):
-        if key in self.__dataclass_fields__:
-            return getattr(self, key)
-        raise KeyError(key)
-
-    def __iter__(self):
-        return (f.name for f in dataclasses.fields(self))
-
-    def __len__(self):
-        return len(dataclasses.fields(self))
-
-
-class NoPorts(AbstractAnalysisPorts):
-    """An empty Ports dataclass for analyses with no additional inputs."""
-
-    pass
-
-
-T = TypeVar("T")
-
-
-class SinglePort(AbstractAnalysisPorts, Generic[T]):
-    """A Ports dataclass with a single port named 'input'."""
-
-    input: InputOf[T] = eqx.field(kw_only=True)
-
-
-PortsType = TypeVar("PortsType", bound=AbstractAnalysisPorts)
-
-
-# Define a string representer for objects PyYAML doesn't know how to handle
-
-
-@dataclass(frozen=True, slots=True)
-class _DataField:
-    """Description of what to extract from `AnalysisInputData`.
-
-    Parameters
-    ----------
-    attr
-        Name of the attribute to forward (must be one of the dataclass fields
-        of `AnalysisInputData`).
-    where, is_leaf
-        If *where* is provided the forwarded value becomes
-
-        ``jax.tree.map(where, getattr(data, attr), is_leaf=is_leaf)``.
-    """
-
-    attr: str
-    where: Optional[Callable] = None
-    is_leaf: Optional[Callable[[Any], bool]] = is_module
-
-    # Allow the author to write `Data.states(where=..., is_leaf=...)`
-    def __call__(
-        self,
-        *,
-        where: Optional[Callable] = None,
-        is_leaf: Optional[Callable[[Any], bool]] = None,
-    ) -> Self:
-        """Return a new `_DataField` overriding *where* and/or *is_leaf*.
-
-        Any argument left as ``None`` inherits the value from the receiver
-        instance so that `Data.states(where=...)` keeps the default
-        ``is_leaf=is_module``.
-        """
-        return type(self)(
-            self.attr,
-            where if where is not None else self.where,
-            is_leaf if is_leaf is not None else self.is_leaf,
-        )
-
-    def __repr__(self):  # noqa: D401
-        return f"Data.{self.attr}"
-
-
-T = TypeVar("T")
-
-
-@jtu.register_pytree_node_class
-@dataclass(frozen=True, slots=True)
-class ExpandTo:
-    """Specifies that a PyTree input should be prefix-expanded to match another input's structure.
-
-    This is useful when one input lacks the inner structure necessary for tree operations
-    with another input. For example, if `funcs` has structure ['sisu', 'train__pert__std']
-    but `fn_args` is a tuple lacking the 'train__pert__std' level, you can use:
-
-        fn_args=ExpandTo("fns", tuple((Data.hps(...), Data.tasks(...))))
-
-    The `source` will be prefix-expanded to match the structure of `target`.
-
-    Parameters
-    ----------
-    target
-        Reference to the input whose structure should be matched. Can be either:
-        - A string referring to another input in the same analysis
-        - A _DataField (e.g., Data.models)
-    source
-        The PyTree to be prefix-expanded
-    where
-        Optional function to select a subtree of the target for expansion.
-        For example: where=lambda fn_args fn_args[0] to expand to just the
-        first element of a tuple target instead of the entire tuple structure.
-    is_leaf, is_leaf_prefix
-        Optional leaf predicates passed to the prefix expansion operation
-    """
-
-    target: Union[str, _DataField]
-    source: PyTree
-    where: Optional[Callable] = None
-    is_leaf: Optional[Callable] = None
-    is_leaf_prefix: Optional[PyTree[Callable]] = None
-
-    @classmethod
-    def map(
-        cls,
-        target: Union[str, _DataField],
-        source: T,
-        is_leaf_prefix: Optional[PyTree[Callable]] = None,
-        **kwargs,
-    ) -> T:
-        """Convenience, for mapping over the first level of a tree."""
-        #! TODO: Support mapping to arbitrary levels / leaves, not just first
-        #! Though this might get kind of confusing with `is_leaf`, `is_leaf_prefix` already
-        #! allowed as params
-        source_with_is_leaf = jt.map(
-            lambda is_leaf_node_prefix, node: (node, is_leaf_node_prefix),
-            is_leaf_prefix,
-            source,
-            is_leaf=is_none,
-        )
-        nodes_with_is_leaf, treedef = eqx.tree_flatten_one_level(source_with_is_leaf)
-        return jt.unflatten(
-            treedef,
-            [
-                cls(target, node, is_leaf_prefix=is_leaf_node_prefix, **kwargs)
-                for node, is_leaf_node_prefix in nodes_with_is_leaf
-            ],
-        )
-
-    def tree_flatten(self):
-        return [self.source], SimpleNamespace(
-            target=self.target,
-            where=self.where,
-            is_leaf=self.is_leaf,
-            is_leaf_prefix=self.is_leaf_prefix,
-        )
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(
-            target=aux_data.target,
-            source=children[0],
-            where=aux_data.where,
-            is_leaf=aux_data.is_leaf,
-            is_leaf_prefix=aux_data.is_leaf_prefix,
-        )
-
-
-@jtu.register_pytree_node_class
-@dataclass(frozen=True, slots=True)
-class Transformed:
-    """Applies a transformation to resolved dependencies before passing to compute.
-
-    This allows in-place transformation of dependency results. For example:
-
-        some_input=Transformed("states_pca", lambda result: result.batch_transform)
-
-    Or with PyTree sources:
-
-        some_input=Transformed((Data.states, Data.tasks), lambda tree: custom_transform(tree))
-
-    The `source` will be resolved as dependencies first, then transformed.
-
-    Parameters
-    ----------
-    source
-        The PyTree of dependencies to resolve and transform
-    transform
-        Function to apply to the resolved source dependencies
-    """
-
-    source: PyTree
-    transform: Callable
-
-    def tree_flatten(self):
-        return [self.source], (self.transform,)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        (transform,) = aux_data
-        return cls(source=children[0], transform=transform)
-
-    @classmethod
-    def map(cls, source: PyTree, transform: Callable, is_leaf: Optional[Callable] = None) -> PyTree:
-        def _map_transform(tree):
-            return jt.map(transform, tree, is_leaf=is_leaf)
-
-        return cls(source=source, transform=_map_transform)
-
-
-@dataclass(frozen=True, slots=True)
-class LiteralInput:
-    """Wraps a constant value to be passed directly as an analysis input.
-
-    This allows passing literal values without going through dependency resolution.
-    For example:
-
-        custom_inputs=dict(some_param=LiteralInput(42), other_param=LiteralInput(jnp.array([1, 2, 3])))
-
-    The wrapped value will be passed directly to the analysis's compute method.
-
-    Parameters
-    ----------
-    value
-        The constant value to pass to the analysis
-    """
-
-    value: Any
-
-
-class _DataProxy:
-    """Expose only valid `AnalysisInputData` attributes.
-
-    Any attempt to access a non-existent field fails *eagerly* at import time.
-    """
-
-    _allowed = tuple(AnalysisInputData.__annotations__.keys())
-
-    def __getattr__(self, item: str) -> _DataField:  # noqa: D401
-        if item not in self._allowed:
-            raise AttributeError(
-                f"'Data' has no attribute '{item}'. "
-                f"Valid attributes are: {', '.join(self._allowed)}"
-            )
-        return _DataField(item)
-
-    def __repr__(self):  # noqa: D401
-        return "Data"
-
-
-"""Sentinel for forwarding attributes from `AnalysisInputData` to analysis input ports."""
-Data = _DataProxy()
-
-
-@dataclass(frozen=True)
-class FigIterCtx:
-    """Context object passed to fig_params_fn during figure iteration.
-
-    Provides information about the current iteration state for context-aware
-    figure parameter updates.
-    """
-
-    level: Optional[str]  # the LDict level label for this mapping step (or None for axis maps)
-    key: Any  # the selected key at this level (or index for axis maps)
-    idx: int  # 0-based index of `key` within items at this level
-    depth: int  # 0 = outermost mapped level
-    path: tuple[tuple[Optional[str], Any, int], ...]  # cumulative selections from outermost→current
-
-
-class FigureSaveTask(NamedTuple):
-    """Container for figure save operation parameters."""
-
-    fig: go.Figure
-    figure_hash: str
-    eval_dir: Path
-    save_formats: list[str]
-    params: dict[str, Any]
-
-
-class _PrepOp(NamedTuple):
-    name: str
-    dep_name: Optional[Union[str, Sequence[str]]]  # Dependencies to transform
-    fn: Callable[..., Any]  # Original function
-    wrapped_fn: Callable[..., Any]  # Wrapped to accept var kwargs
-    params: Optional[dict[str, Any]] = None
-    metadata: Optional[dict[str, Any]] = None
-
-
-class _FigOp(NamedTuple):
-    """Figure operation that iteratively generates and aggregates figures.
-
-    Fig ops enable recursive iteration over dependency structures (LDict levels or array axes)
-    to generate figures for each item, then aggregate them according to a specified strategy.
-    They are applied during figure generation, allowing context-aware updates to figure
-    parameters and custom aggregation logic.
-
-    Attributes:
-        name: Operation identifier for logging and debugging
-        dep_name: Name(s) of dependencies to iterate over. If None, uses all available.
-        is_leaf: Predicate to identify nodes to iterate over (e.g., LDict.is_of(level))
-        slice_fn: Function to extract a single item from a node (leaf, item) -> sliced_leaf
-        items_fn: Function to get all items to iterate over from a node (leaf) -> list
-        agg_fn: Function to aggregate child figures (list[figs], items) -> aggregated_tree
-        fig_params_fn: Optional function to update figure parameters per iteration
-        params: Operation parameters for serialization and debugging
-        metadata: Additional metadata (descriptions, labels)
-        pre_slice_hook: Optional hook called before recursion with (data, kwargs, ctx)
-        post_agg_hook: Optional hook called after aggregation with (figs, items, path)
-    """
-
-    name: str
-    dep_name: Optional[Union[str, Sequence[str]]]
-    is_leaf: Callable[[Any], bool]
-    slice_fn: Callable[[Any, Any], Any]  # (leaf, item) -> sliced_leaf
-    items_fn: Callable[[Any], list]  # (leaf) -> items at this level
-    agg_fn: Callable[[list, list], Any]  # (list(child_figs), items) -> aggregated_figs_tree
-    fig_params_fn: Optional[Callable] = None
-    params: Optional[dict] = None
-    metadata: Optional[dict[str, Any]] = None
-
-    # Optional hooks (default None)
-    pre_slice_hook: Optional[Callable] = None
-    post_agg_hook: Optional[Callable] = None
-
-
-class _FinalOp(NamedTuple):
-    name: str
-    fn: Callable[[PyTree[go.Figure]], PyTree[go.Figure]]  # Original function
-    wrapped_fn: Callable[[PyTree[go.Figure]], PyTree[go.Figure]]  # Wrapped to accept var kwargs
-    params: Optional[dict[str, Any]] = None
-    is_leaf: Optional[Callable[[Any], bool]] = None
-    metadata: Optional[dict[str, Any]] = None
-
-
+PARAM_SEQ_LEN_TRUNCATE = 9
 def _process_param(param: Any) -> Any:
     """
     Process parameter values for serialization in the database.
@@ -537,36 +180,6 @@ def _process_param(param: Any) -> Any:
     else:
         # Simple types
         return param
-
-
-def _combine_figures(
-    figs_list: list[PyTree[go.Figure]],
-    items_iterated: Iterable,
-) -> PyTree[go.Figure]:
-    """Merge traces from multiple figures into a single one."""
-
-    def combine_figs(*figs):
-        if not figs:
-            return None
-
-        layout = figs[0].layout
-
-        if layout.legend.traceorder == "reversed":
-            layout.legend.traceorder = "grouped+reversed"
-
-        if layout.legend.grouptitlefont.style is None:
-            layout.legend.grouptitlefont.style = "italic"
-
-        traces = [trace for fig in figs for trace in fig.data]
-
-        fig = go.Figure(data=traces, layout=layout)
-        return fig
-
-    return jt.map(
-        combine_figs,
-        *figs_list,
-        is_leaf=is_type(go.Figure),
-    )
 
 
 def _format_level_str(label: str):
@@ -614,34 +227,6 @@ _NAME_NORMALIZATION = {"states": "data.states"}
 
 def _normalize_name(name: str) -> str:
     return _NAME_NORMALIZATION.get(name, name)
-
-
-def _axis_items_fn(axis: int, leaf: Array) -> Iterable:
-    if not isinstance(leaf, Array) or axis >= leaf.ndim:
-        raise ValueError(f"Combine target for axis {axis} is not Array or axis out of bounds.")
-    return range(leaf.shape[axis])
-
-
-def _axis_slice_fn(axis: int, node: Array, idx: int) -> Array:
-    return node[(slice(None),) * axis + (idx,)]
-
-
-def _level_slice_fn(node: LDict, item: Any) -> Any:
-    return node[item]
-
-
-def _level_items_fn(level: str, leaf: LDict) -> Iterable:
-    if not LDict.is_of(level)(leaf):
-        raise TypeError(f"Map target for level '{level}' is not an LDict with that label.")
-    return leaf.keys()
-
-
-def _reconstruct_ldict_aggregator(
-    level: str, figs_list: list[PyTree], items_iterated: Iterable
-) -> LDict:
-    # items_iterated here will be the keys from the LDict level
-    # Rebuild the LDict using the original level label
-    return LDict.of(level)(dict(zip(items_iterated, figs_list)))
 
 
 def get_validation_trial_specs(task: AbstractTask):
@@ -702,35 +287,6 @@ def _build_in_axes_sequence(
         in_axes_sequence.append((data_axis, *vmapped_dep_axes))
 
     return tuple(in_axes_sequence)
-
-
-class _AnalysisVmapSpec(eqx.Module):
-    """Immutable container holding all accumulated vmap information
-    for an AbstractAnalysis instance."""
-
-    # Logical → per-level axis schedule (one tuple entry per vmap level)
-    in_axes_spec: Mapping[str, tuple[int | None, ...]] = field(default_factory=dict)
-    # Names of dependencies (kwargs) that must be popped before vmapping
-    vmapped_dep_names: tuple[str, ...] = ()
-    # Fully-resolved positional in_axes_sequence for vmap_multi
-    in_axes_sequence: tuple[tuple[int | None, ...], ...] = ()
-
-
-_FinalOpKeyType = Literal["results", "figs"]
-
-
-def _call_fig_params_fn(fn, fp, ctx, **kwargs):
-    """Call fig_params_fn with ctx-style signature.
-
-    Args:
-        fn: The fig_params_fn to call
-        fp: Current figure parameters
-        ctx: Context object
-
-    Returns:
-        Updated figure parameters
-    """
-    return fn(fp, ctx, **kwargs)
 
 
 def _get_vmap_spec_debug_str(
@@ -3027,132 +2583,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return modified
 
 
-# By using `strict=False`, we can define non-abstract fields, i.e. without needing to
-# implement them trivially in subclasses. This violates the abstract-final design
-# pattern. This is intentional. If it leads to problems, I will learn from that.
-def _apply_fig_ops(
-    analysis: AbstractAnalysis, data: AnalysisInputData, depth: int, path: tuple, **kwargs
-):
-    """Recursively apply figure operations outer→inner.
-
-    Args:
-        analysis: The AbstractAnalysis instance
-        data: AnalysisInputData
-        kwargs: Dependency kwargs
-        depth: Current recursion depth (0 = outermost)
-        path: Cumulative path selections from outermost→current
-
-    Returns:
-        PyTree of figures
-    """
-    if depth >= len(analysis._fig_ops):
-        # Base case: no more fig-ops
-        return analysis.make_figs(data, **kwargs)
-
-    op = analysis._fig_ops[depth]
-
-    # Choose dependencies that will vary at this level
-    target_dep_names = analysis._get_target_dependency_names(op.dep_name, kwargs, "Fig op")
-    deps = {k: kwargs[k] for k in target_dep_names if k in kwargs}
-    if not deps:
-        logger.warning("No varying dependencies for fig-op %s; falling back to make_figs.", op.name)
-        return analysis.make_figs(data, **kwargs)
-
-    # Find a representative leaf for items
-    first_dep = next(iter(deps.values()))
-    leaves = jt.leaves(first_dep, is_leaf=op.is_leaf)
-    if not leaves:
-        logger.error("Fig-op %s found no matching leaves; falling back.", op.name)
-        return analysis.make_figs(data, **kwargs)
-    sample_leaf = leaves[0]
-
-    ref_keys = list(op.items_fn(sample_leaf))
-    for name, dep in deps.items():
-        keys = list(op.items_fn(jt.leaves(dep, is_leaf=op.is_leaf)[0]))
-        if keys != ref_keys:
-            logger.warning(
-                "Fig-op %s: keys for %r differ from reference; proceeding with reference ordering.",
-                op.name,
-                name,
-            )
-
-    children = []
-
-    for i, key in enumerate(ref_keys):
-        # Slice kwargs for this item
-        sliced_kwargs = dict(kwargs)
-        for k, v in deps.items():
-            sliced_kwargs[k] = jt.map(
-                lambda x: op.slice_fn(x, key) if op.is_leaf(x) else x,
-                v,
-                is_leaf=op.is_leaf,
-            )
-
-        # (Optional) move states in/out as in current pipeline
-        data_i = data
-        if "data.states" in sliced_kwargs:
-            data_i = eqx.tree_at(lambda d: d.states, data, sliced_kwargs["data.states"])
-            del sliced_kwargs["data.states"]
-
-        # Context
-        ctx = FigIterCtx(
-            level=op.params.get("level"),
-            key=key,
-            idx=i,
-            depth=depth,
-            path=path,
-        )
-
-        # Optional hook before recursion
-        if op.pre_slice_hook is not None:
-            data_i, sliced_kwargs = op.pre_slice_hook(data_i, sliced_kwargs, ctx)
-
-        # Per-level fig params (ctx-aware)
-        analysis_i = analysis
-        if op.fig_params_fn is not None:
-            new_fp = op.fig_params_fn(analysis.fig_params, ctx, **sliced_kwargs)
-            analysis_i = eqx.tree_at(
-                lambda a: a.fig_params,
-                analysis,
-                MappingProxyType(deep_merge(analysis.fig_params, new_fp)),
-            )
-
-        # Recurse
-        child = _apply_fig_ops(
-            analysis_i, data_i, depth + 1, path + ((ctx.level, key, i),), **sliced_kwargs
-        )
-        children.append(child)
-
-    # Aggregate children at this depth
-    figs = op.agg_fn(children, ref_keys)
-
-    # Optional post-aggregation hook
-    if op.post_agg_hook is not None:
-        figs = op.post_agg_hook(figs, ref_keys, path)
-
-    return figs
-
-
-def _apply_final_ops(
-    analysis: AbstractAnalysis, kind: Literal["figs", "results"], tree: PyTree, **kwargs
-):
-    for final_op in analysis._final_ops_by_type.get(kind, ()):
-        try:
-            tree = jt.map(
-                lambda leaf: final_op.wrapped_fn(leaf, **kwargs),
-                tree,
-                is_leaf=final_op.is_leaf,
-            )
-        except Exception as e:
-            logger.error(
-                f"Error during execution of final {kind} op '{final_op.name}'",
-                exc_info=True,
-            )
-            raise e
-
-    return tree
-
-
 # Keep InputType for validation purposes
 InputType: TypeAlias = PyTree[
     type[AbstractAnalysis]
@@ -3188,113 +2618,3 @@ class DummyNode(AbstractAnalysis[NoPorts]):
 
     def make_figs(self, data: AnalysisInputData, **kwargs) -> PyTree[go.Figure]:
         return None
-
-
-class CallWithDeps:
-    """
-    Plug (PyTrees of) dependency specs into arbitrary argument positions.
-
-    Positional spec slots:
-      - None -> consume the NEXT *caller*-provided positional arg.
-      - Any other object -> treat as a dependency *spec*; it will be computed
-        under a private port and injected here when the wrapper is called.
-
-    Keyword spec slots:
-      - name=spec -> inject the computed dependency as keyword `name`
-        unless the caller explicitly provides `name` (caller wins).
-    """
-
-    _counter = 0
-
-    def __init__(self, *pos_specs: Any, **kw_specs: Any):
-        self.pos_specs = pos_specs
-        self.kw_specs = kw_specs
-
-    @staticmethod
-    def _alloc_port() -> str:
-        CallWithDeps._counter += 1
-        return f"__cwd_{CallWithDeps._counter:x}"
-
-    def __call__(self, fn: Callable):
-        # Plan structures
-        spec_map: Dict[str, Any] = {}  # {private_port -> spec (leaf or PyTree)}
-        pos_tokens: list[Optional[str]] = []  # [None | private_port]
-        kw_ports: Dict[str, str] = {}  # {param_name -> private_port}
-
-        def port_for(spec: Any) -> str:
-            p = self._alloc_port()
-            spec_map[p] = spec
-            return p
-
-        for item in self.pos_specs:
-            pos_tokens.append(None if item is None else port_for(item))
-        for name, item in self.kw_specs.items():
-            kw_ports[name] = port_for(item)
-
-        # Introspect the *wrapped* function once, outside the wrapper body
-        sig = inspect.signature(fn)
-        param_names = set(sig.parameters.keys())
-        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-
-        #! Does it make sense to wrap like this?
-        #! The resulting function does *not* have the same signature since we're supplying
-        #! one or more of its args.
-        #! Also, if we end up calling the wrapped function many times in the same context
-        #! (e.g. mapping over leaves) then there will be a lot of redundancy here. Maybe we can
-        #! resolve the function and then pass it in?
-        @functools.wraps(fn)
-        def wrapper(
-            *caller_args: Any,
-            _spec_map=spec_map,  # capture to avoid late binding
-            _pos_tokens=tuple(pos_tokens),
-            _kw_ports=kw_ports,
-            _param_names=param_names,
-            _has_varkw=has_varkw,
-            **caller_kwargs: Any,
-        ) -> Any:
-            # 1) Extract dependency payloads from private ports
-            deps: Dict[str, Any] = {}
-            for p in _spec_map.keys():
-                if p in caller_kwargs:
-                    deps[p] = caller_kwargs.pop(p)
-
-            missing = [p for p in _spec_map.keys() if p not in deps]
-            if missing:
-                raise KeyError(
-                    f"Missing dependency ports {missing}; have keys={sorted(deps.keys())}"
-                )
-
-            # 2) Build positional args: None consumes a caller positional
-            args: list[Any] = []
-            it = iter(caller_args)
-            for tok in _pos_tokens:
-                if tok is None:
-                    try:
-                        args.append(next(it))
-                    except StopIteration:
-                        raise TypeError(
-                            "Not enough positional arguments from caller "
-                            "to satisfy `None` placeholders."
-                        ) from None
-                else:
-                    args.append(deps[tok])
-
-            # Any remaining caller positionals go after the tokens
-            args.extend(list(it))
-
-            # 3) Build keyword args: caller wins; fill missing with deps
-            mapped_kwargs: Dict[str, Any] = dict(caller_kwargs)
-            for name, port in _kw_ports.items():
-                if name not in mapped_kwargs:
-                    mapped_kwargs[name] = deps[port]
-
-            # 4) Filter unknown kwargs if the underlying function has no **kwargs
-            if not _has_varkw:
-                mapped_kwargs = {k: v for k, v in mapped_kwargs.items() if k in _param_names}
-
-            return fn(*args, **mapped_kwargs)
-
-        # Expose to the engine:
-        wrapper._extra_inputs = spec_map  # {port -> spec}  # type: ignore[attr-defined]
-        wrapper._ports = tuple(spec_map.keys())  # type: ignore[attr-defined]
-        return wrapper
