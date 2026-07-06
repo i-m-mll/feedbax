@@ -711,9 +711,7 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
 
 
 def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueComposer:
-    schema_version = str(
-        params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION)
-    )
+    schema_version = str(params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION))
     if schema_version != AFFINE_VALUE_COMPOSER_SCHEMA_VERSION:
         raise ValueError(
             "AffineValueComposer unsupported schema_version "
@@ -818,9 +816,33 @@ _DISPLAY_ONLY_MESSAGES: dict[str, str] = {
 }
 
 
+def _unsupported_component_builder(component_type: str) -> Callable[[Mapping[str, Any]], Component]:
+    message = _DISPLAY_ONLY_MESSAGES.get(
+        component_type,
+        f"Component type {component_type!r} is registered for metadata but has no "
+        "executable builder.",
+    )
+
+    def _builder(params: Mapping[str, Any]) -> Component:
+        del params
+        raise NotImplementedError(message.format(node_name="<unknown>"))
+
+    _builder._feedbax_unsupported_builder = True  # type: ignore[attr-defined]
+    _builder._feedbax_unsupported_builder_message = message  # type: ignore[attr-defined]
+    return _builder
+
+
 def register_builtin_component_builders(registry: Any) -> None:
     for name, builder in _BUILDERS.items():
         registry.register_builder(name, builder, provenance="feedbax")
+    for name in registry.names():
+        meta = registry.get(name)
+        if meta is not None and meta.builder is None:
+            registry.register_builder(
+                name,
+                _unsupported_component_builder(name),
+                provenance="feedbax",
+            )
 
 
 def build_component(
@@ -843,8 +865,13 @@ def build_component(
             f"Unsupported component type {node_type!r} for node {node_name!r}. "
             f"Known component types: {known}"
         )
-    if meta.builder is None:
-        message = _DISPLAY_ONLY_MESSAGES.get(
+    unsupported_message = (
+        None
+        if meta.builder is None
+        else getattr(meta.builder, "_feedbax_unsupported_builder_message", None)
+    )
+    if meta.builder is None or unsupported_message is not None:
+        message = unsupported_message or _DISPLAY_ONLY_MESSAGES.get(
             node_type,
             f"Component type {node_type!r} for node {node_name!r} is registered "
             "for metadata but has no executable builder.",

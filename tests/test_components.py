@@ -42,6 +42,91 @@ def test_generated_equinox_components_preserve_explicit_float64():
         assert gru.layer.weight_hh.dtype == jnp.float64
 
 
+def test_generated_equinox_wrapper_contract_metadata_marks_state_and_key_layers():
+    assert graph_eqx.EQUINOX_WRAPPER_SCHEMA_VERSION == "feedbax.equinox_wrappers.v2"
+    assert graph_eqx.EQUINOX_WRAPPER_EQUINOX_VERSION == eqx.__version__
+
+    wrapper_names = {
+        name
+        for name in graph_eqx.__all__
+        if name
+        not in {
+            "EQUINOX_WRAPPER_SCHEMA_VERSION",
+            "EQUINOX_WRAPPER_GENERATOR",
+            "EQUINOX_WRAPPER_EQUINOX_VERSION",
+            "EQUINOX_WRAPPER_CONTRACTS",
+        }
+    }
+    assert set(graph_eqx.EQUINOX_WRAPPER_CONTRACTS) == wrapper_names
+
+    assert graph_eqx.BatchNorm.wrapper_contract == {
+        "call_kind": "batch_norm",
+        "state_handling": "threads_eqx_state",
+        "key_handling": "optional_forwarded",
+    }
+    assert graph_eqx.Dropout.wrapper_contract["key_handling"] == "forwarded"
+    assert graph_eqx.MultiheadAttention.wrapper_contract["key_handling"] == "forwarded"
+
+
+def test_generated_batchnorm_threads_equinox_state():
+    component = graph_eqx.BatchNorm(3, axis_name="batch")
+    state = init_state_from_component(component)
+    inputs = jnp.arange(12, dtype=jnp.float32).reshape(4, 3)
+
+    def run_one(x, current_state):
+        return component({"input": x}, current_state, key=jax.random.PRNGKey(0))
+
+    outputs, new_state = jax.vmap(
+        run_one,
+        in_axes=(0, None),
+        out_axes=(0, None),
+        axis_name="batch",
+    )(inputs, state)
+
+    assert outputs["output"].shape == (4, 3)
+    old_leaves = jtu.tree_leaves(state)
+    new_leaves = jtu.tree_leaves(new_state)
+    assert any(
+        hasattr(old, "shape") and not jnp.allclose(old, new)
+        for old, new in zip(old_leaves, new_leaves)
+    )
+
+
+def test_generated_dropout_honors_training_and_inference_modes():
+    inputs = {"input": jnp.ones((16,), dtype=jnp.float32)}
+
+    training = graph_eqx.Dropout(p=0.5, inference=False)
+    training_state = init_state_from_component(training)
+    training_outputs, _ = training(inputs, training_state, key=jax.random.PRNGKey(1))
+    assert not jnp.allclose(training_outputs["output"], inputs["input"])
+
+    inference = graph_eqx.Dropout(p=0.5, inference=True)
+    inference_state = init_state_from_component(inference)
+    inference_outputs, _ = inference(inputs, inference_state, key=jax.random.PRNGKey(1))
+    assert jnp.allclose(inference_outputs["output"], inputs["input"])
+
+
+def test_generated_multihead_attention_forwards_dropout_key():
+    component = graph_eqx.MultiheadAttention(
+        num_heads=1,
+        query_size=2,
+        dropout_p=0.5,
+        inference=False,
+        key=jax.random.PRNGKey(0),
+    )
+    state = init_state_from_component(component)
+    value = jnp.ones((2, 2), dtype=jnp.float32)
+
+    outputs, new_state = component(
+        {"query": value, "key_": value, "value": value},
+        state,
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert outputs["output"].shape == (2, 2)
+    assert new_state is state
+
+
 def test_runtime_neural_components_default_trainable_leaves_to_float32():
     linear = runtime_components.Linear(2, 3, key=jax.random.PRNGKey(0))
     mlp = runtime_components.MLP(2, 3, hidden_sizes=(4,), key=jax.random.PRNGKey(1))
