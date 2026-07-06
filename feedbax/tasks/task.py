@@ -36,7 +36,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 import numpy as np
-import plotly.graph_objs as go  # pyright: ignore [reportMissingTypeStubs]
 from equinox import AbstractVar, Module, field
 from jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
@@ -61,6 +60,8 @@ from feedbax.runtime.state import CartesianState, StateT
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 if TYPE_CHECKING:
+    import plotly.graph_objs as go  # pyright: ignore [reportMissingTypeStubs]
+
     from feedbax.runtime.graph import Component
 
 logger = logging.getLogger(__name__)
@@ -1188,7 +1189,7 @@ class AbstractTask(Module):
         self,
         states,
         trial_specs: Optional[TaskTrialSpec] = None,
-    ) -> Mapping[str, go.Figure]:
+    ) -> Mapping[str, "go.Figure"]:
         """Returns a basic set of plots to visualize performance on the task."""
         ...
 
@@ -1499,7 +1500,7 @@ class SimpleReaches(AbstractTask):
 
     def validation_plots(
         self, states, trial_specs: Optional[TaskTrialSpec] = None
-    ) -> dict[str, go.Figure]:
+    ) -> dict[str, "go.Figure"]:
         import feedbax.plot.trajectories as plot
 
         return dict(
@@ -1808,7 +1809,7 @@ class DelayedReaches(AbstractTask):
 
     def validation_plots(
         self, states, trial_specs: Optional[TaskTrialSpec] = None
-    ) -> dict[str, go.Figure]:
+    ) -> dict[str, "go.Figure"]:
         import feedbax.plot.trajectories as plot
 
         return dict(
@@ -1871,7 +1872,7 @@ class Stabilization(AbstractTask):
             timeline=TrialTimeline(self.n_steps),
         )
 
-    def validation_plots(self, states, trial_specs=None) -> Mapping[str, go.Figure]:
+    def validation_plots(self, states, trial_specs=None) -> Mapping[str, "go.Figure"]:
         return dict()
 
     def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
