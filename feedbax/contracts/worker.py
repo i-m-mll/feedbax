@@ -569,7 +569,7 @@ def supervised_task_trainer_mapping() -> tuple[WorkerMappingRow, ...]:
 
 PPO_MAPPING_TABLE: tuple[WorkerMappingRow, ...] = (
     WorkerMappingRow(
-        source="feedbax.training.rl.ppo.train_ppo",
+        source="feedbax.training.rl.ppo.train_ppo_batched",
         phase="collect_rollout",
         axes=["environment", "rollout"],
         state_slots=["policy", "environment_state", "prng", "rollout", "observation_norm"],
@@ -586,7 +586,7 @@ PPO_MAPPING_TABLE: tuple[WorkerMappingRow, ...] = (
         notes="GAE is an auxiliary/intermediate state slot, not a method runner.",
     ),
     WorkerMappingRow(
-        source="feedbax.training.rl.ppo.train_ppo",
+        source="feedbax.training.rl.ppo.train_ppo_batched",
         phase="ppo_epoch_minibatch",
         axes=["epoch", "minibatch", "environment"],
         state_slots=["policy", "policy_optimizer", "value_optimizer", "gae_state", "prng"],

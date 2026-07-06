@@ -18,7 +18,6 @@ from feedbax.training.rl.ppo import (
     train_ppo_batched,
     _collect_rollout,
     _init_envs,
-    compute_gae_scan,
 )
 from feedbax.training.rl.rewards import RewardConfig
 from feedbax.training.rl.tasks import TASK_REACH, TASK_HOLD
@@ -69,18 +68,24 @@ def presets(key):
 @pytest.fixture
 def batched_plant(presets, chain_config, sim_config):
     return MJXPlant.build_batch(
-        presets, chain_config, sim_config, clip_states=False,
+        presets,
+        chain_config,
+        sim_config,
+        clip_states=False,
     )
 
 
 @pytest.fixture
 def single_plant(presets, chain_config, sim_config):
     return MJXPlant.from_body_preset(
-        presets[0], chain_config, sim_config, clip_states=False,
+        presets[0],
+        chain_config,
+        sim_config,
+        clip_states=False,
     )
 
 
-B = 3   # number of bodies in test batch
+B = 3  # number of bodies in test batch
 N = 32  # parallel envs (small for CPU tests)
 
 
@@ -113,10 +118,7 @@ class TestBatchedCollect:
 
         # Create batched policy + states
         key, pk, ek = jax.random.split(key, 3)
-        policies = [
-            ActorCritic(obs_dim, action_dim, 32, 1, key=k)
-            for k in jax.random.split(pk, B)
-        ]
+        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
         batched_policy = _stack_pytrees(*policies)
 
         env_keys = jax.random.split(ek, B)
@@ -128,7 +130,13 @@ class TestBatchedCollect:
         keys = jax.random.split(key, B)
         states, rollout, last_values, _ = eqx.filter_vmap(
             lambda pl, pol, st, k: _collect_rollout(
-                pl, env_config, pol, st, k, n_steps, N,
+                pl,
+                env_config,
+                pol,
+                st,
+                k,
+                n_steps,
+                N,
             ),
         )(batched_plant, batched_policy, batched_states, keys)
 
@@ -143,10 +151,7 @@ class TestBatchedCollect:
         action_dim = env_config.n_muscles
 
         key, pk, ek = jax.random.split(key, 3)
-        policies = [
-            ActorCritic(obs_dim, action_dim, 32, 1, key=k)
-            for k in jax.random.split(pk, B)
-        ]
+        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
         batched_policy = _stack_pytrees(*policies)
 
         env_keys = jax.random.split(ek, B)
@@ -157,7 +162,13 @@ class TestBatchedCollect:
         keys = jax.random.split(key, B)
         _, rollout, _, _ = eqx.filter_vmap(
             lambda pl, pol, st, k: _collect_rollout(
-                pl, env_config, pol, st, k, 16, N,
+                pl,
+                env_config,
+                pol,
+                st,
+                k,
+                16,
+                N,
             ),
         )(batched_plant, batched_policy, batched_states, keys)
 
@@ -172,15 +183,13 @@ class TestBatchedUpdate:
         action_dim = env_config.n_muscles
 
         key, pk, ek = jax.random.split(key, 3)
-        policies = [
-            ActorCritic(obs_dim, action_dim, 32, 1, key=k)
-            for k in jax.random.split(pk, B)
-        ]
+        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
         batched_policy = _stack_pytrees(*policies)
 
         # Get shapes before update
-        shapes_before = [leaf.shape for leaf in jt.leaves(batched_policy)
-                         if isinstance(leaf, jnp.ndarray)]
+        shapes_before = [
+            leaf.shape for leaf in jt.leaves(batched_policy) if isinstance(leaf, jnp.ndarray)
+        ]
 
         # Run short training (1 update)
         config = PPOConfig(
@@ -192,11 +201,16 @@ class TestBatchedUpdate:
             hidden_layers=1,
         )
         trained_policy, metrics = train_ppo_batched(
-            batched_plant, env_config, config, key, n_envs=N,
+            batched_plant,
+            env_config,
+            config,
+            key,
+            n_envs=N,
         )
 
-        shapes_after = [leaf.shape for leaf in jt.leaves(trained_policy)
-                        if isinstance(leaf, jnp.ndarray)]
+        shapes_after = [
+            leaf.shape for leaf in jt.leaves(trained_policy) if isinstance(leaf, jnp.ndarray)
+        ]
         assert shapes_before == shapes_after
 
 
@@ -208,15 +222,16 @@ class TestBatchedRollout:
         R = 2
 
         key, pk = jax.random.split(key)
-        policies = [
-            ActorCritic(obs_dim, action_dim, 32, 1, key=k)
-            for k in jax.random.split(pk, B)
-        ]
+        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
         batched_policy = _stack_pytrees(*policies)
 
         task_types = jnp.array([TASK_REACH, TASK_HOLD])
         result = collect_rollouts_batched(
-            batched_plant, env_config, batched_policy, key, task_types,
+            batched_plant,
+            env_config,
+            batched_policy,
+            key,
+            task_types,
         )
 
         T = env_config.n_steps
@@ -235,19 +250,19 @@ class TestBatchedRollout:
         action_dim = env_config.n_muscles
 
         key, pk = jax.random.split(key)
-        policies = [
-            ActorCritic(obs_dim, action_dim, 32, 1, key=k)
-            for k in jax.random.split(pk, B)
-        ]
+        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
         batched_policy = _stack_pytrees(*policies)
 
         task_types = jnp.array([TASK_REACH])
         result = collect_rollouts_batched(
-            batched_plant, env_config, batched_policy, key, task_types,
+            batched_plant,
+            env_config,
+            batched_policy,
+            key,
+            task_types,
         )
 
-        for name in ("joint_angles", "joint_velocities", "muscle_activations",
-                      "effector_pos"):
+        for name in ("joint_angles", "joint_velocities", "muscle_activations", "effector_pos"):
             assert jnp.all(jnp.isfinite(result[name])), f"Non-finite in {name}"
 
 
@@ -264,7 +279,11 @@ class TestBatchedTrainShort:
             hidden_layers=1,
         )
         _, metrics = train_ppo_batched(
-            batched_plant, env_config, config, key, n_envs=N,
+            batched_plant,
+            env_config,
+            config,
+            key,
+            n_envs=N,
         )
 
         returns = metrics["per_body_mean_return"]
