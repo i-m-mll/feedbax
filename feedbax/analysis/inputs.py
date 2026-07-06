@@ -213,16 +213,15 @@ PortsType = TypeVar("PortsType", bound=AbstractAnalysisPorts)
 class CallWithDeps:
     """Plug dependency specs into arbitrary argument positions."""
 
-    _counter = 0
-
     def __init__(self, *pos_specs: Any, **kw_specs: Any):
         self.pos_specs = pos_specs
         self.kw_specs = kw_specs
+        self._port_prefix = f"__cwd_{id(self):x}"
+        self._counter = 0
 
-    @staticmethod
-    def _alloc_port() -> str:
-        CallWithDeps._counter += 1
-        return f"__cwd_{CallWithDeps._counter:x}"
+    def _alloc_port(self) -> str:
+        self._counter += 1
+        return f"{self._port_prefix}_{self._counter:x}"
 
     def __call__(self, fn: Callable):
         spec_map: dict[str, Any] = {}

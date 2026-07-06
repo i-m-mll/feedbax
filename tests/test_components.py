@@ -224,6 +224,50 @@ def test_simplestagednetwork_preserves_explicit_float64_trainable_leaves():
         assert net._initial_state.hidden.dtype == jnp.float64
 
 
+def test_simplestagednetwork_rejects_custom_factory_that_cannot_honor_dtype():
+    class NoDtypeCell(eqx.Module):
+        weight: jax.Array
+
+        def __init__(self, input_size, hidden_size, use_bias=True, *, key):
+            del use_bias
+            self.weight = jax.random.normal(key, (hidden_size, input_size))
+
+        def __call__(self, x, hidden):
+            return self.weight @ x + hidden
+
+    with jax.experimental.enable_x64():
+        with pytest.raises(TypeError, match="does not accept a dtype keyword"):
+            SimpleStagedNetwork(
+                input_size=2,
+                hidden_size=3,
+                out_size=1,
+                hidden_type=NoDtypeCell,
+                dtype=jnp.float64,
+                key=jax.random.PRNGKey(0),
+            )
+
+
+def test_simplestagednetwork_rejects_hidden_cell_with_no_input_argument():
+    class NoInputCell(eqx.Module):
+        def __init__(self, input_size, hidden_size, use_bias=True, *, key, dtype=jnp.float32):
+            del input_size, hidden_size, use_bias, key, dtype
+
+        def __call__(self):
+            return jnp.array([0.0], dtype=jnp.float32)
+
+    net = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=1,
+        out_size=1,
+        hidden_type=NoInputCell,
+        key=jax.random.PRNGKey(0),
+    )
+    state = init_state_from_component(net)
+
+    with pytest.raises(TypeError, match="must accept either"):
+        net({"input": jnp.ones((2,), dtype=jnp.float32)}, state, key=jax.random.PRNGKey(1))
+
+
 def test_simplestagednetwork_threads_key_to_stochastic_hidden_cell() -> None:
     net = SimpleStagedNetwork(
         input_size=2,

@@ -485,10 +485,62 @@ def _supports_keyword(factory: Callable[..., Module], keyword: str) -> bool:
     )
 
 
-def _trainable_dtype_kwargs(factory: Callable[..., Module], dtype: object) -> dict[str, object]:
+def _trainable_dtype_kwargs(
+    factory: Callable[..., Module],
+    dtype: object,
+    *,
+    path: str,
+) -> dict[str, object]:
     if _supports_keyword(factory, "dtype"):
         return {"dtype": dtype}
+    if jnp.dtype(dtype) != jnp.dtype(jnp.float32):
+        raise TypeError(
+            f"{path} does not accept a dtype keyword, so SimpleStagedNetwork cannot "
+            f"honor dtype={dtype!r}. Wrap the factory to accept and forward dtype, "
+            "or use the default float32 dtype."
+        )
     return {}
+
+
+def _hidden_cell(
+    hidden_type: Callable[..., Module],
+    input_size: int,
+    hidden_size: int,
+    *,
+    use_bias: bool,
+    dtype: object,
+    key: PRNGKeyArray,
+) -> Module:
+    return hidden_type(
+        input_size,
+        hidden_size,
+        use_bias=use_bias,
+        key=key,
+        **_trainable_dtype_kwargs(
+            hidden_type,
+            dtype,
+            path="SimpleStagedNetwork.hidden_type",
+        ),
+    )
+
+
+def _mask_hidden_input_kernel(
+    hidden: Module,
+    population_structure: PopulationStructure | None,
+    input_size: int,
+    hidden_size: int,
+) -> Module:
+    if population_structure is None or not hasattr(hidden, "weight_ih"):
+        return hidden
+    weight_ih_shape = hidden.weight_ih.shape
+    gate_count = infer_recurrent_gate_count(weight_ih_shape[0], hidden_size)
+    hidden_input_mask = population_input_kernel_mask(
+        population_structure,
+        input_size,
+        gate_count=gate_count,
+    )
+    masked_weight_ih = hidden.weight_ih * hidden_input_mask
+    return eqx.tree_at(lambda h: h.weight_ih, hidden, masked_weight_ih)
 
 
 def _is_all_ones_mask(mask: Array) -> bool:
@@ -745,6 +797,8 @@ class SimpleStagedNetwork(Component):
             key: Random key for initialising the network.
         """
         key1, key2, key3 = jr.split(key, 3)
+        if dtype is None:
+            dtype = jnp.float32
 
         self.input_size = input_size
         self.population_structure = population_structure
@@ -786,81 +840,33 @@ class SimpleStagedNetwork(Component):
                     layer_input_size,
                     encoding_size,
                     key=key2,
-                    **_trainable_dtype_kwargs(encoder_type, dtype),
+                    **_trainable_dtype_kwargs(
+                        encoder_type,
+                        dtype,
+                        path="SimpleStagedNetwork.encoder_type",
+                    ),
                 )
             self.encoding_size = encoding_size
-
-            # Create hidden layer - if we have population structure, we need to mask
-            # the connection from encoder to hidden
-            if population_structure is not None:
-                # For RNN cells like GRUCell, we need to mask the input weights
-                # Create the hidden layer first, then mask its input weights
-                hidden = hidden_type(
-                    encoding_size,
-                    hidden_size,
-                    use_bias=use_bias,
-                    key=key1,
-                    **_trainable_dtype_kwargs(hidden_type, dtype),
-                )
-
-                # Mask the input->hidden weights (weight_ih for GRU/RNN)
-                if hasattr(hidden, "weight_ih"):
-                    # For GRUCell, weight_ih is (3*hidden_size, input_size) for reset, update, candidate
-                    weight_ih_shape = hidden.weight_ih.shape
-
-                    gate_count = infer_recurrent_gate_count(weight_ih_shape[0], hidden_size)
-                    hidden_input_mask = population_input_kernel_mask(
-                        population_structure,
-                        encoding_size,
-                        gate_count=gate_count,
-                    )
-
-                    masked_weight_ih = hidden.weight_ih * hidden_input_mask
-                    hidden = eqx.tree_at(lambda h: h.weight_ih, hidden, masked_weight_ih)
-
-                self.hidden = hidden
-            else:
-                self.hidden = hidden_type(
-                    encoding_size,
-                    hidden_size,
-                    use_bias=use_bias,
-                    key=key1,
-                    **_trainable_dtype_kwargs(hidden_type, dtype),
-                )
+            hidden_input_size = encoding_size
         else:
-            # No encoder - input goes directly to hidden layer
-            if population_structure is not None:
-                hidden = hidden_type(
-                    layer_input_size,
-                    hidden_size,
-                    use_bias=use_bias,
-                    key=key1,
-                    **_trainable_dtype_kwargs(hidden_type, dtype),
-                )
+            self.encoding_size = None
+            self.encoder = None
+            hidden_input_size = layer_input_size
 
-                # Mask the input->hidden weights
-                if hasattr(hidden, "weight_ih"):
-                    weight_ih_shape = hidden.weight_ih.shape
-
-                    gate_count = infer_recurrent_gate_count(weight_ih_shape[0], hidden_size)
-                    hidden_input_mask = population_input_kernel_mask(
-                        population_structure,
-                        layer_input_size,
-                        gate_count=gate_count,
-                    )
-
-                    masked_weight_ih = hidden.weight_ih * hidden_input_mask
-                    hidden = eqx.tree_at(lambda h: h.weight_ih, hidden, masked_weight_ih)
-
-                self.hidden = hidden
-            else:
-                self.hidden = hidden_type(
-                    layer_input_size,
-                    hidden_size,
-                    use_bias=use_bias,
-                    key=key1,
-                    **_trainable_dtype_kwargs(hidden_type, dtype),
-                )
+        hidden = _hidden_cell(
+            hidden_type,
+            hidden_input_size,
+            hidden_size,
+            use_bias=use_bias,
+            dtype=dtype,
+            key=key1,
+        )
+        self.hidden = _mask_hidden_input_kernel(
+            hidden,
+            population_structure,
+            hidden_input_size,
+            hidden_size,
+        )
 
         self.hidden_size = hidden_size
         self.hidden_nonlinearity = hidden_nonlinearity
@@ -892,7 +898,11 @@ class SimpleStagedNetwork(Component):
                     hidden_size,
                     out_size,
                     key=key3,
-                    **_trainable_dtype_kwargs(readout_type, dtype),
+                    **_trainable_dtype_kwargs(
+                        readout_type,
+                        dtype,
+                        path="SimpleStagedNetwork.readout_type",
+                    ),
                 )
 
             if (bias := getattr(readout, "bias", None)) is not None:
@@ -933,6 +943,35 @@ class SimpleStagedNetwork(Component):
         if self.hidden_noise_std is None:
             return state
         return state + self.hidden_noise_std * jr.normal(key, state.shape, dtype=state.dtype)
+
+    def _call_hidden(
+        self,
+        x_hidden: PyTree,
+        previous_hidden: PyTree,
+        *,
+        key: PRNGKeyArray,
+    ) -> PyTree:
+        positional_args = n_positional_args(self.hidden)  # type: ignore[arg-type]
+        if positional_args == 1:
+            args = (x_hidden,)
+        elif positional_args >= 2:
+            args = (x_hidden, previous_hidden)
+        else:
+            raise TypeError(
+                "SimpleStagedNetwork hidden module must accept either "
+                "(input) or (input, hidden_state) positional arguments"
+            )
+
+        try:
+            if _accepts_key_argument(self.hidden):  # type: ignore[arg-type]
+                return self.hidden(*args, key=key)  # type: ignore[misc]
+            return self.hidden(*args)  # type: ignore[misc]
+        except TypeError as exc:
+            raise TypeError(
+                "SimpleStagedNetwork hidden module call failed. Expected a callable "
+                "compatible with (input), (input, *, key=...), "
+                "(input, hidden_state), or (input, hidden_state, *, key=...)."
+            ) from exc
 
     input_ports = ("input", "feedback")
     output_ports = ("output", "hidden")
@@ -984,16 +1023,7 @@ class SimpleStagedNetwork(Component):
 
         key_hidden, key_hidden_noise = jr.split(key)
 
-        if n_positional_args(self.hidden) == 1:  # type: ignore
-            if _accepts_key_argument(self.hidden):  # type: ignore
-                hidden = self.hidden(x_hidden, key=key_hidden)  # type: ignore
-            else:
-                hidden = self.hidden(x_hidden)  # type: ignore
-        else:
-            if _accepts_key_argument(self.hidden):  # type: ignore
-                hidden = self.hidden(x_hidden, net_state.hidden, key=key_hidden)  # type: ignore
-            else:
-                hidden = self.hidden(x_hidden, net_state.hidden)  # type: ignore
+        hidden = self._call_hidden(x_hidden, net_state.hidden, key=key_hidden)
 
         hidden = self.hidden_nonlinearity(hidden)
         if self.hidden_noise_std is not None:

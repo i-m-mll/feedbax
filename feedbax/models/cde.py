@@ -105,6 +105,7 @@ class CDENetwork(Component):
     h0: Float[Array, "hidden_dim"]
     anti_nf_gate: Union[eqx.nn.GRUCell, None]
     alpha: float
+    dtype: object = field(static=True)
 
     state_index: StateIndex
     _initial_state: CDENetworkState = field(static=True)
@@ -124,6 +125,7 @@ class CDENetwork(Component):
         decay: float = 0.1,
         use_anti_nf: bool = True,
         alpha: float = 1.0,
+        dtype: object = jnp.float32,
         *,
         key: PRNGKeyArray,
     ):
@@ -145,6 +147,8 @@ class CDENetwork(Component):
             use_anti_nf: Whether to add Anti-NF gated decay on top of
                 fixed decay (True) or use fixed decay only (False).
             alpha: Feedback strength scalar for Anti-NF gated decay.
+            dtype: Dtype for trainable neural/controller leaves and initial
+                state arrays.
             key: PRNG key for parameter initialization.
         """
         key_vf, key_readout, key_h0, key_gate = jr.split(key, 4)
@@ -161,12 +165,16 @@ class CDENetwork(Component):
         self.decay = decay
         self.use_anti_nf = use_anti_nf
         self.alpha = alpha
+        self.dtype = dtype
 
         # Anti-NF gated decay (DeNOTS): GRU receives obs as input, -h as
         # hidden state, producing learned input-dependent negative feedback.
         if use_anti_nf:
             self.anti_nf_gate = eqx.nn.GRUCell(
-                input_size=obs_dim, hidden_size=hidden_dim, key=key_gate,
+                input_size=obs_dim,
+                hidden_size=hidden_dim,
+                dtype=dtype,
+                key=key_gate,
             )
         else:
             self.anti_nf_gate = None
@@ -180,25 +188,28 @@ class CDENetwork(Component):
             width_size=vf_width,
             depth=vf_depth,
             final_activation=jax.nn.tanh,
+            dtype=dtype,
             key=key_vf,
         )
 
         # Readout: h -> action_dim
-        self.readout = eqx.nn.Linear(hidden_dim, out_size, key=key_readout)
+        self.readout = eqx.nn.Linear(hidden_dim, out_size, dtype=dtype, key=key_readout)
         # Quiescent start: sigmoid(-5) ≈ 0.007, muscles start near-zero
         self.readout = eqx.tree_at(
-            lambda layer: layer.bias, self.readout, -5.0 * jnp.ones(out_size)
+            lambda layer: layer.bias,
+            self.readout,
+            -5.0 * jnp.ones(out_size, dtype=dtype),
         )
 
         # Learned initial hidden state (small random init)
-        self.h0 = 0.01 * jr.normal(key_h0, (hidden_dim,))
+        self.h0 = 0.01 * jr.normal(key_h0, (hidden_dim,), dtype=dtype)
 
         # Build initial state for Equinox State management
         init_state = CDENetworkState(
-            input=jnp.zeros(obs_dim),
+            input=jnp.zeros(obs_dim, dtype=dtype),
             hidden=self.h0,
-            output=jnp.zeros(out_size),
-            obs_prev=jnp.zeros(obs_dim),
+            output=jnp.zeros(out_size, dtype=dtype),
+            obs_prev=jnp.zeros(obs_dim, dtype=dtype),
         )
         self._initial_state = init_state
         self.state_index = StateIndex(init_state)
@@ -294,14 +305,16 @@ class CDENetwork(Component):
             raise ValueError("CDENetwork requires at least one input.")
 
         if input_value is None:
-            flat_input = jnp.zeros((0,))
+            flat_input = jnp.zeros((0,), dtype=self.dtype)
         else:
             flat_input, _ = ravel_pytree(input_value)
+            flat_input = jnp.asarray(flat_input, dtype=self.dtype)
 
         if feedback_value is None:
-            flat_feedback = jnp.zeros((0,))
+            flat_feedback = jnp.zeros((0,), dtype=self.dtype)
         else:
             flat_feedback, _ = ravel_pytree(feedback_value)
+            flat_feedback = jnp.asarray(flat_feedback, dtype=self.dtype)
 
         obs = jnp.concatenate([flat_input, flat_feedback], axis=-1)
 
