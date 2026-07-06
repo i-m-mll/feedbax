@@ -18,7 +18,11 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
 )
 from feedbax.contracts.worker import AxisReducerSpec, toy_adaptive_curriculum_method_contract
-from feedbax.objectives.service import LossService, ObjectiveLoweringError
+from feedbax.objectives.service import (
+    LossService,
+    ObjectiveLoweringError,
+    loss_term_spec_to_objective_spec,
+)
 from feedbax.objectives.spec import (
     EpochMaskSpec,
     MatrixPayloadSpec,
@@ -445,6 +449,34 @@ def _state_selector(selector: str) -> SelectorAddressSpec:
     )
 
 
+def _legacy_expected_target_state(norm: str, time_mode: str) -> jnp.ndarray:
+    diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
+    if norm == "squared_l2":
+        values = jnp.sum(jnp.square(diff), axis=-1)
+    elif norm == "l1":
+        values = jnp.sum(jnp.abs(diff), axis=-1)
+    elif norm == "l2":
+        values = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1))
+    elif norm == "huber":
+        abs_diff = jnp.abs(diff)
+        values = jnp.sum(
+            jnp.where(abs_diff <= 1.0, 0.5 * jnp.square(diff), abs_diff - 0.5),
+            axis=-1,
+        )
+    else:
+        raise AssertionError(f"unexpected norm {norm!r}")
+
+    if time_mode in {"all", "mean"}:
+        values = jnp.mean(values, axis=1)
+    elif time_mode == "sum":
+        values = jnp.sum(values, axis=1)
+    elif time_mode == "final":
+        values = jnp.take(values, -1, axis=1)
+    else:
+        raise AssertionError(f"unexpected time mode {time_mode!r}")
+    return jnp.mean(values)
+
+
 class TestExecutableLowering:
     def test_loss_term_lowers_to_executable_loss_matching_hand_reduction(self) -> None:
         spec = LossTermSpec(
@@ -480,6 +512,107 @@ class TestExecutableLowering:
 
         diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
         expected = jnp.mean(jnp.sum(jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1)), axis=1))
+        assert jnp.allclose(value, expected)
+
+    @pytest.mark.parametrize("norm", ["squared_l2", "l1", "l2", "huber"])
+    @pytest.mark.parametrize("time_mode", ["all", "mean", "sum", "final"])
+    def test_loss_term_adapter_preserves_legacy_norm_and_time_values(
+        self,
+        norm: str,
+        time_mode: str,
+    ) -> None:
+        spec = LossTermSpec(
+            type="target_state",
+            label="output",
+            selector="state.output",
+            target_value=[1.0, 0.0],
+            norm=norm,
+            time_agg=TimeAggregationSpec(mode=time_mode),
+        )
+
+        objective = loss_term_spec_to_objective_spec(spec)
+        assert objective.terms[0].reduction == ReductionSpec(
+            time="mean" if time_mode == "all" else time_mode,
+            trial="mean",
+            feature="sum",
+        )
+        if norm == "huber":
+            assert objective.terms[0].metric.huber_delta == 1.0
+
+        lowered = LossService().lower_loss_term_spec(spec)
+        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        assert jnp.allclose(value, _legacy_expected_target_state(norm, time_mode))
+
+    def test_loss_term_adapter_rejects_range_time_aggregation(self) -> None:
+        spec = LossTermSpec(
+            type="target_state",
+            label="output",
+            selector="state.output",
+            target_value=[1.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="range", start=0, end=2),
+        )
+
+        with pytest.raises(ObjectiveLoweringError, match="no ObjectiveSpec equivalent"):
+            LossService().lower_loss_term_spec(spec)
+
+    def test_loss_term_adapter_rejects_inert_legacy_discount(self) -> None:
+        spec = LossTermSpec(
+            type="target_state",
+            label="output",
+            selector="state.output",
+            target_value=[1.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="mean", discount="power", discount_exp=2.0),
+        )
+
+        with pytest.raises(ObjectiveLoweringError, match="time_agg.discount"):
+            LossService().lower_loss_term_spec(spec)
+
+    def test_modern_objective_huber_delta_controls_threshold(self) -> None:
+        spec = ObjectiveSpec(
+            terms=[
+                TargetStateLossSpec(
+                    label="output_huber",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[1.0, 0.0]),
+                    metric={"kind": "huber", "huber_delta": 0.5},
+                    reduction=ReductionSpec(time="mean", trial="mean", feature="sum"),
+                )
+            ],
+        )
+
+        lowered = LossService().lower_objective_spec(spec)
+        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
+        abs_diff = jnp.abs(diff)
+        expected_terms = jnp.where(abs_diff <= 0.5, 0.5 * jnp.square(diff), 0.5 * (abs_diff - 0.25))
+        expected = jnp.mean(jnp.mean(jnp.sum(expected_terms, axis=-1), axis=1))
+        assert jnp.allclose(value, expected)
+
+    def test_objective_selector_value_dtype_casts_selected_value(self) -> None:
+        spec = ObjectiveSpec(
+            terms=[
+                TargetStateLossSpec(
+                    label="output_dtype",
+                    selector=SelectorAddressSpec(
+                        selector="state.output",
+                        kind="state",
+                        value_dtype="float16",
+                        temporal_axis="time",
+                        feature_axis="coordinate",
+                    ),
+                    target=TargetValueSpec(kind="constant", value=[1.0, 0.0]),
+                    reduction=ReductionSpec(time="mean", trial="mean", feature="sum"),
+                )
+            ],
+        )
+
+        lowered = LossService().lower_objective_spec(spec)
+        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        diff = _runtime_state().output.astype(jnp.float16) - jnp.asarray([1.0, 0.0])
+        expected = jnp.mean(jnp.mean(jnp.sum(jnp.square(diff), axis=-1), axis=1))
         assert jnp.allclose(value, expected)
 
     def test_objective_spec_l2_uses_euclidean_feature_norm(self) -> None:
@@ -601,7 +734,7 @@ class TestExecutableLowering:
         with pytest.raises(ObjectiveLoweringError) as excinfo:
             lowered.loss(_runtime_state(), SimpleNamespace(), None).total
 
-        assert "/loss/matrix" in str(excinfo.value)
+        assert "/loss/terms/0/matrix" in str(excinfo.value)
         assert "feature dimension" in str(excinfo.value)
 
     def test_unsupported_epoch_schedule_error_names_path(self) -> None:

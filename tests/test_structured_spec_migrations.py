@@ -14,6 +14,11 @@ from feedbax.contracts.migrations import (
     migrate_studio_scenario_spec,
     migrate_studio_stage_spec,
     migrate_studio_task_binding_spec,
+    migrate_structured_spec_payload,
+)
+from feedbax.contracts.training import (
+    LOSS_TERM_SPEC_SCHEMA_VERSION,
+    LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -220,6 +225,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
     assert families["TrainingRunSpec"].current_version == "feedbax.spec.training_run.v1"
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
+    assert families["LossTermSpec"].identity == "feedbax.spec.training.loss_term"
+    assert families["LossTermSpec"].current_version == LOSS_TERM_SPEC_SCHEMA_VERSION
     assert (
         families["StandardSupervisedMethodPayload"].identity
         == "feedbax.spec.training_method.standard_supervised_payload"
@@ -287,6 +294,62 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["SpecPayload"].namespace == SchemaNamespaceKind.MANIFEST
     assert not families["RegistryEntry"].durable
     assert not families["StudioSchemaRegistry"].durable
+
+
+def test_loss_term_spec_v1_migrates_to_v2_schema_identity() -> None:
+    result = migrate_structured_spec_payload(
+        "LossTermSpec",
+        {
+            "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+            "type": "TargetStateLoss",
+            "label": "position",
+            "selector": "state.output",
+            "target_value": [1.0, 0.0],
+            "norm": "huber",
+            "time_agg": {"mode": "final"},
+        },
+        path="loss",
+    )
+
+    assert result.target_version == LOSS_TERM_SPEC_SCHEMA_VERSION
+    assert result.payload["schema_id"] == "feedbax.spec.training.loss_term"
+    assert result.payload["schema_version"] == LOSS_TERM_SPEC_SCHEMA_VERSION
+    assert result.payload["type"] == "TargetStateLoss"
+    assert [record.migration_id for record in result.migration_records] == [
+        "loss-term-spec-v1-to-v2-objective-adapter"
+    ]
+
+
+def test_loss_term_spec_current_version_accepts_without_migration() -> None:
+    payload = {
+        "schema_id": "feedbax.spec.training.loss_term",
+        "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION,
+        "type": "TargetStateLoss",
+        "label": "position",
+        "selector": "state.output",
+        "target_value": [1.0, 0.0],
+    }
+
+    result = migrate_structured_spec_payload("LossTermSpec", payload, path="loss")
+
+    assert result.payload == payload
+    assert not result.migrated
+
+
+def test_loss_term_spec_v1_migration_rejects_unmapped_range_mode() -> None:
+    with pytest.raises(ValueError, match="no ObjectiveSpec equivalent"):
+        migrate_structured_spec_payload(
+            "LossTermSpec",
+            {
+                "schema_version": LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+                "type": "TargetStateLoss",
+                "label": "position",
+                "selector": "state.output",
+                "target_value": [1.0, 0.0],
+                "time_agg": {"mode": "range", "start": 0, "end": 2},
+            },
+            path="loss",
+        )
 
 
 def test_manifest_schema_identities_survive_contract_package_move() -> None:

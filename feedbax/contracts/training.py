@@ -31,6 +31,9 @@ from feedbax.contracts.worker import (
 
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
 TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v1"
+LOSS_TERM_SPEC_SCHEMA_ID = "feedbax.spec.training.loss_term"
+LOSS_TERM_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training.loss_term.v1"
+LOSS_TERM_SPEC_SCHEMA_VERSION = "feedbax.spec.training.loss_term.v2"
 STANDARD_SUPERVISED_METHOD_REF = "feedbax/standard_supervised/v1"
 STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID = (
     "feedbax.spec.training_method.standard_supervised_payload"
@@ -62,6 +65,8 @@ class TimeAggregationSpec(BaseModel):
 class LossTermSpec(BaseModel):
     """Specification for a loss term."""
 
+    schema_id: Literal["feedbax.spec.training.loss_term"] = LOSS_TERM_SPEC_SCHEMA_ID
+    schema_version: str = LOSS_TERM_SPEC_SCHEMA_VERSION
     type: str
     label: str
     weight: float = 1.0

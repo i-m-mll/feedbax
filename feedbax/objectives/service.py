@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
@@ -15,13 +16,16 @@ from feedbax.objectives.spec import (
     ConstantScheduleSpec,
     EpochMaskSpec,
     FiniteDifferenceLossSpec,
+    MatrixPayloadSpec,
     MatrixQuadraticLossSpec,
+    MetricSpec,
     MovementEpochRampScheduleSpec,
     ObjectiveExecutionRequirements,
     ObjectiveSpec,
     ObjectiveTermSpec,
     PowerLawScheduleSpec,
     ReductionSpec,
+    SelectorAddressSpec,
     TargetStateLossSpec,
     TargetValueSpec,
     TaskTimelineSpec,
@@ -63,11 +67,24 @@ class TargetSpecResult:
 
 NORM_FUNCTIONS: Dict[str, str] = {
     "squared_l2": "feedbax.loss.norms.squared_l2",
+    "squared": "feedbax.loss.norms.squared_l2",
     "l2": "feedbax.loss.norms.l2",
     "l1": "feedbax.loss.norms.l1",
+    "absolute": "feedbax.loss.norms.l1",
     "huber": "feedbax.loss.norms.huber",
 }
-_TARGET_REQUIRED_LOSS_TYPES = {"TargetStateLoss", "target_state"}
+_LEGACY_LOSS_TYPE_ALIASES = {
+    "TargetStateLoss": "target_state",
+    "target_state": "target_state",
+    "MatrixQuadraticLoss": "matrix_quadratic",
+    "matrix_quadratic": "matrix_quadratic",
+}
+_LEGACY_TIME_REDUCTION = {
+    "all": "mean",
+    "mean": "mean",
+    "sum": "sum",
+    "final": "final",
+}
 
 
 class ObjectiveLoweringError(ValueError):
@@ -93,13 +110,14 @@ class SelectorObjectiveLoss(AbstractLoss):
 
     label: str
     selector: str
+    value_dtype: str | None
     target_selector: str | None
     target_value: Any
     norm: str
+    huber_delta: float | None
     matrix: Any
     matrix_kind: Literal["dense", "diagonal"] | None
-    time_agg: TimeAggregationSpec | None
-    reduction: ReductionSpec | None
+    reduction: ReductionSpec
     mask: EpochMaskSpec | None
     schedule: ConstantScheduleSpec | PowerLawScheduleSpec | MovementEpochRampScheduleSpec | None
     timeline: TaskTimelineSpec | None
@@ -113,6 +131,11 @@ class SelectorObjectiveLoss(AbstractLoss):
             model,
             self.selector,
             path=f"{self.path}/selector",
+        )
+        source = _cast_declared_dtype(
+            source,
+            self.value_dtype,
+            path=f"{self.path}/selector/value_dtype",
         )
         if self.target_selector is not None:
             target = _select_runtime_value(
@@ -135,12 +158,11 @@ class SelectorObjectiveLoss(AbstractLoss):
         values = _metric_values(
             diff,
             norm=self.norm,
+            huber_delta=self.huber_delta,
             matrix=self.matrix,
             matrix_kind=self.matrix_kind,
             path=self.path,
         )
-        if self.reduction is None:
-            values = _legacy_reduce_feature_metric(values, self.norm)
         values = _apply_time_weights(
             values,
             mask=self.mask,
@@ -148,14 +170,12 @@ class SelectorObjectiveLoss(AbstractLoss):
             timeline=self.timeline,
             path=self.path,
         )
-        if self.reduction is not None:
-            return _reduce_objective_values(
-                values,
-                self.reduction,
-                norm=self.norm,
-                path=f"{self.path}/reduction",
-            )
-        return _reduce_legacy_values(values, self.time_agg, path=f"{self.path}/time_agg")
+        return _reduce_objective_values(
+            values,
+            self.reduction,
+            norm=self.norm,
+            path=f"{self.path}/reduction",
+        )
 
 
 class LossService:
@@ -530,12 +550,17 @@ class LossService:
                     f"{error_path}/{first['field']}",
                     first["message"],
                 )
-        loss = self._lower_loss_term(spec, path=path)
-        requirements = _requirements_from_reductions(
-            (spec.time_agg.mode if spec.time_agg is not None else "all",),
+        objective = loss_term_spec_to_objective_spec(spec, path=path)
+        lowered = self.lower_objective_spec(
+            objective,
             trial_axis=trial_axis,
+            path=path,
         )
-        return LoweredObjective(loss=loss, requirements=requirements, source_kind="loss_term")
+        return LoweredObjective(
+            loss=lowered.loss,
+            requirements=lowered.requirements,
+            source_kind="loss_term",
+        )
 
     def lower_objective_spec(
         self,
@@ -570,52 +595,6 @@ class LossService:
         requirements = _requirements_from_reductions(trial_reductions, trial_axis=trial_axis)
         return LoweredObjective(loss=loss, requirements=requirements, source_kind="objective_spec")
 
-    def _lower_loss_term(self, term: LossTermSpec, *, path: str) -> AbstractLoss:
-        if term.children:
-            terms = {
-                key: self._lower_loss_term(child, path=f"{path}/children/{key}")
-                for key, child in term.children.items()
-            }
-            weights = {key: child.weight for key, child in term.children.items()}
-            return CompositeLoss(terms=terms, weights=weights, label=term.label)
-        if not term.selector:
-            raise ObjectiveLoweringError(f"{path}/selector", f"loss leaf {term.label!r} requires selector")
-        if term.target_selector is not None and term.target_value is not None:
-            raise ObjectiveLoweringError(
-                path,
-                "loss leaf cannot specify both target_selector and target_value",
-            )
-        if term.type not in {"TargetStateLoss", "target_state", "MatrixQuadraticLoss", "matrix_quadratic"}:
-            raise ObjectiveLoweringError(f"{path}/type", f"unknown loss term type {term.type!r}")
-        if term.type in _TARGET_REQUIRED_LOSS_TYPES and term.target_selector is None and term.target_value is None:
-            raise ObjectiveLoweringError(
-                path,
-                "loss leaf requires either target_selector or target_value",
-            )
-        _validate_matrix_payload(term.matrix, term.matrix_kind, path=path)
-        target_value = (
-            0.0
-            if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}
-            and term.target_value is None
-            else term.target_value
-        )
-        return SelectorObjectiveLoss(
-            label=term.label,
-            selector=term.selector,
-            target_selector=term.target_selector,
-            target_value=target_value,
-            norm=term.norm or "squared_l2",
-            matrix=term.matrix,
-            matrix_kind=term.matrix_kind,
-            time_agg=term.time_agg or TimeAggregationSpec(mode="mean"),
-            reduction=None,
-            mask=None,
-            schedule=None,
-            timeline=None,
-            difference_order=0,
-            path=path,
-        )
-
     def _lower_objective_term(
         self,
         term: ObjectiveTermSpec,
@@ -623,35 +602,226 @@ class LossService:
         timeline: TaskTimelineSpec | None,
         path: str,
     ) -> AbstractLoss:
-        if not isinstance(term, (TargetStateLossSpec, MatrixQuadraticLossSpec, FiniteDifferenceLossSpec)):
+        lowerer = _OBJECTIVE_TERM_LOWERERS.get(type(term))
+        if lowerer is None:
             raise ObjectiveLoweringError(f"{path}/type", f"unknown objective term {type(term).__name__}")
+        return lowerer(term, timeline=timeline, path=path)
 
-        target = term.target if isinstance(term, (TargetStateLossSpec, MatrixQuadraticLossSpec)) else None
-        target_selector, target_value = _objective_target_payload(target, path=path)
-        matrix = term.matrix.value if isinstance(term, MatrixQuadraticLossSpec) else None
-        matrix_kind = term.matrix.kind if isinstance(term, MatrixQuadraticLossSpec) else None
-        _validate_matrix_payload(matrix, matrix_kind, path=path)
-        if isinstance(term.schedule, PowerLawScheduleSpec) and term.schedule.window == "epoch":
-            raise ObjectiveLoweringError(
-                f"{path}/schedule",
-                "epoch power-law schedule requires executor timeline binding",
+
+def loss_term_spec_to_objective_spec(
+    spec: LossTermSpec | Mapping[str, Any],
+    *,
+    path: str = "/loss",
+) -> ObjectiveSpec:
+    """Adapt a legacy ``LossTermSpec`` tree to modern objective/reduction specs."""
+
+    root = spec if isinstance(spec, LossTermSpec) else LossTermSpec.model_validate(spec)
+    terms: list[ObjectiveTermSpec] = []
+    used_labels: set[str] = set()
+
+    def visit(term: LossTermSpec, keys: tuple[str, ...], weight: float, term_path: str) -> None:
+        if term.children:
+            for child_key, child in term.children.items():
+                visit(
+                    child,
+                    (*keys, child_key),
+                    weight * child.weight,
+                    f"{term_path}/children/{child_key}",
+                )
+            return
+
+        label = _unique_objective_label("_".join(keys) if keys else term.label, used_labels)
+        used_labels.add(label)
+        terms.append(
+            _legacy_leaf_to_objective_term(
+                term,
+                label=label,
+                weight=weight,
+                path=term_path,
             )
-        return SelectorObjectiveLoss(
-            label=term.label,
-            selector=term.selector.selector,
-            target_selector=target_selector,
-            target_value=target_value,
-            norm=term.metric.kind,
-            matrix=matrix,
-            matrix_kind=matrix_kind,
-            time_agg=None,
-            reduction=term.reduction,
-            mask=term.mask,
-            schedule=term.schedule,
-            timeline=timeline,
-            difference_order=term.order if isinstance(term, FiniteDifferenceLossSpec) else 0,
-            path=path,
         )
+
+    visit(root, (), 1.0, path)
+    if not terms:
+        raise ObjectiveLoweringError(f"{path}/children", "loss spec must contain at least one leaf term")
+    return ObjectiveSpec(
+        terms=terms,
+        metadata={
+            "lowered_from": "feedbax.spec.training.loss_term",
+            "source_schema_version": root.schema_version,
+        },
+    )
+
+
+def _legacy_leaf_to_objective_term(
+    term: LossTermSpec,
+    *,
+    label: str,
+    weight: float,
+    path: str,
+) -> ObjectiveTermSpec:
+    if not term.selector:
+        raise ObjectiveLoweringError(f"{path}/selector", f"loss leaf {term.label!r} requires selector")
+    if term.target_selector is not None and term.target_value is not None:
+        raise ObjectiveLoweringError(
+            path,
+            "loss leaf cannot specify both target_selector and target_value",
+        )
+    term_type = _LEGACY_LOSS_TYPE_ALIASES.get(term.type)
+    if term_type is None:
+        raise ObjectiveLoweringError(f"{path}/type", f"unknown loss term type {term.type!r}")
+
+    reduction = _legacy_reduction_spec(term.time_agg, path=f"{path}/time_agg")
+    metadata = _legacy_term_metadata(term)
+    selector = _selector_address(term.selector, matrix=term_type == "matrix_quadratic")
+
+    if term_type == "target_state":
+        if term.target_selector is None and term.target_value is None:
+            raise ObjectiveLoweringError(
+                path,
+                "loss leaf requires either target_selector or target_value",
+            )
+        return TargetStateLossSpec(
+            label=label,
+            weight=weight,
+            selector=selector,
+            target=_legacy_target_spec(term, path=path),
+            metric=_legacy_metric_spec(term.norm),
+            reduction=reduction,
+            metadata=metadata,
+        )
+
+    _validate_matrix_payload(term.matrix, term.matrix_kind, path=path)
+    if term.matrix is None:
+        raise ObjectiveLoweringError(f"{path}/matrix", "matrix_quadratic loss requires matrix")
+    return MatrixQuadraticLossSpec(
+        label=label,
+        weight=weight,
+        selector=selector,
+        target=_legacy_target_spec(term, path=path, default_value=0.0),
+        matrix=MatrixPayloadSpec(kind=term.matrix_kind or "dense", value=term.matrix),
+        metric=MetricSpec(kind="squared_l2"),
+        reduction=reduction,
+        metadata=metadata,
+    )
+
+
+def _legacy_reduction_spec(
+    time_agg: TimeAggregationSpec | None,
+    *,
+    path: str,
+) -> ReductionSpec:
+    if time_agg is not None and time_agg.discount not in (None, "none"):
+        raise ObjectiveLoweringError(
+            f"{path}/discount",
+            "legacy time_agg.discount has no executable ObjectiveSpec equivalent",
+        )
+    mode = "mean" if time_agg is None else time_agg.mode
+    time = _LEGACY_TIME_REDUCTION.get(mode)
+    if time is None:
+        raise ObjectiveLoweringError(
+            f"{path}/mode",
+            f"legacy time aggregation {mode!r} has no ObjectiveSpec equivalent",
+        )
+    return ReductionSpec(time=time, trial="mean", feature="sum")
+
+
+def _legacy_target_spec(
+    term: LossTermSpec,
+    *,
+    path: str,
+    default_value: Any = None,
+) -> TargetValueSpec:
+    if term.target_selector is not None:
+        return TargetValueSpec(
+            kind="selector",
+            selector=_selector_address(term.target_selector),
+        )
+    value = default_value if term.target_value is None else term.target_value
+    return TargetValueSpec(kind="constant", value=value)
+
+
+def _legacy_metric_spec(norm: str | None) -> MetricSpec:
+    kind = norm or "squared_l2"
+    if kind == "huber":
+        return MetricSpec(kind="huber", huber_delta=1.0)
+    return MetricSpec(kind=kind)
+
+
+def _legacy_term_metadata(term: LossTermSpec) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "legacy_loss_type": term.type,
+    }
+    if term.retention is not None:
+        metadata["legacy_retention"] = term.retention.model_dump(mode="json", exclude_none=True)
+    return metadata
+
+
+def _selector_address(selector: str, *, matrix: bool = False) -> SelectorAddressSpec:
+    kind = "state"
+    if selector.startswith("port:"):
+        kind = "port"
+    elif selector.startswith("probe:"):
+        kind = "probe"
+    elif selector.startswith(("trial_specs.", "task_data.")):
+        kind = "task_data"
+    return SelectorAddressSpec(
+        selector=selector,
+        kind=kind,
+        temporal_axis="time",
+        feature_axis="coordinate" if matrix else None,
+    )
+
+
+def _unique_objective_label(label: str, used: set[str]) -> str:
+    if label not in used:
+        return label
+    index = 1
+    while f"{label}_{index}" in used:
+        index += 1
+    return f"{label}_{index}"
+
+
+def _lower_selector_objective_term(
+    term: TargetStateLossSpec | MatrixQuadraticLossSpec | FiniteDifferenceLossSpec,
+    *,
+    timeline: TaskTimelineSpec | None,
+    path: str,
+) -> AbstractLoss:
+    target = term.target if isinstance(term, (TargetStateLossSpec, MatrixQuadraticLossSpec)) else None
+    target_selector, target_value = _objective_target_payload(target, path=path)
+    matrix = term.matrix.value if isinstance(term, MatrixQuadraticLossSpec) else None
+    matrix_kind = term.matrix.kind if isinstance(term, MatrixQuadraticLossSpec) else None
+    _validate_matrix_payload(matrix, matrix_kind, path=path)
+    if isinstance(term.schedule, PowerLawScheduleSpec) and term.schedule.window == "epoch":
+        raise ObjectiveLoweringError(
+            f"{path}/schedule",
+            "epoch power-law schedule requires executor timeline binding",
+        )
+    return SelectorObjectiveLoss(
+        label=term.label,
+        selector=term.selector.selector,
+        value_dtype=term.selector.value_dtype,
+        target_selector=target_selector,
+        target_value=target_value,
+        norm=term.metric.kind,
+        huber_delta=term.metric.huber_delta,
+        matrix=matrix,
+        matrix_kind=matrix_kind,
+        reduction=term.reduction,
+        mask=term.mask,
+        schedule=term.schedule,
+        timeline=timeline,
+        difference_order=term.order if isinstance(term, FiniteDifferenceLossSpec) else 0,
+        path=path,
+    )
+
+
+_OBJECTIVE_TERM_LOWERERS: dict[type[ObjectiveTermSpec], Callable[..., AbstractLoss]] = {
+    TargetStateLossSpec: _lower_selector_objective_term,
+    MatrixQuadraticLossSpec: _lower_selector_objective_term,
+    FiniteDifferenceLossSpec: _lower_selector_objective_term,
+}
 
 
 def _join_path(base: str, *parts: str) -> str:
@@ -750,10 +920,20 @@ def _resolve_target_value(target: Any, trial_specs: Any, *, path: str) -> Any:
     return target
 
 
+def _cast_declared_dtype(value: Any, dtype: str | None, *, path: str) -> Any:
+    if dtype is None:
+        return value
+    try:
+        return jnp.asarray(value, dtype=jnp.dtype(dtype))
+    except TypeError as exc:
+        raise ObjectiveLoweringError(path, f"unsupported selector value_dtype {dtype!r}") from exc
+
+
 def _metric_values(
     values: Any,
     *,
     norm: str,
+    huber_delta: float | None,
     matrix: Any,
     matrix_kind: Literal["dense", "diagonal"] | None,
     path: str,
@@ -768,20 +948,16 @@ def _metric_values(
     if norm == "l2":
         return jnp.square(arr)
     if norm == "huber":
+        if huber_delta is None:
+            raise ObjectiveLoweringError(f"{path}/metric", "huber metric requires huber_delta")
         abs_arr = jnp.abs(arr)
-        return jnp.where(abs_arr <= 1.0, 0.5 * jnp.square(arr), abs_arr - 0.5)
+        delta = jnp.asarray(huber_delta, dtype=arr.dtype)
+        return jnp.where(
+            abs_arr <= delta,
+            0.5 * jnp.square(arr),
+            delta * (abs_arr - 0.5 * delta),
+        )
     raise ObjectiveLoweringError(f"{path}/metric", f"unsupported norm {norm!r}")
-
-
-def _legacy_reduce_feature_metric(values: Any, norm: str) -> Any:
-    arr = jnp.asarray(values)
-    if arr.ndim < 3:
-        if norm == "l2":
-            return jnp.sqrt(arr)
-        return arr
-    if norm == "l2":
-        return jnp.sqrt(jnp.sum(arr, axis=-1))
-    return jnp.sum(arr, axis=-1)
 
 
 def _matrix_quadratic_values(
@@ -960,25 +1136,6 @@ def _reduce_objective_values(
             path=f"{path}/trial",
         )
     return arr
-
-
-def _reduce_legacy_values(values: Any, time_agg: TimeAggregationSpec | None, *, path: str) -> Any:
-    arr = jnp.asarray(values)
-    if arr.ndim >= 2:
-        mode = "mean" if time_agg is None else time_agg.mode
-        if mode in {"all", "mean"}:
-            arr = jnp.mean(arr, axis=1)
-        elif mode == "sum":
-            arr = jnp.sum(arr, axis=1)
-        elif mode == "final":
-            arr = jnp.take(arr, -1, axis=1)
-        elif mode == "range":
-            if time_agg is None or time_agg.start is None or time_agg.end is None:
-                raise ObjectiveLoweringError(path, "range reduction requires start and end")
-            arr = jnp.mean(arr[:, time_agg.start:time_agg.end], axis=1)
-        else:
-            raise ObjectiveLoweringError(path, f"unsupported time aggregation {mode!r}")
-    return jnp.mean(arr)
 
 
 def _apply_reduction(

@@ -19,6 +19,7 @@ import {
   selectorDisplayLabel,
   selectorOptionsForRegistry,
 } from '@/features/scenario/selectors';
+import { LOSS_TERM_SPEC_SCHEMA_ID, LOSS_TERM_SPEC_SCHEMA_VERSION } from '@/types/training';
 import type { LossTermSpec } from '@/types/training';
 import type { StudioSelectorRef } from '@/types/workspace';
 import { useCallback, useEffect, useRef } from 'react';
@@ -130,6 +131,8 @@ export function PortContextMenu({
 
     // Create the new loss term
     const newTerm: LossTermSpec = {
+      schema_id: LOSS_TERM_SPEC_SCHEMA_ID,
+      schema_version: LOSS_TERM_SPEC_SCHEMA_VERSION,
       type: 'TargetStateLoss',
       label: `${nodeName} ${portName}`,
       weight: 1.0,

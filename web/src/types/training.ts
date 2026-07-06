@@ -1,5 +1,8 @@
 import type { ParamValue, RetentionPolicySpec } from '@/types/graph';
 
+export const LOSS_TERM_SPEC_SCHEMA_ID = 'feedbax.spec.training.loss_term';
+export const LOSS_TERM_SPEC_SCHEMA_VERSION = 'feedbax.spec.training.loss_term.v2';
+
 export interface OptimizerSpec {
   type: string;
   params: Record<string, ParamValue>;
@@ -16,6 +19,8 @@ export interface TimeAggregationSpec {
 }
 
 export interface LossTermSpec {
+  schema_id?: typeof LOSS_TERM_SPEC_SCHEMA_ID;
+  schema_version?: string;
   type: string;
   label: string;
   weight: number;
