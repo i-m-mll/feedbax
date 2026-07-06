@@ -15,6 +15,7 @@ def test_repo_cache_root_is_namespaced_by_source_fingerprint(
     common_dir = tmp_path / "common"
     repo_root = tmp_path / "repo"
     calls: list[tuple[str, ...]] = []
+    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
     monkeypatch.setenv("FEEDBAX_JAX_CACHE_INVOCATION_ID", "test-invocation")
 
     def fake_run(args, **kwargs):
