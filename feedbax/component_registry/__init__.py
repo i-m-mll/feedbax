@@ -4,6 +4,7 @@ from .meta import ComponentBuilder, ComponentMeta, OutputPrototypeFn
 from .registry import (
     ComponentRegistry,
     ComponentResolution,
+    TemplateBuilderIssue,
     get_component_registry,
     register_component_type,
 )
@@ -19,4 +20,5 @@ __all__ = [
     "ComponentRegistry",
     "get_component_registry",
     "register_component_type",
+    "TemplateBuilderIssue",
 ]

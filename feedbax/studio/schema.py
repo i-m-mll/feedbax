@@ -346,7 +346,7 @@ def validate_graph_connection_schema(
     for binding in graph.input_bindings.values():
         occupied[(binding[0], binding[1])] = -1
 
-    issues: list[SchemaValidationIssue] = []
+    issues: list[SchemaValidationIssue] = _missing_subgraph_issues(graph, base_path)
     for index, wire in enumerate(graph.wires):
         wire_path = f"{base_path}/wires/{index}"
         source = by_node_port_direction.get((wire.source_node, wire.source_port, "output"))
@@ -458,6 +458,37 @@ def validate_graph_connection_schema(
     issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
     issues.extend(_derived_dimension_issues(graph, task_binding_spec, base_path))
     issues.extend(_instant_cycle_issues(graph, base_path))
+    return issues
+
+
+def _missing_subgraph_issues(graph: GraphSpec, base_path: str) -> list[SchemaValidationIssue]:
+    from feedbax.component_registry import ComponentRegistry
+
+    registry = ComponentRegistry()
+    subgraphs = graph.subgraphs or {}
+    issues: list[SchemaValidationIssue] = []
+    for node_id, node in graph.nodes.items():
+        meta = registry.get(node.type)
+        requires_subgraph = (
+            node.type in {"Network", "Subgraph"}
+            or bool(meta is not None and meta.is_composite and meta.builder is None)
+        )
+        if not requires_subgraph or node_id in subgraphs:
+            continue
+        if node.type == "Network":
+            message = (
+                f"Network node {node_id!r} has no subgraph. Open it in Studio to "
+                "generate the internal architecture, then save again."
+            )
+        else:
+            message = f"{node.type} node {node_id!r} requires a subgraph, but none was provided"
+        issues.append(
+            SchemaValidationIssue(
+                type="missing_subgraph",
+                message=message,
+                location={"path": f"{base_path}/nodes/{node_id}", "node": node_id},
+            )
+        )
     return issues
 
 

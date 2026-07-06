@@ -43,6 +43,7 @@ class ComponentMeta:
     param_schema_version: str = "1"
     supported_param_schema_versions: List[str] = field(default_factory=list)
     migrations: List[ComponentMigrationInfo] = field(default_factory=list)
+    trainable_by_default: bool = False
 
     def __setattr__(self, name: str, value: Any) -> None:
         if (
