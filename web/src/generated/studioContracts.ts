@@ -562,6 +562,8 @@ export interface TimeAggregationSpec {
 }
 
 export interface LossTermSpec {
+  schema_id?: "feedbax.spec.training.loss_term";
+  schema_version?: string;
   type: string;
   label: string;
   weight?: number;
@@ -1618,6 +1620,8 @@ export const TimeAggregationSpecSchema: z.ZodType<TimeAggregationSpec> = z.lazy(
 export const LossTermSpecSchema: z.ZodType<LossTermSpec> = z.lazy(() =>
   z
     .object({
+      "schema_id": z.literal("feedbax.spec.training.loss_term").optional(),
+      "schema_version": z.string().optional(),
       "type": z.string(),
       "label": z.string(),
       "weight": z.number().optional(),

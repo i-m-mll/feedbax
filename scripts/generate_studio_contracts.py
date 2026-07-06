@@ -1,13 +1,20 @@
 """Generate Studio frontend contracts from Python Pydantic models."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import json
+import sys
 import types
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from feedbax.contracts.component import (
     ComponentDefinition,
@@ -119,7 +126,6 @@ from feedbax.contracts.training import (
     TrainingSpec,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
 

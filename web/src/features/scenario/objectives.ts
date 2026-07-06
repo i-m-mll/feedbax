@@ -7,7 +7,13 @@ import {
   objectiveEntityId,
 } from '@/features/scenario/entities';
 import type { ComponentSpec, WireSpec } from '@/types/graph';
-import type { LossTermSpec, NormFunction, TimeAggregationSpec } from '@/types/training';
+import {
+  LOSS_TERM_SPEC_SCHEMA_ID,
+  LOSS_TERM_SPEC_SCHEMA_VERSION,
+  type LossTermSpec,
+  type NormFunction,
+  type TimeAggregationSpec,
+} from '@/types/training';
 import type {
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
@@ -34,9 +40,6 @@ export const OBJECTIVE_TEMPORAL_MODE_OPTIONS: Array<{
   { value: 'mean', label: 'Mean' },
   { value: 'sum', label: 'Sum' },
   { value: 'final', label: 'Final step' },
-  { value: 'range', label: 'Range' },
-  { value: 'segment', label: 'Segment' },
-  { value: 'custom', label: 'Custom steps' },
 ];
 
 export const OBJECTIVE_DISCOUNT_OPTIONS: Array<{
@@ -44,8 +47,6 @@ export const OBJECTIVE_DISCOUNT_OPTIONS: Array<{
   label: string;
 }> = [
   { value: 'none', label: 'None' },
-  { value: 'power', label: 'Power' },
-  { value: 'linear', label: 'Linear' },
 ];
 
 export function isStudioObjectiveSpec(value: unknown): value is StudioObjectiveSpec {
@@ -346,6 +347,8 @@ export function lossSpecFromObjectiveSpec(spec: StudioObjectiveSpec): LossTermSp
     if (!objectiveTermEnabled(term)) return;
     if (!['loss', 'regularizer', 'reward', 'constraint'].includes(term.role)) return;
     children[sanitizedLossKey(term, index)] = {
+      schema_id: LOSS_TERM_SPEC_SCHEMA_ID,
+      schema_version: LOSS_TERM_SPEC_SCHEMA_VERSION,
       type: term.type_id || 'TargetStateLoss',
       label: term.label,
       weight: term.weight,
@@ -360,6 +363,8 @@ export function lossSpecFromObjectiveSpec(spec: StudioObjectiveSpec): LossTermSp
     };
   });
   return {
+    schema_id: LOSS_TERM_SPEC_SCHEMA_ID,
+    schema_version: LOSS_TERM_SPEC_SCHEMA_VERSION,
     type: 'Composite',
     label: 'scenario_objective',
     weight: 1,

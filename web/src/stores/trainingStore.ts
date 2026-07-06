@@ -11,6 +11,7 @@ import type {
   TrainingProgress,
   TrainingLogLine,
 } from '@/types/training';
+import { LOSS_TERM_SPEC_SCHEMA_ID, LOSS_TERM_SPEC_SCHEMA_VERSION } from '@/types/training';
 
 export interface TrajectorySnapshot {
   batch: number;
@@ -34,11 +35,15 @@ export const defaultTrainingSpec: TrainingSpec = {
     },
   },
   loss: {
+    schema_id: LOSS_TERM_SPEC_SCHEMA_ID,
+    schema_version: LOSS_TERM_SPEC_SCHEMA_VERSION,
     type: 'Composite',
     label: 'reach_loss',
     weight: 1.0,
     children: {
       position: {
+        schema_id: LOSS_TERM_SPEC_SCHEMA_ID,
+        schema_version: LOSS_TERM_SPEC_SCHEMA_VERSION,
         type: 'TargetStateLoss',
         label: 'Effector Position',
         weight: 1.0,
@@ -46,11 +51,11 @@ export const defaultTrainingSpec: TrainingSpec = {
         norm: 'squared_l2',
         time_agg: {
           mode: 'all',
-          discount: 'power',
-          discount_exp: 6,
         },
       },
       final_velocity: {
+        schema_id: LOSS_TERM_SPEC_SCHEMA_ID,
+        schema_version: LOSS_TERM_SPEC_SCHEMA_VERSION,
         type: 'TargetStateLoss',
         label: 'Final Velocity',
         weight: 0.5,
@@ -61,6 +66,8 @@ export const defaultTrainingSpec: TrainingSpec = {
         },
       },
       regularization: {
+        schema_id: LOSS_TERM_SPEC_SCHEMA_ID,
+        schema_version: LOSS_TERM_SPEC_SCHEMA_VERSION,
         type: 'TargetStateLoss',
         label: 'Network Activity',
         weight: 0.01,

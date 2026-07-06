@@ -13,7 +13,7 @@ from feedbax.contracts.studio_api import (
     TrainingStartPayload,
 )
 from feedbax.web.app import create_app
-from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES
+from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES, OUTPUT, generate
 
 
 GENERATED_STUDIO_PREFIXES = (
@@ -96,3 +96,7 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
             missing.append(f"{route.path} contractSchemas missing {model_name}")
 
     assert missing == []
+
+
+def test_generated_studio_contracts_are_current() -> None:
+    assert OUTPUT.read_text(encoding="utf-8") == generate()
