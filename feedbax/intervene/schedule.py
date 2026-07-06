@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple, TypeAlias
 import equinox as eqx
 import jax
 import jax.tree as jt
+import jax_cookbook.tree as jtree
 from jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
 
@@ -43,16 +44,33 @@ def _eval_intervenor_param_spec(
     batch_info: BatchInfo,
     key: PRNGKeyArray,
 ):
-    def is_timeseries_param(x):
-        return isinstance(x, TimeSeriesParam)
+    return evaluate_intervenor_params(intervention_spec.params, trial_spec, batch_info, key)
 
-    return jt.map(
-        lambda leaf: leaf(trial_spec, batch_info, key=key)
-        if callable(leaf)
-        else leaf,
-        intervention_spec.params,
+
+def evaluate_intervenor_params(
+    params: PyTree,
+    trial_spec,
+    batch_info: BatchInfo,
+    key: PRNGKeyArray,
+):
+    """Evaluate callable intervention parameter leaves with independent keys."""
+
+    def is_timeseries_param(leaf):
+        return isinstance(leaf, TimeSeriesParam)
+
+    callables, other_values = eqx.partition(
+        params,
+        lambda leaf: callable(leaf) and not is_timeseries_param(leaf),
         is_leaf=is_timeseries_param,
     )
+    keys = jtree.random_split_like_tree(key, callables, is_leaf=is_timeseries_param)
+    values = jt.map(
+        lambda leaf, leaf_key: leaf(trial_spec, batch_info, key=leaf_key),
+        callables,
+        keys,
+        is_leaf=is_timeseries_param,
+    )
+    return eqx.combine(values, other_values, is_leaf=is_timeseries_param)
 
 
 def schedule_intervenor(

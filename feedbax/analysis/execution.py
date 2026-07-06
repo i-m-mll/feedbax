@@ -1,3 +1,4 @@
+import hashlib
 import shutil
 import sys
 from collections.abc import Callable
@@ -12,6 +13,7 @@ import feedbax
 import jax
 import jax.tree as jt
 import jax_cookbook.tree as jtree
+import numpy as np
 import optax
 import plotly
 import plotly.graph_objects as go
@@ -65,6 +67,11 @@ from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace, namespace_to_dict
 
 STATES_CACHE_SUBDIR = "states"
+
+
+def _prng_key_digest(key) -> str:
+    key_bytes = np.asarray(jax.device_get(key)).tobytes()
+    return hashlib.sha256(key_bytes).hexdigest()[:16]
 
 
 @dataclass
@@ -733,7 +740,7 @@ def run_evaluation(
         return computed_states
 
     if evaluation_manifest_id is None:
-        states_pickle_path = states_pkl_dir / f"{eval_info.hash}.pkl"
+        states_pickle_path = states_pkl_dir / f"{eval_info.hash}_{_prng_key_digest(key)}.pkl"
 
     loaded_from_pickle = False
     if not no_pickle and states_pickle_path.exists():

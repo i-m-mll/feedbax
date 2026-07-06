@@ -13,7 +13,7 @@ import jax_cookbook.tree as jtree
 from jax.flatten_util import ravel_pytree
 from jax_cookbook import is_none
 from jax_cookbook.misc import construct_tuple_like
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.func import CallerPorts
@@ -600,7 +600,7 @@ def _rademacher_like(like, key):
     return unravel(r)
 
 
-def reducer_frobenius_hutchinson(*, samples: int = 32, key=jax.random.PRNGKey(0)):
+def reducer_frobenius_hutchinson(*, key: PRNGKeyArray, samples: int = 32):
     """Reducer (mv, like_v) -> scalar ≈ ||A||_F.
     For Jacobian A=J this uses only mv; for symmetric H it also works.
     """
@@ -619,7 +619,7 @@ def reducer_frobenius_hutchinson(*, samples: int = 32, key=jax.random.PRNGKey(0)
     return reduce
 
 
-def reducer_trace_hutchinson(*, samples: int = 32, key=jax.random.PRNGKey(0)):
+def reducer_trace_hutchinson(*, key: PRNGKeyArray, samples: int = 32):
     """Reducer (mv, like) -> scalar ≈ tr(H). Assumes symmetry."""
 
     def reduce(mv, like):

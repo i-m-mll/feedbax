@@ -13,7 +13,7 @@ from feedbax.runtime.graph import (
     Wire,
     init_state_from_component,
 )
-from feedbax.intervene import TimeSeriesParam
+from feedbax.intervene import InterventionSpec, TimeSeriesParam
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.contracts.graphs.builders import build_component
 from feedbax.tasks.presets import delayed_center_out_reaches_params
@@ -64,6 +64,26 @@ class DummyTask(AbstractTask):
     @property
     def n_validation_trials(self) -> int:
         return 1
+
+
+class ValidationRngTask(DummyTask):
+    seed_validation: int = 123
+    intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs(
+        validation={
+            "rng": InterventionSpec(
+                {
+                    "sample": lambda trial_spec, batch_info, *, key: jax.random.uniform(key, ()),
+                }
+            )
+        }
+    )
+
+    def get_validation_trials(self, key):
+        return TaskTrialSpec(
+            inits=WhereDict(),
+            targets=WhereDict(),
+            inputs=jax.random.uniform(key, (self.n_validation_trials,)),
+        )
 
 
 class _EvalCounter(Component):
@@ -151,6 +171,17 @@ def test_task_component_open_loop_steps():
     assert out1["intervene"]["foo"] == intervene["foo"].value[0]
     assert out2["intervene"]["foo"] == intervene["foo"].value[1]
     assert out3["intervene"]["foo"] == intervene["foo"].value[2]
+
+
+def test_validation_trials_use_separate_rng_streams() -> None:
+    task = ValidationRngTask()
+    key_trials, _, _ = jax.random.split(jax.random.PRNGKey(task.seed_validation), 3)
+
+    trial_specs = task.validation_trials
+
+    assert jnp.allclose(trial_specs.inputs, jax.random.uniform(key_trials, (1,)))
+    assert trial_specs.intervene["rng"]["sample"].shape == (1,)
+    assert not jnp.allclose(trial_specs.intervene["rng"]["sample"], trial_specs.inputs)
 
 
 def test_eval_trials_rollout_step_hook_runs_inside_rollout():

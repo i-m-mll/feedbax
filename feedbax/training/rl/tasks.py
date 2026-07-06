@@ -90,7 +90,9 @@ def update_curriculum(
     # Bug: 2055433 -- Consecutive success tracking for stage advancement.
     is_success = success_rate >= 0.85
     new_success_count = jnp.where(
-        is_success, state.success_count + 1, jnp.array(0, dtype=jnp.int32),
+        is_success,
+        state.success_count + 1,
+        jnp.array(0, dtype=jnp.int32),
     )
     new_total_count = state.total_count + 1
 
@@ -105,10 +107,14 @@ def update_curriculum(
 
     # Reset counters on stage advancement
     new_success_count = jnp.where(
-        should_advance, jnp.array(0, dtype=jnp.int32), new_success_count,
+        should_advance,
+        jnp.array(0, dtype=jnp.int32),
+        new_success_count,
     )
     new_total_count = jnp.where(
-        should_advance, jnp.array(0, dtype=jnp.int32), new_total_count,
+        should_advance,
+        jnp.array(0, dtype=jnp.int32),
+        new_total_count,
     )
 
     new_fraction = CURRICULUM_STAGES[new_stage]
@@ -279,13 +285,17 @@ def _sample_reachable_pos(
     """
     n_joints = segment_lengths.shape[0]
     angles = jax.random.uniform(
-        key, shape=(n_joints,), minval=0.1 * jnp.pi, maxval=0.9 * jnp.pi,
+        key,
+        shape=(n_joints,),
+        minval=0.1 * jnp.pi,
+        maxval=0.9 * jnp.pi,
     )
     return _fk_planar(angles, segment_lengths)
 
 
 def _finite_diff_velocity(
-    positions: Float[Array, "T 2"], dt: Float[Array, ""],
+    positions: Float[Array, "T 2"],
+    dt: Float[Array, ""],
 ) -> Float[Array, "T 2"]:
     """Finite-difference velocity with boundary clamping."""
     n_steps = positions.shape[0]
@@ -296,15 +306,14 @@ def _finite_diff_velocity(
     return (positions[idx_plus] - positions[idx_minus]) / (2.0 * dt_safe)
 
 
-def _velocity_from_positions(
-    positions: Float[Array, "T 2"], dt: float
-) -> Float[Array, "T 2"]:
+def _velocity_from_positions(positions: Float[Array, "T 2"], dt: float) -> Float[Array, "T 2"]:
     """Finite-difference velocity from position trajectory."""
     return _finite_diff_velocity(positions, jnp.asarray(dt))
 
 
 def _vel_from_pos(
-    positions: Float[Array, "T 2"], dt: Float[Array, ""],
+    positions: Float[Array, "T 2"],
+    dt: Float[Array, ""],
 ) -> Float[Array, "T 2"]:
     """Finite-difference velocity. dt may be a JAX tracer (safe in JIT)."""
     return _finite_diff_velocity(positions, dt)
@@ -465,10 +474,16 @@ def sample_task_params_jax(
     reach_start_fk = _sample_reachable_pos(rk1, segment_lengths)
     reach_end_fk = _sample_reachable_pos(rk2, segment_lengths)
     reach_start_raw = jax.random.uniform(
-        rk1, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+        rk1,
+        (2,),
+        minval=-reach_radius * 0.5,
+        maxval=reach_radius * 0.5,
     )
     reach_end_raw = jax.random.uniform(
-        rk2, (2,), minval=-reach_radius, maxval=reach_radius,
+        rk2,
+        (2,),
+        minval=-reach_radius,
+        maxval=reach_radius,
     )
     reach_start = jnp.where(use_fk, reach_start_fk, reach_start_raw)
     reach_end_raw = jnp.where(use_fk, reach_end_fk, reach_end_raw)
@@ -476,7 +491,7 @@ def sample_task_params_jax(
     # Scale the direction vector from start to end so the distance does not
     # exceed max_target_distance, preserving the sampled direction.
     direction = reach_end_raw - reach_start
-    dist = jnp.sqrt(jnp.sum(direction ** 2))
+    dist = jnp.sqrt(jnp.sum(direction**2))
     safe_dist = jnp.maximum(dist, 1e-8)
     scale = jnp.minimum(jnp.asarray(max_target_distance) / safe_dist, 1.0)
     reach_end_clipped = reach_start + direction * scale
@@ -488,10 +503,13 @@ def sample_task_params_jax(
 
     # --- Hold ---
     # Bug: 67e2e5e -- Randomize perturbation direction, magnitude, and timing
-    key, hk1, hk2, hk3 = jax.random.split(key, 4)
-    hold_fk = _sample_reachable_pos(k2, segment_lengths)
+    key, hold_fk_key, hold_raw_key, hk1, hk2, hk3 = jax.random.split(key, 6)
+    hold_fk = _sample_reachable_pos(hold_fk_key, segment_lengths)
     hold_raw = jax.random.uniform(
-        k2, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+        hold_raw_key,
+        (2,),
+        minval=-reach_radius * 0.5,
+        maxval=reach_radius * 0.5,
     )
     hold_pos = jnp.where(use_fk, hold_fk, hold_raw)
     hold_cp = jnp.zeros((6, 2))
@@ -499,14 +517,19 @@ def sample_task_params_jax(
     perturb_angle = jax.random.uniform(hk1, shape=(), minval=0.0, maxval=2 * jnp.pi)
     # Random magnitude (normal, clipped to avoid degenerate cases)
     perturb_mag = jnp.clip(
-        jax.random.normal(hk2, shape=()) * 1.0 + 3.0, 0.5, 6.0,
+        jax.random.normal(hk2, shape=()) * 1.0 + 3.0,
+        0.5,
+        6.0,
     )
     hold_perturb = perturb_mag * jnp.array(
         [jnp.cos(perturb_angle), jnp.sin(perturb_angle)],
     )
     # Jittered timing (+-10% of episode around midpoint)
     hold_perturb_idx = jax.random.randint(
-        hk3, shape=(), minval=int(0.4 * n_steps), maxval=int(0.6 * n_steps) + 1,
+        hk3,
+        shape=(),
+        minval=int(0.4 * n_steps),
+        maxval=int(0.6 * n_steps) + 1,
     ).astype(jnp.int32)
 
     # --- Track ---
@@ -515,12 +538,14 @@ def sample_task_params_jax(
     # Sample each control point as a reachable position via FK
     cp_keys = jax.random.split(k3a, n_pts)
     track_cp_fk = jax.vmap(_sample_reachable_pos, in_axes=(0, None))(
-        cp_keys, segment_lengths,
+        cp_keys,
+        segment_lengths,
     )
     angles = jax.random.uniform(k3a, (n_pts,), minval=0.0, maxval=2 * jnp.pi)
     radii = track_radius * (0.6 + 0.4 * jax.random.uniform(k3b, (n_pts,)))
     track_cp_raw = jnp.stack(
-        [radii * jnp.cos(angles), radii * jnp.sin(angles)], axis=-1,
+        [radii * jnp.cos(angles), radii * jnp.sin(angles)],
+        axis=-1,
     )
     track_cp = jnp.where(use_fk, track_cp_fk, track_cp_raw)
     track_perturb_idx = jnp.array(0, dtype=jnp.int32)
@@ -712,9 +737,7 @@ def swing_task(
     """
     t = timestamps - timestamps[0]
     angle = amplitude * jnp.sin(2 * jnp.pi * frequency * t)
-    target_pos = jnp.stack(
-        [radius * jnp.cos(angle), radius * jnp.sin(angle)], axis=-1
-    )
+    target_pos = jnp.stack([radius * jnp.cos(angle), radius * jnp.sin(angle)], axis=-1)
     dt = float(timestamps[1] - timestamps[0])
     target_vel = _velocity_from_positions(target_pos, dt)
     perturb = jnp.zeros_like(target_pos)
@@ -749,15 +772,24 @@ def sample_task(
     if task_type == TASK_REACH:
         key_start, key_target = jax.random.split(key)
         start = jax.random.uniform(
-            key_start, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+            key_start,
+            (2,),
+            minval=-reach_radius * 0.5,
+            maxval=reach_radius * 0.5,
         )
         target = jax.random.uniform(
-            key_target, (2,), minval=-reach_radius, maxval=reach_radius,
+            key_target,
+            (2,),
+            minval=-reach_radius,
+            maxval=reach_radius,
         )
         return reach_task(timestamps, start, target)
     if task_type == TASK_HOLD:
         hold_pos = jax.random.uniform(
-            key, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+            key,
+            (2,),
+            minval=-reach_radius * 0.5,
+            maxval=reach_radius * 0.5,
         )
         return hold_task(timestamps, hold_pos)
     if task_type == TASK_TRACK:
@@ -794,17 +826,23 @@ def sample_task_jax(
     T = timestamps.shape[0]
     dt = timestamps[1] - timestamps[0]
 
-    key, type_key, k1, k2, k3 = jax.random.split(key, 5)
+    key, type_key, k1, _k2, k3 = jax.random.split(key, 5)
     if task_type is None:
         task_type = jax.random.randint(type_key, (), 0, 4)
 
     # --- Reach (minimum-jerk) ---
     rk1, rk2 = jax.random.split(k1)
     start = jax.random.uniform(
-        rk1, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+        rk1,
+        (2,),
+        minval=-reach_radius * 0.5,
+        maxval=reach_radius * 0.5,
     )
     target = jax.random.uniform(
-        rk2, (2,), minval=-reach_radius, maxval=reach_radius,
+        rk2,
+        (2,),
+        minval=-reach_radius,
+        maxval=reach_radius,
     )
     t0 = timestamps[0]
     tf = timestamps[-1]
@@ -815,8 +853,12 @@ def sample_task_jax(
     reach_perturb = jnp.zeros((T, 2))
 
     # --- Hold (static target + perturbation pulse) ---
+    _, _, hold_raw_key, _, _, _ = jax.random.split(key, 6)
     hold_center = jax.random.uniform(
-        k2, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+        hold_raw_key,
+        (2,),
+        minval=-reach_radius * 0.5,
+        maxval=reach_radius * 0.5,
     )
     hold_pos = jnp.tile(hold_center[None, :], (T, 1))
     hold_vel = jnp.zeros((T, 2))
@@ -830,7 +872,8 @@ def sample_task_jax(
     angles = jax.random.uniform(k3a, (n_pts,), minval=0.0, maxval=2 * jnp.pi)
     radii = 0.35 * (0.6 + 0.4 * jax.random.uniform(k3b, (n_pts,)))
     pts = jnp.stack(
-        [radii * jnp.cos(angles), radii * jnp.sin(angles)], axis=-1,
+        [radii * jnp.cos(angles), radii * jnp.sin(angles)],
+        axis=-1,
     )
     pts = jnp.concatenate([pts[:1], pts, pts[-1:]], axis=0)
     n_seg = pts.shape[0] - 3
@@ -859,7 +902,8 @@ def sample_task_jax(
     t_sw = timestamps - timestamps[0]
     angle_sw = 0.6 * jnp.sin(2 * jnp.pi * 0.5 * t_sw)
     swing_pos = jnp.stack(
-        [0.45 * jnp.cos(angle_sw), 0.45 * jnp.sin(angle_sw)], axis=-1,
+        [0.45 * jnp.cos(angle_sw), 0.45 * jnp.sin(angle_sw)],
+        axis=-1,
     )
     swing_vel = _vel_from_pos(swing_pos, dt)
     swing_perturb = jnp.zeros((T, 2))
