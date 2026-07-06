@@ -685,6 +685,39 @@ def test_studio_workspace_stamps_versionless_nested_scenario_specs() -> None:
     assert "schema_version" not in payload["scenarios"]["scenario:train"]
 
 
+def test_studio_workspace_stamps_versionless_scenario_owned_structured_specs() -> None:
+    payload = {
+        "id": "workspace:durable",
+        "label": "Durable",
+        "schema_version": default_spec_registry.resolve("StudioWorkspaceSpec").current_version,
+        "scenarios": {
+            "scenario:train": {
+                "id": "scenario:train",
+                "schema_version": default_spec_registry.resolve(
+                    "StudioScenarioSpec"
+                ).current_version,
+                "label": "Train",
+                "objective_spec": {
+                    "terms": [
+                        {
+                            "selector": "task_data:targets",
+                            "label": "Target tracking",
+                        }
+                    ]
+                },
+            }
+        },
+    }
+
+    result = migrate_studio_workspace_spec(payload)
+
+    objective_spec = result.payload["scenarios"]["scenario:train"]["objective_spec"]
+    assert objective_spec["schema_version"] == (
+        default_spec_registry.resolve("ObjectiveSpec").current_version
+    )
+    assert "schema_version" not in payload["scenarios"]["scenario:train"]["objective_spec"]
+
+
 def test_studio_workspace_stamps_versionless_nested_stage_specs() -> None:
     payload = {
         "id": "workspace:durable",
