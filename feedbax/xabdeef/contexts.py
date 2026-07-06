@@ -6,16 +6,14 @@
 
 from collections.abc import Callable, Sequence
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 import equinox as eqx
 from jaxtyping import PRNGKeyArray
-import optax  # type: ignore
 
 import jax_cookbook.tree as jtree
 from feedbax.runtime.graph import Component
 from feedbax.tasks import AbstractTask, SimpleReaches
-from feedbax.training.trainer import TaskTrainer, TaskTrainerHistory
 from feedbax.xabdeef.losses import simple_reach_loss
 from feedbax.xabdeef.models import point_mass_nn
 
@@ -23,12 +21,8 @@ from feedbax.xabdeef.models import point_mass_nn
 logger = logging.getLogger(__name__)
 
 
-N_LOG_STEPS_DEFAULT = 10
-
-
 class TrainingContext(eqx.Module):
-    """A model-task pairing with automatic construction of a
-    [`TaskTrainer`][feedbax.training.trainer.TaskTrainer] instance.
+    """A model-task pairing for constructing supervised training run specs.
 
     Attributes:
         model: The model.
@@ -42,51 +36,6 @@ class TrainingContext(eqx.Module):
     task: AbstractTask
     where_train: Callable = lambda model: model.nodes["net"]
     ensembled: bool = False
-
-    def train(
-        self,
-        *,
-        n_batches: int,
-        batch_size: int,
-        learning_rate: float = 0.01,
-        log_step: Optional[int] = None,
-        optimizer_cls: Callable[..., optax.GradientTransformation] = optax.adam,
-        key: PRNGKeyArray,
-        **kwargs: Any,
-    ) -> tuple[Component, TaskTrainerHistory]:
-        """Train the model on the task.
-
-        Arguments:
-            n_batches: The number of batches of trials to train on.
-            batch_size: The number of trials per batch.
-            learning_rate: The learning rate for the optimizer.
-            log_step: The number of batches between logs of training progress.
-                If `None`, 10 evenly-spaced logs will be made along the training run.
-            optimizer_cls: The class of Optax optimizer to use.
-            key: A PRNG key for initializing the model.
-            **kwargs: Additional keyword arguments to pass to the `TaskTrainer`.
-        """
-        optimizer = optax.inject_hyperparams(optimizer_cls)(learning_rate)
-
-        trainer = TaskTrainer(
-            optimizer=optimizer,
-            checkpointing=True,
-        )
-
-        if log_step is None:
-            log_step = n_batches // N_LOG_STEPS_DEFAULT
-
-        return trainer(
-            task=self.task,
-            model=self.model,
-            n_batches=n_batches,
-            batch_size=batch_size,
-            log_step=log_step,
-            where_train=self.where_train,
-            key=key,
-            ensembled=self.ensembled,
-            **kwargs,
-        )
 
 
 def point_mass_nn_simple_reaches(

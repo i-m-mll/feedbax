@@ -3,7 +3,7 @@
 Unified entrypoint.
 
 Usage:
-  run train    [<args>...]     # forwards to feedbax.bin.train:main()
+  run train    [<args>...]     # reports the retired training CLI entrypoint
   run analysis [<args>...]     # forwards to feedbax.bin.analysis:main()
 
 All arguments after the subcommand are passed through unchanged to the target

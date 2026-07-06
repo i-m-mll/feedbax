@@ -825,7 +825,7 @@ import threading
 import queue
 
 import jax
-from feedbax.training.trainer import TaskTrainer
+from feedbax.training.executor import execute_training_run_spec
 from feedbax.runtime.graph import Graph
 
 class TrainingStatus(Enum):
@@ -2481,7 +2481,7 @@ These would be separate routes/tabs in the same application, sharing the compone
 ### 16.2 Meta-Canvas View
 
 A higher-level view showing the relationship between:
-- TaskTrainer
+- Training executor
 - Model (Graph)
 - Task
 - Analysis pipelines
@@ -2524,7 +2524,7 @@ For team/production use:
 | **Port** | A named input or output on a component |
 | **StateIndex** | Equinox pattern for managing persistent state in JAX |
 | **TermTree** | Hierarchical loss function structure |
-| **TaskTrainer** | Orchestrator for training loops |
+| **Training executor** | Orchestrator for structured training run specs |
 | **Intervention** | Modification to model behavior (e.g., force field, perturbation) |
 
 ---

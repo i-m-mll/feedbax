@@ -1,7 +1,7 @@
 """Environment and task protocols for feedbax training.
 
-Defines the minimal shared interface that both supervised (TaskTrainer) and
-RL training paths use to interact with environments and tasks.
+Defines the minimal shared interface that supervised and RL training paths use
+to interact with environments and tasks.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -102,9 +102,8 @@ class EnvironmentProtocol(Protocol):
 class TaskProtocol(Protocol):
     """Task interface for trainers.
 
-    Describes the contract that a task object must fulfill so that a trainer
-    (TaskTrainer or an RL trainer) can drive a training loop without
-    knowing the concrete task type.
+    Describes the contract that a task object must fulfill so that a training
+    loop can run without knowing the concrete task type.
     """
 
     def sample_trial(

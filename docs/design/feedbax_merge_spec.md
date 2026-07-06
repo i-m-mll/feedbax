@@ -166,7 +166,7 @@ class Iterator(AbstractIterator):
 **Migration:** 
 - Add `n_steps` to `AbstractTask` (already there)
 - Move `lax.scan` logic from `Iterator.__call__` to `AbstractTask.eval`
-- Update `TaskTrainer` to work with non-Iterator models
+- Update supervised training to work with non-Iterator models
 - Grep for `model.step.` and update to `model.`
 
 ### 2. Split analysis/analysis.py
@@ -322,7 +322,7 @@ def mock_db_session():
 8. [ ] Add optional extras (notebook)
 9. [ ] Deprecate Iterator class
 10. [ ] Refactor task.eval to handle iteration
-11. [ ] Update TaskTrainer for non-Iterator models
+11. [ ] Update supervised training for non-Iterator models
 12. [ ] Delete dead code (fps_tmp2, tmp-map, empty nn_utils)
 13. [ ] Run existing tests, fix breakage
 14. [ ] Add new tests per priority list

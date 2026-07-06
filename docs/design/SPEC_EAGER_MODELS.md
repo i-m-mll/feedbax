@@ -895,7 +895,7 @@ Convert in order of dependency (leaf components first):
 
 1. Create `TaskComponent` adapter for graph composition
 2. Update `AbstractTask.eval_trials` for new graph interface
-3. Update `TaskTrainer` if needed
+3. Update supervised training if needed
 4. Update intervention scheduling to use graph surgery + state initialization
 
 ### Phase 5: Cleanup
