@@ -100,6 +100,36 @@ behavior.
   and `from jax_cookbook import is_type, is_module, is_none` for common
   shorthands.
 
+### Test Policy
+
+<!-- feedbax-test-policy:start -->
+- This marked block is mirrored in `AGENTS.md` and `CLAUDE.md`. When changing
+  Feedbax test policy, edit both copies in the same commit and run
+  `uv run --no-sync python scripts/check_instruction_policy.py`.
+- While iterating on a fix, run the narrowest relevant tests first: explicit
+  node IDs or paths, `-k`, `pytest --lf`, or the repo's selective runner when
+  one exists.
+- Run the repo's full integration bar only at lane closeout before work lands
+  on an integration or auth path, and at most once or twice per lane when a
+  rerun is justified. Do not use the full bar to check whether a single fix
+  worked. Repo instructions define the integration bar; this norm governs how
+  often to pay it.
+- Run the integration test bar through `scripts/full_suite.sh`. The wrapper uses
+  `uv run --no-sync python -m pytest tests -n auto`, configures the persistent
+  JAX compilation cache, and records green-tree memo entries only for a clean Git
+  tree with the same `uv.lock`, Python, JAX, and jaxlib fingerprint. Dirty trees
+  or unresolved fingerprint fields run the suite and do not record a green memo.
+- The test JAX compilation cache defaults to the shared Git common-dir cache;
+  override with
+  `FEEDBAX_JAX_COMPILATION_CACHE_DIR` or disable with
+  `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1`.
+- New tests must be safe under `pytest-xdist`: write only to `tmp_path` or a
+  unique per-test directory, avoid shared checkpoint/custody/cache locations
+  unless the path includes a test-unique segment, and restore any process-global
+  JAX, registry, environment, or cwd changes before the test exits. Tests must
+  not depend on collection or execution order.
+<!-- feedbax-test-policy:end -->
+
 ### Running Studio
 Studio requires two processes:
 - Frontend: `cd web && npm run dev` (Vite, default port 3008)

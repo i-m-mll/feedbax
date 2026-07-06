@@ -16,6 +16,21 @@
 ### Environment Management
 
 - Use `uv` for package management. Do not run `pip install` directly.
+
+### Test Policy
+
+<!-- feedbax-test-policy:start -->
+- This marked block is mirrored in `AGENTS.md` and `CLAUDE.md`. When changing
+  Feedbax test policy, edit both copies in the same commit and run
+  `uv run --no-sync python scripts/check_instruction_policy.py`.
+- While iterating on a fix, run the narrowest relevant tests first: explicit
+  node IDs or paths, `-k`, `pytest --lf`, or the repo's selective runner when
+  one exists.
+- Run the repo's full integration bar only at lane closeout before work lands
+  on an integration or auth path, and at most once or twice per lane when a
+  rerun is justified. Do not use the full bar to check whether a single fix
+  worked. Repo instructions define the integration bar; this norm governs how
+  often to pay it.
 - Run the integration test bar through `scripts/full_suite.sh`. The wrapper uses
   `uv run --no-sync python -m pytest tests -n auto`, configures the persistent
   JAX compilation cache, and records green-tree memo entries only for a clean Git
@@ -30,6 +45,7 @@
   unless the path includes a test-unique segment, and restore any process-global
   JAX, registry, environment, or cwd changes before the test exits. Tests must
   not depend on collection or execution order.
+<!-- feedbax-test-policy:end -->
 
 ### Equinox Modules
 
