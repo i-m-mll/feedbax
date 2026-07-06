@@ -4,6 +4,7 @@ import importlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -1253,6 +1254,59 @@ def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypa
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_analysis_cli_keeps_bundle_progress_off_json_stdout(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    def fake_execute_analysis_bundle(*_args, **_kwargs):
+        analysis_cli.rich.get_console().print("Computing analysis nodes...")
+        return [
+            (
+                SimpleNamespace(
+                    bundle_name="toy_matrix",
+                    template_name="per_cell",
+                    mode="per-run",
+                    matched_run_ids=("feedbax-evaluation-run:toy",),
+                ),
+                SimpleNamespace(id="feedbax-analysis-run:toy"),
+                tmp_path / "manifests" / "analysis_runs" / "toy.json",
+            )
+        ]
+
+    monkeypatch.setattr(analysis_cli, "load_analysis_bundle", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fake_execute_analysis_bundle)
+
+    analysis_cli.main(
+        [
+            "--bundle",
+            "toy/matrix",
+            "--manifest-root",
+            str(tmp_path),
+            "--fig-dump-dir",
+            str(tmp_path / "figures"),
+            "--fig-dump-formats",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "Computing analysis nodes" not in captured.out
+    assert "Computing analysis nodes" in captured.err
+    assert json.loads(captured.out) == [
+        {
+            "bundle": "toy_matrix",
+            "template": "per_cell",
+            "mode": "per-run",
+            "matched_run_ids": ["feedbax-evaluation-run:toy"],
+            "manifest_id": "feedbax-analysis-run:toy",
+            "manifest_path": str(tmp_path / "manifests" / "analysis_runs" / "toy.json"),
+        }
+    ]
 
 
 def test_bundle_context_projects_figures_through_registered_routing(

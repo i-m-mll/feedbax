@@ -5,6 +5,7 @@ Takes a single positional argument: the path to the YAML config.
 """
 
 import argparse
+from contextlib import contextmanager, redirect_stdout
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from pathlib import Path
 import jax
 import jax.random as jr
 import plotly.io as pio
+import rich
 from jax_cookbook.progress import progress_session
 
 from feedbax.analysis.execution import (
@@ -38,6 +40,19 @@ from feedbax.config.utils import deep_merge
 from feedbax.plugins import EXPERIMENT_REGISTRY
 
 logger = logging.getLogger(os.path.basename(__file__))
+
+
+@contextmanager
+def _bundle_human_output_to_stderr():
+    """Keep stdout reserved for bundle JSON while progress/noisy output renders on stderr."""
+    console = rich.get_console()
+    previous_console_state = console.__dict__.copy()
+    rich.reconfigure(file=sys.stderr)
+    try:
+        with redirect_stdout(sys.stderr):
+            yield
+    finally:
+        console.__dict__ = previous_console_state
 
 
 def build_arg_parser():
@@ -147,14 +162,15 @@ def main(argv: list[str] | None = None) -> None:
             if args.runs is not None
             else None
         )
-        outputs = execute_analysis_bundle(
-            bundle,
-            root=Path(args.manifest_root) if args.manifest_root else None,
-            run_ids=run_ids,
-            issues=list(args.issue),
-            fig_dump_path=Path(args.fig_dump_dir),
-            fig_dump_formats=fig_dump_formats,
-        )
+        with _bundle_human_output_to_stderr():
+            outputs = execute_analysis_bundle(
+                bundle,
+                root=Path(args.manifest_root) if args.manifest_root else None,
+                run_ids=run_ids,
+                issues=list(args.issue),
+                fig_dump_path=Path(args.fig_dump_dir),
+                fig_dump_formats=fig_dump_formats,
+            )
         print(
             json.dumps(
                 [
