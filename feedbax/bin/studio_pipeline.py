@@ -45,28 +45,20 @@ def _materialize_training(args: argparse.Namespace) -> int:
         sys.stderr.write("\n")
         return 1
 
-    total_batches = int(training_spec.get("n_batches") or 0)
     summary = {
-        "kind": "StudioTrainingResult",
-        "status": "completed",
-        "runner": "studio_mvp_materialization",
-        "total_batches": total_batches,
+        "kind": "StudioTrainingValidationArtifact",
+        "status": "validated",
+        "runner": "studio_validation_only",
+        "total_batches": training_spec.get("n_batches"),
         "batch_size": training_spec.get("batch_size"),
-        "final_loss": 0.0 if total_batches == 0 else round(1.0 / (1.0 + total_batches), 8),
-        "history": [
-            {"batch": 0, "loss": 1.0},
-            {
-                "batch": total_batches,
-                "loss": 0.0 if total_batches == 0 else round(1.0 / (1.0 + total_batches), 8),
-            },
-        ],
         "validation": training_result.model_dump(mode="json", exclude_none=True),
         "task_type": task_spec.get("type"),
         "task_binding_spec": task_binding_spec,
         "warnings": warnings,
         "notes": [
-            "This is a Studio Phase 4 materialized training result.",
-            "The full graph-to-JAX worker backend remains tracked separately.",
+            "This artifact records validation only and contains no training metrics.",
+            "Use Studio live training or python -m feedbax execute-training-run-spec "
+            "for executor-backed training output.",
         ],
     }
     _write_json(args.output, summary)

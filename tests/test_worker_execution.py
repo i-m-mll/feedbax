@@ -360,7 +360,8 @@ def test_rollout_graph_threads_network_template_recurrence() -> None:
     assert not jnp.allclose(output[0], output[-1])
 
 
-def test_run_training_graph_trains_tiny_full_graph() -> None:
+def test_run_training_graph_trains_tiny_full_graph(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
@@ -387,6 +388,11 @@ def test_run_training_graph_trains_tiny_full_graph() -> None:
     )
 
     assert result.checkpoint_path is not None
+    assert result.manifest_path is not None
+    assert Path(result.manifest_path).is_file()
+    assert result.manifest_payload is not None
+    assert result.manifest_payload["kind"] == "TrainingRunManifest"
+    assert result.manifest_payload["checkpoint_custody"]
     assert result.final_loss < float(initial_loss)
     assert any(event["type"] == "training_progress" for event in events)
     trajectory = next(event for event in events if event["type"] == "training_trajectory")
@@ -410,7 +416,8 @@ def test_worker_checkpoint_cleanup_removes_managed_tempdir(tmp_path: Path) -> No
     assert not checkpoint_dir.exists()
 
 
-def test_run_training_graph_emits_progress_on_snapshot_cadence() -> None:
+def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
         graph_spec=_linear_graph_spec(),
         training_spec=_training_spec(),
@@ -431,12 +438,21 @@ def test_run_training_graph_emits_progress_on_snapshot_cadence() -> None:
 
     progress_batches = [event["batch"] for event in events if event["type"] == "training_progress"]
     log_batches = [event["batch"] for event in events if event["type"] == "training_log"]
+    trajectory_batches = [
+        event["batch"] for event in events if event["type"] == "training_trajectory"
+    ]
 
-    assert progress_batches == [1, 3, 5]
-    assert log_batches == [1, 3, 5]
+    assert progress_batches == [1, 2, 3, 4, 5]
+    assert log_batches == [1, 2, 3, 4, 5]
+    assert trajectory_batches == [3, 5]
 
 
-def test_run_training_graph_stopped_run_returns_latest_batch_loss() -> None:
+def test_run_training_graph_stopped_run_returns_latest_batch_loss(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+
     class StopAfterTwoChecks:
         def __init__(self) -> None:
             self.calls = 0
@@ -464,8 +480,9 @@ def test_run_training_graph_stopped_run_returns_latest_batch_loss() -> None:
     )
 
     progress_losses = [event["loss"] for event in events if event["type"] == "training_progress"]
-    assert len(progress_losses) == 1
-    assert result.final_loss < progress_losses[0]
+    assert progress_losses
+    assert result.final_loss == pytest.approx(progress_losses[-1])
+    assert result.final_batch == len(progress_losses)
 
 
 def test_run_training_graph_projects_parameter_constraints_after_update() -> None:

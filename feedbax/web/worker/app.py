@@ -343,10 +343,12 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
     with job._state_lock:
         job.last_loss = result.final_loss
-        job.batch = job.total_batches
+        job.batch = result.final_batch
         job.checkpoint_path = result.checkpoint_path
         job.retention_plan_payload = result.retention_plan
         job.retained_observables_payload = result.retained_observables
+        job.manifest_path = result.manifest_path
+        job.manifest_payload = result.manifest_payload
         job.status = terminal_status
         job.terminal_at = time.monotonic()
         batch = job.batch
@@ -360,19 +362,31 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
                 "batch": batch,
                 "level": "info",
                 "message": "Checkpoint saved",
-                "execution": "generic_graph",
+                "execution": "contract_executor",
             },
         )
-    _write_job_manifest(job)
-    with job._state_lock:
-        manifest_path = job.manifest_path
-        manifest_payload = job.manifest_payload
+    manifest_path = result.manifest_path
+    manifest_payload = result.manifest_payload
+    if manifest_path is not None:
+        _emit(
+            job,
+            {
+                "type": "training_log",
+                "job_id": job.job_id,
+                "batch": batch,
+                "level": "info",
+                "message": "Training manifest saved",
+                "manifest_path": manifest_path,
+                "manifest_id": manifest_payload.get("id") if manifest_payload else None,
+                "execution": "contract_executor",
+            },
+        )
     complete_event = {
         "type": "training_complete",
         "job_id": job.job_id,
         "batch": batch,
         "loss": last_loss,
-        "execution": "generic_graph",
+        "execution": "contract_executor",
     }
     if manifest_path is not None:
         complete_event["manifest_path"] = manifest_path
@@ -417,6 +431,11 @@ def _emit(job: _Job, event: dict) -> None:
     """Assign a seq number to *event*, buffer it, and enqueue it for SSE delivery."""
     seq = job.next_seq()
     event["seq"] = seq
+    if event.get("type") == "training_progress":
+        with job._state_lock:
+            job.batch = int(event.get("batch", job.batch) or job.batch)
+            if "loss" in event:
+                job.last_loss = float(event["loss"])
     with job._state_lock:
         job.event_buffer.append((seq, event))
     job.event_queue.put(event)

@@ -168,21 +168,25 @@ class TrainingService:
                 process.terminate()
             except OSError:
                 pass
-            try:
-                process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
+            wait = getattr(process, "wait", None)
+            if callable(wait):
                 try:
-                    process.kill()
-                except OSError:
-                    pass
-                try:
-                    process.wait(timeout=2.0)
+                    wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    try:
+                        wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        pass
+            communicate = getattr(process, "communicate", None)
+            if callable(communicate):
+                try:
+                    communicate(timeout=0.1)
+                except (OSError, subprocess.TimeoutExpired):
                     pass
-            try:
-                process.communicate(timeout=0.1)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
 
     # ------------------------------------------------------------------
     # Public interface (mirrors the old TrainingService API)
