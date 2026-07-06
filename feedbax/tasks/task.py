@@ -41,14 +41,14 @@ from jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 from feedbax.config.mapping import WhereDict
-from feedbax.tasks._tree import tree_call, tree_call_with_keys
+from feedbax.tasks._tree import tree_call
 from feedbax.runtime.graph import Component, Graph, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.intervene import (
     InterventionSpec,
     TimeSeriesParam,
 )
-from feedbax.intervene.schedule import IntervenorLabelStr
+from feedbax.intervene.schedule import IntervenorLabelStr, evaluate_intervenor_params
 from feedbax.objectives.loss import (
     AbstractLoss,
     TargetSpec,
@@ -726,28 +726,20 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         batch_info: Optional[BatchInfo] = None,
     ) -> TaskTrialSpec:
-        spec_intervenor_params = {k: v.params for k, v in intervention_specs.items()}
-
-        # TODO: Don't repeat `intervene._eval_intervenor_param_spec`
-        # Evaluate any parameters that are defined as trial-varying functions
-        intervenor_params = tree_call_with_keys(
-            spec_intervenor_params,
-            trial_spec,
-            batch_info,
-            key=key,
-            # Treat `TimeSeriesParam`s as leaves, and don't call (unwrap) them yet.
-            exclude=is_type(TimeSeriesParam),
-            is_leaf=is_type(TimeSeriesParam),
-        )
-
-        # Preserve TimeSeriesParam wrappers so that downstream consumers
-        # (_apply_inits and TaskComponent) can distinguish time-varying
-        # params from time-invariant ones.  Time-invariant leaves pass
-        # through unchanged and get merged into the initial State by
-        # _apply_inits; TimeSeriesParam leaves are skipped by _apply_inits
-        # and unwrapped + indexed per-step by TaskComponent or the
-        # training loop.
-        return intervenor_params
+        # Split at the label boundary, then the shared evaluator splits each
+        # callable parameter leaf within that label.
+        return {
+            label: evaluate_intervenor_params(
+                spec.params,
+                trial_spec,
+                batch_info,
+                key=spec_key,
+            )
+            for (label, spec), spec_key in zip(
+                intervention_specs.items(),
+                jr.split(key, len(intervention_specs)),
+            )
+        }
 
     @abstractmethod
     def get_validation_trials(
@@ -771,10 +763,10 @@ class AbstractTask(Module):
     def validation_trials(self) -> TaskTrialSpec:
         """The set of validation trials associated with the task."""
         key = jr.PRNGKey(self.seed_validation)
-        key_trials, key_dependencies = jr.split(key)
-        keys = jr.split(key, self.n_validation_trials)
+        key_trials, key_intervene, key_dependencies = jr.split(key, 3)
+        keys = jr.split(key_intervene, self.n_validation_trials)
 
-        trial_specs = self.get_validation_trials(key)
+        trial_specs = self.get_validation_trials(key_trials)
 
         callables, other = eqx.partition(trial_specs, is_type(Callable))
 
@@ -1700,8 +1692,7 @@ class DelayedReaches(AbstractTask):
 
         effector_init_states, effector_target_states = _pos_only_states(effector_pos_endpoints)
 
-        key_val = jr.PRNGKey(self.seed_validation)
-        epochs_keys = jr.split(key_val, effector_init_states.pos.shape[0])
+        epochs_keys = jr.split(key, effector_init_states.pos.shape[0])
         #! Assume no catch trials during validation
         get_sequences = partial(self._get_sequences, p_catch=0.0)
         task_inputs, effector_target_states, epoch_bounds, is_catch = jax.vmap(get_sequences)(

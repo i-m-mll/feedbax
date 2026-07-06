@@ -8,12 +8,12 @@ in the rlrmp tree.
 
 import equinox as eqx
 from equinox.nn import State
-import jax
 import jax.numpy as jnp
 import jax.random as jr
-import pytest
 
 from feedbax.intervene import (
+    AddNoise,
+    AddNoiseParams,
     DynamicsMatrixPerturb,
     DynamicsMatrixPerturbParams,
 )
@@ -26,8 +26,13 @@ def _make_state(component: DynamicsMatrixPerturb, params: DynamicsMatrixPerturbP
     return state.set(component.params_index, params)
 
 
-def _call(component: DynamicsMatrixPerturb, *, effector: CartesianState,
-          force_in: jnp.ndarray, params: DynamicsMatrixPerturbParams):
+def _call(
+    component: DynamicsMatrixPerturb,
+    *,
+    effector: CartesianState,
+    force_in: jnp.ndarray,
+    params: DynamicsMatrixPerturbParams,
+):
     state = _make_state(component, params)
     inputs = {"effector": effector, "force": force_in}
     out, _ = component(inputs, state, key=jr.PRNGKey(0))
@@ -69,9 +74,7 @@ class TestDynamicsMatrixPerturb:
         # delta_A = [[0,0,k,0],[0,0,0,k]] ⇒ Δ(dot v) = k * vel
         # ⇒ Δf = mass * k * vel
         k = 0.7
-        delta_A = jnp.array(
-            [[0.0, 0.0, k, 0.0], [0.0, 0.0, 0.0, k]], dtype=jnp.float32
-        )
+        delta_A = jnp.array([[0.0, 0.0, k, 0.0], [0.0, 0.0, 0.0, k]], dtype=jnp.float32)
         eff = CartesianState(pos=jnp.array([0.0, 0.0]), vel=jnp.array([1.0, -2.0]))
         f_in = jnp.zeros(2)
         params = DynamicsMatrixPerturbParams(
@@ -85,9 +88,7 @@ class TestDynamicsMatrixPerturb:
 
     def test_scale_multiplies_perturbation(self):
         comp = DynamicsMatrixPerturb(mass=1.0)
-        delta_A = jnp.array(
-            [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=jnp.float32
-        )
+        delta_A = jnp.array([[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=jnp.float32)
         eff = CartesianState(pos=jnp.zeros(2), vel=jnp.array([2.0, 3.0]))
         f_in = jnp.zeros(2)
         # scale = 0.5 → half the perturbation
@@ -111,3 +112,16 @@ class TestDynamicsMatrixPerturb:
 
         f_out = run(eff, f_in, params)
         assert f_out.shape == (2,)
+
+
+def test_add_noise_splits_key_per_signal_leaf() -> None:
+    component = AddNoise(params=AddNoiseParams(active=True))
+    state = State(component)
+    signal = {
+        "left": jnp.zeros((4,), dtype=jnp.float32),
+        "right": jnp.zeros((4,), dtype=jnp.float32),
+    }
+
+    outputs, _ = component({"input": signal}, state, key=jr.PRNGKey(0))
+
+    assert not jnp.allclose(outputs["output"]["left"], outputs["output"]["right"])

@@ -17,7 +17,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.config.selectors import attr_str_tree_to_where_func, where_func_to_attr_str_tree
-from feedbax.models.networks import SimpleStagedNetwork
+from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork
 from feedbax.models.feedback import SimpleFeedback
 
 
@@ -222,6 +222,30 @@ def test_simplestagednetwork_preserves_explicit_float64_trainable_leaves():
         assert net.hidden.weight_hh.dtype == jnp.float64
         assert net.readout.weight.dtype == jnp.float64
         assert net._initial_state.hidden.dtype == jnp.float64
+
+
+def test_simplestagednetwork_threads_key_to_stochastic_hidden_cell() -> None:
+    net = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=3,
+        out_size=1,
+        hidden_type=lambda *args, **kwargs: LeakyRNNCell(
+            *args,
+            **kwargs,
+            use_noise=True,
+            noise_strength=0.1,
+        ),
+        key=jax.random.PRNGKey(0),
+    )
+    state = init_state_from_component(net)
+
+    outputs, _ = net(
+        {"input": jnp.ones((2,), dtype=jnp.float32)},
+        state,
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert outputs["output"].shape == (1,)
 
 
 def _call_modulator(component, signal, modulator):

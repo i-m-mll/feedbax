@@ -3,9 +3,14 @@ from __future__ import annotations
 from collections import OrderedDict
 
 import jax.numpy as jnp
+import jax.random as jr
 import pytest
 
-from feedbax.analysis.grad import _compute_grads
+from feedbax.analysis.grad import (
+    _compute_grads,
+    reducer_frobenius_hutchinson,
+    reducer_trace_hutchinson,
+)
 
 
 def test_compute_grads_preserves_all_argnum_columns() -> None:
@@ -42,3 +47,28 @@ def test_compute_grads_rejects_mismatched_leaf_arity() -> None:
             fn_args,
             argnums=(0, 1),
         )
+
+
+def test_hutchinson_reducers_require_explicit_keys() -> None:
+    with pytest.raises(TypeError):
+        reducer_frobenius_hutchinson()
+
+    with pytest.raises(TypeError):
+        reducer_trace_hutchinson()
+
+
+def test_hutchinson_reducers_are_deterministic_for_same_key() -> None:
+    like = jnp.zeros((4,), dtype=jnp.float32)
+
+    def identity(x):
+        return x
+
+    frob = reducer_frobenius_hutchinson(key=jr.PRNGKey(0), samples=8)
+    trace = reducer_trace_hutchinson(key=jr.PRNGKey(1), samples=8)
+
+    assert frob(identity, like) == reducer_frobenius_hutchinson(key=jr.PRNGKey(0), samples=8)(
+        identity, like
+    )
+    assert trace(identity, like) == reducer_trace_hutchinson(key=jr.PRNGKey(1), samples=8)(
+        identity, like
+    )
