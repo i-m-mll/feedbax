@@ -53,6 +53,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
     AnalysisInputRequirement,
+    ComponentSpec,
     GraphMetadata,
     GraphSpec,
     StudioStageSpec,
@@ -1045,6 +1046,29 @@ def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch(
     assert "graph_wire_dtype_mismatch" in issue_types
     assert "wrong_source_port_direction" in issue_types
     assert "graph_input_occupied" in issue_types
+
+
+def test_graph_validation_reports_network_missing_subgraph_before_build() -> None:
+    graph = GraphSpec(
+        nodes={
+            "network": ComponentSpec(
+                type="Network",
+                params={"input_size": 1, "hidden_size": 4, "out_size": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        input_ports=["input"],
+        output_ports=["output"],
+        input_bindings={"input": ("network", "input")},
+        output_bindings={"output": ("network", "output")},
+    )
+
+    result = validate_graph_spec(graph)
+    issue_types = {issue.type for issue in result.errors}
+
+    assert not result.valid
+    assert "missing_subgraph" in issue_types
 
 
 def test_studio_task_timeline_spec_validates_value_specs() -> None:

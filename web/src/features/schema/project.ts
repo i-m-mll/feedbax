@@ -63,12 +63,38 @@ export function projectStudioSchema(
     task_data: taskData,
     selector_targets: selectorTargets,
     issues: [
+      ...validateMissingSubgraphs(schemaGraph, componentMap),
       ...validateGraphConnections(schemaGraph, ports),
       ...validateTaskBindings(schemaGraph, ports, taskData, taskBindingSpec),
       ...validateInterventionSchema(graph.taps, { selector_targets: selectorTargets }),
     ],
     metadata: { projected_by: 'feedbax.web.projectStudioSchema' },
   };
+}
+
+function validateMissingSubgraphs(
+  graph: GraphSpec,
+  componentMap: Map<string, ComponentDefinition>
+): SchemaValidationIssue[] {
+  const issues: SchemaValidationIssue[] = [];
+  for (const [nodeId, node] of Object.entries(graph.nodes)) {
+    const component = componentMap.get(node.type);
+    const requiresSubgraph =
+      node.type === 'Network' ||
+      node.type === 'Subgraph' ||
+      Boolean(component?.is_composite);
+    if (!requiresSubgraph || graph.subgraphs?.[nodeId]) continue;
+    issues.push({
+      type: 'missing_subgraph',
+      message:
+        node.type === 'Network'
+          ? `Network node '${nodeId}' has no subgraph. Open it in Studio to generate the internal architecture, then save again.`
+          : `${node.type} node '${nodeId}' requires a subgraph, but none was provided`,
+      severity: 'error',
+      location: { path: `nodes.${nodeId}`, node: nodeId },
+    });
+  }
+  return issues;
 }
 
 export function validateConnectionAgainstSchema(

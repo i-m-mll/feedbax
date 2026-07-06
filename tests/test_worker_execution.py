@@ -19,6 +19,7 @@ from feedbax.contracts.graph import (
 )
 from feedbax.web.worker.execution import (
     _build_optimizer,
+    _derive_trainable_nodes,
     compile_training_run,
     rollout_graph,
     run_training_graph,
@@ -289,6 +290,33 @@ def test_compile_training_run_uses_array_leaf_trainability_for_network_template(
     )
 
 
+def test_trainable_nodes_come_from_registry_metadata_and_explicit_overrides() -> None:
+    graph_spec = GraphSpec(
+        nodes={
+            "default_readout": ComponentSpec(
+                type="Linear",
+                params={"input_size": 1, "output_size": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "disabled_readout": ComponentSpec(
+                type="Linear",
+                params={"input_size": 1, "output_size": 1, "trainable": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "explicit_gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 1.0, "trainable": True},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        }
+    )
+
+    assert _derive_trainable_nodes(graph_spec) == ("default_readout", "explicit_gain")
+
+
 def test_rollout_graph_threads_network_template_recurrence() -> None:
     graph_spec = network_template_graph(
         {"input_size": 2, "hidden_size": 3, "out_size": 1}
@@ -439,6 +467,40 @@ def test_compile_training_run_fails_unsupported_display_only_component() -> None
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
             task_binding_spec=_task_binding_spec(),
+            cfg=_cfg(),
+        )
+
+
+def test_compile_training_run_rejects_network_without_subgraph_during_validation() -> None:
+    graph_spec = GraphSpec(
+        nodes={
+            "network": ComponentSpec(
+                type="Network",
+                params={"input_size": 1, "hidden_size": 3, "out_size": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("network", "output")},
+    ).model_dump(mode="json", exclude_none=True)
+
+    with pytest.raises(ValueError, match="missing_subgraph"):
+        compile_training_run(
+            graph_spec=graph_spec,
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec={
+                **_task_binding_spec(),
+                "bindings": [
+                    {
+                        **_task_binding_spec()["bindings"][0],
+                        "id": "task:model_input->network:input",
+                        "target_node_id": "network",
+                        "target_port": "input",
+                    }
+                ],
+            },
             cfg=_cfg(),
         )
 

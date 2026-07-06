@@ -30,4 +30,6 @@ export interface ComponentDefinition {
   template_id?: string;
   /** Backend-declared executability of template_graph. */
   template_kind?: 'executable' | 'display';
+  /** Backend-declared default optimizer participation for this component type. */
+  trainable_by_default?: boolean;
 }

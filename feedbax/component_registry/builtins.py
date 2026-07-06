@@ -675,6 +675,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector')},
             ),
             output_prototype_fn=linear_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -702,6 +703,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector')},
             ),
             output_prototype_fn=linear_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -721,6 +723,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
             ),
             output_prototype_fn=recurrent_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -748,6 +751,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
             ),
             output_prototype_fn=recurrent_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(
@@ -775,6 +779,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
             ),
             output_prototype_fn=lstm_output_prototype,
+            trainable_by_default=True,
         )
     )
     registry.register(

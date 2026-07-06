@@ -818,6 +818,55 @@ _DISPLAY_ONLY_MESSAGES: dict[str, str] = {
 }
 
 
+_UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {
+    "Input": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "Graph inputs must be represented by GraphSpec input_bindings, not display-only "
+        "placeholder nodes."
+    ),
+    "Subtract": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "Register a real arithmetic component builder before materializing this template."
+    ),
+    "Reshape": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "Register a real reshape component builder before materializing this template."
+    ),
+    "MatMul": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "Register a real matrix-multiply component builder before materializing this template."
+    ),
+    "Scale": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "Use a registered Gain node or register a real Scale builder before materializing "
+        "this template."
+    ),
+    "Sigmoid": (
+        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
+        "Use a registered activation-bearing component or register a real Sigmoid builder "
+        "before materializing this template."
+    ),
+}
+
+
+def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
+    if getattr(meta, "template_graph", None) is None:
+        return None
+    template_builder_issues = getattr(component_registry, "template_builder_issues", None)
+    if not callable(template_builder_issues):
+        return None
+    issues = template_builder_issues(meta)
+    if not issues:
+        return None
+    details = "; ".join(issue.summary for issue in issues[:6])
+    if len(issues) > 6:
+        details += f"; and {len(issues) - 6} more"
+    return (
+        f"Component template {meta.name!r} is not executable because its template graph "
+        f"contains node types without registered builders: {details}"
+    )
+
+
 def register_builtin_component_builders(registry: Any) -> None:
     for name, builder in _BUILDERS.items():
         registry.register_builder(name, builder, provenance="feedbax")
@@ -838,16 +887,24 @@ def build_component(
         component_registry = get_component_registry()
     meta = component_registry.get(node_type)
     if meta is None:
+        message = _UNREGISTERED_TEMPLATE_MESSAGES.get(node_type)
+        if message is not None:
+            raise NotImplementedError(
+                message.format(node_type=node_type, node_name=node_name)
+            )
         known = ", ".join(component_registry.names())
         raise ValueError(
             f"Unsupported component type {node_type!r} for node {node_name!r}. "
             f"Known component types: {known}"
         )
     if meta.builder is None:
-        message = _DISPLAY_ONLY_MESSAGES.get(
-            node_type,
-            f"Component type {node_type!r} for node {node_name!r} is registered "
-            "for metadata but has no executable builder.",
+        message = (
+            _template_builder_error(meta, component_registry)
+            or _DISPLAY_ONLY_MESSAGES.get(
+                node_type,
+                f"Component type {node_type!r} for node {node_name!r} is registered "
+                "for metadata but has no executable builder.",
+            )
         )
         raise NotImplementedError(message.format(node_name=node_name))
     try:

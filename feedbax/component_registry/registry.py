@@ -42,6 +42,23 @@ class ComponentResolution:
     migrations: tuple[ComponentMigrationInfo, ...] = ()
 
 
+@dataclass(frozen=True)
+class TemplateBuilderIssue:
+    template_type: str
+    node_path: str
+    node_type: str
+    reason: str
+    template_id: str | None = None
+
+    @property
+    def summary(self) -> str:
+        template_ref = self.template_id or self.template_type
+        return (
+            f"{template_ref}: {self.node_path} uses {self.node_type!r}, "
+            f"{self.reason}"
+        )
+
+
 @contextmanager
 def _registration_provenance(provenance: str | None) -> Iterator[None]:
     if provenance is None:
@@ -110,6 +127,7 @@ class ComponentRegistry:
         owner: str | None = None,
         param_schema_version: str = "1",
         supported_param_schema_versions: Iterable[str] | None = None,
+        trainable_by_default: bool = False,
     ) -> ComponentMeta:
         if not callable(builder):
             raise TypeError(f"Builder for component type {name!r} must be callable")
@@ -142,6 +160,7 @@ class ComponentRegistry:
                 if supported_param_schema_versions is not None
                 else [param_schema_version]
             ),
+            trainable_by_default=trainable_by_default,
         )
         self.register(meta)
         return meta
@@ -297,6 +316,84 @@ class ComponentRegistry:
             by_category.setdefault(meta.category, []).append(self._to_definition(meta))
         return by_category
 
+    def template_builder_issues(
+        self,
+        meta: ComponentMeta | None = None,
+    ) -> list[TemplateBuilderIssue]:
+        """Return template graph nodes that cannot be materialized as executable graph nodes."""
+
+        metas = [meta] if meta is not None else list(self._components.values())
+        issues: list[TemplateBuilderIssue] = []
+        for template_meta in metas:
+            if template_meta.template_graph is None:
+                continue
+            issues.extend(
+                self._template_graph_builder_issues(
+                    template_meta,
+                    template_meta.template_graph,
+                    node_path="template_graph",
+                )
+            )
+        return issues
+
+    def _template_graph_builder_issues(
+        self,
+        template_meta: ComponentMeta,
+        graph: Any,
+        *,
+        node_path: str,
+    ) -> list[TemplateBuilderIssue]:
+        issues: list[TemplateBuilderIssue] = []
+        subgraphs = dict(getattr(graph, "subgraphs", None) or {})
+        nodes = getattr(graph, "nodes", {})
+        for node_id, node in nodes.items():
+            current_path = f"{node_path}/nodes/{node_id}"
+            node_type = str(getattr(node, "type", ""))
+            if node_type in {"Subgraph", "Network"} or node_id in subgraphs:
+                subgraph = subgraphs.get(node_id)
+                if subgraph is None:
+                    issues.append(
+                        TemplateBuilderIssue(
+                            template_type=template_meta.name,
+                            template_id=template_meta.template_id,
+                            node_path=current_path,
+                            node_type=node_type,
+                            reason="requires a subgraph but none is registered",
+                        )
+                    )
+                else:
+                    issues.extend(
+                        self._template_graph_builder_issues(
+                            template_meta,
+                            subgraph,
+                            node_path=f"{current_path}/subgraph",
+                        )
+                    )
+                continue
+
+            node_meta = self._components.get(node_type)
+            if node_meta is None:
+                issues.append(
+                    TemplateBuilderIssue(
+                        template_type=template_meta.name,
+                        template_id=template_meta.template_id,
+                        node_path=current_path,
+                        node_type=node_type,
+                        reason="has no registered component metadata or builder",
+                    )
+                )
+            elif node_meta.builder is None:
+                issues.append(
+                    TemplateBuilderIssue(
+                        template_type=template_meta.name,
+                        template_id=template_meta.template_id,
+                        node_path=current_path,
+                        node_type=node_type,
+                        reason="is registered but has no executable builder",
+                    )
+                )
+        return issues
+
     def load_user_components(self, path: Path) -> None:
         if not path.exists():
             return
@@ -447,6 +544,7 @@ class ComponentRegistry:
             param_schema_version=meta.param_schema_version,
             supported_param_schema_versions=list(meta.supported_param_schema_versions),
             migrations=list(meta.migrations),
+            trainable_by_default=meta.trainable_by_default,
         )
 
     def _migration_infos_for_target(self, target_type: str) -> list[ComponentMigrationInfo]:
@@ -570,6 +668,7 @@ def register_component_type(
     owner: str | None = None,
     param_schema_version: str = "1",
     supported_param_schema_versions: Iterable[str] | None = None,
+    trainable_by_default: bool = False,
 ) -> ComponentMeta:
     """Register an executable component type in the process-wide registry."""
 
@@ -589,4 +688,5 @@ def register_component_type(
         owner=owner,
         param_schema_version=param_schema_version,
         supported_param_schema_versions=supported_param_schema_versions,
+        trainable_by_default=trainable_by_default,
     )
