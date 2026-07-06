@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.graph import (
@@ -21,51 +21,66 @@ from feedbax.contracts.graph import (
 )
 
 
-class SuccessPayload(BaseModel):
+STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
+STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v1"
+
+
+class StudioApiModel(BaseModel):
+    """Base model for Studio API transport contracts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_API_TRANSPORT_SCHEMA_ID] = STUDIO_API_TRANSPORT_SCHEMA_ID
+    schema_version: Literal[STUDIO_API_TRANSPORT_SCHEMA_VERSION] = (
+        STUDIO_API_TRANSPORT_SCHEMA_VERSION
+    )
+
+
+class SuccessPayload(StudioApiModel):
     """Boolean success payload shared by mutation endpoints."""
 
     success: bool
 
 
-class SuccessResponse(BaseModel):
+class SuccessResponse(StudioApiModel):
     """Standard API envelope for success-only mutations."""
 
     data: SuccessPayload
 
 
-class GraphListItem(BaseModel):
+class GraphListItem(StudioApiModel):
     """A saved graph listing row."""
 
     id: str
     metadata: GraphMetadata
 
 
-class GraphListPayload(BaseModel):
+class GraphListPayload(StudioApiModel):
     """Payload for ``GET /api/graphs``."""
 
     graphs: list[GraphListItem]
 
 
-class GraphListResponse(BaseModel):
+class GraphListResponse(StudioApiModel):
     """Standard API envelope for saved graph listings."""
 
     data: GraphListPayload
 
 
-class GraphCreatePayload(BaseModel):
+class GraphCreatePayload(StudioApiModel):
     """Payload returned after creating a graph."""
 
     id: str
     metadata: GraphMetadata
 
 
-class GraphCreateResponse(BaseModel):
+class GraphCreateResponse(StudioApiModel):
     """Standard API envelope for graph creation."""
 
     data: GraphCreatePayload
 
 
-class GraphDetailPayload(BaseModel):
+class GraphDetailPayload(StudioApiModel):
     """Payload for ``GET /api/graphs/{graph_id}``."""
 
     graph: GraphSpec
@@ -77,100 +92,100 @@ class GraphDetailPayload(BaseModel):
     workspace: Optional[StudioWorkspaceSpec] = None
 
 
-class GraphDetailResponse(BaseModel):
+class GraphDetailResponse(StudioApiModel):
     """Standard API envelope for graph detail retrieval."""
 
     data: GraphDetailPayload
 
 
-class GraphValidationResponse(BaseModel):
+class GraphValidationResponse(StudioApiModel):
     """Standard API envelope for graph validation."""
 
     data: ValidationResult
 
 
-class GraphExportPayload(BaseModel):
+class GraphExportPayload(StudioApiModel):
     """Payload for graph export endpoints."""
 
     content: str
     filename: str
 
 
-class GraphExportResponse(BaseModel):
+class GraphExportResponse(StudioApiModel):
     """Standard API envelope for graph exports."""
 
     data: GraphExportPayload
 
 
-class ComponentListPayload(BaseModel):
+class ComponentListPayload(StudioApiModel):
     """Payload for ``GET /api/components``."""
 
     components: list[ComponentDefinition]
 
 
-class ComponentListResponse(BaseModel):
+class ComponentListResponse(StudioApiModel):
     """Standard API envelope for component library listings."""
 
     data: ComponentListPayload
 
 
-class ComponentDetailResponse(BaseModel):
+class ComponentDetailResponse(StudioApiModel):
     """Standard API envelope for component detail retrieval."""
 
     data: ComponentDefinition
 
 
-class ComponentRefreshPayload(BaseModel):
+class ComponentRefreshPayload(StudioApiModel):
     """Payload for component library refresh results."""
 
     added: list[str]
     removed: list[str]
 
 
-class ComponentRefreshResponse(BaseModel):
+class ComponentRefreshResponse(StudioApiModel):
     """Standard API envelope for component library refresh results."""
 
     data: ComponentRefreshPayload
 
 
-class TrainingStartPayload(BaseModel):
+class TrainingStartPayload(StudioApiModel):
     """Payload returned after starting a training job."""
 
     job_id: str
 
 
-class TrainingStartResponse(BaseModel):
+class TrainingStartResponse(StudioApiModel):
     """Standard API envelope for ``POST /api/training``."""
 
     data: TrainingStartPayload
 
 
-class TrainingStatusPayload(BaseModel):
+class TrainingStatusPayload(StudioApiModel):
     """Payload for training status polling."""
 
     status: dict[str, Any]
 
 
-class TrainingStatusResponse(BaseModel):
+class TrainingStatusResponse(StudioApiModel):
     """Standard API envelope for training status polling."""
 
     data: TrainingStatusPayload
 
 
-class WorkerConnectResponse(BaseModel):
+class WorkerConnectResponse(StudioApiModel):
     """Payload for connecting Studio to a worker."""
 
     ok: bool
     url: str
 
 
-class WorkerConnectEnvelope(BaseModel):
+class WorkerConnectEnvelope(StudioApiModel):
     """Standard API envelope for worker connection responses."""
 
     data: WorkerConnectResponse
 
 
-class WorkerStatusResponse(BaseModel):
+class WorkerStatusResponse(StudioApiModel):
     """Payload describing the current worker connection."""
 
     mode: Literal["local", "remote"]
@@ -178,13 +193,13 @@ class WorkerStatusResponse(BaseModel):
     connected: bool
 
 
-class WorkerStatusEnvelope(BaseModel):
+class WorkerStatusEnvelope(StudioApiModel):
     """Standard API envelope for worker status responses."""
 
     data: WorkerStatusResponse
 
 
-class AnalysisClassInfo(BaseModel):
+class AnalysisClassInfo(StudioApiModel):
     """Describes a single analysis class available in a package."""
 
     name: str
@@ -196,7 +211,7 @@ class AnalysisClassInfo(BaseModel):
     icon: str
 
 
-class AnalysisPackageInfo(BaseModel):
+class AnalysisPackageInfo(StudioApiModel):
     """A group of related analysis classes."""
 
     name: str
@@ -204,19 +219,19 @@ class AnalysisPackageInfo(BaseModel):
     analyses: list[AnalysisClassInfo]
 
 
-class AnalysisPackagesPayload(BaseModel):
+class AnalysisPackagesPayload(StudioApiModel):
     """Payload for analysis package discovery."""
 
     packages: list[AnalysisPackageInfo]
 
 
-class AnalysisPackagesResponse(BaseModel):
+class AnalysisPackagesResponse(StudioApiModel):
     """Standard API envelope for analysis package discovery."""
 
     data: AnalysisPackagesPayload
 
 
-class GenerateAnalysisRequest(BaseModel):
+class GenerateAnalysisRequest(StudioApiModel):
     """Body for ``POST /api/analyses/jobs``."""
 
     node_id: str
@@ -224,7 +239,7 @@ class GenerateAnalysisRequest(BaseModel):
     eval_run_id: Optional[str] = None
 
 
-class GenerateAnalysisPayload(BaseModel):
+class GenerateAnalysisPayload(StudioApiModel):
     """Payload returned immediately after scheduling an analysis job."""
 
     request_id: str
@@ -232,13 +247,13 @@ class GenerateAnalysisPayload(BaseModel):
     manifest_id: Optional[str] = None
 
 
-class GenerateAnalysisResponse(BaseModel):
+class GenerateAnalysisResponse(StudioApiModel):
     """Standard API envelope for demand-driven analysis job creation."""
 
     data: GenerateAnalysisPayload
 
 
-class AnalysisJobStatusPayload(BaseModel):
+class AnalysisJobStatusPayload(StudioApiModel):
     """Payload returned by demand-driven analysis job polling."""
 
     request_id: str
@@ -251,13 +266,13 @@ class AnalysisJobStatusPayload(BaseModel):
     error: Optional[str] = None
 
 
-class AnalysisJobStatusResponse(BaseModel):
+class AnalysisJobStatusResponse(StudioApiModel):
     """Standard API envelope for demand-driven analysis job polling."""
 
     data: AnalysisJobStatusPayload
 
 
-class TrainingProgressEvent(BaseModel):
+class TrainingProgressEvent(StudioApiModel):
     """Training progress event sent over the Studio WebSocket."""
 
     type: Literal["training_progress"]
@@ -273,7 +288,7 @@ class TrainingProgressEvent(BaseModel):
     execution: Optional[str] = None
 
 
-class TrainingLogEvent(BaseModel):
+class TrainingLogEvent(StudioApiModel):
     """Training log event sent over the Studio WebSocket."""
 
     type: Literal["training_log"]
@@ -286,7 +301,7 @@ class TrainingLogEvent(BaseModel):
     execution: Optional[str] = None
 
 
-class TrainingTrajectoryPayload(BaseModel):
+class TrainingTrajectoryPayload(StudioApiModel):
     """Trajectory snapshot carried by a training WebSocket event."""
 
     effector: list[Any] = Field(default_factory=list)
@@ -296,7 +311,7 @@ class TrainingTrajectoryPayload(BaseModel):
     outputs: dict[str, Any] = Field(default_factory=dict)
 
 
-class TrainingTrajectoryEvent(BaseModel):
+class TrainingTrajectoryEvent(StudioApiModel):
     """Training trajectory event sent over the Studio WebSocket."""
 
     type: Literal["training_trajectory"]
@@ -306,7 +321,7 @@ class TrainingTrajectoryEvent(BaseModel):
     execution: Optional[str] = None
 
 
-class TrainingCompleteEvent(BaseModel):
+class TrainingCompleteEvent(StudioApiModel):
     """Training completion event sent over the Studio WebSocket."""
 
     type: Literal["training_complete"]
@@ -318,7 +333,7 @@ class TrainingCompleteEvent(BaseModel):
     execution: Optional[str] = None
 
 
-class TrainingErrorEvent(BaseModel):
+class TrainingErrorEvent(StudioApiModel):
     """Training error event sent over the Studio WebSocket."""
 
     type: Literal["training_error"]

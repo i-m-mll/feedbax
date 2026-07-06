@@ -14,9 +14,15 @@ from pydantic import ValidationError
 from feedbax.execution.backends import render_modal_app
 from feedbax.execution.local import run_local_execution
 from feedbax.execution.models import (
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
+    EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
     EXECUTION_PLAN_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
     EXECUTION_SPEC_SCHEMA_VERSION,
+    ExecutionCloudPayload,
     ExecutionCell,
+    ExecutionReproducibility,
     ExecutionSpec,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
     RepoSource,
@@ -26,6 +32,7 @@ from feedbax.execution.planning import (
     default_feedbax_sources,
     prepare_execution_plan,
 )
+from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -230,6 +237,11 @@ def test_training_execution_plan_derives_local_command_from_training_run_spec() 
     assert "--run-id training-local" in plan.command
     training_record = plan.reproducibility["training_run_spec"]
     assert plan.schema_version == EXECUTION_PLAN_SCHEMA_VERSION
+    assert plan.cloud_payload["schema_id"] == EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID
+    assert plan.cloud_payload["schema_version"] == EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
+    assert plan.cloud_payload["provider"] == "none"
+    assert plan.reproducibility["schema_id"] == EXECUTION_REPRODUCIBILITY_SCHEMA_ID
+    assert plan.reproducibility["schema_version"] == EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
     assert training_record["identity"] == "studio:training-run-spec:toy"
     assert len(training_record["content_sha256"]) == 64
     assert training_record["path"].endswith("/feedbax_runs/training-local/training-run-spec.json")
@@ -271,6 +283,21 @@ def test_training_execution_plan_accepts_referenced_training_run_spec() -> None:
     assert record["identity"] == "repo://specs/training-run.json"
     assert record["ref"] == "repo://specs/training-run.json"
     assert record["content_sha256"] == "a" * 64
+
+
+def test_execution_plan_nested_payloads_require_schema_identity() -> None:
+    with pytest.raises(ValidationError, match="ExecutionCloudPayload"):
+        ExecutionCloudPayload.model_validate({"provider": "none"})
+
+    with pytest.raises(ValidationError, match="ExecutionReproducibility"):
+        ExecutionReproducibility.model_validate({"install_modes": {}})
+
+    for kind, version in {
+        "ExecutionCloudPayload": "feedbax.manifest.execution_cloud_payload.v0",
+        "ExecutionReproducibility": "feedbax.manifest.execution_reproducibility.v0",
+    }.items():
+        with pytest.raises(UnsupportedSpecVersion, match=version):
+            default_spec_registry.migrate(kind, {"schema_version": version})
 
 
 def test_runpod_plan_uses_ssh_worker_contract() -> None:
@@ -425,6 +452,37 @@ def test_modal_training_plan_and_app_use_training_run_spec_runner() -> None:
     assert plan.cloud_payload["cells"][0]["command"].startswith(
         "python -m feedbax execute-training-run-spec"
     )
+
+
+def test_modal_renderer_and_cloud_payload_share_cell_payload_builder(monkeypatch) -> None:
+    import feedbax.execution.backends as backends
+
+    sentinel_cells = [
+        {
+            "id": "sentinel",
+            "command": "python sentinel.py",
+            "env": {"FROM": "shared-builder"},
+            "params": {"seed": 7},
+        }
+    ]
+
+    def fake_modal_cell_payloads(spec: ExecutionSpec, *, job_id: str) -> list[dict[str, object]]:
+        assert job_id == "modal-shared"
+        return sentinel_cells
+
+    monkeypatch.setattr(backends, "modal_cell_payloads", fake_modal_cell_payloads)
+    spec = ExecutionSpec(
+        backend="modal",
+        job_id="modal-shared",
+        command="python ignored.py",
+        modal={"volume_name": None},
+    )
+
+    plan = prepare_execution_plan(spec)
+    namespace = _exec_rendered_modal_app(render_modal_app(spec), monkeypatch)
+
+    assert plan.cloud_payload["cells"] == sentinel_cells
+    assert namespace["CELLS"] == sentinel_cells
 
 
 def test_modal_app_renderer_contains_volume_health_and_map_semantics() -> None:

@@ -13,6 +13,10 @@ from fastapi.testclient import TestClient
 import feedbax.web.api.training as training_api
 import feedbax.web.services.training_service as training_service_module
 import feedbax.web.worker.app as worker_app
+from feedbax.contracts.studio_api import (
+    STUDIO_API_TRANSPORT_SCHEMA_ID,
+    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+)
 from feedbax.web.services.training_service import TrainingService
 from feedbax.web.worker.app import WorkerStatus
 
@@ -246,7 +250,10 @@ def test_training_api_routes_pass_path_job_id(monkeypatch) -> None:
     client = TestClient(app)
 
     assert client.get("/api/training/job-a").json()["data"]["status"]["job_id"] == "job-a"
-    assert client.delete("/api/training/job-b").json() == {"data": {"success": True}}
+    delete_payload = client.delete("/api/training/job-b").json()
+    assert delete_payload["data"]["success"] is True
+    assert delete_payload["data"]["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
+    assert delete_payload["data"]["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
     assert calls == [("status", "job-a"), ("stop", "job-b")]
 
 
