@@ -13,7 +13,7 @@ from feedbax.contracts.graphs.serialization import spec_to_graph
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.tasks import AbstractTask, TaskInterventionSpecs, TaskTrialSpec, TrialSpecDependency
 from feedbax.training import trainer as trainer_module
-from feedbax.training.trainer import TaskTrainer
+from feedbax.training.trainer import TaskTrainer, _training_key_for_batch
 
 
 class _WeightSumLoss(AbstractLoss):
@@ -122,3 +122,16 @@ def test_task_trainer_progress_subdescription_uses_log_cadence(monkeypatch) -> N
     _train(disable_progress=False, n_batches=5, log_step=2)
 
     assert len(recorder.subdescriptions) == 3
+
+
+def test_training_key_for_resumed_batches_uses_local_index() -> None:
+    keys = jax.random.split(jax.random.PRNGKey(7), 3)
+    selected = [
+        _training_key_for_batch(keys, batch, idx_start=5)
+        for batch in jnp.arange(5, 8)
+    ]
+
+    assert jnp.array_equal(selected[0], keys[0])
+    assert jnp.array_equal(selected[1], keys[1])
+    assert jnp.array_equal(selected[2], keys[2])
+    assert not jnp.array_equal(selected[0], selected[-1])

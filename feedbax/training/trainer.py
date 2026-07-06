@@ -65,6 +65,15 @@ def _as_host_scalar(value: Array) -> float:
     return float(jax.device_get(value))
 
 
+def _training_key_for_batch(
+    keys: PRNGKeyArray,
+    batch: int | Array,
+    idx_start: int,
+) -> PRNGKeyArray:
+    """Select a per-run PRNG key using the batch index local to this run."""
+    return keys[int(batch - idx_start)]
+
+
 def _cast_to_state_dtypes(new_value, current_value):
     """Cast a replacement StateIndex value to the stored State leaf dtypes."""
 
@@ -601,9 +610,11 @@ class TaskTrainer(eqx.Module):
         with progress_context as (batches, update_pbar):
             # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
             for batch in batches:
-                key_train, key_eval = jr.split(keys[batch], 2)
-
                 batch_local = int(batch - idx_start)
+                key_train, key_eval = jr.split(
+                    _training_key_for_batch(keys, batch, idx_start),
+                    2,
+                )
 
                 if batch_local in where_train_local:
                     where_train_func = where_train_local[batch_local]

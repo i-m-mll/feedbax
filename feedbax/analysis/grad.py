@@ -2,10 +2,8 @@
 Compute derivatives of functions.
 """
 
-import re
-from collections.abc import Callable, Mapping, Sequence
-from types import MappingProxyType
-from typing import Any, Optional, Self, TypeAlias, TypeVar
+from collections.abc import Callable, Sequence
+from typing import Any, Optional, TypeVar
 
 import equinox as eqx
 import jax
@@ -13,12 +11,12 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 from jax.flatten_util import ravel_pytree
-from jax_cookbook import is_module, is_none
+from jax_cookbook import is_none
 from jax_cookbook.misc import construct_tuple_like
 from jaxtyping import Array, PyTree
 
-from feedbax.analysis.analysis import AbstractAnalysis, InputOf
-from feedbax.analysis.func import CallerPorts, make_argwise_functional
+from feedbax.analysis.analysis import AbstractAnalysis
+from feedbax.analysis.func import CallerPorts
 from feedbax.analysis.types import AnalysisInputData
 
 _Tuple = jtree.make_named_tuple_subclass("Tuple")
@@ -38,15 +36,25 @@ def _compute_grads(
     elif isinstance(argnums, int):
         argnums = (argnums,)
 
-    grads_raw = jt.map(
-        lambda func, *args: _Tuple(grad_fn(func, *args, argnums=argnums)),
-        fns,
-        *fn_args,
-        is_leaf=callable,
-    )
+    def compute_leaf(func: Callable, *args: Any) -> _Tuple:
+        grad_tuple = _Tuple(grad_fn(func, *args, argnums=argnums))
+        if len(grad_tuple) != len(argnums):
+            raise ValueError(
+                "gradient result arity does not match argnums: "
+                f"expected {len(argnums)}, got {len(grad_tuple)}"
+            )
+        return grad_tuple
 
-    #! Something is wrong here.
-    grads_by_argnum = jtree.unzip(grads_raw, tuple_cls=_Tuple)
+    grads_raw = jt.map(compute_leaf, fns, *fn_args, is_leaf=callable)
+
+    grads_by_argnum = tuple(
+        jt.map(
+            lambda grad_tuple: grad_tuple[position],
+            grads_raw,
+            is_leaf=lambda value: isinstance(value, _Tuple),
+        )
+        for position in range(len(argnums))
+    )
 
     grads_expanded: list = [
         grads_by_argnum[argnums.index(i)] if i in argnums else None for i in range(len(fn_args))

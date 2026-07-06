@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -250,6 +252,7 @@ def test_training_api_routes_pass_path_job_id(monkeypatch) -> None:
 
 def test_ensure_worker_serializes_concurrent_spawns(monkeypatch) -> None:
     popen_calls: list[list[str]] = []
+    popen_kwargs: list[dict[str, Any]] = []
 
     class FakeProcess:
         def poll(self) -> None:
@@ -263,6 +266,7 @@ def test_ensure_worker_serializes_concurrent_spawns(monkeypatch) -> None:
 
     def fake_popen(args: list[str], **kwargs: Any) -> FakeProcess:
         popen_calls.append(args)
+        popen_kwargs.append(kwargs)
         return FakeProcess()
 
     async def fake_wait_for_health(*args: Any, **kwargs: Any) -> None:
@@ -285,3 +289,18 @@ def test_ensure_worker_serializes_concurrent_spawns(monkeypatch) -> None:
     assert first_url == "http://127.0.0.1:54321"
     assert second_url == first_url
     assert len(popen_calls) == 1
+    assert popen_kwargs[0]["stderr"] is subprocess.PIPE
+
+
+def test_worker_module_help_smoke() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "feedbax.web.worker", "--help"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Feedbax headless training worker" in proc.stdout

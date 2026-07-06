@@ -148,7 +148,12 @@ class SelectorObjectiveLoss(AbstractLoss):
             path=self.path,
         )
         if self.reduction is not None:
-            return _reduce_objective_values(values, self.reduction, path=f"{self.path}/reduction")
+            return _reduce_objective_values(
+                values,
+                self.reduction,
+                norm=self.norm,
+                path=f"{self.path}/reduction",
+            )
         return _reduce_legacy_values(values, self.time_agg, path=f"{self.path}/time_agg")
 
 
@@ -749,7 +754,7 @@ def _metric_values(
     if norm in {"l1", "absolute"}:
         return jnp.abs(arr)
     if norm == "l2":
-        return jnp.abs(arr)
+        return jnp.square(arr)
     if norm == "huber":
         abs_arr = jnp.abs(arr)
         return jnp.where(abs_arr <= 1.0, 0.5 * jnp.square(arr), abs_arr - 0.5)
@@ -759,9 +764,11 @@ def _metric_values(
 def _legacy_reduce_feature_metric(values: Any, norm: str) -> Any:
     arr = jnp.asarray(values)
     if arr.ndim < 3:
+        if norm == "l2":
+            return jnp.sqrt(arr)
         return arr
     if norm == "l2":
-        return jnp.sqrt(jnp.sum(jnp.square(arr), axis=-1))
+        return jnp.sqrt(jnp.sum(arr, axis=-1))
     return jnp.sum(arr, axis=-1)
 
 
@@ -901,7 +908,13 @@ def _schedule_weights(
     raise ObjectiveLoweringError(path, f"unsupported schedule {type(schedule).__name__}")
 
 
-def _reduce_objective_values(values: Any, reduction: ReductionSpec, *, path: str) -> Any:
+def _reduce_objective_values(
+    values: Any,
+    reduction: ReductionSpec,
+    *,
+    norm: str,
+    path: str,
+) -> Any:
     arr = jnp.asarray(values)
     if arr.ndim >= 3:
         arr = _apply_reduction(
@@ -911,6 +924,10 @@ def _reduce_objective_values(values: Any, reduction: ReductionSpec, *, path: str
             tail_fraction=reduction.tail_fraction,
             path=f"{path}/feature",
         )
+        if norm == "l2":
+            arr = jnp.sqrt(arr)
+    elif norm == "l2":
+        arr = jnp.sqrt(arr)
     if arr.ndim >= 2:
         if reduction.time == "final":
             arr = jnp.take(arr, -1, axis=1)
