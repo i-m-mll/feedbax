@@ -203,6 +203,16 @@ def mux_output_prototype(
 
     n_inputs = int(params.get("n_inputs", 2))
     ports = [f"in_{index}" for index in range(n_inputs)]
+    extra_dynamic_ports = [
+        port
+        for port in inputs
+        if port.startswith("in_") and port.removeprefix("in_").isdigit() and port not in ports
+    ]
+    if extra_dynamic_ports:
+        raise ValueError(
+            f"Mux output prototype received ports {extra_dynamic_ports!r} outside "
+            f"declared n_inputs={n_inputs}"
+        )
     missing = [port for port in ports if port not in inputs]
     if missing:
         raise MissingPrototypeInput(

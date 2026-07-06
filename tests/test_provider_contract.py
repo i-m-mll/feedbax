@@ -1533,7 +1533,7 @@ def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cu
     assert "recurrent_initializer_missing" not in {issue.type for issue in recurrent_issues}
 
 
-def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
+def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch() -> None:
     graph = GraphSpec(
         nodes={
             "mux": {
@@ -1580,14 +1580,14 @@ def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
     )
 
     registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
-    port = next(port for port in registry.ports if port.id == "port:mux.in_2:input")
+    issue_types = {issue.type for issue in registry.issues}
 
-    assert port.value_schema.dtype == "vector"
-    assert port.origin == "declared"
-    assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
+    assert "dynamic_port_arity_mismatch" in issue_types
+    assert "unknown_task_binding_target_port" in issue_types
+    assert not any(port.id == "port:mux.in_2:input" for port in registry.ports)
 
 
-def test_studio_schema_enumeration_projects_dynamic_demux_outputs() -> None:
+def test_studio_schema_enumeration_reports_dynamic_demux_output_mismatch() -> None:
     graph = GraphSpec(
         nodes={
             "split": {
@@ -1606,12 +1606,10 @@ def test_studio_schema_enumeration_projects_dynamic_demux_outputs() -> None:
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
 
     registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
-    port = next(port for port in registry.ports if port.id == "port:split.out_2:output")
+    issue = next(issue for issue in registry.issues if issue.type == "dynamic_port_arity_mismatch")
 
-    assert port.value_schema.dtype == "vector"
-    assert port.value_schema.shape == [3]
-    assert port.origin == "inferred_static"
-    assert not any(issue.type == "unknown_graph_output_binding_port" for issue in registry.issues)
+    assert "Demux node 'split'" in issue.message
+    assert not any(port.id == "port:split.out_2:output" for port in registry.ports)
 
 
 def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:

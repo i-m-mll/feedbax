@@ -140,7 +140,12 @@ ScheduleSpec = Annotated[
 
 
 class MetricSpec(ObjectiveSpecModel):
-    """Metric applied before time/trial/objective reduction."""
+    """Metric applied before time/trial/objective reduction.
+
+    Huber metrics require an explicit ``huber_delta`` so the lowering path uses
+    the caller's threshold instead of the legacy default; see Mandible issue
+    dd224bf.
+    """
 
     kind: MetricKind = "squared_l2"
     axis: Literal["feature", "coordinate", "unit", "channel", "all"] = "feature"

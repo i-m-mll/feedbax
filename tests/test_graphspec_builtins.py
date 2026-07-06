@@ -1614,6 +1614,44 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
     assert roundtrip.output_bindings == spec.output_bindings
 
 
+def test_mux_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
+    with pytest.raises(ValueError, match="Mux node 'join'.*n_inputs=2"):
+        spec_to_graph(
+            GraphSpec(
+                nodes={
+                    "join": ComponentSpec(
+                        type="Mux",
+                        params={"n_inputs": 2},
+                        input_ports=["in_0", "in_1", "in_2"],
+                        output_ports=["output"],
+                    )
+                },
+                output_ports=["output"],
+                output_bindings={"output": ("join", "output")},
+            )
+        )
+
+
+def test_demux_graphspec_rejects_sizes_output_port_count_mismatch() -> None:
+    with pytest.raises(ValueError, match="Demux node 'split'.*sizes=\\[2, 1, 3\\]"):
+        spec_to_graph(
+            GraphSpec(
+                nodes={
+                    "split": ComponentSpec(
+                        type="Demux",
+                        params={"sizes": [2, 1, 3]},
+                        input_ports=["input"],
+                        output_ports=["out_0", "out_1"],
+                    )
+                },
+                input_ports=["input"],
+                output_ports=["tail"],
+                input_bindings={"input": ("split", "input")},
+                output_bindings={"tail": ("split", "out_1")},
+            )
+        )
+
+
 def test_demux_graphspec_executes_as_internal_node() -> None:
     spec = GraphSpec(
         nodes={

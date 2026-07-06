@@ -1,6 +1,12 @@
 """
 Database tools for cataloguing trained models and notebook evaluations/figures.
 
+Persistence schema changes for this legacy SQLAlchemy database are reconciled
+at runtime by ``_sync_declared_schema`` using Alembic operations against the
+live engine. This is the accepted migration mechanism for this DB; do not add a
+separate literal Alembic revision unless the reconciliation layer can no longer
+express the change safely.
+
 Written with the help of Claude 3.5 Sonnet.
 """
 

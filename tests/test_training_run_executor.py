@@ -182,6 +182,47 @@ def _chunked_registry(
     return registry, program
 
 
+def _nan_registry(
+    *,
+    nan_on_global_step: int,
+    stop_after_global_step: int = 3,
+) -> tuple[TrainingMethodRegistry, object]:
+    registry, program = _chunked_registry(stop_after_global_step=stop_after_global_step)
+    base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
+    base_kernel = standard_supervised_update_kernels()[
+        "feedbax.training.standard_supervised.gradient_update"
+    ]
+
+    def gradient_update(slots, coordinate, context):
+        updates = dict(base_kernel(slots, coordinate, context))
+        if coordinate.global_step >= nan_on_global_step:
+            updates["train_loss"] = jnp.array(float("nan"))
+            updates["model"] = updates["model"] + jnp.array(float("nan"))
+            updates["optimizer"] = {
+                **dict(updates["optimizer"]),
+                "count": updates["optimizer"]["count"] + jnp.array(float("nan")),
+            }
+        return updates
+
+    runtime_registry = TrainingMethodRegistry()
+    runtime_registry.register(
+        TrainingMethodRegistration(
+            method_ref="feedbax/standard_supervised/v1",
+            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            payload_model=StandardSupervisedMethodPayload,
+            contract_factory=base_registration.contract_factory,
+            update_kernels_factory=lambda _payload: {
+                "feedbax.training.standard_supervised.gradient_update": gradient_update
+            },
+            guard_predicates_factory=base_registration.guard_predicates_factory,
+            owner="tests.test_training_run_executor",
+            package="feedbax",
+        )
+    )
+    return runtime_registry, program
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -440,6 +481,70 @@ def test_execute_training_run_spec_writes_checkpoint_before_later_failure(
     assert loaded.slots["model"].tolist() == [1.0]
 
 
+@pytest.mark.no_silent_substitution_contract
+def test_execute_training_run_spec_raises_on_nan_with_batch_and_step(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _nan_registry(nan_on_global_step=1)
+
+    with pytest.raises(FloatingPointError) as excinfo:
+        execute_training_run_spec(
+            _run_spec(),
+            run_id="nan-raise",
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path / "runs",
+            checkpoint_root=tmp_path / "checkpoints",
+            registry=registry,
+        )
+
+    message = str(excinfo.value)
+    assert "NaN detected" in message
+    assert "batch 2" in message
+    assert "step 0" in message
+    assert "train_loss" in message
+    assert "on_nan='raise'" in message
+
+
+@pytest.mark.no_silent_substitution_contract
+def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_nan(
+    tmp_path: Path,
+) -> None:
+    registry, program = _nan_registry(nan_on_global_step=1)
+    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    checkpoint_root = tmp_path / "checkpoints"
+
+    result = execute_training_run_spec(
+        spec,
+        run_id="nan-restore",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=checkpoint_root,
+        registry=registry,
+    )
+
+    assert result.final_coordinate.global_step == 1
+    assert result.final_slots["model"].tolist() == [1.0]
+    assert result.final_slots["optimizer"]["count"].tolist() == [2.0]
+    assert result.final_slots["prng"].tolist() == [0, 1]
+    assert "train_loss" not in result.final_slots
+    assert result.manifest.summary_metrics["train_loss"] == 1.0
+    assert len(result.checkpoint_writes) == 1
+
+    loaded = load_latest_checkpoint(
+        checkpoint_root,
+        expected_run_spec=spec,
+        expected_phase_program=program,
+        expected_slots=_initial_slots(arrays=True),
+    )
+    assert {slot.slot for slot in loaded.manifest.slots} == {"model", "optimizer", "prng"}
+    assert loaded.manifest.transaction_id == result.checkpoint_writes[0].manifest.transaction_id
+    assert loaded.slots["model"].tolist() == result.final_slots["model"].tolist()
+    assert loaded.slots["optimizer"]["count"].tolist() == (
+        result.final_slots["optimizer"]["count"].tolist()
+    )
+    assert loaded.slots["prng"].tolist() == result.final_slots["prng"].tolist()
+
+
 def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
     tmp_path: Path,
 ) -> None:
@@ -653,3 +758,6 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     assert payload["run_id"] == "cli-toy"
     assert payload["status"] == "completed"
     assert Path(payload["manifest_path"]).is_file()
+    assert "batch=1" in proc.stderr
+    assert "loss=1" in proc.stderr
+    assert "elapsed=" in proc.stderr

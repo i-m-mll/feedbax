@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping, cast
+from typing import Any, Literal, Mapping, Sequence, cast
 
 import jax.numpy as jnp
 import jax.tree as jt
@@ -1026,6 +1026,13 @@ def spec_to_graph(
             node_name=node_name,
             node_type=node_type,
         )
+        _validate_dynamic_component_ports(
+            node_name,
+            node_type,
+            params,
+            node_spec.input_ports,
+            node_spec.output_ports,
+        )
 
         if node_type == "Subgraph":
             if not spec.subgraphs or node_name not in spec.subgraphs:
@@ -1080,3 +1087,36 @@ def spec_to_graph(
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
     )
     return apply_parameter_constraints(graph)
+
+
+def _validate_dynamic_component_ports(
+    node_name: str,
+    node_type: str,
+    params: Mapping[str, Any],
+    input_ports: Sequence[str],
+    output_ports: Sequence[str],
+) -> None:
+    if node_type == "Mux":
+        n_inputs = int(params.get("n_inputs", 2))
+        expected_inputs = [f"in_{index}" for index in range(n_inputs)]
+        if list(input_ports) != expected_inputs:
+            raise ValueError(
+                f"Mux node {node_name!r} declares input_ports {list(input_ports)!r} "
+                f"but n_inputs={n_inputs} requires {expected_inputs!r}"
+            )
+        if list(output_ports) != ["output"]:
+            raise ValueError(
+                f"Mux node {node_name!r} declares output_ports {list(output_ports)!r} "
+                "but requires ['output']"
+            )
+    elif node_type == "Demux":
+        sizes = params.get("sizes")
+        if not isinstance(sizes, (list, tuple)):
+            return
+        expected_outputs = [f"out_{index}" for index in range(len(sizes))]
+        if list(input_ports) != ["input"] or list(output_ports) != expected_outputs:
+            raise ValueError(
+                f"Demux node {node_name!r} declares input_ports {list(input_ports)!r} "
+                f"and output_ports {list(output_ports)!r}, but sizes={list(sizes)!r} "
+                f"requires input_ports ['input'] and output_ports {expected_outputs!r}"
+            )

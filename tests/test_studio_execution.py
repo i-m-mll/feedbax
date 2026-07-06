@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
     StudioExecutionPreparationError,
@@ -407,6 +408,52 @@ def test_studio_training_run_local_endpoint_returns_execution_result(tmp_path: P
     )
     assert train_stage["status"] == "completed"
     assert any(ref["role"] == "training_run" for ref in train_stage["manifest_refs"])
+
+
+def test_studio_pipeline_materialize_training_writes_validation_only_artifact(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace()
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    graph_path = tmp_path / "graph-spec.json"
+    training_path = tmp_path / "training-spec.json"
+    task_path = tmp_path / "task-spec.json"
+    binding_path = tmp_path / "task-binding-spec.json"
+    output_path = tmp_path / "artifacts" / "training-summary.json"
+    graph_path.write_text(
+        scenario.graph.model_dump_json(indent=2, exclude_none=True) + "\n",
+        encoding="utf-8",
+    )
+    training_path.write_text(json.dumps(scenario.training_spec), encoding="utf-8")
+    task_path.write_text(json.dumps(scenario.task_spec), encoding="utf-8")
+    binding_path.write_text(
+        scenario.task_binding_spec.model_dump_json(indent=2, exclude_none=True) + "\n",
+        encoding="utf-8",
+    )
+
+    rc = studio_pipeline_main(
+        [
+            "materialize-training",
+            "--graph",
+            str(graph_path),
+            "--training",
+            str(training_path),
+            "--task",
+            str(task_path),
+            "--task-binding",
+            str(binding_path),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["kind"] == "StudioTrainingValidationArtifact"
+    assert payload["runner"] == "studio_validation_only"
+    assert "final_loss" not in payload
+    assert "history" not in payload
 
 
 def test_materialize_studio_pipeline_requires_registered_eval_recipe(tmp_path: Path):

@@ -17,7 +17,6 @@ import jax.tree as jt
 import optax
 
 from feedbax.runtime.graph import Graph, GraphTraceRequest, init_state_from_component
-from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.runtime.task_bindings import TaskInputPlan, expose_task_inputs
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.runtime.retained_observables import (
@@ -35,13 +34,24 @@ from feedbax.contracts.graph import (
     StudioTaskBindingSpec,
     StudioTaskDataSpec,
 )
-from feedbax.contracts.training import TrainingSpec
+from feedbax.contracts.training import (
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    TrainingSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
+)
 from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings, spec_to_graph
-
-
-def _should_emit_training_progress(batch: int, total_batches: int, interval: int) -> bool:
-    """Return whether a one-based training batch should synchronize progress scalars."""
-    return batch == 1 or batch == total_batches or batch % interval == 0
+from feedbax.objectives import ObjectiveExecutionRequirements
+from feedbax.objectives.service import LossService, LoweredObjective
+from feedbax.training.executor import execute_training_run_spec
+from feedbax.training.studio_executor import (
+    executor_method_contract,
+    studio_training_registry,
+)
 
 
 def _build_optimizer(
@@ -81,6 +91,9 @@ class TrainingGraphResult:
     checkpoint_path: str | None
     final_loss: float
     final_loss_terms: dict[str, float]
+    final_batch: int
+    manifest_path: str | None
+    manifest_payload: dict[str, Any] | None
     execution_metadata: dict[str, Any]
     retention_plan: dict[str, Any]
     retained_observables: dict[str, Any]
@@ -182,6 +195,7 @@ def compile_training_run(
         n_steps=n_steps,
         metadata={
             "execution": "generic_graph",
+            "task_spec": dict(task_spec),
             "task_input_count": len(task_inputs),
             "trace_request_count": len(trace_requests),
             "loss_term_count": len(loss_terms),
@@ -201,112 +215,232 @@ def run_training_graph(
     stop_event: Any,
     emit: Callable[[dict[str, Any]], None],
 ) -> TrainingGraphResult:
-    """Train an executable graph and stream Studio-compatible worker events."""
-    graph = compiled.graph
+    """Train an executable graph via the contract executor and stream worker events."""
     learning_rate = float(getattr(cfg, "learning_rate", 1e-3))
     raw_grad_clip = getattr(cfg, "grad_clip", 1.0)
     grad_clip = None if raw_grad_clip is None else float(raw_grad_clip)
-    snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
     optimizer = _build_optimizer(learning_rate, grad_clip)
-
-    trainable, static = eqx.partition(graph, compiled.trainable_filter)
+    snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
+    trainable, _static = eqx.partition(compiled.graph, compiled.trainable_filter)
     opt_state = optimizer.init(trainable)
-    rng_key = jr.PRNGKey(0)
-    final_terms: dict[str, float] = {}
-    final_loss = 0.0
-    latest_loss_value = None
-    latest_loss_terms = None
+    started_at = time.perf_counter()
+    run_spec = _training_run_spec_for_compiled(
+        compiled,
+        job_id=job_id,
+        total_batches=total_batches,
+        cfg=cfg,
+        grad_clip=grad_clip,
+    )
+    registry = studio_training_registry(
+        compiled=compiled,
+        optimizer=optimizer,
+        total_batches=total_batches,
+        stop_event=stop_event,
+        rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
+        evaluate_loss_fn=_evaluate_loss,
+    )
 
-    def _loss_from_trainable(trainable_graph, static_graph, step_key):
-        current_graph = eqx.combine(static_graph, trainable_graph)
-        rollout = rollout_graph(current_graph, compiled, key=step_key)
-        return _evaluate_loss(compiled, rollout)
-
-    for batch in range(total_batches):
-        if stop_event.is_set():
-            break
-
-        rng_key, step_key = jr.split(rng_key)
-        step_t0 = time.perf_counter()
-        (loss_value, loss_terms), grads = eqx.filter_value_and_grad(
-            _loss_from_trainable,
-            has_aux=True,
-        )(trainable, static, step_key)
-        latest_loss_value = loss_value
-        latest_loss_terms = loss_terms
-        grad_norm = optax.global_norm(grads)
-        updates, opt_state = optimizer.update(grads, opt_state, trainable)
-        trainable = eqx.apply_updates(trainable, updates)
-        graph = eqx.combine(static, trainable)
-        graph = apply_parameter_constraints(graph)
-        trainable, static = eqx.partition(graph, compiled.trainable_filter)
-        compiled.graph = graph
-
-        batch_one_based = batch + 1
-        if _should_emit_training_progress(batch_one_based, total_batches, snapshot_interval):
-            final_loss = float(jax.block_until_ready(loss_value))
-            final_terms = {
-                key: float(jax.block_until_ready(value)) for key, value in loss_terms.items()
+    def _emit_executor_progress(event: Mapping[str, Any]) -> None:
+        progress_event = _studio_progress_event(
+            event,
+            job_id=job_id,
+            total_batches=total_batches,
+            elapsed_seconds=time.perf_counter() - started_at,
+        )
+        emit(progress_event)
+        emit(
+            {
+                "type": "training_log",
+                "job_id": job_id,
+                "batch": progress_event["batch"],
+                "level": "info",
+                "message": (
+                    f"Step {progress_event['batch']} | loss={progress_event['loss']:.4f} | "
+                    f"grad_norm={progress_event['grad_norm']:.3f} | "
+                    f"{progress_event['step_time_ms']:.0f}ms"
+                ),
+                "execution": "contract_executor",
             }
-            grad_norm_value = float(jax.block_until_ready(grad_norm))
-            step_time_ms = (time.perf_counter() - step_t0) * 1000.0
-
-            emit(
-                {
-                    "type": "training_progress",
-                    "job_id": job_id,
-                    "batch": batch_one_based,
-                    "total_batches": total_batches,
-                    "loss": final_loss,
-                    "loss_terms": final_terms,
-                    "grad_norm": grad_norm_value,
-                    "step_time_ms": step_time_ms,
-                    "status": "running",
-                    "execution": "generic_graph",
-                }
-            )
-            emit(
-                {
-                    "type": "training_log",
-                    "job_id": job_id,
-                    "batch": batch_one_based,
-                    "level": "info",
-                    "message": (
-                        f"Step {batch_one_based} | loss={final_loss:.4f} | "
-                        f"grad_norm={grad_norm_value:.3f} | {step_time_ms:.0f}ms"
-                    ),
-                }
-            )
-
-        if batch_one_based % snapshot_interval == 0 or batch_one_based == total_batches:
-            snapshot = _trajectory_snapshot(graph, compiled, step_key)
+        )
+        if progress_event["batch"] % snapshot_interval == 0 or (
+            progress_event["batch"] >= total_batches
+        ):
             emit(
                 {
                     "type": "training_trajectory",
                     "job_id": job_id,
-                    "batch": batch_one_based,
-                    "trajectory": snapshot,
-                    "execution": "generic_graph",
+                    "batch": progress_event["batch"],
+                    "trajectory": _trajectory_snapshot(
+                        compiled.graph,
+                        compiled,
+                        key=jr.PRNGKey(progress_event["batch"]),
+                    ),
+                    "execution": "contract_executor",
                 }
             )
 
-    if latest_loss_value is not None and latest_loss_terms is not None:
-        final_loss = float(jax.block_until_ready(latest_loss_value))
-        final_terms = {
-            key: float(jax.block_until_ready(value)) for key, value in latest_loss_terms.items()
-        }
+    result = execute_training_run_spec(
+        run_spec,
+        run_id=job_id,
+        initial_slots={
+            "model": compiled.graph,
+            "optimizer": opt_state,
+            "prng": jr.PRNGKey(0),
+        },
+        registry=registry,
+        loss_service=_StudioWorkerLossService(compiled),
+        training_spec_payload=compiled.training_spec.model_dump(mode="json"),
+        training_spec_payload_kind="TrainingSpec",
+        training_spec_payload_schema_id="feedbax.spec.training",
+        training_spec_payload_schema_version="feedbax.spec.training.v1",
+        task_binding_spec=compiled.task_binding_spec.model_dump(mode="json", exclude_none=True),
+        manifest_conflict_policy="reuse-identical",
+        progress_callback=_emit_executor_progress,
+    )
 
+    graph = result.final_slots["model"]
+    compiled.graph = graph
+    final_terms = _float_mapping(result.final_slots.get("loss_terms", {}))
+    final_loss = _float_metric(
+        result.final_slots.get(
+            "train_loss",
+            result.final_coordinate.metrics.get("train_loss", 0.0),
+        )
+    )
     checkpoint_path = _write_checkpoint(job_id, graph)
-    final_rollout = rollout_graph(graph, compiled, key=rng_key)
+    final_rollout = rollout_graph(graph, compiled, key=result.final_slots["prng"])
     return TrainingGraphResult(
         graph=graph,
         checkpoint_path=checkpoint_path,
         final_loss=final_loss,
         final_loss_terms=final_terms,
+        final_batch=result.final_coordinate.global_step,
+        manifest_path=str(result.manifest_path),
+        manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
         execution_metadata=dict(compiled.metadata),
         retention_plan=retention_plan_to_json(compiled.retention_plan),
         retained_observables=_retained_observables_payload(final_rollout),
     )
+
+
+class _StudioWorkerLossService(LossService):
+    """Adapter for Studio retained-observable losses already lowered in preflight."""
+
+    def __init__(self, compiled: CompiledTrainingRun) -> None:
+        super().__init__()
+        self._compiled = compiled
+
+    def lower_objective_slot(self, *args: Any, **kwargs: Any) -> LoweredObjective:
+        del args, kwargs
+        return LoweredObjective(
+            loss=self._compiled.loss_terms,
+            requirements=ObjectiveExecutionRequirements(),
+            source_kind="loss_term",
+        )
+
+
+def _training_run_spec_for_compiled(
+    compiled: CompiledTrainingRun,
+    *,
+    job_id: str,
+    total_batches: int,
+    cfg: Any,
+    grad_clip: float | None,
+) -> TrainingRunSpec:
+    method_contract = executor_method_contract(total_batches=total_batches)
+    effective_phase = standard_supervised_effective_phase_spec().model_copy(
+        update={
+            "phase_program": method_contract.phase_program,
+            "state_slots": method_contract.state_slots,
+        }
+    )
+    return TrainingRunSpec(
+        graph={
+            "kind": "GraphSpec",
+            "inline": compiled.graph_spec.model_dump(mode="json", exclude_none=True),
+        },
+        task=TaskSpec.model_validate(compiled.metadata.get("task_spec", {}))
+        if isinstance(compiled.metadata.get("task_spec"), Mapping)
+        else TaskSpec(type="StudioTask", params={}),
+        training_config=TrainingConfig(
+            n_batches=total_batches,
+            batch_size=compiled.training_spec.batch_size,
+            learning_rate=float(getattr(cfg, "learning_rate", 1e-3)),
+            grad_clip=grad_clip,
+            n_reach_steps=compiled.n_steps,
+            snapshot_interval=max(1, int(getattr(cfg, "snapshot_interval", 100))),
+        ),
+        objective={"loss": compiled.training_spec.loss.model_dump(mode="json", exclude_none=True)},
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=WorkerExecutionSpec(
+            method_contract=method_contract,
+            effective_phase=effective_phase,
+        ),
+        artifacts={},
+        checkpoint_progress={
+            "checkpoint_interval": 1,
+            "progress_interval": 1,
+        },
+        metadata={
+            "job_id": job_id,
+            "execution": "studio_contract_executor",
+        },
+    )
+
+
+def _studio_progress_event(
+    event: Mapping[str, Any],
+    *,
+    job_id: str,
+    total_batches: int,
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    coordinate = event.get("coordinate", {})
+    coordinate = coordinate if isinstance(coordinate, Mapping) else {}
+    metrics = event.get("metrics", {})
+    metrics = metrics if isinstance(metrics, Mapping) else {}
+    batch = int(coordinate.get("global_step") or 0)
+    loss = _float_metric(metrics.get("train_loss", 0.0))
+    loss_terms = _float_mapping(metrics.get("loss_terms", {}))
+    scalar_metrics = {
+        key: value
+        for key, value in _float_mapping(metrics).items()
+        if key not in {"loss_terms"}
+    }
+    scalar_metrics["elapsed_seconds"] = float(elapsed_seconds)
+    return {
+        "type": "training_progress",
+        "job_id": job_id,
+        "batch": batch,
+        "total_batches": total_batches,
+        "loss": loss,
+        "loss_terms": loss_terms,
+        "grad_norm": _float_metric(metrics.get("grad_norm", 0.0)),
+        "step_time_ms": _float_metric(metrics.get("step_time_ms", 0.0)),
+        "metrics": scalar_metrics,
+        "status": "running",
+        "execution": "contract_executor",
+    }
+
+
+def _float_metric(value: Any) -> float:
+    try:
+        return float(jax.block_until_ready(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _float_mapping(value: Any) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, float] = {}
+    for key, item in value.items():
+        try:
+            result[str(key)] = float(jax.block_until_ready(item))
+        except (TypeError, ValueError):
+            continue
+    return result
 
 
 def rollout_graph(

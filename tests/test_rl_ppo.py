@@ -124,8 +124,8 @@ class TestPPOConsolidation:
         assert not hasattr(ppo, "train_ppo")
         assert not hasattr(ppo, "train_ppo_batched_extended")
 
-    def test_update_body_uses_lax_loop_without_host_scalar_syncs(self):
-        source = inspect.getsource(ppo._update_one)
+    def _assert_no_host_scalar_syncs(self, obj):
+        source = inspect.getsource(obj)
         tree = ast.parse(source)
         called_names = {
             node.func.id
@@ -137,8 +137,21 @@ class TestPPOConsolidation:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
-        assert "jax.lax.fori_loop" in source
         assert "float" not in called_names
         assert "int" not in called_names
         assert "item" not in called_attrs
         assert "device_get" not in called_attrs
+        return source, tree
+
+    def test_update_body_uses_lax_loop_without_host_scalar_syncs(self):
+        source, _ = self._assert_no_host_scalar_syncs(ppo._update_one)
+        assert "jax.lax.fori_loop" in source
+
+    def test_outer_training_body_uses_scan_without_host_scalar_syncs(self):
+        source, _ = self._assert_no_host_scalar_syncs(ppo._run_ppo_updates)
+        assert "jax.lax.scan" in source
+
+    def test_public_training_entrypoint_has_no_python_outer_update_loop(self):
+        source = inspect.getsource(ppo.train_ppo_batched)
+        tree = ast.parse(source)
+        assert not any(isinstance(node, ast.While) for node in ast.walk(tree))
