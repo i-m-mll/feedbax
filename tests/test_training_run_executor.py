@@ -653,3 +653,6 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     assert payload["run_id"] == "cli-toy"
     assert payload["status"] == "completed"
     assert Path(payload["manifest_path"]).is_file()
+    assert "batch=1" in proc.stderr
+    assert "loss=1" in proc.stderr
+    assert "elapsed=" in proc.stderr
