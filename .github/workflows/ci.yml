@@ -26,7 +26,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --all-extras
 
       - name: Check lockfile
         run: uv lock --check
@@ -36,14 +36,22 @@ jobs:
           uv run python scripts/generate_studio_contracts.py
           git diff --exit-code web/src/generated/studioContracts.ts
 
-      - name: Run bootstrap regression and contract tests
-        run: uv run pytest tests/test_batch_reshape_nan_bypass.py tests/test_studio_api_contracts.py -q
+      - name: Run feedbax contract marker tests if present
+        run: |
+          if grep -R "feedbax_contract" pyproject.toml tests >/dev/null; then
+            uv run pytest -m feedbax_contract
+          else
+            echo "feedbax_contract marker not present on this branch; skipping marker gate."
+          fi
 
-      - name: Run ruff
-        run: uv run ruff check scripts/generate_studio_contracts.py tests/test_batch_reshape_nan_bypass.py tests/test_studio_api_contracts.py
+      - name: Run full Python suite
+        run: scripts/full_suite.sh --no-memo
+
+      - name: Run ruff fatal checks
+        run: uv run ruff check feedbax tests scripts --select E9,F63,F7,F82 --ignore F722,F821
 
       - name: Run pyright
-        run: uv run pyright tests/test_batch_reshape_nan_bypass.py
+        run: uv run python -m pyright tests/test_batch_reshape_nan_bypass.py
 
   frontend:
     name: Frontend checks

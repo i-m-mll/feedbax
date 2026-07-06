@@ -32,52 +32,107 @@ dependencies = [
     "crc32c>=2.7.1",
     "diffrax>=0.7.0",
     "equinox>=0.11.12",
-    "fastapi>=0.110.0",
     "jax>=0.5.2",
     "jaxtyping>=0.2.38",
-    "matplotlib>=3.10.1",
     "numpy>=2.2.3",
     "optax>=0.2.4",
-    "plotly>=6.0.0",
-    "polars>=1.24.0",
     "pydantic>=2.0",
-    "seaborn>=0.13.2",
-    "tensorboardx>=2.6.2.2",
     "treescope>=0.1.1",
     "tqdm>=4.67.1",
-    "httpx>=0.27.0",
-    "uvicorn>=0.29.0",
     "jax-cookbook",
-    # From feedbax_experiments:
-    "alembic>=1.15.1",
-    "dill>=0.3.9",
-    "kaleido==0.2.1",
-    "pandas>=2.1.0",
-    "pillow>=11.1.0",
-    "pyexiv2>=2.15.3",
-    "pyperclip>=1.9.0",
-    "ruamel-yaml>=0.18.0",
-    "rich>=13.9.4",
-    "scikit-learn>=1.6.1",
 ]
 
 [project.optional-dependencies]
+analysis = [
+    "dill>=0.3.9",
+    "plotly>=6.0.0",
+    "pyperclip>=1.9.0",
+    "rich>=13.9.4",
+    "scikit-learn>=1.6.1",
+    "sqlalchemy>=2.0",
+]
+config = [
+    "ruamel-yaml>=0.18.0",
+]
 dashboard = [
     "dash>=2.14.0",
     "dash-bootstrap-components>=1.5.0",
+    "pandas>=2.1.0",
+    "sqlalchemy>=2.0",
+]
+persistence = [
+    "alembic>=1.15.1",
+    "matplotlib>=3.10.1",
+    "plotly>=6.0.0",
+    "pyexiv2>=2.15.3",
+    "sqlalchemy>=2.0",
+]
+training = [
+    "rich>=13.9.4",
+    "sqlalchemy>=2.0",
+    "tensorboardx>=2.6.2.2",
+]
+viz = [
+    "kaleido==0.2.1",
+    "matplotlib>=3.10.1",
+    "pandas>=2.1.0",
+    "plotly>=6.0.0",
+    "polars>=1.24.0",
+    "pyexiv2>=2.15.3",
+    "pyperclip>=1.9.0",
+    "scikit-learn>=1.6.1",
+    "seaborn>=0.13.2",
+]
+web = [
+    "fastapi>=0.110.0",
+    "httpx>=0.27.0",
+    "sqlalchemy>=2.0",
+    "uvicorn>=0.29.0",
 ]
 notebook = [
     "ipyfilechooser>=0.6.0",
     "ipywidgets>=8.1.5",
     "notebook>=7.4.1",
+    "plotly>=6.0.0",
+    "ruamel-yaml>=0.18.0",
 ]
 plotlyviewer = [
     "pyqt5>=5.15.11",
     "pyqtwebengine>=5.15.7",
+    "ruamel-yaml>=0.18.0",
 ]
 mjx = [
     "mujoco>=3.0.0",
     "mujoco-mjx>=0.1.0",
+]
+all = [
+    "alembic>=1.15.1",
+    "dash>=2.14.0",
+    "dash-bootstrap-components>=1.5.0",
+    "dill>=0.3.9",
+    "fastapi>=0.110.0",
+    "httpx>=0.27.0",
+    "ipyfilechooser>=0.6.0",
+    "ipywidgets>=8.1.5",
+    "kaleido==0.2.1",
+    "matplotlib>=3.10.1",
+    "mujoco>=3.0.0",
+    "mujoco-mjx>=0.1.0",
+    "notebook>=7.4.1",
+    "pandas>=2.1.0",
+    "plotly>=6.0.0",
+    "polars>=1.24.0",
+    "pyexiv2>=2.15.3",
+    "pyperclip>=1.9.0",
+    "pyqt5>=5.15.11",
+    "pyqtwebengine>=5.15.7",
+    "rich>=13.9.4",
+    "ruamel-yaml>=0.18.0",
+    "scikit-learn>=1.6.1",
+    "seaborn>=0.13.2",
+    "sqlalchemy>=2.0",
+    "tensorboardx>=2.6.2.2",
+    "uvicorn>=0.29.0",
 ]
 
 [project.scripts]

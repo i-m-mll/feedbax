@@ -6,7 +6,6 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional, Tuple, TypeAlias
 
 import equinox as eqx
-import jax
 import jax.tree as jt
 from jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
@@ -70,7 +69,7 @@ def schedule_intervenor(
     This does not modify models. Models should already include intervention
     components whose parameter StateIndex labels match `label`.
     """
-    invalid_labels_tasks = jax.tree_util.tree_reduce(
+    invalid_labels_tasks = jt.reduce(
         lambda x, y: x + y,
         jt.map(
             lambda task: tuple(task.intervention_specs.all.keys()),

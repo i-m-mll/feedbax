@@ -95,7 +95,7 @@ def init_state_from_component(component: "Component") -> State:
             for idx in indices:
                 _set_index(idx, _state_index_init(idx))
 
-        children, _ = jax.tree_util.tree_flatten(x, is_leaf=lambda y: isinstance(y, StateIndex))
+        children, _ = jt.flatten(x, is_leaf=lambda y: isinstance(y, StateIndex))
         if len(children) == 1 and children[0] is x:
             return
         for child in children:
