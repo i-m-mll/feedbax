@@ -840,29 +840,33 @@ _UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {
     "Input": (
         "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
         "Graph inputs must be represented by GraphSpec input_bindings, not display-only "
-        "placeholder nodes."
+        "placeholder nodes. CDE templates are currently display-only and fail closed; "
+        "real subgraph-to-builder construction is future work tracked by issue 2f8dd61."
     ),
     "Subtract": (
         "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "Register a real arithmetic component builder before materializing this template."
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
     ),
     "Reshape": (
         "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "Register a real reshape component builder before materializing this template."
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
     ),
     "MatMul": (
         "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "Register a real matrix-multiply component builder before materializing this template."
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
     ),
     "Scale": (
         "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "Use a registered Gain node or register a real Scale builder before materializing "
-        "this template."
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
     ),
     "Sigmoid": (
         "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "Use a registered activation-bearing component or register a real Sigmoid builder "
-        "before materializing this template."
+        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
+        "construction is future work tracked by issue 2f8dd61."
     ),
 }
 
@@ -879,10 +883,17 @@ def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
     details = "; ".join(issue.summary for issue in issues[:6])
     if len(issues) > 6:
         details += f"; and {len(issues) - 6} more"
-    return (
+    message = (
         f"Component template {meta.name!r} is not executable because its template graph "
         f"contains node types without registered builders: {details}"
     )
+    template_id = getattr(meta, "template_id", "") or ""
+    if template_id.startswith("feedbax.templates.cde_"):
+        message += (
+            ". CDE templates are currently display-only and fail closed; real "
+            "subgraph-to-builder construction is future work tracked by issue 2f8dd61."
+        )
+    return message
 
 
 def register_builtin_component_builders(registry: Any) -> None:
