@@ -22,6 +22,17 @@ REQUIRED_FINGERPRINT_FIELDS = (
     "jax_version",
     "jaxlib_version",
 )
+EXECUTION_RELEVANT_UNTRACKED_PATHS = (
+    "conftest.py",
+    "feedbax/",
+    "pyproject.toml",
+    "pytest.ini",
+    "scripts/",
+    "setup.cfg",
+    "tests/",
+    "tox.ini",
+    "uv.lock",
+)
 
 
 @dataclass(frozen=True)
@@ -87,14 +98,33 @@ def configure_jax_cache_env(cache_root: Path) -> None:
     os.environ.setdefault("FEEDBAX_JAX_TEST_CACHE_ROOT", str(cache_root))
 
 
+def is_execution_relevant_untracked_path(path: str) -> bool:
+    return any(
+        path == relevant_path.rstrip("/") or path.startswith(relevant_path)
+        for relevant_path in EXECUTION_RELEVANT_UNTRACKED_PATHS
+    )
+
+
+def has_memo_blocking_status(status_stdout: str) -> bool:
+    for record in status_stdout.split("\0"):
+        if not record:
+            continue
+        status_code = record[:2]
+        if status_code != "??":
+            return True
+        if is_execution_relevant_untracked_path(record[3:]):
+            return True
+    return False
+
+
 def clean_tree_hash(repo_root: Path) -> tuple[str | None, tuple[str, ...]]:
     status = run_command(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
         cwd=repo_root,
     )
     if status.returncode != 0:
         return None, ("git status failed",)
-    if status.stdout.strip():
+    if has_memo_blocking_status(status.stdout):
         return None, ("git working tree is dirty",)
 
     result = run_command(["git", "rev-parse", "HEAD^{tree}"], cwd=repo_root)
