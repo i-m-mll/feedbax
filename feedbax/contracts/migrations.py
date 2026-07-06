@@ -889,6 +889,12 @@ def migrate_studio_scenario_spec(
     for field_name, kind in _SCENARIO_STRUCTURED_FIELDS.items():
         field_payload = migrated_payload.get(field_name)
         if isinstance(field_payload, Mapping):
+            if not assume_current:
+                field_payload = _stamp_parent_carried_nested_schema_version(
+                    kind,
+                    field_payload,
+                    registry=registry,
+                )
             field_result = migrate_structured_spec_payload(
                 kind,
                 field_payload,
@@ -906,6 +912,12 @@ def migrate_studio_scenario_spec(
             if not isinstance(probe_payload, Mapping):
                 migrated_probes.append(probe_payload)
                 continue
+            if not assume_current:
+                probe_payload = _stamp_parent_carried_nested_schema_version(
+                    "RetainedObservableSpec",
+                    probe_payload,
+                    registry=registry,
+                )
             probe_result = migrate_structured_spec_payload(
                 "RetainedObservableSpec",
                 probe_payload,
