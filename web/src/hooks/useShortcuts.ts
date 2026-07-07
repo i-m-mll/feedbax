@@ -1,4 +1,5 @@
 import { useEffect, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getTopPaneState,
@@ -19,13 +20,38 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 export function useAppShortcuts() {
-  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved, markDirty, nodes, graphStack } =
-    useGraphStore();
-  const workspace = useWorkspaceStore((state) => state.workspace);
-  const updateTaskBindingSpec = useWorkspaceStore(
-    (state) => state.updateActiveScenarioTaskBindingSpec
+  const {
+    undo,
+    redo,
+    deleteSelected,
+    graph,
+    uiState,
+    graphId,
+    markSaved,
+    markDirty,
+    nodes,
+    graphStack,
+  } = useGraphStore(
+    useShallow((state) => ({
+      undo: state.undo,
+      redo: state.redo,
+      deleteSelected: state.deleteSelected,
+      graph: state.graph,
+      uiState: state.uiState,
+      graphId: state.graphId,
+      markSaved: state.markSaved,
+      markDirty: state.markDirty,
+      nodes: state.nodes,
+      graphStack: state.graphStack,
+    }))
   );
-  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const { workspace, updateTaskBindingSpec, selectTopPaneEntity } = useWorkspaceStore(
+    useShallow((state) => ({
+      workspace: state.workspace,
+      updateTaskBindingSpec: state.updateActiveScenarioTaskBindingSpec,
+      selectTopPaneEntity: state.selectTopPaneEntity,
+    }))
+  );
   const saveMutation = useSaveGraph();
 
   const saveGraph = useCallback(async () => {

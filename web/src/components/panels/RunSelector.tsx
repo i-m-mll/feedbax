@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import clsx from 'clsx';
 import { ChevronDown, Plus } from 'lucide-react';
 import { useRunStore } from '@/stores/runStore';
@@ -40,7 +41,16 @@ export function TrainingRunSelector({ activeTab }: TrainingRunSelectorProps) {
     loadTrainingRuns,
     selectTrainingRun,
     addTrainingRun,
-  } = useRunStore();
+  } = useRunStore(
+    useShallow((state) => ({
+      trainingRuns: state.trainingRuns,
+      selectedTrainingRunId: state.selectedTrainingRunId,
+      loading: state.loading,
+      loadTrainingRuns: state.loadTrainingRuns,
+      selectTrainingRun: state.selectTrainingRun,
+      addTrainingRun: state.addTrainingRun,
+    }))
+  );
 
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);

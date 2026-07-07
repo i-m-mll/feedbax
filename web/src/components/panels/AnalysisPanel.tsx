@@ -10,13 +10,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ReactFlowProvider, type Edge } from '@xyflow/react';
+import { useShallow } from 'zustand/react/shallow';
 import { AnalysisCanvas } from '@/components/analysis/AnalysisCanvas';
 import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useDemandStore } from '@/stores/demandStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
-import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
+import { generateFigure, getFigureData } from '@/api/figureAPI';
+import { useFigureGenerationStatus } from '@/hooks/useFigureGenerationStatus';
 import type {
   AnalysisEdgeData,
   AnalysisNodeData,
@@ -159,7 +161,27 @@ export function AnalysisPanel() {
     renamePage,
     switchPage,
     evalRunId,
-  } = useAnalysisStore();
+  } = useAnalysisStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      edges: state.edges,
+      selectedNodeId: state.selectedNodeId,
+      selectedTransformId: state.selectedTransformId,
+      selectedEdgeId: state.selectedEdgeId,
+      selectedDataSourceField: state.selectedDataSourceField,
+      analysisClasses: state.analysisClasses,
+      setAnalysisClasses: state.setAnalysisClasses,
+      graphSpec: state.graphSpec,
+      loadGraph: state.loadGraph,
+      pages: state.pages,
+      activePageId: state.activePageId,
+      addPage: state.addPage,
+      removePage: state.removePage,
+      renamePage: state.renamePage,
+      switchPage: state.switchPage,
+      evalRunId: state.evalRunId,
+    }))
+  );
   const bottomRightSidebarCollapsed = useLayoutStore((s) => s.bottomRightSidebarCollapsed);
 
   // Load analysis classes on mount
@@ -587,49 +609,14 @@ function NodeDetailPanel({
   const status = useDemandStore((s) => s.requests[nodeId]?.status ?? 'idle');
   const figureHash = useDemandStore((s) => s.requests[nodeId]?.figureHash);
   const requestGeneration = useDemandStore((s) => s.requestGeneration);
-  const setResult = useDemandStore((s) => s.setResult);
   const setError = useDemandStore((s) => s.setError);
 
   // Local state for toast and figure preview
   const [showToast, setShowToast] = useState(false);
   const [previewData, setPreviewData] = useState<unknown>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const plotRef = useRef<HTMLDivElement>(null);
-
-  // Poll for figure status when running
-  useEffect(() => {
-    if (status !== 'running' || !nodeId) {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return;
-    }
-
-    const requestId = useDemandStore.getState().requests[nodeId]?.figureHash;
-    if (!requestId) return;
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const result = await getFigureStatus(requestId);
-        if (result.status === 'complete' && result.figure_hashes?.length) {
-          setResult(nodeId, result.figure_hashes[0]);
-        } else if (result.status === 'error') {
-          setError(nodeId, result.error ?? 'Generation failed');
-        }
-      } catch {
-        // Keep polling on transient errors
-      }
-    }, 2000);
-
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [status, nodeId, setResult, setError]);
+  useFigureGenerationStatus(nodeId, status);
 
   // Load figure data when ready
   useEffect(() => {

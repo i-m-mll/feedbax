@@ -7,6 +7,7 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import clsx from 'clsx';
 import { toast } from 'sonner';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
@@ -46,7 +47,16 @@ export function Header() {
     graphStack,
     isDirty,
     markSaved,
-  } = useGraphStore();
+  } = useGraphStore(
+    useShallow((state) => ({
+      graph: state.graph,
+      uiState: state.uiState,
+      graphId: state.graphId,
+      graphStack: state.graphStack,
+      isDirty: state.isDirty,
+      markSaved: state.markSaved,
+    }))
+  );
   const {
     tabs,
     activeTabId,
