@@ -28,11 +28,11 @@ import { useGraphStore } from '@/stores/graphStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import {
   prepareStudioTrainingExecution,
-  runStudioTrainingLocalExecution,
 } from '@/api/client';
 import {
   cancelTrainingRun,
   deleteTrainingRun,
+  fetchTrainingRunManifest,
   supersedeTrainingRun,
 } from '@/api/runAPI';
 import {
@@ -76,7 +76,7 @@ import {
   trainAxisColumns,
   validateAxisPath,
   workspaceWithMatrixSelection,
-  workspaceWithoutMatrixSelection,
+  selectionSpecWithoutMatrix,
   type BulkEditVerb,
   type TrainAxisColumn,
   type TrainMatrixAxisDraft,
@@ -84,7 +84,16 @@ import {
   type TrainMatrixMode,
   type TrainMatrixSpec,
 } from '@/utils/trainMatrix';
+import {
+  progressBindingsForRuns,
+  sortTrainingRows,
+  stageWithTrainingRunLifecyclePatch,
+  trainingRunGroupId,
+  UNGROUPED_RUN_GROUP_ID,
+} from '@/utils/trainRunTable';
 import type { TrainingProgress } from '@/types/training';
+import type { TrainingRun } from '@/types/runs';
+import type { StudioWorkspaceSpec } from '@/types/workspace';
 
 type RunView = 'all' | 'selected' | 'best';
 type SortKey = string;
@@ -104,7 +113,6 @@ export function TrainCollectionPanel() {
   const setTrainingExecutionPreparation = useWorkspaceStore(
     (state) => state.setTrainingExecutionPreparation
   );
-  const setTrainingLocalRunResult = useWorkspaceStore((state) => state.setTrainingLocalRunResult);
   const lastTrainingExecutionPreparation = useWorkspaceStore(
     (state) => state.lastTrainingExecutionPreparation
   );
@@ -189,18 +197,15 @@ export function TrainCollectionPanel() {
     () => validateAxisPath(axisDraft.path, trainScenario),
     [axisDraft.path, trainScenario]
   );
-  const progressByRunId = useMemo(() => {
-    const label = trainingProgress
-      ? `${trainingProgress.batch}/${trainingProgress.total_batches}`
-      : null;
-    const jobId = trainingProgress?.job_id ?? trainingJobId ?? lastTrainingExecutionPreparation?.plan.job_id;
-    const byRun = new Map<string, string>();
-    if (!label || !jobId) return byRun;
-    for (const row of rows) {
-      if (row.id === jobId || row.jobId === jobId) byRun.set(row.id, label);
-    }
-    return byRun;
-  }, [lastTrainingExecutionPreparation?.plan.job_id, rows, trainingJobId, trainingProgress]);
+  const progressBindings = useMemo(
+    () =>
+      progressBindingsForRuns(
+        rows,
+        trainingProgress,
+        trainingJobId ?? lastTrainingExecutionPreparation?.plan.job_id ?? null
+      ),
+    [lastTrainingExecutionPreparation?.plan.job_id, rows, trainingJobId, trainingProgress]
+  );
 
   useEffect(() => {
     if (!trainStage) return;
@@ -387,70 +392,68 @@ export function TrainCollectionPanel() {
     if (!workspace || !trainStage) return;
     setFocusedRunId(run.id);
     setSnapshotRunId(null);
-    const axisCount = Object.keys(run.axisCoordinates).length;
-    if (axisCount === 0) {
-      const nextWorkspace = workspaceWithoutMatrixSelection(workspace, trainStage.id);
+    setStageState({ busy: true, error: null });
+    try {
+      const manifest = await fetchTrainingRunManifest(run.id);
+      const nextWorkspace = workspaceWithTrainingSnapshot(
+        workspace,
+        trainStage.id,
+        trainStage.scenario_id,
+        manifest,
+        run.axisCoordinates
+      );
       await stageWorkspace(nextWorkspace, trainStage.id, {
-        source: 'train_collection_row_restage',
+        source: 'train_collection_snapshot_restage',
         restaged_from_run_id: run.id,
+        restaged_from_manifest_id: manifest.id,
         matrix_preview_count: 1,
       });
-      return;
-    }
-    const plan = matrixSpecFromGhostRows({
-      name: `Restage ${run.label}`,
-      rows: [{
-        id: `restage-preview:${run.id}`,
-        label: run.label,
-        status: 'ghost',
-        runSetId: run.runSetId ?? 'restage-preview',
-        coordinateIndex: 0,
-        axisCoordinates: run.axisCoordinates,
-      }],
-      axes: axisColumns,
-    });
-    if (!plan.matrix) {
+    } catch (error) {
       setStageState({
         busy: false,
-        error: plan.error ?? 'Run cannot be restaged because its axis paths are unavailable.',
+        error: error instanceof Error ? error.message : 'Failed to restage run snapshot.',
       });
-      return;
     }
-    await stageMatrixSpec(plan.matrix, {
-      source: 'train_collection_row_restage',
-      restaged_from_run_id: run.id,
-      matrix_preview_count: 1,
-    });
-  }, [axisColumns, stageMatrixSpec, stageWorkspace, trainStage, workspace]);
+  }, [stageWorkspace, trainStage, workspace]);
 
-  const runLocal = useCallback(async () => {
-    if (!workspace || !trainStage) return;
-    setRunActionState({ busy: true, error: null });
-    try {
-      const result = await runStudioTrainingLocalExecution({
-        workspace,
-        stage_id: trainStage.id,
-        issues: ['3a6d02e'],
-        metadata: { source: 'train_collection_panel' },
-      });
-      setTrainingLocalRunResult(result);
+  const patchLifecycleRun = useCallback(
+    (action: 'cancel' | 'delete' | 'supersede', run: TrainingRun) => {
+      if (!workspace || !trainStage) return;
+      const patchAction = action === 'delete' ? 'remove' : 'update';
+      const nextWorkspace = {
+        ...workspace,
+        stages: workspace.stages.map((stage) =>
+          stage.id === trainStage.id
+            ? stageWithTrainingRunLifecyclePatch(stage, patchAction, run)
+            : stage
+        ),
+      };
+      setWorkspace(nextWorkspace);
+      if (action === 'delete') {
+        setSelectedRunIds((current) => {
+          const next = new Set(current);
+          next.delete(run.id);
+          return next;
+        });
+        setFocusedRunId((current) => (current === run.id ? null : current));
+        setSnapshotRunId((current) => (current === run.id ? null : current));
+      }
       markDirty();
-      setRunActionState({ busy: false, error: null });
-    } catch (error) {
-      setRunActionState({
-        busy: false,
-        error: error instanceof Error ? error.message : 'Failed to launch local training.',
-      });
-    }
-  }, [markDirty, setTrainingLocalRunResult, trainStage, workspace]);
+    },
+    [markDirty, setWorkspace, trainStage, workspace]
+  );
 
   const runLifecycleAction = useCallback(
     async (action: 'cancel' | 'delete' | 'supersede', run: TrainingRunSummary) => {
       setRunActionState({ busy: true, error: null });
       try {
-        if (action === 'cancel') await cancelTrainingRun(run.id);
-        else if (action === 'delete') await deleteTrainingRun(run.id);
-        else await supersedeTrainingRun(run.id, { reason: 'Superseded from Train tab' });
+        const updated =
+          action === 'cancel'
+            ? await cancelTrainingRun(run.id)
+            : action === 'delete'
+              ? await deleteTrainingRun(run.id)
+              : await supersedeTrainingRun(run.id, { reason: 'Superseded from Train tab' });
+        patchLifecycleRun(action, updated);
         setRunActionState({ busy: false, error: null });
       } catch (error) {
         setRunActionState({
@@ -459,7 +462,7 @@ export function TrainCollectionPanel() {
         });
       }
     },
-    []
+    [patchLifecycleRun]
   );
 
   const setTarget = useCallback(
@@ -529,7 +532,8 @@ export function TrainCollectionPanel() {
               view={view}
               sort={sort}
               bestRunId={bestRow?.id ?? null}
-              progressByRunId={progressByRunId}
+              progressByRunId={progressBindings.byRunId}
+              progressByGroupId={progressBindings.byGroupId}
               onViewChange={setView}
               onSortChange={setSort}
               onToggle={toggleRow}
@@ -540,7 +544,6 @@ export function TrainCollectionPanel() {
               onOpenDetails={(run) => setFocusedRunId(run.id)}
               onViewSnapshot={viewSnapshot}
               onRestageRun={restageRun}
-              onRunLocal={runLocal}
               onLifecycleAction={runLifecycleAction}
             />
 
@@ -785,6 +788,69 @@ export function EvaluateCollectionPanel() {
       {detailsRun && <RunDetailOverlay run={detailsRun} onClose={() => setDetailsRun(null)} />}
     </div>
   );
+}
+
+function workspaceWithTrainingSnapshot(
+  workspace: StudioWorkspaceSpec,
+  stageId: string,
+  scenarioId: string | null | undefined,
+  manifest: Record<string, unknown>,
+  axisCoordinates: Record<string, unknown>
+): StudioWorkspaceSpec {
+  const graphSpec = specPayloadInlineValue(manifest, 'graph_spec');
+  const trainingSpec = specPayloadInlineValue(manifest, 'training_spec');
+  const taskSpec = specPayloadInlineValue(manifest, 'task_spec');
+  const taskBindingSpec = specPayloadInlineValue(manifest, 'task_binding_spec');
+  if (!scenarioId) throw new Error('Run snapshot cannot be restaged without a scenario id.');
+  if (!trainingSpec || !taskSpec) {
+    throw new Error('Run snapshot is missing inline training or task specs.');
+  }
+  return {
+    ...workspace,
+    scenarios: Object.fromEntries(
+      Object.entries(workspace.scenarios).map(([id, scenario]) => [
+        id,
+        id === scenarioId
+          ? {
+              ...scenario,
+              graph: (graphSpec ?? scenario.graph) as typeof scenario.graph,
+              training_spec: trainingSpec as unknown as typeof scenario.training_spec,
+              task_spec: taskSpec as unknown as typeof scenario.task_spec,
+              task_binding_spec:
+                taskBindingSpec === undefined
+                  ? scenario.task_binding_spec
+                  : (taskBindingSpec as unknown as typeof scenario.task_binding_spec),
+            }
+          : scenario,
+      ])
+    ),
+    stages: workspace.stages.map((stage) =>
+      stage.id === stageId
+        ? {
+            ...stage,
+            selection_spec: {
+              ...selectionSpecWithoutMatrix(stage.selection_spec),
+              axis_coordinates: axisCoordinates,
+              restaged_from_manifest_id:
+                typeof manifest.id === 'string' ? manifest.id : undefined,
+            },
+          }
+        : stage
+    ),
+  };
+}
+
+function specPayloadInlineValue(
+  manifest: Record<string, unknown>,
+  key: string
+): Record<string, unknown> | null | undefined {
+  const value = manifest[key];
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const inline = (value as Record<string, unknown>).inline;
+  return inline && typeof inline === 'object' && !Array.isArray(inline)
+    ? (inline as Record<string, unknown>)
+    : undefined;
 }
 
 function MatrixBuilderStrip({
@@ -1095,6 +1161,7 @@ function RunTable({
   sort,
   bestRunId,
   progressByRunId,
+  progressByGroupId,
   onViewChange,
   onSortChange,
   onToggle,
@@ -1105,7 +1172,6 @@ function RunTable({
   onOpenDetails,
   onViewSnapshot,
   onRestageRun,
-  onRunLocal,
   onLifecycleAction,
 }: {
   title: string;
@@ -1120,6 +1186,7 @@ function RunTable({
   sort: SortState;
   bestRunId: string | null;
   progressByRunId?: Map<string, string>;
+  progressByGroupId?: Map<string, string>;
   onViewChange: (view: RunView) => void;
   onSortChange: (sort: SortState) => void;
   onToggle: (id: string) => void;
@@ -1130,7 +1197,6 @@ function RunTable({
   onOpenDetails: (run: TrainingRunSummary) => void;
   onViewSnapshot?: (run: TrainingRunSummary) => void;
   onRestageRun?: (run: TrainingRunSummary) => void;
-  onRunLocal?: () => void;
   onLifecycleAction?: (
     action: 'cancel' | 'delete' | 'supersede',
     run: TrainingRunSummary
@@ -1176,16 +1242,6 @@ function RunTable({
           >
             Clear
           </button>
-          {onRunLocal && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-              onClick={onRunLocal}
-            >
-              <PlayCircle className="h-3.5 w-3.5" />
-              Launch
-            </button>
-          )}
         </div>
       </div>
       {ghostRows.length > 0 && (
@@ -1235,11 +1291,17 @@ function RunTable({
             <div className="divide-y divide-slate-100">
               {groups.map((group) => {
                 const collapsed = collapsedSets.has(group.id);
+                const groupProgress = progressByGroupId?.get(group.id) ?? null;
+                const showHeader =
+                  groups.length > 1 ||
+                  group.id !== UNGROUPED_RUN_GROUP_ID ||
+                  Boolean(groupProgress);
                 return (
                   <div key={group.id}>
-                    {groups.length > 1 && (
+                    {showHeader && (
                       <RunSetHeader
                         group={group}
+                        progressLabel={groupProgress}
                         collapsed={collapsed}
                         onToggle={() => onToggleSet?.(group.id)}
                       />
@@ -1299,10 +1361,12 @@ function groupTrainingRows(rows: TrainingRunSummary[]): TrainingRunGroup[] {
 
 function RunSetHeader({
   group,
+  progressLabel,
   collapsed,
   onToggle,
 }: {
   group: TrainingRunGroup;
+  progressLabel: string | null;
   collapsed: boolean;
   onToggle: () => void;
 }) {
@@ -1316,6 +1380,11 @@ function RunSetHeader({
         {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         <span className="truncate font-semibold text-slate-700">{group.label}</span>
         <span className="shrink-0 text-slate-400">{group.rows.length} runs</span>
+        {progressLabel && (
+          <span className="shrink-0 rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-semibold text-brand-700">
+            job {progressLabel}
+          </span>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-1">
         {Object.entries(group.counts).map(([status, count]) => (
@@ -1496,6 +1565,15 @@ function TrainingRunRow({
           title="Details"
         >
           <Info className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          disabled
+          className="flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md text-slate-300"
+          aria-label={`Launch unavailable for ${row.label}`}
+          title="Manifest launch requires queue execution support"
+        >
+          <PlayCircle className="h-4 w-4" />
         </button>
         {onViewSnapshot && (
           <button
@@ -2101,23 +2179,4 @@ function EmptyCollection({ title, detail }: { title: string; detail: string }) {
       <div className="mt-1 max-w-sm text-xs leading-5 text-slate-500">{detail}</div>
     </div>
   );
-}
-
-function sortTrainingRows(rows: TrainingRunSummary[], sort: SortState): TrainingRunSummary[] {
-  return [...rows].sort((a, b) => {
-    const direction = sort.direction === 'asc' ? 1 : -1;
-    return compareMetric(metricValue(a, sort.key), metricValue(b, sort.key)) * direction;
-  });
-}
-
-function metricValue(row: TrainingRunSummary, key: SortKey): number | null {
-  if (key === 'progress') return row.status === 'completed' ? row.warmupBatches ?? 1 : 0;
-  return trainingRunMetricValue(row, key);
-}
-
-function compareMetric(a: number | null, b: number | null): number {
-  if (a === null && b === null) return 0;
-  if (a === null) return 1;
-  if (b === null) return -1;
-  return a - b;
 }

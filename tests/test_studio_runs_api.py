@@ -94,6 +94,23 @@ def test_training_run_index_lists_sweep_axis_hyperparams(
     assert response.json()[0]["hyperparams"]["axis_loss_weight"] == 1e-5
 
 
+def test_training_run_manifest_endpoint_returns_snapshot_payload(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    write_manifest(_training_manifest("feedbax-training-run:snapshot", "pending"), root=tmp_path)
+    client = TestClient(create_app())
+
+    response = client.get("/api/runs/training/feedbax-training-run:snapshot/manifest")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "feedbax-training-run:snapshot"
+    assert payload["training_spec"]["inline"]["n_batches"] == 25
+    assert payload["task_spec"]["inline"]["type"] == "ReachingTask"
+
+
 def test_training_run_index_merges_manifest_and_legacy_db_rows(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
