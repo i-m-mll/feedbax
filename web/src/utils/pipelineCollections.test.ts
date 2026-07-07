@@ -8,6 +8,7 @@ import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
 import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
 import {
   bestTrainingRun,
+  buildLineageProjection,
   evaluationProtocolLabel,
   evaluationRunSummaries,
   selectedIds,
@@ -99,5 +100,120 @@ describe('pipeline collection summaries', () => {
     expect(evaluationProtocolLabel(summary)).toBe(
       '8-direction center-out - SISU 0.5 - no perturbation'
     );
+  });
+
+  it('projects manifest ParentRefs as run-set grouped lineage edges', () => {
+    const workspace = seededWorkspace();
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train');
+    const evalStage = workspace.stages.find((stage) => stage.kind === 'eval');
+    const analysisStage = workspace.stages.find((stage) => stage.kind === 'analysis');
+    if (!trainStage || !evalStage || !analysisStage) throw new Error('seed missing stages');
+    const trainRef = {
+      ...trainStage.output_collections[0].item_refs[0],
+      metadata: {
+        ...trainStage.output_collections[0].item_refs[0].metadata,
+        run_set_id: 'movement-ramp',
+      },
+    };
+    const evalRef = {
+      ...evalStage.output_collections[0].item_refs[0],
+      kind: 'EvaluationRunManifest',
+      metadata: {
+        ...evalStage.output_collections[0].item_refs[0].metadata,
+        status: 'stale',
+        staleness_reason: 'training manifest was superseded',
+        provenance: {
+          parents: [
+            {
+              kind: 'TrainingRunManifest',
+              id: trainRef.id,
+              role: 'training_run',
+              metadata: { status: 'completed' },
+            },
+          ],
+        },
+      },
+    };
+    const analysisRef = {
+      ...analysisStage.output_collections[0].item_refs[0],
+      kind: 'AnalysisRunManifest',
+      metadata: {
+        ...analysisStage.output_collections[0].item_refs[0].metadata,
+        status: 'skipped',
+        skip_reason: 'optional output disabled',
+        inputs: [{ kind: 'EvaluationRunManifest', id: evalRef.id, role: 'evaluation_run' }],
+      },
+    };
+    const projection = buildLineageProjection({
+      ...workspace,
+      collections: [
+        {
+          ...trainStage.output_collections[0],
+          item_refs: [trainRef],
+        },
+        {
+          ...evalStage.output_collections[0],
+          item_refs: [evalRef],
+        },
+        {
+          ...analysisStage.output_collections[0],
+          item_refs: [analysisRef],
+        },
+      ],
+      stages: workspace.stages.map((stage) => {
+        if (stage.id === trainStage.id) {
+          return {
+            ...stage,
+            output_collections: [{ ...stage.output_collections[0], item_refs: [trainRef] }],
+            manifest_refs: [trainRef],
+          };
+        }
+        if (stage.id === evalStage.id) {
+          return {
+            ...stage,
+            output_collections: [{ ...stage.output_collections[0], item_refs: [evalRef] }],
+            manifest_refs: [evalRef],
+          };
+        }
+        if (stage.id === analysisStage.id) {
+          return {
+            ...stage,
+            output_collections: [{ ...stage.output_collections[0], item_refs: [analysisRef] }],
+            manifest_refs: [analysisRef],
+          };
+        }
+        return stage;
+      }),
+      manifest_refs: [trainRef, evalRef, analysisRef],
+    });
+
+    expect(projection.groups.find((group) => group.id === 'run-set:movement-ramp')).toMatchObject({
+      label: 'Run set movement-ramp',
+      nodeIds: [trainRef.id],
+    });
+    expect(projection.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          parentId: trainRef.id,
+          childId: evalRef.id,
+          role: 'training_run',
+        }),
+        expect.objectContaining({
+          parentId: evalRef.id,
+          childId: analysisRef.id,
+          role: 'evaluation_run',
+        }),
+      ])
+    );
+    expect(projection.nodes.find((node) => node.id === evalRef.id)).toMatchObject({
+      status: 'stale',
+      statusReason: 'training manifest was superseded',
+      focusStageId: evalStage.id,
+      focusCollectionId: evalStage.output_collections[0].id,
+    });
+    expect(projection.nodes.find((node) => node.id === analysisRef.id)).toMatchObject({
+      status: 'skipped',
+      statusReason: 'optional output disabled',
+    });
   });
 });

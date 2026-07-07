@@ -11,6 +11,7 @@ import {
   Cpu,
   Download,
   Eye,
+  GitBranch,
   Info,
   Layers3,
   Pencil,
@@ -42,6 +43,7 @@ import {
 } from '@/api/runAPI';
 import {
   bestTrainingRun,
+  buildLineageProjection,
   evaluationProtocolLabel,
   evaluationRunSummaries,
   formatMetric,
@@ -51,6 +53,8 @@ import {
   trainingInputSummaries,
   trainingRunSummaries,
   type EvaluationRunSummary,
+  type LineageProjection,
+  type LineageProjectionNode,
   type TrainingRunSummary,
 } from '@/utils/pipelineCollections';
 import {
@@ -141,6 +145,7 @@ export function TrainCollectionPanel() {
   const previewRunId = useSelectionContextStore((state) => state.previewId);
   const syncMode = useSelectionContextStore((state) => state.syncMode);
   const frozenSnapshot = useSelectionContextStore((state) => state.frozenSnapshot);
+  const setSelectionContext = useSelectionContextStore((state) => state.setContext);
   const syncCollection = useSelectionContextStore((state) => state.syncCollection);
   const toggleSelectionId = useSelectionContextStore((state) => state.toggleSelectedId);
   const setSelectedIds = useSelectionContextStore((state) => state.setSelectedIds);
@@ -169,6 +174,7 @@ export function TrainCollectionPanel() {
   const evalStage = getStageByKind(workspace, 'eval');
   const protocol = trainingProtocolSnapshot(trainStage, trainScenario);
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
+  const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
   const trainingCollectionId =
     trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
@@ -581,6 +587,20 @@ export function TrainCollectionPanel() {
     [markDirty, trainScenario, updateActiveScenarioTrainingSpec]
   );
 
+  const focusLineageNode = useCallback(
+    (node: LineageProjectionNode) => {
+      if (!node.focusStageId || !node.focusCollectionId) return;
+      setSelectionContext({
+        stage: node.focusStageId,
+        collection: node.focusCollectionId,
+        selectedIds: [node.id],
+        focusedId: node.id,
+      });
+      setActiveStage(node.focusStageId);
+    },
+    [setActiveStage, setSelectionContext]
+  );
+
   return (
     <div className="relative h-full overflow-hidden bg-slate-50/40">
       <div className="h-full overflow-y-auto">
@@ -640,6 +660,15 @@ export function TrainCollectionPanel() {
               onViewSnapshot={viewSnapshot}
               onRestageRun={restageRun}
               onLifecycleAction={runLifecycleAction}
+            />
+
+            <LineageProjectionPanel
+              projection={lineage}
+              focusedId={selectionContext.focusedId}
+              previewId={previewRunId}
+              syncMode={syncMode}
+              onPreview={previewSelectionId}
+              onFocusNode={focusLineageNode}
             />
 
             <BulkEditPanel
@@ -736,6 +765,7 @@ export function EvaluateCollectionPanel() {
   const evalStage = getStageByKind(workspace, 'eval');
   const analysisStage = getStageByKind(workspace, 'analysis');
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
+  const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
   const rows = useMemo(() => trainingInputSummaries(evalStage), [evalStage]);
   const metricColumns = useMemo(() => runMetricColumns(metrics, rows), [metrics, rows]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
@@ -746,18 +776,23 @@ export function EvaluateCollectionPanel() {
   const evaluationCollectionId =
     evalStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
     'collection:evaluation-runs';
-  const contextMatchesEval =
+  const contextMatchesEvalInput =
     selectionContext.stage === evalStage?.id &&
     selectionContext.collection === evalSelectionCollectionId;
+  const contextMatchesEvalOutput =
+    selectionContext.stage === evalStage?.id &&
+    selectionContext.collection === evaluationCollectionId;
+  const selectionContextSelectedKey = selectionContext.selectedIds.join('\0');
   const workspaceSelectedIds = useMemo(
     () => selectedIds(evalStage, 'training_run_ids'),
     [evalStage]
   );
   const selectedIdsForEval = useMemo(
-    () => new Set(contextMatchesEval ? selectionContext.selectedIds : workspaceSelectedIds),
-    [contextMatchesEval, selectionContext.selectedIds, workspaceSelectedIds]
+    () => new Set(contextMatchesEvalInput ? selectionContext.selectedIds : workspaceSelectedIds),
+    [contextMatchesEvalInput, selectionContext.selectedIds, workspaceSelectedIds]
   );
-  const focusedRunId = contextMatchesEval ? selectionContext.focusedId : null;
+  const focusedRunId = contextMatchesEvalInput ? selectionContext.focusedId : null;
+  const focusedEvalRunId = contextMatchesEvalOutput ? selectionContext.focusedId : null;
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedIdsForEval.has(row.id)),
     [rows, selectedIdsForEval]
@@ -775,22 +810,35 @@ export function EvaluateCollectionPanel() {
   useEffect(() => {
     if (!evalStage) return;
     const available = new Set(rows.map((row) => row.id));
+    const availableEvaluationRuns = new Set(evaluationRows.map((row) => row.id));
+    if (
+      contextMatchesEvalOutput &&
+      ((selectionContext.focusedId && availableEvaluationRuns.has(selectionContext.focusedId)) ||
+        selectionContext.selectedIds.some((id) => availableEvaluationRuns.has(id)))
+    ) {
+      return;
+    }
     const selected = workspaceSelectedIds.filter((id) => available.has(id));
     setSelectionContext({
       stage: evalStage.id,
       collection: evalSelectionCollectionId,
       selectedIds: selected,
       focusedId:
-        contextMatchesEval && selectionContext.focusedId && available.has(selectionContext.focusedId)
+        contextMatchesEvalInput &&
+        selectionContext.focusedId &&
+        available.has(selectionContext.focusedId)
           ? selectionContext.focusedId
           : selected[0] ?? null,
     });
   }, [
-    contextMatchesEval,
+    contextMatchesEvalInput,
+    contextMatchesEvalOutput,
     evalSelectionCollectionId,
     evalStage,
+    evaluationRows,
     rows,
     selectionContext.focusedId,
+    selectionContextSelectedKey,
     setSelectionContext,
     workspaceSelectedIds,
   ]);
@@ -831,6 +879,33 @@ export function EvaluateCollectionPanel() {
   const openAnalyze = useCallback(() => {
     if (analysisStage) setActiveStage(analysisStage.id);
   }, [analysisStage, setActiveStage]);
+
+  const focusEvaluationResult = useCallback(
+    (row: EvaluationRunSummary) => {
+      if (!evalStage) return;
+      setSelectionContext({
+        stage: evalStage.id,
+        collection: evaluationCollectionId,
+        selectedIds: [row.id],
+        focusedId: row.id,
+      });
+    },
+    [evalStage, evaluationCollectionId, setSelectionContext]
+  );
+
+  const focusLineageNode = useCallback(
+    (node: LineageProjectionNode) => {
+      if (!node.focusStageId || !node.focusCollectionId) return;
+      setSelectionContext({
+        stage: node.focusStageId,
+        collection: node.focusCollectionId,
+        selectedIds: [node.id],
+        focusedId: node.id,
+      });
+      setActiveStage(node.focusStageId);
+    },
+    [setActiveStage, setSelectionContext]
+  );
 
   const viewEvalSnapshot = useCallback(async (row: EvaluationRunSummary) => {
     if (!evalStage || !workspace || !row.uri) return;
@@ -916,6 +991,14 @@ export function EvaluateCollectionPanel() {
               setDetailsRun(run);
             }}
           />
+          <LineageProjectionPanel
+            projection={lineage}
+            focusedId={selectionContext.focusedId}
+            previewId={previewRunId}
+            syncMode={syncMode}
+            onPreview={previewSelectionId}
+            onFocusNode={focusLineageNode}
+          />
         </div>
 
           <div className="space-y-3">
@@ -968,6 +1051,11 @@ export function EvaluateCollectionPanel() {
                       selectedRun={rows.find(
                         (candidate) => candidate.id === row.selectedTrainingRunId
                       )}
+                      focused={focusedEvalRunId === row.id}
+                      previewed={previewRunId === row.id}
+                      onPreview={() => previewSelectionId(row.id)}
+                      onPreviewEnd={() => previewSelectionId(null)}
+                      onCommitFocus={() => focusEvaluationResult(row)}
                       onOpenAnalyze={openAnalyze}
                       onViewSnapshot={() => viewEvalSnapshot(row)}
                       snapshotBusy={evalActionState.busyRunId === row.id}
@@ -1527,6 +1615,190 @@ function BulkEditPanel({
       </div>
     </section>
   );
+}
+
+function LineageProjectionPanel({
+  projection,
+  focusedId,
+  previewId,
+  syncMode,
+  onPreview,
+  onFocusNode,
+}: {
+  projection: LineageProjection;
+  focusedId: string | null;
+  previewId: string | null;
+  syncMode: 'linked' | 'decoupled';
+  onPreview: (id: string | null) => void;
+  onFocusNode: (node: LineageProjectionNode) => void;
+}) {
+  const nodesById = useMemo(
+    () => new Map(projection.nodes.map((node) => [node.id, node])),
+    [projection.nodes]
+  );
+  const visibleGroups = projection.groups
+    .map((group) => ({
+      ...group,
+      nodes: group.nodeIds
+        .map((id) => nodesById.get(id))
+        .filter((node): node is LineageProjectionNode => Boolean(node)),
+    }))
+    .filter((group) => group.nodes.length > 0);
+
+  return (
+    <section className="max-w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <GitBranch className="h-4 w-4 shrink-0 text-slate-400" />
+          <div className="font-semibold text-slate-800">Lineage</div>
+          <div className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+            {projection.nodes.length} nodes
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span className="rounded-full bg-slate-100 px-2 py-0.5">{projection.edges.length} ParentRefs</span>
+          <span
+            className={clsx(
+              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium',
+              syncMode === 'linked' ? 'bg-brand-50 text-brand-700' : 'bg-slate-100 text-slate-600'
+            )}
+          >
+            {syncMode === 'linked' ? <Pin className="h-3 w-3" /> : <PinOff className="h-3 w-3" />}
+            {syncMode === 'linked' ? 'Linked' : 'Decoupled'}
+          </span>
+        </div>
+      </div>
+      {projection.nodes.length === 0 ? (
+        <EmptyCollection title="No lineage" detail="No manifests recorded in stage collections." />
+      ) : (
+        <div className="space-y-4 p-4">
+          <div className="grid gap-3 xl:grid-cols-4">
+            {visibleGroups.map((group) => (
+              <div key={group.id} className="min-w-0 rounded-md border border-slate-100 bg-slate-50/60 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate font-semibold text-slate-700">{group.label}</span>
+                  <span className="shrink-0 text-[11px] text-slate-400">{group.nodes.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {group.nodes.map((node) => (
+                    <LineageNodeButton
+                      key={node.id}
+                      node={node}
+                      focused={focusedId === node.id}
+                      previewed={previewId === node.id}
+                      onPreview={onPreview}
+                      onFocusNode={onFocusNode}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {projection.edges.length > 0 && (
+            <div className="max-h-36 overflow-y-auto rounded-md border border-slate-100">
+              {projection.edges.map((edge) => {
+                const parent = nodesById.get(edge.parentId);
+                const child = nodesById.get(edge.childId);
+                return (
+                  <div
+                    key={edge.id}
+                    className="grid gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)]"
+                  >
+                    <span className="truncate font-medium text-slate-700" title={edge.parentId}>
+                      {parent?.label ?? edge.parentId}
+                    </span>
+                    <span
+                      className="truncate text-center text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400"
+                      title={edge.reason ?? undefined}
+                    >
+                      {edge.role ?? 'parent'} -&gt;
+                    </span>
+                    <span className="truncate font-medium text-slate-700" title={edge.childId}>
+                      {child?.label ?? edge.childId}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function LineageNodeButton({
+  node,
+  focused,
+  previewed,
+  onPreview,
+  onFocusNode,
+}: {
+  node: LineageProjectionNode;
+  focused: boolean;
+  previewed: boolean;
+  onPreview: (id: string | null) => void;
+  onFocusNode: (node: LineageProjectionNode) => void;
+}) {
+  const clickable = Boolean(node.focusStageId && node.focusCollectionId);
+  return (
+    <button
+      type="button"
+      aria-disabled={!clickable}
+      onMouseEnter={() => onPreview(node.id)}
+      onMouseLeave={() => onPreview(null)}
+      onClick={() => {
+        if (clickable) onFocusNode(node);
+      }}
+      className={clsx(
+        'w-full min-w-0 rounded-md border bg-white px-3 py-2 text-left text-xs transition-colors',
+        clickable ? 'hover:border-brand-200 hover:bg-brand-50/40' : 'cursor-default',
+        previewed && 'border-sky-200 bg-sky-50/70',
+        focused ? 'border-brand-300 ring-1 ring-inset ring-brand-200' : 'border-slate-200'
+      )}
+      title={node.statusReason ?? node.id}
+    >
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate font-semibold text-slate-800">{node.label}</div>
+          <div className="mt-0.5 truncate text-[11px] text-slate-400">{node.id}</div>
+        </div>
+        <span className={clsx('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold', lineageStatusClass(node.status))}>
+          {lineageStatusLabel(node.status)}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+          {node.stageKind}
+        </span>
+        {node.role && (
+          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+            {node.role}
+          </span>
+        )}
+        {node.statusReason && (
+          <span className="truncate rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
+            {node.statusReason}
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function lineageStatusLabel(status: string): string {
+  return status.replace(/_/g, ' ');
+}
+
+function lineageStatusClass(status: string): string {
+  if (status === 'completed') return 'bg-emerald-50 text-emerald-700';
+  if (status === 'running') return 'bg-brand-50 text-brand-700';
+  if (status === 'failed' || status === 'cancelled') return 'bg-red-50 text-red-700';
+  if (status === 'stale' || status === 'skipped' || status === 'not_applicable') {
+    return 'bg-amber-50 text-amber-700';
+  }
+  if (status === 'pending' || status === 'planned') return 'bg-sky-50 text-sky-700';
+  return 'bg-slate-100 text-slate-600';
 }
 
 function RunTable({
@@ -2294,19 +2566,38 @@ function RunDetailOverlay({
 function EvaluationResult({
   row,
   selectedRun,
+  focused,
+  previewed,
+  onPreview,
+  onPreviewEnd,
+  onCommitFocus,
   onOpenAnalyze,
   onViewSnapshot,
   snapshotBusy,
 }: {
   row: EvaluationRunSummary;
   selectedRun: TrainingRunSummary | undefined;
+  focused: boolean;
+  previewed: boolean;
+  onPreview: () => void;
+  onPreviewEnd: () => void;
+  onCommitFocus: () => void;
   onOpenAnalyze: () => void;
   onViewSnapshot: () => void;
   snapshotBusy: boolean;
 }) {
   const snapshotAvailable = Boolean(row.uri);
   return (
-    <div className="rounded-md border border-slate-200 p-3">
+    <div
+      onMouseEnter={onPreview}
+      onMouseLeave={onPreviewEnd}
+      onClick={onCommitFocus}
+      className={clsx(
+        'rounded-md border border-slate-200 p-3 transition-colors',
+        previewed && 'bg-sky-50/70',
+        focused && 'ring-1 ring-inset ring-brand-200'
+      )}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="font-semibold text-slate-800">{row.label}</div>
         <StatusDot status={row.status} />
@@ -2321,7 +2612,10 @@ function EvaluationResult({
         <button
           type="button"
           disabled={!snapshotAvailable || snapshotBusy}
-          onClick={onViewSnapshot}
+          onClick={(event) => {
+            event.stopPropagation();
+            onViewSnapshot();
+          }}
           className="inline-flex items-center justify-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
           title={
             snapshotAvailable
@@ -2334,7 +2628,10 @@ function EvaluationResult({
         </button>
         <button
           type="button"
-          onClick={onOpenAnalyze}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenAnalyze();
+          }}
           className="inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-600"
         >
           Analyze
