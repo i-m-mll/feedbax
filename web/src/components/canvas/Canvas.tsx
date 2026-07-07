@@ -65,6 +65,7 @@ import { RoutedEdge } from './RoutedEdge';
 import { StateFlowEdge } from './StateFlowEdge';
 import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
+import { FIT_VIEW_SHORTCUT_EVENT } from '@/hooks/useShortcuts';
 import clsx from 'clsx';
 import type { ComponentSpec, GraphEdgeData, GraphNodeData, GraphSpec, TapNodeData } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
@@ -1143,6 +1144,7 @@ export function Canvas() {
   );
   const hasRestoredSubgraphViewport =
     graphStack.length > 0 && !isDefaultViewport(uiState.viewport);
+  const isEmptyRootCanvas = nodes.length === 0 && graphStack.length === 0;
   const connectionLineStyle = useMemo(() => {
     if (connectionFeedback?.status === 'valid') {
       return { stroke: '#10b981', strokeWidth: 2.5 };
@@ -1184,6 +1186,14 @@ export function Canvas() {
       timeouts.forEach((timeout) => window.clearTimeout(timeout));
     };
   }, [graphViewKey, hasRestoredSubgraphViewport, nodes.length, reactFlow]);
+
+  useEffect(() => {
+    const fitView = () => {
+      void reactFlow.fitView(DEFAULT_FIT_VIEW_OPTIONS);
+    };
+    window.addEventListener(FIT_VIEW_SHORTCUT_EVENT, fitView);
+    return () => window.removeEventListener(FIT_VIEW_SHORTCUT_EVENT, fitView);
+  }, [reactFlow]);
 
   const isStateHandle = (handleId?: string | null) =>
     typeof handleId === 'string' && handleId.startsWith('__state');
@@ -1705,6 +1715,11 @@ export function Canvas() {
           </ControlButton>
         </Controls>
         {showMinimap && <MiniMap nodeColor="#9ca3af" />}
+        <Panel position="top-right" className="pointer-events-none">
+          <div className="max-w-[280px] rounded-md border border-slate-200 bg-white/85 px-3 py-2 text-[11px] leading-5 text-slate-500 shadow-soft">
+            Shift-click an edge to add a waypoint. Double-click a state edge to insert a probe.
+          </div>
+        </Panel>
         <Panel position="top-left" className="nodrag">
           <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-soft">
             <button
@@ -1740,6 +1755,14 @@ export function Canvas() {
           </div>
         </Panel>
       </ReactFlow>
+      {isEmptyRootCanvas && (
+        <div className="pointer-events-none absolute inset-y-0 left-0 z-20 flex w-full items-start">
+          <div className="ml-8 mt-20 max-w-[300px] rounded-md border border-brand-200 bg-white/90 px-4 py-3 text-sm text-slate-600 shadow-soft">
+            Start by adding a component from the library on the left. Drag a card onto the canvas
+            or click one to place it here.
+          </div>
+        </div>
+      )}
       {pendingStateMerge && (
         <StateMergeDialog
           request={pendingStateMerge}

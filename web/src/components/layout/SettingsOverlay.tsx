@@ -158,6 +158,28 @@ function GeneralSection({
           />
         </SettingRow>
       </div>
+      <div className="mt-8">
+        <SectionHeading>Shortcuts</SectionHeading>
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-100">
+          {[
+            ['Save project', 'Cmd/Ctrl S'],
+            ['Undo', 'Cmd/Ctrl Z'],
+            ['Redo', 'Cmd/Ctrl Shift Z or Cmd/Ctrl Y'],
+            ['Duplicate selection', 'Cmd/Ctrl D'],
+            ['Select all', 'Cmd/Ctrl A'],
+            ['Deselect', 'Esc'],
+            ['Delete selection', 'Delete or Backspace'],
+            ['Zoom to fit', 'Cmd/Ctrl 0'],
+          ].map(([label, shortcut]) => (
+            <div key={label} className="flex items-center justify-between gap-4 px-3 py-2">
+              <span className="text-xs font-medium text-slate-600">{label}</span>
+              <kbd className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                {shortcut}
+              </kbd>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

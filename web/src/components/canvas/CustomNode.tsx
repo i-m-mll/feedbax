@@ -527,8 +527,8 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                 }}
                 title={
                   isDynamicMuxPort
-                    ? `Connect to add ${label}.${port}`
-                    : `Select ${label}.${port}`
+                    ? `Connect to add ${label}.${port}. Right-click for objectives and probes.`
+                    : `Select ${label}.${port}. Right-click for objectives and probes.`
                 }
                 onContextMenu={(event) => handlePortContextMenu(event, port, 'input')}
               >
@@ -559,7 +559,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                 [reversed ? 'left' : 'right']: LABEL_OFFSET,
                 transform: 'translateY(-50%)',
               }}
-              title={`Select ${label}.${port}`}
+              title={`Select ${label}.${port}. Right-click for objectives and probes.`}
               onContextMenu={(event) => handlePortContextMenu(event, port, 'output')}
             >
               {(highlightedPorts.has(port) || objectivePorts.has(`output:${port}`)) && (

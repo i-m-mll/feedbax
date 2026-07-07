@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import type {
   StatisticsResponse,
   TimeseriesResponse,
@@ -16,12 +17,17 @@ import {
 import { withStoreActionFeedback } from '@/stores/storeActions';
 import { useTrajectoryStore } from '@/stores/trajectoryStore';
 
+export type StatisticsSubTab = 'overview' | 'charts' | 'diagnostics';
+export type StatisticsChartSubTab = 'timeseries' | 'histogram' | 'scatter';
+
 interface StatisticsStoreState {
   // Settings
   groupBy: string;
   selectedMetric: string;
   scatterXMetric: string;
   scatterYMetric: string;
+  activeSubTab: StatisticsSubTab;
+  activeChartSubTab: StatisticsChartSubTab;
 
   // Data
   summaryData: StatisticsResponse | null;
@@ -38,6 +44,8 @@ interface StatisticsStoreState {
   setGroupBy: (groupBy: string) => void;
   setSelectedMetric: (metric: string) => void;
   setScatterMetrics: (x: string, y: string) => void;
+  setActiveSubTab: (tab: StatisticsSubTab) => void;
+  setActiveChartSubTab: (tab: StatisticsChartSubTab) => void;
   loadSummary: () => Promise<void>;
   loadTimeseries: () => Promise<void>;
   loadHistogram: () => Promise<void>;
@@ -45,12 +53,35 @@ interface StatisticsStoreState {
   loadDiagnostics: () => Promise<void>;
 }
 
-export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
+type PersistedStatisticsState = Pick<
+  StatisticsStoreState,
+  | 'groupBy'
+  | 'selectedMetric'
+  | 'scatterXMetric'
+  | 'scatterYMetric'
+  | 'activeSubTab'
+  | 'activeChartSubTab'
+>;
+
+const DEFAULT_PERSISTED_STATISTICS: PersistedStatisticsState = {
+  groupBy: 'none',
+  selectedMetric: 'distance_to_target',
+  scatterXMetric: 'final_distance',
+  scatterYMetric: 'effort',
+  activeSubTab: 'overview',
+  activeChartSubTab: 'timeseries',
+};
+
+export const useStatisticsStore = create<StatisticsStoreState>()(
+  persist(
+    (set, get) => ({
   // Settings
   groupBy: 'none',
   selectedMetric: 'distance_to_target',
   scatterXMetric: 'final_distance',
   scatterYMetric: 'effort',
+  activeSubTab: 'overview',
+  activeChartSubTab: 'timeseries',
 
   // Data
   summaryData: null,
@@ -80,6 +111,14 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
 
   setScatterMetrics: (x: string, y: string) => {
     set({ scatterXMetric: x, scatterYMetric: y });
+  },
+
+  setActiveSubTab: (tab) => {
+    set({ activeSubTab: tab });
+  },
+
+  setActiveChartSubTab: (tab) => {
+    set({ activeChartSubTab: tab });
   },
 
   loadSummary: async () => {
@@ -195,7 +234,41 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     }
     set({ diagnosticsData, loading: false });
   },
-}));
+    }),
+    {
+      name: 'feedbax-studio-statistics',
+      storage: createJSONStorage(() => window.localStorage),
+      version: 1,
+      migrate: (persistedState): PersistedStatisticsState => {
+        const persisted =
+          persistedState && typeof persistedState === 'object'
+            ? (persistedState as Partial<PersistedStatisticsState>)
+            : {};
+        return {
+          ...DEFAULT_PERSISTED_STATISTICS,
+          ...persisted,
+          activeSubTab:
+            persisted.activeSubTab === 'charts' || persisted.activeSubTab === 'diagnostics'
+              ? persisted.activeSubTab
+              : DEFAULT_PERSISTED_STATISTICS.activeSubTab,
+          activeChartSubTab:
+            persisted.activeChartSubTab === 'histogram' ||
+            persisted.activeChartSubTab === 'scatter'
+              ? persisted.activeChartSubTab
+              : DEFAULT_PERSISTED_STATISTICS.activeChartSubTab,
+        };
+      },
+      partialize: (state) => ({
+        groupBy: state.groupBy,
+        selectedMetric: state.selectedMetric,
+        scatterXMetric: state.scatterXMetric,
+        scatterYMetric: state.scatterYMetric,
+        activeSubTab: state.activeSubTab,
+        activeChartSubTab: state.activeChartSubTab,
+      }),
+    },
+  )
+);
 
 // Subscribe to activeDataset changes from trajectoryStore —
 // auto-load summary + diagnostics when dataset changes.

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import type {
   TrajectoryDataset,
   TrajectoryMetadata,
@@ -49,6 +50,13 @@ interface TrajectoryStoreState {
   stepBackward: () => void;
 }
 
+type PersistedTrajectoryState = Pick<
+  TrajectoryStoreState,
+  'activeDataset' | 'activeIndex' | 'filterBodyIdx' | 'filterTaskType' | 'showTargetTrace'
+> & {
+  playbackSpeed: number;
+};
+
 const defaultPlayback: PlaybackState = {
   playing: false,
   speed: 1,
@@ -56,7 +64,18 @@ const defaultPlayback: PlaybackState = {
   totalFrames: 0,
 };
 
-export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
+const DEFAULT_PERSISTED_TRAJECTORY: PersistedTrajectoryState = {
+  activeDataset: null,
+  activeIndex: null,
+  filterBodyIdx: null,
+  filterTaskType: null,
+  showTargetTrace: true,
+  playbackSpeed: 1,
+};
+
+export const useTrajectoryStore = create<TrajectoryStoreState>()(
+  persist(
+    (set, get) => ({
   // Data
   datasets: [],
   activeDataset: null,
@@ -104,7 +123,7 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
       trajectoryData: null,
       loading: true,
       error: null,
-      playback: { ...defaultPlayback },
+      playback: { ...defaultPlayback, speed: get().playback.speed },
     });
     const metadata = await withStoreActionFeedback(
       () => fetchTrajectoryMetadata(name),
@@ -174,6 +193,7 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
       loading: false,
       playback: {
         ...defaultPlayback,
+        speed: get().playback.speed,
         totalFrames: data.timestamps.length,
       },
     });
@@ -211,4 +231,51 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
       return { playback: { ...state.playback, frame: prev, playing: false } };
     });
   },
-}));
+    }),
+    {
+      name: 'feedbax-studio-trajectory',
+      storage: createJSONStorage(() => window.localStorage),
+      version: 1,
+      migrate: (persistedState): PersistedTrajectoryState => {
+        const persisted =
+          persistedState && typeof persistedState === 'object'
+            ? (persistedState as Partial<PersistedTrajectoryState>)
+            : {};
+        return {
+          ...DEFAULT_PERSISTED_TRAJECTORY,
+          ...persisted,
+          playbackSpeed:
+            typeof persisted.playbackSpeed === 'number'
+              ? persisted.playbackSpeed
+              : DEFAULT_PERSISTED_TRAJECTORY.playbackSpeed,
+        };
+      },
+      merge: (persistedState, currentState) => {
+        const persisted =
+          persistedState && typeof persistedState === 'object'
+            ? (persistedState as Partial<PersistedTrajectoryState>)
+            : {};
+        return {
+          ...currentState,
+          activeDataset: persisted.activeDataset ?? currentState.activeDataset,
+          activeIndex: persisted.activeIndex ?? currentState.activeIndex,
+          filterBodyIdx: persisted.filterBodyIdx ?? currentState.filterBodyIdx,
+          filterTaskType: persisted.filterTaskType ?? currentState.filterTaskType,
+          showTargetTrace: persisted.showTargetTrace ?? currentState.showTargetTrace,
+          playback: {
+            ...currentState.playback,
+            speed: persisted.playbackSpeed ?? currentState.playback.speed,
+          },
+        };
+      },
+      partialize: (state) => ({
+        activeDataset: state.activeDataset,
+        activeIndex: state.activeIndex,
+        filterBodyIdx: state.filterBodyIdx,
+        filterTaskType: state.filterTaskType,
+        showTargetTrace: state.showTargetTrace,
+        playbackSpeed: state.playback.speed,
+      }),
+    },
+  )
+);

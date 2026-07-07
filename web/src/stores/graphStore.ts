@@ -1535,6 +1535,8 @@ interface GraphStoreState {
   setSelectedNode: (nodeId: string | null) => void;
   setSelectedTap: (tapId: string | null) => void;
   setSelectedEdge: (edgeId: string | null) => void;
+  clearSelection: () => void;
+  selectAll: () => void;
   toggleNodeCollapse: (nodeId: string) => void;
   toggleNodeReversed: (nodeId: string) => void;
   setAllNodesCollapsed: (collapsed: boolean) => void;
@@ -1603,6 +1605,8 @@ export const graphStoreSlices = {
     setSelectedNode: state.setSelectedNode,
     setSelectedTap: state.setSelectedTap,
     setSelectedEdge: state.setSelectedEdge,
+    clearSelection: state.clearSelection,
+    selectAll: state.selectAll,
     confirmStateMerge: state.confirmStateMerge,
     cancelStateMerge: state.cancelStateMerge,
   }),
@@ -3395,6 +3399,74 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         edges,
         selectedEdgeId: edgeId,
+        pendingStateMerge: null,
+      };
+    });
+  },
+  clearSelection: () => {
+    set((state) => {
+      const nodes = state.nodes.map((node) =>
+        node.selected ? { ...node, selected: false } : node
+      );
+      const edges = state.edges.map((edge) =>
+        edge.selected ? { ...edge, selected: false } : edge
+      );
+      const node_states = Object.fromEntries(
+        Object.entries(state.uiState.node_states).map(([nodeId, nodeState]) => [
+          nodeId,
+          { ...nodeState, selected: false },
+        ])
+      ) as GraphUIState['node_states'];
+      const tap_states = state.uiState.tap_states
+        ? Object.fromEntries(
+            Object.entries(state.uiState.tap_states).map(([tapId, tapState]) => [
+              tapId,
+              { ...tapState, selected: false },
+            ])
+          )
+        : undefined;
+      return {
+        nodes,
+        edges,
+        uiState: {
+          ...state.uiState,
+          node_states,
+          tap_states,
+        },
+        selectedTapId: null,
+        selectedEdgeId: null,
+        pendingStateMerge: null,
+      };
+    });
+  },
+  selectAll: () => {
+    set((state) => {
+      const nodes = state.nodes.map((node) => ({ ...node, selected: true }));
+      const edges = state.edges.map((edge) => ({ ...edge, selected: true }));
+      const node_states = Object.fromEntries(
+        Object.entries(state.uiState.node_states).map(([nodeId, nodeState]) => [
+          nodeId,
+          { ...nodeState, selected: true },
+        ])
+      ) as GraphUIState['node_states'];
+      const tap_states = state.uiState.tap_states
+        ? Object.fromEntries(
+            Object.entries(state.uiState.tap_states).map(([tapId, tapState]) => [
+              tapId,
+              { ...tapState, selected: true },
+            ])
+          )
+        : undefined;
+      return {
+        nodes,
+        edges,
+        uiState: {
+          ...state.uiState,
+          node_states,
+          tap_states,
+        },
+        selectedTapId: null,
+        selectedEdgeId: null,
         pendingStateMerge: null,
       };
     });

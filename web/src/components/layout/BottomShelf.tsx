@@ -79,15 +79,17 @@ export function BottomShelf({
   height: number;
   availableHeight: number;
 }) {
-  const [mode, setMode] = useState<WorkspaceMode>('stage');
   const {
     bottomCollapsed,
     bottomSidebarCollapsed,
     bottomRightSidebarCollapsed,
+    bottomShelfMode,
     toggleBottom,
     toggleBottomRightSidebar,
     toggleBottomSidebar,
+    setBottomShelfMode,
   } = useLayoutStore();
+  const mode = bottomShelfMode as WorkspaceMode;
   const workspace = useWorkspaceStore((state) => state.workspace);
   const stages = workspace?.stages ?? [];
   const activeStage = getActiveStage(workspace);
@@ -112,11 +114,11 @@ export function BottomShelf({
   const selectStage = useCallback(
     (stageId: string) => {
       if (bottomCollapsed) toggleBottom(availableHeight);
-      setMode('stage');
+      setBottomShelfMode('stage');
       setActiveStage(stageId);
       markDirty();
     },
-    [availableHeight, bottomCollapsed, markDirty, setActiveStage, toggleBottom]
+    [availableHeight, bottomCollapsed, markDirty, setActiveStage, setBottomShelfMode, toggleBottom]
   );
 
   const updateFades = useCallback(() => {
@@ -185,7 +187,7 @@ export function BottomShelf({
             <button
               onClick={() => {
                 if (bottomCollapsed) toggleBottom(availableHeight);
-                setMode('console');
+                setBottomShelfMode('console');
               }}
               className={clsx(
                 'inline-flex h-10 items-center gap-2 whitespace-nowrap border-b-2 px-4 text-xs font-semibold uppercase tracking-[0.12em] transition-colors',

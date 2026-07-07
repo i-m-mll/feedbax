@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import clsx from 'clsx';
 import { Loader2 } from 'lucide-react';
 import { useTrajectoryStore } from '@/stores/trajectoryStore';
@@ -9,9 +9,6 @@ import { TimeseriesChart } from '@/components/charts/TimeseriesChart';
 import { HistogramChart } from '@/components/charts/HistogramChart';
 import { ScatterPlotChart } from '@/components/charts/ScatterChart';
 import { DiagnosticsPanel } from '@/components/charts/DiagnosticsPanel';
-
-type SubTab = 'overview' | 'charts' | 'diagnostics';
-type ChartSubTab = 'timeseries' | 'histogram' | 'scatter';
 
 const METRIC_OPTIONS = Object.entries(METRIC_LABELS).map(([value, label]) => ({
   value,
@@ -38,18 +35,19 @@ export function StatisticsPanel() {
     diagnosticsData,
     loading,
     error,
+    activeSubTab,
+    activeChartSubTab,
     setGroupBy,
     setSelectedMetric,
     setScatterMetrics,
+    setActiveSubTab,
+    setActiveChartSubTab,
     loadSummary,
     loadTimeseries,
     loadHistogram,
     loadScatter,
     loadDiagnostics,
   } = useStatisticsStore();
-
-  const [subTab, setSubTab] = useState<SubTab>('overview');
-  const [chartSubTab, setChartSubTab] = useState<ChartSubTab>('timeseries');
 
   // Load datasets on mount
   useEffect(() => {
@@ -65,25 +63,35 @@ export function StatisticsPanel() {
 
   // Load timeseries for overview tab when summary is loaded
   useEffect(() => {
-    if (subTab === 'overview' && activeDataset && !timeseriesData) {
+    if (activeSubTab === 'overview' && activeDataset && !timeseriesData) {
       loadTimeseries();
     }
-  }, [subTab, activeDataset, timeseriesData, loadTimeseries]);
+  }, [activeSubTab, activeDataset, timeseriesData, loadTimeseries]);
 
   // Load chart data when chart sub-tab changes
   useEffect(() => {
-    if (subTab !== 'charts' || !activeDataset) return;
-    if (chartSubTab === 'timeseries' && !timeseriesData) loadTimeseries();
-    if (chartSubTab === 'histogram' && !histogramData) loadHistogram();
-    if (chartSubTab === 'scatter' && !scatterData) loadScatter();
-  }, [subTab, chartSubTab, activeDataset, timeseriesData, histogramData, scatterData, loadTimeseries, loadHistogram, loadScatter]);
+    if (activeSubTab !== 'charts' || !activeDataset) return;
+    if (activeChartSubTab === 'timeseries' && !timeseriesData) loadTimeseries();
+    if (activeChartSubTab === 'histogram' && !histogramData) loadHistogram();
+    if (activeChartSubTab === 'scatter' && !scatterData) loadScatter();
+  }, [
+    activeSubTab,
+    activeChartSubTab,
+    activeDataset,
+    timeseriesData,
+    histogramData,
+    scatterData,
+    loadTimeseries,
+    loadHistogram,
+    loadScatter,
+  ]);
 
   // Load diagnostics when switching to diagnostics tab
   useEffect(() => {
-    if (subTab === 'diagnostics' && activeDataset && !diagnosticsData) {
+    if (activeSubTab === 'diagnostics' && activeDataset && !diagnosticsData) {
       loadDiagnostics();
     }
-  }, [subTab, activeDataset, diagnosticsData, loadDiagnostics]);
+  }, [activeSubTab, activeDataset, diagnosticsData, loadDiagnostics]);
 
   const handleDatasetChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -191,10 +199,10 @@ export function StatisticsPanel() {
           {(['overview', 'charts', 'diagnostics'] as const).map((tab) => (
             <button
               key={tab}
-              onClick={() => setSubTab(tab)}
+              onClick={() => setActiveSubTab(tab)}
               className={clsx(
                 'text-[10px] font-semibold px-2.5 py-0.5 rounded-full border capitalize',
-                subTab === tab
+                activeSubTab === tab
                   ? 'border-brand-500 text-brand-600 bg-brand-500/10'
                   : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50',
               )}
@@ -229,7 +237,7 @@ export function StatisticsPanel() {
         )}
 
         {/* Overview tab */}
-        {activeDataset && subTab === 'overview' && (
+        {activeDataset && activeSubTab === 'overview' && (
           <div className="p-4 space-y-4">
             {/* Metric cards row */}
             {overviewMetrics && (
@@ -254,7 +262,7 @@ export function StatisticsPanel() {
         )}
 
         {/* Charts tab */}
-        {activeDataset && subTab === 'charts' && (
+        {activeDataset && activeSubTab === 'charts' && (
           <div className="p-4 space-y-3">
             {/* Chart toolbar */}
             <div className="flex items-center gap-3 flex-wrap">
@@ -263,10 +271,10 @@ export function StatisticsPanel() {
                 {(['timeseries', 'histogram', 'scatter'] as const).map((ct) => (
                   <button
                     key={ct}
-                    onClick={() => setChartSubTab(ct)}
+                    onClick={() => setActiveChartSubTab(ct)}
                     className={clsx(
                       'text-[10px] font-semibold px-2 py-0.5 rounded-full border capitalize',
-                      chartSubTab === ct
+                      activeChartSubTab === ct
                         ? 'border-brand-500 text-brand-600 bg-brand-500/10'
                         : 'border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-50',
                     )}
@@ -277,7 +285,7 @@ export function StatisticsPanel() {
               </div>
 
               {/* Metric selector (for timeseries and histogram) */}
-              {(chartSubTab === 'timeseries' || chartSubTab === 'histogram') && (
+              {(activeChartSubTab === 'timeseries' || activeChartSubTab === 'histogram') && (
                 <select
                   value={selectedMetric}
                   onChange={handleMetricChange}
@@ -292,7 +300,7 @@ export function StatisticsPanel() {
               )}
 
               {/* Scatter axis selectors */}
-              {chartSubTab === 'scatter' && (
+              {activeChartSubTab === 'scatter' && (
                 <>
                   <span className="text-[10px] text-slate-400">X:</span>
                   <select
@@ -324,19 +332,19 @@ export function StatisticsPanel() {
 
             {/* Chart area */}
             <div className="h-[280px]">
-              {chartSubTab === 'timeseries' && timeseriesData && (
+              {activeChartSubTab === 'timeseries' && timeseriesData && (
                 <TimeseriesChart data={timeseriesData} />
               )}
-              {chartSubTab === 'histogram' && histogramData && (
+              {activeChartSubTab === 'histogram' && histogramData && (
                 <HistogramChart data={histogramData} />
               )}
-              {chartSubTab === 'scatter' && scatterData && (
+              {activeChartSubTab === 'scatter' && scatterData && (
                 <ScatterPlotChart data={scatterData} />
               )}
               {!loading &&
-                ((chartSubTab === 'timeseries' && !timeseriesData) ||
-                  (chartSubTab === 'histogram' && !histogramData) ||
-                  (chartSubTab === 'scatter' && !scatterData)) && (
+                ((activeChartSubTab === 'timeseries' && !timeseriesData) ||
+                  (activeChartSubTab === 'histogram' && !histogramData) ||
+                  (activeChartSubTab === 'scatter' && !scatterData)) && (
                   <div className="h-full flex items-center justify-center text-sm text-slate-400">
                     No data loaded
                   </div>
@@ -346,7 +354,7 @@ export function StatisticsPanel() {
         )}
 
         {/* Diagnostics tab */}
-        {activeDataset && subTab === 'diagnostics' && (
+        {activeDataset && activeSubTab === 'diagnostics' && (
           <div className="p-4">
             {diagnosticsData ? (
               <DiagnosticsPanel data={diagnosticsData} />

@@ -8,7 +8,7 @@
  * and edges drawn from data.subgraph.
  */
 
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback } from 'react';
 import {
   Position,
   ReactFlow,
@@ -20,6 +20,7 @@ import { CustomNode } from './CustomNode';
 import type { GraphNodeData } from '@/types/graph';
 import { ChevronDown, ChevronRight, Layers } from 'lucide-react';
 import { NodeHeader, NodeShell, PortHandle } from '@/components/ui/NodePrimitives';
+import { useLayoutStore } from '@/stores/layoutStore';
 
 // ---------------------------------------------------------------------------
 // Layout constants — match CustomNode for visual consistency
@@ -48,9 +49,15 @@ function SubgraphNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const { label, spec, subgraph } = nodeData;
 
-  const [expanded, setExpanded] = useState(false);
+  const expanded = useLayoutStore((state) => Boolean(state.subgraphPreviewExpanded[label]));
+  const setSubgraphPreviewExpanded = useLayoutStore(
+    (state) => state.setSubgraphPreviewExpanded
+  );
 
-  const toggleExpanded = useCallback(() => setExpanded((v) => !v), []);
+  const toggleExpanded = useCallback(
+    () => setSubgraphPreviewExpanded(label, !expanded),
+    [expanded, label, setSubgraphPreviewExpanded]
+  );
 
   const inputPorts = subgraph?.inputPorts ?? spec.input_ports;
   const outputPorts = subgraph?.outputPorts ?? spec.output_ports;

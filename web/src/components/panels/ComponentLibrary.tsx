@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
+import { useLayoutStore } from '@/stores/layoutStore';
 import type { ComponentDefinition } from '@/types/components';
 import { groupComponentsByCategory } from '@/utils/components';
 import clsx from 'clsx';
@@ -104,10 +105,29 @@ const iconMap = {
 
 type ComponentLibraryMode = 'components' | 'templates';
 
+function nextInsertPosition(
+  nodes: ReturnType<typeof useGraphStore.getState>['nodes'],
+  viewport: ReturnType<typeof useGraphStore.getState>['uiState']['viewport']
+) {
+  const zoom = viewport.zoom || 1;
+  const index = nodes.filter((node) => node.type !== 'tap').length;
+  return {
+    x: (320 - viewport.x) / zoom + (index % 5) * 32,
+    y: (180 - viewport.y) / zoom + (index % 5) * 24,
+  };
+}
+
 export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibraryMode }) {
   const [search, setSearch] = useState('');
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['Neural Networks', 'CDE Controllers', 'Sensorimotor'])
+  const expandedCategoryList = useLayoutStore(
+    (state) => state.componentLibraryExpandedCategories
+  );
+  const setExpandedCategories = useLayoutStore(
+    (state) => state.setComponentLibraryExpandedCategories
+  );
+  const expandedCategories = useMemo(
+    () => new Set(expandedCategoryList),
+    [expandedCategoryList]
   );
   const { components, isLoading } = useComponents();
   const currentContext = useGraphStore((state) => state.currentContext);
@@ -187,15 +207,13 @@ export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibr
   const suggestedHeaderLabel = isExclusiveContext ? 'Available' : 'Suggested';
 
   const toggleCategory = (category: string) => {
-    setExpandedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(category)) {
-        next.delete(category);
-      } else {
-        next.add(category);
-      }
-      return next;
-    });
+    const next = new Set(expandedCategories);
+    if (next.has(category)) {
+      next.delete(category);
+    } else {
+      next.add(category);
+    }
+    setExpandedCategories([...next]);
   };
 
   return (
@@ -312,6 +330,9 @@ function CategorySection({
 
 function ComponentCard({ component }: { component: ComponentDefinition }) {
   const Icon = iconMap[component.icon as keyof typeof iconMap] ?? CircuitBoard;
+  const addNodeFromComponent = useGraphStore((state) => state.addNodeFromComponent);
+  const nodes = useGraphStore((state) => state.nodes);
+  const viewport = useGraphStore((state) => state.uiState.viewport);
   // Blank subgraph type containers (Subgraph, AcausalSystem) get purple "Type" badge.
   const isSubgraphType = SUBGRAPH_TYPES.has(component.name);
   const isTemplate = Boolean(component.template_graph);
@@ -321,17 +342,21 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
     ? `${Object.keys(component.template_graph.nodes).length} nodes, ${component.template_graph.wires.length} wires`
     : null;
 
-  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
+  const onDragStart = (event: DragEvent<HTMLButtonElement>) => {
     event.dataTransfer.setData('application/feedbax-component', component.name);
     event.dataTransfer.effectAllowed = 'move';
   };
 
   return (
-    <div
+    <button
+      type="button"
       draggable
       onDragStart={onDragStart}
+      onClick={() => addNodeFromComponent(component, nextInsertPosition(nodes, viewport))}
+      title={`Add ${component.name}`}
       className={clsx(
-        'rounded-xl bg-white/90 p-3 shadow-soft cursor-grab transition',
+        'w-full rounded-xl bg-white/90 p-3 text-left shadow-soft cursor-grab transition',
+        'focus:outline-none focus:ring-2 focus:ring-brand-500/40',
         isSubgraphType
           ? 'border border-violet-200 hover:border-violet-400 hover:-translate-y-0.5 hover:shadow'
           : isDisplayTemplate
@@ -399,6 +424,6 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
           )}
         </div>
       </div>
-    </div>
+    </button>
   );
 }

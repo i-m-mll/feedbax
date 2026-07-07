@@ -15,6 +15,8 @@ import {
   taskBindingInGraphPath,
 } from '@/features/scenario/taskBindings';
 
+export const FIT_VIEW_SHORTCUT_EVENT = 'feedbax:shortcut-fit-view';
+
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName.toLowerCase();
@@ -27,6 +29,8 @@ export function useAppShortcuts() {
     redo,
     deleteSelected,
     duplicateSelected,
+    clearSelection,
+    selectAll,
     graph,
     uiState,
     graphId,
@@ -40,6 +44,8 @@ export function useAppShortcuts() {
       redo: state.redo,
       deleteSelected: state.deleteSelected,
       duplicateSelected: state.duplicateSelected,
+      clearSelection: state.clearSelection,
+      selectAll: state.selectAll,
       graph: state.graph,
       uiState: state.uiState,
       graphId: state.graphId,
@@ -194,6 +200,26 @@ export function useAppShortcuts() {
         return;
       }
 
+      if (isMod && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        selectTopPaneEntity(null);
+        selectAll();
+        return;
+      }
+
+      if (isMod && event.key === '0') {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent(FIT_VIEW_SHORTCUT_EVENT));
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearSelection();
+        selectTopPaneEntity(null);
+        return;
+      }
+
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
         deleteSelection();
@@ -202,5 +228,14 @@ export function useAppShortcuts() {
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [deleteSelection, duplicateSelection, redo, undo, saveGraph]);
+  }, [
+    clearSelection,
+    deleteSelection,
+    duplicateSelection,
+    redo,
+    saveGraph,
+    selectAll,
+    selectTopPaneEntity,
+    undo,
+  ]);
 }
