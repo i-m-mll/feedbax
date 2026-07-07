@@ -51,7 +51,7 @@ EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
     "feedbax.manifest.evaluation_states_container.v2"
 )
 
-ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
 
 def feedbax_version() -> str:

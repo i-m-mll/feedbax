@@ -30,6 +30,11 @@ const baseRun: TrainingRunSummary = {
   runSetId: null,
   planned: false,
   supersededBy: null,
+  supersedes: null,
+  statusReason: null,
+  stale: false,
+  staleReason: null,
+  specHashComparisons: [],
 };
 
 function metric(id: string, source: ScenarioMetricSpec['source']): ScenarioMetricSpec {

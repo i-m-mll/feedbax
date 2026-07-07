@@ -9,7 +9,7 @@ import sys
 import uuid
 import copy
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -152,7 +152,7 @@ class StudioTrainingLocalRunResult(StudioExecutionModel):
 
 
 EvalCheckpointPolicyMode = Literal["last", "best-by-metric", "every-k"]
-EvalReprocessMode = Literal["missing", "missing_failed", "all"]
+EvalReprocessMode = Literal["missing", "missing_failed", "all", "stale"]
 
 
 class StudioEvaluationCheckpointPolicy(StudioExecutionModel):
@@ -658,6 +658,9 @@ def run_studio_evaluation_local_execution(
 ) -> StudioEvaluationLocalRunResult:
     """Stage and execute selected Studio evaluations through registered recipes."""
 
+    stale_launch_ids = (
+        _stale_evaluation_launch_ids(request) if request.reprocess == "stale" else None
+    )
     staged = stage_studio_evaluation_matrix(request)
     root_path = _request_root(request.root)
     workspace = staged.workspace.model_copy(deep=True)
@@ -675,7 +678,12 @@ def run_studio_evaluation_local_execution(
             failed += 1
             errors.append(f"Manifest {ref.id!r} is not an EvaluationRunManifest")
             continue
-        if not _should_launch_status(manifest.status, request.reprocess):
+        should_launch = (
+            ref.id in stale_launch_ids
+            if stale_launch_ids is not None
+            else _should_launch_status(manifest.status, request.reprocess)
+        )
+        if not should_launch:
             skipped += 1
             if manifest.status == "failed":
                 failed += 1
@@ -772,6 +780,18 @@ def run_studio_evaluation_local_execution(
         skipped_failed_count=skipped_failed,
         errors=errors,
     )
+
+
+def _stale_evaluation_launch_ids(request: StudioEvaluationMatrixRequest) -> set[str]:
+    plan = _evaluation_matrix_plan(request)
+    root = plan["root"]
+    launch_ids: set[str] = set()
+    for item in plan["items"]:
+        manifest = _existing_manifest(item["evaluation_id"], root=root)
+        status = manifest.status if isinstance(manifest, EvaluationRunManifest) else None
+        if _should_launch_status(status, "stale"):
+            launch_ids.add(item["evaluation_id"])
+    return launch_ids
 
 
 def materialize_studio_pipeline(
@@ -1099,6 +1119,24 @@ def _materialize_local_execution_snapshot(
         _write_json(snapshot_dir / filename, payload)
 
 
+def _restaged_metadata(
+    existing_metadata: Mapping[str, Any],
+    *,
+    manifest_id: str,
+    restaged_from_status: str,
+) -> dict[str, Any]:
+    metadata = {
+        **existing_metadata,
+        "planned": True,
+        "restaged_at": utc_now().isoformat(),
+        "restaged_from_status": restaged_from_status,
+    }
+    for key in ("superseded_by", "supersedes"):
+        if metadata.get(key) == manifest_id:
+            metadata.pop(key)
+    return metadata
+
+
 def _write_pending_training_manifest(
     *,
     workspace: StudioWorkspaceSpec,
@@ -1134,12 +1172,11 @@ def _write_pending_training_manifest(
                     update={
                         "status": "pending",
                         "completed_at": None,
-                        "metadata": {
-                            **existing.metadata,
-                            "planned": True,
-                            "restaged_at": utc_now().isoformat(),
-                            "restaged_from_status": "cancelled",
-                        },
+                        "metadata": _restaged_metadata(
+                            existing.metadata,
+                            manifest_id=manifest_id,
+                            restaged_from_status="cancelled",
+                        ),
                     }
                 )
                 return restaged, write_manifest(restaged, root=root_path)
@@ -1161,6 +1198,14 @@ def _write_pending_training_manifest(
         "planned": True,
         "staged_at": now.isoformat(),
     }
+    metadata["spec_hashes"] = _ui_spec_hashes(
+        {
+            "graph_spec": graph_spec,
+            "training_spec": training_spec,
+            "task_spec": task_spec,
+            "task_binding_spec": task_binding_spec,
+        }
+    )
     manifest = TrainingRunManifest(
         id=manifest_id,
         job_id=request.job_id,
@@ -1357,12 +1402,11 @@ def _write_pending_training_manifest_for_expanded_run(
                     update={
                         "status": "pending",
                         "completed_at": None,
-                        "metadata": {
-                            **existing.metadata,
-                            "planned": True,
-                            "restaged_at": utc_now().isoformat(),
-                            "restaged_from_status": "cancelled",
-                        },
+                        "metadata": _restaged_metadata(
+                            existing.metadata,
+                            manifest_id=expanded_run.run_id,
+                            restaged_from_status="cancelled",
+                        ),
                     }
                 )
                 return restaged, write_manifest(restaged, root=root)
@@ -1388,6 +1432,14 @@ def _write_pending_training_manifest_for_expanded_run(
         "planned": True,
         "staged_at": now.isoformat(),
     }
+    metadata["spec_hashes"] = _ui_spec_hashes(
+        {
+            "graph_spec": expanded_run.graph_spec,
+            "training_spec": expanded_run.training_spec,
+            "task_spec": expanded_run.task_spec,
+            "task_binding_spec": expanded_run.task_binding_spec,
+        }
+    )
     manifest = TrainingRunManifest(
         id=expanded_run.run_id,
         run_set_id=run_set_id,
@@ -1459,9 +1511,62 @@ def _pending_training_manifest_ref(
         "stage_id": stage.id,
         "scenario_id": stage.scenario_id,
         "planned": True,
+        "spec_hashes": _manifest_spec_hashes(pending_manifest),
         **pending_manifest.metadata,
     }
     return pending_ref
+
+
+def _manifest_spec_hashes(manifest: Any) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for key in ("graph_spec", "training_spec", "task_spec", "task_binding_spec", "evaluation_spec"):
+        payload = getattr(manifest, key, None)
+        inline = getattr(payload, "inline", None)
+        if isinstance(inline, dict):
+            hashes[key] = _stable_ui_hash(inline)
+    return hashes
+
+
+def _ui_spec_hashes(payloads: dict[str, Any]) -> dict[str, str]:
+    return {
+        key: _stable_ui_hash(value)
+        for key, value in payloads.items()
+        if isinstance(value, dict)
+    }
+
+
+def _stable_ui_hash(value: Any) -> str:
+    """Match Studio's synchronous FNV-1a draft hash used for stale badges."""
+
+    text = _stable_ui_stringify(value)
+    hash_value = 2166136261
+    for character in text:
+        hash_value ^= ord(character)
+        hash_value = (hash_value * 16777619) & 0xFFFFFFFF
+    return f"fnv1a:{hash_value:08x}"
+
+
+def _stable_ui_stringify(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value, separators=(",", ":"), allow_nan=False)
+    if isinstance(value, str):
+        return json.dumps(value, separators=(",", ":"))
+    if isinstance(value, list):
+        return "[" + ",".join(_stable_ui_stringify(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{"
+            + ",".join(
+                f"{json.dumps(key, separators=(',', ':'))}:{_stable_ui_stringify(value[key])}"
+                for key in sorted(value)
+            )
+            + "}"
+        )
+    return json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=False)
 
 
 def _training_seed(training_spec: dict[str, Any]) -> Any | None:
@@ -2002,12 +2107,11 @@ def _write_pending_evaluation_manifest(
                     "status": "pending",
                     "artifacts": [],
                     "summary_metrics": {"input_training_runs": len(existing.input_training_runs)},
-                    "metadata": {
-                        **existing.metadata,
-                        "planned": True,
-                        "restaged_at": utc_now().isoformat(),
-                        "restaged_from_status": existing.status,
-                    },
+                    "metadata": _restaged_metadata(
+                        existing.metadata,
+                        manifest_id=manifest_id,
+                        restaged_from_status=existing.status,
+                    ),
                 }
             )
             return restaged, write_manifest(restaged, root=root)
@@ -2057,6 +2161,14 @@ def _write_pending_evaluation_manifest(
             "checkpoint_policy": item["checkpoint_policy"],
             "checkpoint_selection_manifest_id": checkpoint_ref.id,
             "condition_axis_coordinates": condition["axis_coordinates"],
+            "spec_hashes": _ui_spec_hashes(
+                {
+                    "evaluation_spec": item["evaluation_spec"].model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                }
+            ),
             "studio": {
                 "workspace_id": item["workspace"].id,
                 "workspace_schema_version": item["workspace"].schema_version,
@@ -2077,7 +2189,14 @@ def _pending_evaluation_manifest_ref(
     stage: StudioStageSpec,
     job_id: str,
 ) -> StudioManifestRef:
-    ref = _studio_manifest_ref(manifest.kind, manifest.id, "evaluation_run", path, str(job_id))
+    ref = _studio_manifest_ref(
+        manifest.kind,
+        manifest.id,
+        "evaluation_run",
+        path,
+        str(job_id),
+        manifest=manifest,
+    )
     ref.metadata = {
         **ref.metadata,
         "status": manifest.status,
@@ -2104,6 +2223,10 @@ def _eval_protocol_metadata(condition: dict[str, Any]) -> dict[str, Any]:
 
 
 def _should_launch_status(status: str | None, reprocess: EvalReprocessMode) -> bool:
+    if reprocess == "stale":
+        return status == "stale"
+    if status == "stale":
+        return reprocess == "all"
     if status is None:
         return True
     if status == "pending":
@@ -2116,7 +2239,7 @@ def _should_launch_status(status: str | None, reprocess: EvalReprocessMode) -> b
 
 
 def _should_restaging_overwrite(status: str | None, reprocess: EvalReprocessMode) -> bool:
-    return status in {"failed", "cancelled", "completed"} and _should_launch_status(
+    return status in {"failed", "cancelled", "completed", "stale"} and _should_launch_status(
         status,
         reprocess,
     )
