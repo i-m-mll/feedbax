@@ -94,6 +94,62 @@ def test_component_params_normalize_typed_value_specs() -> None:
     assert gain["variation"]["stochastic_policy"] == "shared_per_run"
 
 
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (
+            {
+                "schema_version": "feedbax.spec.studio.value.v0",
+                "mode": "constant",
+                "value": 1,
+                "metadata": {},
+            },
+            "unsupported StudioValueSpec schema_version",
+        ),
+        (
+            {
+                "schema_version": "feedbax.studio.value.v0",
+                "mode": "constant",
+                "value": 1,
+                "metadata": {},
+            },
+            "unsupported StudioValueSpec schema_version",
+        ),
+        (
+            {
+                "schema_id": "feedbax.spec.studio.value",
+                "schema_version": "third.party.value.v1",
+                "mode": "constant",
+                "value": 1,
+                "metadata": {},
+            },
+            "unsupported StudioValueSpec schema_version",
+        ),
+    ],
+)
+def test_component_params_reject_unsupported_value_spec_like_payloads(
+    payload: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        ComponentSpec.model_validate(
+            {
+                "type": "feedbax.test.Component",
+                "params": {"gain": payload},
+                "input_ports": [],
+                "output_ports": [],
+            }
+        )
+
+
+def test_value_spec_registry_migration_rejects_malformed_legacy_probe_payload() -> None:
+    with pytest.raises(ValidationError, match="legacy StudioValueSpec requires mode"):
+        default_spec_registry.migrate(
+            "StudioValueSpec",
+            {"schema_version": "feedbax.spec.studio.value.v1"},
+        )
+
+
 def test_value_spec_schema_registry_declares_v2_migration_policy() -> None:
     family = default_spec_registry.resolve("StudioValueSpec")
 

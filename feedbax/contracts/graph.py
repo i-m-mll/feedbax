@@ -25,22 +25,29 @@ ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION = (
 STUDIO_VALUE_SPEC_SCHEMA_VERSION = "feedbax.spec.studio.value.v2"
 LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1 = "feedbax.spec.studio.value.v1"
 LEGACY_STUDIO_VALUE_SPEC_FRONTEND_SCHEMA_V1 = "feedbax.studio.value.v1"
+STUDIO_VALUE_SPEC_SCHEMA_ID = "feedbax.spec.studio.value"
 
 
-def _is_value_spec_payload(value: Any) -> bool:
+def _is_value_spec_like_payload(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    schema_id = value.get("schema_id")
+    schema_version = value.get("schema_version")
     return (
-        isinstance(value, dict)
-        and value.get("schema_version")
-        in {
-            STUDIO_VALUE_SPEC_SCHEMA_VERSION,
-            LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1,
-            LEGACY_STUDIO_VALUE_SPEC_FRONTEND_SCHEMA_V1,
-        }
+        schema_id == STUDIO_VALUE_SPEC_SCHEMA_ID
+        or (
+            isinstance(schema_version, str)
+            and schema_version.startswith("feedbax.studio.value.")
+        )
+        or (
+            isinstance(schema_version, str)
+            and schema_version.startswith(f"{STUDIO_VALUE_SPEC_SCHEMA_ID}.")
+        )
     )
 
 
 def _validate_nested_value_specs(value: Any) -> Any:
-    if _is_value_spec_payload(value):
+    if _is_value_spec_like_payload(value):
         return StudioValueSpec.model_validate(value).model_dump(mode="json", exclude_none=True)
     if isinstance(value, list):
         return [_validate_nested_value_specs(item) for item in value]

@@ -942,8 +942,6 @@ def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str
 
 def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Migrate legacy Studio ValueSpec v1 payloads to the v2 envelope."""
-    if "mode" not in payload:
-        return dict(payload)
     from feedbax.contracts.graph import StudioValueSpec
 
     return StudioValueSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
