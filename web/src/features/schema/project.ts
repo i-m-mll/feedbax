@@ -38,6 +38,40 @@ const PROTOCOL_TASK_DATA_PATH_PREFIXES = [
   'task.validation_trials',
 ];
 
+interface PortSchemaIndex {
+  byNodePort: Map<string, PortSchema>;
+  byDirectedNodePort: Map<string, PortSchema>;
+}
+
+function portLookupKey(nodeId: string, port: string): string {
+  return `${nodeId}.${port}`;
+}
+
+function directedPortLookupKey(
+  nodeId: string,
+  port: string,
+  direction: 'input' | 'output'
+): string {
+  return `${portLookupKey(nodeId, port)}:${direction}`;
+}
+
+function buildPortSchemaIndex(ports: PortSchema[]): PortSchemaIndex {
+  const byNodePort = new Map<string, PortSchema>();
+  const byDirectedNodePort = new Map<string, PortSchema>();
+  for (const port of ports) {
+    if (!port.node_id) continue;
+    const nodePortKey = portLookupKey(port.node_id, port.port);
+    if (!byNodePort.has(nodePortKey)) {
+      byNodePort.set(nodePortKey, port);
+    }
+    byDirectedNodePort.set(
+      directedPortLookupKey(port.node_id, port.port, port.direction),
+      port
+    );
+  }
+  return { byNodePort, byDirectedNodePort };
+}
+
 export function projectStudioSchema(
   graph: GraphSpec,
   components: ComponentDefinition[],
@@ -47,10 +81,11 @@ export function projectStudioSchema(
   const schemaGraph = normalizeDynamicPorts(graph, taskBindingSpec);
   const taskData = enumerateTaskData(taskBindingSpec);
   const ports = enumerateGraphPorts(schemaGraph, componentMap, taskBindingSpec, taskData);
-  markBoundPorts(ports, taskBindingSpec);
+  const portIndex = buildPortSchemaIndex(ports);
+  markBoundPorts(ports, taskBindingSpec, portIndex);
   const selectorTargets = [
     ...portSelectorTargets(ports),
-    ...graphStructuralSelectorTargets(schemaGraph, ports),
+    ...graphStructuralSelectorTargets(schemaGraph, portIndex),
     ...taskDataSelectorTargets(taskData),
     ...knownStateHintTargets(),
   ];
@@ -64,8 +99,8 @@ export function projectStudioSchema(
     selector_targets: selectorTargets,
     issues: [
       ...validateMissingSubgraphs(schemaGraph, componentMap),
-      ...validateGraphConnections(schemaGraph, ports),
-      ...validateTaskBindings(schemaGraph, ports, taskData, taskBindingSpec),
+      ...validateGraphConnections(schemaGraph, portIndex),
+      ...validateTaskBindings(schemaGraph, portIndex, taskData, taskBindingSpec),
       ...validateInterventionSchema(graph.taps, { selector_targets: selectorTargets }),
     ],
     metadata: { projected_by: 'feedbax.web.projectStudioSchema' },
@@ -104,10 +139,26 @@ export function validateConnectionAgainstSchema(
   targetNode: string,
   targetPort: string
 ): SchemaValidationIssue[] {
-  const source = findPort(registry.ports, sourceNode, sourcePort, 'output');
-  const target = findPort(registry.ports, targetNode, targetPort, 'input');
-  const sourceAnyDirection = findPortAnyDirection(registry.ports, sourceNode, sourcePort);
-  const targetAnyDirection = findPortAnyDirection(registry.ports, targetNode, targetPort);
+  return validateConnectionAgainstSchemaWithIndex(
+    buildPortSchemaIndex(registry.ports),
+    sourceNode,
+    sourcePort,
+    targetNode,
+    targetPort
+  );
+}
+
+function validateConnectionAgainstSchemaWithIndex(
+  portIndex: PortSchemaIndex,
+  sourceNode: string,
+  sourcePort: string,
+  targetNode: string,
+  targetPort: string
+): SchemaValidationIssue[] {
+  const source = findPort(portIndex, sourceNode, sourcePort, 'output');
+  const target = findPort(portIndex, targetNode, targetPort, 'input');
+  const sourceAnyDirection = findPortAnyDirection(portIndex, sourceNode, sourcePort);
+  const targetAnyDirection = findPortAnyDirection(portIndex, targetNode, targetPort);
   const issues: SchemaValidationIssue[] = [];
 
   if (!source) {
@@ -153,8 +204,9 @@ export function validateTaskDataBindingAgainstSchema(
   const source = registry.task_data.find(
     (item) => item.id === `task_data:${sourceDataId}` || item.id === sourceDataId
   );
-  const target = findPort(registry.ports, targetNode, targetPort, 'input');
-  const targetAnyDirection = findPortAnyDirection(registry.ports, targetNode, targetPort);
+  const portIndex = buildPortSchemaIndex(registry.ports);
+  const target = findPort(portIndex, targetNode, targetPort, 'input');
+  const targetAnyDirection = findPortAnyDirection(portIndex, targetNode, targetPort);
   const issues: SchemaValidationIssue[] = [];
 
   if (!source) {
@@ -242,11 +294,12 @@ function enumerateGraphPorts(
       );
     }
   }
+  const componentPortIndex = buildPortSchemaIndex(ports);
   for (const port of graph.input_ports) {
-    ports.push(graphPortSchema(port, 'input', graph.input_bindings[port], ports));
+    ports.push(graphPortSchema(port, 'input', graph.input_bindings[port], componentPortIndex));
   }
   for (const port of graph.output_ports) {
-    ports.push(graphPortSchema(port, 'output', graph.output_bindings[port], ports));
+    ports.push(graphPortSchema(port, 'output', graph.output_bindings[port], componentPortIndex));
   }
   applyMuxOutputShapes(ports, graph, taskBindingSpec, taskData);
   return ports;
@@ -393,12 +446,7 @@ function subgraphBoundaryValueSchema(
   if (!binding) return null;
   const [nodeId, boundPort] = binding;
   const subgraphPorts = enumerateGraphPorts(subgraph, componentMap);
-  const bound = subgraphPorts.find(
-    (item) =>
-      item.node_id === nodeId &&
-      item.port === boundPort &&
-      item.direction === direction
-  );
+  const bound = findPort(buildPortSchemaIndex(subgraphPorts), nodeId, boundPort, direction);
   return bound?.value_schema ?? null;
 }
 
@@ -406,18 +454,14 @@ function graphPortSchema(
   port: string,
   direction: 'input' | 'output',
   binding?: [string, string],
-  ports: PortSchema[] = []
+  portIndex?: PortSchemaIndex
 ): PortSchema {
   const portId = `port:graph.${port}:${direction}`;
   const metadata = binding ? { binding: { node_id: binding[0], port: binding[1] } } : {};
-  const bound = binding
-    ? ports.find(
-        (item) =>
-          item.node_id === binding[0] &&
-          item.port === binding[1] &&
-          item.direction === direction
-      )
-    : null;
+  const bound =
+    binding && portIndex
+      ? findPort(portIndex, binding[0], binding[1], direction)
+      : null;
   return {
     id: portId,
     label: `graph.${port}`,
@@ -572,9 +616,13 @@ function usesProtocolTaskDataPath(path: string): boolean {
   );
 }
 
-function markBoundPorts(ports: PortSchema[], taskBindingSpec?: StudioTaskBindingSpec | null): void {
+function markBoundPorts(
+  ports: PortSchema[],
+  taskBindingSpec: StudioTaskBindingSpec | null | undefined,
+  portIndex: PortSchemaIndex
+): void {
   for (const binding of taskBindingSpec?.bindings ?? []) {
-    const port = findPort(ports, binding.target_node_id, binding.target_port, 'input');
+    const port = findPort(portIndex, binding.target_node_id, binding.target_port, 'input');
     if (port) {
       port.bound_task_data_id = `task_data:${binding.source_data_id}`;
     }
@@ -611,11 +659,11 @@ function taskDataSelectorTargets(taskData: TaskDataSchema[]): SelectorTargetSche
 
 function graphStructuralSelectorTargets(
   graph: GraphSpec,
-  ports: PortSchema[]
+  portIndex: PortSchemaIndex
 ): SelectorTargetSchema[] {
   const targets: SelectorTargetSchema[] = [];
   for (const [outputName, [nodeId, portName]] of Object.entries(graph.output_bindings)) {
-    const port = findPort(ports, nodeId, portName, 'output');
+    const port = findPort(portIndex, nodeId, portName, 'output');
     if (!port) continue;
     const selector = `graph_output:${outputName}`;
     targets.push({
@@ -638,7 +686,7 @@ function graphStructuralSelectorTargets(
     });
   }
   graph.wires.forEach((wire, index) => {
-    const port = findPort(ports, wire.source_node, wire.source_port, 'output');
+    const port = findPort(portIndex, wire.source_node, wire.source_port, 'output');
     if (!port) return;
     const selector = `edge:${wire.source_node}.${wire.source_port}->${wire.target_node}.${wire.target_port}`;
     const kind = wire.temporality === 'recurrent' ? 'recurrent_carry' : 'edge';
@@ -747,7 +795,10 @@ function knownStateHintTargets(): SelectorTargetSchema[] {
   }));
 }
 
-function validateGraphConnections(graph: GraphSpec, ports: PortSchema[]): SchemaValidationIssue[] {
+function validateGraphConnections(
+  graph: GraphSpec,
+  portIndex: PortSchemaIndex
+): SchemaValidationIssue[] {
   const issues: SchemaValidationIssue[] = [];
   const occupied = new Map<string, string>();
   for (const [graphPort, binding] of Object.entries(graph.input_bindings)) {
@@ -767,8 +818,8 @@ function validateGraphConnections(graph: GraphSpec, ports: PortSchema[]): Schema
     }
     occupied.set(targetKey, path);
     issues.push(
-      ...validateConnectionAgainstSchema(
-        { ports },
+      ...validateConnectionAgainstSchemaWithIndex(
+        portIndex,
         wire.source_node,
         wire.source_port,
         wire.target_node,
@@ -842,7 +893,7 @@ function instantCycleIssues(graph: GraphSpec): SchemaValidationIssue[] {
 
 function validateTaskBindings(
   graph: GraphSpec,
-  ports: PortSchema[],
+  portIndex: PortSchemaIndex,
   taskData: TaskDataSchema[],
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): SchemaValidationIssue[] {
@@ -855,7 +906,7 @@ function validateTaskBindings(
   taskBindingSpec?.bindings.forEach((binding, index) => {
     const path = `task_binding_spec.bindings.${index}`;
     const data = dataById.get(binding.source_data_id);
-    const target = findPort(ports, binding.target_node_id, binding.target_port, 'input');
+    const target = findPort(portIndex, binding.target_node_id, binding.target_port, 'input');
     const targetKey = `${binding.target_node_id}.${binding.target_port}`;
     const expectedId = taskBindingId(
       binding.source_data_id,
@@ -963,22 +1014,20 @@ function validateTaskBindings(
 }
 
 function findPort(
-  ports: PortSchema[],
+  portIndex: PortSchemaIndex,
   nodeId: string,
   port: string,
   direction: 'input' | 'output'
 ): PortSchema | undefined {
-  return ports.find(
-    (item) => item.node_id === nodeId && item.port === port && item.direction === direction
-  );
+  return portIndex.byDirectedNodePort.get(directedPortLookupKey(nodeId, port, direction));
 }
 
 function findPortAnyDirection(
-  ports: PortSchema[],
+  portIndex: PortSchemaIndex,
   nodeId: string,
   port: string
 ): PortSchema | undefined {
-  return ports.find((item) => item.node_id === nodeId && item.port === port);
+  return portIndex.byNodePort.get(portLookupKey(nodeId, port));
 }
 
 function valueSchemaCompatibilityIssues(
