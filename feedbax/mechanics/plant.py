@@ -20,6 +20,9 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
 from feedbax.mechanics.dynamics import AbstractDynamicalSystem
 from feedbax.mechanics.muscle import AbstractMuscle, MuscleState
+from feedbax.mechanics.muscle_config import (
+    default_6muscle_2link_muscled_arm_parameters,
+)
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton
 from feedbax.runtime.state import StateBounds, StateT, clip_state
@@ -192,37 +195,30 @@ class MuscledArm(AbstractMuscledPlant):
         activator: AbstractDynamicalSystem,
         skeleton: AbstractSkeleton = TwoLinkArm(),
         clip_states: bool = True,
-        moment_arms: Float[Array, "links=2 muscles"] | Sequence[Sequence[float]] = (
-            jnp.array(
-                (
-                    (2.0, -2.0, 0.0, 0.0, 1.50, -2.0),
-                    (0.0, 0.0, 2.0, -2.0, 2.0, -1.50),
-                )
-            )
-        ),
-        theta0: Float[Array, "links=2 muscles"] | Sequence[Sequence[float]] = (
-            2
-            * jnp.pi
-            * jnp.array(
-                (
-                    (15.0, 4.88, 0.0, 0.0, 4.5, 2.12),
-                    (0.0, 0.0, 80.86, 109.32, 92.96, 91.52),
-                )
-            )
-            / 360.0
-        ),
-        l0: Float[Array, "muscles"] | Sequence[float] = jnp.array(  # noqa: F821
-            (7.32, 3.26, 6.4, 4.26, 5.95, 4.04)
-        ),
-        f0: Float[Array, "muscles"] | Sequence[float] = jnp.array(  # noqa: F821
-            (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
-        ),
+        moment_arms: (
+            Float[Array, "links=2 muscles"] | Sequence[Sequence[float]] | None
+        ) = None,
+        theta0: (
+            Float[Array, "links=2 muscles"] | Sequence[Sequence[float]] | None
+        ) = None,
+        l0: Float[Array, "muscles"] | Sequence[float] | None = None,  # noqa: F821
+        f0: Float[Array, "muscles"] | Sequence[float] | None = None,  # noqa: F821
         *,
         key: Optional[PRNGKeyArray] = None,
     ):
         self.skeleton = skeleton
         self.activator = activator
         self.clip_states = clip_states
+
+        defaults = default_6muscle_2link_muscled_arm_parameters()
+        if moment_arms is None:
+            moment_arms = defaults["moment_arms"]
+        if theta0 is None:
+            theta0 = defaults["theta0"]
+        if l0 is None:
+            l0 = defaults["l0"]
+        if f0 is None:
+            f0 = defaults["f0"]
 
         self.moment_arms = jnp.array(moment_arms)
         self.theta0 = jnp.array(theta0)
