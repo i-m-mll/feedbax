@@ -95,6 +95,8 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
 )
 
+ExecutionTarget = Literal["local", "gcp", "runpod", "manual"]
+
 
 class StudioExecutionModel(BaseModel):
     """Base model for Studio execution preparation records."""
@@ -113,6 +115,8 @@ class StudioTrainingExecutionRequest(StudioExecutionModel):
     feedbax_ref: Optional[str] = None
     repos: Optional[list[RepoSource]] = None
     primary_repo: Optional[str] = None
+    queue_target: Optional[ExecutionTarget] = None
+    queue_manifest_ids: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -322,6 +326,7 @@ def prepare_studio_training_execution(
         )
 
     job_id = request.job_id or f"studio-train-{uuid.uuid4().hex[:12]}"
+    execution_target = _request_execution_target(stage, request)
     execution_spec = _build_execution_spec(
         request=request,
         workspace=workspace,
@@ -371,19 +376,29 @@ def prepare_studio_training_execution(
             metadata=plan_ref.metadata,
         ),
     )
-    staged_training_refs, staged_run_set_ref, staged_summary = _stage_pending_training_manifests(
-        workspace=workspace,
-        stage=stage,
-        scenario_id=stage.scenario_id,
-        graph_spec=scenario.graph.model_dump(mode="json", exclude_none=True),
-        training_spec=scenario.training_spec,
-        task_spec=scenario.task_spec,
-        task_binding_spec=scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
-        if scenario.task_binding_spec is not None
-        else None,
-        request=request,
-        job_id=plan.job_id,
-    )
+    if request.queue_manifest_ids:
+        staged_training_refs, staged_run_set_ref, staged_summary = (
+            _queue_training_manifest_subset(
+                stage=stage,
+                request=request,
+                execution_target=execution_target,
+            )
+        )
+    else:
+        staged_training_refs, staged_run_set_ref, staged_summary = _stage_pending_training_manifests(
+            workspace=workspace,
+            stage=stage,
+            scenario_id=stage.scenario_id,
+            graph_spec=scenario.graph.model_dump(mode="json", exclude_none=True),
+            training_spec=scenario.training_spec,
+            task_spec=scenario.task_spec,
+            task_binding_spec=scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
+            if scenario.task_binding_spec is not None
+            else None,
+            request=request,
+            job_id=plan.job_id,
+            execution_target=execution_target,
+        )
     for staged_ref in staged_training_refs:
         stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, staged_ref)
         stage.output_collections = _upsert_training_manifest_in_outputs(
@@ -1147,6 +1162,7 @@ def _write_pending_training_manifest(
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | None,
     request: StudioTrainingExecutionRequest,
+    execution_target: str,
 ) -> tuple[TrainingRunManifest, Path]:
     seed = _training_seed(training_spec)
     axis_coordinates = _stage_axis_coordinates(stage)
@@ -1194,9 +1210,13 @@ def _write_pending_training_manifest(
             "axis_coordinates": axis_coordinates,
             "seed": seed,
             "planned_training_run_id": manifest_id,
+            "execution_target": execution_target,
+            "execution_backend": request.backend,
         },
         "planned": True,
         "staged_at": now.isoformat(),
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
     }
     metadata["spec_hashes"] = _ui_spec_hashes(
         {
@@ -1246,6 +1266,7 @@ def _stage_pending_training_manifests(
     task_binding_spec: dict[str, Any] | None,
     request: StudioTrainingExecutionRequest,
     job_id: str,
+    execution_target: str,
 ) -> tuple[list[StudioManifestRef], StudioManifestRef | None, dict[str, Any]]:
     matrix_spec = matrix_spec_from_selection(stage.selection_spec)
     if matrix_spec is None:
@@ -1258,6 +1279,7 @@ def _stage_pending_training_manifests(
             task_spec=task_spec,
             task_binding_spec=task_binding_spec,
             request=request,
+            execution_target=execution_target,
         )
         pending_ref = _pending_training_manifest_ref(
             pending_manifest,
@@ -1271,6 +1293,7 @@ def _stage_pending_training_manifests(
             "path": str(pending_path),
             "staged_at": utc_now().isoformat(),
             "run_count": 1,
+            "execution_target": execution_target,
         }
 
     try:
@@ -1313,6 +1336,8 @@ def _stage_pending_training_manifests(
                     "scenario_id": scenario_id,
                     "selection_spec": stage.selection_spec,
                     "run_count": len(expanded.runs),
+                    "execution_target": execution_target,
+                    "execution_backend": request.backend,
                 },
             },
         ),
@@ -1328,6 +1353,8 @@ def _stage_pending_training_manifests(
             "planned": True,
             "staged_at": utc_now().isoformat(),
             "run_count": len(expanded.runs),
+            "execution_target": execution_target,
+            "execution_backend": request.backend,
         },
     )
     run_set_path = write_manifest(run_set, root=root_path)
@@ -1342,6 +1369,7 @@ def _stage_pending_training_manifests(
             run_set_id=expanded.run_set_id,
             request=request,
             root=root_path,
+            execution_target=execution_target,
         )
         run_refs.append(
             _pending_training_manifest_ref(
@@ -1368,6 +1396,8 @@ def _stage_pending_training_manifests(
         "planned": True,
         "run_count": len(expanded.runs),
         "axes": expanded.axes.model_dump(mode="json", exclude_none=True),
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
     }
     return run_refs, run_set_ref, {
         "manifest_id": run_set.id,
@@ -1377,6 +1407,7 @@ def _stage_pending_training_manifests(
         "run_count": len(expanded.runs),
         "run_ids": [run.run_id for run in expanded.runs],
         "run_paths": run_paths,
+        "execution_target": execution_target,
     }
 
 
@@ -1389,6 +1420,7 @@ def _write_pending_training_manifest_for_expanded_run(
     run_set_id: str,
     request: StudioTrainingExecutionRequest,
     root: Path,
+    execution_target: str,
 ) -> tuple[TrainingRunManifest, Path]:
     from feedbax.contracts.manifest import load_manifest
     from feedbax.persistence.manifest_index import find_manifest_paths_by_id
@@ -1428,9 +1460,13 @@ def _write_pending_training_manifest_for_expanded_run(
             "axis_value_indices": expanded_run.coordinate.value_indices,
             "run_set_id": run_set_id,
             "planned_training_run_id": expanded_run.run_id,
+            "execution_target": execution_target,
+            "execution_backend": request.backend,
         },
         "planned": True,
         "staged_at": now.isoformat(),
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
     }
     metadata["spec_hashes"] = _ui_spec_hashes(
         {
@@ -1576,6 +1612,109 @@ def _training_seed(training_spec: dict[str, Any]) -> Any | None:
     if isinstance(params, dict) and "seed" in params:
         return params["seed"]
     return None
+
+
+def _request_execution_target(
+    stage: StudioStageSpec,
+    request: StudioTrainingExecutionRequest,
+) -> ExecutionTarget:
+    if request.queue_target is not None:
+        if not request.queue_manifest_ids:
+            raise StudioExecutionPreparationError(
+                "Queue launch preparation requires queue_manifest_ids with queue_target"
+            )
+        return request.queue_target
+    return _stage_execution_target(stage, request.backend)
+
+
+def _queue_training_manifest_subset(
+    *,
+    stage: StudioStageSpec,
+    request: StudioTrainingExecutionRequest,
+    execution_target: ExecutionTarget,
+) -> tuple[list[StudioManifestRef], None, dict[str, Any]]:
+    selected_ids = list(dict.fromkeys(request.queue_manifest_ids))
+    refs_by_id = _stage_manifest_refs_by_id(stage)
+    missing_ids = [manifest_id for manifest_id in selected_ids if manifest_id not in refs_by_id]
+    if missing_ids:
+        raise StudioExecutionPreparationError(
+            "Queue launch references manifest IDs that are not present on the selected train "
+            f"stage: {', '.join(missing_ids)}"
+        )
+
+    selected_refs = [refs_by_id[manifest_id] for manifest_id in selected_ids]
+    for ref in selected_refs:
+        if not _is_training_manifest_ref(ref):
+            raise StudioExecutionPreparationError(
+                f"Queue launch manifest {ref.id!r} is not a training run"
+            )
+        ref_target = _manifest_ref_execution_target(ref, stage)
+        if ref_target != execution_target:
+            raise StudioExecutionPreparationError(
+                f"Queue launch manifest {ref.id!r} targets {ref_target!r}, "
+                f"not selected target {execution_target!r}"
+            )
+
+    now = utc_now().isoformat()
+    return selected_refs, None, {
+        "manifest_ids": selected_ids,
+        "status": "pending",
+        "prepared_at": now,
+        "run_count": sum(_manifest_ref_run_count(ref) for ref in selected_refs),
+        "execution_target": execution_target,
+        "source": "queue_manifest_subset",
+    }
+
+
+def _stage_manifest_refs_by_id(stage: StudioStageSpec) -> dict[str, StudioManifestRef]:
+    refs_by_id: dict[str, StudioManifestRef] = {}
+    for ref in stage.manifest_refs:
+        refs_by_id[ref.id] = ref
+    for collection in stage.output_collections:
+        for ref in collection.item_refs:
+            refs_by_id[ref.id] = ref
+    return refs_by_id
+
+
+def _is_training_manifest_ref(ref: StudioManifestRef) -> bool:
+    return ref.role == "training_run" or ref.kind in {"TrainingRun", "TrainingRunManifest"}
+
+
+def _manifest_ref_execution_target(
+    ref: StudioManifestRef,
+    stage: StudioStageSpec,
+) -> ExecutionTarget:
+    for key in ("execution_target", "compute_target", "target"):
+        value = ref.metadata.get(key)
+        if not isinstance(value, str):
+            continue
+        if value == "managed":
+            return "gcp"
+        if value in {"local", "gcp", "runpod", "manual"}:
+            return value
+    return _stage_execution_target(stage, "local")
+
+
+def _manifest_ref_run_count(ref: StudioManifestRef) -> int:
+    value = ref.metadata.get("run_count")
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, float) and value > 0 and value.is_integer():
+        return int(value)
+    return 1
+
+
+def _stage_execution_target(stage: StudioStageSpec, backend: str) -> ExecutionTarget:
+    execution_spec = stage.execution_spec if isinstance(stage.execution_spec, dict) else {}
+    protocol = execution_spec.get("protocol")
+    compute_target = protocol.get("compute_target") if isinstance(protocol, dict) else None
+    if compute_target == "managed":
+        return "gcp"
+    if compute_target in {"local", "gcp", "runpod", "manual"}:
+        return str(compute_target)
+    if backend == "runpod":
+        return "runpod"
+    return "local"
 
 
 def _stage_axis_coordinates(stage: StudioStageSpec) -> dict[str, Any]:
