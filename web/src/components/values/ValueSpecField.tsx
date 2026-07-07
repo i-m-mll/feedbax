@@ -1,20 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { RotateCcw, SlidersHorizontal, X } from 'lucide-react';
-import { DIVIDER_HEIGHT, useLayoutStore } from '@/stores/layoutStore';
 import {
+  LEGACY_FRONTEND_VALUE_SPEC_SCHEMA_V1,
+  LEGACY_VALUE_SPEC_SCHEMA_V1,
   VALUE_SPEC_DISTRIBUTIONS,
   VALUE_SPEC_FUNCTION_TEMPLATES,
   VALUE_SPEC_MODE_OPTIONS,
   VALUE_SPEC_SCOPE_OPTIONS,
+  VALUE_SPEC_SCHEMA_VERSION,
+  normalizeStudioValueSpec,
   setValueSpecDistributionFamily,
   setValueSpecDistributionParameter,
+  setValueSpecEnumerable,
   setValueSpecFunction,
   setValueSpecFunctionParameter,
   setValueSpecMode,
   setValueSpecScope,
   setValueSpecConstantValue,
+  valueSpecEnumerableCount,
   valueSpecChipLabel,
+  valueSpecValidationErrors,
+  type StudioValueSpecEnumerable,
+  type StudioValueSpecVariationScope,
 } from '@/features/scenario/valueSpecs';
 import type {
   StudioTaskTimelineSignalSpec,
@@ -23,9 +32,8 @@ import type {
   StudioValueSpecSamplingScope,
 } from '@/types/workspace';
 
-const VALUE_SPEC_MODAL_TOP_PX = 92;
-const VALUE_SPEC_MODAL_MIN_HEIGHT_PX = 380;
-const VALUE_SPEC_MODAL_MIN_BOTTOM_PX = 32;
+const VALUE_SPEC_POPOVER_WIDTH_PX = 640;
+const VALUE_SPEC_POPOVER_MARGIN_PX = 12;
 
 type OwnerKind =
   | 'task_signal'
@@ -66,11 +74,14 @@ interface ValueSpecFieldProps {
 }
 
 export function isStudioValueSpec(value: unknown): value is StudioValueSpec {
+  const version = (value as { schema_version?: unknown } | null)?.schema_version;
   return (
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
-    (value as { schema_version?: unknown }).schema_version === 'feedbax.studio.value.v1' &&
+    (version === VALUE_SPEC_SCHEMA_VERSION ||
+      version === LEGACY_VALUE_SPEC_SCHEMA_V1 ||
+      version === LEGACY_FRONTEND_VALUE_SPEC_SCHEMA_V1) &&
     typeof (value as { mode?: unknown }).mode === 'string' &&
     typeof (value as { metadata?: unknown }).metadata === 'object'
   );
@@ -78,7 +89,8 @@ export function isStudioValueSpec(value: unknown): value is StudioValueSpec {
 
 export function literalFromValueSpec(value: unknown): unknown {
   if (!isStudioValueSpec(value)) return value;
-  return value.mode === 'constant' ? value.value : value;
+  const spec = normalizeStudioValueSpec(value);
+  return spec.mode === 'constant' && spec.variation?.scope !== 'sweep' ? spec.value : spec;
 }
 
 function formatValue(value: unknown): string {
@@ -195,7 +207,9 @@ function createValueSpec(
   const literal = isStudioValueSpec(value) ? value.value : value;
   return setValueSpecMode(
     {
-      schema_version: 'feedbax.studio.value.v1',
+      schema_version: VALUE_SPEC_SCHEMA_VERSION,
+      value_form: 'literal',
+      variation: { scope: 'fixed', enumerable: null, metadata: {} },
       mode: 'constant',
       value: defaultLiteralForDescriptor(descriptor, literal),
       dtype: typeof schema.dtype === 'string' ? schema.dtype : null,
@@ -226,8 +240,12 @@ function commitValueSpec(
     value_field_semantic_kind: descriptor.semanticKind,
     lowering_target: descriptor.loweringTarget ?? null,
   };
-  const next = { ...valueSpec, metadata };
-  if (!forceValueSpec && next.mode === 'constant') return next.value;
+  const next = normalizeStudioValueSpec({ ...valueSpec, metadata });
+  const errors = valueSpecValidationErrors(next, descriptor.allowedScopes);
+  if (errors.length > 0) return valueSpec;
+  if (!forceValueSpec && next.mode === 'constant' && next.variation.scope !== 'sweep') {
+    return next.value;
+  }
   return next;
 }
 
@@ -349,6 +367,31 @@ function ParameterEditor({
 }
 
 function ValueSpecPreview({ valueSpec }: { valueSpec: StudioValueSpec }) {
+  valueSpec = normalizeStudioValueSpec(valueSpec);
+  if (valueSpec.variation?.scope === 'sweep') {
+    const enumerable = valueSpec.variation.enumerable;
+    const count = valueSpecEnumerableCount(valueSpec);
+    const ticks =
+      enumerable?.form === 'range' && typeof enumerable.count === 'number'
+        ? Array.from({ length: Math.min(enumerable.count, 8) }, (_, index) => index)
+        : Array.from({ length: Math.min(count ?? 4, 8) }, (_, index) => index);
+    return (
+      <div className="space-y-2">
+        <div className="flex h-9 items-end gap-1">
+          {ticks.map((_, index) => (
+            <span
+              key={index}
+              className="block flex-1 rounded-sm bg-amber-400/80"
+              style={{ height: `${35 + ((index * 17) % 55)}%` }}
+            />
+          ))}
+        </div>
+        <div className="text-[10px] font-medium text-amber-700">
+          {count === null ? 'Axis ready' : `${count} axis value${count === 1 ? '' : 's'}`}
+        </div>
+      </div>
+    );
+  }
   if (valueSpec.mode === 'distribution') {
     return (
       <div className="grid grid-cols-8 gap-1">
@@ -382,48 +425,275 @@ function ValueSpecPreview({ valueSpec }: { valueSpec: StudioValueSpec }) {
   );
 }
 
-function useViewportHeight() {
-  const [viewportHeight, setViewportHeight] = useState(() =>
-    typeof window === 'undefined' ? 720 : window.innerHeight
+function popoverStyle(anchorRect: DOMRect | null): CSSProperties {
+  if (typeof window === 'undefined') return {};
+  const width = Math.min(VALUE_SPEC_POPOVER_WIDTH_PX, window.innerWidth - VALUE_SPEC_POPOVER_MARGIN_PX * 2);
+  const left = Math.min(
+    Math.max(VALUE_SPEC_POPOVER_MARGIN_PX, anchorRect?.left ?? VALUE_SPEC_POPOVER_MARGIN_PX),
+    window.innerWidth - width - VALUE_SPEC_POPOVER_MARGIN_PX
   );
-  useEffect(() => {
-    const update = () => setViewportHeight(window.innerHeight);
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-  return viewportHeight;
+  const below = (anchorRect?.bottom ?? 80) + 8;
+  const maxHeight = window.innerHeight - below - VALUE_SPEC_POPOVER_MARGIN_PX;
+  if (maxHeight >= 360) {
+    return { left, top: below, width, maxHeight };
+  }
+  const height = Math.min(560, window.innerHeight - VALUE_SPEC_POPOVER_MARGIN_PX * 2);
+  const top = Math.max(VALUE_SPEC_POPOVER_MARGIN_PX, (anchorRect?.top ?? 80) - height - 8);
+  return { left, top, width, maxHeight: height };
+}
+
+function EnumerableEditor({
+  valueSpec,
+  onChange,
+}: {
+  valueSpec: StudioValueSpec;
+  onChange: (valueSpec: StudioValueSpec) => void;
+}) {
+  const spec = normalizeStudioValueSpec(valueSpec);
+  const enumerable =
+    spec.variation?.enumerable ??
+    ({
+      form: 'list',
+      values: [spec.value ?? 0],
+    } satisfies StudioValueSpecEnumerable);
+  const setEnumerable = (next: StudioValueSpecEnumerable) => onChange(setValueSpecEnumerable(spec, next));
+  const values = enumerable.form === 'list' && Array.isArray(enumerable.values) ? enumerable.values : [0];
+  return (
+    <div className="rounded border border-amber-200 bg-amber-50/70 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold text-amber-800">Sweep axis</div>
+        <select
+          value={enumerable.form}
+          onChange={(event) => {
+            const form = event.target.value as StudioValueSpecEnumerable['form'];
+            if (form === 'range') {
+              setEnumerable({ form, start: 0, stop: 1, count: 5, scale: 'linear' });
+            } else if (form === 'sampler') {
+              setEnumerable({
+                form,
+                sampler: spec.distribution ?? { family: 'uniform', parameters: { min: 0, max: 1 } },
+                n: 5,
+              });
+            } else {
+              setEnumerable({ form, values });
+            }
+          }}
+          className="h-7 rounded border border-amber-200 bg-white px-2 text-xs text-amber-900"
+        >
+          <option value="list">List</option>
+          <option value="range">Range</option>
+          <option value="sampler">Sampler</option>
+        </select>
+      </div>
+      {enumerable.form === 'list' && (
+        <div className="space-y-2">
+          {values.map((item, index) => (
+            <div key={index} className="grid grid-cols-[minmax(0,1fr)_2rem] gap-2">
+              <StructuredValueInput
+                label={`Value ${index + 1}`}
+                value={item}
+                onChange={(nextValue) => {
+                  const nextValues = [...values];
+                  nextValues[index] = nextValue;
+                  setEnumerable({ form: 'list', values: nextValues });
+                }}
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  setEnumerable({
+                    form: 'list',
+                    values: values.filter((_, valueIndex) => valueIndex !== index),
+                  })
+                }
+                className="h-8 rounded border border-amber-200 bg-white text-xs text-amber-700"
+                title="Remove value"
+              >
+                <X className="mx-auto h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setEnumerable({ form: 'list', values: [...values, values.at(-1) ?? 0] })}
+              className="rounded border border-amber-300 bg-white px-2 py-1 text-xs font-medium text-amber-800"
+            >
+              Add value
+            </button>
+            <input
+              placeholder="Paste CSV"
+              onBlur={(event) => {
+                const parsed = event.currentTarget.value
+                  .split(',')
+                  .map((item) => item.trim())
+                  .filter(Boolean)
+                  .map((item) => {
+                    const numeric = Number(item);
+                    return Number.isFinite(numeric) ? numeric : item;
+                  });
+                if (parsed.length > 0) {
+                  setEnumerable({ form: 'list', values: parsed });
+                  event.currentTarget.value = '';
+                }
+              }}
+              className="h-7 min-w-0 flex-1 rounded border border-amber-200 bg-white px-2 text-xs text-amber-900"
+            />
+          </div>
+        </div>
+      )}
+      {enumerable.form === 'range' && (
+        <div className="grid grid-cols-2 gap-2">
+          {(['start', 'stop', 'count'] as const).map((key) => (
+            <label key={key} className="grid gap-1 text-xs text-amber-800">
+              <span>{humanizeLabel(key)}</span>
+              <input
+                type="number"
+                step={key === 'count' ? 1 : 'any'}
+                min={key === 'count' ? 1 : undefined}
+                value={Number(enumerable[key] ?? (key === 'count' ? 5 : 0))}
+                onChange={(event) =>
+                  setEnumerable({
+                    ...enumerable,
+                    form: 'range',
+                    [key]: key === 'count' ? Math.max(1, Math.round(Number(event.target.value))) : Number(event.target.value),
+                  })
+                }
+                className="h-8 rounded border border-amber-200 bg-white px-2 text-xs text-amber-900"
+              />
+            </label>
+          ))}
+          <label className="grid gap-1 text-xs text-amber-800">
+            <span>Scale</span>
+            <select
+              value={enumerable.scale ?? 'linear'}
+              onChange={(event) =>
+                setEnumerable({
+                  ...enumerable,
+                  form: 'range',
+                  scale: event.target.value as 'linear' | 'log',
+                })
+              }
+              className="h-8 rounded border border-amber-200 bg-white px-2 text-xs text-amber-900"
+            >
+              <option value="linear">Linear</option>
+              <option value="log">Log</option>
+            </select>
+          </label>
+        </div>
+      )}
+      {enumerable.form === 'sampler' && (
+        <div className="space-y-2">
+          <label className="grid gap-1 text-xs text-amber-800">
+            <span>Samples</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={enumerable.n ?? 5}
+              onChange={(event) =>
+                setEnumerable({ ...enumerable, form: 'sampler', n: Math.max(1, Math.round(Number(event.target.value))) })
+              }
+              className="h-8 rounded border border-amber-200 bg-white px-2 text-xs text-amber-900"
+            />
+          </label>
+          <div className="rounded bg-white/80 px-2 py-1.5 text-[11px] text-amber-800">
+            Sampler uses the current distribution payload and emits `n` axis values for P2 expansion.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SchedulePointsEditor({
+  schedule,
+  fallback,
+  onChange,
+}: {
+  schedule: Record<string, unknown>;
+  fallback: unknown;
+  onChange: (schedule: Record<string, unknown>) => void;
+}) {
+  const points = Array.isArray(schedule.points) ? schedule.points : [[0, fallback ?? 0]];
+  return (
+    <div className="space-y-2">
+      {points.map((point, index) => {
+        const tuple = Array.isArray(point) ? point : [index, point];
+        return (
+          <div key={index} className="grid grid-cols-[5rem_minmax(0,1fr)_2rem] gap-2">
+            <input
+              type="number"
+              step="any"
+              value={Number(tuple[0] ?? index)}
+              onChange={(event) => {
+                const next = [...points];
+                next[index] = [Number(event.target.value), tuple[1] ?? fallback ?? 0];
+                onChange({ ...schedule, points: next });
+              }}
+              className={VALUE_INPUT_CLASS}
+              aria-label={`Schedule point ${index + 1} coordinate`}
+            />
+            <StructuredValueInput
+              label={`Point ${index + 1}`}
+              value={tuple[1] ?? fallback ?? 0}
+              onChange={(nextValue) => {
+                const next = [...points];
+                next[index] = [tuple[0] ?? index, nextValue];
+                onChange({ ...schedule, points: next });
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => onChange({ ...schedule, points: points.filter((_, pointIndex) => pointIndex !== index) })}
+              className="h-8 rounded border border-slate-200 bg-white text-slate-500"
+              title="Remove point"
+            >
+              <X className="mx-auto h-3.5 w-3.5" />
+            </button>
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        onClick={() => onChange({ ...schedule, points: [...points, [points.length, fallback ?? 0]] })}
+        className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600"
+      >
+        Add point
+      </button>
+    </div>
+  );
 }
 
 function ValueSpecModal({
   descriptor,
   initialValue,
+  anchorRect,
   forceValueSpec,
   onCancel,
   onCommit,
 }: {
   descriptor: ValueSpecFieldDescriptor;
   initialValue: unknown;
+  anchorRect: DOMRect | null;
   forceValueSpec: boolean;
   onCancel: () => void;
   onCommit: (value: unknown) => void;
 }) {
-  const bottomHeight = useLayoutStore((state) => state.bottomHeight);
-  const viewportHeight = useViewportHeight();
   const initialMode = isStudioValueSpec(initialValue)
-    ? initialValue.mode
+    ? normalizeStudioValueSpec(initialValue).mode
     : descriptor.allowedModes[0] ?? 'constant';
   const [activeMode, setActiveMode] = useState<StudioValueSpecMode>(initialMode);
   const [draftsByMode, setDraftsByMode] = useState<Record<string, StudioValueSpec>>(() => {
     const seed = isStudioValueSpec(initialValue)
-      ? initialValue
+      ? normalizeStudioValueSpec(initialValue)
       : createValueSpec(descriptor, initialValue, initialMode);
     return { [seed.mode]: seed };
   });
   const draft =
     draftsByMode[activeMode] ??
     createValueSpec(descriptor, isStudioValueSpec(initialValue) ? initialValue.value : initialValue, activeMode);
-  const scopes = descriptor.allowedScopes ?? ['run', 'sweep'];
+  const scopes = (descriptor.allowedScopes ?? ['run', 'sweep']) as StudioValueSpecVariationScope[];
   const functionTemplates = VALUE_SPEC_FUNCTION_TEMPLATES.filter((template) => {
     if (descriptor.functionIds && !descriptor.functionIds.includes(template.id)) return false;
     if (descriptor.allowedScopes && !template.domains.some((domain) => descriptor.allowedScopes!.includes(domain))) {
@@ -437,14 +707,9 @@ function ValueSpecModal({
   const distributionParameters =
     (draft.distribution?.parameters as Record<string, unknown> | undefined) ?? {};
   const schedule = draft.schedule ?? {};
-  const maxBottomForUsableModal = Math.max(
-    VALUE_SPEC_MODAL_MIN_BOTTOM_PX,
-    viewportHeight - VALUE_SPEC_MODAL_TOP_PX - VALUE_SPEC_MODAL_MIN_HEIGHT_PX
-  );
-  const modalBottom = Math.min(
-    Math.max(VALUE_SPEC_MODAL_MIN_BOTTOM_PX, bottomHeight + DIVIDER_HEIGHT),
-    maxBottomForUsableModal
-  );
+  const validationErrors = valueSpecValidationErrors(draft, scopes);
+  const variationScope = normalizeStudioValueSpec(draft).variation.scope;
+  const enumerableCount = valueSpecEnumerableCount(draft);
   const updateDraft = (next: StudioValueSpec) => {
     setDraftsByMode((current) => ({ ...current, [next.mode]: next }));
   };
@@ -457,24 +722,24 @@ function ValueSpecModal({
   };
   const resetDrafts = () => {
     const seed = isStudioValueSpec(initialValue)
-      ? initialValue
+      ? normalizeStudioValueSpec(initialValue)
       : createValueSpec(descriptor, initialValue, initialMode);
     setActiveMode(seed.mode);
     setDraftsByMode({ [seed.mode]: seed });
   };
   if (typeof document === 'undefined') return null;
   return createPortal(
-    <div
-      className="fixed inset-x-0 z-50"
-      style={{ top: `${VALUE_SPEC_MODAL_TOP_PX}px`, bottom: `${modalBottom}px` }}
-    >
+    <div className="fixed inset-0 z-50">
       <button
         type="button"
         className="absolute inset-0 cursor-default bg-slate-900/30 backdrop-blur-[1px]"
         onClick={onCancel}
         aria-label="Cancel value editor"
       />
-      <div className="absolute left-1/2 top-1/2 max-h-[calc(100%-2rem)] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded border border-slate-200 bg-white p-4 shadow-xl">
+      <div
+        className="absolute overflow-y-auto rounded border border-slate-200 bg-white p-4 shadow-xl"
+        style={popoverStyle(anchorRect)}
+      >
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 truncate text-sm font-semibold text-slate-800">
             {descriptor.label}
@@ -589,21 +854,15 @@ function ValueSpecModal({
                 </label>
                 <label className="grid gap-1 text-xs text-slate-500">
                   <span>Points</span>
-                  <textarea
-                    value={formatValue(schedule.points ?? [[0, draft.value ?? 0]])}
-                    onChange={(event) => {
-                      let points: unknown = schedule.points ?? [[0, draft.value ?? 0]];
-                      try {
-                        points = JSON.parse(event.target.value);
-                      } catch {
-                        points = schedule.points ?? [[0, draft.value ?? 0]];
-                      }
+                  <SchedulePointsEditor
+                    schedule={schedule}
+                    fallback={draft.value}
+                    onChange={(nextSchedule) =>
                       updateDraft({
                         ...draft,
-                        schedule: { ...schedule, points },
-                      });
-                    }}
-                    className="min-h-16 rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] text-slate-700"
+                        schedule: nextSchedule,
+                      })
+                    }
                   />
                 </label>
               </div>
@@ -618,11 +877,11 @@ function ValueSpecModal({
                 />
               </label>
             )}
-            {draft.mode !== 'constant' && scopes.length > 0 && (
+            {scopes.length > 0 && (
               <label className="grid gap-1 text-xs text-slate-500">
-                <span>Scope</span>
+                <span>Variation</span>
                 <select
-                  value={draft.sampling_scope ?? descriptor.defaultScope ?? scopes[0]}
+                  value={variationScope}
                   onChange={(event) =>
                     updateDraft(setValueSpecScope(draft, event.target.value))
                   }
@@ -638,12 +897,38 @@ function ValueSpecModal({
                 </select>
               </label>
             )}
+            {variationScope === 'sweep' && (
+              <EnumerableEditor valueSpec={draft} onChange={updateDraft} />
+            )}
           </div>
           <div className="rounded border border-slate-200 bg-slate-50/70 p-3">
             <ValueSpecPreview valueSpec={draft} />
             <div className="mt-2 truncate text-[11px] font-medium text-slate-500">
               {valueSpecChipLabel(draft)}
             </div>
+            {variationScope === 'sweep' && (
+              <div className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+                Adds an axis to the Train matrix
+                {enumerableCount === null
+                  ? '.'
+                  : ` with ${enumerableCount} value${enumerableCount === 1 ? '' : 's'}.`}
+              </div>
+            )}
+            {variationScope === 'replicate' && (
+              <div className="mt-2 rounded bg-slate-100 px-2 py-1.5 text-[11px] text-slate-600">
+                Replicate variation resamples separately for each replicate.
+              </div>
+            )}
+            {variationScope === 'run' && draft.mode === 'distribution' && (
+              <div className="mt-2 rounded bg-slate-100 px-2 py-1.5 text-[11px] text-slate-600">
+                Run variation samples once and shares the value across replicates.
+              </div>
+            )}
+            {validationErrors.length > 0 && (
+              <div className="mt-2 rounded bg-rose-50 px-2 py-1.5 text-[11px] text-rose-700">
+                {validationErrors.join('. ')}
+              </div>
+            )}
           </div>
         </div>
         <div className="mt-4 flex justify-between gap-2">
@@ -665,8 +950,9 @@ function ValueSpecModal({
             </button>
             <button
               type="button"
+              disabled={validationErrors.length > 0}
               onClick={() => onCommit(commitValueSpec(draft, forceValueSpec, descriptor))}
-              className="rounded border border-emerald-600 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+              className="rounded border border-emerald-600 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-300"
             >
               Done
             </button>
@@ -686,10 +972,23 @@ export function ValueSpecField({
   compact = false,
 }: ValueSpecFieldProps) {
   const [open, setOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+  const fieldRef = useRef<HTMLDivElement | null>(null);
   const [localText, setLocalText] = useState(() => displayTextForValue(value));
   useEffect(() => {
     setLocalText(displayTextForValue(value));
   }, [value]);
+  useEffect(() => {
+    if (!open) return;
+    const updateAnchor = () => setAnchorRect(fieldRef.current?.getBoundingClientRect() ?? null);
+    updateAnchor();
+    window.addEventListener('resize', updateAnchor);
+    window.addEventListener('scroll', updateAnchor, true);
+    return () => {
+      window.removeEventListener('resize', updateAnchor);
+      window.removeEventListener('scroll', updateAnchor, true);
+    };
+  }, [open]);
   const commitLocalText = () => {
     const nextValue = parseInlineText(localText, value);
     if (nextValue !== value) onChange(nextValue);
@@ -698,6 +997,7 @@ export function ValueSpecField({
   return (
     <>
       <div
+        ref={fieldRef}
         className={
           compact
             ? 'flex h-6 w-full min-w-0 items-center overflow-hidden rounded border border-slate-200 bg-white text-[10px] text-slate-700 focus-within:border-emerald-300'
@@ -729,7 +1029,10 @@ export function ValueSpecField({
           type="button"
           disabled={descriptor.disabled}
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            setAnchorRect(fieldRef.current?.getBoundingClientRect() ?? null);
+            setOpen(true);
+          }}
           className={
             compact
               ? 'inline-flex h-full w-6 shrink-0 items-center justify-center border-l border-slate-100 text-slate-500 hover:bg-slate-50 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300'
@@ -744,6 +1047,7 @@ export function ValueSpecField({
         <ValueSpecModal
           descriptor={descriptor}
           initialValue={value}
+          anchorRect={anchorRect}
           forceValueSpec={forceValueSpec}
           onCancel={() => setOpen(false)}
           onCommit={(nextValue) => {
@@ -764,9 +1068,11 @@ export function descriptorForTaskSignal(
     : null;
   const scopes = Array.isArray(signal.metadata.value_spec_scopes)
     ? signal.metadata.value_spec_scopes.filter((scope): scope is StudioValueSpecSamplingScope =>
-        ['snapshot', 'run', 'trial', 'epoch', 'timestep', 'sweep'].includes(String(scope))
+        ['fixed', 'snapshot', 'run', 'replicate', 'trial', 'epoch', 'timestep', 'sweep'].includes(
+          String(scope)
+        )
       )
-    : ['run', 'sweep', 'trial', 'epoch', 'timestep'];
+    : ['fixed', 'run', 'sweep', 'trial', 'epoch', 'timestep'];
   const modes = Array.isArray(signal.metadata.value_spec_modes)
     ? signal.metadata.value_spec_modes.filter((mode): mode is StudioValueSpecMode =>
         ['constant', 'reference', 'expression', 'function', 'distribution', 'schedule'].includes(
@@ -781,7 +1087,7 @@ export function descriptorForTaskSignal(
     semanticKind: signal.kind === 'target' ? 'protocol_target' : 'task_signal',
     valueSchema,
     allowedModes: modes,
-    allowedScopes: scopes.filter((scope) => scope !== 'replicate'),
+    allowedScopes: scopes,
     defaultScope: scopes.includes('trial') ? 'trial' : scopes[0] ?? 'run',
     functionIds:
       signal.id === 'target_position'

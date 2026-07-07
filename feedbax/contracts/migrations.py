@@ -932,6 +932,15 @@ def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str
     return migrated
 
 
+def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate legacy Studio ValueSpec v1 payloads to the v2 envelope."""
+    if "mode" not in payload:
+        return dict(payload)
+    from feedbax.contracts.graph import StudioValueSpec
+
+    return StudioValueSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
+
+
 def migrate_graph_spec(
     payload: Mapping[str, Any] | GraphSpec,
     *,
@@ -2155,18 +2164,31 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         ("StudioValueSpec", "feedbax.spec.studio.value", "Structured Studio-authored value."),
     ):
-        supported = (STUDIO_TASK_BINDING_LEGACY_V1,) if kind == "StudioTaskBindingSpec" else None
-        rejected = ("feedbax.studio.task_bindings.v0",) if kind == "StudioTaskBindingSpec" else None
+        if kind == "StudioTaskBindingSpec":
+            current_version = f"{schema_id}.v2"
+            stance = "migrate"
+            supported = (STUDIO_TASK_BINDING_LEGACY_V1,)
+            rejected = ("feedbax.studio.task_bindings.v0",)
+        elif kind == "StudioValueSpec":
+            current_version = f"{schema_id}.v2"
+            stance = "migrate"
+            supported = ("feedbax.spec.studio.value.v1", "feedbax.studio.value.v1")
+            rejected = ("feedbax.spec.studio.value.v0",)
+        else:
+            current_version = f"{schema_id}.v1"
+            stance = "reject"
+            supported = None
+            rejected = None
         families.append(
             _family(
                 kind,
                 schema_id,
-                f"{schema_id}.v2" if kind == "StudioTaskBindingSpec" else f"{schema_id}.v1",
+                current_version,
                 owner_module="feedbax.contracts.graph",
                 emitted_by=("Studio save/load", "provider_manifest.schemas"),
                 consumed_by=("Studio backend", "worker"),
                 description=description,
-                stance="migrate" if kind == "StudioTaskBindingSpec" else "reject",
+                stance=stance,
                 supported_old_versions=supported,
                 rejected_old_versions=rejected,
             )
@@ -2512,5 +2534,25 @@ default_spec_registry.register_migration(
             "Rename exposed_outputs to exposed_data and source_output_id to "
             "source_data_id for scenario-owned task data bindings."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioValueSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.studio.value.v1",
+        target_version="feedbax.spec.studio.value.v2",
+        migration_id="studio-value-spec-v1-to-v2",
+        migrate=_migrate_studio_value_spec_v1_payload,
+        description="Split legacy mode/sampling_scope into value_form and variation.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioValueSpec",
+    SchemaMigration(
+        source_version="feedbax.studio.value.v1",
+        target_version="feedbax.spec.studio.value.v2",
+        migration_id="studio-value-spec-frontend-v1-to-v2",
+        migrate=_migrate_studio_value_spec_v1_payload,
+        description="Normalize frontend-emitted legacy ValueSpec v1 spelling.",
     ),
 )

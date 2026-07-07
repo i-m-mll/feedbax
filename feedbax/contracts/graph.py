@@ -22,6 +22,33 @@ ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION = (
 )
 
 
+STUDIO_VALUE_SPEC_SCHEMA_VERSION = "feedbax.spec.studio.value.v2"
+LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1 = "feedbax.spec.studio.value.v1"
+LEGACY_STUDIO_VALUE_SPEC_FRONTEND_SCHEMA_V1 = "feedbax.studio.value.v1"
+
+
+def _is_value_spec_payload(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("schema_version")
+        in {
+            STUDIO_VALUE_SPEC_SCHEMA_VERSION,
+            LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1,
+            LEGACY_STUDIO_VALUE_SPEC_FRONTEND_SCHEMA_V1,
+        }
+    )
+
+
+def _validate_nested_value_specs(value: Any) -> Any:
+    if _is_value_spec_payload(value):
+        return StudioValueSpec.model_validate(value).model_dump(mode="json", exclude_none=True)
+    if isinstance(value, list):
+        return [_validate_nested_value_specs(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _validate_nested_value_specs(item) for key, item in value.items()}
+    return value
+
+
 # Use Any for nested param values to avoid recursive type issues
 ParamValue = Union[int, float, str, bool, None, List[Any], Dict[str, Any]]
 
@@ -53,6 +80,20 @@ class ComponentSpec(BaseModel):
     param_schema_version: Optional[str] = None
     input_ports: List[str] = Field(default_factory=list)
     output_ports: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_value_spec_params(cls, data: Any) -> Any:
+        """Normalize Studio-authored ValueSpec params instead of passing dicts through."""
+        if isinstance(data, dict) and isinstance(data.get("params"), dict):
+            return {
+                **data,
+                "params": {
+                    key: _validate_nested_value_specs(value)
+                    for key, value in data["params"].items()
+                },
+            }
+        return data
 
 
 class ParameterConstraintSpec(BaseModel):
@@ -544,10 +585,116 @@ class StudioSelectorRef(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class StudioValueEnumerableSpec(BaseModel):
+    """Enumerable ValueSpec axis payload consumed by train matrix expansion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    form: Literal["list", "range", "sampler"]
+    values: Optional[List[Any]] = None
+    start: Optional[float] = None
+    stop: Optional[float] = None
+    count: Optional[int] = None
+    scale: Literal["linear", "log"] = "linear"
+    sampler: Optional[Dict[str, Any]] = None
+    n: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_form_payload(self) -> "StudioValueEnumerableSpec":
+        if self.form == "list":
+            if not self.values:
+                raise ValueError("sweep list enumerables require at least one value")
+            return self
+        if self.form == "range":
+            if self.start is None or self.stop is None or self.count is None:
+                raise ValueError("sweep range enumerables require start, stop, and count")
+            if self.count < 1:
+                raise ValueError("sweep range count must be positive")
+            if self.scale == "log" and (self.start <= 0 or self.stop <= 0):
+                raise ValueError("log sweep ranges require positive start and stop")
+            return self
+        if self.sampler is None or self.n is None:
+            raise ValueError("sweep sampler enumerables require sampler and n")
+        if self.n < 1:
+            raise ValueError("sweep sampler n must be positive")
+        return self
+
+
+class StudioValueVariationSpec(BaseModel):
+    """Where and how a Studio value varies."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["fixed", "snapshot", "run", "replicate", "trial", "epoch", "timestep", "sweep"]
+    enumerable: Optional[StudioValueEnumerableSpec] = None
+    stochastic_policy: Optional[Literal["shared_per_run", "resample_per_replicate"]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_scope_payload(self) -> "StudioValueVariationSpec":
+        if self.scope == "sweep" and self.enumerable is None:
+            raise ValueError("sweep variation requires an enumerable list, range, or sampler+n")
+        if self.scope != "sweep" and self.enumerable is not None:
+            raise ValueError("enumerable payloads are only valid for sweep variation")
+        if self.scope == "run" and self.stochastic_policy not in (None, "shared_per_run"):
+            raise ValueError("run variation samples once and shares within the run")
+        if self.scope == "replicate" and self.stochastic_policy not in (
+            None,
+            "resample_per_replicate",
+        ):
+            raise ValueError("replicate variation resamples per replicate")
+        return self
+
+
+def _legacy_value_form(mode: Any) -> str:
+    return "literal" if mode == "constant" else str(mode)
+
+
+def _legacy_variation(data: Dict[str, Any]) -> Dict[str, Any]:
+    mode = data.get("mode")
+    metadata = dict(data.get("metadata") or {})
+    scope = data.get("sampling_scope") or ("fixed" if mode == "constant" else "run")
+    if scope == "replicate":
+        policy = "resample_per_replicate"
+    elif scope == "run":
+        policy = "shared_per_run"
+    else:
+        policy = None
+    variation: Dict[str, Any] = {
+        "scope": scope,
+        "metadata": {"migrated_from_sampling_scope": data.get("sampling_scope")},
+    }
+    if policy:
+        variation["stochastic_policy"] = policy
+    if metadata.get("indexed_constant") is True:
+        values = data.get("value") if isinstance(data.get("value"), list) else [data.get("value")]
+        variation["scope"] = "sweep"
+        variation["enumerable"] = {"form": "list", "values": values}
+    elif scope == "sweep" and isinstance(data.get("distribution"), dict):
+        distribution = data["distribution"]
+        parameters = distribution.get("parameters")
+        if distribution.get("family") == "categorical" and isinstance(parameters, dict):
+            values = parameters.get("values")
+            if isinstance(values, list):
+                variation["enumerable"] = {"form": "list", "values": values}
+        if "enumerable" not in variation:
+            n = metadata.get("sweep_n") or metadata.get("axis_count")
+            if not isinstance(n, int):
+                raise ValueError("legacy distribution sweep ValueSpec requires metadata.sweep_n")
+            variation["enumerable"] = {"form": "sampler", "sampler": distribution, "n": n}
+    return variation
+
+
 class StudioValueSpec(BaseModel):
     """Declarative value used by Studio task timelines and parameter fields."""
 
-    schema_version: str = "feedbax.spec.studio.value.v1"
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = STUDIO_VALUE_SPEC_SCHEMA_VERSION
+    value_form: Literal["literal", "reference", "expression", "function", "schedule", "distribution"]
+    variation: StudioValueVariationSpec = Field(
+        default_factory=lambda: StudioValueVariationSpec(scope="fixed")
+    )
     mode: str
     value: Optional[Any] = None
     reference: Optional[StudioSelectorRef] = None
@@ -562,6 +709,50 @@ class StudioValueSpec(BaseModel):
     units: Optional[str] = None
     frame: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_value_spec(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        version = data.get("schema_version", LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1)
+        if version == STUDIO_VALUE_SPEC_SCHEMA_VERSION:
+            if "mode" not in data and "value_form" in data:
+                mode = "constant" if data["value_form"] == "literal" else data["value_form"]
+                return {**data, "mode": mode}
+            return data
+        if version not in {
+            LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1,
+            LEGACY_STUDIO_VALUE_SPEC_FRONTEND_SCHEMA_V1,
+        }:
+            raise ValueError(
+                f"unsupported StudioValueSpec schema_version {version!r}; "
+                f"expected {STUDIO_VALUE_SPEC_SCHEMA_VERSION}"
+            )
+        if "mode" not in data:
+            raise ValueError("legacy StudioValueSpec requires mode")
+        return {
+            **data,
+            "schema_version": STUDIO_VALUE_SPEC_SCHEMA_VERSION,
+            "value_form": _legacy_value_form(data["mode"]),
+            "variation": _legacy_variation(data),
+        }
+
+    @model_validator(mode="after")
+    def validate_value_variation(self) -> "StudioValueSpec":
+        expected_mode = "constant" if self.value_form == "literal" else self.value_form
+        if self.mode != expected_mode:
+            raise ValueError("StudioValueSpec mode must match value_form compatibility alias")
+        if self.value_form == "literal" and self.variation.scope != "sweep":
+            if self.sampling_scope not in (None, "fixed"):
+                raise ValueError("literal fixed values must not carry a sampling_scope")
+        if self.value_form == "distribution" and self.variation.scope == "run":
+            if self.variation.stochastic_policy not in (None, "shared_per_run"):
+                raise ValueError("run distribution specs sample once and share")
+        if self.value_form == "distribution" and self.variation.scope == "replicate":
+            if self.variation.stochastic_policy not in (None, "resample_per_replicate"):
+                raise ValueError("replicate distribution specs resample per replicate")
+        return self
 
 
 class StudioInterventionValueBounds(BaseModel):

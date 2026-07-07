@@ -51,6 +51,7 @@ import {
   humanizeLabel,
   type ValueSpecFieldDescriptor,
 } from '@/components/values/ValueSpecField';
+import { VALUE_SPEC_SCHEMA_VERSION } from '@/features/scenario/valueSpecs';
 import clsx from 'clsx';
 
 export function PropertiesPanel() {
@@ -897,7 +898,9 @@ function constantInterventionValue(
   intervention: StudioInterventionTransformSpec
 ): StudioValueSpec {
   return {
-    schema_version: 'feedbax.studio.value.v1',
+    schema_version: VALUE_SPEC_SCHEMA_VERSION,
+    value_form: 'literal',
+    variation: { scope: 'fixed', enumerable: null, metadata: {} },
     mode: 'constant',
     value,
     dtype: intervention.target_selector?.dtype ?? null,
@@ -1386,7 +1389,7 @@ function descriptorForParamSchema(schema: ParamSchema): ValueSpecFieldDescriptor
     },
     allowedModes:
       schema.type === 'enum' ? ['constant', 'expression'] : ['constant', 'expression', 'distribution'],
-    allowedScopes: ['run', 'sweep'],
+    allowedScopes: staticShape || schema.type === 'enum' ? ['fixed', 'run'] : ['fixed', 'run', 'sweep'],
     defaultScope: 'run',
     loweringTarget: staticShape ? 'run_manifest' : 'sweep_axis',
   };
