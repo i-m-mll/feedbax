@@ -516,9 +516,13 @@ def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
     prepared_training = prepare_studio_training_execution(
         StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
     )
-    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    train_stage = next(
+        stage for stage in prepared_training.workspace.stages if stage.kind == "train"
+    )
     training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
-    eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
+    eval_stage = next(
+        stage for stage in prepared_training.workspace.stages if stage.kind == "eval"
+    )
     eval_stage.input_collections = [
         collection
         for collection in train_stage.output_collections
@@ -560,6 +564,57 @@ def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
     assert "supersedes" not in restaged_manifest.metadata
     assert "superseded_by" not in restaged.manifest_refs[0].metadata
     assert "supersedes" not in restaged.manifest_refs[0].metadata
+
+
+def test_studio_evaluation_run_local_reprocesses_stale_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    studio_default_eval_recipe,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    prepared_training = prepare_studio_training_execution(
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+    )
+    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
+    eval_stage.input_collections = [
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
+    ]
+    request = StudioEvaluationMatrixRequest(
+        workspace=prepared_training.workspace,
+        training_run_ids=[training_ref.id],
+        eval_params={"perturbation": "none"},
+        checkpoint_policy=StudioEvaluationCheckpointPolicy(mode="last"),
+        reprocess="missing",
+        root=str(tmp_path),
+    )
+    staged = stage_studio_evaluation_matrix(request)
+    existing_manifest = load_manifest(staged.manifest_refs[0].uri)
+    assert isinstance(existing_manifest, EvaluationRunManifest)
+    stale_manifest = existing_manifest.model_copy(
+        update={
+            "status": "stale",
+            "metadata": {
+                **existing_manifest.metadata,
+                "staleness_reason": "upstream superseded",
+            },
+        }
+    )
+    write_manifest(stale_manifest, root=tmp_path)
+
+    launched = run_studio_evaluation_local_execution(
+        request.model_copy(update={"reprocess": "stale"})
+    )
+    launched_manifest = load_manifest(launched.manifest_refs[0].uri)
+
+    assert launched.completed_count == 1
+    assert launched.failed_count == 0
+    assert launched.skipped_count == 0
+    assert isinstance(launched_manifest, EvaluationRunManifest)
+    assert launched_manifest.status == "completed"
 
 
 @pytest.mark.parametrize(

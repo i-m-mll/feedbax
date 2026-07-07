@@ -658,6 +658,9 @@ def run_studio_evaluation_local_execution(
 ) -> StudioEvaluationLocalRunResult:
     """Stage and execute selected Studio evaluations through registered recipes."""
 
+    stale_launch_ids = (
+        _stale_evaluation_launch_ids(request) if request.reprocess == "stale" else None
+    )
     staged = stage_studio_evaluation_matrix(request)
     root_path = _request_root(request.root)
     workspace = staged.workspace.model_copy(deep=True)
@@ -675,7 +678,12 @@ def run_studio_evaluation_local_execution(
             failed += 1
             errors.append(f"Manifest {ref.id!r} is not an EvaluationRunManifest")
             continue
-        if not _should_launch_status(manifest.status, request.reprocess):
+        should_launch = (
+            ref.id in stale_launch_ids
+            if stale_launch_ids is not None
+            else _should_launch_status(manifest.status, request.reprocess)
+        )
+        if not should_launch:
             skipped += 1
             if manifest.status == "failed":
                 failed += 1
@@ -772,6 +780,18 @@ def run_studio_evaluation_local_execution(
         skipped_failed_count=skipped_failed,
         errors=errors,
     )
+
+
+def _stale_evaluation_launch_ids(request: StudioEvaluationMatrixRequest) -> set[str]:
+    plan = _evaluation_matrix_plan(request)
+    root = plan["root"]
+    launch_ids: set[str] = set()
+    for item in plan["items"]:
+        manifest = _existing_manifest(item["evaluation_id"], root=root)
+        status = manifest.status if isinstance(manifest, EvaluationRunManifest) else None
+        if _should_launch_status(status, "stale"):
+            launch_ids.add(item["evaluation_id"])
+    return launch_ids
 
 
 def materialize_studio_pipeline(
