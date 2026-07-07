@@ -13,6 +13,7 @@ import { persistLocalProjectTabs } from '@/stores/projectsStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
 import { fetchGraph, updateGraph } from '@/api/client';
 import { isHttpConflict } from '@/api/request';
+import { summarizeSaveConflict } from '@/utils/saveConflict';
 import {
   useLayoutStore,
   BOTTOM_COLLAPSED_HEIGHT,
@@ -124,10 +125,28 @@ export default function App() {
         persistLocalProjectTabs();
         if (isHttpConflict(e)) {
           saveConflict = true;
-          await fetchGraph(graphId).catch(() => undefined);
-          toast.error('Save conflict: project changed elsewhere. Review the server copy before saving again.', {
-            id: 'autosave-conflict',
-          });
+          const server = await fetchGraph(graphId).catch(() => null);
+          const message = server
+            ? summarizeSaveConflict({
+                expectedRevision: graphStore.saveRevision,
+                serverMetadata: server.metadata,
+                local: {
+                  graph,
+                  uiState,
+                  workspace,
+                  analysisPages: analysis?.pages ?? null,
+                  activeAnalysisPageId: analysis?.activePageId ?? null,
+                },
+                server: {
+                  graph: server.graph,
+                  uiState: server.ui_state,
+                  workspace: server.workspace,
+                  analysisPages: server.analysis_pages,
+                  activeAnalysisPageId: server.active_analysis_page_id,
+                },
+              })
+            : 'Save conflict: project changed elsewhere, but the server copy could not be fetched. Your local edits are still unsaved.';
+          toast.error(message, { id: 'autosave-conflict', duration: 12000 });
         } else {
           toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
         }
