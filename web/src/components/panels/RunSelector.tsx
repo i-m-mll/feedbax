@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { ChevronDown, Plus } from 'lucide-react';
+import { AlertCircle, ChevronDown, Plus } from 'lucide-react';
 import { useRunStore } from '@/stores/runStore';
 import { createTrainingRun } from '@/api/runAPI';
+import { apiErrorMessage } from '@/api/request';
 
 /** Format an ISO timestamp for display. */
 function formatTimestamp(iso: string): string {
@@ -37,12 +38,14 @@ export function TrainingRunSelector({ activeTab }: TrainingRunSelectorProps) {
     trainingRuns,
     selectedTrainingRunId,
     loading,
+    trainingError,
     loadTrainingRuns,
     selectTrainingRun,
     addTrainingRun,
   } = useRunStore();
 
   const [open, setOpen] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   // Load runs on mount
@@ -66,10 +69,15 @@ export function TrainingRunSelector({ activeTab }: TrainingRunSelectorProps) {
   const handleCreateRun = useCallback(async () => {
     const name = prompt('Training run name:');
     if (!name) return;
-    const run = await createTrainingRun(name);
-    addTrainingRun(run);
-    await selectTrainingRun(run.id);
-    setOpen(false);
+    setCreateError(null);
+    try {
+      const run = await createTrainingRun(name);
+      addTrainingRun(run);
+      await selectTrainingRun(run.id);
+      setOpen(false);
+    } catch (error) {
+      setCreateError(apiErrorMessage(error, 'Could not create training run'));
+    }
   }, [addTrainingRun, selectTrainingRun]);
 
   if (loading && trainingRuns.length === 0) {
@@ -93,14 +101,25 @@ export function TrainingRunSelector({ activeTab }: TrainingRunSelectorProps) {
         title={selectedTraining ? `Training: ${selectedTraining.name}` : 'Select training run'}
       >
         <span className="text-[10px] uppercase tracking-wider text-slate-400 mr-0.5">Run</span>
+        {trainingError && <AlertCircle className="h-3 w-3 shrink-0 text-red-500" />}
         <span className="max-w-[100px] truncate">
-          {selectedTraining?.name ?? 'None'}
+          {selectedTraining?.name ?? (trainingError ? 'Unavailable' : 'None')}
         </span>
         <ChevronDown className="w-3 h-3 text-slate-400" />
       </button>
 
       {open && (
         <div className="absolute top-full left-0 mt-1 z-50 min-w-[220px] bg-white rounded-lg border border-slate-200 shadow-lg py-1">
+          {trainingError && (
+            <div className="mx-2 mb-1 rounded-md border border-red-100 bg-red-50 px-2 py-1.5 text-xs text-red-700">
+              {trainingError}
+            </div>
+          )}
+          {createError && (
+            <div className="mx-2 mb-1 rounded-md border border-red-100 bg-red-50 px-2 py-1.5 text-xs text-red-700">
+              {createError}
+            </div>
+          )}
           {trainingRuns.map((run) => (
             <button
               key={run.id}
@@ -161,7 +180,7 @@ interface EvalRunSelectorProps {
  * Uses a form-style dropdown rather than a header pill.
  */
 export function EvalRunSelector({ selectedEvalRunId, onSelectEvalRun }: EvalRunSelectorProps) {
-  const { evalRuns, selectedTrainingRunId } = useRunStore();
+  const { evalRuns, selectedTrainingRunId, evalError } = useRunStore();
 
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -200,13 +219,19 @@ export function EvalRunSelector({ selectedEvalRunId, onSelectEvalRun }: EvalRunS
         title={selectedEval ? `Eval: ${selectedEval.name}` : 'Select evaluation run'}
       >
         <span className="truncate">
-          {selectedEval?.name ?? 'None selected'}
+          {selectedEval?.name ?? (evalError ? 'Evaluations unavailable' : 'None selected')}
         </span>
+        {evalError && <AlertCircle className="w-3 h-3 text-red-500 shrink-0" />}
         <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" />
       </button>
 
       {open && (
         <div className="absolute top-full left-0 right-0 mt-1 z-50 min-w-[200px] bg-white rounded-lg border border-slate-200 shadow-lg py-1">
+          {evalError && (
+            <div className="mx-2 mb-1 rounded-md border border-red-100 bg-red-50 px-2 py-1.5 text-xs text-red-700">
+              {evalError}
+            </div>
+          )}
           {/* "None" option to clear selection */}
           <button
             onClick={() => { onSelectEvalRun(null); setOpen(false); }}

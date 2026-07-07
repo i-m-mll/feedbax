@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { TrainingRun, EvalRun } from '@/types/runs';
 import { fetchTrainingRuns, fetchEvalRuns } from '@/api/runAPI';
+import { apiErrorMessage } from '@/api/request';
 import { getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { StudioCollectionRef, StudioManifestRef, StudioWorkspaceSpec } from '@/types/workspace';
 
@@ -298,6 +299,10 @@ interface RunStoreState {
   selectedEvalRunId: string | null;
   /** Whether runs are being loaded. */
   loading: boolean;
+  /** Most recent training-run load failure, if any. */
+  trainingError: string | null;
+  /** Most recent evaluation-run load failure, if any. */
+  evalError: string | null;
 
   // Actions
   loadTrainingRuns: () => Promise<void>;
@@ -315,12 +320,14 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
   selectedTrainingRunId: null,
   selectedEvalRunId: null,
   loading: false,
+  trainingError: null,
+  evalError: null,
 
   loadTrainingRuns: async () => {
-    set({ loading: true });
+    set({ loading: true, trainingError: null });
     try {
       const runs = await fetchTrainingRuns();
-      set({ trainingRuns: runs, loading: false });
+      set({ trainingRuns: runs, loading: false, trainingError: null });
       writeTrainingRunsToWorkspace(runs);
       const workspaceSelected = selectedTrainingRunIdFromWorkspace();
       if (runs.length > 0 && get().selectedTrainingRunId === null) {
@@ -330,19 +337,22 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
             : runs[0].id;
         await get().selectTrainingRun(selectedId);
       }
-    } catch {
-      set({ loading: false });
+    } catch (error) {
+      set({
+        loading: false,
+        trainingError: apiErrorMessage(error, 'Could not load training runs'),
+      });
     }
   },
 
   selectTrainingRun: async (id) => {
-    set({ selectedTrainingRunId: id, selectedEvalRunId: null, evalRuns: [] });
+    set({ selectedTrainingRunId: id, selectedEvalRunId: null, evalRuns: [], evalError: null });
     const selected = get().trainingRuns.find((run) => run.id === id) ?? null;
     writeSelectedTrainingRunToWorkspace(selected);
     if (id === null) return;
     try {
       const evals = await fetchEvalRuns(id);
-      set({ evalRuns: evals });
+      set({ evalRuns: evals, evalError: null });
       writeEvalRunsToWorkspace(evals);
       const workspaceSelected = selectedEvalRunIdFromWorkspace();
       if (evals.length > 0) {
@@ -352,8 +362,8 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
             : evals[0].id;
         get().selectEvalRun(selectedId);
       }
-    } catch {
-      // eval fetch failed silently
+    } catch (error) {
+      set({ evalError: apiErrorMessage(error, 'Could not load evaluation runs') });
     }
   },
 
@@ -419,6 +429,8 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
       selectedTrainingRunId,
       selectedEvalRunId,
       loading: false,
+      trainingError: null,
+      evalError: null,
     });
   },
 }));

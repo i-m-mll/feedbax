@@ -28,23 +28,7 @@ import type {
   ScatterResponse,
   DiagnosticsResponse,
 } from '@/types/statistics';
-
-async function requestJson(path: string, options?: RequestInit): Promise<unknown> {
-  const response = await fetch(path, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers ?? {}),
-    },
-    ...options,
-  });
-
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
-  }
-
-  return response.json() as Promise<unknown>;
-}
+import { requestJson } from '@/api/request';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return requestJson(path, options) as Promise<T>;
