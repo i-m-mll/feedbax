@@ -31,11 +31,13 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
         params = dict(node_spec.params)
         input_ports = list(node_spec.input_ports)
         output_ports = list(node_spec.output_ports)
-        nodes[node_id] = ComponentSpec(
-            type=next_type,
-            params=params,
-            input_ports=input_ports,
-            output_ports=output_ports,
+        nodes[node_id] = node_spec.model_copy(
+            update={
+                "type": next_type,
+                "params": params,
+                "input_ports": input_ports,
+                "output_ports": output_ports,
+            }
         )
 
     def rename_port(node_name: str, port: str) -> str:
