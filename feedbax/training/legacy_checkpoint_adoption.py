@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import shutil
 import subprocess
 import tempfile
@@ -41,6 +42,7 @@ from feedbax.training.checkpoint_custody import (
 LEGACY_MANIFEST_KIND = "LegacyCheckpointLeafManifest"
 PATH_MAPPING_REGISTRY_SCHEMA_ID = "feedbax.training.legacy_checkpoint_path_mapping"
 PATH_MAPPING_REGISTRY_SCHEMA_VERSION = "feedbax.training.legacy_checkpoint_path_mapping.v1"
+DROP_PATH = "__drop__"
 
 
 class LegacyCheckpointAdoptionError(ValueError):
@@ -65,7 +67,7 @@ class LegacyWorktreeDumpError(LegacyCheckpointAdoptionError):
 
 @dataclass(frozen=True)
 class PathMappingRule:
-    """One exact old-path to current-path rename rule."""
+    """One exact old-path to current-path rename or explicit drop rule."""
 
     old_path: str
     new_path: str
@@ -133,6 +135,7 @@ class TreeAdoptionReport:
 
     assigned_paths: tuple[str, ...]
     static_paths: tuple[StaticPathReport, ...]
+    dropped_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -242,10 +245,10 @@ def read_legacy_stream(
     """Compatibility helper returning verified stream arrays keyed by manifest path."""
     del tree
     records = read_raw_np_save_stream(path, manifest_entries)
-    entries = [entry for entry in manifest_entries if entry.kind == "array"]
     return {
         entry.tree_path: jnp.asarray(record.value)
-        for entry, record in zip(entries, records, strict=True)
+        for entry, record in zip(manifest_entries, records, strict=True)
+        if entry.kind == "array"
     }
 
 
@@ -253,9 +256,8 @@ def read_raw_np_save_stream(
     path: Path | str,
     manifest_entries: Sequence[LeafManifestEntry],
 ) -> tuple[StreamRecord, ...]:
-    """Read consecutive ``np.save`` records and verify them against array entries."""
+    """Read consecutive ``np.save`` records and verify full manifest order."""
     stream_path = Path(path)
-    expected = [entry for entry in manifest_entries if entry.kind == "array"]
     records: list[StreamRecord] = []
     with stream_path.open("rb") as stream:
         while True:
@@ -278,7 +280,7 @@ def read_raw_np_save_stream(
                     dtype=str(array.dtype),
                 )
             )
-    _verify_stream_records(stream_path, expected, records)
+    _verify_stream_records(stream_path, manifest_entries, records)
     return tuple(records)
 
 
@@ -288,6 +290,7 @@ def adopt_tree_from_legacy_stream(
     current_template: Any,
     *,
     mapping_rules: Sequence[PathMappingRule | Mapping[str, str]] = (),
+    keep_current_paths: Sequence[str] = (),
     allow_current_shape_dtype_mismatch: bool = False,
 ) -> tuple[Any, TreeAdoptionReport]:
     """Populate a current slot template from a legacy stream by manifest path."""
@@ -295,14 +298,19 @@ def adopt_tree_from_legacy_stream(
     current_arrays = _array_paths(current_template)
     current_statics = _static_paths(current_template)
     path_map = _compile_path_map(mapping_rules)
-    array_entries = [entry for entry in manifest_entries if entry.kind == "array"]
     replacements: dict[str, np.ndarray] = {}
     unmatched_old: list[str] = []
     duplicate_new: list[str] = []
     incompatible_current: list[str] = []
+    dropped_old: list[str] = []
 
-    for entry, record in zip(array_entries, records, strict=True):
+    for entry, record in zip(manifest_entries, records, strict=True):
+        if entry.kind != "array":
+            continue
         new_path = path_map.resolve(entry.tree_path)
+        if new_path == DROP_PATH:
+            dropped_old.append(entry.tree_path)
+            continue
         if new_path in replacements:
             duplicate_new.append(new_path)
             continue
@@ -327,7 +335,9 @@ def adopt_tree_from_legacy_stream(
             continue
         replacements[new_path] = record.value
 
-    unfilled_current = sorted(set(current_arrays) - set(replacements))
+    keep_current = set(keep_current_paths)
+    unknown_keep_current = sorted(keep_current - set(current_arrays))
+    unfilled_current = sorted(set(current_arrays) - set(replacements) - keep_current)
     errors: list[str] = []
     if unmatched_old:
         errors.append(f"unmatched old array leaves: {unmatched_old!r}")
@@ -335,6 +345,8 @@ def adopt_tree_from_legacy_stream(
         errors.append(f"ambiguous current array assignments: {sorted(duplicate_new)!r}")
     if incompatible_current:
         errors.append(f"incompatible current array leaves: {incompatible_current!r}")
+    if unknown_keep_current:
+        errors.append(f"unknown keep-current array paths: {unknown_keep_current!r}")
     if unfilled_current:
         errors.append(f"unfilled current array leaves: {unfilled_current!r}")
     if errors:
@@ -355,6 +367,7 @@ def adopt_tree_from_legacy_stream(
     return adopted, TreeAdoptionReport(
         assigned_paths=tuple(sorted(replacements)),
         static_paths=tuple(static_report),
+        dropped_paths=tuple(sorted(dropped_old)),
     )
 
 
@@ -374,6 +387,8 @@ def adopt_legacy_checkpoint(
     fresh_optimizer: bool = False,
     model_mapping_rules: Sequence[PathMappingRule | Mapping[str, str]] = (),
     optimizer_mapping_rules: Sequence[PathMappingRule | Mapping[str, str]] = (),
+    model_keep_current_paths: Sequence[str] = (),
+    optimizer_keep_current_paths: Sequence[str] = (),
     resume_slot_transform: ResumeSlotTransform | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> LegacyCheckpointAdoptionResult:
@@ -387,6 +402,7 @@ def adopt_legacy_checkpoint(
         manifest.model,
         current_slots[model_slot],
         mapping_rules=model_mapping_rules,
+        keep_current_paths=model_keep_current_paths,
     )
     slots[model_slot] = adopted_model
 
@@ -401,6 +417,7 @@ def adopt_legacy_checkpoint(
             manifest.optimizer,
             current_slots[optimizer_slot],
             mapping_rules=optimizer_mapping_rules,
+            keep_current_paths=optimizer_keep_current_paths,
             allow_current_shape_dtype_mismatch=resume_slot_transform is not None,
         )
         slots[optimizer_slot] = adopted_optimizer
@@ -416,33 +433,39 @@ def adopt_legacy_checkpoint(
             "model_slot": model_slot,
             "optimizer_slot": optimizer_slot if optimizer_stream is not None else None,
             "model_assigned_paths": list(model_report.assigned_paths),
+            "model_dropped_paths": list(model_report.dropped_paths),
+            "model_keep_current_paths": list(model_keep_current_paths),
             "optimizer_assigned_paths": (
                 list(optimizer_report.assigned_paths) if optimizer_report is not None else []
             ),
+            "optimizer_dropped_paths": (
+                list(optimizer_report.dropped_paths) if optimizer_report is not None else []
+            ),
+            "optimizer_keep_current_paths": list(optimizer_keep_current_paths),
         }
     }
     adoption_metadata.update(dict(metadata or {}))
+    write_slots = _expected_round_trip_slots(
+        slots,
+        resume_slot_transform=resume_slot_transform,
+    )
     write = write_checkpoint_transaction(
         checkpoint_root,
         run_spec=run_spec,
         phase_program=phase_program,
         barrier_name=barrier_name,
         coordinate=coordinate,
-        slots=slots,
+        slots=write_slots,
         status="partial",
         metadata=adoption_metadata,
         publish_latest=False,
-    )
-    expected_slots = _expected_round_trip_slots(
-        slots,
-        resume_slot_transform=resume_slot_transform,
     )
     loaded_slots = _round_trip_before_publish(
         write,
         run_spec=run_spec,
         phase_program=phase_program,
-        expected_slots=expected_slots,
-        resume_slot_transform=resume_slot_transform,
+        expected_slots=write_slots,
+        resume_slot_transform=None,
     )
     return LegacyCheckpointAdoptionResult(
         write=write,
@@ -552,13 +575,19 @@ def _verify_stream_records(
     diffs: list[str] = []
     if len(records) != len(expected):
         diffs.append(
-            f"record count mismatch: file={len(records)} manifest_arrays={len(expected)}"
+            f"record count mismatch: file={len(records)} manifest_entries={len(expected)}"
         )
     for index, (entry, record) in enumerate(zip(expected, records)):
-        if tuple(entry.shape or ()) != record.shape:
+        if entry.shape is None or entry.dtype is None:
+            diffs.append(
+                f"record {index} {entry.tree_path}: manifest entry lacks stream "
+                "shape/dtype metadata"
+            )
+            continue
+        if tuple(entry.shape) != record.shape:
             diffs.append(
                 f"record {index} {entry.tree_path}: shape file={record.shape} "
-                f"manifest={tuple(entry.shape or ())}"
+                f"manifest={tuple(entry.shape)}"
             )
         if str(np.dtype(entry.dtype)) != record.dtype:
             diffs.append(
@@ -617,7 +646,7 @@ def _entries_from_tree(tree: Any) -> list[LeafManifestEntry]:
     entries: list[LeafManifestEntry] = []
     for path, leaf in jt.leaves_with_path(tree):
         tree_path = _key_path_to_text(path)
-        if eqx.is_array(leaf):
+        if _is_serialized_array_leaf(leaf):
             array = np.asarray(leaf)
             entries.append(
                 LeafManifestEntry(
@@ -627,17 +656,35 @@ def _entries_from_tree(tree: Any) -> list[LeafManifestEntry]:
                     dtype=str(array.dtype),
                 )
             )
-        else:
+        elif _is_serialized_static_scalar(leaf):
+            static_array = _static_stream_array(leaf)
             entries.append(
                 LeafManifestEntry(
                     tree_path=tree_path,
                     kind="static",
+                    shape=tuple(int(dim) for dim in static_array.shape),
+                    dtype=str(static_array.dtype),
                     static_repr_sha256=sha256_bytes(
                         repr(leaf).encode("utf-8", errors="replace")
                     ),
                 )
             )
     return entries
+
+
+def _is_serialized_array_leaf(value: Any) -> bool:
+    return (
+        (eqx.is_array(value) and not isinstance(value, np.generic))
+        or hasattr(value, "__jax_array__")
+    )
+
+
+def _is_serialized_static_scalar(value: Any) -> bool:
+    return isinstance(value, (np.generic, bool, int, float, complex))
+
+
+def _static_stream_array(value: Any) -> np.ndarray:
+    return np.asarray(value)
 
 
 def _static_report(
@@ -780,12 +827,22 @@ def _assert_tree_equal(expected: Mapping[str, Any], loaded: Mapping[str, Any]) -
                     mismatches.append(f"{path_text}: shape/dtype mismatch")
                 elif not bool(jnp.all(left == right)):
                     mismatches.append(f"{path_text}: value mismatch")
-            elif expected_leaf != loaded_leaf:
+            elif expected_leaf != loaded_leaf and not _pickle_equal(expected_leaf, loaded_leaf):
                 mismatches.append(f"{path_text}: static value mismatch")
     if mismatches:
         raise LegacyCheckpointAdoptionError(
             "adopted checkpoint round-trip values differ: " + "; ".join(mismatches)
         )
+
+
+def _pickle_equal(left: Any, right: Any) -> bool:
+    try:
+        return pickle.dumps(left, protocol=pickle.HIGHEST_PROTOCOL) == pickle.dumps(
+            right,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    except Exception:
+        return False
 
 
 def _write_latest_pointer(path: Path, latest: CheckpointLatestPointer) -> None:
@@ -854,6 +911,7 @@ import numpy as np
 SCHEMA_ID = "feedbax.manifest.legacy_checkpoint_leaf_manifest"
 SCHEMA_VERSION = "feedbax.manifest.legacy_checkpoint_leaf_manifest.v1"
 DUMPER_VERSION = "feedbax-legacy-leaf-dumper.v1"
+JAX_ARRAY_TYPE = getattr(jax, "Array", ())
 
 
 def _path_text(path: Any) -> str:
@@ -876,11 +934,29 @@ def _path_text(path: Any) -> str:
 
 
 def _is_array(value: Any) -> bool:
-    return hasattr(value, "shape") and hasattr(value, "dtype")
+    return (
+        isinstance(value, np.ndarray)
+        or (JAX_ARRAY_TYPE and isinstance(value, JAX_ARRAY_TYPE))
+        or hasattr(value, "__jax_array__")
+    )
+
+
+def _is_static_scalar(value: Any) -> bool:
+    return isinstance(value, (np.generic, bool, int, float, complex))
 
 
 def _static_hash(value: Any) -> str:
     return hashlib.sha256(repr(value).encode("utf-8", errors="replace")).hexdigest()
+
+
+def _static_array(value: Any):
+    try:
+        array = np.asarray(value)
+    except Exception:
+        return None
+    if array.dtype == object:
+        return None
+    return array
 
 
 def _entries(tree: Any) -> list[dict[str, Any]]:
@@ -896,14 +972,16 @@ def _entries(tree: Any) -> list[dict[str, Any]]:
                     "dtype": str(array.dtype),
                 }
             )
-        else:
-            entries.append(
-                {
-                    "tree_path": _path_text(path),
-                    "kind": "static",
-                    "static_repr_sha256": _static_hash(leaf),
-                }
-            )
+        elif _is_static_scalar(leaf):
+            array = np.asarray(leaf)
+            entry = {
+                "tree_path": _path_text(path),
+                "kind": "static",
+                "shape": [int(dim) for dim in array.shape],
+                "dtype": str(array.dtype),
+                "static_repr_sha256": _static_hash(leaf),
+            }
+            entries.append(entry)
     return entries
 
 
