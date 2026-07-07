@@ -86,9 +86,14 @@ import {
   workspaceReplayTrialLabel,
   workspaceReplayTrialRef,
 } from '@/features/scenario/workspaceReplay';
+import {
+  liveTrainingEffectorTrack,
+  liveTrainingTargetTrack,
+} from '@/features/scenario/liveTraining';
 import { semanticTokens } from '@/components/ui/semanticTokens';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
+import { useTrainingStore } from '@/stores/trainingStore';
 import {
   getActiveStage,
   getProjectedScenario,
@@ -404,9 +409,29 @@ function WorkspaceProjection({
     ...objectiveLossWindowBands(objectiveSpec, replayDuration),
   ];
   const replayEventTicks = workspaceReplayEventTicks(selectedReplayTrial);
+  const liveTrainingFrame = useTrainingStore((state) => state.latestTrajectory);
+  const liveTrainingStatus = useTrainingStore((state) => state.status);
+  const liveTrainingWorkerMode = useTrainingStore((state) => state.workerMode);
+  const liveTrainingVisible =
+    liveTrainingWorkerMode === 'local' &&
+    liveTrainingStatus === 'running' &&
+    liveTrainingFrame !== null &&
+    liveTrainingFrame.tracks.length > 0;
+  const liveTrainingEffector = liveTrainingVisible
+    ? liveTrainingEffectorTrack(liveTrainingFrame)
+    : null;
+  const liveTrainingTarget = liveTrainingVisible
+    ? liveTrainingTargetTrack(liveTrainingFrame)
+    : null;
+  const liveTrainingPoints = workspaceReplayPolyline(liveTrainingEffector);
+  const liveTrainingTargetPoint = liveTrainingTarget
+    ? workspaceReplaySampleAt(liveTrainingTarget, Math.max(0, liveTrainingTarget.samples.length - 1))
+    : null;
   const bounds = sceneBounds(scene);
   if (previewMode === 'sampled') includeSampledTrials(bounds, sampledTrials);
   if (previewMode === 'playback') includeReplayTrials(bounds, replayTrials);
+  for (const point of liveTrainingPoints) includePoint(bounds, point);
+  if (liveTrainingTargetPoint) includePoint(bounds, liveTrainingTargetPoint);
   const baseScale = fitScale(bounds);
   const scale = baseScale * view.zoom;
   const center: ScenePoint = [
@@ -867,6 +892,53 @@ function WorkspaceProjection({
     );
   };
 
+  const renderLiveTrainingOverlay = () => {
+    if (!liveTrainingVisible || liveTrainingPoints.length === 0) return null;
+    const projected = liveTrainingPoints.map(project).map((point) => point.join(',')).join(' ');
+    const latest = liveTrainingPoints[liveTrainingPoints.length - 1];
+    const [x, y] = project(latest);
+    const target = liveTrainingTargetPoint ? project(liveTrainingTargetPoint) : null;
+    return (
+      <g opacity="0.92">
+        <polyline
+          points={projected}
+          fill="none"
+          stroke="#d97706"
+          strokeWidth={2.75}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray="7 5"
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle
+          cx={x}
+          cy={y}
+          r={8}
+          fill="#fffbeb"
+          stroke="#d97706"
+          strokeWidth={2}
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle cx={x} cy={y} r={3.5} fill="#d97706" />
+        {target && (
+          <>
+            <circle
+              cx={target[0]}
+              cy={target[1]}
+              r={11}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth={2.25}
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle cx={target[0]} cy={target[1]} r={3.5} fill="#f59e0b" />
+          </>
+        )}
+        <title>Live training snapshot</title>
+      </g>
+    );
+  };
+
   const renderedSamples = previewMode === 'sampled' ? sampledTrials.slice(0, previewCount) : [];
   const modeLabel =
     previewMode === 'sampled'
@@ -936,6 +1008,7 @@ function WorkspaceProjection({
           {renderedSamples.map(renderSampledTrial)}
           {previewMode === 'playback' && replayTrials.map(renderReplayTrace)}
           {previewMode === 'playback' && renderReplayCursor()}
+          {renderLiveTrainingOverlay()}
           {objectiveDrag && (() => {
             const sourceAnchor = scene.anchors.find((anchor) => anchor.id === objectiveDrag.sourceAnchorId);
             if (!sourceAnchor?.position) return null;
@@ -1121,6 +1194,12 @@ function WorkspaceProjection({
                 {replayModel.message}
                 {replayModel.warnings.length > 0 ? ` ${replayModel.warnings[0]}` : ''}
               </div>
+            </div>
+          )}
+          {liveTrainingVisible && (
+            <div className="flex items-center justify-between gap-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+              <span className="font-semibold">Live snapshot</span>
+              <span className="truncate">lower fidelity - batch {liveTrainingFrame?.batch ?? '-'}</span>
             </div>
           )}
           {objectiveNotice && (
