@@ -329,7 +329,10 @@ class TrainingMethodRegistry:
         except KeyError as exc:
             raise ValueError(
                 f"{path}: unknown method_ref {key!r}; "
-                f"available registry keys={list(self.available_keys())!r}"
+                f"available registry keys={list(self.available_keys())!r}. "
+                "Install a package exposing a feedbax.plugins training-method hook, "
+                "or pass --plugin <module> to CLI commands that validate "
+                "TrainingRunSpec payloads."
             ) from exc
 
     def validate_payload(

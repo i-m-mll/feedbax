@@ -1,18 +1,26 @@
-"""Automatic discovery of experiment packages via entry points."""
+"""Automatic discovery of feedbax plugins via entry points."""
 
 import importlib
 import importlib.metadata
 import logging
-from typing import Optional
+import inspect
+from collections.abc import Iterable, Sequence
+from typing import Any, Optional, cast
 
 from .registry import ExperimentRegistry, get_default_registry
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_ENTRY_POINT_GROUP = "feedbax.plugins"
+TRAINING_METHOD_REGISTRAR_NAMES = (
+    "register_feedbax_training_methods",
+    "register_training_methods",
+)
+
 
 def discover_experiment_packages(
     registry: Optional[ExperimentRegistry] = None,
-    entry_point_group: str = "feedbax.plugins",
+    entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP,
 ) -> ExperimentRegistry:
     """Discover and register experiment packages using entry points.
 
@@ -26,18 +34,7 @@ def discover_experiment_packages(
     if registry is None:
         registry = get_default_registry()
 
-    # Discover packages via entry points
-    try:
-        # Python 3.10+ syntax
-        entry_points = importlib.metadata.entry_points(group=entry_point_group)
-    except TypeError:
-        # Fallback for older Python versions
-        all_entry_points = importlib.metadata.entry_points()
-        if hasattr(all_entry_points, "get"):
-            entry_points = all_entry_points.get(entry_point_group, [])
-        else:
-            # Even older versions - filter manually
-            entry_points = [ep for ep in all_entry_points if ep.group == entry_point_group]
+    entry_points = feedbax_plugin_entry_points(entry_point_group)
 
     for entry_point in entry_points:
         try:
@@ -61,6 +58,102 @@ def discover_experiment_packages(
         logger.warning(f"No experiment packages found in entry point group '{entry_point_group}'")
 
     return registry
+
+
+def feedbax_plugin_entry_points(entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP) -> Iterable[Any]:
+    """Return entry points published through the shared Feedbax plugin group."""
+    try:
+        return importlib.metadata.entry_points(group=entry_point_group)
+    except TypeError:
+        all_entry_points = importlib.metadata.entry_points()
+        entry_points_getter = getattr(all_entry_points, "get", None)
+        if callable(entry_points_getter):
+            return cast(Iterable[Any], entry_points_getter(entry_point_group, []))
+        return [
+            entry_point
+            for entry_point in all_entry_points
+            if entry_point.group == entry_point_group
+        ]
+
+
+def load_training_method_plugins(
+    *,
+    registry: Any | None = None,
+    entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP,
+    entry_points: Iterable[Any] | None = None,
+    modules: Sequence[str] | None = None,
+) -> None:
+    """Load training-method registration hooks from Feedbax plugins.
+
+    Entry points share the existing ``feedbax.plugins`` group. A plugin can expose
+    ``register_feedbax_training_methods(registry)`` or ``register_training_methods(registry)``
+    on the loaded object/module. Explicit module names are imported as an escape
+    hatch for local/downstream code that is not installed as an entry point.
+    """
+    if registry is None:
+        from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY
+
+        registry = DEFAULT_TRAINING_METHOD_REGISTRY
+
+    for entry_point in entry_points if entry_points is not None else feedbax_plugin_entry_points(
+        entry_point_group
+    ):
+        provenance = _entry_point_provenance(entry_point)
+        try:
+            plugin = entry_point.load()
+        except Exception as exc:
+            logger.warning("Failed to load Feedbax plugin entry point %s: %s", provenance, exc)
+            continue
+        _register_training_methods_from_plugin(plugin, registry, provenance=provenance)
+
+    for module_name in modules or ():
+        module = importlib.import_module(module_name)
+        _register_training_methods_from_plugin(module, registry, provenance=f"module:{module_name}")
+
+
+def _register_training_methods_from_plugin(
+    plugin: Any,
+    registry: Any,
+    *,
+    provenance: str,
+) -> None:
+    registrar = _training_method_registrar(plugin)
+    if registrar is None:
+        return
+    try:
+        registrar(registry)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to register Feedbax training methods from {provenance}: {exc}"
+        ) from exc
+    logger.info("Registered Feedbax training methods from %s", provenance)
+
+
+def _training_method_registrar(plugin: Any) -> Any | None:
+    for attr in TRAINING_METHOD_REGISTRAR_NAMES:
+        registrar = getattr(plugin, attr, None)
+        if callable(registrar):
+            return registrar
+    if not callable(plugin):
+        return None
+    try:
+        signature = inspect.signature(plugin)
+    except (TypeError, ValueError):
+        return None
+    parameter_names = set(signature.parameters)
+    if parameter_names & {"training_method_registry", "method_registry", "training_methods"}:
+        return plugin
+    return None
+
+
+def _entry_point_provenance(entry_point: Any) -> str:
+    dist = getattr(entry_point, "dist", None)
+    if dist is not None:
+        metadata = getattr(dist, "metadata", {})
+        package_name = metadata.get("Name") if hasattr(metadata, "get") else None
+        if package_name:
+            return f"package:{package_name}"
+    return f"entry-point:{getattr(entry_point, 'name', '<unknown>')}"
 
 
 def _is_recipe_validation_error(exc: Exception) -> bool:

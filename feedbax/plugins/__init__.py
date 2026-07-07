@@ -2,7 +2,11 @@
 
 from typing import TYPE_CHECKING
 
-from .discovery import discover_experiment_packages
+from .discovery import (
+    discover_experiment_packages,
+    feedbax_plugin_entry_points,
+    load_training_method_plugins,
+)
 from .registry import ExperimentRegistry, get_default_registry
 
 # `EXPERIMENT_REGISTRY` is discovered lazily on first access rather than as an
@@ -38,4 +42,6 @@ __all__ = [
     "ExperimentRegistry",
     "get_default_registry",
     "discover_experiment_packages",
+    "feedbax_plugin_entry_points",
+    "load_training_method_plugins",
 ]
