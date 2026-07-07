@@ -210,7 +210,7 @@ function normalizeWorkspaceViewState(
       },
     },
     selected_artifact_ref: stringRefOrNull(record.selected_artifact_ref, availableRefs),
-    selected_trial_ref: stringRefOrNull(record.selected_trial_ref, availableRefs),
+    selected_trial_ref: stringRefOrNull(record.selected_trial_ref, null),
     overlay_visibility: {
       ...DEFAULT_WORKSPACE_VIEW_STATE.overlay_visibility,
       ...normalizedOverlayVisibility,
