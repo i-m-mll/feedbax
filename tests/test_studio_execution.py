@@ -324,6 +324,7 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     workspace = _workspace()
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    train_stage.execution_spec = {"protocol": {"compute_target": "runpod"}}
     train_stage.selection_spec["matrix"] = {
         "name": "Loss weight sweep",
         "axes": [
@@ -361,8 +362,12 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     assert len(run_set.axes.runs) == 2
     assert len(run_refs) == 2
     assert {ref.id for ref in training_collection.item_refs} == {ref.id for ref in run_refs}
+    assert {ref.metadata["execution_target"] for ref in run_refs} == {"runpod"}
+    assert run_set_ref.metadata["execution_target"] == "runpod"
     assert all(isinstance(run, TrainingRunManifest) for run in runs)
     assert [run.training_spec.inline["loss"]["weight"] for run in runs] == [0, 1e-5]
+    assert {run.metadata["execution_target"] for run in runs} == {"runpod"}
+    assert {run.metadata["execution_backend"] for run in runs} == {"local"}
     assert [run.metadata["studio"]["axis_coordinates"]["loss_weight"] for run in runs] == [
         0,
         1e-5,

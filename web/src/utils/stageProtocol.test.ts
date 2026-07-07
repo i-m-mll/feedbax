@@ -44,8 +44,18 @@ describe('stage protocol helpers', () => {
       batchCount: 200,
       batchSize: 32,
       checkpointInterval: 25,
-      computeTarget: 'managed',
+      computeTarget: 'gcp',
     });
+  });
+
+  it('distinguishes RunPod and keeps legacy managed stages readable as GCP', () => {
+    expect(trainingProtocolSnapshot(stage, scenario).computeTarget).toBe('gcp');
+    expect(
+      trainingProtocolSnapshot(
+        { ...stage, execution_spec: { protocol: { compute_target: 'runpod' } } },
+        scenario
+      ).computeTarget
+    ).toBe('runpod');
   });
 
   it('patches stage protocol and training spec independently', () => {

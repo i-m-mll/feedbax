@@ -46,7 +46,9 @@ import {
 } from '@/api/runAPI';
 import {
   bestTrainingRun,
+  buildBillableSpecLock,
   buildLineageProjection,
+  buildQueueProjection,
   evaluationProtocolLabel,
   evaluationRunSummaries,
   formatMetric,
@@ -56,12 +58,15 @@ import {
   trainingInputSummaries,
   trainingRunSummaries,
   type EvaluationRunSummary,
+  type BillableSpecLock,
   type LineageProjection,
   type LineageProjectionEdge,
   type LineageProjectionNode,
+  type QueueProjection,
   type TrainingRunSummary,
 } from '@/utils/pipelineCollections';
 import {
+  executionBackendForTarget,
   stageExecutionSpecWithProtocolPatch,
   stageExecutionTarget,
   trainingProtocolSnapshot,
@@ -179,6 +184,11 @@ export function TrainCollectionPanel() {
   const [bulkValues, setBulkValues] = useState('0.001, 0.0003');
   const [stageState, setStageState] = useState({ busy: false, error: null as string | null });
   const [runActionState, setRunActionState] = useState({ busy: false, error: null as string | null });
+  const [queueConfirmed, setQueueConfirmed] = useState(false);
+  const [queueLaunchState, setQueueLaunchState] = useState({
+    busy: false,
+    error: null as string | null,
+  });
 
   const trainStage = getStageByKind(workspace, 'train');
   const trainScenario = getScenario(workspace, trainStage?.scenario_id);
@@ -186,6 +196,11 @@ export function TrainCollectionPanel() {
   const protocol = trainingProtocolSnapshot(trainStage, trainScenario);
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
+  const queueProjection = useMemo(() => buildQueueProjection(workspace), [workspace]);
+  const queueSpecLock = useMemo(
+    () => buildBillableSpecLock(queueProjection.items),
+    [queueProjection.items]
+  );
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
   const trainingCollectionId =
     trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
@@ -571,6 +586,80 @@ export function TrainCollectionPanel() {
     [patchLifecycleRun]
   );
 
+  const prepareQueueLaunch = useCallback(async () => {
+    if (!workspace) return;
+    const launchableItems = queueProjection.items.filter((item) => item.canLaunch);
+    if (launchableItems.length === 0) {
+      setQueueLaunchState({ busy: false, error: 'No queued items can be launched from here.' });
+      return;
+    }
+    if (queueSpecLock.required && !queueConfirmed) {
+      setQueueLaunchState({ busy: false, error: 'Confirm the billable spec-lock before launch.' });
+      return;
+    }
+    const target = queueSpecLock.target ?? launchableItems[0].target;
+    const backend = executionBackendForTarget(target);
+    if (backend === null) {
+      setQueueLaunchState({
+        busy: false,
+        error: `${queueSpecLock.targetLabel} uses a separate launch path.`,
+      });
+      return;
+    }
+    const trainItem = launchableItems.find(
+      (item) => item.target === target && item.stageKind === 'train' && item.stageId
+    );
+    if (!trainItem?.stageId) {
+      setQueueLaunchState({
+        busy: false,
+        error: 'This queue launch path currently prepares training-stage work only.',
+      });
+      return;
+    }
+    setQueueLaunchState({ busy: true, error: null });
+    try {
+      const preparation = await prepareStudioTrainingExecution({
+        workspace,
+        stage_id: trainItem.stageId,
+        backend,
+        issues: ['12e49a2'],
+        metadata: {
+          source: 'pipeline_queue',
+          queue_target: target,
+          queue_item_ids: launchableItems
+            .filter((item) => item.target === target)
+            .map((item) => item.manifestId),
+          spec_lock: {
+            required: queueSpecLock.required,
+            run_count: queueSpecLock.runCount,
+            varied_axes: queueSpecLock.variedAxes.map((axis) => axis.id),
+            estimated_duration_minutes: queueSpecLock.estimatedDurationMinutes,
+            estimated_cost_usd: queueSpecLock.estimatedCostUsd,
+            confirmation_token: queueSpecLock.confirmationToken,
+          },
+        },
+      });
+      setWorkspace(preparation.workspace);
+      setTrainingExecutionPreparation(preparation);
+      markDirty();
+      setQueueConfirmed(false);
+      setQueueLaunchState({ busy: false, error: null });
+    } catch (error) {
+      setQueueLaunchState({
+        busy: false,
+        error: error instanceof Error ? error.message : 'Failed to prepare queue launch.',
+      });
+    }
+  }, [
+    markDirty,
+    queueConfirmed,
+    queueProjection.items,
+    queueSpecLock,
+    setTrainingExecutionPreparation,
+    setWorkspace,
+    workspace,
+  ]);
+
   const setTarget = useCallback(
     (target: ExecutionTargetChoice) => {
       if (!trainStage) return;
@@ -680,6 +769,16 @@ export function TrainCollectionPanel() {
               syncMode={syncMode}
               onPreview={previewSelectionId}
               onFocusNode={focusLineageNode}
+            />
+
+            <QueueProjectionPanel
+              projection={queueProjection}
+              specLock={queueSpecLock}
+              confirmed={queueConfirmed}
+              busy={queueLaunchState.busy}
+              error={queueLaunchState.error}
+              onConfirmChange={setQueueConfirmed}
+              onPrepareLaunch={prepareQueueLaunch}
             />
 
             <BulkEditPanel
@@ -1803,6 +1902,167 @@ function BulkEditPanel({
   );
 }
 
+function QueueProjectionPanel({
+  projection,
+  specLock,
+  confirmed,
+  busy,
+  error,
+  onConfirmChange,
+  onPrepareLaunch,
+}: {
+  projection: QueueProjection;
+  specLock: BillableSpecLock;
+  confirmed: boolean;
+  busy: boolean;
+  error: string | null;
+  onConfirmChange: (confirmed: boolean) => void;
+  onPrepareLaunch: () => void;
+}) {
+  const launchDisabled =
+    busy ||
+    projection.launchableCount === 0 ||
+    (specLock.required && !confirmed);
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="font-semibold text-slate-800">Queue</div>
+          <div className="mt-1 text-xs text-slate-500">
+            {projection.pendingCount} pending, {projection.billableCount} billable
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            disabled
+            className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-2 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Drag reorder is not implemented in this queue surface yet"
+          >
+            Reorder
+          </button>
+          <button
+            type="button"
+            disabled
+            className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-2 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Pause is projected but not backed by a queue mutator yet"
+          >
+            Pause
+          </button>
+          <button
+            type="button"
+            disabled
+            className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-2 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Cancel uses the per-run lifecycle action when available"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 overflow-hidden rounded-md border border-slate-100">
+        {projection.items.length === 0 ? (
+          <div className="bg-slate-50 px-3 py-3 text-xs text-slate-500">
+            No pending manifests.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {projection.items.slice(0, 8).map((item) => (
+              <div
+                key={item.id}
+                className="grid gap-2 px-3 py-2 text-xs text-slate-600 md:grid-cols-[2rem_minmax(0,1fr)_7rem_8rem_6rem]"
+              >
+                <div className="font-semibold text-slate-400">#{item.order + 1}</div>
+                <div className="min-w-0">
+                  <div className="truncate font-semibold text-slate-800">{item.label}</div>
+                  <div className="truncate text-[11px] text-slate-500">
+                    {item.stageLabel ?? item.stageKind} · {item.status}
+                    {item.statusReason ? ` · ${item.statusReason}` : ''}
+                  </div>
+                </div>
+                <div className="font-medium text-slate-700">{item.targetLabel}</div>
+                <div>{item.queueState}</div>
+                <div className={item.canLaunch ? 'text-emerald-700' : 'text-amber-700'}>
+                  {item.canLaunch ? 'Ready' : 'Blocked'}
+                </div>
+              </div>
+            ))}
+            {projection.items.length > 8 && (
+              <div className="bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                +{projection.items.length - 8} more queued
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {projection.events.length > 0 && (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {projection.events.slice(0, 3).map((event) => (
+            <div key={event.id} className="truncate">
+              {event.label}: {event.reason}
+            </div>
+          ))}
+          {projection.events.length > 3 && <div>+{projection.events.length - 3} more events</div>}
+        </div>
+      )}
+
+      {specLock.required && (
+        <div className="mt-3 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+          <div className="font-semibold">Spec lock: {specLock.targetLabel}</div>
+          <div className="mt-1 grid gap-1 sm:grid-cols-3">
+            <div>{specLock.runCount} run{specLock.runCount === 1 ? '' : 's'}</div>
+            <div>{formatSpecLockDuration(specLock.estimatedDurationMinutes)}</div>
+            <div>{formatSpecLockCost(specLock.estimatedCostUsd)}</div>
+          </div>
+          <div className="mt-2">
+            {specLock.variedAxes.length === 0
+              ? 'No varied axes recorded'
+              : specLock.variedAxes
+                  .map((axis) => `${axis.label}: ${axis.values.join(', ')}`)
+                  .join(' · ')}
+          </div>
+          <label className="mt-2 flex items-center gap-2 font-medium">
+            <input
+              type="checkbox"
+              checked={confirmed}
+              onChange={(event) => onConfirmChange(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            Confirm billable launch
+          </label>
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {error}
+        </div>
+      )}
+
+      <div className="mt-3 flex justify-end">
+        <button
+          type="button"
+          disabled={launchDisabled}
+          onClick={onPrepareLaunch}
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-brand-500 px-3 text-xs font-semibold text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <PlayCircle className="h-3.5 w-3.5" />
+          {busy ? 'Preparing' : 'Prepare launch'}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function formatSpecLockDuration(value: number | null): string {
+  return value === null ? 'Duration not estimated' : `${value} min estimated`;
+}
+
+function formatSpecLockCost(value: number | null): string {
+  return value === null ? 'Cost not estimated' : `$${value.toFixed(2)} estimated`;
+}
+
 function LineageProjectionPanel({
   projection,
   focusedId,
@@ -2919,16 +3179,22 @@ function ExecutionTarget({
       detail: 'CPU now; accelerator when available',
     },
     {
-      id: 'managed',
+      id: 'gcp',
       icon: Server,
-      title: 'Managed worker',
-      detail: 'RunPod or lab worker once connected',
+      title: 'GCP',
+      detail: 'Managed VM worker',
+    },
+    {
+      id: 'runpod',
+      icon: Activity,
+      title: 'RunPod',
+      detail: 'GPU pod execution plan',
     },
     {
       id: 'manual',
-      icon: Activity,
-      title: 'Manual endpoint',
-      detail: 'Advanced connection details',
+      icon: Download,
+      title: 'Manual export',
+      detail: 'Operator-run instructions',
     },
   ];
   return (

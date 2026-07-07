@@ -5,6 +5,12 @@ import type {
   StudioStageSpec,
   StudioWorkspaceSpec,
 } from '@/types/workspace';
+import {
+  executionTargetIsBillable,
+  executionTargetLabel,
+  stageExecutionTarget,
+  type ExecutionTargetChoice,
+} from '@/utils/stageProtocol';
 
 export interface TrainingRunSummary {
   id: string;
@@ -87,6 +93,75 @@ export interface LineageProjection {
   nodes: LineageProjectionNode[];
   edges: LineageProjectionEdge[];
   groups: LineageProjectionGroup[];
+}
+
+export interface QueueProjectionItem {
+  id: string;
+  manifestId: string;
+  label: string;
+  kind: string;
+  role: string | null;
+  status: string;
+  statusReason: string | null;
+  stageId: string | null;
+  stageKind: StudioStageKind | 'unknown';
+  stageLabel: string | null;
+  collectionIds: string[];
+  runSetId: string | null;
+  target: ExecutionTargetChoice;
+  targetLabel: string;
+  billable: boolean;
+  queueState: 'queued' | 'paused' | 'blocked';
+  order: number;
+  canLaunch: boolean;
+  canCancel: boolean;
+  canPause: boolean;
+  canReorder: boolean;
+  axisCoordinates: Record<string, unknown>;
+  runCount: number;
+  estimatedDurationMinutes: number | null;
+  estimatedCostUsd: number | null;
+  launchBlocker: string | null;
+}
+
+export interface QueueProjectionEvent {
+  id: string;
+  manifestId: string;
+  label: string;
+  stageId: string | null;
+  stageLabel: string | null;
+  status: string;
+  reason: string;
+}
+
+export interface QueueProjection {
+  items: QueueProjectionItem[];
+  events: QueueProjectionEvent[];
+  pendingCount: number;
+  billableCount: number;
+  launchableCount: number;
+  controls: {
+    canPause: boolean;
+    canCancel: boolean;
+    canReorder: boolean;
+  };
+}
+
+export interface SpecLockAxisSummary {
+  id: string;
+  label: string;
+  values: string[];
+}
+
+export interface BillableSpecLock {
+  required: boolean;
+  target: ExecutionTargetChoice | null;
+  targetLabel: string;
+  runCount: number;
+  variedAxes: SpecLockAxisSummary[];
+  estimatedDurationMinutes: number | null;
+  estimatedCostUsd: number | null;
+  confirmationToken: string | null;
 }
 
 export function selectedIds(stage: StudioStageSpec | null | undefined, key: string): string[] {
@@ -275,10 +350,271 @@ export function buildLineageProjection(
   };
 }
 
+export function buildQueueProjection(
+  workspace: StudioWorkspaceSpec | null | undefined
+): QueueProjection {
+  const itemMap = new Map<string, QueueProjectionItem>();
+  const eventMap = new Map<string, QueueProjectionEvent>();
+  const stages = workspace?.stages ?? [];
+  let fallbackOrder = 0;
+
+  const addRef = (
+    ref: StudioManifestRef,
+    stage: StudioStageSpec | null,
+    collection: StudioCollectionRef | null
+  ) => {
+    const status = normalizedStatus(ref);
+    const eventReason = queueEventReason(ref, status);
+    if (eventReason) {
+      const event = queueEventFromRef(ref, stage, eventReason, status);
+      eventMap.set(event.id, event);
+    }
+    if (!isPendingQueueStatus(status, ref)) return;
+
+    const existing = itemMap.get(ref.id);
+    const collectionIds = collection
+      ? uniqueStrings([...(existing?.collectionIds ?? []), collection.id])
+      : existing?.collectionIds ?? [];
+    const item = queueItemFromRef(ref, stage, collectionIds, fallbackOrder);
+    fallbackOrder += 1;
+    if (!existing || queueItemSourceRank(item) >= queueItemSourceRank(existing)) {
+      itemMap.set(ref.id, item);
+      return;
+    }
+    itemMap.set(ref.id, { ...existing, collectionIds });
+  };
+
+  for (const collection of workspace?.collections ?? []) {
+    const stage = collection.source_stage_id
+      ? stages.find((candidate) => candidate.id === collection.source_stage_id) ?? null
+      : null;
+    for (const ref of collection.item_refs) addRef(ref, stage, collection);
+  }
+  for (const ref of workspace?.manifest_refs ?? []) addRef(ref, null, null);
+  for (const stage of stages) {
+    for (const collection of stage.input_collections) {
+      for (const ref of collection.item_refs) addRef(ref, stage, collection);
+    }
+    for (const collection of stage.output_collections) {
+      for (const ref of collection.item_refs) addRef(ref, stage, collection);
+    }
+    for (const ref of stage.manifest_refs) addRef(ref, stage, null);
+  }
+
+  const items = Array.from(itemMap.values()).sort(compareQueueItems);
+  const events = Array.from(eventMap.values()).sort((a, b) => {
+    const stage = (a.stageLabel ?? '').localeCompare(b.stageLabel ?? '');
+    return stage || a.label.localeCompare(b.label);
+  });
+  return {
+    items,
+    events,
+    pendingCount: items.length,
+    billableCount: items.filter((item) => item.billable).length,
+    launchableCount: items.filter((item) => item.canLaunch).length,
+    controls: {
+      canPause: items.some((item) => item.canPause),
+      canCancel: items.some((item) => item.canCancel),
+      canReorder: items.some((item) => item.canReorder),
+    },
+  };
+}
+
+export function buildBillableSpecLock(items: QueueProjectionItem[]): BillableSpecLock {
+  const billableItems = items.filter((item) => item.billable);
+  if (billableItems.length === 0) {
+    return {
+      required: false,
+      target: null,
+      targetLabel: 'Unpaid target',
+      runCount: items.reduce((total, item) => total + item.runCount, 0),
+      variedAxes: variedAxesForQueue(items),
+      estimatedDurationMinutes: sumNullable(items.map((item) => item.estimatedDurationMinutes)),
+      estimatedCostUsd: sumNullable(items.map((item) => item.estimatedCostUsd)),
+      confirmationToken: null,
+    };
+  }
+  const target = billableItems[0]?.target ?? null;
+  return {
+    required: true,
+    target,
+    targetLabel: target ? executionTargetLabel(target) : 'Billable target',
+    runCount: billableItems.reduce((total, item) => total + item.runCount, 0),
+    variedAxes: variedAxesForQueue(billableItems),
+    estimatedDurationMinutes: sumNullable(
+      billableItems.map((item) => item.estimatedDurationMinutes)
+    ),
+    estimatedCostUsd: sumNullable(billableItems.map((item) => item.estimatedCostUsd)),
+    confirmationToken: target ? `confirm-${target}-queue-launch` : 'confirm-billable-queue-launch',
+  };
+}
+
 function uniqueRefs(refs: StudioManifestRef[]): StudioManifestRef[] {
   const byId = new Map<string, StudioManifestRef>();
   for (const ref of refs) byId.set(ref.id, ref);
   return Array.from(byId.values());
+}
+
+function queueItemFromRef(
+  ref: StudioManifestRef,
+  stage: StudioStageSpec | null,
+  collectionIds: string[],
+  fallbackOrder: number
+): QueueProjectionItem {
+  const target = targetForRef(ref, stage);
+  const status = normalizedStatus(ref);
+  const queueState = queueStateForRef(ref);
+  const launchBlocker = launchBlockerForTarget(target);
+  return {
+    id: `${stage?.id ?? 'workspace'}:${ref.id}`,
+    manifestId: ref.id,
+    label: stringValue(ref.metadata.name) ?? stringValue(ref.metadata.label) ?? ref.id,
+    kind: ref.kind,
+    role: ref.role ?? null,
+    status,
+    statusReason: statusReason(ref.metadata),
+    stageId: stage?.id ?? null,
+    stageKind: stage?.kind ?? stageKindForRef(ref),
+    stageLabel: stage?.label ?? null,
+    collectionIds,
+    runSetId: stringValue(ref.metadata.run_set_id),
+    target,
+    targetLabel: executionTargetLabel(target),
+    billable: executionTargetIsBillable(target),
+    queueState,
+    order: numberValue(ref.metadata.queue_order) ?? fallbackOrder,
+    canLaunch: queueState === 'queued' && launchBlocker === null,
+    canCancel: status === 'pending' || status === 'planned' || status === 'queued',
+    canPause: queueState === 'queued',
+    canReorder: queueState === 'queued',
+    axisCoordinates: axisCoordinatesFromRef(ref),
+    runCount: Math.max(1, numberValue(ref.metadata.run_count) ?? 1),
+    estimatedDurationMinutes: numberValue(ref.metadata.estimated_duration_minutes),
+    estimatedCostUsd: numberValue(ref.metadata.estimated_cost_usd),
+    launchBlocker,
+  };
+}
+
+function queueEventFromRef(
+  ref: StudioManifestRef,
+  stage: StudioStageSpec | null,
+  reason: string,
+  status: string
+): QueueProjectionEvent {
+  return {
+    id: `${ref.id}:${status}:${reason}`,
+    manifestId: ref.id,
+    label: stringValue(ref.metadata.name) ?? stringValue(ref.metadata.label) ?? ref.id,
+    stageId: stage?.id ?? null,
+    stageLabel: stage?.label ?? null,
+    status,
+    reason,
+  };
+}
+
+function normalizedStatus(ref: StudioManifestRef): string {
+  const fallback = booleanValue(ref.metadata.planned) ? 'pending' : 'unknown';
+  return (stringValue(ref.metadata.status) ?? fallback).toLowerCase();
+}
+
+function isPendingQueueStatus(status: string, ref: StudioManifestRef): boolean {
+  if (stringValue(ref.metadata.superseded_by)) return false;
+  if (booleanValue(ref.metadata.evicted) === true) return false;
+  return status === 'pending' || status === 'planned' || status === 'queued';
+}
+
+function queueStateForRef(ref: StudioManifestRef): QueueProjectionItem['queueState'] {
+  const state = stringValue(ref.metadata.queue_state)?.toLowerCase();
+  if (state === 'paused') return 'paused';
+  if (state === 'blocked') return 'blocked';
+  return 'queued';
+}
+
+function queueEventReason(ref: StudioManifestRef, status: string): string | null {
+  const supersededBy = stringValue(ref.metadata.superseded_by);
+  if (supersededBy) {
+    return statusReason(ref.metadata) ?? `Superseded by ${supersededBy}`;
+  }
+  if (booleanValue(ref.metadata.evicted) === true || status === 'evicted') {
+    return statusReason(ref.metadata) ?? 'Evicted from queue';
+  }
+  if (status === 'stale' || status === 'superseded') {
+    return statusReason(ref.metadata) ?? 'Superseded or stale queue item';
+  }
+  return null;
+}
+
+function targetForRef(
+  ref: StudioManifestRef,
+  stage: StudioStageSpec | null
+): ExecutionTargetChoice {
+  const explicit =
+    stringValue(ref.metadata.execution_target) ??
+    stringValue(ref.metadata.compute_target) ??
+    stringValue(ref.metadata.target);
+  if (explicit === 'managed') return 'gcp';
+  if (
+    explicit === 'gcp' ||
+    explicit === 'runpod' ||
+    explicit === 'manual' ||
+    explicit === 'local'
+  ) {
+    return explicit;
+  }
+  return stageExecutionTarget(stage);
+}
+
+function launchBlockerForTarget(target: ExecutionTargetChoice): string | null {
+  if (target === 'gcp') return 'Use the managed GCP worker launch path for GCP targets.';
+  if (target === 'manual') return 'Manual export is not launched by the queue.';
+  return null;
+}
+
+function queueItemSourceRank(item: QueueProjectionItem): number {
+  if (item.stageId && item.collectionIds.length > 0) return 3;
+  if (item.stageId) return 2;
+  if (item.collectionIds.length > 0) return 1;
+  return 0;
+}
+
+function compareQueueItems(a: QueueProjectionItem, b: QueueProjectionItem): number {
+  const order = a.order - b.order;
+  if (order !== 0) return order;
+  const stage = stageRank(a.stageKind) - stageRank(b.stageKind);
+  if (stage !== 0) return stage;
+  return a.label.localeCompare(b.label);
+}
+
+function variedAxesForQueue(items: QueueProjectionItem[]): SpecLockAxisSummary[] {
+  const valuesByAxis = new Map<string, Set<string>>();
+  for (const item of items) {
+    for (const [axis, value] of Object.entries(item.axisCoordinates)) {
+      const values = valuesByAxis.get(axis) ?? new Set<string>();
+      values.add(formatAxisForSpecLock(value));
+      valuesByAxis.set(axis, values);
+    }
+  }
+  return Array.from(valuesByAxis.entries())
+    .filter(([, values]) => values.size > 1)
+    .map(([id, values]) => ({
+      id,
+      label: id,
+      values: Array.from(values).sort(),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function formatAxisForSpecLock(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return 'null';
+  return JSON.stringify(value);
+}
+
+function sumNullable(values: Array<number | null>): number | null {
+  const finite = values.filter((value): value is number => value !== null);
+  if (finite.length === 0) return null;
+  return Number(finite.reduce((total, value) => total + value, 0).toFixed(4));
 }
 
 function uniqueStrings(values: string[]): string[] {

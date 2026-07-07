@@ -329,6 +329,7 @@ def prepare_studio_training_execution(
         job_id=job_id,
     )
     plan = prepare_execution_plan(execution_spec)
+    execution_target = _stage_execution_target(stage, request.backend)
     plan.warnings.extend(
         issue.message for issue in validation.warnings if issue.message not in plan.warnings
     )
@@ -383,6 +384,7 @@ def prepare_studio_training_execution(
         else None,
         request=request,
         job_id=plan.job_id,
+        execution_target=execution_target,
     )
     for staged_ref in staged_training_refs:
         stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, staged_ref)
@@ -1109,6 +1111,7 @@ def _write_pending_training_manifest(
     task_spec: dict[str, Any],
     task_binding_spec: dict[str, Any] | None,
     request: StudioTrainingExecutionRequest,
+    execution_target: str,
 ) -> tuple[TrainingRunManifest, Path]:
     seed = _training_seed(training_spec)
     axis_coordinates = _stage_axis_coordinates(stage)
@@ -1157,9 +1160,13 @@ def _write_pending_training_manifest(
             "axis_coordinates": axis_coordinates,
             "seed": seed,
             "planned_training_run_id": manifest_id,
+            "execution_target": execution_target,
+            "execution_backend": request.backend,
         },
         "planned": True,
         "staged_at": now.isoformat(),
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
     }
     manifest = TrainingRunManifest(
         id=manifest_id,
@@ -1201,6 +1208,7 @@ def _stage_pending_training_manifests(
     task_binding_spec: dict[str, Any] | None,
     request: StudioTrainingExecutionRequest,
     job_id: str,
+    execution_target: str,
 ) -> tuple[list[StudioManifestRef], StudioManifestRef | None, dict[str, Any]]:
     matrix_spec = matrix_spec_from_selection(stage.selection_spec)
     if matrix_spec is None:
@@ -1213,6 +1221,7 @@ def _stage_pending_training_manifests(
             task_spec=task_spec,
             task_binding_spec=task_binding_spec,
             request=request,
+            execution_target=execution_target,
         )
         pending_ref = _pending_training_manifest_ref(
             pending_manifest,
@@ -1226,6 +1235,7 @@ def _stage_pending_training_manifests(
             "path": str(pending_path),
             "staged_at": utc_now().isoformat(),
             "run_count": 1,
+            "execution_target": execution_target,
         }
 
     try:
@@ -1268,6 +1278,8 @@ def _stage_pending_training_manifests(
                     "scenario_id": scenario_id,
                     "selection_spec": stage.selection_spec,
                     "run_count": len(expanded.runs),
+                    "execution_target": execution_target,
+                    "execution_backend": request.backend,
                 },
             },
         ),
@@ -1283,6 +1295,8 @@ def _stage_pending_training_manifests(
             "planned": True,
             "staged_at": utc_now().isoformat(),
             "run_count": len(expanded.runs),
+            "execution_target": execution_target,
+            "execution_backend": request.backend,
         },
     )
     run_set_path = write_manifest(run_set, root=root_path)
@@ -1297,6 +1311,7 @@ def _stage_pending_training_manifests(
             run_set_id=expanded.run_set_id,
             request=request,
             root=root_path,
+            execution_target=execution_target,
         )
         run_refs.append(
             _pending_training_manifest_ref(
@@ -1323,6 +1338,8 @@ def _stage_pending_training_manifests(
         "planned": True,
         "run_count": len(expanded.runs),
         "axes": expanded.axes.model_dump(mode="json", exclude_none=True),
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
     }
     return run_refs, run_set_ref, {
         "manifest_id": run_set.id,
@@ -1332,6 +1349,7 @@ def _stage_pending_training_manifests(
         "run_count": len(expanded.runs),
         "run_ids": [run.run_id for run in expanded.runs],
         "run_paths": run_paths,
+        "execution_target": execution_target,
     }
 
 
@@ -1344,6 +1362,7 @@ def _write_pending_training_manifest_for_expanded_run(
     run_set_id: str,
     request: StudioTrainingExecutionRequest,
     root: Path,
+    execution_target: str,
 ) -> tuple[TrainingRunManifest, Path]:
     from feedbax.contracts.manifest import load_manifest
     from feedbax.persistence.manifest_index import find_manifest_paths_by_id
@@ -1384,9 +1403,13 @@ def _write_pending_training_manifest_for_expanded_run(
             "axis_value_indices": expanded_run.coordinate.value_indices,
             "run_set_id": run_set_id,
             "planned_training_run_id": expanded_run.run_id,
+            "execution_target": execution_target,
+            "execution_backend": request.backend,
         },
         "planned": True,
         "staged_at": now.isoformat(),
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
     }
     manifest = TrainingRunManifest(
         id=expanded_run.run_id,
@@ -1471,6 +1494,19 @@ def _training_seed(training_spec: dict[str, Any]) -> Any | None:
     if isinstance(params, dict) and "seed" in params:
         return params["seed"]
     return None
+
+
+def _stage_execution_target(stage: StudioStageSpec, backend: str) -> str:
+    execution_spec = stage.execution_spec if isinstance(stage.execution_spec, dict) else {}
+    protocol = execution_spec.get("protocol")
+    compute_target = protocol.get("compute_target") if isinstance(protocol, dict) else None
+    if compute_target == "managed":
+        return "gcp"
+    if compute_target in {"local", "gcp", "runpod", "manual"}:
+        return str(compute_target)
+    if backend == "runpod":
+        return "runpod"
+    return "local"
 
 
 def _stage_axis_coordinates(stage: StudioStageSpec) -> dict[str, Any]:

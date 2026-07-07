@@ -121,6 +121,20 @@ class TerminateResponse(BaseModel):
     ok: bool
 
 
+class OrchestrationTarget(BaseModel):
+    id: Literal["local", "gcp", "runpod", "manual"]
+    label: str
+    billable: bool
+    launch_mode: Literal["local", "web-orchestration", "execution-plan", "manual-export"]
+    available: bool
+    confirmation_token: Optional[str] = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class OrchestrationTargetsResponse(BaseModel):
+    targets: list[OrchestrationTarget]
+
+
 # ---------------------------------------------------------------------------
 # Background launch helper
 # ---------------------------------------------------------------------------
@@ -270,6 +284,52 @@ async def get_orchestration_status():
         error=state.error,
         orphaned_instance=state.orphaned_instance,
         worker_health_failures=state.worker_health_failures,
+    )
+
+
+@router.get("/targets", response_model=OrchestrationTargetsResponse)
+async def list_orchestration_targets():
+    """Return execution targets available to Studio queue orchestration."""
+    return OrchestrationTargetsResponse(
+        targets=[
+            OrchestrationTarget(
+                id="local",
+                label="Local worker",
+                billable=False,
+                launch_mode="local",
+                available=True,
+                notes=["Uses the existing local Studio execution path."],
+            ),
+            OrchestrationTarget(
+                id="gcp",
+                label="GCP",
+                billable=True,
+                launch_mode="web-orchestration",
+                available=True,
+                confirmation_token=_BILLABLE_CONFIRMATION_TOKEN,
+                notes=["Uses the existing GCP VM orchestration launch endpoint."],
+            ),
+            OrchestrationTarget(
+                id="runpod",
+                label="RunPod",
+                billable=True,
+                launch_mode="execution-plan",
+                available=True,
+                confirmation_token="confirm-runpod-queue-launch",
+                notes=[
+                    "Queue launch prepares a RunPod ExecutionPlan with repository script commands.",
+                    "Real pod acquisition remains owned by scripts/deploy/runpod_deploy.sh.",
+                ],
+            ),
+            OrchestrationTarget(
+                id="manual",
+                label="Manual export",
+                billable=False,
+                launch_mode="manual-export",
+                available=True,
+                notes=["Exports operator instructions without starting compute."],
+            ),
+        ]
     )
 
 

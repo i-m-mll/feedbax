@@ -8,7 +8,9 @@ import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
 import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
 import {
   bestTrainingRun,
+  buildBillableSpecLock,
   buildLineageProjection,
+  buildQueueProjection,
   evaluationProtocolLabel,
   evaluationRunSummaries,
   selectedIds,
@@ -214,6 +216,129 @@ describe('pipeline collection summaries', () => {
     expect(projection.nodes.find((node) => node.id === analysisRef.id)).toMatchObject({
       status: 'skipped',
       statusReason: 'optional output disabled',
+    });
+  });
+
+  it('projects pending manifests across stages with target assignment and events', () => {
+    const workspace = seededWorkspace();
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train');
+    const evalStage = workspace.stages.find((stage) => stage.kind === 'eval');
+    if (!trainStage || !evalStage) throw new Error('seed missing stages');
+    const pendingTrain = {
+      kind: 'TrainingRunManifest',
+      id: 'train:pending-runpod',
+      role: 'training_run',
+      provider: 'feedbax',
+      metadata: {
+        name: 'RunPod train',
+        status: 'pending',
+        axis_coordinates: { learning_rate: 0.001, seed: 1 },
+        execution_target: 'runpod',
+        queue_order: 2,
+        estimated_duration_minutes: 40,
+        estimated_cost_usd: 1.5,
+      },
+    };
+    const pendingEval = {
+      kind: 'EvaluationRunManifest',
+      id: 'eval:pending-local',
+      role: 'evaluation_run',
+      provider: 'feedbax',
+      metadata: {
+        name: 'Local eval',
+        status: 'pending',
+        axis_coordinates: { learning_rate: 0.003, seed: 2 },
+        queue_order: 1,
+      },
+    };
+    const superseded = {
+      kind: 'TrainingRunManifest',
+      id: 'train:superseded',
+      role: 'training_run',
+      provider: 'feedbax',
+      metadata: {
+        name: 'Superseded run',
+        status: 'pending',
+        superseded_by: 'train:new',
+      },
+    };
+    const projection = buildQueueProjection({
+      ...workspace,
+      stages: workspace.stages.map((stage) => {
+        if (stage.id === trainStage.id) {
+          return {
+            ...stage,
+            execution_spec: { protocol: { compute_target: 'runpod' } },
+            manifest_refs: [pendingTrain, superseded],
+          };
+        }
+        if (stage.id === evalStage.id) {
+          return {
+            ...stage,
+            execution_spec: { protocol: { compute_target: 'local' } },
+            manifest_refs: [pendingEval],
+          };
+        }
+        return stage;
+      }),
+      manifest_refs: [pendingTrain, pendingEval, superseded],
+    });
+
+    expect(projection.items.map((item) => item.manifestId)).toEqual([
+      'eval:pending-local',
+      'train:pending-runpod',
+    ]);
+    expect(projection.items[0]).toMatchObject({
+      target: 'local',
+      billable: false,
+      canLaunch: true,
+    });
+    expect(projection.items[1]).toMatchObject({
+      target: 'runpod',
+      billable: true,
+      canLaunch: true,
+      estimatedCostUsd: 1.5,
+    });
+    expect(projection.events).toEqual([
+      expect.objectContaining({
+        manifestId: 'train:superseded',
+        reason: 'Superseded by train:new',
+      }),
+    ]);
+  });
+
+  it('requires spec-lock only for billable queue targets', () => {
+    const runpodItem = {
+      manifestId: 'runpod-a',
+      target: 'runpod',
+      targetLabel: 'RunPod',
+      billable: true,
+      runCount: 1,
+      axisCoordinates: { learning_rate: 0.001 },
+      estimatedDurationMinutes: 20,
+      estimatedCostUsd: 0.8,
+    } as any;
+    const localItem = {
+      manifestId: 'local-a',
+      target: 'local',
+      targetLabel: 'Local worker',
+      billable: false,
+      runCount: 1,
+      axisCoordinates: { learning_rate: 0.003 },
+      estimatedDurationMinutes: null,
+      estimatedCostUsd: null,
+    } as any;
+
+    expect(buildBillableSpecLock([localItem])).toMatchObject({
+      required: false,
+      confirmationToken: null,
+    });
+    expect(buildBillableSpecLock([runpodItem, localItem])).toMatchObject({
+      required: true,
+      target: 'runpod',
+      runCount: 1,
+      estimatedCostUsd: 0.8,
+      confirmationToken: 'confirm-runpod-queue-launch',
     });
   });
 });
