@@ -611,6 +611,7 @@ dependencies = [
     { name = "numpy" },
     { name = "optax" },
     { name = "pydantic" },
+    { name = "ruamel-yaml" },
     { name = "tqdm" },
     { name = "treescope" },
 ]
@@ -766,6 +767,7 @@ requires-dist = [
     { name = "rich", marker = "extra == 'all'", specifier = ">=13.9.4" },
     { name = "rich", marker = "extra == 'analysis'", specifier = ">=13.9.4" },
     { name = "rich", marker = "extra == 'training'", specifier = ">=13.9.4" },
+    { name = "ruamel-yaml", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'all'", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'config'", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'notebook'", specifier = ">=0.18.0" },
