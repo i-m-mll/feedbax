@@ -372,6 +372,126 @@ describe('graphStore boundary aliases', () => {
   });
 });
 
+describe('graphStore subgraph entry templates', () => {
+  const unpopulatedMuscleGraph: GraphSpec = {
+    nodes: {
+      muscle: {
+        type: 'Arm6MuscleRigidTendon',
+        params: {},
+        input_ports: ['excitation', 'angles', 'angular_velocities'],
+        output_ports: ['torques'],
+      },
+    },
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+  };
+  const unpopulatedUi: GraphUIState = {
+    viewport: { x: 0, y: 0, zoom: 1 },
+    node_states: {
+      muscle: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+    },
+  };
+
+  beforeEach(() => {
+    useGraphStore.getState().hydrateGraph(unpopulatedMuscleGraph, unpopulatedUi);
+    useGraphStore.setState({
+      _compositeTypes: new Set(['Arm6MuscleRigidTendon']),
+      _componentRegistry: new Map(),
+      _isRegistryLoaded: false,
+      lastSubgraphError: null,
+    });
+  });
+
+  it('reports registry-loading failure without creating a layer or synthesized subgraph', () => {
+    useGraphStore.getState().enterSubgraph('muscle');
+
+    const state = useGraphStore.getState();
+    const renderedNode = state.nodes.find((node) => node.id === 'muscle');
+    expect(state.graphStack).toEqual([]);
+    expect(state.graph.subgraphs?.muscle).toBeUndefined();
+    expect(state.lastSubgraphError).toContain('component templates are still loading');
+    expect(renderedNode?.type).toBe('component');
+    expect(renderedNode?.data.subgraph).toBeUndefined();
+    expect(state.capturePersistedGraph().graph.subgraphs?.muscle).toBeUndefined();
+  });
+
+  it('reports missing backend templates instead of fabricating frontend subgraphs', () => {
+    useGraphStore.getState().setComponentRegistry([
+      {
+        name: 'Arm6MuscleRigidTendon',
+        category: 'Mechanics',
+        description: 'Composite without a loaded template',
+        param_schema: [],
+        input_ports: ['excitation', 'angles', 'angular_velocities'],
+        output_ports: ['torques'],
+        icon: 'activity',
+        default_params: {},
+      },
+    ]);
+
+    useGraphStore.getState().enterSubgraph('muscle');
+
+    const state = useGraphStore.getState();
+    expect(state.graphStack).toEqual([]);
+    expect(state.graph.subgraphs?.muscle).toBeUndefined();
+    expect(state.lastSubgraphError).toContain('no backend template_graph');
+    expect(state.lastSubgraphError).toContain('cannot synthesize');
+    expect(state.capturePersistedGraph().graph.subgraphs?.muscle).toBeUndefined();
+  });
+
+  it('uses registry template_graph as the only fresh subgraph source', () => {
+    const templateGraph: GraphSpec = {
+      nodes: {
+        inner: {
+          type: 'Gain',
+          params: { gain: 1 },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      input_bindings: { input: ['inner', 'input'] },
+      output_bindings: { output: ['inner', 'output'] },
+    };
+
+    useGraphStore.getState().setComponentRegistry([
+      {
+        name: 'Arm6MuscleRigidTendon',
+        category: 'Mechanics',
+        description: 'Composite with a backend template',
+        param_schema: [],
+        input_ports: ['input'],
+        output_ports: ['output'],
+        icon: 'activity',
+        default_params: {},
+        template_graph: templateGraph,
+        template_ui_state: {
+          viewport: { x: 0, y: 0, zoom: 1 },
+          node_states: {
+            inner: { position: { x: 10, y: 20 }, collapsed: false, selected: false },
+          },
+        },
+      },
+    ]);
+
+    useGraphStore.getState().enterSubgraph('muscle');
+
+    const state = useGraphStore.getState();
+    const persisted = state.capturePersistedGraph();
+    expect(state.graph.nodes.inner.type).toBe('Gain');
+    expect(state.graph.nodes.inner.params).toEqual({ gain: 1 });
+    expect(state.lastSubgraphError).toBeNull();
+    expect(persisted.graph.subgraphs?.muscle?.nodes.inner.type).toBe('Gain');
+    expect(persisted.graph.subgraphs?.muscle?.nodes.activation_dynamics).toBeUndefined();
+    expect(persisted.graph.nodes.muscle.params._subgraph).toBeUndefined();
+  });
+});
+
 describe('graphStore recurrent connections', () => {
   beforeEach(() => {
     useGraphStore.getState().hydrateGraph(
@@ -690,7 +810,9 @@ describe('graphStore template insertion', () => {
     expect(state.graph.subgraphs?.cell?.nodes.inner.type).toBe('Linear');
     expect(state.uiState.subgraph_states?.cell?.node_states.inner).toBeDefined();
     expect(state.uiState.node_states.input_mux.position).toEqual({ x: 200, y: 160 });
-    expect(state.nodes.find((node) => node.id === 'cell')?.type).toBe('component');
+    const cellNode = state.nodes.find((node) => node.id === 'cell');
+    expect(cellNode?.type).toBe('subgraph');
+    expect(cellNode?.data.subgraph).toBeDefined();
     expect(state.edges.some((edge) => edge.source === 'input_mux' && edge.target === 'cell')).toBe(true);
   });
 

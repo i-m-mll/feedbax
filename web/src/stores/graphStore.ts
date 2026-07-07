@@ -390,36 +390,6 @@ export function createBlankGraph(): GraphSpec {
   };
 }
 
-function createEmptySubgraph(label: string): { graph: GraphSpec; uiState: GraphUIState } {
-  const now = new Date().toISOString();
-  const graph: GraphSpec = {
-    nodes: {},
-    wires: [],
-    input_ports: [],
-    output_ports: [],
-    input_bindings: {},
-    output_bindings: {},
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${label} Graph`,
-      description: 'Empty subgraph workspace.',
-      created_at: now,
-      updated_at: now,
-      version: '1.0.0',
-    },
-  };
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {},
-  };
-  const uiState: GraphUIState = {
-    ...baseUiState,
-    edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-  };
-  return { graph, uiState };
-}
-
 function getSubgraphContext(type: string): string {
   switch (type) {
     case 'Arm6MuscleRigidTendon':
@@ -428,219 +398,6 @@ function getSubgraphContext(type: string): string {
     default: return 'generic';
   }
 }
-
-function createArm6MuscleSubgraph(
-  nodeId: string,
-  _nodeSpec: ComponentSpec,
-): { graph: GraphSpec; uiState: GraphUIState } {
-  const now = new Date().toISOString();
-
-  // Arm6MuscleRigidTendon internal architecture (causal ODE, rigid tendon assumption):
-  //   excitation → activation_dynamics (FirstOrderFilter, 6-channel)
-  //                ↓
-  //   angles/angular_velocities → geometry (MomentArmProjection) → musculotendon_lengths/velocities
-  //                                                                  ↓
-  //                               activation + lengths/velocities → hill_muscles (RigidTendonHillMuscleThelen)
-  //                                                                  ↓
-  //                               forces → torque_map (MomentArmProjection) → torques
-  //
-  // For clarity, MomentArmProjection handles both the forward kinematics (angles → MT lengths)
-  // and the inverse (forces → torques) via its input/output ports.
-
-  const graph: GraphSpec = {
-    nodes: {
-      activation_dynamics: {
-        type: 'FirstOrderFilter',
-        params: {
-          tau_rise: 0.015,
-          tau_decay: 0.05,
-          dt: 0.01,
-          init_value: 0.0,
-        },
-        input_ports: ['input'],
-        output_ports: ['output'],
-      },
-      geometry: {
-        type: 'MomentArmProjection',
-        params: {
-          n_muscles: 6,
-          n_joints: 2,
-        },
-        input_ports: ['forces', 'angles', 'angular_velocities'],
-        output_ports: ['torques', 'musculotendon_lengths', 'musculotendon_velocities'],
-      },
-      hill_muscles: {
-        type: 'RigidTendonHillMuscleThelen',
-        params: {
-          n_muscles: 6,
-          dt: 0.01,
-          tau_activation: 0.015,
-          tau_deactivation: 0.05,
-          max_isometric_force: 500.0,
-          optimal_muscle_length: 0.1,
-          tendon_slack_length: 0.2,
-        },
-        input_ports: ['excitation', 'musculotendon_length', 'musculotendon_velocity'],
-        output_ports: ['force', 'activation', 'fiber_length', 'fiber_velocity'],
-      },
-    },
-    wires: [
-      // Activation dynamics → hill muscles
-      {
-        source_node: 'activation_dynamics',
-        source_port: 'output',
-        target_node: 'hill_muscles',
-        target_port: 'excitation',
-      },
-      // Geometry → hill muscles (kinematics)
-      {
-        source_node: 'geometry',
-        source_port: 'musculotendon_lengths',
-        target_node: 'hill_muscles',
-        target_port: 'musculotendon_length',
-      },
-      {
-        source_node: 'geometry',
-        source_port: 'musculotendon_velocities',
-        target_node: 'hill_muscles',
-        target_port: 'musculotendon_velocity',
-      },
-      // Hill muscles → torque projection
-      {
-        source_node: 'hill_muscles',
-        source_port: 'force',
-        target_node: 'geometry',
-        target_port: 'forces',
-      },
-    ],
-    input_ports: ['excitation', 'angles', 'angular_velocities'],
-    output_ports: ['torques', 'forces', 'activations'],
-    input_bindings: {
-      excitation: ['activation_dynamics', 'input'],
-      angles: ['geometry', 'angles'],
-      angular_velocities: ['geometry', 'angular_velocities'],
-    },
-    output_bindings: {
-      torques: ['geometry', 'torques'],
-      forces: ['hill_muscles', 'force'],
-      activations: ['hill_muscles', 'activation'],
-    },
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${nodeId} internals`,
-      description: '6-muscle rigid-tendon arm: activation dynamics → Hill force → moment arm projection.',
-      created_at: now,
-      updated_at: now,
-      version: '1.0.0',
-    },
-  };
-
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {
-      activation_dynamics: { position: { x: 120, y: 200 }, collapsed: false, selected: false },
-      geometry: { position: { x: 360, y: 340 }, collapsed: false, selected: false },
-      hill_muscles: { position: { x: 600, y: 200 }, collapsed: false, selected: false },
-    },
-  };
-
-  return {
-    graph,
-    uiState: {
-      ...baseUiState,
-      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-    },
-  };
-}
-
-function createPointMass8MuscleSubgraph(
-  nodeId: string,
-  _nodeSpec: ComponentSpec,
-): { graph: GraphSpec; uiState: GraphUIState } {
-  const now = new Date().toISOString();
-
-  // PointMass8MuscleRelu internal architecture (causal):
-  //   excitation (8) → relu_muscles (ReluMuscle, 8-channel) → forces (8)
-  //   forces (8) → force_projection (RadialForceProjection) → force_2d (2)
-
-  const graph: GraphSpec = {
-    nodes: {
-      relu_muscles: {
-        type: 'ReluMuscle',
-        params: {
-          max_isometric_force: 500.0,
-          tau_activation: 0.015,
-          tau_deactivation: 0.05,
-          min_activation: 0.0,
-          dt: 0.01,
-        },
-        input_ports: ['excitation'],
-        output_ports: ['activation', 'force'],
-      },
-      force_projection: {
-        type: 'RadialForceProjection',
-        params: {
-          n_muscles: 8,
-        },
-        input_ports: ['forces'],
-        output_ports: ['force_2d'],
-      },
-    },
-    wires: [
-      {
-        source_node: 'relu_muscles',
-        source_port: 'force',
-        target_node: 'force_projection',
-        target_port: 'forces',
-      },
-    ],
-    input_ports: ['excitation'],
-    output_ports: ['force_2d', 'forces', 'activations'],
-    input_bindings: {
-      excitation: ['relu_muscles', 'excitation'],
-    },
-    output_bindings: {
-      force_2d: ['force_projection', 'force_2d'],
-      forces: ['relu_muscles', 'force'],
-      activations: ['relu_muscles', 'activation'],
-    },
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${nodeId} internals`,
-      description: '8 radially-arranged ReLU muscles projecting to 2D net force.',
-      created_at: now,
-      updated_at: now,
-      version: '1.0.0',
-    },
-  };
-
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {
-      relu_muscles: { position: { x: 200, y: 200 }, collapsed: false, selected: false },
-      force_projection: { position: { x: 480, y: 200 }, collapsed: false, selected: false },
-    },
-  };
-
-  return {
-    graph,
-    uiState: {
-      ...baseUiState,
-      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-    },
-  };
-}
-
-const SUBGRAPH_FACTORIES: Record<
-  string,
-  (label: string, nodeSpec: ComponentSpec) => { graph: GraphSpec; uiState: GraphUIState }
-> = {
-  Arm6MuscleRigidTendon: createArm6MuscleSubgraph,
-  PointMass8MuscleRelu: createPointMass8MuscleSubgraph,
-  AcausalSystem: (label) => createEmptySubgraph(label),
-};
 
 function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
   const wiredInputs = new Set(
@@ -817,6 +574,19 @@ function normalizeUiState(
   };
 }
 
+function subgraphPreviewFromGraph(
+  graph: GraphSpec,
+  uiState?: GraphUIState,
+): SubgraphPreview {
+  const normalizedUiState = normalizeUiState(graph, uiState, DEFAULT_EDGE_STYLE);
+  return {
+    nodes: buildComponentNodes(graph, normalizedUiState),
+    edges: buildEdges(graph, normalizedUiState, DEFAULT_EDGE_STYLE),
+    inputPorts: graph.input_ports,
+    outputPorts: graph.output_ports,
+  };
+}
+
 function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
   const connectedInputs = new Map<string, Set<string>>();
   const connectedOutputs = new Map<string, Set<string>>();
@@ -843,10 +613,11 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
       selected: false,
     };
     const size = ui.size;
-    // Nodes that carry a _subgraph param are rendered by SubgraphNode.
-    const isSubgraphNode = Boolean(spec.params._subgraph);
-    const subgraph = isSubgraphNode
-      ? (spec.params._subgraph as unknown as SubgraphPreview)
+    const subgraphGraph = graph.subgraphs?.[id];
+    const subgraphUiState = uiState.subgraph_states?.[id];
+    const isSubgraphNode = Boolean(subgraphGraph);
+    const subgraph = subgraphGraph
+      ? subgraphPreviewFromGraph(subgraphGraph, subgraphUiState)
       : undefined;
     return {
       id,
@@ -1479,6 +1250,7 @@ interface GraphStoreState {
   currentContext: string;
   isDirty: boolean;
   lastSavedAt: string | null;
+  lastSubgraphError: string | null;
   past: { graph: GraphSpec; uiState: GraphUIState }[];
   future: { graph: GraphSpec; uiState: GraphUIState }[];
   selectedTapId: string | null;
@@ -1759,6 +1531,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   currentContext: 'top-level',
   isDirty: false,
   lastSavedAt: null,
+  lastSubgraphError: null,
   past: [],
   future: [],
   selectedTapId: null,
@@ -1786,6 +1559,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentGraphLabel: restored.currentGraphLabel,
       currentContext: restored.currentContext,
       isDirty: false,
+      lastSubgraphError: null,
       past: [],
       future: [],
       selectedTapId: null,
@@ -1811,6 +1585,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentContext: snapshot.currentContext,
       isDirty: snapshot.isDirty,
       lastSavedAt: snapshot.lastSavedAt,
+      lastSubgraphError: null,
       past: snapshot.past,
       future: snapshot.future,
       selectedTapId: snapshot.selectedTapId,
@@ -1841,6 +1616,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentContext: 'top-level',
       isDirty: false,
       lastSavedAt: null,
+      lastSubgraphError: null,
       past: [],
       future: [],
       selectedTapId: null,
@@ -2023,7 +1799,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeSpec = state.graph.nodes[nodeId];
       const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
-      if (!nodeSpec || (!get()._compositeTypes.has(nodeSpec.type) && !hasSubgraph)) {
+      const isComposite = nodeSpec ? get()._compositeTypes.has(nodeSpec.type) : false;
+      if (!nodeSpec || (!isComposite && !hasSubgraph)) {
         return state;
       }
       const parentLabel = state.currentGraphLabel || state.graph.metadata?.name || 'Model';
@@ -2039,18 +1816,23 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         derivedNext = cachedGraph;
         nextUiState = cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
       } else {
-        // Bug 5e8895e: If registry hasn't loaded yet and no factory exists,
-        // defer rather than creating an empty subgraph that would mask the template.
-        if (!get()._isRegistryLoaded && get()._compositeTypes.has(nodeSpec.type) && !SUBGRAPH_FACTORIES[nodeSpec.type]) {
-          console.warn(`enterSubgraph: component registry not yet loaded for type "${nodeSpec.type}", deferring`);
-          return state;
+        if (!get()._isRegistryLoaded) {
+          return {
+            lastSubgraphError:
+              `Cannot open "${nodeId}" because component templates are still loading.`,
+          };
         }
-        const freshLayer = SUBGRAPH_FACTORIES[nodeSpec.type]?.(nodeId, nodeSpec)
-            ?? (componentDef?.template_graph
-                ? { graph: componentDef.template_graph, uiState: componentDef.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-                : createEmptySubgraph(nodeId));
-        derivedNext = deriveSubgraphPorts(freshLayer.graph);
-        nextUiState = freshLayer.uiState;
+        if (!componentDef?.template_graph) {
+          return {
+            lastSubgraphError:
+              `${nodeSpec.type} node "${nodeId}" has no backend template_graph; `
+              + 'Studio cannot synthesize a subgraph.',
+          };
+        }
+        derivedNext = deriveSubgraphPorts(cloneGraphSpec(componentDef.template_graph));
+        nextUiState = cloneGraphSpec(
+          componentDef.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} }
+        );
       }
       const normalized = normalizeUiState(derivedNext, nextUiState, state.edgeStyle);
       const parentGraph: GraphSpec = {
@@ -2086,6 +1868,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         edges: buildEdges(derivedNext, normalized, state.edgeStyle),
         currentGraphLabel: nodeId,
         currentContext: context,
+        lastSubgraphError: null,
         past: [],
         future: [],
       };
