@@ -3,13 +3,17 @@ import {
   buildWorkspaceSnapshot,
   getActiveScenario,
   getActiveStage,
+  getProjectedScenario,
   getTopPaneState,
   getTrainingScenario,
+  getWorkspaceViewMode,
+  getWorkspaceViewState,
   objectiveSpecFromLossSpec,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { graphNodeEntityId } from '@/features/scenario/entities';
 import { addObjectiveTerm, createObjectiveTerm } from '@/features/scenario/objectives';
+import { WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
 import type { AnalysisSnapshot } from '@/types/analysis';
@@ -414,6 +418,215 @@ describe('buildWorkspaceSnapshot', () => {
 
     expect(getActiveStage(refreshed)?.kind).toBe('report');
     expect(refreshed.ui_state.active_stage_id).toBe(getActiveStage(refreshed)?.id);
+  });
+
+  it('projects stage-scoped scenario data without leaking train losses into eval views', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec: {
+        ...trainingSpec,
+        loss: {
+          type: 'Composite',
+          label: 'train loss',
+          weight: 1,
+          children: {
+            endpoint: {
+              type: 'TargetStateLoss',
+              label: 'Train endpoint loss',
+              weight: 1,
+              selector: 'port:effector.position',
+            },
+          },
+        },
+      },
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
+    const evalStage = workspace.stages.find((stage) => stage.kind === 'eval')!;
+    const trainScenario = workspace.scenarios[trainStage.scenario_id!];
+    const evalScenario = workspace.scenarios[evalStage.scenario_id!];
+    const evalObjective: StudioObjectiveSpec = {
+      schema_version: 'feedbax.studio.objective.v1',
+      terms: [
+        {
+          id: 'objective:eval_success',
+          type_id: 'SuccessRateMetric',
+          label: 'Eval success',
+          role: 'metric',
+          source_selector: null,
+          target_selector: null,
+          operator: 'maximize',
+          weight: 1,
+          metadata: {},
+        },
+      ],
+      legacy_loss_spec: null,
+      metadata: { stage: 'eval' },
+    };
+    const scopedWorkspace: StudioWorkspaceSpec = {
+      ...workspace,
+      scenarios: {
+        ...workspace.scenarios,
+        [evalStage.scenario_id!]: {
+          ...evalScenario,
+          task_spec: {
+            ...taskSpec,
+            params: { ...taskSpec.params, target_radius: 0.08 },
+          },
+          objective_spec: evalObjective,
+        },
+      },
+    };
+
+    const trainProjection = getProjectedScenario(scopedWorkspace, trainStage)!;
+    const evalProjection = getProjectedScenario(scopedWorkspace, evalStage)!;
+    const trainObjective = trainProjection.objective_spec as StudioObjectiveSpec;
+    const projectedEvalObjective = evalProjection.objective_spec as StudioObjectiveSpec;
+
+    expect(trainObjective.terms[0].label).toBe('Train endpoint loss');
+    expect(evalProjection.graph).toBe(trainScenario.graph);
+    expect(evalProjection.task_spec?.params.target_radius).toBe(0.08);
+    expect(projectedEvalObjective).toEqual(evalObjective);
+    expect(projectedEvalObjective.terms.map((term) => term.label)).not.toContain(
+      'Train endpoint loss'
+    );
+  });
+
+  it('persists active workspace view camera and overlay state in scenario UI state', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().updateActiveWorkspaceViewState({
+      camera: { zoom: 2.25, pan: { x: 120, y: -40 } },
+      overlay_visibility: { objectives: false },
+      playback: { position: 12.5, speed: 1.5 },
+    });
+
+    const state = useWorkspaceStore.getState();
+    const trainStage = getActiveStage(state.workspace)!;
+    const trainScenario = state.workspace!.scenarios[trainStage.scenario_id!];
+    const viewState = getWorkspaceViewState(state.workspace, trainStage);
+
+    expect(viewState.schema_version).toBe(WORKSPACE_VIEW_STATE_SCHEMA_VERSION);
+    expect(viewState.camera).toEqual({ zoom: 2.25, pan: { x: 120, y: -40 } });
+    expect(viewState.overlay_visibility.objectives).toBe(false);
+    expect(viewState.playback).toEqual({ position: 12.5, speed: 1.5 });
+    expect(trainScenario.ui_state.workspace_view_state).toMatchObject({
+      schema_version: WORKSPACE_VIEW_STATE_SCHEMA_VERSION,
+      camera: { zoom: 2.25, pan: { x: 120, y: -40 } },
+    });
+  });
+
+  it('clears unsupported or stale workspace view refs to defined fallbacks', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
+    const trainScenario = workspace.scenarios[trainStage.scenario_id!];
+    const restoredWorkspace: StudioWorkspaceSpec = {
+      ...workspace,
+      stages: workspace.stages.map((stage) =>
+        stage.id === trainStage.id
+          ? {
+              ...stage,
+              artifact_refs: [
+                {
+                  id: 'artifact:valid',
+                  kind: 'Plot',
+                  provider: 'test',
+                  role: 'workspace_overlay',
+                  uri: 'artifact://valid',
+                  media_type: null,
+                  metadata: {},
+                },
+              ],
+            }
+          : stage
+      ),
+      scenarios: {
+        ...workspace.scenarios,
+        [trainScenario.id]: {
+          ...trainScenario,
+          ui_state: {
+            workspace_view_state: {
+              schema_version: WORKSPACE_VIEW_STATE_SCHEMA_VERSION,
+              camera: { zoom: 99, pan: { x: '4', y: 'bad' } },
+              selected_artifact_ref: 'artifact:valid',
+              selected_trial_ref: 'trial:missing',
+              comparison_selection: {
+                baseline_ref: 'artifact:valid',
+                candidate_ref: 'artifact:missing',
+              },
+              overlay_visibility: { objectives: false, artifacts: 'yes' },
+              playback: { position: -4, speed: 99 },
+            },
+          },
+        },
+      },
+    };
+
+    useWorkspaceStore.getState().setWorkspace(restoredWorkspace);
+    const restoredStage = getActiveStage(useWorkspaceStore.getState().workspace)!;
+    const viewState = getWorkspaceViewState(useWorkspaceStore.getState().workspace, restoredStage);
+
+    expect(viewState.camera).toEqual({ zoom: 8, pan: { x: 4, y: 0 } });
+    expect(viewState.selected_artifact_ref).toBe('artifact:valid');
+    expect(viewState.selected_trial_ref).toBeNull();
+    expect(viewState.comparison_selection).toEqual({
+      baseline_ref: 'artifact:valid',
+      candidate_ref: null,
+    });
+    expect(viewState.overlay_visibility.objectives).toBe(false);
+    expect(viewState.overlay_visibility.artifacts).toBe(true);
+    expect(viewState.playback).toEqual({ position: 0, speed: 16 });
+    expect(
+      getWorkspaceViewState({
+        ...workspace,
+        ui_state: {
+          workspace_view_state: { schema_version: 'feedbax.studio.workspace_view_state.v0' },
+        },
+      }).schema_version
+    ).toBe(WORKSPACE_VIEW_STATE_SCHEMA_VERSION);
+  });
+
+  it('derives workspace view mode from stage kind and available data', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
+
+    expect(getWorkspaceViewMode(workspace, trainStage)).toBe('authoring');
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().updateActiveWorkspaceViewState({
+      playback: { position: 4 },
+    });
+    expect(
+      getWorkspaceViewMode(useWorkspaceStore.getState().workspace, trainStage)
+    ).toBe('playback');
   });
 
   it('stores top-pane projection and scenario entity selection in workspace UI state', () => {
