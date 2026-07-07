@@ -77,6 +77,23 @@ def test_training_run_index_lists_pending_manifest_rows(
     assert payload[0]["hyperparams"]["axis_duration"] == 80
 
 
+def test_training_run_index_lists_sweep_axis_hyperparams(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(runs, "_legacy_training_runs_from_model_db", lambda: [])
+    manifest = _training_manifest("feedbax-training-run:sweep", "pending")
+    manifest.metadata["studio"]["axis_coordinates"] = {"loss_weight": 1e-5}
+    write_manifest(manifest, root=tmp_path)
+    client = TestClient(create_app())
+
+    response = client.get("/api/runs/training")
+
+    assert response.status_code == 200
+    assert response.json()[0]["hyperparams"]["axis_loss_weight"] == 1e-5
+
+
 def test_training_run_index_merges_manifest_and_legacy_db_rows(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

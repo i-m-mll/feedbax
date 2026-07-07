@@ -38,6 +38,7 @@ from feedbax.contracts.manifest import (
     Provenance,
     ReportSpec,
     TrainingRunManifest,
+    TrainingRunSetManifest,
     default_manifest_root,
     planned_training_run_manifest_id,
     spec_payload,
@@ -45,6 +46,12 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
+from feedbax.studio.sweep_matrix import (
+    ExpandedSweepRun,
+    SweepMatrixError,
+    expand_sweep_matrix,
+    matrix_spec_from_selection,
+)
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
 from feedbax.contracts.graph import (
     GraphSpec,
@@ -244,7 +251,7 @@ def prepare_studio_training_execution(
             metadata=plan_ref.metadata,
         ),
     )
-    pending_manifest, pending_path = _write_pending_training_manifest(
+    staged_training_refs, staged_run_set_ref, staged_summary = _stage_pending_training_manifests(
         workspace=workspace,
         stage=stage,
         scenario_id=stage.scenario_id,
@@ -255,28 +262,25 @@ def prepare_studio_training_execution(
         if scenario.task_binding_spec is not None
         else None,
         request=request,
+        job_id=plan.job_id,
     )
-    pending_ref = _studio_manifest_ref(
-        pending_manifest.kind,
-        pending_manifest.id,
-        "training_run",
-        pending_path,
-        plan.job_id,
-    )
-    pending_ref.metadata = {
-        **pending_ref.metadata,
-        "status": pending_manifest.status,
-        "stage_id": stage.id,
-        "scenario_id": stage.scenario_id,
-        "planned": True,
-        **pending_manifest.metadata,
-    }
-    stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, pending_ref)
-    stage.output_collections = _upsert_training_manifest_in_outputs(
-        stage.output_collections,
-        pending_ref,
-        stage.id,
-    )
+    for staged_ref in staged_training_refs:
+        stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, staged_ref)
+        stage.output_collections = _upsert_training_manifest_in_outputs(
+            stage.output_collections,
+            staged_ref,
+            stage.id,
+        )
+    if staged_run_set_ref is not None:
+        stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, staged_run_set_ref)
+        stage.output_collections = _upsert_manifest_in_output_collection(
+            stage.output_collections,
+            collection_kind="training_run_sets",
+            collection_id="collection:training-run-sets",
+            collection_label="Training run sets",
+            stage_id=stage.id,
+            manifest_ref=staged_run_set_ref,
+        )
     stage.metadata = {
         **stage.metadata,
         "last_execution_plan": {
@@ -285,15 +289,13 @@ def prepare_studio_training_execution(
             "prepared_at": prepared_at,
             "run_directory": plan.run_directory,
         },
-        "last_staged_training_run": {
-            "manifest_id": pending_manifest.id,
-            "status": pending_manifest.status,
-            "path": str(pending_path),
-            "staged_at": prepared_at,
-        },
+        "last_staged_training": staged_summary,
     }
     workspace.artifact_refs = _upsert_artifact_ref(workspace.artifact_refs, plan_ref)
-    workspace.manifest_refs = _upsert_manifest_ref(workspace.manifest_refs, pending_ref)
+    for staged_ref in staged_training_refs:
+        workspace.manifest_refs = _upsert_manifest_ref(workspace.manifest_refs, staged_ref)
+    if staged_run_set_ref is not None:
+        workspace.manifest_refs = _upsert_manifest_ref(workspace.manifest_refs, staged_run_set_ref)
     workspace.collections = _upsert_many_collection_refs(
         workspace.collections,
         stage.output_collections,
@@ -839,6 +841,280 @@ def _write_pending_training_manifest(
         metadata=metadata,
     )
     return manifest, write_manifest(manifest, root=root_path)
+
+
+def _stage_pending_training_manifests(
+    *,
+    workspace: StudioWorkspaceSpec,
+    stage: StudioStageSpec,
+    scenario_id: str | None,
+    graph_spec: dict[str, Any],
+    training_spec: dict[str, Any],
+    task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None,
+    request: StudioTrainingExecutionRequest,
+    job_id: str,
+) -> tuple[list[StudioManifestRef], StudioManifestRef | None, dict[str, Any]]:
+    matrix_spec = matrix_spec_from_selection(stage.selection_spec)
+    if matrix_spec is None:
+        pending_manifest, pending_path = _write_pending_training_manifest(
+            workspace=workspace,
+            stage=stage,
+            scenario_id=scenario_id,
+            graph_spec=graph_spec,
+            training_spec=training_spec,
+            task_spec=task_spec,
+            task_binding_spec=task_binding_spec,
+            request=request,
+        )
+        pending_ref = _pending_training_manifest_ref(
+            pending_manifest,
+            pending_path,
+            stage=stage,
+            job_id=job_id,
+        )
+        return [pending_ref], None, {
+            "manifest_id": pending_manifest.id,
+            "status": pending_manifest.status,
+            "path": str(pending_path),
+            "staged_at": utc_now().isoformat(),
+            "run_count": 1,
+        }
+
+    try:
+        expanded = expand_sweep_matrix(
+            matrix_spec,
+            graph_spec=graph_spec,
+            training_spec=training_spec,
+            task_spec=task_spec,
+            task_binding_spec=task_binding_spec,
+            default_name=f"{stage.label} matrix",
+        )
+    except SweepMatrixError as exc:
+        raise StudioExecutionPreparationError(str(exc)) from exc
+
+    for expanded_run in expanded.runs:
+        _validate_expanded_training_run(expanded_run)
+
+    root_path = default_manifest_root()
+    run_set = TrainingRunSetManifest(
+        id=expanded.run_set_id,
+        name=expanded.name,
+        status="pending",
+        run_ids=[run.run_id for run in expanded.runs],
+        graph_spec=spec_payload("GraphSpec", graph_spec),
+        axes=expanded.axes,
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-studio-pipeline",
+                name="stage_training_run_set",
+                metadata={"job_id": request.job_id},
+            ),
+            issues=list(request.issues),
+            metadata={
+                **request.metadata,
+                "studio": {
+                    "workspace_id": workspace.id,
+                    "workspace_schema_version": workspace.schema_version,
+                    "stage_id": stage.id,
+                    "stage_kind": stage.kind,
+                    "scenario_id": scenario_id,
+                    "selection_spec": stage.selection_spec,
+                    "run_count": len(expanded.runs),
+                },
+            },
+        ),
+        metadata={
+            "studio": {
+                "workspace_id": workspace.id,
+                "workspace_schema_version": workspace.schema_version,
+                "stage_id": stage.id,
+                "stage_kind": stage.kind,
+                "scenario_id": scenario_id,
+                "selection_spec": stage.selection_spec,
+            },
+            "planned": True,
+            "staged_at": utc_now().isoformat(),
+            "run_count": len(expanded.runs),
+        },
+    )
+    run_set_path = write_manifest(run_set, root=root_path)
+    run_refs: list[StudioManifestRef] = []
+    run_paths: dict[str, str] = {}
+    for expanded_run in expanded.runs:
+        manifest, path = _write_pending_training_manifest_for_expanded_run(
+            expanded_run,
+            workspace=workspace,
+            stage=stage,
+            scenario_id=scenario_id,
+            run_set_id=expanded.run_set_id,
+            request=request,
+            root=root_path,
+        )
+        run_refs.append(
+            _pending_training_manifest_ref(
+                manifest,
+                path,
+                stage=stage,
+                job_id=job_id,
+            )
+        )
+        run_paths[manifest.id] = str(path)
+
+    run_set_ref = _studio_manifest_ref(
+        run_set.kind,
+        run_set.id,
+        "training_run_set",
+        run_set_path,
+        job_id,
+    )
+    run_set_ref.metadata = {
+        **run_set_ref.metadata,
+        "status": run_set.status,
+        "stage_id": stage.id,
+        "scenario_id": scenario_id,
+        "planned": True,
+        "run_count": len(expanded.runs),
+        "axes": expanded.axes.model_dump(mode="json", exclude_none=True),
+    }
+    return run_refs, run_set_ref, {
+        "manifest_id": run_set.id,
+        "status": run_set.status,
+        "path": str(run_set_path),
+        "staged_at": utc_now().isoformat(),
+        "run_count": len(expanded.runs),
+        "run_ids": [run.run_id for run in expanded.runs],
+        "run_paths": run_paths,
+    }
+
+
+def _write_pending_training_manifest_for_expanded_run(
+    expanded_run: ExpandedSweepRun,
+    *,
+    workspace: StudioWorkspaceSpec,
+    stage: StudioStageSpec,
+    scenario_id: str | None,
+    run_set_id: str,
+    request: StudioTrainingExecutionRequest,
+    root: Path,
+) -> tuple[TrainingRunManifest, Path]:
+    from feedbax.contracts.manifest import load_manifest
+    from feedbax.persistence.manifest_index import find_manifest_paths_by_id
+
+    existing_paths = find_manifest_paths_by_id(expanded_run.run_id, root=root)
+    if existing_paths:
+        existing = load_manifest(existing_paths[0])
+        if isinstance(existing, TrainingRunManifest):
+            if existing.status == "cancelled":
+                restaged = existing.model_copy(
+                    update={
+                        "status": "pending",
+                        "completed_at": None,
+                        "metadata": {
+                            **existing.metadata,
+                            "planned": True,
+                            "restaged_at": utc_now().isoformat(),
+                            "restaged_from_status": "cancelled",
+                        },
+                    }
+                )
+                return restaged, write_manifest(restaged, root=root)
+            return existing, existing_paths[0]
+
+    now = utc_now()
+    axis_coordinates = expanded_run.coordinate.values
+    metadata = {
+        "name": expanded_run.coordinate.label,
+        "label": expanded_run.coordinate.label,
+        "studio": {
+            "workspace_id": workspace.id,
+            "workspace_schema_version": workspace.schema_version,
+            "stage_id": stage.id,
+            "stage_kind": stage.kind,
+            "scenario_id": scenario_id,
+            "selection_spec": stage.selection_spec,
+            "axis_coordinates": axis_coordinates,
+            "axis_value_indices": expanded_run.coordinate.value_indices,
+            "run_set_id": run_set_id,
+            "planned_training_run_id": expanded_run.run_id,
+        },
+        "planned": True,
+        "staged_at": now.isoformat(),
+    }
+    manifest = TrainingRunManifest(
+        id=expanded_run.run_id,
+        run_set_id=run_set_id,
+        job_id=request.job_id,
+        status="pending",
+        graph_spec=spec_payload("GraphSpec", expanded_run.graph_spec),
+        training_spec=spec_payload("TrainingSpec", expanded_run.training_spec),
+        task_spec=spec_payload("TaskSpec", expanded_run.task_spec),
+        task_binding_spec=spec_payload("StudioTaskBindingSpec", expanded_run.task_binding_spec)
+        if expanded_run.task_binding_spec is not None
+        else None,
+        overrides=expanded_run.overrides,
+        summary_metrics={
+            key: value
+            for key, value in {"total_batches": expanded_run.training_spec.get("n_batches")}.items()
+            if value is not None
+        },
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-studio-pipeline",
+                name="stage_training_run",
+                metadata={"job_id": request.job_id, "run_set_id": run_set_id},
+            ),
+            issues=list(request.issues),
+            metadata={**request.metadata, "studio": metadata["studio"]},
+        ),
+        metadata=metadata,
+    )
+    return manifest, write_manifest(manifest, root=root)
+
+
+def _validate_expanded_training_run(expanded_run: ExpandedSweepRun) -> None:
+    validation = _validate_training_scenario(
+        graph=expanded_run.graph_spec,
+        training_spec=expanded_run.training_spec,
+        task_spec=expanded_run.task_spec,
+        task_binding_spec=expanded_run.task_binding_spec,
+    )
+    if not validation.errors:
+        return
+    details = "; ".join(
+        f"{issue.location.get('path') if issue.location else '<unknown>'}: {issue.message}"
+        for issue in validation.errors
+    )
+    raise StudioExecutionPreparationError(
+        "Expanded sweep training run is invalid: "
+        f"run_id={expanded_run.run_id!r}, coordinate={expanded_run.coordinate.values!r}; "
+        f"{details}"
+    )
+
+
+def _pending_training_manifest_ref(
+    pending_manifest: TrainingRunManifest,
+    pending_path: Path,
+    *,
+    stage: StudioStageSpec,
+    job_id: str,
+) -> StudioManifestRef:
+    pending_ref = _studio_manifest_ref(
+        pending_manifest.kind,
+        pending_manifest.id,
+        "training_run",
+        pending_path,
+        job_id,
+    )
+    pending_ref.metadata = {
+        **pending_ref.metadata,
+        "status": pending_manifest.status,
+        "stage_id": stage.id,
+        "scenario_id": stage.scenario_id,
+        "planned": True,
+        **pending_manifest.metadata,
+    }
+    return pending_ref
 
 
 def _training_seed(training_spec: dict[str, Any]) -> Any | None:
