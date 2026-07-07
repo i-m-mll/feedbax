@@ -18,14 +18,21 @@
   - Other networks (SimpleStagedNetwork, LeakyRNNCell): `feedbax/models/networks.py`
   - Graph execution and Component base: `feedbax/runtime/graph.py`
 - **Studio backend** (FastAPI): `feedbax/web/`
-  - Training service (stub): `feedbax/web/services/training_service.py`
+  - Training service: `feedbax/web/services/training_service.py` manages local
+    worker subprocesses, remote worker forwarding, SSE relay state, and
+    checkpoint proxy/download helpers
+  - Worker client/subprocess path: `feedbax/web/worker/client.py`,
+    `feedbax/web/worker/`, and `feedbax/web/ws/training.py`
   - WebSocket handlers: `feedbax/web/ws/`
   - API routes: `feedbax/web/api/`
 - **Studio frontend** (React/TypeScript): `web/`
-  - Canvas + nodes: `web/src/components/canvas/`, `web/src/components/nodes/`
-  - Bottom shelf panels: `web/src/components/panels/`
+  - Canvas renderers: `web/src/components/canvas/`
+  - Shelves, sidebars, and panels: `web/src/components/layout/`,
+    `web/src/components/panels/`
   - Zustand stores: `web/src/stores/`
-- **Docs**: `docs/WEB_UI_SPEC.md` (87 KB comprehensive spec), `docs/COLLIMATOR_COMPARISON.md`
+- **Docs**: `docs/STUDIO_CURRENT_ARCHITECTURE.md`,
+  `docs/WEB_UI_SPEC.md` (historical 2026-01 draft),
+  `docs/COLLIMATOR_COMPARISON.md`
 - **Design specs**: `docs/design/feedbax_merge_spec.md`, `docs/design/SPEC_EAGER_MODELS.md`
 
 ## Core Principle
