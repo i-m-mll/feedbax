@@ -330,10 +330,14 @@ def _legacy_training_runs_from_model_db() -> list[TrainingRunInfo]:
 @router.get("/training")
 async def list_training_runs() -> list[TrainingRunInfo]:
     """List training runs from the durable manifest index."""
-    rows = iter_indexed_manifest_records_by_kind("TrainingRunManifest")
-    if rows:
-        return [_training_summary_from_index_row(row) for row in rows]
-    return _legacy_training_runs_from_model_db()
+    indexed = [
+        _training_summary_from_index_row(row)
+        for row in iter_indexed_manifest_records_by_kind("TrainingRunManifest")
+    ]
+    by_id = {row.id: row for row in indexed}
+    for legacy in _legacy_training_runs_from_model_db():
+        by_id.setdefault(legacy.id, legacy)
+    return list(by_id.values())
 
 
 @router.get("/training/{training_run_id}/evals")

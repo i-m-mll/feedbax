@@ -5,6 +5,7 @@ import { buildWorkspaceSnapshot, getStageByKind, useWorkspaceStore } from '@/sto
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { EvalRun, TrainingRun } from '@/types/runs';
 import type { TaskSpec, TrainingSpec } from '@/types/training';
+import { trainingRunSummaries } from '@/utils/pipelineCollections';
 
 vi.mock('@/api/runAPI', () => ({
   fetchTrainingRuns: vi.fn(),
@@ -58,6 +59,26 @@ const evalRun: EvalRun = {
   createdAt: '2026-05-18T12:10:00Z',
   status: 'completed',
   description: 'Stage input selection',
+};
+
+const pendingTrainingRun: TrainingRun = {
+  id: 'feedbax-training-run:pending',
+  name: 'Pending manifest run',
+  createdAt: '2026-05-18T12:20:00Z',
+  status: 'pending',
+  hyperparams: {
+    n_batches: 25,
+    batch_size: 8,
+    ramp_duration_steps: 80,
+  },
+  metrics: { final_validation_loss: 0.25 },
+  uri: '/tmp/feedbax_runs/manifests/training_runs/pending.json',
+  stageId: 'stage:train',
+  scenarioId: 'scenario:train',
+  planned: true,
+  checkpointAvailable: false,
+  sourceIssue: '9aa8ff2',
+  provenanceId: 'feedbax-training-run:pending',
 };
 
 beforeEach(() => {
@@ -156,6 +177,77 @@ describe('useRunStore stage collection ownership', () => {
     });
     expect(useRunStore.getState().selectedTrainingRunId).toBe(trainingRun.id);
     expect(useRunStore.getState().selectedEvalRunId).toBe(evalRun.id);
+  });
+
+  it('preserves typed pending training-run fields through workspace refs and hydration', () => {
+    useRunStore.getState().addTrainingRun(pendingTrainingRun);
+
+    const workspace = useWorkspaceStore.getState().workspace;
+    const trainStage = getStageByKind(workspace, 'train');
+    const ref = trainStage?.output_collections[0].item_refs[0];
+    expect(ref).toMatchObject({
+      kind: 'TrainingRunManifest',
+      id: pendingTrainingRun.id,
+      uri: pendingTrainingRun.uri,
+      metadata: expect.objectContaining({
+        status: 'pending',
+        planned: true,
+        stage_id: 'stage:train',
+        scenario_id: 'scenario:train',
+        source_issue: '9aa8ff2',
+        provenance_id: pendingTrainingRun.id,
+        final_validation_loss: 0.25,
+      }),
+    });
+
+    const [summary] = trainingRunSummaries(trainStage);
+    expect(summary).toMatchObject({
+      id: pendingTrainingRun.id,
+      status: 'pending',
+      finalValidationLoss: 0.25,
+      batchSize: 8,
+      rampDurationSteps: 80,
+      checkpointAvailable: false,
+      sourceIssue: '9aa8ff2',
+      provenanceId: pendingTrainingRun.id,
+      uri: pendingTrainingRun.uri,
+    });
+
+    useRunStore.setState({ trainingRuns: [], selectedTrainingRunId: null });
+    useRunStore.getState().hydrateFromWorkspace(workspace);
+
+    expect(useRunStore.getState().trainingRuns[0]).toMatchObject({
+      id: pendingTrainingRun.id,
+      status: 'pending',
+      planned: true,
+      stageId: 'stage:train',
+      scenarioId: 'scenario:train',
+      checkpointAvailable: false,
+      sourceIssue: '9aa8ff2',
+      provenanceId: pendingTrainingRun.id,
+      uri: pendingTrainingRun.uri,
+    });
+  });
+
+  it('preserves cancelled training-run status through workspace hydration', () => {
+    const cancelledRun: TrainingRun = {
+      ...pendingTrainingRun,
+      id: 'feedbax-training-run:cancelled',
+      name: 'Cancelled manifest run',
+      status: 'cancelled',
+      planned: true,
+    };
+    useRunStore.getState().addTrainingRun(cancelledRun);
+
+    const workspace = useWorkspaceStore.getState().workspace;
+    useRunStore.setState({ trainingRuns: [], selectedTrainingRunId: null });
+    useRunStore.getState().hydrateFromWorkspace(workspace);
+
+    expect(useRunStore.getState().trainingRuns[0]).toMatchObject({
+      id: cancelledRun.id,
+      status: 'cancelled',
+      planned: true,
+    });
   });
 
   it('keeps training-run load failures visible without fabricating rows', async () => {

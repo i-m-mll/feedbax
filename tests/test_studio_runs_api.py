@@ -61,6 +61,7 @@ def test_training_run_index_lists_pending_manifest_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(runs, "_legacy_training_runs_from_model_db", lambda: [])
     write_manifest(_training_manifest("feedbax-training-run:pending", "pending"), root=tmp_path)
     client = TestClient(create_app())
 
@@ -76,11 +77,40 @@ def test_training_run_index_lists_pending_manifest_rows(
     assert payload[0]["hyperparams"]["axis_duration"] == 80
 
 
+def test_training_run_index_merges_manifest_and_legacy_db_rows(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    write_manifest(_training_manifest("feedbax-training-run:pending", "pending"), root=tmp_path)
+    monkeypatch.setattr(
+        runs,
+        "_legacy_training_runs_from_model_db",
+        lambda: [
+            runs.TrainingRunInfo(
+                id="legacy-completed-run",
+                name="Legacy completed run",
+                created_at="2026-07-07T12:00:00",
+                status="completed",
+                hyperparams={"n_batches": 10},
+            )
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/runs/training")
+
+    assert response.status_code == 200
+    ids = {row["id"] for row in response.json()}
+    assert ids == {"feedbax-training-run:pending", "legacy-completed-run"}
+
+
 def test_pending_training_manifest_lifecycle_is_status_guarded(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(runs, "_legacy_training_runs_from_model_db", lambda: [])
     pending_path = write_manifest(
         _training_manifest("feedbax-training-run:pending", "pending"),
         root=tmp_path,
@@ -115,6 +145,7 @@ def test_pending_training_manifest_delete_removes_only_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(runs, "_legacy_training_runs_from_model_db", lambda: [])
     pending_path = write_manifest(
         _training_manifest("feedbax-training-run:delete-me", "pending"),
         root=tmp_path,

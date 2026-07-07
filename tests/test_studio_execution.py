@@ -302,6 +302,38 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     assert manifest.provenance.issues == ["9aa8ff2"]
 
 
+def test_prepare_studio_training_execution_restages_cancelled_deterministic_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    request = StudioTrainingExecutionRequest(
+        workspace=_workspace(),
+        job_id="studio-plan",
+        local_cwd="/tmp/feedbax-studio",
+        issues=["9aa8ff2"],
+    )
+
+    first = prepare_studio_training_execution(request)
+    train_stage = next(stage for stage in first.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    client = TestClient(create_app())
+
+    cancelled = client.post(f"/api/runs/training/{training_ref.id}/cancel")
+    assert cancelled.status_code == 200
+    assert load_manifest(training_ref.uri).status == "cancelled"
+
+    restaged = prepare_studio_training_execution(request)
+    restaged_stage = next(stage for stage in restaged.workspace.stages if stage.kind == "train")
+    restaged_ref = next(ref for ref in restaged_stage.manifest_refs if ref.role == "training_run")
+    restaged_manifest = load_manifest(restaged_ref.uri)
+
+    assert restaged_ref.id == training_ref.id
+    assert restaged_manifest.status == "pending"
+    assert restaged_manifest.completed_at is None
+    assert restaged_manifest.metadata["restaged_from_status"] == "cancelled"
+
+
 def test_studio_training_plan_endpoint_rejects_missing_training_spec():
     workspace = build_default_studio_workspace(label="Missing spec", graph=_graph())
     client = TestClient(create_app())

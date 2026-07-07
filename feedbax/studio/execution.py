@@ -780,6 +780,20 @@ def _write_pending_training_manifest(
     if existing_paths:
         existing = load_manifest(existing_paths[0])
         if isinstance(existing, TrainingRunManifest):
+            if existing.status == "cancelled":
+                restaged = existing.model_copy(
+                    update={
+                        "status": "pending",
+                        "completed_at": None,
+                        "metadata": {
+                            **existing.metadata,
+                            "planned": True,
+                            "restaged_at": utc_now().isoformat(),
+                            "restaged_from_status": "cancelled",
+                        },
+                    }
+                )
+                return restaged, write_manifest(restaged, root=root_path)
             return existing, existing_paths[0]
 
     now = utc_now()
