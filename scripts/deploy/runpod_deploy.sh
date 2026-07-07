@@ -52,6 +52,8 @@ REMOTE_RUN_DIR="${REMOTE_RUN_DIR:-}"
 REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-}"
 REMOTE_ARTIFACTS_DIR="${REMOTE_ARTIFACTS_DIR:-}"
 TRAIN_COMMAND="${TRAIN_COMMAND:-}"
+RUNPOD_RUN_CONFIG_FILE="${RUNPOD_RUN_CONFIG_FILE:-}"
+REMOTE_DEPLOY_CONFIG_PATH="${REMOTE_DEPLOY_CONFIG_PATH:-}"
 
 # --- Parallel multi-row launch (W2, issue 9ca50b1) ---------------------------
 ROWS_MANIFEST="${ROWS_MANIFEST:-}"
@@ -296,6 +298,8 @@ finalize_remote_defaults() {
     REMOTE_RUN_DIR="${REMOTE_RUN_DIR:-$RUNPOD_VOLUME_MOUNT/feedbax_runs/runpod-deploy}"
     REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-$REMOTE_RUN_DIR/sentinels}"
     REMOTE_ARTIFACTS_DIR="${REMOTE_ARTIFACTS_DIR:-$REMOTE_RLRMP_ROOT/_artifacts}"
+    RUNPOD_RUN_CONFIG_FILE="${RUNPOD_RUN_CONFIG_FILE:-$FEEDBAX_ROOT/.runpod/run-config.json}"
+    REMOTE_DEPLOY_CONFIG_PATH="${REMOTE_DEPLOY_CONFIG_PATH:-$RUNPOD_VOLUME_MOUNT/feedbax_runs/runpod-deploy-config.json}"
 }
 
 print_spec_table() {
@@ -340,6 +344,184 @@ validate_train_spec_gate() {
         print_spec_table "$TRAIN_SPEC"
         exit 2
     fi
+}
+
+baseline_jq_filter() {
+    cat <<'JQ'
+def baseline_entries($label):
+  [
+    (.baseline_checkpoint_path // .baseline_checkpoint // .checkpoint_path // empty) as $path
+    | (.baseline_completed_batches // .baseline_completed_batch // .completed_batches // .completed_batch // empty) as $batch
+    | select(($path | tostring) != "")
+    | {path: ($path | tostring), completed_batch: ($batch | tostring), label: $label}
+  ]
+  +
+  [
+    (.resume // {}) as $resume
+    | ($resume.baseline_checkpoint_path // $resume.baseline_checkpoint // $resume.checkpoint_path // $resume.checkpoint // empty) as $path
+    | ($resume.baseline_completed_batches // $resume.baseline_completed_batch // $resume.completed_batches // $resume.completed_batch // empty) as $batch
+    | select(($path | tostring) != "")
+    | {path: ($path | tostring), completed_batch: ($batch | tostring), label: $label}
+  ];
+
+if type != "object" then []
+elif has("rows") then
+  [ .rows[]
+    | baseline_entries("row:" + ((.id // "unknown") | tostring))[]
+  ]
+else
+  baseline_entries($source_label)
+end
+JQ
+}
+
+declared_baselines_json() {
+    local entries="[]"
+    if [ -n "$TRAIN_SPEC" ] && [ -f "$TRAIN_SPEC" ]; then
+        entries=$(jq --arg source_label train_spec "$(baseline_jq_filter)" "$TRAIN_SPEC")
+    fi
+    if [ -n "$ROWS_MANIFEST" ] && [ -f "$ROWS_MANIFEST" ]; then
+        entries=$(jq -s 'add' \
+            <(printf '%s\n' "$entries") \
+            <(jq --arg source_label rows_manifest "$(baseline_jq_filter)" "$ROWS_MANIFEST"))
+    fi
+    printf '%s\n' "$entries"
+}
+
+baseline_source_path() {
+    local source=$1
+    if [[ $source = /* ]]; then
+        printf '%s\n' "$source"
+    else
+        printf '%s/%s\n' "$RLRMP_ROOT" "$source"
+    fi
+}
+
+baseline_remote_target() {
+    local source=$1 source_path rel base
+    source_path=$(baseline_source_path "$source")
+    case "$source" in
+        "$RLRMP_ROOT/_artifacts"/*)
+            rel=${source#"$RLRMP_ROOT/_artifacts"/}
+            printf '%s/%s\n' "$REMOTE_ARTIFACTS_DIR" "$rel"
+            ;;
+        _artifacts/*)
+            rel=${source#_artifacts/}
+            printf '%s/%s\n' "$REMOTE_ARTIFACTS_DIR" "$rel"
+            ;;
+        *)
+            base=${source_path##*/}
+            printf '%s/baselines/%s\n' "$REMOTE_ARTIFACTS_DIR" "$base"
+            ;;
+    esac
+}
+
+validate_declared_baselines() {
+    [ -n "$TRAIN_COMMAND" ] || [ -n "$ROWS_MANIFEST" ] || return 0
+    local baselines count i source source_path label expected latest actual
+    baselines=$(declared_baselines_json)
+    count=$(printf '%s\n' "$baselines" | jq 'length')
+    [ "$count" -gt 0 ] || return 0
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        source=$(printf '%s\n' "$baselines" | jq -r ".[$i].path")
+        source_path=$(baseline_source_path "$source")
+        label=$(printf '%s\n' "$baselines" | jq -r ".[$i].label")
+        expected=$(printf '%s\n' "$baselines" | jq -r ".[$i].completed_batch")
+        [ -e "$source_path" ] ||
+            die "baseline preflight failed: source checkpoint not found for $label: $source_path"
+        latest="$source_path/latest.json"
+        [ -f "$latest" ] ||
+            die "baseline preflight failed: custody latest.json not found for $label: $latest"
+        [ -n "$expected" ] && [ "$expected" != "null" ] ||
+            die "baseline preflight failed: declared completed_batch missing for $label"
+        actual=$(latest_pointer_completed_batches "$latest")
+        [ -n "$actual" ] ||
+            die "baseline preflight failed: completed_batch missing from $latest for $label"
+        [ "$actual" = "$expected" ] ||
+            die "baseline preflight failed: completed_batch mismatch for $label: declared $expected but latest.json has $actual"
+        i=$((i + 1))
+    done
+}
+
+sync_declared_baselines() {
+    local baselines count i source source_path target rsh
+    baselines=$(declared_baselines_json)
+    count=$(printf '%s\n' "$baselines" | jq 'length')
+    [ "$count" -gt 0 ] || return 0
+    rsh=$(rsync_rsh)
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        source=$(printf '%s\n' "$baselines" | jq -r ".[$i].path")
+        source_path=$(baseline_source_path "$source")
+        target=$(baseline_remote_target "$source")
+        log "staging declared baseline $source_path -> $target"
+        remote_cmd "mkdir -p $(sq "$(dirname "$target")")"
+        if [ -d "$source_path" ]; then
+            run_cmd rsync -az --delete --no-owner --no-group --stats -e "$rsh" \
+                "$source_path/" "root@$SSH_HOST:$target/"
+        else
+            run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
+                "$source_path" "root@$SSH_HOST:$target"
+        fi
+        i=$((i + 1))
+    done
+}
+
+validate_remote_declared_baselines() {
+    local baselines count i source target label expected latest
+    baselines=$(declared_baselines_json)
+    count=$(printf '%s\n' "$baselines" | jq 'length')
+    [ "$count" -gt 0 ] || return 0
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        source=$(printf '%s\n' "$baselines" | jq -r ".[$i].path")
+        target=$(baseline_remote_target "$source")
+        label=$(printf '%s\n' "$baselines" | jq -r ".[$i].label")
+        expected=$(printf '%s\n' "$baselines" | jq -r ".[$i].completed_batch")
+        latest="$target/latest.json"
+        remote_cmd "test -e $(sq "$target") && test -f $(sq "$latest") && actual=\$(jq -r '.completed_coordinate.global_step // .completed_batches // .completed_batch // .completedBatch // .n_batches // .batch // .metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // empty' $(sq "$latest")) && test -n \"\$actual\" && test \"\$actual\" = $(sq "$expected")" ||
+            die "baseline preflight failed: remote staged baseline mismatch for $label at $latest (expected completed batch $expected)"
+        i=$((i + 1))
+    done
+}
+
+write_run_config() {
+    local parent
+    [ -n "$RUNPOD_RUN_CONFIG_FILE" ] || return 0
+    parent=$(dirname "$RUNPOD_RUN_CONFIG_FILE")
+    mkdir -p "$parent"
+    jq -n \
+        --arg pod_id "${POD_ID:-}" \
+        --arg remote_run_dir "$REMOTE_RUN_DIR" \
+        --arg remote_sentinel_dir "$REMOTE_SENTINEL_DIR" \
+        --arg remote_checkpoint_dir "$REMOTE_RUN_DIR" \
+        --arg remote_log_dir "$REMOTE_RUN_DIR/logs" \
+        --arg remote_artifacts_dir "$REMOTE_ARTIFACTS_DIR" \
+        --argjson baselines "$(declared_baselines_json)" \
+        '{
+          schema_version: 1,
+          pod_id: $pod_id,
+          remote_run_dir: $remote_run_dir,
+          remote_sentinel_dir: $remote_sentinel_dir,
+          remote_checkpoint_dir: $remote_checkpoint_dir,
+          remote_log_dir: $remote_log_dir,
+          remote_artifacts_dir: $remote_artifacts_dir,
+          baselines: $baselines
+        }' >"$RUNPOD_RUN_CONFIG_FILE"
+}
+
+sync_run_config() {
+    [ -n "$RUNPOD_RUN_CONFIG_FILE" ] || return 0
+    [ -f "$RUNPOD_RUN_CONFIG_FILE" ] || return 0
+    local rsh
+    rsh=$(rsync_rsh)
+    remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR")"
+    run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
+        "$RUNPOD_RUN_CONFIG_FILE" "root@$SSH_HOST:$REMOTE_RUN_DIR/run-config.json"
+    remote_cmd "mkdir -p $(sq "$(dirname "$REMOTE_DEPLOY_CONFIG_PATH")")"
+    run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
+        "$RUNPOD_RUN_CONFIG_FILE" "root@$SSH_HOST:$REMOTE_DEPLOY_CONFIG_PATH"
 }
 
 parse_docker_hub_image() {
@@ -1007,7 +1189,7 @@ remote_nohup_sentinel() {
     local failed_file=$5
     local log_file=$6
     local remote sentinel_command
-    sentinel_command="cd $(sq "$workdir") && { $command; rc=\$?; if [ \"\$rc\" -eq 0 ]; then touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \"\$rc\"; fi; }"
+    sentinel_command="cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; { $command; } & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \"\$rc\"; fi"
     remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "$sentinel_command") >$(sq "$log_file") 2>&1 &"
     log "starting $label"
     remote_cmd "$remote"
@@ -1203,7 +1385,7 @@ launch_row() {
     # Foreground reservation + setup, THEN background the job. The leading
     # `mkdir/rm/touch .started` run synchronously and finish before the SSH
     # command returns, so the slot is held the instant launch_row returns.
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && ( $command ) && touch $(sq "$done_file") || { rc=\$?; touch $(sq "$failed_file"); exit \$rc; }") >$(sq "$log_file") 2>&1 &"
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && ( $command ) & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") >$(sq "$log_file") 2>&1 &"
     log "launching row $row_id"
     remote_cmd "$remote"
 }
@@ -1281,7 +1463,9 @@ main() {
     require_command jq
     if [ "$ACQUIRE_ONLY" -eq 0 ]; then
         validate_train_spec_gate
+        validate_declared_baselines
     fi
+    write_run_config
     require_real_commands
 
     # Trap guarantees teardown of any pod THIS script created/leaked on every
@@ -1309,9 +1493,13 @@ main() {
     fi
     sync_repos
     repair_remote_artifacts
+    sync_declared_baselines
+    validate_remote_declared_baselines
     apply_path_patches
     bootstrap_remote_env_for_pod
     verify_remote_device
+    write_run_config
+    sync_run_config
     sync_train_spec
     launch_training
 

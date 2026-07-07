@@ -158,7 +158,7 @@ eq "repair missing -> left" "left missing" "$out"
 # ---------------------------------------------------------------------------
 section "W4 aggregate progress"
 out=$(printf 'a done\nb running\nc failed\nd pending\ne done\n' | rows_rollup_from_listing)
-eq "rows rollup" "rows_done=2 rows_failed=1 rows_running=1 rows_pending=1 rows_total=5" "$out"
+eq "rows rollup" "rows_done=2 rows_failed=1 rows_running=1 rows_stale=0 rows_pending=1 rows_total=5" "$out"
 
 # checkpoint dirs
 mkdir -p "$TMP/ckpt/checkpoint_100" "$TMP/ckpt/checkpoint_1200" "$TMP/ckpt/checkpoint_50"
@@ -197,7 +197,7 @@ eq "discover_row_ids (rows only, sorted, bootstrap excluded)" \
    "row_a,row_b,row_c," \
    "$(discover_row_ids "$SDIR" | grep -vE '^(uv_sync|jax_cuda|venv_probe|probe_ok|probe_failed_rebuilding|rebuild_done)$' | tr '\n' ',')"
 eq "row_state done" "done" "$(row_state "$SDIR" row_a)"
-eq "row_state running" "running" "$(row_state "$SDIR" row_b)"
+eq "row_state stale pid" "stale_started" "$(row_state "$SDIR" row_b)"
 eq "row_state failed" "failed" "$(row_state "$SDIR" row_c)"
 
 report=$(progress_report "$SDIR" "$CDIR" "$LDIR")
@@ -225,10 +225,10 @@ eval "$REMOTE_STATUS_FN"
 remote_cmd=$(build_remote_status_command "$SDIR" "$CDIR" "$LDIR")
 rendered=$(bash -c "$remote_cmd" 2>/dev/null)
 case "$rendered" in
-  *"rows_done=1 rows_failed=1 rows_running=1 rows_pending=0 rows_total=3"*)
+  *"rows_done=1 rows_failed=1 rows_running=0 rows_stale=1 rows_pending=0 rows_total=3"*)
     ok "remote status rows roll-up (bootstrap filtered)" ;;
   *) no "remote status rows roll-up" \
-        "...rows_done=1 rows_failed=1 rows_running=1 rows_pending=0 rows_total=3..." \
+        "...rows_done=1 rows_failed=1 rows_running=0 rows_stale=1 rows_pending=0 rows_total=3..." \
         "$rendered" ;;
 esac
 case "$rendered" in
@@ -309,12 +309,29 @@ SR="$TMP/started"
 mkdir -p "$SR"
 # row with only a .started reservation (job hasn't written .pid yet) is running.
 : > "$SR/rx.started"
-eq "started-only -> running" "running" "$(row_state "$SR" rx)"
+eq "started-only -> stale_started" "stale_started" "$(row_state "$SR" rx)"
 out=$(discover_row_ids "$SR" | tr '\n' ',')
 eq "discover finds started-only row" "rx," "$out"
 # terminal sentinel wins over .started.
 : > "$SR/rx.done"
 eq "started+done -> done" "done" "$(row_state "$SR" rx)"
+printf '%s\n' "$$" > "$SR/live.pid"
+eq "live pid -> running" "running" "$(row_state "$SR" live)"
+printf '%s\n' "999999" > "$SR/stale.pid"
+eq "stale pid -> stale_started" "stale_started" "$(row_state "$SR" stale)"
+
+# ---------------------------------------------------------------------------
+section "W8 latest pointer completed batches"
+BASE="$TMP/baseline"
+mkdir -p "$BASE"
+cat > "$BASE/latest.json" <<JSON
+{"completed_coordinate":{"global_step":1200}}
+JSON
+eq "latest pointer completed_coordinate" "1200" "$(latest_pointer_completed_batches "$BASE/latest.json")"
+cat > "$TMP/old-latest.json" <<JSON
+{"completed_batches":900}
+JSON
+eq "latest pointer completed_batches fallback" "900" "$(latest_pointer_completed_batches "$TMP/old-latest.json")"
 
 # ---------------------------------------------------------------------------
 printf '\n== summary ==\n'
