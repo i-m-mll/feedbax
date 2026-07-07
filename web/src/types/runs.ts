@@ -1,3 +1,9 @@
+export type {
+  CreateEvalRunRequest,
+  EvalRunInfo,
+  TrainingRunInfo,
+} from '@/generated/studioContracts';
+
 /** Metadata for a single training run. */
 export interface TrainingRun {
   id: string;

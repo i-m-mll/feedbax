@@ -29,6 +29,19 @@ describe('runAPI failure behavior', () => {
     });
   });
 
+  it('throws a typed contract error when training run payloads drift', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify([{ id: 'tr-1', name: 'run', status: 'completed', hyperparams: {} }]),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )));
+
+    await expect(fetchTrainingRuns()).rejects.toMatchObject({
+      name: 'ApiRequestError',
+      kind: 'contract',
+      path: '/api/runs/training',
+    });
+  });
+
   it('does not fabricate successful training-run creation', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not implemented', { status: 405 })));
 

@@ -76,6 +76,27 @@ export interface UserPortSpec {
   outputs?: string[];
 }
 
+export interface CanvasPositionSpec {
+  x: number;
+  y: number;
+}
+
+export interface CanvasSizeSpec {
+  width: number;
+  height: number;
+}
+
+export interface CanvasViewportSpec {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface TapPositionSpec {
+  afterNode: string;
+  targetNode?: string | null;
+}
+
 export interface TapTransform {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
@@ -85,7 +106,7 @@ export interface TapTransform {
 export interface TapSpec {
   id: string;
   type: "probe" | "intervention";
-  position: Record<string, unknown>;
+  position: TapPositionSpec;
   paths?: Record<string, string>;
   transform?: TapTransform | null;
 }
@@ -125,7 +146,7 @@ export interface RetainedObservableSpec {
   selector?: string | null;
   target?: RetainedObservableTargetSpec | null;
   retention?: RetentionPolicySpec;
-  value_schema?: Record<string, unknown> | null;
+  value_schema?: ValueSchema | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -219,20 +240,20 @@ export interface EdgeUIState {
 }
 
 export interface NodeUIState {
-  position: Record<string, number>;
+  position: CanvasPositionSpec;
   collapsed?: boolean;
   selected?: boolean;
   reversed?: boolean;
-  size?: Record<string, number> | null;
+  size?: CanvasSizeSpec | null;
 }
 
 export interface TapUIState {
-  position: Record<string, number>;
+  position: CanvasPositionSpec;
   selected?: boolean | null;
 }
 
 export interface GraphUIState {
-  viewport?: Record<string, number>;
+  viewport?: CanvasViewportSpec;
   node_states?: Record<string, NodeUIState>;
   edge_states?: Record<string, EdgeUIState> | null;
   subgraph_states?: Record<string, GraphUIState> | null;
@@ -295,11 +316,24 @@ export interface StudioCollectionRef {
   metadata?: Record<string, unknown>;
 }
 
+export interface ValueSchema {
+  id: string;
+  label: string;
+  kind: string;
+  dtype?: string | null;
+  shape?: unknown[] | null;
+  rank?: number | null;
+  units?: string | null;
+  frame?: string | null;
+  origin?: "declared" | "inferred_static" | "runtime_sample" | "curated_fallback" | "unknown";
+  metadata?: Record<string, unknown>;
+}
+
 export interface StudioValueSpec {
   schema_version?: string;
   mode: string;
   value?: unknown | null;
-  reference?: Record<string, unknown> | null;
+  reference?: StudioSelectorRef | null;
   expression?: string | null;
   function_id?: string | null;
   parameters?: Record<string, unknown> | null;
@@ -314,7 +348,7 @@ export interface StudioValueSpec {
 }
 
 export interface StudioSelectorRef {
-  namespace: string;
+  namespace: "graph_port" | "graph_edge" | "graph_output" | "recurrent_carry" | "retained_observable" | "probe" | "state_path" | "task_object" | "task_data" | "task_binding" | "mechanics_object" | "biomechanics_object" | "artifact_field" | "analysis_output" | "custom";
   compact: string;
   target_id?: string | null;
   path?: string | null;
@@ -918,6 +952,201 @@ export interface TrainingErrorEvent {
   error: string;
 }
 
+export interface ProbeResponse {
+  id: string;
+  label: string;
+  node: string;
+  timing: string;
+  selector: string;
+  description?: string | null;
+}
+
+export interface ValidationErrorResponse {
+  path: string[];
+  field: string;
+  message: string;
+}
+
+export interface ValidateLossResponse {
+  valid: boolean;
+  errors: ValidationErrorResponse[];
+}
+
+export interface TrainingRunInfo {
+  id: string;
+  name: string;
+  created_at: string;
+  status: string;
+  hyperparams: Record<string, unknown>;
+}
+
+export interface EvalRunInfo {
+  id: string;
+  training_run_id: string;
+  name: string;
+  created_at: string;
+  status: string;
+  description?: string | null;
+}
+
+export interface CreateEvalRunRequest {
+  training_run_id: string;
+  name: string;
+  eval_params?: Record<string, unknown>;
+}
+
+export interface DatasetInfo {
+  name: string;
+  file_size: number;
+  modified: number;
+}
+
+export interface TrajectoryMetadata {
+  n_trajectories: number;
+  n_timesteps: number;
+  n_joints: number;
+  n_muscles: number;
+  n_bodies: number;
+  rollouts_per_body: number;
+  task_types: number[];
+  body_indices: number[];
+  angle_convention?: string;
+}
+
+export interface FilterResult {
+  indices: number[];
+  count: number;
+}
+
+export interface TrajectoryData {
+  timestamps: number[];
+  joint_angles: number[][];
+  muscle_activations: number[][];
+  effector_pos: number[][];
+  task_target: number[][];
+  body_preset_flat: number[];
+  task_type: number;
+  body_idx: number;
+}
+
+export interface MetricSummary {
+  mean: number;
+  std: number;
+  median: number;
+  q25: number;
+  q75: number;
+  min: number;
+  max: number;
+  count: number;
+}
+
+export interface GroupStatistics {
+  group_key: string;
+  group_label: string;
+  metrics: Record<string, MetricSummary>;
+}
+
+export interface StatisticsResponse {
+  dataset: string;
+  group_by: string;
+  groups: GroupStatistics[];
+}
+
+export interface TimeseriesPercentiles {
+  group_key: string;
+  group_label: string;
+  timesteps: number[];
+  p50: number[];
+  p25: number[];
+  p75: number[];
+  p05: number[];
+  p95: number[];
+}
+
+export interface TimeseriesResponse {
+  dataset: string;
+  metric: string;
+  group_by: string;
+  series: TimeseriesPercentiles[];
+}
+
+export interface HistogramBin {
+  lo: number;
+  hi: number;
+  count: number;
+}
+
+export interface HistogramGroup {
+  group_key: string;
+  group_label: string;
+  bins: HistogramBin[];
+}
+
+export interface HistogramResponse {
+  dataset: string;
+  metric: string;
+  group_by: string;
+  groups: HistogramGroup[];
+}
+
+export interface ScatterPoint {
+  x: number;
+  y: number;
+  body_idx: number;
+  task_type: number;
+}
+
+export interface ScatterResponse {
+  dataset: string;
+  x_metric: string;
+  y_metric: string;
+  points: ScatterPoint[];
+}
+
+export interface DiagnosticCheck {
+  name: string;
+  status: string;
+  reason: string;
+  evidence: Record<string, unknown>;
+  hint?: string | null;
+}
+
+export interface DiagnosticsResponse {
+  dataset: string;
+  checks: DiagnosticCheck[];
+}
+
+export interface CycleAnnotationModel {
+  source: string;
+  target: string;
+}
+
+export interface TreescopeRequest {
+  max_depth?: number;
+  project_cycles?: boolean;
+  roundtrip_mode?: boolean;
+}
+
+export interface InlineTreescopeRequest {
+  graph: GraphSpec;
+  max_depth?: number;
+  project_cycles?: boolean;
+}
+
+export interface TreescopeResponse {
+  html: string;
+  has_cycles?: boolean;
+  cycle_count?: number;
+  cycles?: CycleAnnotationModel[];
+  execution_order?: string[] | null;
+}
+
+export interface InspectionStatusResponse {
+  treescope_available: boolean;
+  treescope_configured: boolean;
+  treescope_version?: string | null;
+}
+
 export const ParamSchemaSchema: z.ZodType<ParamSchema> = z.lazy(() =>
   z
     .object({
@@ -1020,6 +1249,43 @@ export const UserPortSpecSchema: z.ZodType<UserPortSpec> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<UserPortSpec>;
 
+export const CanvasPositionSpecSchema: z.ZodType<CanvasPositionSpec> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number(),
+      "y": z.number(),
+    })
+    .strict()
+) as unknown as z.ZodType<CanvasPositionSpec>;
+
+export const CanvasSizeSpecSchema: z.ZodType<CanvasSizeSpec> = z.lazy(() =>
+  z
+    .object({
+      "width": z.number(),
+      "height": z.number(),
+    })
+    .strict()
+) as unknown as z.ZodType<CanvasSizeSpec>;
+
+export const CanvasViewportSpecSchema: z.ZodType<CanvasViewportSpec> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number(),
+      "y": z.number(),
+      "zoom": z.number(),
+    })
+    .strict()
+) as unknown as z.ZodType<CanvasViewportSpec>;
+
+export const TapPositionSpecSchema: z.ZodType<TapPositionSpec> = z.lazy(() =>
+  z
+    .object({
+      "afterNode": z.string(),
+      "targetNode": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TapPositionSpec>;
+
 export const TapTransformSchema: z.ZodType<TapTransform> = z.lazy(() =>
   z
     .object({
@@ -1035,7 +1301,7 @@ export const TapSpecSchema: z.ZodType<TapSpec> = z.lazy(() =>
     .object({
       "id": z.string(),
       "type": z.union([z.literal("probe"), z.literal("intervention")]),
-      "position": z.record(z.string(), z.unknown()),
+      "position": TapPositionSpecSchema,
       "paths": z.record(z.string(), z.string()).optional(),
       "transform": TapTransformSchema.nullable().optional(),
     })
@@ -1091,7 +1357,7 @@ export const RetainedObservableSpecSchema: z.ZodType<RetainedObservableSpec> = z
       "selector": z.string().nullable().optional(),
       "target": RetainedObservableTargetSpecSchema.nullable().optional(),
       "retention": RetentionPolicySpecSchema.optional(),
-      "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
+      "value_schema": ValueSchemaSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
@@ -1221,11 +1487,11 @@ export const EdgeUIStateSchema: z.ZodType<EdgeUIState> = z.lazy(() =>
 export const NodeUIStateSchema: z.ZodType<NodeUIState> = z.lazy(() =>
   z
     .object({
-      "position": z.record(z.string(), z.number()),
+      "position": CanvasPositionSpecSchema,
       "collapsed": z.boolean().optional(),
       "selected": z.boolean().optional(),
       "reversed": z.boolean().optional(),
-      "size": z.record(z.string(), z.number()).nullable().optional(),
+      "size": CanvasSizeSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<NodeUIState>;
@@ -1233,7 +1499,7 @@ export const NodeUIStateSchema: z.ZodType<NodeUIState> = z.lazy(() =>
 export const TapUIStateSchema: z.ZodType<TapUIState> = z.lazy(() =>
   z
     .object({
-      "position": z.record(z.string(), z.number()),
+      "position": CanvasPositionSpecSchema,
       "selected": z.boolean().nullable().optional(),
     })
     .strict()
@@ -1242,7 +1508,7 @@ export const TapUIStateSchema: z.ZodType<TapUIState> = z.lazy(() =>
 export const GraphUIStateSchema: z.ZodType<GraphUIState> = z.lazy(() =>
   z
     .object({
-      "viewport": z.record(z.string(), z.number()).optional(),
+      "viewport": CanvasViewportSpecSchema.optional(),
       "node_states": z.record(z.string(), NodeUIStateSchema).optional(),
       "edge_states": z.record(z.string(), EdgeUIStateSchema).nullable().optional(),
       "subgraph_states": z.record(z.string(), GraphUIStateSchema).nullable().optional(),
@@ -1331,13 +1597,30 @@ export const StudioCollectionRefSchema: z.ZodType<StudioCollectionRef> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<StudioCollectionRef>;
 
+export const ValueSchemaSchema: z.ZodType<ValueSchema> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "label": z.string(),
+      "kind": z.string(),
+      "dtype": z.string().nullable().optional(),
+      "shape": z.array(z.unknown()).nullable().optional(),
+      "rank": z.number().int().nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "frame": z.string().nullable().optional(),
+      "origin": z.union([z.literal("declared"), z.literal("inferred_static"), z.literal("runtime_sample"), z.literal("curated_fallback"), z.literal("unknown")]).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ValueSchema>;
+
 export const StudioValueSpecSchema: z.ZodType<StudioValueSpec> = z.lazy(() =>
   z
     .object({
       "schema_version": z.string().optional(),
       "mode": z.string(),
       "value": z.unknown().nullable().optional(),
-      "reference": z.record(z.string(), z.unknown()).nullable().optional(),
+      "reference": StudioSelectorRefSchema.nullable().optional(),
       "expression": z.string().nullable().optional(),
       "function_id": z.string().nullable().optional(),
       "parameters": z.record(z.string(), z.unknown()).nullable().optional(),
@@ -1356,7 +1639,7 @@ export const StudioValueSpecSchema: z.ZodType<StudioValueSpec> = z.lazy(() =>
 export const StudioSelectorRefSchema: z.ZodType<StudioSelectorRef> = z.lazy(() =>
   z
     .object({
-      "namespace": z.string(),
+      "namespace": z.union([z.literal("graph_port"), z.literal("graph_edge"), z.literal("graph_output"), z.literal("recurrent_carry"), z.literal("retained_observable"), z.literal("probe"), z.literal("state_path"), z.literal("task_object"), z.literal("task_data"), z.literal("task_binding"), z.literal("mechanics_object"), z.literal("biomechanics_object"), z.literal("artifact_field"), z.literal("analysis_output"), z.literal("custom")]),
       "compact": z.string(),
       "target_id": z.string().nullable().optional(),
       "path": z.string().nullable().optional(),
@@ -2234,6 +2517,309 @@ export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<TrainingErrorEvent>;
 
+export const ProbeResponseSchema: z.ZodType<ProbeResponse> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "label": z.string(),
+      "node": z.string(),
+      "timing": z.string(),
+      "selector": z.string(),
+      "description": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ProbeResponse>;
+
+export const ValidationErrorResponseSchema: z.ZodType<ValidationErrorResponse> = z.lazy(() =>
+  z
+    .object({
+      "path": z.array(z.string()),
+      "field": z.string(),
+      "message": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<ValidationErrorResponse>;
+
+export const ValidateLossResponseSchema: z.ZodType<ValidateLossResponse> = z.lazy(() =>
+  z
+    .object({
+      "valid": z.boolean(),
+      "errors": z.array(ValidationErrorResponseSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ValidateLossResponse>;
+
+export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "name": z.string(),
+      "created_at": z.string(),
+      "status": z.string(),
+      "hyperparams": z.record(z.string(), z.unknown()),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingRunInfo>;
+
+export const EvalRunInfoSchema: z.ZodType<EvalRunInfo> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "training_run_id": z.string(),
+      "name": z.string(),
+      "created_at": z.string(),
+      "status": z.string(),
+      "description": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<EvalRunInfo>;
+
+export const CreateEvalRunRequestSchema: z.ZodType<CreateEvalRunRequest> = z.lazy(() =>
+  z
+    .object({
+      "training_run_id": z.string(),
+      "name": z.string(),
+      "eval_params": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<CreateEvalRunRequest>;
+
+export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
+  z
+    .object({
+      "name": z.string(),
+      "file_size": z.number().int(),
+      "modified": z.number(),
+    })
+    .strict()
+) as unknown as z.ZodType<DatasetInfo>;
+
+export const TrajectoryMetadataSchema: z.ZodType<TrajectoryMetadata> = z.lazy(() =>
+  z
+    .object({
+      "n_trajectories": z.number().int(),
+      "n_timesteps": z.number().int(),
+      "n_joints": z.number().int(),
+      "n_muscles": z.number().int(),
+      "n_bodies": z.number().int(),
+      "rollouts_per_body": z.number().int(),
+      "task_types": z.array(z.number().int()),
+      "body_indices": z.array(z.number().int()),
+      "angle_convention": z.string().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrajectoryMetadata>;
+
+export const FilterResultSchema: z.ZodType<FilterResult> = z.lazy(() =>
+  z
+    .object({
+      "indices": z.array(z.number().int()),
+      "count": z.number().int(),
+    })
+    .strict()
+) as unknown as z.ZodType<FilterResult>;
+
+export const TrajectoryDataSchema: z.ZodType<TrajectoryData> = z.lazy(() =>
+  z
+    .object({
+      "timestamps": z.array(z.number()),
+      "joint_angles": z.array(z.array(z.number())),
+      "muscle_activations": z.array(z.array(z.number())),
+      "effector_pos": z.array(z.array(z.number())),
+      "task_target": z.array(z.array(z.number())),
+      "body_preset_flat": z.array(z.number()),
+      "task_type": z.number().int(),
+      "body_idx": z.number().int(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrajectoryData>;
+
+export const MetricSummarySchema: z.ZodType<MetricSummary> = z.lazy(() =>
+  z
+    .object({
+      "mean": z.number(),
+      "std": z.number(),
+      "median": z.number(),
+      "q25": z.number(),
+      "q75": z.number(),
+      "min": z.number(),
+      "max": z.number(),
+      "count": z.number().int(),
+    })
+    .strict()
+) as unknown as z.ZodType<MetricSummary>;
+
+export const GroupStatisticsSchema: z.ZodType<GroupStatistics> = z.lazy(() =>
+  z
+    .object({
+      "group_key": z.string(),
+      "group_label": z.string(),
+      "metrics": z.record(z.string(), MetricSummarySchema),
+    })
+    .strict()
+) as unknown as z.ZodType<GroupStatistics>;
+
+export const StatisticsResponseSchema: z.ZodType<StatisticsResponse> = z.lazy(() =>
+  z
+    .object({
+      "dataset": z.string(),
+      "group_by": z.string(),
+      "groups": z.array(GroupStatisticsSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StatisticsResponse>;
+
+export const TimeseriesPercentilesSchema: z.ZodType<TimeseriesPercentiles> = z.lazy(() =>
+  z
+    .object({
+      "group_key": z.string(),
+      "group_label": z.string(),
+      "timesteps": z.array(z.number().int()),
+      "p50": z.array(z.number()),
+      "p25": z.array(z.number()),
+      "p75": z.array(z.number()),
+      "p05": z.array(z.number()),
+      "p95": z.array(z.number()),
+    })
+    .strict()
+) as unknown as z.ZodType<TimeseriesPercentiles>;
+
+export const TimeseriesResponseSchema: z.ZodType<TimeseriesResponse> = z.lazy(() =>
+  z
+    .object({
+      "dataset": z.string(),
+      "metric": z.string(),
+      "group_by": z.string(),
+      "series": z.array(TimeseriesPercentilesSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TimeseriesResponse>;
+
+export const HistogramBinSchema: z.ZodType<HistogramBin> = z.lazy(() =>
+  z
+    .object({
+      "lo": z.number(),
+      "hi": z.number(),
+      "count": z.number().int(),
+    })
+    .strict()
+) as unknown as z.ZodType<HistogramBin>;
+
+export const HistogramGroupSchema: z.ZodType<HistogramGroup> = z.lazy(() =>
+  z
+    .object({
+      "group_key": z.string(),
+      "group_label": z.string(),
+      "bins": z.array(HistogramBinSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<HistogramGroup>;
+
+export const HistogramResponseSchema: z.ZodType<HistogramResponse> = z.lazy(() =>
+  z
+    .object({
+      "dataset": z.string(),
+      "metric": z.string(),
+      "group_by": z.string(),
+      "groups": z.array(HistogramGroupSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<HistogramResponse>;
+
+export const ScatterPointSchema: z.ZodType<ScatterPoint> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number(),
+      "y": z.number(),
+      "body_idx": z.number().int(),
+      "task_type": z.number().int(),
+    })
+    .strict()
+) as unknown as z.ZodType<ScatterPoint>;
+
+export const ScatterResponseSchema: z.ZodType<ScatterResponse> = z.lazy(() =>
+  z
+    .object({
+      "dataset": z.string(),
+      "x_metric": z.string(),
+      "y_metric": z.string(),
+      "points": z.array(ScatterPointSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ScatterResponse>;
+
+export const DiagnosticCheckSchema: z.ZodType<DiagnosticCheck> = z.lazy(() =>
+  z
+    .object({
+      "name": z.string(),
+      "status": z.string(),
+      "reason": z.string(),
+      "evidence": z.record(z.string(), z.unknown()),
+      "hint": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DiagnosticCheck>;
+
+export const DiagnosticsResponseSchema: z.ZodType<DiagnosticsResponse> = z.lazy(() =>
+  z
+    .object({
+      "dataset": z.string(),
+      "checks": z.array(DiagnosticCheckSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<DiagnosticsResponse>;
+
+export const CycleAnnotationModelSchema: z.ZodType<CycleAnnotationModel> = z.lazy(() =>
+  z
+    .object({
+      "source": z.string(),
+      "target": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<CycleAnnotationModel>;
+
+export const TreescopeRequestSchema: z.ZodType<TreescopeRequest> = z.lazy(() =>
+  z
+    .object({
+      "max_depth": z.number().int().optional(),
+      "project_cycles": z.boolean().optional(),
+      "roundtrip_mode": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TreescopeRequest>;
+
+export const InlineTreescopeRequestSchema: z.ZodType<InlineTreescopeRequest> = z.lazy(() =>
+  z
+    .object({
+      "graph": GraphSpecSchema,
+      "max_depth": z.number().int().optional(),
+      "project_cycles": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InlineTreescopeRequest>;
+
+export const TreescopeResponseSchema: z.ZodType<TreescopeResponse> = z.lazy(() =>
+  z
+    .object({
+      "html": z.string(),
+      "has_cycles": z.boolean().optional(),
+      "cycle_count": z.number().int().optional(),
+      "cycles": z.array(CycleAnnotationModelSchema).optional(),
+      "execution_order": z.array(z.string()).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TreescopeResponse>;
+
+export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse> = z.lazy(() =>
+  z
+    .object({
+      "treescope_available": z.boolean(),
+      "treescope_configured": z.boolean(),
+      "treescope_version": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InspectionStatusResponse>;
+
 export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingErrorEvent;
 
 export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingErrorEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
@@ -2255,6 +2841,24 @@ export const contractSchemas = {
   AnalysisPackagesResponse: AnalysisPackagesResponseSchema,
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
   AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
+  TrainingRunInfo: TrainingRunInfoSchema,
+  EvalRunInfo: EvalRunInfoSchema,
+  CreateEvalRunRequest: CreateEvalRunRequestSchema,
+  DatasetInfo: DatasetInfoSchema,
+  TrajectoryMetadata: TrajectoryMetadataSchema,
+  FilterResult: FilterResultSchema,
+  TrajectoryData: TrajectoryDataSchema,
+  StatisticsResponse: StatisticsResponseSchema,
+  TimeseriesResponse: TimeseriesResponseSchema,
+  HistogramResponse: HistogramResponseSchema,
+  ScatterResponse: ScatterResponseSchema,
+  DiagnosticsResponse: DiagnosticsResponseSchema,
+  TreescopeRequest: TreescopeRequestSchema,
+  InlineTreescopeRequest: InlineTreescopeRequestSchema,
+  TreescopeResponse: TreescopeResponseSchema,
+  InspectionStatusResponse: InspectionStatusResponseSchema,
+  ProbeResponse: ProbeResponseSchema,
+  ValidateLossResponse: ValidateLossResponseSchema,
   TrainingWebSocketEvent: TrainingWebSocketEventSchema,
 } as const;
 
@@ -2276,6 +2880,24 @@ export interface ContractTypeMap {
   AnalysisPackagesResponse: AnalysisPackagesResponse;
   GenerateAnalysisResponse: GenerateAnalysisResponse;
   AnalysisJobStatusResponse: AnalysisJobStatusResponse;
+  TrainingRunInfo: TrainingRunInfo;
+  EvalRunInfo: EvalRunInfo;
+  CreateEvalRunRequest: CreateEvalRunRequest;
+  DatasetInfo: DatasetInfo;
+  TrajectoryMetadata: TrajectoryMetadata;
+  FilterResult: FilterResult;
+  TrajectoryData: TrajectoryData;
+  StatisticsResponse: StatisticsResponse;
+  TimeseriesResponse: TimeseriesResponse;
+  HistogramResponse: HistogramResponse;
+  ScatterResponse: ScatterResponse;
+  DiagnosticsResponse: DiagnosticsResponse;
+  TreescopeRequest: TreescopeRequest;
+  InlineTreescopeRequest: InlineTreescopeRequest;
+  TreescopeResponse: TreescopeResponse;
+  InspectionStatusResponse: InspectionStatusResponse;
+  ProbeResponse: ProbeResponse;
+  ValidateLossResponse: ValidateLossResponse;
   TrainingWebSocketEvent: TrainingWebSocketEvent;
 }
 

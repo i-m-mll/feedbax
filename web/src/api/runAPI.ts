@@ -4,41 +4,34 @@
  * Calls the backend endpoints and reports backend failures to callers.
  */
 
-import type { TrainingRun, EvalRun } from '@/types/runs';
-import { requestJson } from '@/api/request';
+import type { EvalRunInfo, TrainingRun, TrainingRunInfo, EvalRun } from '@/types/runs';
+import { parseContract } from '@/generated/studioContracts';
+import { asApiRequestError, requestJson } from '@/api/request';
 
 // ---------------------------------------------------------------------------
 // Wire format -- backend uses snake_case, frontend uses camelCase
 // ---------------------------------------------------------------------------
 
-interface TrainingRunWire {
-  id: string;
-  name: string;
-  created_at: string;
-  status: string;
-  hyperparams: Record<string, string | number>;
+function displayHyperparams(hyperparams: Record<string, unknown>): Record<string, string | number> {
+  return Object.fromEntries(
+    Object.entries(hyperparams).filter(
+      (entry): entry is [string, string | number] =>
+        typeof entry[1] === 'string' || typeof entry[1] === 'number',
+    ),
+  );
 }
 
-interface EvalRunWire {
-  id: string;
-  training_run_id: string;
-  name: string;
-  created_at: string;
-  status: string;
-  description?: string | null;
-}
-
-function trainingRunFromWire(wire: TrainingRunWire): TrainingRun {
+function trainingRunFromWire(wire: TrainingRunInfo): TrainingRun {
   return {
     id: wire.id,
     name: wire.name,
     createdAt: wire.created_at,
     status: wire.status as TrainingRun['status'],
-    hyperparams: wire.hyperparams,
+    hyperparams: displayHyperparams(wire.hyperparams),
   };
 }
 
-function evalRunFromWire(wire: EvalRunWire): EvalRun {
+function evalRunFromWire(wire: EvalRunInfo): EvalRun {
   return {
     id: wire.id,
     trainingRunId: wire.training_run_id,
@@ -55,25 +48,40 @@ function evalRunFromWire(wire: EvalRunWire): EvalRun {
 
 /** Fetch all training runs. */
 export async function fetchTrainingRuns(): Promise<TrainingRun[]> {
-  const wire = await requestJson('/api/runs/training') as TrainingRunWire[];
-  return wire.map(trainingRunFromWire);
+  const path = '/api/runs/training';
+  const wire = await requestJson(path) as unknown[];
+  try {
+    const runs = wire.map((item) => parseContract('TrainingRunInfo', item));
+    return runs.map(trainingRunFromWire);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Training run response did not match the Studio contract.');
+  }
 }
 
 /** Fetch evaluation runs for a training run. */
 export async function fetchEvalRuns(trainingRunId: string): Promise<EvalRun[]> {
-  const wire = await requestJson(
-    `/api/runs/training/${encodeURIComponent(trainingRunId)}/evals`,
-  ) as EvalRunWire[];
-  return wire.map(evalRunFromWire);
+  const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}/evals`;
+  const wire = await requestJson(path) as unknown[];
+  try {
+    const runs = wire.map((item) => parseContract('EvalRunInfo', item));
+    return runs.map(evalRunFromWire);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Evaluation run response did not match the Studio contract.');
+  }
 }
 
 /** Create a new training run. */
 export async function createTrainingRun(name: string): Promise<TrainingRun> {
-  const wire = await requestJson('/api/runs/training', {
+  const path = '/api/runs/training';
+  const result = await requestJson(path, {
     method: 'POST',
     body: JSON.stringify({ name }),
-  }) as TrainingRunWire;
-  return trainingRunFromWire(wire);
+  });
+  try {
+    return trainingRunFromWire(parseContract('TrainingRunInfo', result));
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Created training run did not match the Studio contract.');
+  }
 }
 
 /** Create a new evaluation run. */
@@ -82,15 +90,20 @@ export async function createEvalRun(
   name: string,
   evalParams: Record<string, unknown>,
 ): Promise<EvalRun> {
-  const wire = await requestJson('/api/runs/evaluation', {
+  const path = '/api/runs/evaluation';
+  const result = await requestJson(path, {
     method: 'POST',
     body: JSON.stringify({
       training_run_id: trainingRunId,
       name,
       eval_params: evalParams,
     }),
-  }) as EvalRunWire;
-  return evalRunFromWire(wire);
+  });
+  try {
+    return evalRunFromWire(parseContract('EvalRunInfo', result));
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Created evaluation run did not match the Studio contract.');
+  }
 }
 
 /** Build a short human-readable summary from eval params. */

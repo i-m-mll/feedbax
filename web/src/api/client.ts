@@ -28,10 +28,37 @@ import type {
   ScatterResponse,
   DiagnosticsResponse,
 } from '@/types/statistics';
-import { requestJson } from '@/api/request';
+import { asApiRequestError, requestJson } from '@/api/request';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return requestJson(path, options) as Promise<T>;
+}
+
+function parseContractResponse<K extends import('@/generated/studioContracts').ContractName>(
+  name: K,
+  path: string,
+  value: unknown,
+): import('@/generated/studioContracts').ContractTypeMap[K] {
+  try {
+    return parseContract(name, value);
+  } catch (error) {
+    throw asApiRequestError(error, path, `${name} response did not match the Studio contract.`);
+  }
+}
+
+function parseContractArray<K extends import('@/generated/studioContracts').ContractName>(
+  name: K,
+  path: string,
+  value: unknown,
+): import('@/generated/studioContracts').ContractTypeMap[K][] {
+  if (!Array.isArray(value)) {
+    throw asApiRequestError(
+      new Error(`${name} response expected an array`),
+      path,
+      `${name} response did not match the Studio contract.`,
+    );
+  }
+  return value.map((item) => parseContractResponse(name, path, item));
 }
 
 export async function fetchComponents(): Promise<ComponentDefinition[]> {
@@ -238,17 +265,19 @@ export async function fetchWorkerStatus() {
 // --- Probe and Loss API ---
 
 export async function fetchProbes(graphId: string): Promise<ProbeInfo[]> {
-  return request<ProbeInfo[]>(`/api/training/probes/${graphId}`);
+  const path = `/api/training/probes/${graphId}`;
+  return parseContractArray('ProbeResponse', path, await requestJson(path));
 }
 
 export async function validateLossSpec(
   graphId: string,
   lossSpec: LossTermSpec
 ): Promise<LossValidationResult> {
-  return request<LossValidationResult>('/api/training/loss/validate', {
+  const path = '/api/training/loss/validate';
+  return parseContractResponse('ValidateLossResponse', path, await requestJson(path, {
     method: 'POST',
     body: JSON.stringify({ graph_id: graphId, loss_spec: lossSpec }),
-  });
+  }));
 }
 
 export async function resolveSelector(
@@ -337,17 +366,18 @@ export async function terminateInstance() {
 // --- Trajectory API ---
 
 export async function fetchTrajectoryDatasets(): Promise<TrajectoryDataset[]> {
-  return request<TrajectoryDataset[]>('/api/trajectories/datasets');
+  const path = '/api/trajectories/datasets';
+  return parseContractArray('DatasetInfo', path, await requestJson(path));
 }
 
 export async function fetchTrajectoryMetadata(dataset: string): Promise<TrajectoryMetadata> {
-  return request<TrajectoryMetadata>(`/api/trajectories/${encodeURIComponent(dataset)}/metadata`);
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/metadata`;
+  return parseContractResponse('TrajectoryMetadata', path, await requestJson(path));
 }
 
 export async function fetchTrajectory(dataset: string, index: number): Promise<TrajectoryData> {
-  return request<TrajectoryData>(
-    `/api/trajectories/${encodeURIComponent(dataset)}/${index}`,
-  );
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/${index}`;
+  return parseContractResponse('TrajectoryData', path, await requestJson(path));
 }
 
 export async function filterTrajectories(
@@ -357,9 +387,8 @@ export async function filterTrajectories(
   const params = new URLSearchParams();
   if (filters.body_idx !== undefined) params.set('body_idx', String(filters.body_idx));
   if (filters.task_type !== undefined) params.set('task_type', String(filters.task_type));
-  return request<{ indices: number[]; count: number }>(
-    `/api/trajectories/${encodeURIComponent(dataset)}/filter?${params}`,
-  );
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/filter?${params}`;
+  return parseContractResponse('FilterResult', path, await requestJson(path));
 }
 
 // --- Statistics API ---
@@ -369,9 +398,8 @@ export async function fetchStatsSummary(
   groupBy: string,
 ): Promise<StatisticsResponse> {
   const params = new URLSearchParams({ group_by: groupBy });
-  return request<StatisticsResponse>(
-    `/api/trajectories/${encodeURIComponent(dataset)}/stats/summary?${params}`,
-  );
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/summary?${params}`;
+  return parseContractResponse('StatisticsResponse', path, await requestJson(path));
 }
 
 export async function fetchStatsTimeseries(
@@ -380,9 +408,8 @@ export async function fetchStatsTimeseries(
   groupBy: string,
 ): Promise<TimeseriesResponse> {
   const params = new URLSearchParams({ metric, group_by: groupBy });
-  return request<TimeseriesResponse>(
-    `/api/trajectories/${encodeURIComponent(dataset)}/stats/timeseries?${params}`,
-  );
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/timeseries?${params}`;
+  return parseContractResponse('TimeseriesResponse', path, await requestJson(path));
 }
 
 export async function fetchStatsHistogram(
@@ -393,9 +420,8 @@ export async function fetchStatsHistogram(
 ): Promise<HistogramResponse> {
   const params = new URLSearchParams({ metric, group_by: groupBy });
   if (bins !== undefined) params.set('bins', String(bins));
-  return request<HistogramResponse>(
-    `/api/trajectories/${encodeURIComponent(dataset)}/stats/histogram?${params}`,
-  );
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/histogram?${params}`;
+  return parseContractResponse('HistogramResponse', path, await requestJson(path));
 }
 
 export async function fetchStatsScatter(
@@ -404,15 +430,13 @@ export async function fetchStatsScatter(
   yMetric: string,
 ): Promise<ScatterResponse> {
   const params = new URLSearchParams({ x_metric: xMetric, y_metric: yMetric });
-  return request<ScatterResponse>(
-    `/api/trajectories/${encodeURIComponent(dataset)}/stats/scatter?${params}`,
-  );
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/scatter?${params}`;
+  return parseContractResponse('ScatterResponse', path, await requestJson(path));
 }
 
 export async function fetchStatsDiagnostics(
   dataset: string,
 ): Promise<DiagnosticsResponse> {
-  return request<DiagnosticsResponse>(
-    `/api/trajectories/${encodeURIComponent(dataset)}/stats/diagnostics`,
-  );
+  const path = `/api/trajectories/${encodeURIComponent(dataset)}/stats/diagnostics`;
+  return parseContractResponse('DiagnosticsResponse', path, await requestJson(path));
 }

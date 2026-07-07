@@ -1,169 +1,71 @@
-import type { StudioInterventionTransformSpec, ValueSchema } from '@/types/workspace';
+import type {
+  BarnacleSpec,
+  ComponentSpec,
+  EdgeRouting,
+  GraphSpec,
+  ParamValue,
+  TapSpec,
+} from '@/generated/studioContracts';
+
+export type {
+  AdditiveGraphChannelAdapterSpec,
+  AdditiveGraphChannelTargetSpec,
+  AnalysisDataProductRequirement,
+  AnalysisInputConsumerSpec,
+  AnalysisInputRequirement,
+  AnalysisPageSpec,
+  BarnacleSpec,
+  ComponentSpec,
+  DerivedDimensionRuleSpec,
+  EdgeRouting,
+  EdgeRoutingPoint,
+  EdgeUIState,
+  GraphMetadata,
+  GraphProject,
+  GraphSpec,
+  GraphUIState,
+  NodeUIState,
+  ParamSchema,
+  ParamValue,
+  ParameterConstraintSpec,
+  RetainedObservableSpec,
+  RetainedObservableTargetSpec,
+  RetentionPolicySpec,
+  StudioArtifactRef,
+  StudioCollectionRef,
+  StudioInterventionTransformSpec,
+  StudioInterventionValueBounds,
+  StudioManifestRef,
+  StudioScenarioSpec,
+  StudioSelectorRef,
+  StudioStageSpec,
+  StudioTaskBinding,
+  StudioTaskBindingSpec,
+  StudioTaskDataSpec,
+  StudioTaskEpochSpec,
+  StudioTaskTimelineSegmentSpec,
+  StudioTaskTimelineSignalSpec,
+  StudioTaskTimelineSpec,
+  StudioValidationIssue,
+  StudioValidationState,
+  StudioValueSpec,
+  StudioWorkspaceSpec,
+  TapSpec,
+  TapTransform,
+  TapUIState,
+  UserPortSpec,
+  ValidationError,
+  ValidationResult,
+  ValidationWarning,
+  WireSpec,
+} from '@/generated/studioContracts';
 
 export type ParamPrimitive = number | string | boolean | null;
+export type ParamValueObject = Record<string, ParamValue>;
+export type ParamValueArray = ParamValue[];
 
-export interface ParamValueObject {
-  [key: string]: ParamValue;
-}
-
-export interface ParamValueArray extends Array<ParamValue> {}
-
-export type ParamValue = ParamPrimitive | ParamValueArray | ParamValueObject;
-
-export interface ParamSchema {
-  name: string;
-  type: 'int' | 'float' | 'bool' | 'str' | 'enum' | 'array' | 'object' | 'bounds2d';
-  default?: ParamValue;
-  min?: number;
-  max?: number;
-  step?: number;
-  options?: string[];
-  description?: string;
-  required: boolean;
-  nested_schema?: ParamSchema[];
-}
-
-export interface ComponentSpec {
-  type: string;
-  params: Record<string, ParamValue>;
-  input_ports: string[];
-  output_ports: string[];
-}
-
-export interface UserPortSpec {
-  inputs: string[];
-  outputs: string[];
-}
-
-export interface TapTransform {
-  type: string;
-  params: ParamValueObject;
-  intervention?: StudioInterventionTransformSpec | null;
-}
-
-export interface TapSpec {
-  id: string;
-  type: 'probe' | 'intervention';
-  position: {
-    afterNode: string;
-    targetNode?: string;
-  };
-  paths: Record<string, string>;
-  transform?: TapTransform;
-}
-
-export interface TapUIState {
-  position: { x: number; y: number };
-  selected?: boolean;
-}
-
-export type BarnacleKind = 'probe' | 'intervention';
-export type BarnacleTiming = 'input' | 'output';
-
-export interface BarnacleSpec {
-  id: string;
-  kind: BarnacleKind;
-  timing: BarnacleTiming;
-  label: string;
-  read_paths: string[];
-  write_paths: string[];
-  transform: string;
-}
-
-export interface WireSpec {
-  source_node: string;
-  source_port: string;
-  target_node: string;
-  target_port: string;
-  temporality?: 'instant' | 'recurrent';
-  recurrent_initializer?: Record<string, unknown> | null;
-}
-
-export interface RetentionPolicySpec {
-  mode: 'stream' | 'window' | 'trajectory';
-  window_size?: number | null;
-  order?: number | null;
-  reason?: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface RetainedObservableTargetSpec {
-  kind: 'port' | 'edge' | 'graph_output' | 'recurrent_carry' | 'state_path' | 'task_data';
-  selector: string;
-  node_id?: string | null;
-  port?: string | null;
-  edge_id?: string | null;
-  path?: string | null;
-  timing?: 'input' | 'output' | 'step' | 'initial' | 'final' | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface RetainedObservableSpec {
-  id: string;
-  label?: string | null;
-  selector?: string | null;
-  target?: RetainedObservableTargetSpec | null;
-  retention: RetentionPolicySpec;
-  value_schema?: ValueSchema | Record<string, unknown> | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface GraphSpec {
-  schema_id?: string;
-  schema_version?: string;
-  nodes: Record<string, ComponentSpec>;
-  wires: WireSpec[];
-  input_ports: string[];
-  output_ports: string[];
-  input_bindings: Record<string, [string, string]>;
-  output_bindings: Record<string, [string, string]>;
-  subgraphs?: Record<string, GraphSpec>;
-  barnacles?: Record<string, BarnacleSpec[]>;
-  user_ports?: Record<string, UserPortSpec>;
-  taps?: TapSpec[];
-  retained_observables?: RetainedObservableSpec[] | null;
-  metadata?: GraphMetadata;
-}
-
-export interface GraphMetadata {
-  name: string;
-  description?: string;
-  created_at: string;
-  updated_at: string;
-  version: string;
-  author?: string;
-  tags?: string[];
-}
-
-export interface NodeUIState {
-  position: { x: number; y: number };
-  collapsed: boolean;
-  selected: boolean;
-  size?: { width: number; height: number };
-  reversed?: boolean;
-}
-
-export interface EdgeRoutingPoint {
-  x: number;
-  y: number;
-}
-
-export interface EdgeRouting {
-  style: 'bezier' | 'elbow';
-  points: EdgeRoutingPoint[];
-}
-
-export interface EdgeUIState {
-  routing: EdgeRouting;
-}
-
-export interface GraphUIState {
-  viewport: { x: number; y: number; zoom: number };
-  node_states: Record<string, NodeUIState>;
-  edge_states?: Record<string, EdgeUIState>;
-  subgraph_states?: Record<string, GraphUIState>;
-  tap_states?: Record<string, TapUIState>;
-}
+export type BarnacleKind = BarnacleSpec['kind'];
+export type BarnacleTiming = BarnacleSpec['timing'];
 
 /** Internal graph carried by a SubgraphNode for the nested preview canvas. */
 export interface SubgraphPreview {
