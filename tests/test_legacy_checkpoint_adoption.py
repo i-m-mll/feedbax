@@ -32,6 +32,7 @@ from feedbax.contracts.worker import (
     toy_minimax_method_contract,
 )
 from feedbax.training.legacy_checkpoint_adoption import (
+    DROP_PATH,
     LegacyManifestSchemaError,
     LegacyPathMappingError,
     LegacyStreamMismatchError,
@@ -386,6 +387,50 @@ def test_path_keyed_tree_adoption_lists_unmatched_and_unfilled_leaves(
     message = str(excinfo.value)
     assert "unmatched old array leaves" in message
     assert "unfilled current array leaves" in message
+
+
+def test_explicit_drop_rule_verifies_stream_without_assignment(tmp_path: Path) -> None:
+    stream = tmp_path / "model.eqx"
+    _write_stream(
+        stream,
+        [
+            np.array([9, 10], dtype=np.int64),
+            np.array([1.0, 2.0], dtype=np.float32),
+        ],
+    )
+    manifest = accept_leaf_manifest(
+        _manifest_payload(
+            model_entries=[
+                {
+                    "tree_path": "/old/structure_indices",
+                    "kind": "array",
+                    "shape": [2],
+                    "dtype": "int64",
+                },
+                {
+                    "tree_path": "/old/controller",
+                    "kind": "array",
+                    "shape": [2],
+                    "dtype": "float32",
+                },
+            ],
+            optimizer_entries=[],
+        )
+    )
+
+    adopted, report = adopt_tree_from_legacy_stream(
+        stream,
+        manifest.model,
+        jnp.array([0.0, 0.0], dtype=jnp.float32),
+        mapping_rules=[
+            PathMappingRule("/old/structure_indices", DROP_PATH),
+            PathMappingRule("/old/controller", "/"),
+        ],
+    )
+
+    assert adopted.tolist() == [1.0, 2.0]
+    assert report.assigned_paths == ("/",)
+    assert report.dropped_paths == ("/old/structure_indices",)
 
 
 def test_static_stream_entries_verify_in_order_but_do_not_populate_current_statics(

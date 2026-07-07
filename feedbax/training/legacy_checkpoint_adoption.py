@@ -41,6 +41,7 @@ from feedbax.training.checkpoint_custody import (
 LEGACY_MANIFEST_KIND = "LegacyCheckpointLeafManifest"
 PATH_MAPPING_REGISTRY_SCHEMA_ID = "feedbax.training.legacy_checkpoint_path_mapping"
 PATH_MAPPING_REGISTRY_SCHEMA_VERSION = "feedbax.training.legacy_checkpoint_path_mapping.v1"
+DROP_PATH = "__drop__"
 
 
 class LegacyCheckpointAdoptionError(ValueError):
@@ -65,7 +66,7 @@ class LegacyWorktreeDumpError(LegacyCheckpointAdoptionError):
 
 @dataclass(frozen=True)
 class PathMappingRule:
-    """One exact old-path to current-path rename rule."""
+    """One exact old-path to current-path rename or explicit drop rule."""
 
     old_path: str
     new_path: str
@@ -133,6 +134,7 @@ class TreeAdoptionReport:
 
     assigned_paths: tuple[str, ...]
     static_paths: tuple[StaticPathReport, ...]
+    dropped_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -298,11 +300,15 @@ def adopt_tree_from_legacy_stream(
     unmatched_old: list[str] = []
     duplicate_new: list[str] = []
     incompatible_current: list[str] = []
+    dropped_old: list[str] = []
 
     for entry, record in zip(manifest_entries, records, strict=True):
         if entry.kind != "array":
             continue
         new_path = path_map.resolve(entry.tree_path)
+        if new_path == DROP_PATH:
+            dropped_old.append(entry.tree_path)
+            continue
         if new_path in replacements:
             duplicate_new.append(new_path)
             continue
@@ -355,6 +361,7 @@ def adopt_tree_from_legacy_stream(
     return adopted, TreeAdoptionReport(
         assigned_paths=tuple(sorted(replacements)),
         static_paths=tuple(static_report),
+        dropped_paths=tuple(sorted(dropped_old)),
     )
 
 
