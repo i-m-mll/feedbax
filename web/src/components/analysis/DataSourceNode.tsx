@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo } from 'react';
-import { useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
+import { type NodeProps, useUpdateNodeInternals } from '@xyflow/react';
 import type { DataSourceNodeData } from '@/stores/analysisStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { STATE_FIELD_TREE, type StateFieldNode } from '@/types/analysis';
@@ -27,7 +27,7 @@ import { getStageByKind, getTrainingScenario, useWorkspaceStore } from '@/stores
 import type { GraphSpec } from '@/types/graph';
 import { StateFieldTree, countVisibleRows, FIELD_ROW_HEIGHT } from './StateFieldTree';
 import { Database } from 'lucide-react';
-import clsx from 'clsx';
+import { NodeHeader, NodeShell } from '@/components/ui/NodePrimitives';
 
 const WIDTH = 200;
 const HEADER_HEIGHT = 36;
@@ -255,19 +255,11 @@ export function DataSourceNode({ id, data, selected }: NodeProps) {
   }, [id, visibleCount, updateNodeInternals]);
 
   return (
-    <div
-      className={clsx(
-        'relative rounded-lg border bg-slate-50/80 backdrop-blur shadow-soft transition-all duration-150',
-        selected
-          ? 'border-brand-500 ring-1 ring-brand-500/40'
-          : 'border-slate-200/80',
-      )}
-      style={{ width: WIDTH, height: totalHeight }}
-    >
+    <NodeShell tone="dataSource" selected={selected} style={{ width: WIDTH, height: totalHeight }}>
       {/* Header */}
-      <div className="px-3 py-2 flex items-center justify-center border-b border-slate-100/80 rounded-t-lg">
+      <NodeHeader tone="dataSource" className="justify-center">
         <Database className="w-4 h-4 text-slate-400" />
-      </div>
+      </NodeHeader>
 
       {/* Hierarchical field tree */}
       <div
@@ -283,6 +275,6 @@ export function DataSourceNode({ id, data, selected }: NodeProps) {
           bodyPadding={BODY_PADDING}
         />
       </div>
-    </div>
+    </NodeShell>
   );
 }

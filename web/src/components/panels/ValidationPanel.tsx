@@ -9,7 +9,8 @@ import { validateGraph } from '@/features/graph/validation';
 import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { projectStudioSchema } from '@/features/schema/project';
 import { useComponents } from '@/hooks/useComponents';
-import clsx from 'clsx';
+import { PanelSectionHeader } from '@/components/ui/PanelPrimitives';
+import { semanticTokens } from '@/components/ui/semanticTokens';
 
 export function ValidationPanel() {
   const [isExpanded, setIsExpanded] = useState(true);
@@ -53,18 +54,14 @@ export function ValidationPanel() {
   return (
     <div className="border-t border-slate-100">
       {/* Header */}
-      <button
-        onClick={toggleExpanded}
-        className={clsx(
-          'flex w-full items-center justify-between px-4 py-3',
-          'text-left text-xs font-semibold uppercase tracking-[0.3em] text-slate-400',
-          'hover:bg-slate-50 transition-colors'
-        )}
-      >
-        <span className="flex items-center gap-2">
-          Validation
+      <PanelSectionHeader
+        title="Validation"
+        expanded={isExpanded}
+        onToggle={toggleExpanded}
+        badges={
+          <>
           {errorCount > 0 && (
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 normal-case tracking-normal">
+            <span className={`rounded-full ${semanticTokens.error.badgeBackground} px-2 py-0.5 text-[10px] font-medium ${semanticTokens.error.badgeText} normal-case tracking-normal`}>
               {errorCount} error{errorCount !== 1 ? 's' : ''}
             </span>
           )}
@@ -74,20 +71,13 @@ export function ValidationPanel() {
             </span>
           )}
           {!hasIssues && (
-            <span className="rounded-full bg-mint-100 px-2 py-0.5 text-[10px] font-medium text-mint-600 normal-case tracking-normal">
+            <span className={`rounded-full ${semanticTokens.success.background} px-2 py-0.5 text-[10px] font-medium ${semanticTokens.success.text} normal-case tracking-normal`}>
               valid
             </span>
           )}
-        </span>
-        <svg
-          className={clsx('h-4 w-4 transition-transform', isExpanded ? 'rotate-180' : '')}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
+          </>
+        }
+      />
 
       {/* Content */}
       {isExpanded && (
@@ -104,7 +94,7 @@ export function ValidationPanel() {
           ) : (
             <div className="space-y-1.5">
               {validation.errors.map((error, index) => (
-                <div key={`error-${index}`} className="text-xs text-amber-600">
+                <div key={`error-${index}`} className={`text-xs ${semanticTokens.error.text}`}>
                   {error.message}
                 </div>
               ))}

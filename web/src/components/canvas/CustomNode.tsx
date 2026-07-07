@@ -1,4 +1,4 @@
-import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
+import { NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { GraphNodeData } from '@/types/graph';
 import type { AnalysisNodeMeta } from '@/types/analysis';
 import clsx from 'clsx';
@@ -20,6 +20,7 @@ import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
 import { FigureOutputPin } from '@/components/analysis/FigureOutputPin';
+import { NodeHeader, NodeShell, PortHandle } from '@/components/ui/NodePrimitives';
 
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
@@ -224,12 +225,10 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
   // Position the figure pin below the last output port
   const figPinOffset = HEADER_HEIGHT + BODY_PADDING + (outputCount > 0 ? outputCount * ROW_HEIGHT : ROW_HEIGHT) + 8;
   return (
-    <div
-      className={clsx(
-        'relative rounded-xl border-2 shadow-soft bg-white/90 backdrop-blur transition-all duration-150',
-        selected ? 'border-brand-500 ring-2 ring-brand-500/30' : 'border-slate-200',
-        isNodeHighlighted && !selected && 'border-amber-400 ring-2 ring-amber-200'
-      )}
+    <NodeShell
+      selected={selected}
+      selectedRing="strong"
+      highlighted={isNodeHighlighted}
       style={{ width, height }}
     >
       <NodeResizer
@@ -240,7 +239,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
         handleClassName="bg-white border border-slate-300 shadow-soft z-10"
         lineClassName="border border-dashed border-slate-200"
       />
-      <Handle
+      <PortHandle
         type="target"
         position={reversed ? Position.Right : Position.Left}
         id="__state_in"
@@ -248,14 +247,11 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
           top: HEADER_HEIGHT / 2,
           [reversed ? 'right' : 'left']: HANDLE_OFFSET - 2,
           transform: 'translateY(-50%)',
-          clipPath: reversed
-            ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
-            : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-          width: '8px',
-          height: '8px',
           zIndex: 40,
         }}
-        className="w-2 h-2 z-20 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
+        arrow={reversed ? 'right' : 'left'}
+        tone="state"
+        className="border-2 cursor-crosshair"
       />
       {collapsedEffective && showTaskSourceHints && taskHintEntries.length > 0 && (
         <div
@@ -317,7 +313,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
           ))}
         </div>
       )}
-      <Handle
+      <PortHandle
         type="source"
         position={reversed ? Position.Left : Position.Right}
         id="__state_out"
@@ -325,20 +321,14 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
           top: HEADER_HEIGHT / 2,
           [reversed ? 'left' : 'right']: HANDLE_OFFSET - 2,
           transform: 'translateY(-50%)',
-          clipPath: reversed
-            ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
-            : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-          width: '8px',
-          height: '8px',
           zIndex: 40,
         }}
-        className="w-2 h-2 z-20 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
+        arrow={reversed ? 'right' : 'left'}
+        tone="state"
+        className="border-2 cursor-crosshair"
       />
-      <div
-        className={clsx(
-          'px-3 py-2 bg-slate-50/70 flex items-center gap-3 overflow-hidden',
-          collapsedEffective ? 'rounded-xl' : 'border-b border-slate-100 rounded-t-xl'
-        )}
+      <NodeHeader
+        collapsed={collapsedEffective}
         onDoubleClick={(event) => {
           event.stopPropagation();
           if (isComposite) {
@@ -410,14 +400,14 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
             )
           )}
         </div>
-      </div>
+      </NodeHeader>
 
       {collapsedEffective ? null : (
         <div className="relative text-xs text-slate-600" style={{ height: bodyHeight, padding: BODY_PADDING }}>
           {inputPorts.map((port, index) => {
             const isDynamicMuxPort = port === nextMuxPort;
             return (
-              <Handle
+              <PortHandle
                 key={`handle-in-${port}`}
                 type="target"
                 position={reversed ? Position.Right : Position.Left}
@@ -426,20 +416,23 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                   top: rowCenterInBody(index),
                   [reversed ? 'right' : 'left']: HANDLE_OFFSET,
                   transform: 'translateY(-50%)',
-                  clipPath: reversed
-                    ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
-                    : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-                  width: '8px',
-                  height: '8px',
                   zIndex: 40,
                 }}
+                arrow={reversed ? 'right' : 'left'}
+                tone={
+                  topPane.selected_entity_id === graphPortEntityId(label, 'input', port)
+                    ? 'selected'
+                    : objectivePorts.has(`input:${port}`)
+                      ? 'objective'
+                      : taskBoundInputs.has(port)
+                        ? 'task'
+                        : isDynamicMuxPort
+                          ? 'dynamic'
+                          : 'model'
+                }
                 className={clsx(
-                  'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
-                  isDynamicMuxPort && 'bg-white ring-1 ring-slate-300 border-slate-300',
-                  taskBoundInputs.has(port) && 'bg-emerald-500 ring-2 ring-emerald-200',
-                  objectivePorts.has(`input:${port}`) && 'bg-violet-500 ring-2 ring-violet-200',
                   topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
-                    'bg-brand-600 ring-4 ring-brand-300 scale-150'
+                    'scale-150'
                 )}
                 onContextMenu={(e) => handlePortContextMenu(e, port, 'input')}
               />
@@ -481,7 +474,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
               );
             })}
           {spec.output_ports.map((port, index) => (
-            <Handle
+            <PortHandle
               key={`handle-out-${port}`}
               type="source"
               position={reversed ? Position.Left : Position.Right}
@@ -490,19 +483,22 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                 top: rowCenterInBody(index),
                 [reversed ? 'left' : 'right']: HANDLE_OFFSET,
                 transform: 'translateY(-50%)',
-                clipPath: reversed
-                  ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
-                  : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-                width: '8px',
-                height: '8px',
                 zIndex: 40,
               }}
+              arrow={reversed ? 'right' : 'left'}
+              tone={
+                topPane.selected_entity_id === graphPortEntityId(label, 'output', port)
+                  ? 'selected'
+                  : objectivePorts.has(`output:${port}`)
+                    ? 'objective'
+                    : highlightedPorts.has(port)
+                      ? 'highlighted'
+                      : 'model'
+              }
               className={clsx(
-                'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
-                objectivePorts.has(`output:${port}`) && 'bg-violet-500 ring-2 ring-violet-200',
-                highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125',
+                highlightedPorts.has(port) && 'scale-125',
                 topPane.selected_entity_id === graphPortEntityId(label, 'output', port) &&
-                  'bg-brand-600 ring-4 ring-brand-300 scale-150'
+                  'scale-150'
               )}
               onContextMenu={(e) => handlePortContextMenu(e, port, 'output')}
             />
@@ -600,7 +596,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
           onClose={closeContextMenu}
         />
       )}
-    </div>
+    </NodeShell>
   );
 }
 
