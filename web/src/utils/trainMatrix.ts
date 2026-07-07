@@ -26,6 +26,7 @@ export interface TrainMatrixSpec {
   name: string;
   mode: TrainMatrixMode;
   axes: TrainMatrixAxisDraft[];
+  manualCoordinates?: Array<Record<string, number>>;
 }
 
 export interface TrainMatrixCoordinate {
@@ -48,6 +49,11 @@ export interface TrainAxisColumn {
   id: string;
   label: string;
   path?: string | null;
+}
+
+export interface MatrixFromGhostRowsResult {
+  matrix: TrainMatrixSpec | null;
+  error: string | null;
 }
 
 const DEFAULT_MATRIX_NAME = 'Training matrix';
@@ -206,10 +212,24 @@ export function matrixSpecFromSelection(stage: StudioStageSpec | null | undefine
       source: 'selection',
     }];
   });
+  const combination = isRecord(raw.combination) ? raw.combination : null;
+  const manualCoordinates =
+    combination?.mode === 'manual' && Array.isArray(combination.manual_coordinates)
+      ? combination.manual_coordinates.flatMap((coordinate): Array<Record<string, number>> => {
+          if (!isRecord(coordinate)) return [];
+          const normalized = Object.fromEntries(
+            Object.entries(coordinate).filter(([, value]) =>
+              typeof value === 'number' && Number.isInteger(value) && value >= 0
+            )
+          ) as Record<string, number>;
+          return Object.keys(normalized).length > 0 ? [normalized] : [];
+        })
+      : undefined;
   return {
     name: stringValue(raw.name) ?? stringValue(raw.label) ?? DEFAULT_MATRIX_NAME,
     mode: raw.mode === 'zip' ? 'zip' : 'cross',
     axes: dedupeAxes(axes),
+    manualCoordinates,
   };
 }
 
@@ -236,7 +256,14 @@ function dedupeAxes(axes: TrainMatrixAxisDraft[]): TrainMatrixAxisDraft[] {
   return out;
 }
 
-export function runCountExpression(axes: TrainMatrixAxisDraft[], mode: TrainMatrixMode): string {
+export function runCountExpression(
+  axes: TrainMatrixAxisDraft[],
+  mode: TrainMatrixMode,
+  manualCoordinates?: Array<Record<string, number>>
+): string {
+  if (manualCoordinates && manualCoordinates.length > 0) {
+    return `${manualCoordinates.length} manual run${manualCoordinates.length === 1 ? '' : 's'}`;
+  }
   if (axes.length === 0) return '0 runs';
   const counts = axes.map((axis) => axis.values.length);
   if (mode === 'zip') {
@@ -249,11 +276,22 @@ export function runCountExpression(axes: TrainMatrixAxisDraft[], mode: TrainMatr
 
 export function expandTrainMatrix(
   axes: TrainMatrixAxisDraft[],
-  mode: TrainMatrixMode
+  mode: TrainMatrixMode,
+  manualCoordinates?: Array<Record<string, number>>
 ): TrainMatrixCoordinate[] {
   if (axes.length === 0 || axes.some((axis) => axis.values.length === 0)) return [];
   const coordinates: Array<Record<string, number>> = [];
-  if (mode === 'zip') {
+  if (manualCoordinates && manualCoordinates.length > 0) {
+    for (const coordinate of manualCoordinates) {
+      const normalized: Record<string, number> = {};
+      for (const axis of axes) {
+        const index = coordinate[axis.id];
+        if (!Number.isInteger(index) || index < 0 || index >= axis.values.length) return [];
+        normalized[axis.id] = index;
+      }
+      coordinates.push(normalized);
+    }
+  } else if (mode === 'zip') {
     const lengths = new Set(axes.map((axis) => axis.values.length));
     if (lengths.size !== 1) return [];
     for (let index = 0; index < axes[0].values.length; index += 1) {
@@ -287,7 +325,7 @@ export function expandTrainMatrix(
 
 export function ghostRowsForMatrix(matrix: TrainMatrixSpec): TrainMatrixGhostRow[] {
   const runSetId = `ghost-run-set:${stableAxisId(matrix.name) || 'matrix'}`;
-  return expandTrainMatrix(matrix.axes, matrix.mode).map((coordinate) => ({
+  return expandTrainMatrix(matrix.axes, matrix.mode, matrix.manualCoordinates).map((coordinate) => ({
     id: `${runSetId}:${coordinate.index}`,
     label: coordinate.label || `Run ${coordinate.index + 1}`,
     status: 'ghost',
@@ -301,6 +339,15 @@ export function selectionSpecForMatrix(
   current: Record<string, unknown>,
   matrix: TrainMatrixSpec
 ): Record<string, unknown> {
+  const combination =
+    matrix.manualCoordinates && matrix.manualCoordinates.length > 0
+      ? {
+          combination: {
+            mode: 'manual',
+            manual_coordinates: matrix.manualCoordinates,
+          },
+        }
+      : {};
   return {
     ...current,
     matrix: {
@@ -312,8 +359,14 @@ export function selectionSpecForMatrix(
         path: axis.path,
         values: axis.values,
       })),
+      ...combination,
     },
   };
+}
+
+export function selectionSpecWithoutMatrix(current: Record<string, unknown>): Record<string, unknown> {
+  const { matrix: _matrix, sweep_matrix: _sweepMatrix, run_matrix: _runMatrix, ...rest } = current;
+  return rest;
 }
 
 export function workspaceWithMatrixSelection(
@@ -334,12 +387,31 @@ export function workspaceWithMatrixSelection(
   };
 }
 
+export function workspaceWithoutMatrixSelection(
+  workspace: StudioWorkspaceSpec,
+  stageId: string
+): StudioWorkspaceSpec {
+  return {
+    ...workspace,
+    stages: workspace.stages.map((stage) =>
+      stage.id === stageId
+        ? {
+            ...stage,
+            selection_spec: selectionSpecWithoutMatrix(stage.selection_spec),
+          }
+        : stage
+    ),
+  };
+}
+
 export function trainAxisColumns(
   rows: TrainingRunSummary[],
   matrixAxes: TrainMatrixAxisDraft[] = []
 ): TrainAxisColumn[] {
   const byId = new Map<string, TrainAxisColumn>();
+  const matrixAxisIds = new Set<string>();
   for (const axis of matrixAxes) {
+    matrixAxisIds.add(axis.id);
     byId.set(axis.id, { id: axis.id, label: axis.label, path: axis.path });
   }
   for (const row of rows) {
@@ -348,7 +420,7 @@ export function trainAxisColumns(
     }
   }
   return Array.from(byId.values()).filter((axis) =>
-    rows.some((row) => row.axisCoordinates[axis.id] !== undefined)
+    matrixAxisIds.has(axis.id) || rows.some((row) => row.axisCoordinates[axis.id] !== undefined)
   );
 }
 
@@ -425,4 +497,80 @@ export function bulkEditGhostRows({
     });
   }
   return out;
+}
+
+function valueKey(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+export function matrixSpecFromGhostRows({
+  name,
+  rows,
+  axes,
+}: {
+  name: string;
+  rows: TrainMatrixGhostRow[];
+  axes: TrainAxisColumn[];
+}): MatrixFromGhostRowsResult {
+  if (rows.length === 0) return { matrix: null, error: 'No preview rows to stage.' };
+  const selectedAxes = axes.filter((axis) =>
+    rows.some((row) => row.axisCoordinates[axis.id] !== undefined)
+  );
+  if (selectedAxes.length === 0) {
+    return { matrix: null, error: 'Preview rows do not contain axis coordinates.' };
+  }
+  const missingPath = selectedAxes.find((axis) => !axis.path);
+  if (missingPath) {
+    return {
+      matrix: null,
+      error: `Axis ${missingPath.label} is missing its scenario path, so it cannot be restaged.`,
+    };
+  }
+
+  const matrixAxes: TrainMatrixAxisDraft[] = [];
+  const valueIndexes = new Map<string, Map<string, number>>();
+  for (const axis of selectedAxes) {
+    const values: unknown[] = [];
+    const indexes = new Map<string, number>();
+    for (const row of rows) {
+      if (row.axisCoordinates[axis.id] === undefined) {
+        return {
+          matrix: null,
+          error: `Preview row ${row.label} is missing axis ${axis.label}.`,
+        };
+      }
+      const value = row.axisCoordinates[axis.id];
+      const key = valueKey(value);
+      if (!indexes.has(key)) {
+        indexes.set(key, values.length);
+        values.push(value);
+      }
+    }
+    matrixAxes.push({
+      id: axis.id,
+      label: axis.label,
+      path: axis.path ?? axis.id,
+      values,
+      source: 'manual',
+    });
+    valueIndexes.set(axis.id, indexes);
+  }
+
+  const manualCoordinates = rows.map((row) =>
+    Object.fromEntries(
+      matrixAxes.map((axis) => [
+        axis.id,
+        valueIndexes.get(axis.id)?.get(valueKey(row.axisCoordinates[axis.id])) ?? 0,
+      ])
+    )
+  );
+  return {
+    matrix: {
+      name,
+      mode: 'cross',
+      axes: matrixAxes,
+      manualCoordinates,
+    },
+    error: null,
+  };
 }

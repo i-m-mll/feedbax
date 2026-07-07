@@ -22,6 +22,7 @@ export interface TrainingRunSummary {
   sourceIssue: string | null;
   provenanceId: string;
   uri: string | null;
+  jobId: string | null;
   axisCoordinates: Record<string, unknown>;
   runSetId: string | null;
   planned: boolean;
@@ -170,6 +171,7 @@ function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: stringValue(ref.metadata.provenance_id) ?? ref.id,
     uri: ref.uri ?? null,
+    jobId: stringValue(ref.metadata.job_id),
     axisCoordinates,
     runSetId: stringValue(ref.metadata.run_set_id),
     planned: booleanValue(ref.metadata.planned) ?? false,

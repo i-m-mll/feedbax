@@ -25,6 +25,7 @@ const baseRun: TrainingRunSummary = {
   sourceIssue: null,
   provenanceId: 'run:1',
   uri: null,
+  jobId: null,
   axisCoordinates: {},
   runSetId: null,
   planned: false,

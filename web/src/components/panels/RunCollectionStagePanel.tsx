@@ -69,12 +69,14 @@ import {
   formatAxisValue,
   ghostRowsForMatrix,
   initialMatrixSpec,
+  matrixSpecFromGhostRows,
   matrixSpecToValuesInput,
   parseAxisValuesInput,
   runCountExpression,
   trainAxisColumns,
   validateAxisPath,
   workspaceWithMatrixSelection,
+  workspaceWithoutMatrixSelection,
   type BulkEditVerb,
   type TrainAxisColumn,
   type TrainMatrixAxisDraft,
@@ -117,6 +119,7 @@ export function TrainCollectionPanel() {
   const [sort, setSort] = useState<SortState>({ key: 'final_validation_loss', direction: 'asc' });
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(() => new Set());
   const [focusedRunId, setFocusedRunId] = useState<string | null>(null);
+  const [snapshotRunId, setSnapshotRunId] = useState<string | null>(null);
   const [collapsedSets, setCollapsedSets] = useState<Set<string>>(() => new Set());
   const [matrix, setMatrix] = useState<TrainMatrixSpec>(() => initialMatrixSpec(null, null));
   const [editingAxisId, setEditingAxisId] = useState<string | null>(null);
@@ -163,6 +166,15 @@ export function TrainCollectionPanel() {
       }),
     [bulkAxis, bulkValues, bulkVerb, selectedRows]
   );
+  const bulkMatrixPlan = useMemo(
+    () =>
+      matrixSpecFromGhostRows({
+        name: `Bulk ${bulkVerb} ${bulkAxis?.label ?? 'axis'}`,
+        rows: bulkGhostRows,
+        axes: axisColumns,
+      }),
+    [axisColumns, bulkAxis?.label, bulkGhostRows, bulkVerb]
+  );
   const visibleRows = useMemo(() => {
     const base =
       view === 'selected'
@@ -177,6 +189,18 @@ export function TrainCollectionPanel() {
     () => validateAxisPath(axisDraft.path, trainScenario),
     [axisDraft.path, trainScenario]
   );
+  const progressByRunId = useMemo(() => {
+    const label = trainingProgress
+      ? `${trainingProgress.batch}/${trainingProgress.total_batches}`
+      : null;
+    const jobId = trainingProgress?.job_id ?? trainingJobId ?? lastTrainingExecutionPreparation?.plan.job_id;
+    const byRun = new Map<string, string>();
+    if (!label || !jobId) return byRun;
+    for (const row of rows) {
+      if (row.id === jobId || row.jobId === jobId) byRun.set(row.id, label);
+    }
+    return byRun;
+  }, [lastTrainingExecutionPreparation?.plan.job_id, rows, trainingJobId, trainingProgress]);
 
   useEffect(() => {
     if (!trainStage) return;
@@ -254,6 +278,7 @@ export function TrainCollectionPanel() {
       };
       return {
         ...current,
+        manualCoordinates: undefined,
         axes: editingAxisId
           ? current.axes.map((axis) => (axis.id === editingAxisId ? { ...nextAxis, id: axis.id } : axis))
           : [...current.axes, nextAxis],
@@ -274,42 +299,129 @@ export function TrainCollectionPanel() {
   const removeAxis = useCallback((axisId: string) => {
     setMatrix((current) => ({
       ...current,
+      manualCoordinates: undefined,
       axes: current.axes.filter((axis) => axis.id !== axisId),
     }));
     setEditingAxisId((current) => (current === axisId ? null : current));
   }, []);
 
-  const stageMatrix = useCallback(async () => {
-    if (!workspace || !trainStage || matrix.axes.length === 0 || ghostRows.length === 0) return;
+  const stageWorkspace = useCallback(async (
+    nextWorkspace: typeof workspace,
+    stageId: string,
+    metadata: Record<string, unknown>
+  ) => {
+    if (!nextWorkspace) return false;
     setStageState({ busy: true, error: null });
     try {
-      const nextWorkspace = workspaceWithMatrixSelection(workspace, trainStage.id, matrix);
       setWorkspace(nextWorkspace);
       const preparation = await prepareStudioTrainingExecution({
         workspace: nextWorkspace,
-        stage_id: trainStage.id,
+        stage_id: stageId,
         backend: 'local',
         issues: ['3a6d02e'],
-        metadata: { source: 'train_collection_panel', matrix_preview_count: ghostRows.length },
+        metadata,
       });
       setTrainingExecutionPreparation(preparation);
       markDirty();
       setStageState({ busy: false, error: null });
+      return true;
     } catch (error) {
       setStageState({
         busy: false,
         error: error instanceof Error ? error.message : 'Failed to stage training runs.',
       });
+      return false;
     }
+  }, [markDirty, setTrainingExecutionPreparation, setWorkspace]);
+
+  const stageMatrixSpec = useCallback(async (
+    matrixToStage: TrainMatrixSpec,
+    metadata: Record<string, unknown>
+  ) => {
+    if (!workspace || !trainStage || matrixToStage.axes.length === 0) return;
+    const previewRows = ghostRowsForMatrix(matrixToStage);
+    if (previewRows.length === 0) return;
+    const nextWorkspace = workspaceWithMatrixSelection(workspace, trainStage.id, matrixToStage);
+    setMatrix(matrixToStage);
+    return stageWorkspace(nextWorkspace, trainStage.id, metadata);
+  }, [stageWorkspace, trainStage, workspace]);
+
+  const stageMatrix = useCallback(async () => {
+    if (matrix.axes.length === 0 || ghostRows.length === 0) return;
+    await stageMatrixSpec(matrix, {
+      source: 'train_collection_panel',
+      matrix_preview_count: ghostRows.length,
+    });
+  }, [ghostRows.length, matrix, stageMatrixSpec]);
+
+  const applyBulkEdit = useCallback(async () => {
+    if (!bulkMatrixPlan.matrix) {
+      setStageState({
+        busy: false,
+        error: bulkMatrixPlan.error ?? 'Bulk edit preview cannot be staged.',
+      });
+      return;
+    }
+    const staged = await stageMatrixSpec(bulkMatrixPlan.matrix, {
+      source: 'train_collection_bulk_edit',
+      bulk_verb: bulkVerb,
+      selected_pending_count: pendingSelectionCount,
+      matrix_preview_count: bulkGhostRows.length,
+    });
+    if (staged) setSelectedRunIds(new Set());
   }, [
-    ghostRows.length,
-    markDirty,
-    matrix,
-    setTrainingExecutionPreparation,
-    setWorkspace,
-    trainStage,
-    workspace,
+    bulkGhostRows.length,
+    bulkMatrixPlan.error,
+    bulkMatrixPlan.matrix,
+    bulkVerb,
+    pendingSelectionCount,
+    stageMatrixSpec,
   ]);
+
+  const viewSnapshot = useCallback((run: TrainingRunSummary) => {
+    setFocusedRunId(run.id);
+    setSnapshotRunId(run.id);
+  }, []);
+
+  const restageRun = useCallback(async (run: TrainingRunSummary) => {
+    if (!workspace || !trainStage) return;
+    setFocusedRunId(run.id);
+    setSnapshotRunId(null);
+    const axisCount = Object.keys(run.axisCoordinates).length;
+    if (axisCount === 0) {
+      const nextWorkspace = workspaceWithoutMatrixSelection(workspace, trainStage.id);
+      await stageWorkspace(nextWorkspace, trainStage.id, {
+        source: 'train_collection_row_restage',
+        restaged_from_run_id: run.id,
+        matrix_preview_count: 1,
+      });
+      return;
+    }
+    const plan = matrixSpecFromGhostRows({
+      name: `Restage ${run.label}`,
+      rows: [{
+        id: `restage-preview:${run.id}`,
+        label: run.label,
+        status: 'ghost',
+        runSetId: run.runSetId ?? 'restage-preview',
+        coordinateIndex: 0,
+        axisCoordinates: run.axisCoordinates,
+      }],
+      axes: axisColumns,
+    });
+    if (!plan.matrix) {
+      setStageState({
+        busy: false,
+        error: plan.error ?? 'Run cannot be restaged because its axis paths are unavailable.',
+      });
+      return;
+    }
+    await stageMatrixSpec(plan.matrix, {
+      source: 'train_collection_row_restage',
+      restaged_from_run_id: run.id,
+      matrix_preview_count: 1,
+    });
+  }, [axisColumns, stageMatrixSpec, stageWorkspace, trainStage, workspace]);
 
   const runLocal = useCallback(async () => {
     if (!workspace || !trainStage) return;
@@ -390,7 +502,7 @@ export function TrainCollectionPanel() {
               ghostRows={ghostRows}
               busy={stageState.busy}
               onMatrixNameChange={(name) => setMatrix((current) => ({ ...current, name }))}
-              onModeChange={(mode) => setMatrix((current) => ({ ...current, mode }))}
+              onModeChange={(mode) => setMatrix((current) => ({ ...current, mode, manualCoordinates: undefined }))}
               onAxisDraftChange={setAxisDraft}
               onCommitAxis={commitAxisDraft}
               onEditAxis={editAxis}
@@ -417,10 +529,7 @@ export function TrainCollectionPanel() {
               view={view}
               sort={sort}
               bestRunId={bestRow?.id ?? null}
-              progressRunId={trainingJobId ?? lastTrainingExecutionPreparation?.plan.job_id ?? null}
-              progressLabel={
-                trainingProgress ? `${trainingProgress.batch}/${trainingProgress.total_batches}` : null
-              }
+              progressByRunId={progressByRunId}
               onViewChange={setView}
               onSortChange={setSort}
               onToggle={toggleRow}
@@ -429,6 +538,8 @@ export function TrainCollectionPanel() {
               onClear={clearSelection}
               onToggleSet={toggleSetCollapsed}
               onOpenDetails={(run) => setFocusedRunId(run.id)}
+              onViewSnapshot={viewSnapshot}
+              onRestageRun={restageRun}
               onRunLocal={runLocal}
               onLifecycleAction={runLifecycleAction}
             />
@@ -441,9 +552,12 @@ export function TrainCollectionPanel() {
               verb={bulkVerb}
               values={bulkValues}
               ghostRows={bulkGhostRows}
+              applyError={bulkGhostRows.length > 0 ? bulkMatrixPlan.error : null}
+              busy={stageState.busy}
               onAxisChange={setBulkAxisId}
               onVerbChange={setBulkVerb}
               onValuesChange={setBulkValues}
+              onApply={applyBulkEdit}
             />
 
             {runActionState.error && (
@@ -463,7 +577,10 @@ export function TrainCollectionPanel() {
             </section>
             <RunDetailPane
               run={focusedRun}
+              snapshotOpen={Boolean(focusedRun && snapshotRunId === focusedRun.id)}
               lossHistory={lossHistory}
+              onViewSnapshot={viewSnapshot}
+              onRestage={restageRun}
               onDownloadCheckpoint={(run) => {
                 if (run.uri) window.open(run.uri, '_blank', 'noopener,noreferrer');
               }}
@@ -711,7 +828,7 @@ function MatrixBuilderStrip({
             Matrix builder
           </div>
           <div className="mt-1 text-xs text-slate-500">
-            {runCountExpression(matrix.axes, matrix.mode)}
+            {runCountExpression(matrix.axes, matrix.mode, matrix.manualCoordinates)}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -863,9 +980,12 @@ function BulkEditPanel({
   verb,
   values,
   ghostRows,
+  applyError,
+  busy,
   onAxisChange,
   onVerbChange,
   onValuesChange,
+  onApply,
 }: {
   selectedCount: number;
   pendingSelectionCount: number;
@@ -874,10 +994,14 @@ function BulkEditPanel({
   verb: BulkEditVerb;
   values: string;
   ghostRows: TrainMatrixGhostRow[];
+  applyError: string | null;
+  busy: boolean;
   onAxisChange: (axisId: string) => void;
   onVerbChange: (verb: BulkEditVerb) => void;
   onValuesChange: (values: string) => void;
+  onApply: () => void;
 }) {
+  const canApply = pendingSelectionCount > 0 && ghostRows.length > 0 && !applyError && !busy;
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -891,7 +1015,7 @@ function BulkEditPanel({
           {ghostRows.length} preview
         </div>
       </div>
-      <div className="mt-3 grid gap-3 md:grid-cols-[10rem_10rem_minmax(12rem,1fr)]">
+      <div className="mt-3 grid gap-3 md:grid-cols-[10rem_10rem_minmax(12rem,1fr)_auto] md:items-end">
         <label className="text-xs font-medium text-slate-600">
           <span>Verb</span>
           <select
@@ -925,7 +1049,21 @@ function BulkEditPanel({
             className="mt-1 h-9 w-full rounded-md border border-slate-200 px-2.5 text-sm text-slate-700"
           />
         </label>
+        <button
+          type="button"
+          disabled={!canApply}
+          onClick={onApply}
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-slate-800 px-3 text-xs font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          Apply & restage
+        </button>
       </div>
+      {applyError && ghostRows.length > 0 && (
+        <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {applyError}
+        </div>
+      )}
       <div className="mt-3 max-h-24 overflow-y-auto rounded-md border border-slate-100 bg-slate-50 p-2">
         {ghostRows.length === 0 ? (
           <div className="text-xs text-slate-400">
@@ -956,8 +1094,7 @@ function RunTable({
   view,
   sort,
   bestRunId,
-  progressRunId = null,
-  progressLabel = null,
+  progressByRunId,
   onViewChange,
   onSortChange,
   onToggle,
@@ -966,6 +1103,8 @@ function RunTable({
   onClear,
   onToggleSet,
   onOpenDetails,
+  onViewSnapshot,
+  onRestageRun,
   onRunLocal,
   onLifecycleAction,
 }: {
@@ -980,8 +1119,7 @@ function RunTable({
   view: RunView;
   sort: SortState;
   bestRunId: string | null;
-  progressRunId?: string | null;
-  progressLabel?: string | null;
+  progressByRunId?: Map<string, string>;
   onViewChange: (view: RunView) => void;
   onSortChange: (sort: SortState) => void;
   onToggle: (id: string) => void;
@@ -990,6 +1128,8 @@ function RunTable({
   onClear: () => void;
   onToggleSet?: (runSetId: string) => void;
   onOpenDetails: (run: TrainingRunSummary) => void;
+  onViewSnapshot?: (run: TrainingRunSummary) => void;
+  onRestageRun?: (run: TrainingRunSummary) => void;
   onRunLocal?: () => void;
   onLifecycleAction?: (
     action: 'cancel' | 'delete' | 'supersede',
@@ -1002,7 +1142,7 @@ function RunTable({
     metricColumns.length > 0
       ? ` repeat(${metricColumns.length}, minmax(4.75rem,0.8fr))`
       : '';
-  const gridTemplateColumns = `1.5rem minmax(12rem,1.8fr) minmax(7rem,1fr)${axisTemplateColumns}${metricTemplateColumns} minmax(4.75rem,0.7fr) minmax(8rem,0.8fr)`;
+  const gridTemplateColumns = `1.5rem minmax(12rem,1.8fr) minmax(7rem,1fr)${axisTemplateColumns}${metricTemplateColumns} minmax(4.75rem,0.7fr) minmax(11rem,0.9fr)`;
   const groups = useMemo(() => groupTrainingRows(rows), [rows]);
   return (
     <section className="max-w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -1114,9 +1254,11 @@ function RunTable({
                           gridTemplateColumns={gridTemplateColumns}
                           selected={selectedIds.has(row.id)}
                           isBest={bestRunId === row.id}
-                          progressLabel={progressRunId === row.id ? progressLabel : null}
+                          progressLabel={progressByRunId?.get(row.id) ?? null}
                           onToggle={() => onToggle(row.id)}
                           onOpenDetails={() => onOpenDetails(row)}
+                          onViewSnapshot={onViewSnapshot ? () => onViewSnapshot(row) : undefined}
+                          onRestageRun={onRestageRun ? () => onRestageRun(row) : undefined}
                           onLifecycleAction={onLifecycleAction}
                         />
                       ))}
@@ -1254,6 +1396,8 @@ function TrainingRunRow({
   progressLabel,
   onToggle,
   onOpenDetails,
+  onViewSnapshot,
+  onRestageRun,
   onLifecycleAction,
 }: {
   row: TrainingRunSummary;
@@ -1265,6 +1409,8 @@ function TrainingRunRow({
   progressLabel: string | null;
   onToggle: () => void;
   onOpenDetails: () => void;
+  onViewSnapshot?: () => void;
+  onRestageRun?: () => void;
   onLifecycleAction?: (
     action: 'cancel' | 'delete' | 'supersede',
     run: TrainingRunSummary
@@ -1351,6 +1497,28 @@ function TrainingRunRow({
         >
           <Info className="h-4 w-4" />
         </button>
+        {onViewSnapshot && (
+          <button
+            type="button"
+            onClick={onViewSnapshot}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-sky-50 hover:text-sky-700"
+            aria-label={`View snapshot for ${row.label}`}
+            title="View snapshot"
+          >
+            <Eye className="h-4 w-4" />
+          </button>
+        )}
+        {onRestageRun && (
+          <button
+            type="button"
+            onClick={onRestageRun}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            aria-label={`Restage ${row.label}`}
+            title="Restage run"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </button>
+        )}
         {onLifecycleAction && row.status === 'pending' && (
           <>
             <button
@@ -1388,11 +1556,17 @@ function TrainingRunRow({
 
 function RunDetailPane({
   run,
+  snapshotOpen,
   lossHistory,
+  onViewSnapshot,
+  onRestage,
   onDownloadCheckpoint,
 }: {
   run: TrainingRunSummary | null;
+  snapshotOpen: boolean;
   lossHistory: TrainingProgress[];
+  onViewSnapshot: (run: TrainingRunSummary) => void;
+  onRestage: (run: TrainingRunSummary) => void;
   onDownloadCheckpoint: (run: TrainingRunSummary) => void;
 }) {
   if (!run) {
@@ -1420,6 +1594,7 @@ function RunDetailPane({
       </div>
       <div className="mt-4 grid gap-2 text-xs">
         <DetailField label="Manifest" value={run.provenanceId} />
+        <DetailField label="Job" value={run.jobId ?? 'Not recorded'} />
         <DetailField label="Set" value={run.runSetId ?? 'Not grouped'} />
         <DetailField label="Variant" value={run.variant ?? 'Not recorded'} />
         <DetailField label="Batch size" value={run.batchSize?.toLocaleString() ?? 'Not recorded'} />
@@ -1434,6 +1609,37 @@ function RunDetailPane({
           <span className="text-slate-500">{formatMetric(latestLoss, 4)}</span>
         </div>
         <LossSparkline values={lossValues} />
+      </div>
+      {snapshotOpen && (
+        <div className="mt-4 rounded-md border border-sky-100 bg-sky-50 p-3 text-xs">
+          <div className="flex items-center gap-2 font-semibold text-sky-800">
+            <Eye className="h-3.5 w-3.5" />
+            Snapshot
+          </div>
+          <div className="mt-2 grid gap-1 text-slate-600">
+            <DetailField label="Manifest id" value={run.id} />
+            <DetailField label="URI" value={run.uri ?? 'Not recorded'} />
+            <DetailField label="Status" value={run.status} />
+          </div>
+        </div>
+      )}
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onViewSnapshot(run)}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100"
+        >
+          <Eye className="h-3.5 w-3.5" />
+          Snapshot
+        </button>
+        <button
+          type="button"
+          onClick={() => onRestage(run)}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          Restage
+        </button>
       </div>
       <button
         type="button"

@@ -6,6 +6,7 @@ import {
   expandTrainMatrix,
   ghostRowsForMatrix,
   initialMatrixSpec,
+  matrixSpecFromGhostRows,
   parseAxisValuesInput,
   runCountExpression,
   selectionSpecForMatrix,
@@ -91,6 +92,54 @@ describe('train matrix utilities', () => {
     ]);
   });
 
+  it('emits manual matrix coordinates for restaged preview rows', () => {
+    const rows = [
+      {
+        id: 'preview:a',
+        label: 'Run A',
+        status: 'ghost',
+        runSetId: 'preview',
+        coordinateIndex: 0,
+        axisCoordinates: { lr: 0.1, seed: 1 },
+      },
+      {
+        id: 'preview:b',
+        label: 'Run B',
+        status: 'ghost',
+        runSetId: 'preview',
+        coordinateIndex: 1,
+        axisCoordinates: { lr: 0.2, seed: 1 },
+      },
+    ] as const;
+    const result = matrixSpecFromGhostRows({
+      name: 'Bulk restage',
+      rows: [...rows],
+      axes: [
+        { id: 'lr', label: 'LR', path: 'training_spec.optimizer.params.learning_rate' },
+        { id: 'seed', label: 'Seed', path: 'seed' },
+      ],
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.matrix?.manualCoordinates).toEqual([
+      { lr: 0, seed: 0 },
+      { lr: 1, seed: 0 },
+    ]);
+    expect(selectionSpecForMatrix({}, result.matrix!).matrix).toMatchObject({
+      combination: {
+        mode: 'manual',
+        manual_coordinates: [
+          { lr: 0, seed: 0 },
+          { lr: 1, seed: 0 },
+        ],
+      },
+    });
+    expect(ghostRowsForMatrix(result.matrix!).map((row) => row.axisCoordinates)).toEqual([
+      { lr: 0.1, seed: 1 },
+      { lr: 0.2, seed: 1 },
+    ]);
+  });
+
   it('reads existing matrix selection and validates strict paths', () => {
     const spec = initialMatrixSpec(
       stage({
@@ -129,6 +178,11 @@ describe('train matrix utilities', () => {
     ] as any[];
 
     expect(trainAxisColumns(rows)).toEqual([{ id: 'lr', label: 'lr' }]);
+    expect(trainAxisColumns([], [
+      { id: 'lr', label: 'LR', path: 'training_spec.optimizer.params.learning_rate', values: [0.1], source: 'manual' },
+    ])).toEqual([
+      { id: 'lr', label: 'LR', path: 'training_spec.optimizer.params.learning_rate' },
+    ]);
     expect(parseAxisValuesInput('1, 2, true')).toEqual([1, 2, true]);
     expect(
       bulkEditGhostRows({
