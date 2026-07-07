@@ -3,6 +3,8 @@ import type { KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react'
 import clsx from 'clsx';
 import {
   Database,
+  Eye,
+  EyeOff,
   FoldVertical,
   LocateFixed,
   UnfoldVertical,
@@ -57,8 +59,9 @@ import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getActiveStage,
-  getScenario,
+  getProjectedScenario,
   getTopPaneState,
+  getWorkspaceViewState,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -72,6 +75,7 @@ import type {
   StudioScenarioEntityRegistry,
   StudioSchemaRegistry,
   StudioTopPaneProjection,
+  WorkspaceViewState,
 } from '@/types/workspace';
 import type { TimeAggregationSpec } from '@/types/training';
 
@@ -249,17 +253,37 @@ function WorkspaceProjection({
   registry,
   scene,
   selectedId,
+  viewState,
   onSelect,
+  onViewStateChange,
 }: {
   registry: StudioScenarioEntityRegistry;
   scene: ResolvedScene;
   selectedId: string | null;
+  viewState: WorkspaceViewState;
   onSelect: (entityId: string | null) => void;
+  onViewStateChange: (patch: Partial<WorkspaceViewState>) => void;
 }) {
   const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
-  const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
+  const view = viewState.camera;
   const dragStartRef = useRef<{ x: number; y: number; pan: { x: number; y: number } } | null>(
     null
+  );
+  const overlayVisible = (overlayClass: string) =>
+    viewState.overlay_visibility[overlayClass] !== false;
+  const entityOverlayClass = (kind: ResolvedSceneEntity['kind']) => {
+    if (kind === 'objective_term') return 'objectives';
+    if (kind === 'retained_observable' || kind === 'probe') return 'observables';
+    if (kind === 'artifact_overlay') return 'artifacts';
+    if (kind === 'task_object' || kind === 'task_data' || kind === 'task_binding') return 'task';
+    return 'mechanics';
+  };
+  const visibleEntities = scene.entities.filter((entity) =>
+    overlayVisible(entityOverlayClass(entity.kind))
+  );
+  const visibleEntityIds = new Set(visibleEntities.map((entity) => entity.id));
+  const visibleElements = scene.elements.filter((element) =>
+    visibleEntityIds.has(element.entity_id)
   );
   const relatedItems = relatedProjectionItems(registry, selectedId);
   const relatedIds = new Set(relatedItems.map((item) => item.entity_id));
@@ -298,13 +322,24 @@ function WorkspaceProjection({
   };
 
   const zoomBy = (factor: number) => {
-    setView((current) => ({
-      ...current,
-      zoom: Math.max(0.35, Math.min(8, current.zoom * factor)),
-    }));
+    onViewStateChange({
+      camera: {
+        ...view,
+        zoom: Math.max(0.35, Math.min(8, view.zoom * factor)),
+      },
+    });
   };
 
-  const resetView = () => setView({ zoom: 1, pan: { x: 0, y: 0 } });
+  const resetView = () => onViewStateChange({ camera: { zoom: 1, pan: { x: 0, y: 0 } } });
+
+  const toggleOverlay = (overlayClass: string) => {
+    onViewStateChange({
+      overlay_visibility: {
+        ...viewState.overlay_visibility,
+        [overlayClass]: !overlayVisible(overlayClass),
+      },
+    });
+  };
 
   const beginPan = (event: PointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return;
@@ -319,13 +354,15 @@ function WorkspaceProjection({
   const movePan = (event: PointerEvent<SVGSVGElement>) => {
     const start = dragStartRef.current;
     if (!start) return;
-    setView((current) => ({
-      ...current,
-      pan: {
-        x: start.pan.x + event.clientX - start.x,
-        y: start.pan.y + event.clientY - start.y,
+    onViewStateChange({
+      camera: {
+        ...view,
+        pan: {
+          x: start.pan.x + event.clientX - start.x,
+          y: start.pan.y + event.clientY - start.y,
+        },
       },
-    }));
+    });
   };
 
   const endPan = () => {
@@ -518,7 +555,7 @@ function WorkspaceProjection({
             strokeWidth="1"
             vectorEffect="non-scaling-stroke"
           />
-          {scene.elements.map(renderElement)}
+          {visibleElements.map(renderElement)}
           <g transform={`translate(28 ${WORKSPACE_SVG_HEIGHT - 32})`}>
             <line
               x1="0"
@@ -561,6 +598,20 @@ function WorkspaceProjection({
           >
             <LocateFixed className="h-4 w-4" />
           </button>
+          {(['objectives', 'observables', 'artifacts'] as const).map((overlayClass) => {
+            const Icon = overlayVisible(overlayClass) ? Eye : EyeOff;
+            return (
+              <button
+                key={overlayClass}
+                type="button"
+                onClick={() => toggleOverlay(overlayClass)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                title={`${overlayVisible(overlayClass) ? 'Hide' : 'Show'} ${overlayClass}`}
+              >
+                <Icon className="h-4 w-4" />
+              </button>
+            );
+          })}
         </div>
         <div className="pointer-events-none absolute bottom-4 right-4 rounded border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-600 shadow-sm backdrop-blur">
           <div className="font-semibold text-slate-800">World frame</div>
@@ -577,7 +628,7 @@ function WorkspaceProjection({
           </div>
         </div>
         <div className="divide-y divide-slate-100">
-          {scene.entities.map((entity) => {
+          {visibleEntities.map((entity) => {
             const active = entity.id === selectedId;
             const related = relatedIds.has(entity.id) || hoveredRelatedIds.has(entity.id);
             return (
@@ -990,6 +1041,9 @@ function ObjectivesProjection({
 export function ScenarioProjectionWorkspace() {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const updateActiveWorkspaceViewState = useWorkspaceStore(
+    (state) => state.updateActiveWorkspaceViewState
+  );
   const rightSidebarVisible = useLayoutStore((state) => state.rightSidebarVisible);
   const toggleRightSidebar = useLayoutStore((state) => state.toggleRightSidebar);
   const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
@@ -1002,7 +1056,8 @@ export function ScenarioProjectionWorkspace() {
   const { components } = useComponents();
   const topPane = getTopPaneState(workspace);
   const activeStage = getActiveStage(workspace);
-  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const activeScenario = getProjectedScenario(workspace, activeStage);
+  const workspaceViewState = getWorkspaceViewState(workspace, activeStage);
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const schemaQuery = useStudioSchemaRegistry(
     workspace,
@@ -1038,7 +1093,9 @@ export function ScenarioProjectionWorkspace() {
             registry={registry}
             scene={scene}
             selectedId={topPane.selected_entity_id}
+            viewState={workspaceViewState}
             onSelect={selectTopPaneEntity}
+            onViewStateChange={updateActiveWorkspaceViewState}
           />
         )}
         {topPane.active_projection === 'observables' && (
