@@ -613,6 +613,8 @@ export interface StudioEvaluationLocalRunResult {
   manifest_refs: StudioManifestRef[];
   completed_count: number;
   failed_count: number;
+  skipped_count: number;
+  skipped_failed_count: number;
   errors: string[];
 }
 

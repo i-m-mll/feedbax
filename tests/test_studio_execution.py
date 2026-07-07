@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
@@ -17,6 +18,7 @@ from feedbax.studio.execution import (
     materialize_studio_pipeline,
     prepare_studio_training_execution,
     preview_studio_evaluation_matrix,
+    run_studio_evaluation_local_execution,
     run_studio_training_local_execution,
     stage_studio_evaluation_matrix,
 )
@@ -38,6 +40,7 @@ from feedbax.contracts.manifest import (
     TrainingRunSetManifest,
     load_manifest,
     store_json_artifact,
+    write_manifest,
 )
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
@@ -498,6 +501,70 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     assert checkpoint_manifest.metadata["checkpoint_policy"]["metric"] == "final_validation_loss"
 
 
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"mode": "best-by-metric"}, "requires metric"),
+        ({"mode": "best-by-metric", "metric": "  "}, "requires metric"),
+        ({"mode": "every-k"}, "requires every_k"),
+        ({"mode": "every-k", "every_k": 0}, "greater than or equal to 1"),
+    ],
+)
+def test_studio_evaluation_checkpoint_policy_rejects_incomplete_modes(payload, message):
+    with pytest.raises(ValidationError, match=message):
+        StudioEvaluationCheckpointPolicy.model_validate(payload)
+
+
+def test_studio_evaluation_run_local_preserves_skipped_failed_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    studio_default_eval_recipe,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    prepared_training = prepare_studio_training_execution(
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+    )
+    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
+    eval_stage.input_collections = [
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
+    ]
+    request = StudioEvaluationMatrixRequest(
+        workspace=prepared_training.workspace,
+        training_run_ids=[training_ref.id],
+        eval_params={"perturbation": "none"},
+        checkpoint_policy=StudioEvaluationCheckpointPolicy(mode="last"),
+        reprocess="missing",
+        root=str(tmp_path),
+    )
+    staged = stage_studio_evaluation_matrix(request)
+    existing_manifest = load_manifest(staged.manifest_refs[0].uri)
+    assert isinstance(existing_manifest, EvaluationRunManifest)
+    failed_manifest = existing_manifest.model_copy(update={"status": "failed"})
+    write_manifest(failed_manifest, root=tmp_path)
+
+    launched = run_studio_evaluation_local_execution(request)
+    launched_eval_stage = next(stage for stage in launched.workspace.stages if stage.kind == "eval")
+
+    assert launched.completed_count == 0
+    assert launched.failed_count == 1
+    assert launched.skipped_count == 1
+    assert launched.skipped_failed_count == 1
+    assert launched.errors == []
+    assert launched_eval_stage.status == "failed"
+    assert launched_eval_stage.metadata["last_evaluation_launch"] == {
+        "completed_count": 0,
+        "failed_count": 1,
+        "skipped_count": 1,
+        "skipped_failed_count": 1,
+        "launched_at": launched_eval_stage.metadata["last_evaluation_launch"]["launched_at"],
+        "reprocess": "missing",
+    }
+
+
 def test_studio_evaluation_endpoints_preview_stage_and_run_local(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -517,7 +584,11 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
     ]
     payload = {
         "workspace": prepared_training.workspace.model_dump(mode="json", exclude_none=True),
-        "training_run_ids": [training_ref.id],
+        "selection_spec": {
+            "mode": "explicit",
+            "manifest_kind": "TrainingRunManifest",
+            "ids": [training_ref.id],
+        },
         "eval_params": {"perturbation": "none"},
         "checkpoint_policy": {"mode": "last"},
         "issues": ["717e8fb"],

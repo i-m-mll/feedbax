@@ -137,13 +137,23 @@ describe('Studio evaluation provider API', () => {
         manifest_refs: [],
         completed_count: 1,
         failed_count: 0,
+        skipped_count: 0,
+        skipped_failed_count: 0,
         errors: [],
       });
     });
     vi.stubGlobal('fetch', fetchMock);
+    const selectionSpec = {
+      mode: 'query' as const,
+      manifest_kind: 'TrainingRunManifest',
+      query: {
+        statuses: ['completed'],
+        has_checkpoint: true,
+      },
+    };
     const payload = {
       workspace: workspace as never,
-      training_run_ids: ['feedbax-training-run:abc'],
+      selection_spec: selectionSpec,
       checkpoint_policy: {
         mode: 'best-by-metric' as const,
         metric: 'final_validation_loss',
@@ -174,9 +184,10 @@ describe('Studio evaluation provider API', () => {
     );
     const [, options] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];
     expect(JSON.parse(options.body as string)).toMatchObject({
-      training_run_ids: ['feedbax-training-run:abc'],
+      selection_spec: selectionSpec,
       checkpoint_policy: { mode: 'best-by-metric', metric: 'final_validation_loss' },
       reprocess: 'missing_failed',
     });
+    expect(JSON.parse(options.body as string)).not.toHaveProperty('training_run_ids');
   });
 });

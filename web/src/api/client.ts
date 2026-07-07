@@ -1,6 +1,6 @@
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import { parseContract } from '@/generated/studioContracts';
+import { parseContract, type SelectionSpec } from '@/generated/studioContracts';
 import type {
   StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
@@ -191,6 +191,7 @@ export async function runStudioTrainingLocalExecution(payload: {
 export async function previewStudioEvaluationMatrix(payload: {
   workspace: StudioWorkspaceSpec;
   stage_id?: string | null;
+  selection_spec?: SelectionSpec | null;
   training_run_ids?: string[];
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
@@ -210,6 +211,7 @@ export async function previewStudioEvaluationMatrix(payload: {
 export async function stageStudioEvaluationMatrix(payload: {
   workspace: StudioWorkspaceSpec;
   stage_id?: string | null;
+  selection_spec?: SelectionSpec | null;
   training_run_ids?: string[];
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
@@ -229,6 +231,7 @@ export async function stageStudioEvaluationMatrix(payload: {
 export async function runStudioEvaluationLocalExecution(payload: {
   workspace: StudioWorkspaceSpec;
   stage_id?: string | null;
+  selection_spec?: SelectionSpec | null;
   training_run_ids?: string[];
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;

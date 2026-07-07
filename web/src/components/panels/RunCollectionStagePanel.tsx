@@ -814,7 +814,6 @@ export function EvaluateCollectionPanel() {
       },
       checkpoint_policy: checkpointPolicy,
       reprocess: reprocessMode,
-      issues: ['717e8fb'],
     };
   }, [
     checkpointEveryK,

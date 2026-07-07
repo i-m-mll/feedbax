@@ -11,7 +11,7 @@ import copy
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from feedbax.execution.models import (
     ArtifactPolicy,
@@ -164,6 +164,14 @@ class StudioEvaluationCheckpointPolicy(StudioExecutionModel):
     every_k: Optional[int] = Field(default=None, ge=1)
     params: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _validate_policy_parameters(self) -> "StudioEvaluationCheckpointPolicy":
+        if self.mode == "best-by-metric" and not (self.metric or "").strip():
+            raise ValueError("best-by-metric checkpoint policy requires metric")
+        if self.mode == "every-k" and self.every_k is None:
+            raise ValueError("every-k checkpoint policy requires every_k")
+        return self
+
 
 class StudioEvaluationMatrixRequest(StudioExecutionModel):
     """Request to preview or stage a Studio eval matrix."""
@@ -228,6 +236,8 @@ class StudioEvaluationLocalRunResult(StudioExecutionModel):
     manifest_refs: list[StudioManifestRef]
     completed_count: int
     failed_count: int
+    skipped_count: int = 0
+    skipped_failed_count: int = 0
     errors: list[str] = Field(default_factory=list)
 
 
@@ -654,6 +664,8 @@ def run_studio_evaluation_local_execution(
     eval_stage = _select_stage_by_kind(workspace, "eval")
     completed = 0
     failed = 0
+    skipped = 0
+    skipped_failed = 0
     errors: list[str] = []
     updated_refs: list[StudioManifestRef] = []
 
@@ -664,6 +676,10 @@ def run_studio_evaluation_local_execution(
             errors.append(f"Manifest {ref.id!r} is not an EvaluationRunManifest")
             continue
         if not _should_launch_status(manifest.status, request.reprocess):
+            skipped += 1
+            if manifest.status == "failed":
+                failed += 1
+                skipped_failed += 1
             updated_refs.append(ref)
             continue
         try:
@@ -717,6 +733,8 @@ def run_studio_evaluation_local_execution(
         "last_evaluation_launch": {
             "completed_count": completed,
             "failed_count": failed,
+            "skipped_count": skipped,
+            "skipped_failed_count": skipped_failed,
             "launched_at": utc_now().isoformat(),
             "reprocess": request.reprocess,
         },
@@ -750,6 +768,8 @@ def run_studio_evaluation_local_execution(
         manifest_refs=updated_refs,
         completed_count=completed,
         failed_count=failed,
+        skipped_count=skipped,
+        skipped_failed_count=skipped_failed,
         errors=errors,
     )
 
