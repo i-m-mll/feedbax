@@ -54,6 +54,10 @@ from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_VERSION,
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
+from feedbax.contracts.workspace_replay import (
+    WORKSPACE_REPLAY_SCHEMA_ID,
+    WORKSPACE_REPLAY_SCHEMA_VERSION,
+)
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
@@ -388,6 +392,7 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         ),
         "StudioSchemaRegistry": "feedbax.manifest.studio.schema_registry",
         "StudioTrainingLocalRunResult": "feedbax.manifest.studio.training_local_run_result",
+        "WorkspaceReplayProduct": WORKSPACE_REPLAY_SCHEMA_ID,
     }
 
     for kind, identity in expected_manifest_identities.items():
@@ -476,6 +481,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.studio.execution",
             ("feedbax.studio.execution", "feedbax.integrations.provider"),
         ),
+        "WorkspaceReplayProduct": (
+            "feedbax.contracts.workspace_replay",
+            ("eval/validation replay materialization", "provider_manifest.schemas"),
+        ),
         "StudioApiTransport": (
             "feedbax.contracts.studio_api",
             ("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
@@ -556,6 +565,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ProviderManifest",
         "RegistrySnapshot",
         "StudioPipelineMaterializationResult",
+        "WorkspaceReplayProduct",
     }
 
     families = {family.kind: family for family in default_spec_registry.families()}
@@ -564,6 +574,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
     assert {families[kind].namespace for kind in manifest_kinds} == {
         SchemaNamespaceKind.MANIFEST
     }
+    assert families["WorkspaceReplayProduct"].current_version == WORKSPACE_REPLAY_SCHEMA_VERSION
     assert not any(
         family.namespace == SchemaNamespaceKind.COMPONENT_PARAMS
         for family in default_spec_registry.families()

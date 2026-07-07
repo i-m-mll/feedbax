@@ -104,6 +104,11 @@ from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
     WORKER_CONTRACT_SCHEMA_VERSION,
 )
+from feedbax.contracts.workspace_replay import (
+    WORKSPACE_REPLAY_SCHEMA_ID,
+    WORKSPACE_REPLAY_SCHEMA_VERSION,
+    WORKSPACE_REPLAY_SCHEMA_VERSION_V0,
+)
 from feedbax.execution.models import (
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
@@ -2228,20 +2233,57 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.manifest.studio.pipeline_materialization_result",
             "Result from Studio pipeline materialization.",
         ),
+        (
+            "WorkspaceReplayProduct",
+            WORKSPACE_REPLAY_SCHEMA_ID,
+            "Manifest-linked replay product for authored Studio workspace geometry.",
+        ),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
                 (
+                    WORKSPACE_REPLAY_SCHEMA_VERSION
+                    if kind == "WorkspaceReplayProduct"
+                    else
                     "feedbax.manifest.studio.execution.v1"
                     if kind.endswith("Result")
                     else "feedbax.spec.studio.execution.v1"
                 ),
-                owner_module="feedbax.studio.execution",
-                emitted_by=studio_execution_emitters,
-                consumed_by=("provider HTTP API", "Studio backend"),
+                owner_module=(
+                    "feedbax.contracts.workspace_replay"
+                    if kind == "WorkspaceReplayProduct"
+                    else "feedbax.studio.execution"
+                ),
+                emitted_by=(
+                    ("eval/validation replay materialization", "provider_manifest.schemas")
+                    if kind == "WorkspaceReplayProduct"
+                    else studio_execution_emitters
+                ),
+                consumed_by=(
+                    (
+                        "Studio workspace playback",
+                        "Mandible provider integration",
+                        "analysis materialization",
+                    )
+                    if kind == "WorkspaceReplayProduct"
+                    else ("provider HTTP API", "Studio backend")
+                ),
                 description=description,
+                rejected_old_versions=(
+                    (WORKSPACE_REPLAY_SCHEMA_VERSION_V0,)
+                    if kind == "WorkspaceReplayProduct"
+                    else None
+                ),
+                required_tests=(
+                    (
+                        "tests/test_workspace_replay_contract.py",
+                        "tests/test_structured_spec_migrations.py",
+                    )
+                    if kind == "WorkspaceReplayProduct"
+                    else ("tests/test_structured_spec_migrations.py",)
+                ),
             )
         )
 
