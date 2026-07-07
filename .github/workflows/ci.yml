@@ -44,6 +44,16 @@ jobs:
             echo "feedbax_contract marker not present on this branch; skipping marker gate."
           fi
 
+      - name: Run backend web tests
+        run: >
+          uv run pytest
+          tests/test_web_app.py
+          tests/test_studio_api_contracts.py
+          tests/test_studio_analysis_jobs.py
+          tests/test_studio_execution.py
+          tests/test_studio_runs_api.py
+          tests/test_training_websocket.py
+
       - name: Run full Python suite
         run: scripts/full_suite.sh --no-memo
 
@@ -75,6 +85,12 @@ jobs:
 
       - name: Run tests
         run: npm test -- --run
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke
+        run: npm run test:e2e
 
       - name: Build
         run: npm run build

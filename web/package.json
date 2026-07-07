@@ -8,6 +8,7 @@
     "generate:contracts": "cd .. && uv run python scripts/generate_studio_contracts.py",
     "build": "tsc -b && vite build",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -28,6 +29,10 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/dagre": "^0.7.54",
     "@types/node": "^20.11.19",
     "@types/react": "^18.3.12",
@@ -35,6 +40,7 @@
     "@types/three": "^0.183.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
     "typescript": "^5.7.2",

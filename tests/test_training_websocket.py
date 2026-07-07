@@ -4,8 +4,11 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient
+
 websockets = pytest.importorskip("starlette.websockets")
 WebSocketState = websockets.WebSocketState
+from feedbax.web.app import create_app  # noqa: E402
 from feedbax.web.ws import training  # noqa: E402
 
 
@@ -62,3 +65,25 @@ def test_training_ws_send_disconnect_exits_without_error(monkeypatch) -> None:
     asyncio.run(training.training_ws(websocket, "job-2"))
 
     assert websocket.sent == []
+
+
+def test_training_ws_streams_events_over_real_websocket(monkeypatch) -> None:
+    async def stream_progress(job_id: str):
+        assert job_id == "job-real"
+        yield SimpleNamespace(
+            raw={
+                "type": "training_progress",
+                "job_id": job_id,
+                "progress": 0.5,
+            }
+        )
+
+    monkeypatch.setattr(training.training_service, "stream_progress", stream_progress)
+
+    with TestClient(create_app()) as client:
+        with client.websocket_connect("/ws/training/job-real") as websocket:
+            assert websocket.receive_json() == {
+                "type": "training_progress",
+                "job_id": "job-real",
+                "progress": 0.5,
+            }
