@@ -26,7 +26,13 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
-from feedbax.contracts.manifest import EvaluationRunSpec, load_manifest, store_json_artifact
+from feedbax.contracts.manifest import (
+    EvaluationRunSpec,
+    TrainingRunManifest,
+    TrainingRunSetManifest,
+    load_manifest,
+    store_json_artifact,
+)
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
@@ -300,6 +306,59 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     assert manifest.training_spec.inline["n_batches"] == 25
     assert manifest.task_binding_spec.inline["bindings"][0]["target_port"] == "input"
     assert manifest.provenance.issues == ["9aa8ff2"]
+
+
+def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    workspace = _workspace()
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    train_stage.selection_spec["matrix"] = {
+        "name": "Loss weight sweep",
+        "axes": [
+            {
+                "id": "loss_weight",
+                "label": "loss.weight",
+                "path": "training_spec.loss.weight",
+                "values": [0, 1e-5],
+            }
+        ],
+        "mode": "cross",
+    }
+    request = StudioTrainingExecutionRequest(
+        workspace=workspace,
+        job_id="studio-plan",
+        local_cwd="/tmp/feedbax-studio",
+        issues=["c199a9c"],
+    )
+
+    prepared = prepare_studio_training_execution(request)
+
+    train_stage = next(stage for stage in prepared.workspace.stages if stage.kind == "train")
+    run_set_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run_set")
+    run_refs = [ref for ref in train_stage.manifest_refs if ref.role == "training_run"]
+    training_collection = next(
+        collection for collection in train_stage.output_collections if collection.kind == "training_runs"
+    )
+    run_set = load_manifest(run_set_ref.uri)
+    runs = [load_manifest(ref.uri) for ref in run_refs]
+
+    assert isinstance(run_set, TrainingRunSetManifest)
+    assert run_set.name == "Loss weight sweep"
+    assert run_set.axes.axes[0].role == "authored_sweep"
+    assert run_set.axes.axes[0].values == [0, 1e-5]
+    assert len(run_set.axes.runs) == 2
+    assert len(run_refs) == 2
+    assert {ref.id for ref in training_collection.item_refs} == {ref.id for ref in run_refs}
+    assert all(isinstance(run, TrainingRunManifest) for run in runs)
+    assert [run.training_spec.inline["loss"]["weight"] for run in runs] == [0, 1e-5]
+    assert [run.metadata["studio"]["axis_coordinates"]["loss_weight"] for run in runs] == [
+        0,
+        1e-5,
+    ]
+    assert {run.run_set_id for run in runs} == {run_set.id}
 
 
 def test_prepare_studio_training_execution_restages_cancelled_deterministic_manifest(

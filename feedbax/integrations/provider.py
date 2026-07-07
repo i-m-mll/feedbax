@@ -384,7 +384,7 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
             title_fields=["name", "id"],
             spec_fields=["graph_spec"],
             parent_ref_fields=["graph_spec", "run_ids", "provenance.parents"],
-            opaque_domain_fields=["tags", "metadata"],
+            opaque_domain_fields=["axes", "tags", "metadata"],
             actions=run_actions,
             related_issue_refs=["51832b9", "e33f487"],
         ),

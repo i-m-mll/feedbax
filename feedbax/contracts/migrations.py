@@ -55,6 +55,8 @@ from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_SET_SCHEMA_VERSION,
+    TRAINING_RUN_SET_SCHEMA_VERSION_V1,
     ArtifactMigrationRecord,
     canonical_json_bytes,
     sha256_bytes,
@@ -900,6 +902,12 @@ def _migrate_training_run_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict
     migrated = dict(payload)
     migrated.setdefault("schema_id", TRAINING_RUN_SPEC_SCHEMA_ID)
     migrated.setdefault("on_nan", "raise")
+    return migrated
+
+
+def _migrate_training_run_set_manifest_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("axes", {})
     return migrated
 
 
@@ -1957,7 +1965,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 (
                     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
                     if kind == "AnalysisDataProduct"
+                    else TRAINING_RUN_SET_SCHEMA_VERSION
+                    if kind == "TrainingRunSetManifest"
                     else MANIFEST_SCHEMA_VERSION
+                ),
+                stance="migrate" if kind == "TrainingRunSetManifest" else "reject",
+                supported_old_versions=(
+                    (TRAINING_RUN_SET_SCHEMA_VERSION_V1,)
+                    if kind == "TrainingRunSetManifest"
+                    else ()
                 ),
                 owner_module="feedbax.contracts.manifest",
                 emitted_by=(
@@ -2450,6 +2466,16 @@ default_spec_registry.register_migration(
         migration_id="training-run-spec-v1-to-v2-nan-policy",
         migrate=_migrate_training_run_spec_v1_to_v2_payload,
         description="Add fail-loud executor NaN policy to durable training run specs.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunSetManifest",
+    SchemaMigration(
+        source_version=TRAINING_RUN_SET_SCHEMA_VERSION_V1,
+        target_version=TRAINING_RUN_SET_SCHEMA_VERSION,
+        migration_id="training-run-set-manifest-v1-to-v2-axes",
+        migrate=_migrate_training_run_set_manifest_v1_to_v2_payload,
+        description="Add explicit axes metadata to training run-set manifests.",
     ),
 )
 default_spec_registry.register_migration(
