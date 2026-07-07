@@ -31,6 +31,9 @@ from feedbax.contracts.graph import (
     AnalysisInputRequirement,
     AnalysisPageSpec,
     BarnacleSpec,
+    CanvasPositionSpec,
+    CanvasSizeSpec,
+    CanvasViewportSpec,
     ComponentSpec,
     DerivedDimensionRuleSpec,
     EdgeRouting,
@@ -66,6 +69,7 @@ from feedbax.contracts.graph import (
     StudioValueSpec,
     StudioWorkspaceSpec,
     TapSpec,
+    TapPositionSpec,
     TapTransform,
     TapUIState,
     UserPortSpec,
@@ -125,6 +129,40 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingSpec,
 )
+from feedbax.contracts.value_schema import ValueSchema
+from feedbax.web.api.training import (
+    ProbeResponse,
+    ValidateLossResponse,
+    ValidationErrorResponse,
+)
+from feedbax.web.api.runs import CreateEvalRunRequest, EvalRunInfo, TrainingRunInfo
+from feedbax.web.models.inspection import (
+    CycleAnnotationModel,
+    InlineTreescopeRequest,
+    InspectionStatusResponse,
+    TreescopeRequest,
+    TreescopeResponse,
+)
+from feedbax.web.models.statistics import (
+    DiagnosticCheck,
+    DiagnosticsResponse,
+    GroupStatistics,
+    HistogramBin,
+    HistogramGroup,
+    HistogramResponse,
+    MetricSummary,
+    ScatterPoint,
+    ScatterResponse,
+    StatisticsResponse,
+    TimeseriesPercentiles,
+    TimeseriesResponse,
+)
+from feedbax.web.models.trajectory import (
+    DatasetInfo,
+    FilterResult,
+    TrajectoryData,
+    TrajectoryMetadata,
+)
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
@@ -138,6 +176,10 @@ MODEL_TYPES: list[type[BaseModel]] = [
     AdditiveGraphChannelAdapterSpec,
     DerivedDimensionRuleSpec,
     UserPortSpec,
+    CanvasPositionSpec,
+    CanvasSizeSpec,
+    CanvasViewportSpec,
+    TapPositionSpec,
     TapTransform,
     TapSpec,
     BarnacleSpec,
@@ -161,6 +203,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioManifestRef,
     StudioArtifactRef,
     StudioCollectionRef,
+    ValueSchema,
     StudioValueSpec,
     StudioSelectorRef,
     StudioInterventionValueBounds,
@@ -231,6 +274,33 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrainingTrajectoryEvent,
     TrainingCompleteEvent,
     TrainingErrorEvent,
+    ProbeResponse,
+    ValidationErrorResponse,
+    ValidateLossResponse,
+    TrainingRunInfo,
+    EvalRunInfo,
+    CreateEvalRunRequest,
+    DatasetInfo,
+    TrajectoryMetadata,
+    FilterResult,
+    TrajectoryData,
+    MetricSummary,
+    GroupStatistics,
+    StatisticsResponse,
+    TimeseriesPercentiles,
+    TimeseriesResponse,
+    HistogramBin,
+    HistogramGroup,
+    HistogramResponse,
+    ScatterPoint,
+    ScatterResponse,
+    DiagnosticCheck,
+    DiagnosticsResponse,
+    CycleAnnotationModel,
+    TreescopeRequest,
+    InlineTreescopeRequest,
+    TreescopeResponse,
+    InspectionStatusResponse,
 ]
 
 EVENT_MODEL_NAMES = [
@@ -258,6 +328,24 @@ CONTRACT_MODEL_NAMES = [
     "AnalysisPackagesResponse",
     "GenerateAnalysisResponse",
     "AnalysisJobStatusResponse",
+    "TrainingRunInfo",
+    "EvalRunInfo",
+    "CreateEvalRunRequest",
+    "DatasetInfo",
+    "TrajectoryMetadata",
+    "FilterResult",
+    "TrajectoryData",
+    "StatisticsResponse",
+    "TimeseriesResponse",
+    "HistogramResponse",
+    "ScatterResponse",
+    "DiagnosticsResponse",
+    "TreescopeRequest",
+    "InlineTreescopeRequest",
+    "TreescopeResponse",
+    "InspectionStatusResponse",
+    "ProbeResponse",
+    "ValidateLossResponse",
     "TrainingWebSocketEvent",
 ]
 
@@ -293,6 +381,8 @@ def ts_type(annotation: Any) -> str:
         return "number"
     if annotation is bool:
         return "boolean"
+    if annotation is dict:
+        return "Record<string, unknown>"
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return annotation.__name__
 
@@ -332,6 +422,8 @@ def zod_schema(annotation: Any) -> str:
         return "z.number()"
     if annotation is bool:
         return "z.boolean()"
+    if annotation is dict:
+        return "z.record(z.string(), z.unknown())"
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return f"{annotation.__name__}Schema"
 

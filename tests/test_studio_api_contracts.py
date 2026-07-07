@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import get_args, get_origin
+
 import pytest
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
@@ -25,12 +27,25 @@ GENERATED_STUDIO_PREFIXES = (
     "/api/analyses",
     "/api/components",
     "/api/graphs",
+    "/api/inspection",
+    "/api/runs",
     "/api/training",
+    "/api/trajectories",
 )
 
 NON_GENERATED_STUDIO_RESPONSE_ROUTES = {
     "/api/training/loss/validate",
 }
+
+
+def _response_model_members(response_model: object) -> list[type[BaseModel]]:
+    origin = get_origin(response_model)
+    if origin is list:
+        response_model = get_args(response_model)[0]
+
+    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+        return [response_model]
+    return []
 
 
 def test_studio_api_openapi_uses_plural_analysis_jobs_route() -> None:
@@ -120,16 +135,15 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
             continue
         if route.response_model is None:
             continue
-        if not isinstance(route.response_model, type) or not issubclass(
-            route.response_model, BaseModel
-        ):
-            continue
-
-        model_name = route.response_model.__name__
-        if model_name not in generated_model_names:
-            missing.append(f"{route.path} response_model={model_name}")
-        elif model_name.endswith(("Response", "Envelope")) and model_name not in generated_contract_names:
-            missing.append(f"{route.path} contractSchemas missing {model_name}")
+        for model in _response_model_members(route.response_model):
+            model_name = model.__name__
+            if model_name not in generated_model_names:
+                missing.append(f"{route.path} response_model={model_name}")
+            elif (
+                model_name.endswith(("Response", "Envelope", "Info"))
+                and model_name not in generated_contract_names
+            ):
+                missing.append(f"{route.path} contractSchemas missing {model_name}")
 
     assert missing == []
 

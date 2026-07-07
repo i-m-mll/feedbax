@@ -32,3 +32,16 @@ class FilterResult(BaseModel):
 
     indices: list[int]
     count: int
+
+
+class TrajectoryData(BaseModel):
+    """Single trajectory payload returned as raw JSON by the trajectory endpoint."""
+
+    timestamps: list[float]
+    joint_angles: list[list[float]]
+    muscle_activations: list[list[float]]
+    effector_pos: list[list[float]]
+    task_target: list[list[float]]
+    body_preset_flat: list[float]
+    task_type: int
+    body_idx: int

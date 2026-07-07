@@ -113,7 +113,7 @@ export interface StudioSelectorRef {
   units?: string | null;
   frame?: string | null;
   role?: 'editable' | 'observed' | 'generated' | string | null;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface StudioObjectiveTermSpec {
@@ -218,7 +218,7 @@ export type StudioValueSpecSamplingScope =
   | string;
 
 export interface StudioValueSpec {
-  schema_version: 'feedbax.studio.value.v1' | string;
+  schema_version?: 'feedbax.studio.value.v1' | string;
   mode: StudioValueSpecMode;
   value?: unknown;
   reference?: StudioSelectorRef | null;
@@ -232,7 +232,7 @@ export interface StudioValueSpec {
   shape?: unknown[] | null;
   units?: string | null;
   frame?: string | null;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
 
 export type StudioInterventionOperation =
@@ -254,7 +254,7 @@ export interface StudioInterventionTransformSpec {
   value?: StudioValueSpec | null;
   bounds?: StudioInterventionValueBounds | null;
   parameters?: Record<string, unknown> | null;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
 
 export type StudioSchemaOrigin =
