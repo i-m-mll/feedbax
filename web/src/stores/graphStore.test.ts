@@ -88,6 +88,46 @@ function graphWithNetworkSubgraph(): GraphSpec {
   };
 }
 
+function graphWithTwoNodes(): { graph: GraphSpec; uiState: GraphUIState } {
+  return {
+    graph: {
+      nodes: {
+        a: {
+          type: 'Gain',
+          params: { gain: 1 },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+        b: {
+          type: 'Gain',
+          params: { gain: 1 },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [
+        {
+          source_node: 'a',
+          source_port: 'output',
+          target_node: 'b',
+          target_port: 'input',
+        },
+      ],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+    },
+    uiState: {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        a: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+        b: { position: { x: 240, y: 0 }, collapsed: false, selected: false },
+      },
+    },
+  };
+}
+
 function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const innerGraph: GraphSpec = {
     nodes: {
@@ -369,6 +409,56 @@ describe('graphStore boundary aliases', () => {
     expect(() => useGraphStore.getState().capturePersistedGraph()).toThrow(
       'parent graph no longer contains subgraph node "network"'
     );
+  });
+});
+
+describe('graphStore React Flow identity preservation', () => {
+  beforeEach(() => {
+    const { graph, uiState } = graphWithTwoNodes();
+    useGraphStore.getState().hydrateGraph(graph, uiState);
+  });
+
+  it('keeps untouched node and edge references stable for a single-node param edit', () => {
+    const before = useGraphStore.getState();
+    const previousA = before.nodes.find((node) => node.id === 'a');
+    const previousB = before.nodes.find((node) => node.id === 'b');
+    const previousEdge = before.edges.find((edge) => edge.source === 'a' && edge.target === 'b');
+
+    useGraphStore.getState().updateNodeParams('a', 'gain', 2);
+
+    const after = useGraphStore.getState();
+    const nextA = after.nodes.find((node) => node.id === 'a');
+    const nextB = after.nodes.find((node) => node.id === 'b');
+    const nextEdge = after.edges.find((edge) => edge.source === 'a' && edge.target === 'b');
+
+    expect(nextA).not.toBe(previousA);
+    expect(nextB).toBe(previousB);
+    expect(nextEdge).toBe(previousEdge);
+    expect(after.graph.nodes.a.params.gain).toBe(2);
+  });
+
+  it('keeps unrelated graph entity references stable for selection-only changes', () => {
+    const before = useGraphStore.getState();
+    const previousA = before.nodes.find((node) => node.id === 'a');
+    const previousB = before.nodes.find((node) => node.id === 'b');
+    const previousEdges = before.edges;
+
+    useGraphStore.getState().setSelectedNode('a');
+
+    const nodeSelected = useGraphStore.getState();
+    const selectedA = nodeSelected.nodes.find((node) => node.id === 'a');
+    const selectedB = nodeSelected.nodes.find((node) => node.id === 'b');
+    expect(selectedA).not.toBe(previousA);
+    expect(selectedB).toBe(previousB);
+    expect(nodeSelected.edges).toBe(previousEdges);
+
+    const previousNodes = nodeSelected.nodes;
+    const previousEdge = nodeSelected.edges[0];
+    useGraphStore.getState().setSelectedEdge(previousEdge.id);
+
+    const edgeSelected = useGraphStore.getState();
+    expect(edgeSelected.nodes).toBe(previousNodes);
+    expect(edgeSelected.edges[0]).not.toBe(previousEdge);
   });
 });
 
