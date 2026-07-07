@@ -48,6 +48,9 @@ const HEADER_HEIGHT = 40;
 const TAP_WIDTH = 28;
 const TAP_HEIGHT = 18;
 
+type GraphHistoryEntry = { graph: GraphSpec; uiState: GraphUIState };
+type LayerHistory = { past: GraphHistoryEntry[]; future: GraphHistoryEntry[] };
+
 export interface GraphLayer {
   graph: GraphSpec;
   uiState: GraphUIState;
@@ -1444,8 +1447,8 @@ export interface GraphSnapshot {
   currentGraphLabel: string;
   currentContext: string;
   edgeStyle: 'bezier' | 'elbow';
-  past: { graph: GraphSpec; uiState: GraphUIState }[];
-  future: { graph: GraphSpec; uiState: GraphUIState }[];
+  past: GraphHistoryEntry[];
+  future: GraphHistoryEntry[];
   selectedTapId: string | null;
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
@@ -1473,8 +1476,9 @@ interface GraphStoreState {
   isDirty: boolean;
   lastSavedAt: string | null;
   lastSubgraphError: string | null;
-  past: { graph: GraphSpec; uiState: GraphUIState }[];
-  future: { graph: GraphSpec; uiState: GraphUIState }[];
+  past: GraphHistoryEntry[];
+  future: GraphHistoryEntry[];
+  graphHistory: Record<string, LayerHistory>;
   selectedTapId: string | null;
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
@@ -1493,6 +1497,7 @@ interface GraphStoreState {
   undo: () => void;
   redo: () => void;
   deleteSelected: () => void;
+  duplicateSelected: () => void;
   setEdgeStyle: (style: 'bezier' | 'elbow') => void;
   addEdgePoint: (edgeId: string, point: { x: number; y: number }) => void;
   updateEdgePoint: (edgeId: string, index: number, point: { x: number; y: number }) => void;
@@ -1556,6 +1561,7 @@ export const graphStoreSlices = {
     updateNodeParamsBatch: state.updateNodeParamsBatch,
     addNodeFromComponent: state.addNodeFromComponent,
     deleteSelected: state.deleteSelected,
+    duplicateSelected: state.duplicateSelected,
     renameNode: state.renameNode,
     renameSubgraphBoundaryPort: state.renameSubgraphBoundaryPort,
     onConnect: state.onConnect,
@@ -1683,6 +1689,37 @@ function captureGraphStackPathFromState(state: Pick<GraphStoreState, 'graphStack
   return state.graphStack
     .map((layer) => layer.childNodeId)
     .filter((nodeId): nodeId is string => Boolean(nodeId));
+}
+
+function graphLayerKey(path: string[]) {
+  return JSON.stringify(path);
+}
+
+function emptyLayerHistory(): LayerHistory {
+  return { past: [], future: [] };
+}
+
+function activeGraphLayerPath(state: Pick<GraphStoreState, 'graphStack'>) {
+  return captureGraphStackPathFromState(state);
+}
+
+function historyForPath(
+  graphHistory: Record<string, LayerHistory>,
+  path: string[]
+): LayerHistory {
+  return graphHistory[graphLayerKey(path)] ?? emptyLayerHistory();
+}
+
+function graphHistoryWithActiveLayer(
+  state: Pick<GraphStoreState, 'graphStack' | 'graphHistory' | 'past' | 'future'>
+): Record<string, LayerHistory> {
+  return {
+    ...state.graphHistory,
+    [graphLayerKey(activeGraphLayerPath(state))]: {
+      past: state.past,
+      future: state.future,
+    },
+  };
 }
 
 function restoreGraphStackPathFromRoot({
@@ -1827,6 +1864,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   lastSubgraphError: null,
   past: [],
   future: [],
+  graphHistory: {},
   selectedTapId: null,
   selectedEdgeId: null,
   pendingStateMerge: null,
@@ -1855,6 +1893,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       lastSubgraphError: null,
       past: [],
       future: [],
+      graphHistory: {},
       selectedTapId: null,
       selectedEdgeId: null,
       pendingStateMerge: null,
@@ -1881,6 +1920,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       lastSubgraphError: null,
       past: snapshot.past,
       future: snapshot.future,
+      graphHistory: {},
       selectedTapId: snapshot.selectedTapId,
       selectedEdgeId: snapshot.selectedEdgeId,
       pendingStateMerge: snapshot.pendingStateMerge,
@@ -1912,6 +1952,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       lastSubgraphError: null,
       past: [],
       future: [],
+      graphHistory: {},
       selectedTapId: null,
       selectedEdgeId: null,
       pendingStateMerge: null,
@@ -2143,6 +2184,11 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
       };
       const context = getSubgraphContext(nodeSpec.type);
+      const graphHistory = graphHistoryWithActiveLayer(state);
+      const nextHistory = historyForPath(graphHistory, [
+        ...activeGraphLayerPath(state),
+        nodeId,
+      ]);
       return {
         graphStack: [
           ...state.graphStack,
@@ -2162,8 +2208,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         currentGraphLabel: nodeId,
         currentContext: context,
         lastSubgraphError: null,
-        past: [],
-        future: [],
+        past: nextHistory.past,
+        future: nextHistory.future,
+        graphHistory,
       };
     });
   },
@@ -2333,6 +2380,11 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const nextStack = stack.slice(0, index);
       const nextLayer = stack[index];
       const normalized = normalizeUiState(nextLayer.graph, nextLayer.uiState, state.edgeStyle);
+      const graphHistory = graphHistoryWithActiveLayer(state);
+      const nextHistory = historyForPath(
+        graphHistory,
+        nextStack.map((layer) => layer.childNodeId).filter((id): id is string => Boolean(id))
+      );
       return {
         graphStack: nextStack,
         graph: nextLayer.graph,
@@ -2344,8 +2396,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         currentContext: nextStack.length > 0
           ? (nextStack[nextStack.length - 1].contextType ?? 'top-level')
           : 'top-level',
-        past: [],
-        future: [],
+        past: nextHistory.past,
+        future: nextHistory.future,
+        graphHistory,
       };
     });
   },
@@ -2447,6 +2500,166 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           state.selectedEdgeId && selectedEdgeIds.includes(state.selectedEdgeId)
             ? null
             : state.selectedEdgeId,
+      };
+    });
+  },
+  duplicateSelected: () => {
+    set((state) => {
+      const selectedNodeIds = state.nodes
+        .filter((node) => node.selected && !isTapNodeId(node.id))
+        .map((node) => node.id)
+        .filter((nodeId) => state.graph.nodes[nodeId]);
+      if (selectedNodeIds.length === 0) return state;
+
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const nodeMap: Record<string, string> = {};
+      let graphForNames: GraphSpec = state.graph;
+      for (const nodeId of selectedNodeIds) {
+        const nextId = createNodeName(graphForNames, nodeId);
+        nodeMap[nodeId] = nextId;
+        graphForNames = {
+          ...graphForNames,
+          nodes: {
+            ...graphForNames.nodes,
+            [nextId]: state.graph.nodes[nodeId],
+          },
+        };
+      }
+
+      const nodes = Object.fromEntries(
+        Object.entries(state.graph.nodes).map(([nodeId, spec]) => [
+          nodeId,
+          cloneGraphSpec(spec),
+        ])
+      ) as GraphSpec['nodes'];
+      for (const nodeId of selectedNodeIds) {
+        nodes[nodeMap[nodeId]] = cloneGraphSpec(state.graph.nodes[nodeId]);
+      }
+
+      const selectedNodeSet = new Set(selectedNodeIds);
+      const duplicatedWires = state.graph.wires
+        .filter(
+          (wire) =>
+            selectedNodeSet.has(wire.source_node) && selectedNodeSet.has(wire.target_node)
+        )
+        .map((wire) => ({
+          ...cloneGraphSpec(wire),
+          source_node: nodeMap[wire.source_node],
+          target_node: nodeMap[wire.target_node],
+        }));
+      let graph: GraphSpec = {
+        ...state.graph,
+        nodes,
+        wires: [...state.graph.wires.map((wire) => cloneGraphSpec(wire)), ...duplicatedWires],
+      };
+
+      const subgraphs = { ...(state.graph.subgraphs ?? {}) };
+      const subgraph_states = { ...(state.uiState.subgraph_states ?? {}) };
+      for (const nodeId of selectedNodeIds) {
+        const nodeSpec = state.graph.nodes[nodeId];
+        const targetNodeId = nodeMap[nodeId];
+        const isComposite = get()._compositeTypes.has(nodeSpec.type);
+        const sourceSubgraph = state.graph.subgraphs?.[nodeId];
+        const sourceSubgraphUiState = state.uiState.subgraph_states?.[nodeId];
+        if (isComposite && !sourceSubgraph) {
+          throw new Error(
+            `Cannot duplicate composite node "${nodeId}": source subgraph is missing.`
+          );
+        }
+        if (sourceSubgraph && !sourceSubgraphUiState) {
+          throw new Error(
+            `Cannot duplicate composite node "${nodeId}": source subgraph UI state is missing.`
+          );
+        }
+        if (sourceSubgraph && sourceSubgraphUiState) {
+          subgraphs[targetNodeId] = cloneGraphSpec(sourceSubgraph);
+          subgraph_states[targetNodeId] = cloneGraphSpec(sourceSubgraphUiState);
+        }
+      }
+      graph = {
+        ...graph,
+        subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
+      };
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
+
+      const node_states = Object.fromEntries(
+        Object.entries(state.uiState.node_states).map(([nodeId, nodeState]) => [
+          nodeId,
+          { ...nodeState, selected: false },
+        ])
+      ) as GraphUIState['node_states'];
+      for (const nodeId of selectedNodeIds) {
+        const targetNodeId = nodeMap[nodeId];
+        const sourceNodeState = state.uiState.node_states[nodeId];
+        if (!sourceNodeState) {
+          throw new Error(
+            `Cannot duplicate node "${nodeId}": source node UI state is missing.`
+          );
+        }
+        node_states[targetNodeId] = {
+          ...cloneGraphSpec(sourceNodeState),
+          position: {
+            x: sourceNodeState.position.x + 40,
+            y: sourceNodeState.position.y + 40,
+          },
+          selected: true,
+        };
+      }
+
+      const tap_states = state.uiState.tap_states
+        ? Object.fromEntries(
+            Object.entries(state.uiState.tap_states).map(([tapId, tapState]) => [
+              tapId,
+              { ...tapState, selected: false },
+            ])
+          )
+        : undefined;
+      const edgeStateSeed: Record<string, EdgeUIState> = { ...(state.uiState.edge_states ?? {}) };
+      for (const sourceWire of state.graph.wires) {
+        if (
+          !selectedNodeSet.has(sourceWire.source_node) ||
+          !selectedNodeSet.has(sourceWire.target_node)
+        ) {
+          continue;
+        }
+        const oldWireId = wireId(sourceWire);
+        const newWireId = wireId({
+          ...sourceWire,
+          source_node: nodeMap[sourceWire.source_node],
+          target_node: nodeMap[sourceWire.target_node],
+        });
+        const oldEdgeState = state.uiState.edge_states?.[oldWireId];
+        if (oldEdgeState) {
+          edgeStateSeed[newWireId] = cloneGraphSpec(oldEdgeState);
+        }
+      }
+
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        node_states,
+        edge_states: edgeStateSeed,
+        subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
+        tap_states: tap_states && Object.keys(tap_states).length ? tap_states : undefined,
+      };
+      const edge_states = buildEdgeStates(graph, uiState, state.edgeStyle);
+      const normalizedUiState: GraphUIState = {
+        ...uiState,
+        edge_states,
+      };
+
+      return {
+        graph,
+        uiState: normalizedUiState,
+        nodes: buildNodes(graph, normalizedUiState),
+        edges: buildEdges(graph, normalizedUiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+        selectedTapId: null,
+        selectedEdgeId: null,
+        pendingStateMerge: null,
       };
     });
   },
@@ -3190,6 +3403,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeState = state.uiState.node_states[nodeId];
       if (!nodeState) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nextCollapsed = !nodeState.collapsed;
       const uiState: GraphUIState = {
         ...state.uiState,
@@ -3218,6 +3432,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         uiState,
         nodes,
         edges: buildEdges(state.graph, uiState, state.edgeStyle),
+        past,
+        future: [],
         isDirty: true,
       };
     });
@@ -3226,6 +3442,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeState = state.uiState.node_states[nodeId];
       if (!nodeState) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nextReversed = !nodeState.reversed;
       const uiState: GraphUIState = {
         ...state.uiState,
@@ -3242,11 +3459,23 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           ? { ...node, data: { ...node.data, reversed: nextReversed } }
           : node
       );
-      return { uiState, nodes, edges: buildEdges(state.graph, uiState, state.edgeStyle), isDirty: true };
+      return {
+        uiState,
+        nodes,
+        edges: buildEdges(state.graph, uiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
     });
   },
   setAllNodesCollapsed: (collapsed) => {
     set((state) => {
+      const shouldUpdate = Object.values(state.uiState.node_states).some(
+        (nodeState) => nodeState.collapsed !== collapsed || nodeState.size !== undefined
+      );
+      if (!shouldUpdate) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const node_states = { ...state.uiState.node_states };
       for (const nodeId of Object.keys(node_states)) {
         node_states[nodeId] = {
@@ -3270,6 +3499,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
         nodes,
         edges: buildEdges(state.graph, { ...state.uiState, node_states }, state.edgeStyle),
+        past,
+        future: [],
         isDirty: true,
       };
     });

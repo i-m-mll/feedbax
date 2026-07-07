@@ -26,6 +26,7 @@ export function useAppShortcuts() {
     undo,
     redo,
     deleteSelected,
+    duplicateSelected,
     graph,
     uiState,
     graphId,
@@ -38,6 +39,7 @@ export function useAppShortcuts() {
       undo: state.undo,
       redo: state.redo,
       deleteSelected: state.deleteSelected,
+      duplicateSelected: state.duplicateSelected,
       graph: state.graph,
       uiState: state.uiState,
       graphId: state.graphId,
@@ -149,6 +151,16 @@ export function useAppShortcuts() {
     workspace,
   ]);
 
+  const duplicateSelection = useCallback(() => {
+    try {
+      duplicateSelected();
+    } catch (error) {
+      toast.error(actionErrorMessage(error, 'Failed to duplicate selection.'), {
+        id: 'node-duplicate-error',
+      });
+    }
+  }, [duplicateSelected]);
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
@@ -176,6 +188,12 @@ export function useAppShortcuts() {
         return;
       }
 
+      if (isMod && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        duplicateSelection();
+        return;
+      }
+
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
         deleteSelection();
@@ -184,5 +202,5 @@ export function useAppShortcuts() {
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [deleteSelection, redo, undo, saveGraph]);
+  }, [deleteSelection, duplicateSelection, redo, undo, saveGraph]);
 }
