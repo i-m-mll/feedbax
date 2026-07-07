@@ -570,6 +570,54 @@ export interface StudioTrainingLocalRunResult {
   snapshot_dir: string;
 }
 
+export type EvalCheckpointPolicyMode = 'last' | 'best-by-metric' | 'every-k';
+export type EvalReprocessMode = 'missing' | 'missing_failed' | 'all';
+
+export interface StudioEvaluationCheckpointPolicy {
+  mode: EvalCheckpointPolicyMode;
+  metric?: string | null;
+  objective?: 'minimize' | 'maximize';
+  every_k?: number | null;
+  params?: Record<string, unknown>;
+}
+
+export interface StudioEvaluationMatrixPreview {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  selected_training_run_count: number;
+  condition_count: number;
+  checkpoint_policy_count: number;
+  total_eval_count: number;
+  materialized_count: number;
+  pending_count: number;
+  failed_count: number;
+  new_manifest_count: number;
+  launch_count: number;
+  evaluation_run_ids: string[];
+  checkpoint_selection_ids: string[];
+  summary: string;
+}
+
+export interface StudioEvaluationStagingResult {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  preview: StudioEvaluationMatrixPreview;
+  manifest_refs: StudioManifestRef[];
+  checkpoint_selection_refs: StudioManifestRef[];
+}
+
+export interface StudioEvaluationLocalRunResult {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  preview: StudioEvaluationMatrixPreview;
+  manifest_refs: StudioManifestRef[];
+  completed_count: number;
+  failed_count: number;
+  skipped_count: number;
+  skipped_failed_count: number;
+  errors: string[];
+}
+
 export interface StudioPipelineMaterializationResult {
   workspace: StudioWorkspaceSpec;
   stage_ids: string[];

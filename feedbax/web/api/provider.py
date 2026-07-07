@@ -26,6 +26,11 @@ from feedbax.studio.schema import (
 )
 from feedbax.studio.execution import (
     StudioExecutionPreparationError,
+    StudioEvaluationLocalRunRequest,
+    StudioEvaluationLocalRunResult,
+    StudioEvaluationMatrixPreview,
+    StudioEvaluationMatrixRequest,
+    StudioEvaluationStagingResult,
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
     StudioTrainingLocalRunRequest,
@@ -34,7 +39,10 @@ from feedbax.studio.execution import (
     StudioTrainingExecutionRequest,
     materialize_studio_pipeline,
     prepare_studio_training_execution,
+    preview_studio_evaluation_matrix,
+    run_studio_evaluation_local_execution,
     run_studio_training_local_execution,
+    stage_studio_evaluation_matrix,
 )
 
 
@@ -102,6 +110,45 @@ async def run_studio_training_local(
 ) -> StudioTrainingLocalRunResult:
     try:
         return run_studio_training_local_execution(payload)
+    except StudioExecutionPreparationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/studio/evaluation/preview",
+    response_model=StudioEvaluationMatrixPreview,
+)
+async def preview_studio_evaluation(
+    payload: StudioEvaluationMatrixRequest,
+) -> StudioEvaluationMatrixPreview:
+    try:
+        return preview_studio_evaluation_matrix(payload)
+    except StudioExecutionPreparationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/studio/evaluation/stage",
+    response_model=StudioEvaluationStagingResult,
+)
+async def stage_studio_evaluation(
+    payload: StudioEvaluationMatrixRequest,
+) -> StudioEvaluationStagingResult:
+    try:
+        return stage_studio_evaluation_matrix(payload)
+    except StudioExecutionPreparationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/studio/evaluation/run-local",
+    response_model=StudioEvaluationLocalRunResult,
+)
+async def run_studio_evaluation_local(
+    payload: StudioEvaluationLocalRunRequest,
+) -> StudioEvaluationLocalRunResult:
+    try:
+        return run_studio_evaluation_local_execution(payload)
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

@@ -33,6 +33,9 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import type { FrozenSnapshotProjection } from '@/stores/selectionContextStore';
 import {
   prepareStudioTrainingExecution,
+  previewStudioEvaluationMatrix,
+  runStudioEvaluationLocalExecution,
+  stageStudioEvaluationMatrix,
 } from '@/api/client';
 import {
   cancelTrainingRun,
@@ -103,7 +106,14 @@ import {
 } from '@/utils/trainRunTable';
 import type { TrainingProgress } from '@/types/training';
 import type { TrainingRun } from '@/types/runs';
-import type { StudioScenarioSpec, StudioTopPaneState, StudioWorkspaceSpec } from '@/types/workspace';
+import type {
+  EvalCheckpointPolicyMode,
+  EvalReprocessMode,
+  StudioEvaluationMatrixPreview,
+  StudioScenarioSpec,
+  StudioTopPaneState,
+  StudioWorkspaceSpec,
+} from '@/types/workspace';
 
 type RunView = 'all' | 'selected' | 'best';
 type SortKey = string;
@@ -745,6 +755,7 @@ export function EvaluateCollectionPanel() {
   const setWorkspace = useWorkspaceStore((state) => state.setWorkspace);
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
+  const markDirty = useGraphStore((state) => state.markDirty);
   const selectionContext = useSelectionContextStore((state) => state.context);
   const previewRunId = useSelectionContextStore((state) => state.previewId);
   const syncMode = useSelectionContextStore((state) => state.syncMode);
@@ -761,6 +772,13 @@ export function EvaluateCollectionPanel() {
     busyRunId: null as string | null,
     error: null as string | null,
   });
+  const [evalPreview, setEvalPreview] = useState<StudioEvaluationMatrixPreview | null>(null);
+  const [evalMatrixBusy, setEvalMatrixBusy] = useState<'preview' | 'stage' | 'run' | null>(null);
+  const [checkpointPolicyMode, setCheckpointPolicyMode] =
+    useState<EvalCheckpointPolicyMode>('last');
+  const [checkpointMetric, setCheckpointMetric] = useState('final_validation_loss');
+  const [checkpointEveryK, setCheckpointEveryK] = useState(5);
+  const [reprocessMode, setReprocessMode] = useState<EvalReprocessMode>('missing');
 
   const trainStage = getStageByKind(workspace, 'train');
   const evalStage = getStageByKind(workspace, 'eval');
@@ -807,6 +825,41 @@ export function EvaluateCollectionPanel() {
           : rows;
     return sortTrainingRows(base, sort);
   }, [bestRow, rows, selectedRows, sort, view]);
+  const evalPayload = useMemo(() => {
+    const checkpointPolicy = {
+      mode: checkpointPolicyMode,
+      ...(checkpointPolicyMode === 'best-by-metric'
+        ? {
+            metric: checkpointMetric.trim() || 'final_validation_loss',
+            objective: 'minimize' as const,
+          }
+        : {}),
+      ...(checkpointPolicyMode === 'every-k'
+        ? { every_k: Math.max(1, Math.floor(checkpointEveryK)) }
+        : {}),
+      params: {},
+    };
+    return {
+      workspace: workspace as StudioWorkspaceSpec,
+      stage_id: evalStage?.id ?? null,
+      training_run_ids: Array.from(selectedIdsForEval),
+      eval_params: {
+        targets: '8-direction center-out',
+        sisu: 0.5,
+        perturbation: 'none',
+      },
+      checkpoint_policy: checkpointPolicy,
+      reprocess: reprocessMode,
+    };
+  }, [
+    checkpointEveryK,
+    checkpointMetric,
+    checkpointPolicyMode,
+    evalStage?.id,
+    reprocessMode,
+    selectedIdsForEval,
+    workspace,
+  ]);
 
   useEffect(() => {
     if (!evalStage) return;
@@ -954,6 +1007,67 @@ export function EvaluateCollectionPanel() {
     [evalStage, updateStageDraft]
   );
 
+  const previewEvalMatrix = useCallback(async () => {
+    if (!workspace || !evalStage || selectedIdsForEval.size === 0) return;
+    setEvalMatrixBusy('preview');
+    setEvalActionState({ busyRunId: null, error: null });
+    try {
+      const preview = await previewStudioEvaluationMatrix(evalPayload);
+      setEvalPreview(preview);
+    } catch (error) {
+      setEvalActionState({
+        busyRunId: null,
+        error: error instanceof Error ? error.message : 'Failed to preview evaluation matrix.',
+      });
+    } finally {
+      setEvalMatrixBusy(null);
+    }
+  }, [evalPayload, evalStage, selectedIdsForEval.size, workspace]);
+
+  const stageEvalMatrix = useCallback(async () => {
+    if (!workspace || !evalStage || selectedIdsForEval.size === 0) return;
+    setEvalMatrixBusy('stage');
+    setEvalActionState({ busyRunId: null, error: null });
+    try {
+      const result = await stageStudioEvaluationMatrix(evalPayload);
+      setEvalPreview(result.preview);
+      setWorkspace(result.workspace);
+      markDirty();
+    } catch (error) {
+      setEvalActionState({
+        busyRunId: null,
+        error: error instanceof Error ? error.message : 'Failed to stage evaluation manifests.',
+      });
+    } finally {
+      setEvalMatrixBusy(null);
+    }
+  }, [evalPayload, evalStage, markDirty, selectedIdsForEval.size, setWorkspace, workspace]);
+
+  const runEvalMatrix = useCallback(async () => {
+    if (!workspace || !evalStage || selectedIdsForEval.size === 0) return;
+    setEvalMatrixBusy('run');
+    setEvalActionState({ busyRunId: null, error: null });
+    try {
+      const result = await runStudioEvaluationLocalExecution(evalPayload);
+      setEvalPreview(result.preview);
+      setWorkspace(result.workspace);
+      markDirty();
+      if (result.errors.length > 0) {
+        setEvalActionState({
+          busyRunId: null,
+          error: result.errors.join('; '),
+        });
+      }
+    } catch (error) {
+      setEvalActionState({
+        busyRunId: null,
+        error: error instanceof Error ? error.message : 'Failed to run evaluation matrix.',
+      });
+    } finally {
+      setEvalMatrixBusy(null);
+    }
+  }, [evalPayload, evalStage, markDirty, selectedIdsForEval.size, setWorkspace, workspace]);
+
   return (
     <div className="relative h-full overflow-hidden bg-slate-50/40">
       <div className="h-full overflow-y-auto">
@@ -1014,19 +1128,90 @@ export function EvaluateCollectionPanel() {
                 <ProtocolRow label="SISU" value="0.5" />
                 <ProtocolRow label="Perturbation" value="None" />
               </div>
-              <button
-                type="button"
-                disabled
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  selectedIdsForEval.size === 0
-                    ? 'Select at least one run first.'
-                    : 'Backend execution wiring is pending; the selection is ready.'
-                }
-              >
-                <PlayCircle className="h-3.5 w-3.5" />
-                Run selected
-              </button>
+              <div className="mt-4 grid gap-3">
+                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                  Checkpoint
+                  <select
+                    value={checkpointPolicyMode}
+                    onChange={(event) =>
+                      setCheckpointPolicyMode(event.target.value as EvalCheckpointPolicyMode)
+                    }
+                    className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700"
+                  >
+                    <option value="last">Last</option>
+                    <option value="best-by-metric">Best by metric</option>
+                    <option value="every-k">Every k</option>
+                  </select>
+                </label>
+                {checkpointPolicyMode === 'best-by-metric' && (
+                  <input
+                    value={checkpointMetric}
+                    onChange={(event) => setCheckpointMetric(event.target.value)}
+                    className="rounded-md border border-slate-200 px-2 py-1.5 text-xs text-slate-700"
+                    aria-label="Checkpoint metric"
+                  />
+                )}
+                {checkpointPolicyMode === 'every-k' && (
+                  <input
+                    type="number"
+                    min={1}
+                    value={checkpointEveryK}
+                    onChange={(event) => setCheckpointEveryK(Number(event.target.value) || 1)}
+                    className="rounded-md border border-slate-200 px-2 py-1.5 text-xs text-slate-700"
+                    aria-label="Checkpoint interval"
+                  />
+                )}
+                <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                  Reprocess
+                  <select
+                    value={reprocessMode}
+                    onChange={(event) => setReprocessMode(event.target.value as EvalReprocessMode)}
+                    className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700"
+                  >
+                    <option value="missing">Missing</option>
+                    <option value="missing_failed">Missing + failed</option>
+                    <option value="all">All</option>
+                  </select>
+                </label>
+              </div>
+              {evalPreview && (
+                <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  <div className="font-semibold text-slate-800">{evalPreview.summary}</div>
+                  <div className="mt-1">
+                    {evalPreview.pending_count} pending, {evalPreview.failed_count} failed,{' '}
+                    {evalPreview.launch_count} eligible to launch.
+                  </div>
+                </div>
+              )}
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  disabled={evalMatrixBusy !== null || selectedIdsForEval.size === 0}
+                  onClick={previewEvalMatrix}
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  {evalMatrixBusy === 'preview' ? 'Previewing' : 'Preview'}
+                </button>
+                <button
+                  type="button"
+                  disabled={evalMatrixBusy !== null || selectedIdsForEval.size === 0}
+                  onClick={stageEvalMatrix}
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Layers3 className="h-3.5 w-3.5" />
+                  {evalMatrixBusy === 'stage' ? 'Staging' : 'Stage'}
+                </button>
+                <button
+                  type="button"
+                  disabled={evalMatrixBusy !== null || selectedIdsForEval.size === 0}
+                  onClick={runEvalMatrix}
+                  className="inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-2 py-2 text-xs font-semibold text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <PlayCircle className="h-3.5 w-3.5" />
+                  {evalMatrixBusy === 'run' ? 'Running' : 'Run selected'}
+                </button>
+              </div>
             </section>
 
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
