@@ -9,12 +9,13 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import type { HistogramResponse } from '@/types/statistics';
-
-const GENERIC_PALETTE = [
-  '#2f7cf6', '#2fbf7f', '#f2b92d', '#9b59b6',
-  '#e74c3c', '#1abc9c', '#f39c12', '#3498db',
-  '#e67e22', '#27ae60', '#8e44ad', '#c0392b',
-];
+import {
+  chartAxisLine,
+  chartAxisTick,
+  chartColorForIndex,
+  chartLegendStyle,
+  chartTooltipContentStyle,
+} from '@/components/ui/chartTheme';
 
 export function HistogramChart({ data }: { data: HistogramResponse }) {
   // Build row-based data: each row = one bin range, columns = per-group counts.
@@ -52,27 +53,27 @@ export function HistogramChart({ data }: { data: HistogramResponse }) {
           dataKey="bin"
           tick={{ fontSize: 9, fill: '#94a3b8' }}
           tickLine={false}
-          axisLine={{ stroke: '#e2e8f0' }}
+          axisLine={chartAxisLine}
           interval="preserveStartEnd"
         />
         <YAxis
-          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          tick={chartAxisTick}
           tickLine={false}
-          axisLine={{ stroke: '#e2e8f0' }}
+          axisLine={chartAxisLine}
           label={{ value: 'Count', angle: -90, position: 'insideLeft', offset: 0, fontSize: 10, fill: '#94a3b8' }}
         />
         <Tooltip
-          contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+          contentStyle={chartTooltipContentStyle}
         />
         {groupKeys.length > 1 && (
-          <Legend wrapperStyle={{ fontSize: 10 }} />
+          <Legend wrapperStyle={chartLegendStyle} />
         )}
         {groupKeys.map((key, idx) => (
           <Bar
             key={key}
             dataKey={key}
             name={groupLabels[key] ?? key}
-            fill={GENERIC_PALETTE[idx % GENERIC_PALETTE.length]}
+            fill={chartColorForIndex(idx, groupKeys.length)}
             fillOpacity={0.7}
             isAnimationActive={false}
           />

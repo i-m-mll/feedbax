@@ -7,11 +7,13 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import clsx from 'clsx';
 import { toast } from 'sonner';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client';
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
+import { actionErrorMessage } from '@/stores/storeActions';
 import {
   getLastProjectId,
   persistLocalProjectTabs,
@@ -46,7 +48,16 @@ export function Header() {
     graphStack,
     isDirty,
     markSaved,
-  } = useGraphStore();
+  } = useGraphStore(
+    useShallow((state) => ({
+      graph: state.graph,
+      uiState: state.uiState,
+      graphId: state.graphId,
+      graphStack: state.graphStack,
+      isDirty: state.isDirty,
+      markSaved: state.markSaved,
+    }))
+  );
   const {
     tabs,
     activeTabId,
@@ -84,15 +95,18 @@ export function Header() {
         uiState,
       });
       if ('id' in response) {
-        markSaved(response.id);
+        markSaved(response.id, response.metadata.save_revision);
       } else if (graphId) {
-        markSaved(graphId);
+        markSaved(graphId, response.metadata.save_revision);
       }
       persistLocalProjectTabs();
+      toast.success('Project saved.', { id: 'project-save-success' });
     } catch (error) {
       console.error(error);
       persistLocalProjectTabs();
-      toast.error('Saved locally; backend is unreachable', { id: 'save-local-fallback' });
+      toast.error(actionErrorMessage(error, 'Failed to save project; changes remain local.'), {
+        id: 'save-local-fallback',
+      });
     }
   };
 
@@ -128,7 +142,7 @@ export function Header() {
         data.metadata?.name ?? undefined,
         analysisSnapshot,
         data.workspace,
-        options,
+        { ...options, saveRevision: data.metadata?.save_revision ?? null },
       );
       useRunStore.getState().hydrateFromWorkspace(data.workspace);
       if (data.demo_training_data) {
@@ -159,6 +173,9 @@ export function Header() {
       return true;
     } catch (error) {
       console.error(error);
+      toast.error(actionErrorMessage(error, 'Failed to open project.'), {
+        id: `open-project-error-${id}`,
+      });
       return false;
     }
   };
@@ -200,6 +217,11 @@ export function Header() {
       link.download = data.filename || 'graph.json';
       link.click();
       URL.revokeObjectURL(url);
+      toast.success('Project exported.', { id: 'project-export-success' });
+    } catch (error) {
+      toast.error(actionErrorMessage(error, 'Failed to export project.'), {
+        id: 'project-export-error',
+      });
     } finally {
       setExporting(false);
     }
@@ -463,13 +485,14 @@ function ProjectOpenOverlay({
           eval_run_id: page.evalRunId ?? null,
           expanded_field_paths: page.expandedFieldPaths ?? [],
         }));
-        await updateGraph(
+        const updateResponse = await updateGraph(
           graphId,
           null,
           null,
           analysisPages,
           analysisSnapshot.activePageId,
           workspace,
+          response.metadata.save_revision,
         );
         openProjectInTab(
           graphId,
@@ -478,11 +501,15 @@ function ProjectOpenOverlay({
           template.name,
           analysisSnapshot,
           workspace,
+          { saveRevision: updateResponse.metadata.save_revision },
         );
         useRunStore.getState().hydrateFromWorkspace(workspace);
         setLastProjectId(graphId);
       } catch (error) {
         console.error('Failed to save example project to backend:', error);
+        toast.error('Template opened locally; backend save failed.', {
+          id: `template-load-error-${template.id}`,
+        });
         openProjectInTab(
           '',
           modelGraph,
@@ -544,8 +571,8 @@ function ProjectOpenOverlay({
                   key={item.id}
                   type="button"
                   onClick={async () => {
-                    await onOpenSaved(item.id);
-                    onClose();
+                    const opened = await onOpenSaved(item.id);
+                    if (opened) onClose();
                   }}
                   className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:border-brand-200 hover:bg-slate-50"
                 >

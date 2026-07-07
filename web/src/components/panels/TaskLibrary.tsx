@@ -39,6 +39,7 @@ import {
   Cog,
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
+import { useGraphStore } from '@/stores/graphStore';
 import type { ComponentDefinition } from '@/types/components';
 
 const iconMap = {
@@ -80,6 +81,18 @@ const iconMap = {
   Hexagon,
   Cog,
 };
+
+function nextInsertPosition(
+  nodes: ReturnType<typeof useGraphStore.getState>['nodes'],
+  viewport: ReturnType<typeof useGraphStore.getState>['uiState']['viewport']
+) {
+  const zoom = viewport.zoom || 1;
+  const index = nodes.filter((node) => node.type !== 'tap').length;
+  return {
+    x: (320 - viewport.x) / zoom + (index % 5) * 32,
+    y: (180 - viewport.y) / zoom + (index % 5) * 24,
+  };
+}
 
 export function TaskLibrary() {
   const [search, setSearch] = useState('');
@@ -126,17 +139,23 @@ export function TaskLibrary() {
 
 function TaskCard({ component }: { component: ComponentDefinition }) {
   const Icon = iconMap[component.icon as keyof typeof iconMap] ?? CircuitBoard;
+  const addNodeFromComponent = useGraphStore((state) => state.addNodeFromComponent);
+  const nodes = useGraphStore((state) => state.nodes);
+  const viewport = useGraphStore((state) => state.uiState.viewport);
 
-  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
+  const onDragStart = (event: DragEvent<HTMLButtonElement>) => {
     event.dataTransfer.setData('application/feedbax-component', component.name);
     event.dataTransfer.effectAllowed = 'move';
   };
 
   return (
-    <div
+    <button
+      type="button"
       draggable
       onDragStart={onDragStart}
-      className="rounded-xl bg-white/90 p-3 shadow-soft cursor-grab transition border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5"
+      onClick={() => addNodeFromComponent(component, nextInsertPosition(nodes, viewport))}
+      title={`Add ${component.name}`}
+      className="w-full rounded-xl bg-white/90 p-3 text-left shadow-soft cursor-grab transition border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
     >
       <div className="flex items-center gap-2">
         <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-slate-100">
@@ -154,6 +173,6 @@ function TaskCard({ component }: { component: ComponentDefinition }) {
           <div className="text-xs text-slate-500 line-clamp-2">{component.description}</div>
         </div>
       </div>
-    </div>
+    </button>
   );
 }

@@ -10,6 +10,7 @@ import {
 } from '@/stores/workspaceStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useGraphStore } from '@/stores/graphStore';
 import type { LossTermSpec, TimeAggregationSpec } from '@/types/training';
 import { LossTermDetail } from './LossTermDetail';
@@ -38,7 +39,20 @@ import {
 const LOSS_TERM_COLORS = ['#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
 
 export function TrainingPanel() {
-  const trainingStore = useTrainingStore();
+  const trainingStore = useTrainingStore(
+    useShallow((state) => ({
+      trainingSpec: state.trainingSpec,
+      taskSpec: state.taskSpec,
+      setTrainingSpec: state.setTrainingSpec,
+      progress: state.progress,
+      status: state.status,
+      lossHistory: state.lossHistory,
+      jobId: state.jobId,
+      latestTrajectory: state.latestTrajectory,
+      trainingStreamError: state.trainingStreamError,
+      appendLog: state.appendLog,
+    }))
+  );
   const trainingScenario = useWorkspaceStore((state) => getTrainingScenario(state.workspace));
   const trainingSpec = trainingScenario?.training_spec ?? trainingStore.trainingSpec;
   const taskSpec = trainingScenario?.task_spec ?? trainingStore.taskSpec;
@@ -70,28 +84,35 @@ export function TrainingPanel() {
     launch: cloudLaunch,
     terminate: cloudTerminate,
   } = useOrchestration();
-  const graphId = useGraphStore((state) => state.graphId);
-  const graph = useGraphStore((state) => state.graph);
-  const uiState = useGraphStore((state) => state.uiState);
-  const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
-  const inSubgraph = useGraphStore((state) => state.graphStack.length > 0);
-  const workspace = useWorkspaceStore((state) => state.workspace);
-  const setWorkspace = useWorkspaceStore((state) => state.setWorkspace);
-  const lastExecutionPreparation = useWorkspaceStore(
-    (state) => state.lastTrainingExecutionPreparation
+  const { graphId, graph, uiState, currentGraphLabel, inSubgraph } = useGraphStore(
+    useShallow((state) => ({
+      graphId: state.graphId,
+      graph: state.graph,
+      uiState: state.uiState,
+      currentGraphLabel: state.currentGraphLabel,
+      inSubgraph: state.graphStack.length > 0,
+    }))
   );
-  const lastLocalRunResult = useWorkspaceStore((state) => state.lastTrainingLocalRunResult);
-  const lastPipelineMaterializationResult = useWorkspaceStore(
-    (state) => state.lastPipelineMaterializationResult
-  );
-  const setTrainingExecutionPreparation = useWorkspaceStore(
-    (state) => state.setTrainingExecutionPreparation
-  );
-  const setTrainingLocalRunResult = useWorkspaceStore(
-    (state) => state.setTrainingLocalRunResult
-  );
-  const setPipelineMaterializationResult = useWorkspaceStore(
-    (state) => state.setPipelineMaterializationResult
+  const {
+    workspace,
+    setWorkspace,
+    lastExecutionPreparation,
+    lastLocalRunResult,
+    lastPipelineMaterializationResult,
+    setTrainingExecutionPreparation,
+    setTrainingLocalRunResult,
+    setPipelineMaterializationResult,
+  } = useWorkspaceStore(
+    useShallow((state) => ({
+      workspace: state.workspace,
+      setWorkspace: state.setWorkspace,
+      lastExecutionPreparation: state.lastTrainingExecutionPreparation,
+      lastLocalRunResult: state.lastTrainingLocalRunResult,
+      lastPipelineMaterializationResult: state.lastPipelineMaterializationResult,
+      setTrainingExecutionPreparation: state.setTrainingExecutionPreparation,
+      setTrainingLocalRunResult: state.setTrainingLocalRunResult,
+      setPipelineMaterializationResult: state.setPipelineMaterializationResult,
+    }))
   );
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>

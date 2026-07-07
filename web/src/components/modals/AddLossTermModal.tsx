@@ -4,7 +4,8 @@ import { NORM_LABELS } from '@/types/training';
 import { ProbeSelector } from '@/components/panels/ProbeSelector';
 import clsx from 'clsx';
 import { useCallback, useState } from 'react';
-import { X } from 'lucide-react';
+import { Dialog } from '@/components/ui/Dialog';
+import { CloseButton } from '@/components/ui/PanelPrimitives';
 
 interface AddLossTermModalProps {
   parentPath: string[];
@@ -83,18 +84,15 @@ export function AddLossTermModal({ parentPath, onClose }: AddLossTermModalProps)
   );
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+    <Dialog
+      onClose={onClose}
+      ariaLabel="Add loss term"
+      panelClassName="bg-white rounded-xl shadow-xl w-full max-w-md mx-4"
+    >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
           <h2 className="text-lg font-semibold text-slate-800">Add Loss Term</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <CloseButton onClick={onClose} iconClassName="w-5 h-5" />
         </div>
 
         {/* Form */}
@@ -199,7 +197,6 @@ export function AddLossTermModal({ parentPath, onClose }: AddLossTermModalProps)
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   );
 }

@@ -48,6 +48,9 @@ const HEADER_HEIGHT = 40;
 const TAP_WIDTH = 28;
 const TAP_HEIGHT = 18;
 
+type GraphHistoryEntry = { graph: GraphSpec; uiState: GraphUIState };
+type LayerHistory = { past: GraphHistoryEntry[]; future: GraphHistoryEntry[] };
+
 export interface GraphLayer {
   graph: GraphSpec;
   uiState: GraphUIState;
@@ -237,6 +240,9 @@ function applyEdgeStates(
     }
     const routing =
       edgeStates[edge.id]?.routing ?? { style: defaultStyle, points: [] };
+    if (edge.type === 'routed' && edge.data?.routing === routing) {
+      return edge;
+    }
     return {
       ...edge,
       type: 'routed',
@@ -246,6 +252,225 @@ function applyEdgeStates(
       },
     };
   });
+}
+
+function samePoint(
+  a: { x: number; y: number } | undefined,
+  b: { x: number; y: number } | undefined
+) {
+  return a?.x === b?.x && a?.y === b?.y;
+}
+
+function sameSize(
+  a: { width: number; height: number } | undefined,
+  b: { width: number; height: number } | undefined
+) {
+  return a?.width === b?.width && a?.height === b?.height;
+}
+
+function sameStringArray(a: string[] | undefined, b: string[] | undefined) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function sameRouting(a: EdgeRouting | undefined, b: EdgeRouting | undefined) {
+  if (a === b) return true;
+  if (!a || !b || a.style !== b.style || a.points.length !== b.points.length) return false;
+  return a.points.every((point, index) => samePoint(point, b.points[index]));
+}
+
+function sameStateSlots(
+  a: GraphNodeData['state_slots'] | undefined,
+  b: GraphNodeData['state_slots'] | undefined
+) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((slot, index) => {
+    const other = b[index];
+    return (
+      slot.id === other.id &&
+      slot.label === other.label &&
+      JSON.stringify(slot.shape ?? null) === JSON.stringify(other.shape ?? null) &&
+      JSON.stringify(slot.initializer ?? null) === JSON.stringify(other.initializer ?? null)
+    );
+  });
+}
+
+function sameSubgraphPreview(a: SubgraphPreview | undefined, b: SubgraphPreview | undefined) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    sameStringArray(a.inputPorts, b.inputPorts) &&
+    sameStringArray(a.outputPorts, b.outputPorts) &&
+    sameGraphNodes(
+      a.nodes as Node<GraphNodeData | TapNodeData>[],
+      b.nodes as Node<GraphNodeData | TapNodeData>[]
+    ) &&
+    sameGraphEdges(a.edges as Edge<GraphEdgeData>[], b.edges as Edge<GraphEdgeData>[])
+  );
+}
+
+function sameGraphNodeData(
+  previous: GraphNodeData | TapNodeData,
+  next: GraphNodeData | TapNodeData
+) {
+  if ('tap' in previous || 'tap' in next) {
+    return 'tap' in previous && 'tap' in next && previous.tap === next.tap;
+  }
+  return (
+    previous.label === next.label &&
+    previous.spec === next.spec &&
+    previous.collapsed === next.collapsed &&
+    previous.reversed === next.reversed &&
+    sameSize(previous.size, next.size) &&
+    sameStringArray(previous.connected_inputs, next.connected_inputs) &&
+    sameStringArray(previous.connected_outputs, next.connected_outputs) &&
+    previous.state_in === next.state_in &&
+    previous.state_out === next.state_out &&
+    sameStateSlots(previous.state_slots, next.state_slots) &&
+    sameSubgraphPreview(previous.subgraph, next.subgraph)
+  );
+}
+
+function sameGraphNode(
+  previous: Node<GraphNodeData | TapNodeData>,
+  next: Node<GraphNodeData | TapNodeData>
+) {
+  return (
+    previous.id === next.id &&
+    previous.type === next.type &&
+    previous.selected === next.selected &&
+    samePoint(previous.position, next.position) &&
+    sameSize(
+      previous.style as { width: number; height: number } | undefined,
+      next.style as { width: number; height: number } | undefined
+    ) &&
+    sameGraphNodeData(previous.data, next.data)
+  );
+}
+
+function sameGraphNodes(
+  previous: Node<GraphNodeData | TapNodeData>[],
+  next: Node<GraphNodeData | TapNodeData>[]
+) {
+  return (
+    previous.length === next.length &&
+    previous.every((node, index) => sameGraphNode(node, next[index]))
+  );
+}
+
+function sameGraphEdgeData(
+  previous: GraphEdgeData | undefined,
+  next: GraphEdgeData | undefined
+) {
+  if (previous === next) return true;
+  if (!previous || !next) return false;
+  return (
+    sameRouting(previous.routing, next.routing) &&
+    previous.primary === next.primary &&
+    previous.strength === next.strength &&
+    previous.schema_status === next.schema_status &&
+    previous.schema_message === next.schema_message &&
+    previous.temporality === next.temporality &&
+    previous.recurrent_initializer === next.recurrent_initializer
+  );
+}
+
+function sameGraphEdge(previous: Edge<GraphEdgeData>, next: Edge<GraphEdgeData>) {
+  const previousPositions = previous as Edge<GraphEdgeData> & {
+    sourcePosition?: Position;
+    targetPosition?: Position;
+  };
+  const nextPositions = next as Edge<GraphEdgeData> & {
+    sourcePosition?: Position;
+    targetPosition?: Position;
+  };
+  return (
+    previous.id === next.id &&
+    previous.type === next.type &&
+    previous.source === next.source &&
+    previous.target === next.target &&
+    previous.sourceHandle === next.sourceHandle &&
+    previous.targetHandle === next.targetHandle &&
+    previousPositions.sourcePosition === nextPositions.sourcePosition &&
+    previousPositions.targetPosition === nextPositions.targetPosition &&
+    previous.selected === next.selected &&
+    previous.selectable === next.selectable &&
+    previous.deletable === next.deletable &&
+    previous.zIndex === next.zIndex &&
+    sameGraphEdgeData(previous.data, next.data)
+  );
+}
+
+function sameGraphEdges(previous: Edge<GraphEdgeData>[], next: Edge<GraphEdgeData>[]) {
+  return (
+    previous.length === next.length &&
+    previous.every((edge, index) => sameGraphEdge(edge, next[index]))
+  );
+}
+
+function reconcileById<T extends { id: string }>(
+  previous: T[],
+  next: T[],
+  sameEntity: (previous: T, next: T) => boolean
+) {
+  const previousById = new Map(previous.map((entity) => [entity.id, entity]));
+  let changed = previous.length !== next.length;
+  const reconciled = next.map((entity) => {
+    const existing = previousById.get(entity.id);
+    if (existing && sameEntity(existing, entity)) {
+      return existing;
+    }
+    changed = true;
+    return entity;
+  });
+  if (!changed && previous.every((entity, index) => entity === reconciled[index])) {
+    return previous;
+  }
+  return reconciled;
+}
+
+function reconcileNodes(
+  previous: Node<GraphNodeData | TapNodeData>[],
+  graph: GraphSpec,
+  uiState: GraphUIState
+) {
+  return reconcileById(previous, buildNodes(graph, uiState), sameGraphNode);
+}
+
+function reconcileEdges(
+  previous: Edge<GraphEdgeData>[],
+  graph: GraphSpec,
+  uiState: GraphUIState,
+  edgeStyle: EdgeRouting['style']
+) {
+  return reconcileById(previous, buildEdges(graph, uiState, edgeStyle), sameGraphEdge);
+}
+
+function setNodeSelection(
+  nodes: Node<GraphNodeData | TapNodeData>[],
+  selectedId: string | null
+) {
+  let changed = false;
+  const next = nodes.map((node) => {
+    const selected = node.id === selectedId;
+    if (node.selected === selected) return node;
+    changed = true;
+    return { ...node, selected };
+  });
+  return changed ? next : nodes;
+}
+
+function setEdgeSelection(edges: Edge<GraphEdgeData>[], selectedId: string | null) {
+  let changed = false;
+  const next = edges.map((edge) => {
+    const selected = edge.id === selectedId;
+    if (edge.selected === selected) return edge;
+    changed = true;
+    return { ...edge, selected };
+  });
+  return changed ? next : edges;
 }
 
 export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
@@ -390,36 +615,6 @@ export function createBlankGraph(): GraphSpec {
   };
 }
 
-function createEmptySubgraph(label: string): { graph: GraphSpec; uiState: GraphUIState } {
-  const now = new Date().toISOString();
-  const graph: GraphSpec = {
-    nodes: {},
-    wires: [],
-    input_ports: [],
-    output_ports: [],
-    input_bindings: {},
-    output_bindings: {},
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${label} Graph`,
-      description: 'Empty subgraph workspace.',
-      created_at: now,
-      updated_at: now,
-      version: '1.0.0',
-    },
-  };
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {},
-  };
-  const uiState: GraphUIState = {
-    ...baseUiState,
-    edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-  };
-  return { graph, uiState };
-}
-
 function getSubgraphContext(type: string): string {
   switch (type) {
     case 'Arm6MuscleRigidTendon':
@@ -428,219 +623,6 @@ function getSubgraphContext(type: string): string {
     default: return 'generic';
   }
 }
-
-function createArm6MuscleSubgraph(
-  nodeId: string,
-  _nodeSpec: ComponentSpec,
-): { graph: GraphSpec; uiState: GraphUIState } {
-  const now = new Date().toISOString();
-
-  // Arm6MuscleRigidTendon internal architecture (causal ODE, rigid tendon assumption):
-  //   excitation → activation_dynamics (FirstOrderFilter, 6-channel)
-  //                ↓
-  //   angles/angular_velocities → geometry (MomentArmProjection) → musculotendon_lengths/velocities
-  //                                                                  ↓
-  //                               activation + lengths/velocities → hill_muscles (RigidTendonHillMuscleThelen)
-  //                                                                  ↓
-  //                               forces → torque_map (MomentArmProjection) → torques
-  //
-  // For clarity, MomentArmProjection handles both the forward kinematics (angles → MT lengths)
-  // and the inverse (forces → torques) via its input/output ports.
-
-  const graph: GraphSpec = {
-    nodes: {
-      activation_dynamics: {
-        type: 'FirstOrderFilter',
-        params: {
-          tau_rise: 0.015,
-          tau_decay: 0.05,
-          dt: 0.01,
-          init_value: 0.0,
-        },
-        input_ports: ['input'],
-        output_ports: ['output'],
-      },
-      geometry: {
-        type: 'MomentArmProjection',
-        params: {
-          n_muscles: 6,
-          n_joints: 2,
-        },
-        input_ports: ['forces', 'angles', 'angular_velocities'],
-        output_ports: ['torques', 'musculotendon_lengths', 'musculotendon_velocities'],
-      },
-      hill_muscles: {
-        type: 'RigidTendonHillMuscleThelen',
-        params: {
-          n_muscles: 6,
-          dt: 0.01,
-          tau_activation: 0.015,
-          tau_deactivation: 0.05,
-          max_isometric_force: 500.0,
-          optimal_muscle_length: 0.1,
-          tendon_slack_length: 0.2,
-        },
-        input_ports: ['excitation', 'musculotendon_length', 'musculotendon_velocity'],
-        output_ports: ['force', 'activation', 'fiber_length', 'fiber_velocity'],
-      },
-    },
-    wires: [
-      // Activation dynamics → hill muscles
-      {
-        source_node: 'activation_dynamics',
-        source_port: 'output',
-        target_node: 'hill_muscles',
-        target_port: 'excitation',
-      },
-      // Geometry → hill muscles (kinematics)
-      {
-        source_node: 'geometry',
-        source_port: 'musculotendon_lengths',
-        target_node: 'hill_muscles',
-        target_port: 'musculotendon_length',
-      },
-      {
-        source_node: 'geometry',
-        source_port: 'musculotendon_velocities',
-        target_node: 'hill_muscles',
-        target_port: 'musculotendon_velocity',
-      },
-      // Hill muscles → torque projection
-      {
-        source_node: 'hill_muscles',
-        source_port: 'force',
-        target_node: 'geometry',
-        target_port: 'forces',
-      },
-    ],
-    input_ports: ['excitation', 'angles', 'angular_velocities'],
-    output_ports: ['torques', 'forces', 'activations'],
-    input_bindings: {
-      excitation: ['activation_dynamics', 'input'],
-      angles: ['geometry', 'angles'],
-      angular_velocities: ['geometry', 'angular_velocities'],
-    },
-    output_bindings: {
-      torques: ['geometry', 'torques'],
-      forces: ['hill_muscles', 'force'],
-      activations: ['hill_muscles', 'activation'],
-    },
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${nodeId} internals`,
-      description: '6-muscle rigid-tendon arm: activation dynamics → Hill force → moment arm projection.',
-      created_at: now,
-      updated_at: now,
-      version: '1.0.0',
-    },
-  };
-
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {
-      activation_dynamics: { position: { x: 120, y: 200 }, collapsed: false, selected: false },
-      geometry: { position: { x: 360, y: 340 }, collapsed: false, selected: false },
-      hill_muscles: { position: { x: 600, y: 200 }, collapsed: false, selected: false },
-    },
-  };
-
-  return {
-    graph,
-    uiState: {
-      ...baseUiState,
-      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-    },
-  };
-}
-
-function createPointMass8MuscleSubgraph(
-  nodeId: string,
-  _nodeSpec: ComponentSpec,
-): { graph: GraphSpec; uiState: GraphUIState } {
-  const now = new Date().toISOString();
-
-  // PointMass8MuscleRelu internal architecture (causal):
-  //   excitation (8) → relu_muscles (ReluMuscle, 8-channel) → forces (8)
-  //   forces (8) → force_projection (RadialForceProjection) → force_2d (2)
-
-  const graph: GraphSpec = {
-    nodes: {
-      relu_muscles: {
-        type: 'ReluMuscle',
-        params: {
-          max_isometric_force: 500.0,
-          tau_activation: 0.015,
-          tau_deactivation: 0.05,
-          min_activation: 0.0,
-          dt: 0.01,
-        },
-        input_ports: ['excitation'],
-        output_ports: ['activation', 'force'],
-      },
-      force_projection: {
-        type: 'RadialForceProjection',
-        params: {
-          n_muscles: 8,
-        },
-        input_ports: ['forces'],
-        output_ports: ['force_2d'],
-      },
-    },
-    wires: [
-      {
-        source_node: 'relu_muscles',
-        source_port: 'force',
-        target_node: 'force_projection',
-        target_port: 'forces',
-      },
-    ],
-    input_ports: ['excitation'],
-    output_ports: ['force_2d', 'forces', 'activations'],
-    input_bindings: {
-      excitation: ['relu_muscles', 'excitation'],
-    },
-    output_bindings: {
-      force_2d: ['force_projection', 'force_2d'],
-      forces: ['relu_muscles', 'force'],
-      activations: ['relu_muscles', 'activation'],
-    },
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${nodeId} internals`,
-      description: '8 radially-arranged ReLU muscles projecting to 2D net force.',
-      created_at: now,
-      updated_at: now,
-      version: '1.0.0',
-    },
-  };
-
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {
-      relu_muscles: { position: { x: 200, y: 200 }, collapsed: false, selected: false },
-      force_projection: { position: { x: 480, y: 200 }, collapsed: false, selected: false },
-    },
-  };
-
-  return {
-    graph,
-    uiState: {
-      ...baseUiState,
-      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-    },
-  };
-}
-
-const SUBGRAPH_FACTORIES: Record<
-  string,
-  (label: string, nodeSpec: ComponentSpec) => { graph: GraphSpec; uiState: GraphUIState }
-> = {
-  Arm6MuscleRigidTendon: createArm6MuscleSubgraph,
-  PointMass8MuscleRelu: createPointMass8MuscleSubgraph,
-  AcausalSystem: (label) => createEmptySubgraph(label),
-};
 
 function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
   const wiredInputs = new Set(
@@ -817,6 +799,19 @@ function normalizeUiState(
   };
 }
 
+function subgraphPreviewFromGraph(
+  graph: GraphSpec,
+  uiState?: GraphUIState,
+): SubgraphPreview {
+  const normalizedUiState = normalizeUiState(graph, uiState, DEFAULT_EDGE_STYLE);
+  return {
+    nodes: buildComponentNodes(graph, normalizedUiState),
+    edges: buildEdges(graph, normalizedUiState, DEFAULT_EDGE_STYLE),
+    inputPorts: graph.input_ports,
+    outputPorts: graph.output_ports,
+  };
+}
+
 function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
   const connectedInputs = new Map<string, Set<string>>();
   const connectedOutputs = new Map<string, Set<string>>();
@@ -843,10 +838,11 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
       selected: false,
     };
     const size = ui.size;
-    // Nodes that carry a _subgraph param are rendered by SubgraphNode.
-    const isSubgraphNode = Boolean(spec.params._subgraph);
-    const subgraph = isSubgraphNode
-      ? (spec.params._subgraph as unknown as SubgraphPreview)
+    const subgraphGraph = graph.subgraphs?.[id];
+    const subgraphUiState = uiState.subgraph_states?.[id];
+    const isSubgraphNode = Boolean(subgraphGraph);
+    const subgraph = subgraphGraph
+      ? subgraphPreviewFromGraph(subgraphGraph, subgraphUiState)
       : undefined;
     return {
       id,
@@ -1445,14 +1441,15 @@ export interface GraphSnapshot {
   graph: GraphSpec;
   uiState: GraphUIState;
   graphId: string | null;
+  saveRevision: number | null;
   isDirty: boolean;
   lastSavedAt: string | null;
   graphStack: GraphLayer[];
   currentGraphLabel: string;
   currentContext: string;
   edgeStyle: 'bezier' | 'elbow';
-  past: { graph: GraphSpec; uiState: GraphUIState }[];
-  future: { graph: GraphSpec; uiState: GraphUIState }[];
+  past: GraphHistoryEntry[];
+  future: GraphHistoryEntry[];
   selectedTapId: string | null;
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
@@ -1466,6 +1463,7 @@ export interface PersistableGraphSnapshot {
 
 interface GraphStoreState {
   graphId: string | null;
+  saveRevision: number | null;
   graph: GraphSpec;
   uiState: GraphUIState;
   nodes: Node<GraphNodeData | TapNodeData>[];
@@ -1479,8 +1477,10 @@ interface GraphStoreState {
   currentContext: string;
   isDirty: boolean;
   lastSavedAt: string | null;
-  past: { graph: GraphSpec; uiState: GraphUIState }[];
-  future: { graph: GraphSpec; uiState: GraphUIState }[];
+  lastSubgraphError: string | null;
+  past: GraphHistoryEntry[];
+  future: GraphHistoryEntry[];
+  graphHistory: Record<string, LayerHistory>;
   selectedTapId: string | null;
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
@@ -1488,17 +1488,19 @@ interface GraphStoreState {
     graph: GraphSpec,
     uiState?: GraphUIState | null,
     graphId?: string | null,
-    graphStackPath?: string[] | null
+    graphStackPath?: string[] | null,
+    saveRevision?: number | null
   ) => void;
   capturePersistedGraph: () => PersistableGraphSnapshot;
   captureGraphStackPath: () => string[];
   restoreSnapshot: (snapshot: GraphSnapshot) => void;
-  markSaved: (graphId: string) => void;
+  markSaved: (graphId: string, saveRevision?: number | null) => void;
   markDirty: () => void;
   resetGraph: () => void;
   undo: () => void;
   redo: () => void;
   deleteSelected: () => void;
+  duplicateSelected: () => void;
   setEdgeStyle: (style: 'bezier' | 'elbow') => void;
   addEdgePoint: (edgeId: string, point: { x: number; y: number }) => void;
   updateEdgePoint: (edgeId: string, index: number, point: { x: number; y: number }) => void;
@@ -1536,6 +1538,8 @@ interface GraphStoreState {
   setSelectedNode: (nodeId: string | null) => void;
   setSelectedTap: (tapId: string | null) => void;
   setSelectedEdge: (edgeId: string | null) => void;
+  clearSelection: () => void;
+  selectAll: () => void;
   toggleNodeCollapse: (nodeId: string) => void;
   toggleNodeReversed: (nodeId: string) => void;
   setAllNodesCollapsed: (collapsed: boolean) => void;
@@ -1554,6 +1558,80 @@ interface GraphStoreState {
   setCompositeTypes: (types: Set<string>) => void;
   setComponentRegistry: (components: ComponentDefinition[]) => void;
 }
+
+export const graphStoreSlices = {
+  topology: (state: GraphStoreState) => ({
+    graph: state.graph,
+    updateNodeParams: state.updateNodeParams,
+    updateNodeParamsBatch: state.updateNodeParamsBatch,
+    addNodeFromComponent: state.addNodeFromComponent,
+    deleteSelected: state.deleteSelected,
+    duplicateSelected: state.duplicateSelected,
+    renameNode: state.renameNode,
+    renameSubgraphBoundaryPort: state.renameSubgraphBoundaryPort,
+    onConnect: state.onConnect,
+    addTap: state.addTap,
+    addTapForEdge: state.addTapForEdge,
+    updateTap: state.updateTap,
+    removeTap: state.removeTap,
+  }),
+  flowAdapter: (state: GraphStoreState) => ({
+    nodes: state.nodes,
+    edges: state.edges,
+    edgeStyle: state.edgeStyle,
+    uiState: state.uiState,
+    onNodesChange: state.onNodesChange,
+    onEdgesChange: state.onEdgesChange,
+    setEdgeStyle: state.setEdgeStyle,
+    addEdgePoint: state.addEdgePoint,
+    updateEdgePoint: state.updateEdgePoint,
+    removeEdgePoint: state.removeEdgePoint,
+    toggleEdgeStyleForEdge: state.toggleEdgeStyleForEdge,
+    toggleNodeCollapse: state.toggleNodeCollapse,
+    toggleNodeReversed: state.toggleNodeReversed,
+    setAllNodesCollapsed: state.setAllNodesCollapsed,
+  }),
+  subgraphNavigation: (state: GraphStoreState) => ({
+    graphStack: state.graphStack,
+    currentGraphLabel: state.currentGraphLabel,
+    currentContext: state.currentContext,
+    lastSubgraphError: state.lastSubgraphError,
+    enterSubgraph: state.enterSubgraph,
+    wrapInParentGraph: state.wrapInParentGraph,
+    exitToBreadcrumb: state.exitToBreadcrumb,
+    captureGraphStackPath: state.captureGraphStackPath,
+  }),
+  selection: (state: GraphStoreState) => ({
+    selectedTapId: state.selectedTapId,
+    selectedEdgeId: state.selectedEdgeId,
+    pendingStateMerge: state.pendingStateMerge,
+    setSelectedNode: state.setSelectedNode,
+    setSelectedTap: state.setSelectedTap,
+    setSelectedEdge: state.setSelectedEdge,
+    clearSelection: state.clearSelection,
+    selectAll: state.selectAll,
+    confirmStateMerge: state.confirmStateMerge,
+    cancelStateMerge: state.cancelStateMerge,
+  }),
+  history: (state: GraphStoreState) => ({
+    past: state.past,
+    future: state.future,
+    undo: state.undo,
+    redo: state.redo,
+  }),
+  registryPersistence: (state: GraphStoreState) => ({
+    graphId: state.graphId,
+    isDirty: state.isDirty,
+    lastSavedAt: state.lastSavedAt,
+    hydrateGraph: state.hydrateGraph,
+    capturePersistedGraph: state.capturePersistedGraph,
+    restoreSnapshot: state.restoreSnapshot,
+    markSaved: state.markSaved,
+    markDirty: state.markDirty,
+    setCompositeTypes: state.setCompositeTypes,
+    setComponentRegistry: state.setComponentRegistry,
+  }),
+} as const;
 
 const initial = createInitialGraph();
 
@@ -1618,6 +1696,37 @@ function captureGraphStackPathFromState(state: Pick<GraphStoreState, 'graphStack
   return state.graphStack
     .map((layer) => layer.childNodeId)
     .filter((nodeId): nodeId is string => Boolean(nodeId));
+}
+
+function graphLayerKey(path: string[]) {
+  return JSON.stringify(path);
+}
+
+function emptyLayerHistory(): LayerHistory {
+  return { past: [], future: [] };
+}
+
+function activeGraphLayerPath(state: Pick<GraphStoreState, 'graphStack'>) {
+  return captureGraphStackPathFromState(state);
+}
+
+function historyForPath(
+  graphHistory: Record<string, LayerHistory>,
+  path: string[]
+): LayerHistory {
+  return graphHistory[graphLayerKey(path)] ?? emptyLayerHistory();
+}
+
+function graphHistoryWithActiveLayer(
+  state: Pick<GraphStoreState, 'graphStack' | 'graphHistory' | 'past' | 'future'>
+): Record<string, LayerHistory> {
+  return {
+    ...state.graphHistory,
+    [graphLayerKey(activeGraphLayerPath(state))]: {
+      past: state.past,
+      future: state.future,
+    },
+  };
 }
 
 function restoreGraphStackPathFromRoot({
@@ -1704,6 +1813,7 @@ export function createGraphSnapshotFromPersistedGraph({
   graph,
   uiState,
   graphId,
+  saveRevision,
   label,
   graphStackPath,
   edgeStyle = DEFAULT_EDGE_STYLE,
@@ -1711,6 +1821,7 @@ export function createGraphSnapshotFromPersistedGraph({
   graph: GraphSpec;
   uiState: GraphUIState | null;
   graphId: string | null;
+  saveRevision?: number | null;
   label: string;
   graphStackPath?: string[] | null;
   edgeStyle?: 'bezier' | 'elbow';
@@ -1730,6 +1841,7 @@ export function createGraphSnapshotFromPersistedGraph({
     graph: restored.graph,
     uiState: restored.uiState,
     graphId,
+    saveRevision: saveRevision ?? null,
     isDirty: false,
     lastSavedAt: null,
     graphStack: restored.graphStack,
@@ -1746,6 +1858,7 @@ export function createGraphSnapshotFromPersistedGraph({
 
 export const useGraphStore = create<GraphStoreState>((set, get) => ({
   graphId: null,
+  saveRevision: null,
   graph: initial.graph,
   uiState: initial.uiState,
   nodes: buildNodes(initial.graph, initial.uiState),
@@ -1759,12 +1872,14 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   currentContext: 'top-level',
   isDirty: false,
   lastSavedAt: null,
+  lastSubgraphError: null,
   past: [],
   future: [],
+  graphHistory: {},
   selectedTapId: null,
   selectedEdgeId: null,
   pendingStateMerge: null,
-  hydrateGraph: (graph, uiState, graphId, graphStackPath = []) => {
+  hydrateGraph: (graph, uiState, graphId, graphStackPath = [], saveRevision = null) => {
     const edgeStyle = get().edgeStyle;
     const migrated = normalizeGraphForStudioAuthoring(graph);
     const normalized = normalizeUiState(migrated, uiState, edgeStyle);
@@ -1778,6 +1893,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     });
     set({
       graphId: graphId ?? null,
+      saveRevision,
       graph: restored.graph,
       uiState: restored.uiState,
       nodes: restored.nodes,
@@ -1786,8 +1902,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentGraphLabel: restored.currentGraphLabel,
       currentContext: restored.currentContext,
       isDirty: false,
+      lastSubgraphError: null,
       past: [],
       future: [],
+      graphHistory: {},
       selectedTapId: null,
       selectedEdgeId: null,
       pendingStateMerge: null,
@@ -1801,6 +1919,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
     set({
       graphId: snapshot.graphId,
+      saveRevision: snapshot.saveRevision ?? null,
       graph,
       uiState: normalized,
       nodes: buildNodes(graph, normalized),
@@ -1811,16 +1930,19 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentContext: snapshot.currentContext,
       isDirty: snapshot.isDirty,
       lastSavedAt: snapshot.lastSavedAt,
+      lastSubgraphError: null,
       past: snapshot.past,
       future: snapshot.future,
+      graphHistory: {},
       selectedTapId: snapshot.selectedTapId,
       selectedEdgeId: snapshot.selectedEdgeId,
       pendingStateMerge: snapshot.pendingStateMerge,
     });
   },
-  markSaved: (graphId) => {
+  markSaved: (graphId, saveRevision) => {
     set({
       graphId,
+      ...(saveRevision !== undefined ? { saveRevision } : {}),
       isDirty: false,
       lastSavedAt: new Date().toISOString(),
     });
@@ -1832,6 +1954,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const fresh = createInitialGraph();
     set({
       graphId: null,
+      saveRevision: null,
       graph: fresh.graph,
       uiState: fresh.uiState,
       nodes: buildNodes(fresh.graph, fresh.uiState),
@@ -1841,8 +1964,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentContext: 'top-level',
       isDirty: false,
       lastSavedAt: null,
+      lastSubgraphError: null,
       past: [],
       future: [],
+      graphHistory: {},
       selectedTapId: null,
       selectedEdgeId: null,
       pendingStateMerge: null,
@@ -1860,8 +1985,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ...state,
         graph,
         uiState: normalized,
-        nodes: buildNodes(graph, normalized),
-        edges: buildEdges(graph, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, normalized),
+        edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -1882,8 +2007,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ...state,
         graph,
         uiState: normalized,
-        nodes: buildNodes(graph, normalized),
-        edges: buildEdges(graph, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, normalized),
+        edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -2023,7 +2148,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeSpec = state.graph.nodes[nodeId];
       const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
-      if (!nodeSpec || (!get()._compositeTypes.has(nodeSpec.type) && !hasSubgraph)) {
+      const isComposite = nodeSpec ? get()._compositeTypes.has(nodeSpec.type) : false;
+      if (!nodeSpec || (!isComposite && !hasSubgraph)) {
         return state;
       }
       const parentLabel = state.currentGraphLabel || state.graph.metadata?.name || 'Model';
@@ -2039,18 +2165,23 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         derivedNext = cachedGraph;
         nextUiState = cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
       } else {
-        // Bug 5e8895e: If registry hasn't loaded yet and no factory exists,
-        // defer rather than creating an empty subgraph that would mask the template.
-        if (!get()._isRegistryLoaded && get()._compositeTypes.has(nodeSpec.type) && !SUBGRAPH_FACTORIES[nodeSpec.type]) {
-          console.warn(`enterSubgraph: component registry not yet loaded for type "${nodeSpec.type}", deferring`);
-          return state;
+        if (!get()._isRegistryLoaded) {
+          return {
+            lastSubgraphError:
+              `Cannot open "${nodeId}" because component templates are still loading.`,
+          };
         }
-        const freshLayer = SUBGRAPH_FACTORIES[nodeSpec.type]?.(nodeId, nodeSpec)
-            ?? (componentDef?.template_graph
-                ? { graph: componentDef.template_graph, uiState: componentDef.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-                : createEmptySubgraph(nodeId));
-        derivedNext = deriveSubgraphPorts(freshLayer.graph);
-        nextUiState = freshLayer.uiState;
+        if (!componentDef?.template_graph) {
+          return {
+            lastSubgraphError:
+              `${nodeSpec.type} node "${nodeId}" has no backend template_graph; `
+              + 'Studio cannot synthesize a subgraph.',
+          };
+        }
+        derivedNext = deriveSubgraphPorts(cloneGraphSpec(componentDef.template_graph));
+        nextUiState = cloneGraphSpec(
+          componentDef.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} }
+        );
       }
       const normalized = normalizeUiState(derivedNext, nextUiState, state.edgeStyle);
       const parentGraph: GraphSpec = {
@@ -2068,6 +2199,11 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
       };
       const context = getSubgraphContext(nodeSpec.type);
+      const graphHistory = graphHistoryWithActiveLayer(state);
+      const nextHistory = historyForPath(graphHistory, [
+        ...activeGraphLayerPath(state),
+        nodeId,
+      ]);
       return {
         graphStack: [
           ...state.graphStack,
@@ -2082,12 +2218,14 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ],
         graph: derivedNext,
         uiState: normalized,
-        nodes: buildNodes(derivedNext, normalized),
-        edges: buildEdges(derivedNext, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, derivedNext, normalized),
+        edges: reconcileEdges(state.edges, derivedNext, normalized, state.edgeStyle),
         currentGraphLabel: nodeId,
         currentContext: context,
-        past: [],
-        future: [],
+        lastSubgraphError: null,
+        past: nextHistory.past,
+        future: nextHistory.future,
+        graphHistory,
       };
     });
   },
@@ -2191,8 +2329,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         graph: derivedCurrent,
         uiState: normalizedCurrent,
-        nodes: buildNodes(derivedCurrent, normalizedCurrent),
-        edges: buildEdges(derivedCurrent, normalizedCurrent, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, derivedCurrent, normalizedCurrent),
+        edges: reconcileEdges(state.edges, derivedCurrent, normalizedCurrent, state.edgeStyle),
         graphStack: updatedStack,
         currentGraphLabel: state.currentGraphLabel,
         past,
@@ -2257,19 +2395,25 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const nextStack = stack.slice(0, index);
       const nextLayer = stack[index];
       const normalized = normalizeUiState(nextLayer.graph, nextLayer.uiState, state.edgeStyle);
+      const graphHistory = graphHistoryWithActiveLayer(state);
+      const nextHistory = historyForPath(
+        graphHistory,
+        nextStack.map((layer) => layer.childNodeId).filter((id): id is string => Boolean(id))
+      );
       return {
         graphStack: nextStack,
         graph: nextLayer.graph,
         uiState: normalized,
-        nodes: buildNodes(nextLayer.graph, normalized),
-        edges: buildEdges(nextLayer.graph, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, nextLayer.graph, normalized),
+        edges: reconcileEdges(state.edges, nextLayer.graph, normalized, state.edgeStyle),
         graphId: nextLayer.graphId,
         currentGraphLabel: nextLayer.label,
         currentContext: nextStack.length > 0
           ? (nextStack[nextStack.length - 1].contextType ?? 'top-level')
           : 'top-level',
-        past: [],
-        future: [],
+        past: nextHistory.past,
+        future: nextHistory.future,
+        graphHistory,
       };
     });
   },
@@ -2374,6 +2518,166 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
     });
   },
+  duplicateSelected: () => {
+    set((state) => {
+      const selectedNodeIds = state.nodes
+        .filter((node) => node.selected && !isTapNodeId(node.id))
+        .map((node) => node.id)
+        .filter((nodeId) => state.graph.nodes[nodeId]);
+      if (selectedNodeIds.length === 0) return state;
+
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const nodeMap: Record<string, string> = {};
+      let graphForNames: GraphSpec = state.graph;
+      for (const nodeId of selectedNodeIds) {
+        const nextId = createNodeName(graphForNames, nodeId);
+        nodeMap[nodeId] = nextId;
+        graphForNames = {
+          ...graphForNames,
+          nodes: {
+            ...graphForNames.nodes,
+            [nextId]: state.graph.nodes[nodeId],
+          },
+        };
+      }
+
+      const nodes = Object.fromEntries(
+        Object.entries(state.graph.nodes).map(([nodeId, spec]) => [
+          nodeId,
+          cloneGraphSpec(spec),
+        ])
+      ) as GraphSpec['nodes'];
+      for (const nodeId of selectedNodeIds) {
+        nodes[nodeMap[nodeId]] = cloneGraphSpec(state.graph.nodes[nodeId]);
+      }
+
+      const selectedNodeSet = new Set(selectedNodeIds);
+      const duplicatedWires = state.graph.wires
+        .filter(
+          (wire) =>
+            selectedNodeSet.has(wire.source_node) && selectedNodeSet.has(wire.target_node)
+        )
+        .map((wire) => ({
+          ...cloneGraphSpec(wire),
+          source_node: nodeMap[wire.source_node],
+          target_node: nodeMap[wire.target_node],
+        }));
+      let graph: GraphSpec = {
+        ...state.graph,
+        nodes,
+        wires: [...state.graph.wires.map((wire) => cloneGraphSpec(wire)), ...duplicatedWires],
+      };
+
+      const subgraphs = { ...(state.graph.subgraphs ?? {}) };
+      const subgraph_states = { ...(state.uiState.subgraph_states ?? {}) };
+      for (const nodeId of selectedNodeIds) {
+        const nodeSpec = state.graph.nodes[nodeId];
+        const targetNodeId = nodeMap[nodeId];
+        const isComposite = get()._compositeTypes.has(nodeSpec.type);
+        const sourceSubgraph = state.graph.subgraphs?.[nodeId];
+        const sourceSubgraphUiState = state.uiState.subgraph_states?.[nodeId];
+        if (isComposite && !sourceSubgraph) {
+          throw new Error(
+            `Cannot duplicate composite node "${nodeId}": source subgraph is missing.`
+          );
+        }
+        if (sourceSubgraph && !sourceSubgraphUiState) {
+          throw new Error(
+            `Cannot duplicate composite node "${nodeId}": source subgraph UI state is missing.`
+          );
+        }
+        if (sourceSubgraph && sourceSubgraphUiState) {
+          subgraphs[targetNodeId] = cloneGraphSpec(sourceSubgraph);
+          subgraph_states[targetNodeId] = cloneGraphSpec(sourceSubgraphUiState);
+        }
+      }
+      graph = {
+        ...graph,
+        subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
+      };
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
+
+      const node_states = Object.fromEntries(
+        Object.entries(state.uiState.node_states).map(([nodeId, nodeState]) => [
+          nodeId,
+          { ...nodeState, selected: false },
+        ])
+      ) as GraphUIState['node_states'];
+      for (const nodeId of selectedNodeIds) {
+        const targetNodeId = nodeMap[nodeId];
+        const sourceNodeState = state.uiState.node_states[nodeId];
+        if (!sourceNodeState) {
+          throw new Error(
+            `Cannot duplicate node "${nodeId}": source node UI state is missing.`
+          );
+        }
+        node_states[targetNodeId] = {
+          ...cloneGraphSpec(sourceNodeState),
+          position: {
+            x: sourceNodeState.position.x + 40,
+            y: sourceNodeState.position.y + 40,
+          },
+          selected: true,
+        };
+      }
+
+      const tap_states = state.uiState.tap_states
+        ? Object.fromEntries(
+            Object.entries(state.uiState.tap_states).map(([tapId, tapState]) => [
+              tapId,
+              { ...tapState, selected: false },
+            ])
+          )
+        : undefined;
+      const edgeStateSeed: Record<string, EdgeUIState> = { ...(state.uiState.edge_states ?? {}) };
+      for (const sourceWire of state.graph.wires) {
+        if (
+          !selectedNodeSet.has(sourceWire.source_node) ||
+          !selectedNodeSet.has(sourceWire.target_node)
+        ) {
+          continue;
+        }
+        const oldWireId = wireId(sourceWire);
+        const newWireId = wireId({
+          ...sourceWire,
+          source_node: nodeMap[sourceWire.source_node],
+          target_node: nodeMap[sourceWire.target_node],
+        });
+        const oldEdgeState = state.uiState.edge_states?.[oldWireId];
+        if (oldEdgeState) {
+          edgeStateSeed[newWireId] = cloneGraphSpec(oldEdgeState);
+        }
+      }
+
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        node_states,
+        edge_states: edgeStateSeed,
+        subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
+        tap_states: tap_states && Object.keys(tap_states).length ? tap_states : undefined,
+      };
+      const edge_states = buildEdgeStates(graph, uiState, state.edgeStyle);
+      const normalizedUiState: GraphUIState = {
+        ...uiState,
+        edge_states,
+      };
+
+      return {
+        graph,
+        uiState: normalizedUiState,
+        nodes: buildNodes(graph, normalizedUiState),
+        edges: buildEdges(graph, normalizedUiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+        selectedTapId: null,
+        selectedEdgeId: null,
+        pendingStateMerge: null,
+      };
+    });
+  },
   renameNode: (nodeId, nextId) => {
     set((state) => {
       const trimmed = nextId.trim();
@@ -2469,8 +2773,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         graph,
         uiState,
-        nodes: buildNodes(graph, uiState),
-        edges: buildEdges(graph, uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, uiState),
+        edges: reconcileEdges(state.edges, graph, uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -2518,8 +2822,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         graph,
         uiState,
-        nodes: buildNodes(graph, uiState),
-        edges: buildEdges(graph, uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, uiState),
+        edges: reconcileEdges(state.edges, graph, uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -2750,8 +3054,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const selectedEdgeId = nextEdges.find((edge) => edge.selected)?.id ?? null;
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileById(
+          state.edges,
+          applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+          sameGraphEdge
+        ),
         uiState: {
           ...state.uiState,
           edge_states,
@@ -2790,8 +3098,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
           return {
             graph,
-            nodes: buildNodes(graph, state.uiState),
-            edges: buildEdges(graph, state.uiState, state.edgeStyle),
+            nodes: reconcileNodes(state.nodes, graph, state.uiState),
+            edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
             uiState: {
               ...state.uiState,
               edge_states,
@@ -2866,8 +3174,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileById(
+          state.edges,
+          applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+          sameGraphEdge
+        ),
         uiState: {
           ...state.uiState,
           edge_states,
@@ -2989,8 +3301,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       graph = normalizeDynamicPorts(graph, taskBindingSpec);
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: buildEdges(graph, state.uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -3008,8 +3320,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       }
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: buildEdges(graph, state.uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -3018,10 +3330,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   setSelectedNode: (nodeId) => {
     set((state) => {
-      const nodes = state.nodes.map((node) => ({
-        ...node,
-        selected: node.id === nodeId,
-      }));
+      const nodes = setNodeSelection(state.nodes, nodeId);
       const node_states = { ...state.uiState.node_states };
       for (const node of nodes) {
         if (isTapNodeId(node.id)) continue;
@@ -3061,10 +3370,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   setSelectedTap: (tapId) => {
     set((state) => {
       const targetId = tapId ? tapNodeId(tapId) : null;
-      const nodes = state.nodes.map((node) => ({
-        ...node,
-        selected: node.id === targetId,
-      }));
+      const nodes = setNodeSelection(state.nodes, targetId);
       const node_states = { ...state.uiState.node_states };
       for (const node of nodes) {
         if (isTapNodeId(node.id)) continue;
@@ -3100,13 +3406,78 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   setSelectedEdge: (edgeId) => {
     set((state) => {
-      const edges = state.edges.map((edge) => ({
-        ...edge,
-        selected: edge.id === edgeId,
-      }));
+      const edges = setEdgeSelection(state.edges, edgeId);
       return {
         edges,
         selectedEdgeId: edgeId,
+        pendingStateMerge: null,
+      };
+    });
+  },
+  clearSelection: () => {
+    set((state) => {
+      const nodes = state.nodes.map((node) =>
+        node.selected ? { ...node, selected: false } : node
+      );
+      const edges = state.edges.map((edge) =>
+        edge.selected ? { ...edge, selected: false } : edge
+      );
+      const node_states = Object.fromEntries(
+        Object.entries(state.uiState.node_states).map(([nodeId, nodeState]) => [
+          nodeId,
+          { ...nodeState, selected: false },
+        ])
+      ) as GraphUIState['node_states'];
+      const tap_states = state.uiState.tap_states
+        ? Object.fromEntries(
+            Object.entries(state.uiState.tap_states).map(([tapId, tapState]) => [
+              tapId,
+              { ...tapState, selected: false },
+            ])
+          )
+        : undefined;
+      return {
+        nodes,
+        edges,
+        uiState: {
+          ...state.uiState,
+          node_states,
+          tap_states,
+        },
+        selectedTapId: null,
+        selectedEdgeId: null,
+        pendingStateMerge: null,
+      };
+    });
+  },
+  selectAll: () => {
+    set((state) => {
+      const nodes = state.nodes.map((node) => ({ ...node, selected: true }));
+      const edges = state.edges.map((edge) => ({ ...edge, selected: true }));
+      const node_states = Object.fromEntries(
+        Object.entries(state.uiState.node_states).map(([nodeId, nodeState]) => [
+          nodeId,
+          { ...nodeState, selected: true },
+        ])
+      ) as GraphUIState['node_states'];
+      const tap_states = state.uiState.tap_states
+        ? Object.fromEntries(
+            Object.entries(state.uiState.tap_states).map(([tapId, tapState]) => [
+              tapId,
+              { ...tapState, selected: true },
+            ])
+          )
+        : undefined;
+      return {
+        nodes,
+        edges,
+        uiState: {
+          ...state.uiState,
+          node_states,
+          tap_states,
+        },
+        selectedTapId: null,
+        selectedEdgeId: null,
         pendingStateMerge: null,
       };
     });
@@ -3115,6 +3486,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeState = state.uiState.node_states[nodeId];
       if (!nodeState) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nextCollapsed = !nodeState.collapsed;
       const uiState: GraphUIState = {
         ...state.uiState,
@@ -3143,6 +3515,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         uiState,
         nodes,
         edges: buildEdges(state.graph, uiState, state.edgeStyle),
+        past,
+        future: [],
         isDirty: true,
       };
     });
@@ -3151,6 +3525,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeState = state.uiState.node_states[nodeId];
       if (!nodeState) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nextReversed = !nodeState.reversed;
       const uiState: GraphUIState = {
         ...state.uiState,
@@ -3167,11 +3542,23 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           ? { ...node, data: { ...node.data, reversed: nextReversed } }
           : node
       );
-      return { uiState, nodes, edges: buildEdges(state.graph, uiState, state.edgeStyle), isDirty: true };
+      return {
+        uiState,
+        nodes,
+        edges: buildEdges(state.graph, uiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
     });
   },
   setAllNodesCollapsed: (collapsed) => {
     set((state) => {
+      const shouldUpdate = Object.values(state.uiState.node_states).some(
+        (nodeState) => nodeState.collapsed !== collapsed || nodeState.size !== undefined
+      );
+      if (!shouldUpdate) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const node_states = { ...state.uiState.node_states };
       for (const nodeId of Object.keys(node_states)) {
         node_states[nodeId] = {
@@ -3195,6 +3582,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
         nodes,
         edges: buildEdges(state.graph, { ...state.uiState, node_states }, state.edgeStyle),
+        past,
+        future: [],
         isDirty: true,
       };
     });

@@ -579,7 +579,7 @@ describe('buildWorkspaceSnapshot', () => {
     expect(restored.task_binding_spec?.bindings).toEqual([]);
   });
 
-  it('normalizes runtime graph component names when restoring workspace snapshots', () => {
+  it('normalizes runtime graph aliases without synthesizing network subgraphs', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
       graph: {
@@ -606,24 +606,13 @@ describe('buildWorkspaceSnapshot', () => {
 
     const restored = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
     expect(restored.graph?.nodes.network).toMatchObject({
-      type: 'Network',
-      params: { out_size: 2 },
-      input_ports: ['input', 'feedback'],
+      type: 'SimpleStagedNetwork',
+      params: { input_size: 4, hidden_size: 100, output_size: 2 },
+      input_ports: ['target'],
     });
-    expect(restored.graph?.subgraphs?.network.nodes.input_mux).toMatchObject({
-      type: 'Mux',
-      input_ports: ['in_0', 'in_1'],
-    });
-    expect(restored.graph?.subgraphs?.network.input_bindings).toMatchObject({
-      input: ['input_mux', 'in_0'],
-      feedback: ['input_mux', 'in_1'],
-    });
-    expect(restored.graph?.subgraphs?.network.nodes.cell).toMatchObject({
-      type: 'GRU',
-      params: { input_size: 4, hidden_size: 100 },
-    });
+    expect(restored.graph?.subgraphs?.network).toBeUndefined();
     expect(restored.graph?.input_ports).toEqual(['input']);
-    expect(restored.graph?.input_bindings).toEqual({ input: ['network', 'input'] });
+    expect(restored.graph?.input_bindings).toEqual({ input: ['network', 'target'] });
   });
 
   it('retargets active scenario task bindings when a model node is renamed', () => {

@@ -216,7 +216,7 @@ class LossService:
         if graph.taps:
             for tap in graph.taps:
                 if tap.type == "probe":
-                    after_node = tap.position.get("afterNode", "unknown")
+                    after_node = tap.position.afterNode or "unknown"
                     probe = ProbeInfo(
                         id=tap.id,
                         label=tap.id,

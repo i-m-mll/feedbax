@@ -2,6 +2,14 @@
 
 > Canvas-based interface for constructing, visualizing, and training neural control models
 
+> [!WARNING]
+> Historical draft only. This 2026-01-26 v0.1.0 document is retained for
+> archaeology and design provenance, but it is not the current Feedbax Studio
+> architecture contract. It contains stale claims about dependencies, storage,
+> training execution, simulation preview behavior, and frontend file layout.
+> Use `docs/STUDIO_CURRENT_ARCHITECTURE.md` for current orientation, then route
+> to the narrower design docs and current source files named there.
+
 **Version**: 0.1.0 (Draft)
 **Date**: 2026-01-26
 **Author**: MLL <mll@mll.bio>, Claude Opus 4.5

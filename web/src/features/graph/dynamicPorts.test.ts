@@ -114,4 +114,54 @@ describe('dynamic graph ports', () => {
       )
     ).toBe('in_2');
   });
+
+  it('normalizes many muxes with one wire-index pass', () => {
+    const muxCount = 140;
+    const wires: GraphSpec['wires'] = Array.from({ length: muxCount }, (_, index) => ({
+      source_node: 'source',
+      source_port: 'output',
+      target_node: `mux_${index}`,
+      target_port: 'in_2',
+    }));
+    const instrumentedWires = [...wires];
+    const originalIterator = instrumentedWires[Symbol.iterator].bind(instrumentedWires);
+    let wirePasses = 0;
+    Object.defineProperty(instrumentedWires, Symbol.iterator, {
+      value: function countedIterator() {
+        wirePasses += 1;
+        return originalIterator();
+      },
+    });
+    const largeGraph: GraphSpec = {
+      nodes: {
+        source: {
+          type: 'Gain',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+        ...Object.fromEntries(
+          Array.from({ length: muxCount }, (_, index) => [
+            `mux_${index}`,
+            {
+              type: 'Mux',
+              params: { n_inputs: 2 },
+              input_ports: ['in_0', 'in_1'],
+              output_ports: ['output'],
+            },
+          ])
+        ),
+      },
+      wires: instrumentedWires,
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+    };
+
+    const normalized = normalizeDynamicPorts(largeGraph);
+
+    expect(normalized.nodes.mux_139.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
+    expect(wirePasses).toBe(1);
+  });
 });

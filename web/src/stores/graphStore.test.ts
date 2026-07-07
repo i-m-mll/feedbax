@@ -88,6 +88,46 @@ function graphWithNetworkSubgraph(): GraphSpec {
   };
 }
 
+function graphWithTwoNodes(): { graph: GraphSpec; uiState: GraphUIState } {
+  return {
+    graph: {
+      nodes: {
+        a: {
+          type: 'Gain',
+          params: { gain: 1 },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+        b: {
+          type: 'Gain',
+          params: { gain: 1 },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [
+        {
+          source_node: 'a',
+          source_port: 'output',
+          target_node: 'b',
+          target_port: 'input',
+        },
+      ],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+    },
+    uiState: {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        a: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+        b: { position: { x: 240, y: 0 }, collapsed: false, selected: false },
+      },
+    },
+  };
+}
+
 function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const innerGraph: GraphSpec = {
     nodes: {
@@ -369,6 +409,263 @@ describe('graphStore boundary aliases', () => {
     expect(() => useGraphStore.getState().capturePersistedGraph()).toThrow(
       'parent graph no longer contains subgraph node "network"'
     );
+  });
+
+  it('preserves active subgraph undo history across enter and exit', () => {
+    const gain: ComponentDefinition = {
+      name: 'Gain',
+      category: 'Math',
+      description: 'Gain',
+      param_schema: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      icon: 'math',
+      default_params: { gain: 7 },
+    };
+
+    useGraphStore.getState().enterSubgraph('network');
+    useGraphStore.getState().addNodeFromComponent(gain, { x: 520, y: 160 });
+    expect(useGraphStore.getState().graph.nodes.gain).toBeDefined();
+    expect(useGraphStore.getState().past).toHaveLength(1);
+
+    useGraphStore.getState().exitToBreadcrumb(0);
+    expect(useGraphStore.getState().graph.nodes.network).toBeDefined();
+
+    useGraphStore.getState().enterSubgraph('network');
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+
+    expect(useGraphStore.getState().graph.nodes.gain).toBeUndefined();
+  });
+
+  it('duplicates a composite node with its internal graph and UI state', () => {
+    useGraphStore.getState().setSelectedNode('network');
+    useGraphStore.getState().duplicateSelected();
+
+    const state = useGraphStore.getState();
+    expect(state.past).toHaveLength(1);
+    expect(state.graph.nodes.network2).toMatchObject({
+      type: 'Network',
+      input_ports: ['input', 'feedback'],
+      output_ports: ['output'],
+    });
+    expect(state.graph.subgraphs?.network2).toEqual(state.graph.subgraphs?.network);
+    expect(state.graph.subgraphs?.network2).not.toBe(state.graph.subgraphs?.network);
+    expect(state.uiState.subgraph_states?.network2).toEqual(
+      state.uiState.subgraph_states?.network
+    );
+    expect(state.uiState.subgraph_states?.network2).not.toBe(
+      state.uiState.subgraph_states?.network
+    );
+    expect(state.uiState.node_states.network2.position).toEqual({ x: 40, y: 40 });
+    expect(state.uiState.node_states.network2.selected).toBe(true);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().graph.nodes.network2).toBeUndefined();
+  });
+
+  it('raises when duplicating a composite node with no source subgraph', () => {
+    const graph = graphWithNetworkSubgraph();
+    delete graph.subgraphs;
+    useGraphStore.getState().hydrateGraph(graph, uiState);
+    useGraphStore.getState().setCompositeTypes(new Set(['Network']));
+    useGraphStore.getState().setSelectedNode('network');
+
+    expect(() => useGraphStore.getState().duplicateSelected()).toThrow(
+      'Cannot duplicate composite node "network": source subgraph is missing.'
+    );
+  });
+});
+
+describe('graphStore React Flow identity preservation', () => {
+  beforeEach(() => {
+    const { graph, uiState } = graphWithTwoNodes();
+    useGraphStore.getState().hydrateGraph(graph, uiState);
+  });
+
+  it('keeps untouched node and edge references stable for a single-node param edit', () => {
+    const before = useGraphStore.getState();
+    const previousA = before.nodes.find((node) => node.id === 'a');
+    const previousB = before.nodes.find((node) => node.id === 'b');
+    const previousEdge = before.edges.find((edge) => edge.source === 'a' && edge.target === 'b');
+
+    useGraphStore.getState().updateNodeParams('a', 'gain', 2);
+
+    const after = useGraphStore.getState();
+    const nextA = after.nodes.find((node) => node.id === 'a');
+    const nextB = after.nodes.find((node) => node.id === 'b');
+    const nextEdge = after.edges.find((edge) => edge.source === 'a' && edge.target === 'b');
+
+    expect(nextA).not.toBe(previousA);
+    expect(nextB).toBe(previousB);
+    expect(nextEdge).toBe(previousEdge);
+    expect(after.graph.nodes.a.params.gain).toBe(2);
+  });
+
+  it('keeps unrelated graph entity references stable for selection-only changes', () => {
+    const before = useGraphStore.getState();
+    const previousA = before.nodes.find((node) => node.id === 'a');
+    const previousB = before.nodes.find((node) => node.id === 'b');
+    const previousEdges = before.edges;
+
+    useGraphStore.getState().setSelectedNode('a');
+
+    const nodeSelected = useGraphStore.getState();
+    const selectedA = nodeSelected.nodes.find((node) => node.id === 'a');
+    const selectedB = nodeSelected.nodes.find((node) => node.id === 'b');
+    expect(selectedA).not.toBe(previousA);
+    expect(selectedB).toBe(previousB);
+    expect(nodeSelected.edges).toBe(previousEdges);
+
+    const previousNodes = nodeSelected.nodes;
+    const previousEdge = nodeSelected.edges[0];
+    useGraphStore.getState().setSelectedEdge(previousEdge.id);
+
+    const edgeSelected = useGraphStore.getState();
+    expect(edgeSelected.nodes).toBe(previousNodes);
+    expect(edgeSelected.edges[0]).not.toBe(previousEdge);
+  });
+
+  it('records undo snapshots for collapse and reverse UI mutations', () => {
+    useGraphStore.getState().toggleNodeCollapse('a');
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(true);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(false);
+
+    useGraphStore.getState().toggleNodeReversed('a');
+    expect(useGraphStore.getState().uiState.node_states.a.reversed).toBe(true);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().uiState.node_states.a.reversed).toBe(false);
+
+    useGraphStore.getState().setAllNodesCollapsed(true);
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(true);
+    expect(useGraphStore.getState().uiState.node_states.b.collapsed).toBe(true);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(false);
+    expect(useGraphStore.getState().uiState.node_states.b.collapsed).toBe(false);
+  });
+});
+
+describe('graphStore subgraph entry templates', () => {
+  const unpopulatedMuscleGraph: GraphSpec = {
+    nodes: {
+      muscle: {
+        type: 'Arm6MuscleRigidTendon',
+        params: {},
+        input_ports: ['excitation', 'angles', 'angular_velocities'],
+        output_ports: ['torques'],
+      },
+    },
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+  };
+  const unpopulatedUi: GraphUIState = {
+    viewport: { x: 0, y: 0, zoom: 1 },
+    node_states: {
+      muscle: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+    },
+  };
+
+  beforeEach(() => {
+    useGraphStore.getState().hydrateGraph(unpopulatedMuscleGraph, unpopulatedUi);
+    useGraphStore.setState({
+      _compositeTypes: new Set(['Arm6MuscleRigidTendon']),
+      _componentRegistry: new Map(),
+      _isRegistryLoaded: false,
+      lastSubgraphError: null,
+    });
+  });
+
+  it('reports registry-loading failure without creating a layer or synthesized subgraph', () => {
+    useGraphStore.getState().enterSubgraph('muscle');
+
+    const state = useGraphStore.getState();
+    const renderedNode = state.nodes.find((node) => node.id === 'muscle');
+    expect(state.graphStack).toEqual([]);
+    expect(state.graph.subgraphs?.muscle).toBeUndefined();
+    expect(state.lastSubgraphError).toContain('component templates are still loading');
+    expect(renderedNode?.type).toBe('component');
+    expect(renderedNode?.data.subgraph).toBeUndefined();
+    expect(state.capturePersistedGraph().graph.subgraphs?.muscle).toBeUndefined();
+  });
+
+  it('reports missing backend templates instead of fabricating frontend subgraphs', () => {
+    useGraphStore.getState().setComponentRegistry([
+      {
+        name: 'Arm6MuscleRigidTendon',
+        category: 'Mechanics',
+        description: 'Composite without a loaded template',
+        param_schema: [],
+        input_ports: ['excitation', 'angles', 'angular_velocities'],
+        output_ports: ['torques'],
+        icon: 'activity',
+        default_params: {},
+      },
+    ]);
+
+    useGraphStore.getState().enterSubgraph('muscle');
+
+    const state = useGraphStore.getState();
+    expect(state.graphStack).toEqual([]);
+    expect(state.graph.subgraphs?.muscle).toBeUndefined();
+    expect(state.lastSubgraphError).toContain('no backend template_graph');
+    expect(state.lastSubgraphError).toContain('cannot synthesize');
+    expect(state.capturePersistedGraph().graph.subgraphs?.muscle).toBeUndefined();
+  });
+
+  it('uses registry template_graph as the only fresh subgraph source', () => {
+    const templateGraph: GraphSpec = {
+      nodes: {
+        inner: {
+          type: 'Gain',
+          params: { gain: 1 },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      input_bindings: { input: ['inner', 'input'] },
+      output_bindings: { output: ['inner', 'output'] },
+    };
+
+    useGraphStore.getState().setComponentRegistry([
+      {
+        name: 'Arm6MuscleRigidTendon',
+        category: 'Mechanics',
+        description: 'Composite with a backend template',
+        param_schema: [],
+        input_ports: ['input'],
+        output_ports: ['output'],
+        icon: 'activity',
+        default_params: {},
+        template_graph: templateGraph,
+        template_ui_state: {
+          viewport: { x: 0, y: 0, zoom: 1 },
+          node_states: {
+            inner: { position: { x: 10, y: 20 }, collapsed: false, selected: false },
+          },
+        },
+      },
+    ]);
+
+    useGraphStore.getState().enterSubgraph('muscle');
+
+    const state = useGraphStore.getState();
+    const persisted = state.capturePersistedGraph();
+    expect(state.graph.nodes.inner.type).toBe('Gain');
+    expect(state.graph.nodes.inner.params).toEqual({ gain: 1 });
+    expect(state.lastSubgraphError).toBeNull();
+    expect(persisted.graph.subgraphs?.muscle?.nodes.inner.type).toBe('Gain');
+    expect(persisted.graph.subgraphs?.muscle?.nodes.activation_dynamics).toBeUndefined();
+    expect(persisted.graph.nodes.muscle.params._subgraph).toBeUndefined();
   });
 });
 
@@ -690,7 +987,9 @@ describe('graphStore template insertion', () => {
     expect(state.graph.subgraphs?.cell?.nodes.inner.type).toBe('Linear');
     expect(state.uiState.subgraph_states?.cell?.node_states.inner).toBeDefined();
     expect(state.uiState.node_states.input_mux.position).toEqual({ x: 200, y: 160 });
-    expect(state.nodes.find((node) => node.id === 'cell')?.type).toBe('component');
+    const cellNode = state.nodes.find((node) => node.id === 'cell');
+    expect(cellNode?.type).toBe('subgraph');
+    expect(cellNode?.data.subgraph).toBeDefined();
     expect(state.edges.some((edge) => edge.source === 'input_mux' && edge.target === 'cell')).toBe(true);
   });
 

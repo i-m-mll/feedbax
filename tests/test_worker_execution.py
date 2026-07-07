@@ -485,7 +485,11 @@ def test_run_training_graph_stopped_run_returns_latest_batch_loss(
     assert result.final_batch == len(progress_losses)
 
 
-def test_run_training_graph_projects_parameter_constraints_after_update() -> None:
+def test_run_training_graph_projects_parameter_constraints_after_update(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     graph_spec = GraphSpec.model_validate(_linear_graph_spec())
     graph_spec.parameter_constraints = [
         ParameterConstraintSpec(node="readout", role="weight", mask=[[0]], value=0.0)

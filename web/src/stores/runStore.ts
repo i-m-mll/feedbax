@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { TrainingRun, EvalRun } from '@/types/runs';
 import { fetchTrainingRuns, fetchEvalRuns } from '@/api/runAPI';
+import { apiErrorMessage } from '@/api/request';
+import { withStoreActionFeedback } from '@/stores/storeActions';
 import { getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { StudioCollectionRef, StudioManifestRef, StudioWorkspaceSpec } from '@/types/workspace';
 
@@ -298,6 +300,10 @@ interface RunStoreState {
   selectedEvalRunId: string | null;
   /** Whether runs are being loaded. */
   loading: boolean;
+  /** Most recent training-run load failure, if any. */
+  trainingError: string | null;
+  /** Most recent evaluation-run load failure, if any. */
+  evalError: string | null;
 
   // Actions
   loadTrainingRuns: () => Promise<void>;
@@ -315,45 +321,60 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
   selectedTrainingRunId: null,
   selectedEvalRunId: null,
   loading: false,
+  trainingError: null,
+  evalError: null,
 
   loadTrainingRuns: async () => {
-    set({ loading: true });
-    try {
-      const runs = await fetchTrainingRuns();
-      set({ trainingRuns: runs, loading: false });
-      writeTrainingRunsToWorkspace(runs);
-      const workspaceSelected = selectedTrainingRunIdFromWorkspace();
-      if (runs.length > 0 && get().selectedTrainingRunId === null) {
-        const selectedId =
-          workspaceSelected && runs.some((run) => run.id === workspaceSelected)
-            ? workspaceSelected
-            : runs[0].id;
-        await get().selectTrainingRun(selectedId);
-      }
-    } catch {
-      set({ loading: false });
+    set({ loading: true, trainingError: null });
+    const runs = await withStoreActionFeedback(
+      () => fetchTrainingRuns(),
+      {
+        errorToast: (error) => apiErrorMessage(error, 'Could not load training runs'),
+        toastId: 'training-runs-load-error',
+        onError: (error) =>
+          set({
+            loading: false,
+            trainingError: apiErrorMessage(error, 'Could not load training runs'),
+          }),
+      },
+    );
+    if (!runs) return;
+    set({ trainingRuns: runs, loading: false, trainingError: null });
+    writeTrainingRunsToWorkspace(runs);
+    const workspaceSelected = selectedTrainingRunIdFromWorkspace();
+    if (runs.length > 0 && get().selectedTrainingRunId === null) {
+      const selectedId =
+        workspaceSelected && runs.some((run) => run.id === workspaceSelected)
+          ? workspaceSelected
+          : runs[0].id;
+      await get().selectTrainingRun(selectedId);
     }
   },
 
   selectTrainingRun: async (id) => {
-    set({ selectedTrainingRunId: id, selectedEvalRunId: null, evalRuns: [] });
+    set({ selectedTrainingRunId: id, selectedEvalRunId: null, evalRuns: [], evalError: null });
     const selected = get().trainingRuns.find((run) => run.id === id) ?? null;
     writeSelectedTrainingRunToWorkspace(selected);
     if (id === null) return;
-    try {
-      const evals = await fetchEvalRuns(id);
-      set({ evalRuns: evals });
-      writeEvalRunsToWorkspace(evals);
-      const workspaceSelected = selectedEvalRunIdFromWorkspace();
-      if (evals.length > 0) {
-        const selectedId =
-          workspaceSelected && evals.some((run) => run.id === workspaceSelected)
-            ? workspaceSelected
-            : evals[0].id;
-        get().selectEvalRun(selectedId);
-      }
-    } catch {
-      // eval fetch failed silently
+    const evals = await withStoreActionFeedback(
+      () => fetchEvalRuns(id),
+      {
+        errorToast: (error) => apiErrorMessage(error, 'Could not load evaluation runs'),
+        toastId: 'eval-runs-load-error',
+        onError: (error) =>
+          set({ evalError: apiErrorMessage(error, 'Could not load evaluation runs') }),
+      },
+    );
+    if (!evals) return;
+    set({ evalRuns: evals, evalError: null });
+    writeEvalRunsToWorkspace(evals);
+    const workspaceSelected = selectedEvalRunIdFromWorkspace();
+    if (evals.length > 0) {
+      const selectedId =
+        workspaceSelected && evals.some((run) => run.id === workspaceSelected)
+          ? workspaceSelected
+          : evals[0].id;
+      get().selectEvalRun(selectedId);
     }
   },
 
@@ -419,6 +440,8 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
       selectedTrainingRunId,
       selectedEvalRunId,
       loading: false,
+      trainingError: null,
+      evalError: null,
     });
   },
 }));

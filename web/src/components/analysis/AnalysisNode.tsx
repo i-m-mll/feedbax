@@ -9,14 +9,16 @@
  * Dependency nodes (role === 'dependency') are rendered smaller and muted.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { useCallback, useEffect, useState } from 'react';
+import { Position, type NodeProps } from '@xyflow/react';
 import type { AnalysisNodeData } from '@/stores/analysisStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useDemandStore } from '@/stores/demandStore';
-import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
+import { generateFigure, getFigureData } from '@/api/figureAPI';
+import { useFigureGenerationStatus } from '@/hooks/useFigureGenerationStatus';
 import { Play, Loader2, Image, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
+import { NodeHeader, NodeShell, PortHandle } from '@/components/ui/NodePrimitives';
 
 // Layout constants — aligned with CustomNode for consistency
 const WIDTH_FULL = 200;
@@ -49,48 +51,13 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
   const status = useDemandStore((s) => s.requests[id]?.status ?? 'idle');
   const figureHash = useDemandStore((s) => s.requests[id]?.figureHash);
   const requestGeneration = useDemandStore((s) => s.requestGeneration);
-  const setResult = useDemandStore((s) => s.setResult);
   const setError = useDemandStore((s) => s.setError);
 
   // Inline figure preview state
   const [showToast, setShowToast] = useState(false);
   const [previewData, setPreviewData] = useState<unknown>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Poll for figure status when running
-  useEffect(() => {
-    if (status !== 'running') {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return;
-    }
-
-    const requestId = useDemandStore.getState().requests[id]?.figureHash;
-    if (!requestId) return;
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const result = await getFigureStatus(requestId);
-        if (result.status === 'complete' && result.figure_hashes?.length) {
-          setResult(id, result.figure_hashes[0]);
-        } else if (result.status === 'error') {
-          setError(id, result.error ?? 'Generation failed');
-        }
-      } catch {
-        // Keep polling on transient errors
-      }
-    }, 2000);
-
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [status, id, setResult, setError]);
+  useFigureGenerationStatus(id, status);
 
   // Auto-load preview data when figure is ready
   useEffect(() => {
@@ -142,25 +109,17 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
   const rowCenter = (index: number) => BODY_PADDING + rowHeight * (index + 0.5);
 
   return (
-    <div
-      className={clsx(
-        'relative rounded-xl border shadow-soft backdrop-blur transition-all duration-150',
-        isDep ? 'bg-white/70' : 'bg-white/90',
-        selected
-          ? 'border-brand-500 ring-1 ring-brand-500/40'
-          : isDep
-            ? 'border-slate-200/60'
-            : 'border-emerald-200'
-      )}
+    <NodeShell
+      tone={isDep ? 'dependency' : 'analysis'}
+      selected={selected}
       style={{ width, height: totalHeight }}
     >
       {/* Header */}
-      <div
+      <NodeHeader
+        tone={isDep ? 'dependency' : 'analysis'}
         className={clsx(
-          'px-3 overflow-hidden border-b rounded-t-xl',
-          isDep
-            ? 'py-1.5 flex items-center justify-between gap-2 bg-slate-50/60 border-slate-100/60'
-            : 'py-1.5 flex flex-col justify-center bg-emerald-50/60 border-emerald-100/60'
+          'overflow-hidden',
+          isDep ? 'py-1.5 justify-between gap-2' : 'py-1.5 flex-col justify-center items-stretch'
         )}
         style={{ height: headerHeight }}
       >
@@ -183,7 +142,7 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
             </div>
           </>
         )}
-      </div>
+      </NodeHeader>
 
       {/* Ports */}
       <div
@@ -192,7 +151,7 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
       >
         {/* Input handles */}
         {spec.inputPorts.map((port, index) => (
-          <Handle
+          <PortHandle
             key={`in-${port}`}
             type="target"
             position={Position.Left}
@@ -201,20 +160,17 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
               top: rowCenter(index),
               left: HANDLE_OFFSET,
               transform: 'translateY(-50%)',
-              clipPath: 'polygon(0% 0%, 100% 50%, 0% 100%)',
               width: isDep ? '6px' : '8px',
               height: isDep ? '6px' : '8px',
             }}
-            className={clsx(
-              'border border-white shadow-soft',
-              isDep ? 'bg-slate-300' : 'bg-emerald-400'
-            )}
+            arrow="left"
+            tone={isDep ? 'dependency' : 'analysis'}
           />
         ))}
 
         {/* Output handles */}
         {spec.outputPorts.map((port, index) => (
-          <Handle
+          <PortHandle
             key={`out-${port}`}
             type="source"
             position={Position.Right}
@@ -223,14 +179,11 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
               top: rowCenter(index),
               right: HANDLE_OFFSET,
               transform: 'translateY(-50%)',
-              clipPath: 'polygon(0% 0%, 100% 50%, 0% 100%)',
               width: isDep ? '6px' : '8px',
               height: isDep ? '6px' : '8px',
             }}
-            className={clsx(
-              'border border-white shadow-soft',
-              isDep ? 'bg-slate-300' : 'bg-emerald-400'
-            )}
+            arrow="left"
+            tone={isDep ? 'dependency' : 'analysis'}
           />
         ))}
 
@@ -345,7 +298,7 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
           </div>
         </div>
       )}
-    </div>
+    </NodeShell>
   );
 }
 

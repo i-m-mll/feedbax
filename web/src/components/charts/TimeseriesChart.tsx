@@ -10,24 +10,13 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import type { TimeseriesResponse } from '@/types/statistics';
-
-const TASK_COLORS: Record<number, string> = {
-  0: '#2f7cf6',
-  1: '#2fbf7f',
-  2: '#f2b92d',
-  3: '#9b59b6',
-};
-
-const GENERIC_PALETTE = [
-  '#2f7cf6', '#2fbf7f', '#f2b92d', '#9b59b6',
-  '#e74c3c', '#1abc9c', '#f39c12', '#3498db',
-  '#e67e22', '#27ae60', '#8e44ad', '#c0392b',
-];
-
-function colorForIndex(idx: number, total: number): string {
-  if (total <= 4) return Object.values(TASK_COLORS)[idx] ?? GENERIC_PALETTE[idx % GENERIC_PALETTE.length];
-  return GENERIC_PALETTE[idx % GENERIC_PALETTE.length];
-}
+import {
+  chartAxisLine,
+  chartAxisTick,
+  chartColorForIndex,
+  chartLegendStyle,
+  chartTooltipContentStyle,
+} from '@/components/ui/chartTheme';
 
 export function TimeseriesChart({ data }: { data: TimeseriesResponse }) {
   // Transform series data into row-based format for Recharts.
@@ -62,22 +51,22 @@ export function TimeseriesChart({ data }: { data: TimeseriesResponse }) {
       <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
         <XAxis
           dataKey="t"
-          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          tick={chartAxisTick}
           tickLine={false}
-          axisLine={{ stroke: '#e2e8f0' }}
+          axisLine={chartAxisLine}
           label={{ value: 'Time step', position: 'insideBottomRight', offset: -4, fontSize: 10, fill: '#94a3b8' }}
         />
         <YAxis
-          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          tick={chartAxisTick}
           tickLine={false}
-          axisLine={{ stroke: '#e2e8f0' }}
+          axisLine={chartAxisLine}
         />
         <Tooltip
-          contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+          contentStyle={chartTooltipContentStyle}
         />
         {seriesKeys.length > 1 && (
           <Legend
-            wrapperStyle={{ fontSize: 10 }}
+            wrapperStyle={chartLegendStyle}
             formatter={(value: string) => {
               // Show only the group label for the p50 line
               const s = data.series.find((ser) => `${ser.group_key}_p50` === value);
@@ -87,7 +76,7 @@ export function TimeseriesChart({ data }: { data: TimeseriesResponse }) {
         )}
 
         {data.series.map((s, idx) => {
-          const color = colorForIndex(idx, data.series.length);
+          const color = chartColorForIndex(idx, data.series.length);
           return (
             <g key={s.group_key}>
               {/* p05-p95 band (lightest) */}
@@ -130,7 +119,7 @@ export function TimeseriesChart({ data }: { data: TimeseriesResponse }) {
 
         {/* Median lines (on top) */}
         {data.series.map((s, idx) => {
-          const color = colorForIndex(idx, data.series.length);
+          const color = chartColorForIndex(idx, data.series.length);
           return (
             <Line
               key={`${s.group_key}_line`}

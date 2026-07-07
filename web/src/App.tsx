@@ -11,7 +11,9 @@ import { useAnalysisStore } from '@/stores/analysisStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { persistLocalProjectTabs } from '@/stores/projectsStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
-import { updateGraph } from '@/api/client';
+import { fetchGraph, updateGraph } from '@/api/client';
+import { isHttpConflict } from '@/api/request';
+import { summarizeSaveConflict } from '@/utils/saveConflict';
 import {
   useLayoutStore,
   BOTTOM_COLLAPSED_HEIGHT,
@@ -22,6 +24,7 @@ import {
 } from '@/stores/layoutStore';
 
 const AUTO_SAVE_DELAY_MS = 800;
+const PROJECT_CHANNEL_NAME = 'feedbax:studio-project-presence';
 
 /** Convert analysis snapshot into the snake_case wire format the backend expects. */
 function getAnalysisForSave(): {
@@ -52,6 +55,36 @@ export default function App() {
   const isDirty = useGraphStore((s) => s.isDirty);
   const graphId = useGraphStore((s) => s.graphId);
 
+  useEffect(() => {
+    if (!graphId || typeof BroadcastChannel === 'undefined') return;
+    const instanceId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+    const channel = new BroadcastChannel(PROJECT_CHANNEL_NAME);
+    const announceOpen = (type: 'project-open' | 'project-present') => {
+      channel.postMessage({ type, graphId, instanceId });
+    };
+    channel.onmessage = (event) => {
+      const message = event.data as { type?: string; graphId?: string; instanceId?: string };
+      if (
+        (message.type !== 'project-open' && message.type !== 'project-present') ||
+        message.graphId !== graphId ||
+        message.instanceId === instanceId
+      ) {
+        return;
+      }
+      toast.warning('This project is open in another tab. Concurrent saves may conflict.', {
+        id: `multi-tab-${graphId}`,
+      });
+      if (message.type === 'project-open') {
+        announceOpen('project-present');
+      }
+    };
+    announceOpen('project-open');
+    return () => channel.close();
+  }, [graphId]);
+
   // Lifted timer ref so the pagehide handler can cancel a pending debounce.
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Guard against concurrent in-flight saves; re-arm after completion if still dirty.
@@ -76,23 +109,51 @@ export default function App() {
         graphStackPath: graphStore.captureGraphStackPath(),
       });
       useWorkspaceStore.getState().setWorkspace(workspace);
+      let saveConflict = false;
       try {
-        await updateGraph(
+        const response = await updateGraph(
           graphId,
           graph,
           uiState,
           analysis?.pages ?? null,
           analysis?.activePageId,
-          workspace
+          workspace,
+          graphStore.saveRevision,
         );
-        graphStore.markSaved(graphId);
+        graphStore.markSaved(graphId, response.metadata.save_revision);
       } catch (e) {
         persistLocalProjectTabs();
-        toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
+        if (isHttpConflict(e)) {
+          saveConflict = true;
+          const server = await fetchGraph(graphId).catch(() => null);
+          const message = server
+            ? summarizeSaveConflict({
+                expectedRevision: graphStore.saveRevision,
+                serverMetadata: server.metadata,
+                local: {
+                  graph,
+                  uiState,
+                  workspace,
+                  analysisPages: analysis?.pages ?? null,
+                  activeAnalysisPageId: analysis?.activePageId ?? null,
+                },
+                server: {
+                  graph: server.graph,
+                  uiState: server.ui_state,
+                  workspace: server.workspace,
+                  analysisPages: server.analysis_pages,
+                  activeAnalysisPageId: server.active_analysis_page_id,
+                },
+              })
+            : 'Save conflict: project changed elsewhere, but the server copy could not be fetched. Your local edits are still unsaved.';
+          toast.error(message, { id: 'autosave-conflict', duration: 12000 });
+        } else {
+          toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
+        }
       } finally {
         savingRef.current = false;
         // If a new edit arrived while the PUT was in-flight, re-arm the timer.
-        if (useGraphStore.getState().isDirty) {
+        if (!saveConflict && useGraphStore.getState().isDirty) {
           timerRef.current = setTimeout(doSave, AUTO_SAVE_DELAY_MS);
         }
       }
@@ -132,6 +193,7 @@ export default function App() {
       const beaconPayload: Record<string, unknown> = {
         graph: rootGraph,
         ui_state: rootUiState,
+        expected_save_revision: graphStore.saveRevision,
       };
       if (analysis) {
         beaconPayload.analysis_pages = analysis.pages;

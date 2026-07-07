@@ -9,12 +9,14 @@
  * visual style for transforms vs probes/interventions.
  */
 
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Position, type NodeProps } from '@xyflow/react';
 import type { TransformNodeData } from '@/stores/analysisStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { SlidersHorizontal } from 'lucide-react';
 import clsx from 'clsx';
 import { useCallback, useState } from 'react';
+import { PortHandle } from '@/components/ui/NodePrimitives';
+import { semanticTokens } from '@/components/ui/semanticTokens';
 
 const WIDTH = 120;
 const HEIGHT = 32;
@@ -36,21 +38,23 @@ export function TransformNode({ id, data, selected }: NodeProps) {
   return (
     <div className="relative">
       {/* Input handle */}
-      <Handle
+      <PortHandle
         type="target"
         position={Position.Left}
         id="in"
         style={{ left: -5, top: '50%', transform: 'translateY(-50%)' }}
-        className="w-1.5 h-1.5 bg-slate-300 border border-white shadow-soft"
+        tone="dependency"
+        size="xs"
       />
 
       {/* Output handle */}
-      <Handle
+      <PortHandle
         type="source"
         position={Position.Right}
         id="out"
         style={{ right: -5, top: '50%', transform: 'translateY(-50%)' }}
-        className="w-1.5 h-1.5 bg-slate-300 border border-white shadow-soft"
+        tone="dependency"
+        size="xs"
       />
 
       {/* Pill body */}
@@ -60,7 +64,12 @@ export function TransformNode({ id, data, selected }: NodeProps) {
           'flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-medium',
           'bg-white/80 backdrop-blur shadow-soft transition-all duration-150 cursor-pointer',
           selected
-            ? 'border-amber-400 ring-1 ring-amber-300/40 text-amber-700'
+            ? clsx(
+                semanticTokens.selected.border,
+                'ring-1',
+                semanticTokens.selected.ring,
+                semanticTokens.selected.text
+              )
             : 'border-slate-200/80 text-slate-500 hover:border-slate-300 hover:text-slate-600'
         )}
         style={{ width: WIDTH, height: HEIGHT }}

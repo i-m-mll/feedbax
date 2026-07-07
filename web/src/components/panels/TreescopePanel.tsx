@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useGraphStore } from '@/stores/graphStore';
 import type { GraphSpec } from '@/types/graph';
-import clsx from 'clsx';
+import { PanelSectionHeader } from '@/components/ui/PanelPrimitives';
 
 interface CycleAnnotation {
   source: string;
@@ -162,34 +162,18 @@ export function TreescopePanel() {
   return (
     <div className="border-t border-slate-100">
       {/* Header */}
-      <button
-        onClick={toggleExpanded}
-        className={clsx(
-          'flex w-full items-center justify-between px-4 py-3',
-          'text-left text-xs font-semibold uppercase tracking-[0.3em] text-slate-400',
-          'hover:bg-slate-50 transition-colors'
-        )}
-      >
-        <span className="flex items-center gap-2">
-          Treescope
-          {hasNodes && hasCycles && (
+      <PanelSectionHeader
+        title="Treescope"
+        expanded={isExpanded}
+        onToggle={toggleExpanded}
+        badges={
+          hasNodes && hasCycles ? (
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 normal-case tracking-normal">
               {cycleCount} cycle{cycleCount !== 1 ? 's' : ''}
             </span>
-          )}
-        </span>
-        <svg
-          className={clsx(
-            'h-4 w-4 transition-transform',
-            isExpanded ? 'rotate-180' : ''
-          )}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
+          ) : null
+        }
+      />
 
       {/* Content */}
       {isExpanded && (

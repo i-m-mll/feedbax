@@ -5,10 +5,13 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 
+const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
+
 export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
   },
   plugins: [
     react(),
@@ -61,17 +64,37 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  server: {
-    port: 3008,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/ws': {
-        target: 'ws://localhost:8000',
-        ws: true,
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('/node_modules/recharts/')) {
+            return 'recharts';
+          }
+          if (id.includes('/node_modules/@xyflow/')) {
+            return 'xyflow';
+          }
+          if (id.includes('/node_modules/lucide-react/')) {
+            return 'icons';
+          }
+          return undefined;
+        },
       },
     },
+  },
+  server: {
+    port: 3008,
+    proxy: isE2E
+      ? undefined
+      : {
+          '/api': {
+            target: 'http://localhost:8000',
+            changeOrigin: true,
+          },
+          '/ws': {
+            target: 'ws://localhost:8000',
+            ws: true,
+          },
+        },
   },
 });

@@ -54,7 +54,9 @@ import {
   BarChart,
 } from 'lucide-react';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useLayoutStore } from '@/stores/layoutStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
+import { apiErrorMessage } from '@/api/request';
 import type { AnalysisClassDef } from '@/types/analysis';
 
 // ---------------------------------------------------------------------------
@@ -202,15 +204,30 @@ function sortedCategoryEntries(
 
 export function AnalysisLibrary() {
   const [search, setSearch] = useState('');
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['Visualization'])
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const expandedCategoryList = useLayoutStore(
+    (state) => state.analysisLibraryExpandedCategories
+  );
+  const setExpandedCategories = useLayoutStore(
+    (state) => state.setAnalysisLibraryExpandedCategories
+  );
+  const expandedCategories = useMemo(
+    () => new Set(expandedCategoryList),
+    [expandedCategoryList]
   );
   const { analysisClasses, setAnalysisClasses } = useAnalysisStore();
 
   // Load classes on mount if not already loaded
   useEffect(() => {
     if (analysisClasses.length > 0) return;
-    fetchAnalysisClasses().then(setAnalysisClasses).catch(() => {});
+    fetchAnalysisClasses()
+      .then((classes) => {
+        setAnalysisClasses(classes);
+        setLoadError(null);
+      })
+      .catch((error) => {
+        setLoadError(apiErrorMessage(error, 'Could not load analysis definitions'));
+      });
   }, [analysisClasses.length, setAnalysisClasses]);
 
   // When searching, auto-expand all categories that contain matches
@@ -238,24 +255,22 @@ export function AnalysisLibrary() {
   // Auto-expand matching categories while searching
   useEffect(() => {
     if (search) {
-      setExpandedCategories(new Set(Object.keys(categories)));
+      setExpandedCategories(Object.keys(categories));
     }
-  }, [search, categories]);
+  }, [search, categories, setExpandedCategories]);
 
   const toggleCategory = (category: string) => {
-    setExpandedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(category)) {
-        next.delete(category);
-      } else {
-        next.add(category);
-      }
-      return next;
-    });
+    const next = new Set(expandedCategories);
+    if (next.has(category)) {
+      next.delete(category);
+    } else {
+      next.add(category);
+    }
+    setExpandedCategories([...next]);
   };
 
-  const expandAll = () => setExpandedCategories(new Set(Object.keys(categories)));
-  const collapseAll = () => setExpandedCategories(new Set());
+  const expandAll = () => setExpandedCategories(Object.keys(categories));
+  const collapseAll = () => setExpandedCategories([]);
 
   return (
     <div className="flex flex-col h-full overflow-x-hidden">
@@ -287,8 +302,15 @@ export function AnalysisLibrary() {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
+        {loadError && (
+          <div className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">
+            {loadError}
+          </div>
+        )}
         {analysisClasses.length === 0 && (
-          <div className="text-xs text-slate-400">Loading analyses...</div>
+          <div className="text-xs text-slate-400">
+            {loadError ? 'Analysis definitions unavailable.' : 'Loading analyses...'}
+          </div>
         )}
         {sortedCategories.map(([category, classes]) => {
           const style = CATEGORY_STYLES[category] ?? DEFAULT_STYLE;

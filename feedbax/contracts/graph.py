@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from feedbax.contracts.value_schema import ValueSchema
+
 
 GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
 GRAPH_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.graph.v2"
@@ -131,6 +133,33 @@ class UserPortSpec(BaseModel):
     outputs: List[str] = Field(default_factory=list)
 
 
+class CanvasPositionSpec(BaseModel):
+    """Canvas x/y position."""
+
+    x: float
+    y: float
+
+
+class CanvasSizeSpec(BaseModel):
+    """Canvas width/height dimensions."""
+
+    width: float
+    height: float
+
+
+class CanvasViewportSpec(CanvasPositionSpec):
+    """Canvas viewport including zoom."""
+
+    zoom: float
+
+
+class TapPositionSpec(BaseModel):
+    """Tap placement relative to graph nodes."""
+
+    afterNode: str
+    targetNode: Optional[str] = None
+
+
 class TapTransform(BaseModel):
     """Transform applied by a tap."""
 
@@ -144,7 +173,7 @@ class TapSpec(BaseModel):
 
     id: str
     type: Literal["probe", "intervention"]
-    position: Dict[str, Any]
+    position: TapPositionSpec
     paths: Dict[str, str] = Field(default_factory=dict)
     transform: Optional[TapTransform] = None
 
@@ -205,7 +234,7 @@ class RetainedObservableSpec(BaseModel):
     selector: Optional[str] = None
     target: Optional[RetainedObservableTargetSpec] = None
     retention: RetentionPolicySpec = Field(default_factory=RetentionPolicySpec)
-    value_schema: Optional[Dict[str, Any]] = None
+    value_schema: Optional[ValueSchema] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -303,6 +332,11 @@ class GraphMetadata(BaseModel):
     created_at: str
     updated_at: str
     version: str = "1.0.0"
+    save_revision: int = Field(
+        default=0,
+        ge=0,
+        description="Optimistic-concurrency revision for Studio project saves.",
+    )
     author: Optional[str] = None
     tags: Optional[List[str]] = None
 
@@ -360,24 +394,26 @@ class EdgeUIState(BaseModel):
 class NodeUIState(BaseModel):
     """UI state for a node."""
 
-    position: Dict[str, float]
+    position: CanvasPositionSpec
     collapsed: bool = False
     selected: bool = False
     reversed: bool = False
-    size: Optional[Dict[str, float]] = None
+    size: Optional[CanvasSizeSpec] = None
 
 
 class TapUIState(BaseModel):
     """UI state for a tap."""
 
-    position: Dict[str, float]
+    position: CanvasPositionSpec
     selected: Optional[bool] = None
 
 
 class GraphUIState(BaseModel):
     """UI state for the entire graph."""
 
-    viewport: Dict[str, float] = Field(default_factory=lambda: {"x": 0, "y": 0, "zoom": 1})
+    viewport: CanvasViewportSpec = Field(
+        default_factory=lambda: CanvasViewportSpec(x=0, y=0, zoom=1)
+    )
     node_states: Dict[str, NodeUIState] = Field(default_factory=dict)
     edge_states: Optional[Dict[str, EdgeUIState]] = None
     subgraph_states: Optional[Dict[str, "GraphUIState"]] = None
@@ -477,13 +513,44 @@ class StudioCollectionRef(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class StudioSelectorRef(BaseModel):
+    """Typed reference to a schema-backed Studio selector target."""
+
+    namespace: Literal[
+        "graph_port",
+        "graph_edge",
+        "graph_output",
+        "recurrent_carry",
+        "retained_observable",
+        "probe",
+        "state_path",
+        "task_object",
+        "task_data",
+        "task_binding",
+        "mechanics_object",
+        "biomechanics_object",
+        "artifact_field",
+        "analysis_output",
+        "custom",
+    ]
+    compact: str
+    target_id: Optional[str] = None
+    path: Optional[str] = None
+    expected_shape: Optional[List[Any]] = None
+    dtype: Optional[str] = None
+    units: Optional[str] = None
+    frame: Optional[str] = None
+    role: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class StudioValueSpec(BaseModel):
     """Declarative value used by Studio task timelines and parameter fields."""
 
     schema_version: str = "feedbax.spec.studio.value.v1"
     mode: str
     value: Optional[Any] = None
-    reference: Optional[Dict[str, Any]] = None
+    reference: Optional[StudioSelectorRef] = None
     expression: Optional[str] = None
     function_id: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
@@ -494,21 +561,6 @@ class StudioValueSpec(BaseModel):
     shape: Optional[List[Any]] = None
     units: Optional[str] = None
     frame: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class StudioSelectorRef(BaseModel):
-    """Typed reference to a schema-backed Studio selector target."""
-
-    namespace: str
-    compact: str
-    target_id: Optional[str] = None
-    path: Optional[str] = None
-    expected_shape: Optional[List[Any]] = None
-    dtype: Optional[str] = None
-    units: Optional[str] = None
-    frame: Optional[str] = None
-    role: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

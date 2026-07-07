@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 
 interface LayoutStoreState {
   topCollapsed: boolean;
@@ -15,6 +15,10 @@ interface LayoutStoreState {
   bottomSidebarWidth: number;
   bottomSidebarCollapsed: boolean;
   bottomRightSidebarCollapsed: boolean;
+  bottomShelfMode: 'stage' | 'console';
+  componentLibraryExpandedCategories: string[];
+  analysisLibraryExpandedCategories: string[];
+  subgraphPreviewExpanded: Record<string, boolean>;
   toggleTop: (availableHeight: number) => void;
   toggleBottom: (availableHeight: number) => void;
   setBottomHeight: (height: number, availableHeight: number) => void;
@@ -28,6 +32,10 @@ interface LayoutStoreState {
   setBottomSidebarWidth: (width: number) => void;
   toggleBottomSidebar: () => void;
   toggleBottomRightSidebar: () => void;
+  setBottomShelfMode: (mode: 'stage' | 'console') => void;
+  setComponentLibraryExpandedCategories: (categories: string[]) => void;
+  setAnalysisLibraryExpandedCategories: (categories: string[]) => void;
+  setSubgraphPreviewExpanded: (nodeId: string, expanded: boolean) => void;
 }
 
 type PersistedLayoutState = Pick<
@@ -43,6 +51,10 @@ type PersistedLayoutState = Pick<
   | 'bottomSidebarWidth'
   | 'bottomSidebarCollapsed'
   | 'bottomRightSidebarCollapsed'
+  | 'bottomShelfMode'
+  | 'componentLibraryExpandedCategories'
+  | 'analysisLibraryExpandedCategories'
+  | 'subgraphPreviewExpanded'
 >;
 
 const DEFAULT_BOTTOM_HEIGHT = 320;
@@ -80,6 +92,10 @@ const DEFAULT_PERSISTED_LAYOUT: PersistedLayoutState = {
   bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
   bottomSidebarCollapsed: false,
   bottomRightSidebarCollapsed: false,
+  bottomShelfMode: 'stage',
+  componentLibraryExpandedCategories: ['Neural Networks', 'CDE Controllers', 'Sensorimotor'],
+  analysisLibraryExpandedCategories: ['Visualization'],
+  subgraphPreviewExpanded: {},
 };
 
 const clampBottomHeight = (height: number, availableHeight: number) => {
@@ -116,6 +132,14 @@ export const useLayoutStore = create<LayoutStoreState>()(
       bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
       bottomSidebarCollapsed: false,
       bottomRightSidebarCollapsed: false,
+      bottomShelfMode: 'stage',
+      componentLibraryExpandedCategories: [
+        'Neural Networks',
+        'CDE Controllers',
+        'Sensorimotor',
+      ],
+      analysisLibraryExpandedCategories: ['Visualization'],
+      subgraphPreviewExpanded: {},
       toggleTop: (availableHeight) => {
         if (availableHeight <= 0) return;
         set((state) => {
@@ -200,10 +224,31 @@ export const useLayoutStore = create<LayoutStoreState>()(
       toggleBottomRightSidebar: () => {
         set((state) => ({ bottomRightSidebarCollapsed: !state.bottomRightSidebarCollapsed }));
       },
+      setBottomShelfMode: (mode) => {
+        set({ bottomShelfMode: mode });
+      },
+      setComponentLibraryExpandedCategories: (categories) => {
+        set({ componentLibraryExpandedCategories: categories });
+      },
+      setAnalysisLibraryExpandedCategories: (categories) => {
+        set({ analysisLibraryExpandedCategories: categories });
+      },
+      setSubgraphPreviewExpanded: (nodeId, expanded) => {
+        set((state) => {
+          const next = { ...state.subgraphPreviewExpanded };
+          if (expanded) {
+            next[nodeId] = true;
+          } else {
+            delete next[nodeId];
+          }
+          return { subgraphPreviewExpanded: next };
+        });
+      },
     }),
     {
       name: 'feedbax-studio-layout',
-      version: 2,
+      storage: createJSONStorage(() => window.localStorage),
+      version: 3,
       migrate: (persistedState, version): PersistedLayoutState => {
         const persisted =
           persistedState && typeof persistedState === 'object'
@@ -216,6 +261,23 @@ export const useLayoutStore = create<LayoutStoreState>()(
             version < 2
               ? false
               : persisted.rightSidebarVisible ?? DEFAULT_PERSISTED_LAYOUT.rightSidebarVisible,
+          bottomShelfMode:
+            persisted.bottomShelfMode === 'console' ? 'console' : DEFAULT_PERSISTED_LAYOUT.bottomShelfMode,
+          componentLibraryExpandedCategories: Array.isArray(
+            persisted.componentLibraryExpandedCategories
+          )
+            ? persisted.componentLibraryExpandedCategories
+            : DEFAULT_PERSISTED_LAYOUT.componentLibraryExpandedCategories,
+          analysisLibraryExpandedCategories: Array.isArray(
+            persisted.analysisLibraryExpandedCategories
+          )
+            ? persisted.analysisLibraryExpandedCategories
+            : DEFAULT_PERSISTED_LAYOUT.analysisLibraryExpandedCategories,
+          subgraphPreviewExpanded:
+            persisted.subgraphPreviewExpanded &&
+            typeof persisted.subgraphPreviewExpanded === 'object'
+              ? persisted.subgraphPreviewExpanded
+              : DEFAULT_PERSISTED_LAYOUT.subgraphPreviewExpanded,
         };
       },
       partialize: (state) => ({
@@ -230,6 +292,10 @@ export const useLayoutStore = create<LayoutStoreState>()(
         bottomSidebarWidth: state.bottomSidebarWidth,
         bottomSidebarCollapsed: state.bottomSidebarCollapsed,
         bottomRightSidebarCollapsed: state.bottomRightSidebarCollapsed,
+        bottomShelfMode: state.bottomShelfMode,
+        componentLibraryExpandedCategories: state.componentLibraryExpandedCategories,
+        analysisLibraryExpandedCategories: state.analysisLibraryExpandedCategories,
+        subgraphPreviewExpanded: state.subgraphPreviewExpanded,
       }),
     },
   )

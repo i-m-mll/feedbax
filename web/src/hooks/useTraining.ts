@@ -1,17 +1,59 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import { startTraining, stopTraining } from '@/api/client';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { actionErrorMessage, withStoreActionFeedback } from '@/stores/storeActions';
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { parseContract } from '@/generated/studioContracts';
 import type { TrainingWebSocketEvent } from '@/generated/studioContracts';
-import type { TaskSpec, TrainingConfig } from '@/types/training';
+import type { TaskSpec, TrainingConfig, TrainingProgress } from '@/types/training';
 import type { TrainingStatus } from '@/stores/trainingStore';
 
 export const TRAINING_WS_MAX_RECONNECT_ATTEMPTS = 4;
 export const TRAINING_WS_BASE_RECONNECT_DELAY_MS = 500;
 export const TRAINING_WS_MAX_RECONNECT_DELAY_MS = 4_000;
+export const TRAINING_PROGRESS_BATCH_INTERVAL_MS = 50;
+
+export function createTrainingProgressBatcher(
+  applyProgress: (progress: TrainingProgress) => void,
+  applyRunningStatus: () => void,
+  delayMs = TRAINING_PROGRESS_BATCH_INTERVAL_MS
+) {
+  let pendingProgress: TrainingProgress | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushPending = () => {
+    timer = null;
+    const nextProgress = pendingProgress;
+    pendingProgress = null;
+    if (!nextProgress) return;
+    applyProgress(nextProgress);
+    applyRunningStatus();
+  };
+
+  return {
+    enqueue(progress: TrainingProgress) {
+      pendingProgress = progress;
+      if (timer !== null) return;
+      timer = globalThis.setTimeout(flushPending, delayMs);
+    },
+    flush() {
+      if (timer !== null) {
+        globalThis.clearTimeout(timer);
+      }
+      flushPending();
+    },
+    cancel() {
+      if (timer !== null) {
+        globalThis.clearTimeout(timer);
+      }
+      timer = null;
+      pendingProgress = null;
+    },
+  };
+}
 
 export function trainingWebSocketReconnectDelayMs(attempt: number): number {
   return Math.min(
@@ -79,6 +121,14 @@ export function useTraining() {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const intentionalCloseRef = useRef(false);
+  const lastEventSeqRef = useRef(-1);
+  const progressBatcherRef = useRef<ReturnType<typeof createTrainingProgressBatcher> | null>(null);
+  if (progressBatcherRef.current === null) {
+    progressBatcherRef.current = createTrainingProgressBatcher(
+      setProgress,
+      () => setStatus('running'),
+    );
+  }
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -105,7 +155,6 @@ export function useTraining() {
 
       ws.onmessage = (event) => {
         reconnectAttemptRef.current = 0;
-        setTrainingStreamError(null);
         let payload: TrainingWebSocketEvent;
         try {
           payload = parseContract('TrainingWebSocketEvent', JSON.parse(event.data) as unknown);
@@ -124,8 +173,13 @@ export function useTraining() {
           ws.close();
           return;
         }
+        if (payload.job_id !== nextJobId || payload.seq <= lastEventSeqRef.current) {
+          return;
+        }
+        lastEventSeqRef.current = payload.seq;
+        setTrainingStreamError(null);
         if (payload.type === 'training_progress') {
-          setProgress({
+          progressBatcherRef.current?.enqueue({
             batch: payload.batch,
             total_batches: payload.total_batches,
             loss: payload.loss,
@@ -135,7 +189,6 @@ export function useTraining() {
             metrics: payload.metrics ?? {},
             status: payload.status ?? 'running',
           });
-          setStatus('running');
         }
         if (payload.type === 'training_log') {
           appendLog({
@@ -162,12 +215,23 @@ export function useTraining() {
             });
           }
         }
+        if (payload.type === 'training_resync') {
+          setTrainingStreamError(payload.reason === 'gap' ? payload.message : null);
+          appendLog({
+            batch: useTrainingStore.getState().progress?.batch ?? 0,
+            level: payload.reason === 'gap' ? 'warning' : 'info',
+            message: payload.message,
+            timestamp: Date.now(),
+          });
+        }
         if (payload.type === 'training_complete') {
+          progressBatcherRef.current?.flush();
           setStatus('completed');
           intentionalCloseRef.current = true;
           ws.close();
         }
         if (payload.type === 'training_error') {
+          progressBatcherRef.current?.flush();
           setTrainingStreamError(payload.error);
           appendLog({
             batch: payload.batch ?? 0,
@@ -240,6 +304,7 @@ export function useTraining() {
     () => () => {
       intentionalCloseRef.current = true;
       clearReconnectTimer();
+      progressBatcherRef.current?.cancel();
       wsRef.current?.close();
       wsRef.current = null;
     },
@@ -249,11 +314,14 @@ export function useTraining() {
   const start = useCallback(async () => {
     if (!graphId) {
       setStatus('error');
+      toast.error('Save the project before starting training.', { id: 'training-start-error' });
       return;
     }
     try {
       intentionalCloseRef.current = false;
       reconnectAttemptRef.current = 0;
+      lastEventSeqRef.current = -1;
+      progressBatcherRef.current?.cancel();
       clearReconnectTimer();
       setTrainingStreamError(null);
       clearHistory();
@@ -267,20 +335,34 @@ export function useTraining() {
         trainingSpec.batch_size,
         learningRate
       );
-      const response = await startTraining(
-        graphId,
-        trainingSpec,
-        taskSpec,
-        graph,
-        trainingConfig,
-        ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph, taskSpec)
+      const response = await withStoreActionFeedback(
+        () => startTraining(
+          graphId,
+          trainingSpec,
+          taskSpec,
+          graph,
+          trainingConfig,
+          ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph, taskSpec)
+        ),
+        {
+          errorToast: (error) => actionErrorMessage(error, 'Failed to start training.'),
+          toastId: 'training-start-error',
+          onError: (error) => {
+            setTrainingStreamError(actionErrorMessage(error, 'Failed to start training.'));
+            setStatus('error');
+          },
+        },
       );
+      if (!response) return;
       setJobId(response.job_id);
       setStatus('running');
+      toast.success('Training started.', { id: 'training-start-success' });
       connect(response.job_id);
-    } catch {
-      setTrainingStreamError('Failed to start training.');
+    } catch (error) {
+      const message = actionErrorMessage(error, 'Failed to start training.');
+      setTrainingStreamError(message);
       setStatus('error');
+      toast.error(message, { id: 'training-start-error' });
     }
   }, [
     graphId,
@@ -300,12 +382,23 @@ export function useTraining() {
     if (!jobId) return;
     intentionalCloseRef.current = true;
     clearReconnectTimer();
-    await stopTraining(jobId);
+    progressBatcherRef.current?.flush();
+    const stopped = await withStoreActionFeedback(
+      () => stopTraining(jobId),
+      {
+        errorToast: (error) =>
+          `${actionErrorMessage(error, 'Failed to stop training.')} Marked idle locally.`,
+        toastId: 'training-stop-error',
+      },
+    );
     wsRef.current?.close();
     wsJobIdRef.current = null;
     setStatus('idle');
     setJobId(null);
     setTrainingStreamError(null);
+    if (stopped) {
+      toast.success('Training stopped.', { id: 'training-stop-success' });
+    }
   }, [jobId, setJobId, setStatus, clearReconnectTimer, setTrainingStreamError]);
 
   return {

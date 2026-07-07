@@ -1,5 +1,8 @@
 import { useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
+import { useShallow } from 'zustand/react/shallow';
 import { useGraphStore } from '@/stores/graphStore';
+import { actionErrorMessage } from '@/stores/storeActions';
 import {
   getTopPaneState,
   getTrainingScenario,
@@ -12,6 +15,8 @@ import {
   taskBindingInGraphPath,
 } from '@/features/scenario/taskBindings';
 
+export const FIT_VIEW_SHORTCUT_EVENT = 'feedbax:shortcut-fit-view';
+
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName.toLowerCase();
@@ -19,21 +24,59 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 export function useAppShortcuts() {
-  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved, markDirty, nodes, graphStack } =
-    useGraphStore();
-  const workspace = useWorkspaceStore((state) => state.workspace);
-  const updateTaskBindingSpec = useWorkspaceStore(
-    (state) => state.updateActiveScenarioTaskBindingSpec
+  const {
+    undo,
+    redo,
+    deleteSelected,
+    duplicateSelected,
+    clearSelection,
+    selectAll,
+    graph,
+    uiState,
+    graphId,
+    markSaved,
+    markDirty,
+    nodes,
+    graphStack,
+  } = useGraphStore(
+    useShallow((state) => ({
+      undo: state.undo,
+      redo: state.redo,
+      deleteSelected: state.deleteSelected,
+      duplicateSelected: state.duplicateSelected,
+      clearSelection: state.clearSelection,
+      selectAll: state.selectAll,
+      graph: state.graph,
+      uiState: state.uiState,
+      graphId: state.graphId,
+      markSaved: state.markSaved,
+      markDirty: state.markDirty,
+      nodes: state.nodes,
+      graphStack: state.graphStack,
+    }))
   );
-  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const { workspace, updateTaskBindingSpec, selectTopPaneEntity } = useWorkspaceStore(
+    useShallow((state) => ({
+      workspace: state.workspace,
+      updateTaskBindingSpec: state.updateActiveScenarioTaskBindingSpec,
+      selectTopPaneEntity: state.selectTopPaneEntity,
+    }))
+  );
   const saveMutation = useSaveGraph();
 
   const saveGraph = useCallback(async () => {
-    const response = await saveMutation.mutateAsync({ graphId, graph, uiState });
-    if ('id' in response) {
-      markSaved(response.id);
-    } else if (graphId) {
-      markSaved(graphId);
+    try {
+      const response = await saveMutation.mutateAsync({ graphId, graph, uiState });
+      if ('id' in response) {
+        markSaved(response.id, response.metadata.save_revision);
+      } else if (graphId) {
+        markSaved(graphId, response.metadata.save_revision);
+      }
+      toast.success('Project saved.', { id: 'project-save-success' });
+    } catch (error) {
+      toast.error(actionErrorMessage(error, 'Failed to save project.'), {
+        id: 'project-save-error',
+      });
     }
   }, [graphId, graph, uiState, markSaved, saveMutation]);
 
@@ -95,6 +138,14 @@ export function useAppShortcuts() {
     }
 
     deleteSelected();
+    if (selectedNodeIds.length > 0) {
+      toast.success(
+        selectedNodeIds.length === 1
+          ? 'Node deleted - Cmd+Z to undo.'
+          : 'Nodes deleted - Cmd+Z to undo.',
+        { id: 'node-delete-success' },
+      );
+    }
   }, [
     deleteSelected,
     graph,
@@ -105,6 +156,16 @@ export function useAppShortcuts() {
     updateTaskBindingSpec,
     workspace,
   ]);
+
+  const duplicateSelection = useCallback(() => {
+    try {
+      duplicateSelected();
+    } catch (error) {
+      toast.error(actionErrorMessage(error, 'Failed to duplicate selection.'), {
+        id: 'node-duplicate-error',
+      });
+    }
+  }, [duplicateSelected]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -133,6 +194,32 @@ export function useAppShortcuts() {
         return;
       }
 
+      if (isMod && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        duplicateSelection();
+        return;
+      }
+
+      if (isMod && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        selectTopPaneEntity(null);
+        selectAll();
+        return;
+      }
+
+      if (isMod && event.key === '0') {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent(FIT_VIEW_SHORTCUT_EVENT));
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearSelection();
+        selectTopPaneEntity(null);
+        return;
+      }
+
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
         deleteSelection();
@@ -141,5 +228,14 @@ export function useAppShortcuts() {
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [deleteSelection, redo, undo, saveGraph]);
+  }, [
+    clearSelection,
+    deleteSelection,
+    duplicateSelection,
+    redo,
+    saveGraph,
+    selectAll,
+    selectTopPaneEntity,
+    undo,
+  ]);
 }

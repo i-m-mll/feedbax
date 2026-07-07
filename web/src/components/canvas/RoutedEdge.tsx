@@ -4,9 +4,10 @@ import {
   type EdgeProps,
   useReactFlow,
 } from '@xyflow/react';
-import { useCallback } from 'react';
+import { memo, useCallback } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import type { GraphEdgeData } from '@/types/graph';
+import { routedEdgeStyle } from '@/components/ui/edgeStyle';
 
 function buildPolylinePath(points: { x: number; y: number }[]) {
   if (points.length === 0) return '';
@@ -59,7 +60,7 @@ function polylineLabelPoint(points: { x: number; y: number }[]) {
   };
 }
 
-export function RoutedEdge({
+function RoutedEdgeComponent({
   id,
   sourceX,
   sourceY,
@@ -140,13 +141,7 @@ export function RoutedEdge({
       <path
         d={path}
         className="react-flow__edge-path"
-        style={{
-          stroke:
-            schemaStatus === 'warning' ? '#f59e0b' : schemaStatus === 'blocked' ? '#ef4444' : selected ? '#2563eb' : '#b8bcc6',
-          strokeWidth: selected || schemaStatus === 'warning' || schemaStatus === 'blocked' ? 2.5 : 1.5,
-          strokeDasharray: isRecurrent ? '7 5' : undefined,
-          fill: 'none',
-        }}
+        style={routedEdgeStyle({ selected, schemaStatus, recurrent: isRecurrent })}
         onDoubleClick={handleDoubleClick}
         aria-label={typeof schemaMessage === 'string' ? schemaMessage : undefined}
       />
@@ -183,14 +178,28 @@ export function RoutedEdge({
                   removeEdgePoint(id, index);
                   return;
                 }
-                const handleMove = (moveEvent: PointerEvent) => {
+                let frame = 0;
+                let pendingEvent: PointerEvent | null = null;
+                const flushMove = () => {
+                  frame = 0;
+                  const moveEvent = pendingEvent;
+                  if (!moveEvent) return;
+                  pendingEvent = null;
                   const next = screenToFlowPosition({
                     x: moveEvent.clientX,
                     y: moveEvent.clientY,
                   });
                   updateEdgePoint(id, index, next);
                 };
+                const handleMove = (moveEvent: PointerEvent) => {
+                  pendingEvent = moveEvent;
+                  if (!frame) frame = requestAnimationFrame(flushMove);
+                };
                 const handleUp = () => {
+                  if (frame) {
+                    cancelAnimationFrame(frame);
+                    flushMove();
+                  }
                   window.removeEventListener('pointermove', handleMove);
                   window.removeEventListener('pointerup', handleUp);
                 };
@@ -204,3 +213,19 @@ export function RoutedEdge({
     </>
   );
 }
+
+function areRoutedEdgePropsEqual(previous: EdgeProps, next: EdgeProps) {
+  return (
+    previous.id === next.id &&
+    previous.sourceX === next.sourceX &&
+    previous.sourceY === next.sourceY &&
+    previous.targetX === next.targetX &&
+    previous.targetY === next.targetY &&
+    previous.sourcePosition === next.sourcePosition &&
+    previous.targetPosition === next.targetPosition &&
+    previous.selected === next.selected &&
+    previous.data === next.data
+  );
+}
+
+export const RoutedEdge = memo(RoutedEdgeComponent, areRoutedEdgePropsEqual);

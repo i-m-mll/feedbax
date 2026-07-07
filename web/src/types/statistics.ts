@@ -1,89 +1,17 @@
-export interface MetricSummary {
-  mean: number;
-  std: number;
-  median: number;
-  q25: number;
-  q75: number;
-  min: number;
-  max: number;
-  count: number;
-}
-
-export interface GroupStatistics {
-  group_key: string;
-  group_label: string;
-  metrics: Record<string, MetricSummary>;
-}
-
-export interface StatisticsResponse {
-  dataset: string;
-  group_by: string;
-  groups: GroupStatistics[];
-}
-
-export interface TimeseriesPercentiles {
-  group_key: string;
-  group_label: string;
-  timesteps: number[];
-  p50: number[];
-  p25: number[];
-  p75: number[];
-  p05: number[];
-  p95: number[];
-}
-
-export interface TimeseriesResponse {
-  dataset: string;
-  metric: string;
-  group_by: string;
-  series: TimeseriesPercentiles[];
-}
-
-export interface HistogramBin {
-  lo: number;
-  hi: number;
-  count: number;
-}
-
-export interface HistogramGroup {
-  group_key: string;
-  group_label: string;
-  bins: HistogramBin[];
-}
-
-export interface HistogramResponse {
-  dataset: string;
-  metric: string;
-  group_by: string;
-  groups: HistogramGroup[];
-}
-
-export interface ScatterPoint {
-  x: number;
-  y: number;
-  body_idx: number;
-  task_type: number;
-}
-
-export interface ScatterResponse {
-  dataset: string;
-  x_metric: string;
-  y_metric: string;
-  points: ScatterPoint[];
-}
-
-export interface DiagnosticCheck {
-  name: string;
-  status: 'pass' | 'warn' | 'fail';
-  reason: string;
-  evidence: Record<string, unknown>;
-  hint?: string;
-}
-
-export interface DiagnosticsResponse {
-  dataset: string;
-  checks: DiagnosticCheck[];
-}
+export type {
+  DiagnosticCheck,
+  DiagnosticsResponse,
+  GroupStatistics,
+  HistogramBin,
+  HistogramGroup,
+  HistogramResponse,
+  MetricSummary,
+  ScatterPoint,
+  ScatterResponse,
+  StatisticsResponse,
+  TimeseriesPercentiles,
+  TimeseriesResponse,
+} from '@/generated/studioContracts';
 
 export const METRIC_LABELS: Record<string, string> = {
   final_distance: 'Final Distance',
