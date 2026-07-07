@@ -3,15 +3,18 @@ from __future__ import annotations
 from typing import get_args, get_origin
 
 import pytest
+from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunPayload,
     AnalysisBundleDryRunResponse,
     AnalysisPackagesResponse,
     AnalysisPackagesPayload,
+    ComponentListResponse,
     GraphListResponse,
     GraphListPayload,
     STUDIO_API_TRANSPORT_SCHEMA_ID,
@@ -25,6 +28,7 @@ from feedbax.contracts.studio_api import (
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.web.app import create_app
+from feedbax.web.api import components as components_api
 from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES, OUTPUT, generate
 
 
@@ -190,6 +194,50 @@ def test_training_error_and_resync_events_have_stable_coordinates() -> None:
     assert error.job_id == resync.job_id
     assert resync.reason == "gap"
     assert resync.missed_events == 3
+
+
+def test_component_api_serves_representation_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_component_type(
+        "ApiRepresentedGain",
+        lambda params: None,
+        category="Test",
+        description="API represented component fixture.",
+        param_schema=[{"name": "gain", "type": "float", "default": 1.0}],
+        input_ports=["input"],
+        output_ports=["output"],
+        representation={
+            "anchors": [
+                {
+                    "id": "endpoint",
+                    "semantic_role": "endpoint",
+                    "interaction_roles": ["selectable"],
+                    "binding": {"kind": "param_path", "path": "gain"},
+                }
+            ],
+            "elements": [
+                {
+                    "id": "glyph",
+                    "archetype": "marker",
+                    "anchors": ["endpoint"],
+                    "frame_provider": {"kind": "from_input_port", "input_port": "input"},
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(components_api, "registry", registry)
+
+    client = TestClient(create_app())
+    response = client.get("/api/components")
+
+    assert response.status_code == 200
+    contract = ComponentListResponse.model_validate(response.json())
+    represented = next(
+        item for item in contract.data.components if item.name == "ApiRepresentedGain"
+    )
+    assert represented.representation is not None
+    assert represented.representation.schema_version == "feedbax.spec.studio.representation.v1"
+    assert represented.representation.elements[0].archetype == "marker"
 
 
 def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() -> None:

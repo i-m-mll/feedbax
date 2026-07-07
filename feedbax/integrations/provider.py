@@ -56,6 +56,7 @@ from feedbax.contracts.migrations import (
     migrate_studio_task_binding_spec,
     migrate_studio_workspace_spec,
 )
+from feedbax.contracts.workspace_replay import WorkspaceReplayProduct
 from feedbax.objectives.spec import (
     objective_schema_models,
     validate_objective_spec as _validate_objective_spec,
@@ -277,6 +278,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "StudioTrainingLocalRunResult": StudioTrainingLocalRunResult,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
         "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
+        "WorkspaceReplayProduct": WorkspaceReplayProduct,
         "ValueSchema": ValueSchema,
         "PortSchema": PortSchema,
         "TaskDataSchema": TaskDataSchema,
@@ -815,6 +817,7 @@ def provider_manifest() -> ProviderManifest:
             "array_store",
             "retention_plan",
             "retained_observables",
+            "workspace_replay",
             "trajectory_dataset",
             "evaluation_result",
             "checkpoint_selection",

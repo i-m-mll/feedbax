@@ -49,6 +49,15 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
+from feedbax.contracts.representation import (
+    REPRESENTATION_SCHEMA_ID,
+    REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V0,
+)
+from feedbax.contracts.workspace_replay import (
+    WORKSPACE_REPLAY_SCHEMA_ID,
+    WORKSPACE_REPLAY_SCHEMA_VERSION,
+)
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
@@ -282,6 +291,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["ValueSchema"].identity == "feedbax.spec.studio.schema.value"
     assert families["StudioApiTransport"].identity == STUDIO_API_TRANSPORT_SCHEMA_ID
     assert families["StudioApiTransport"].current_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+    assert families["RepresentationSpec"].identity == REPRESENTATION_SCHEMA_ID
+    assert families["RepresentationSpec"].current_version == REPRESENTATION_SCHEMA_VERSION
     assert families["VariableDescriptor"].identity == "feedbax.spec.descriptor.variable"
     assert families["ComponentDescriptor"].identity == "feedbax.spec.descriptor.component"
     assert families["DescriptorBasisIdentity"].identity == "feedbax.spec.descriptor.basis"
@@ -381,6 +392,7 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         ),
         "StudioSchemaRegistry": "feedbax.manifest.studio.schema_registry",
         "StudioTrainingLocalRunResult": "feedbax.manifest.studio.training_local_run_result",
+        "WorkspaceReplayProduct": WORKSPACE_REPLAY_SCHEMA_ID,
     }
 
     for kind, identity in expected_manifest_identities.items():
@@ -469,6 +481,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.studio.execution",
             ("feedbax.studio.execution", "feedbax.integrations.provider"),
         ),
+        "WorkspaceReplayProduct": (
+            "feedbax.contracts.workspace_replay",
+            ("eval/validation replay materialization", "provider_manifest.schemas"),
+        ),
         "StudioApiTransport": (
             "feedbax.contracts.studio_api",
             ("feedbax.contracts.studio_api", "scripts.generate_studio_contracts"),
@@ -549,6 +565,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ProviderManifest",
         "RegistrySnapshot",
         "StudioPipelineMaterializationResult",
+        "WorkspaceReplayProduct",
     }
 
     families = {family.kind: family for family in default_spec_registry.families()}
@@ -557,6 +574,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
     assert {families[kind].namespace for kind in manifest_kinds} == {
         SchemaNamespaceKind.MANIFEST
     }
+    assert families["WorkspaceReplayProduct"].current_version == WORKSPACE_REPLAY_SCHEMA_VERSION
     assert not any(
         family.namespace == SchemaNamespaceKind.COMPONENT_PARAMS
         for family in default_spec_registry.families()
@@ -671,6 +689,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert task_binding_policy.stance == "migrate"
     assert task_binding_policy.supported_old_versions == (STUDIO_TASK_BINDING_LEGACY_V1,)
     assert task_binding_policy.rejected_old_versions == ("feedbax.studio.task_bindings.v0",)
+    representation_policy = default_spec_registry.resolve("RepresentationSpec").policy
+    assert representation_policy is not None
+    assert representation_policy.stance == "reject"
+    assert representation_policy.rejected_old_versions == (REPRESENTATION_SCHEMA_VERSION_V0,)
     assert objective_policy is not None
     assert objective_policy.stance == "reject"
     assert objective_policy.rejected_old_versions == ("feedbax.objective.v0",)

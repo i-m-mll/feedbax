@@ -265,6 +265,41 @@ export async function materializeStudioPipeline(payload: {
   });
 }
 
+export interface SampledTaskTrialCue {
+  label: string;
+  step: number;
+  kind: 'epoch' | 'event' | string;
+}
+
+export interface SampledTaskTrial {
+  id: string;
+  index: number;
+  start: [number, number];
+  goal: [number, number];
+  n_steps: number;
+  timeline: SampledTaskTrialCue[];
+  metadata: Record<string, unknown>;
+}
+
+export interface SampledTaskTrialsResponse {
+  schema_version: 'feedbax.execution.sampled_task_trials.v1';
+  task_type: string;
+  seed: number;
+  count: number;
+  trials: SampledTaskTrial[];
+}
+
+export async function sampleTaskTrials(payload: {
+  task_spec: TaskSpec;
+  seed: number;
+  count: number;
+}) {
+  return request<SampledTaskTrialsResponse>('/api/execution/task-trials/sample', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function fetchStudioSchemaRegistry(payload: {
   workspace: StudioWorkspaceSpec;
   scenario_id?: string | null;

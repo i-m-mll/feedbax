@@ -234,7 +234,7 @@ export function AnalysisBundlePanel() {
     cards.forEach((card) => {
       setBusyIds((current) => new Set(current).add(card.id));
       dryRunAnalysisBundle({
-        bundle: card.bundle,
+        bundle: card.bundle as unknown as Record<string, unknown>,
       })
         .then((dryRun) => {
           if (cancelled) return;

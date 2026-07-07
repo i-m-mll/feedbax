@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addObjectiveTerm,
+  createObjectiveTermFromAnchors,
   createObjectiveTerm,
   lossSpecFromObjectiveSpec,
   objectiveGraphPortTarget,
@@ -12,6 +13,7 @@ import {
   updateObjectiveTerm,
 } from '@/features/scenario/objectives';
 import { graphNodeEntityId, graphPortEntityId, mechanicsEntityId } from '@/features/scenario/entities';
+import type { ResolvedSceneAnchor } from '@/features/scenario/projections';
 import type { StudioObjectiveSpec, StudioScenarioEntityRegistry } from '@/types/workspace';
 
 const baseSpec: StudioObjectiveSpec = {
@@ -289,6 +291,99 @@ describe('scenario objective operations', () => {
     expect(sourceSelectorForEntity(registry.entities[graphPortEntityId('mechanics', 'output', 'effector')], registry)).toMatchObject({
       compact: 'port:mechanics.effector',
       namespace: 'graph_port',
+    });
+  });
+
+  it('authors objective terms from workspace anchors with canonical selectors and timing metadata', () => {
+    const sourceAnchor: ResolvedSceneAnchor = {
+      id: 'mechanics_object:scenario:train:mechanics::anchor:effector',
+      entity_id: 'mechanics_object:scenario:train:mechanics',
+      local_id: 'effector',
+      label: 'Effector',
+      semantic_role: 'endpoint',
+      position: [0.7, 0],
+      selectable: true,
+      hoverable: true,
+      interaction_roles: ['selectable', 'hoverable'],
+      objective_roles: ['objective-source'],
+      frame: 'world.xy',
+      selector: {
+        namespace: 'mechanics_object',
+        compact: 'output:effector',
+        target_id: 'effector',
+        path: 'pos',
+        metadata: {
+          anchor_subpath: 'position',
+          graph_port_node_id: 'mechanics',
+          graph_port_name: 'effector',
+          graph_port_direction: 'output',
+        },
+      },
+      metadata: {},
+    };
+    const illustrativeTarget: ResolvedSceneAnchor = {
+      id: 'task_object:scenario:train:task::anchor:sample-goal',
+      entity_id: 'task_object:scenario:train:task',
+      local_id: 'sample-goal',
+      label: 'Sample goal',
+      semantic_role: 'target',
+      position: [0.5, 0.1],
+      selectable: true,
+      hoverable: true,
+      interaction_roles: ['selectable', 'hoverable'],
+      objective_roles: ['illustrative', 'canonical-for:goal'],
+      frame: 'world.xy',
+      selector: null,
+      metadata: { illustrative: true },
+    };
+    const canonicalTarget: ResolvedSceneAnchor = {
+      id: 'task_object:scenario:train:task::anchor:goal',
+      entity_id: 'task_object:scenario:train:task',
+      local_id: 'goal',
+      label: 'Goal',
+      semantic_role: 'target',
+      position: [0.8, 0],
+      selectable: true,
+      hoverable: true,
+      interaction_roles: ['selectable', 'hoverable', 'editable'],
+      objective_roles: ['objective-target'],
+      frame: 'world.xy',
+      selector: {
+        namespace: 'task_data',
+        compact: 'task_data:targets.effector.pos',
+        target_id: 'scenario:train',
+        path: 'targets.effector.pos',
+        role: 'observed',
+        metadata: { time_mask: { epochs: ['move'] }, discount: 'power', discount_exp: 6 },
+      },
+      metadata: {},
+    };
+
+    const result = createObjectiveTermFromAnchors({
+      spec: baseSpec,
+      sourceAnchor,
+      targetAnchor: illustrativeTarget,
+      anchors: [sourceAnchor, illustrativeTarget, canonicalTarget],
+    });
+
+    expect(result?.target.canonicalized).toBe(true);
+    expect(result?.target.message).toContain('using canonical Goal');
+    expect(result?.term.source_selector).toMatchObject({
+      namespace: 'state_path',
+      compact: 'path:states.mechanics.effector.pos',
+      metadata: {
+        graph_port_node_id: 'mechanics',
+        graph_port_name: 'effector',
+      },
+    });
+    expect(result?.term.target_selector).toMatchObject({
+      namespace: 'task_data',
+      compact: 'task_data:targets.effector.pos',
+    });
+    expect(result?.term.metadata.target_timing).toEqual({
+      time_mask: { epochs: ['move'] },
+      discount: 'power',
+      discount_exp: 6,
     });
   });
 });

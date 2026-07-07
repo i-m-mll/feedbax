@@ -174,10 +174,15 @@ function authoredBundles(
   spec: Record<string, unknown> | null,
 ): Array<{ bundle: AnalysisBundleSpecWire; source: AnalysisBundleCardSource }> {
   const bundles = arrayValue(spec?.bundles)
-    .map((value, index) => {
-      const bundle = coerceBundle(value);
-      return bundle ? { bundle, source: { kind: 'array' as const, index } } : null;
-    })
+    .map(
+      (
+        value,
+        index
+      ): { bundle: AnalysisBundleSpecWire; source: AnalysisBundleCardSource } | null => {
+        const bundle = coerceBundle(value);
+        return bundle ? { bundle, source: { kind: 'array' as const, index } } : null;
+      }
+    )
     .filter(
       (entry): entry is { bundle: AnalysisBundleSpecWire; source: AnalysisBundleCardSource } =>
         Boolean(entry)
@@ -252,7 +257,7 @@ function manifestPredicateValue(value: unknown): ManifestPredicate {
     params_equals: recordValue(record?.params_equals) ?? {},
     path_equals: recordValue(record?.path_equals) ?? {},
     expression: recordValue(record?.expression),
-    top_k_by_metric_per_group: recordValue(record?.top_k_by_metric_per_group) as
+    top_k_by_metric_per_group: recordValue(record?.top_k_by_metric_per_group) as unknown as
       | ManifestPredicate['top_k_by_metric_per_group']
       | null,
   };

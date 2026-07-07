@@ -7,12 +7,60 @@ support biarticular muscles spanning multiple joints.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Bool, Float, Int
 
 from feedbax.mechanics.body import BodyPreset
+
+
+_DEFAULT_6MUSCLE_2LINK_ROUTING: tuple[tuple[bool, ...], ...] = (
+    (True, False),   # shoulder flexor
+    (True, False),   # shoulder extensor
+    (False, True),   # elbow flexor
+    (False, True),   # elbow extensor
+    (True, True),    # biarticular flexor
+    (True, True),    # biarticular extensor
+)
+_DEFAULT_6MUSCLE_2LINK_SIGN: tuple[tuple[int, ...], ...] = (
+    (+1, 0),    # shoulder flexor
+    (-1, 0),    # shoulder extensor
+    (0, +1),    # elbow flexor
+    (0, -1),    # elbow extensor
+    (+1, +1),   # biarticular flexor
+    (-1, -1),   # biarticular extensor
+)
+_DEFAULT_6MUSCLE_2LINK_MOMENT_ARM_MAGNITUDES: tuple[tuple[float, ...], ...] = (
+    (0.04, 0.0),      # shoulder flexor
+    (0.04, 0.0),      # shoulder extensor
+    (0.0, 0.025),     # elbow flexor
+    (0.0, 0.025),     # elbow extensor
+    (0.035, 0.022),   # biarticular flexor
+    (0.035, 0.022),   # biarticular extensor
+)
+_DEFAULT_6MUSCLE_2LINK_REFERENCE_LENGTHS: tuple[float, ...] = (
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.3,
+    0.3,
+)
+
+
+class MuscleAttachmentFrame(NamedTuple):
+    """A local muscle attachment frame.
+
+    Attributes:
+        body: Body name that owns the attachment frame.
+        pos: Attachment position in that body's local frame, shape ``(3,)`` [m].
+    """
+
+    body: str
+    pos: Float[Array, "3"]
 
 
 # ---------------------------------------------------------------------------
@@ -80,23 +128,83 @@ def default_6muscle_2link_topology() -> MuscleTopology:
     Returns:
         MuscleTopology with ``(6, 2)`` routing and sign arrays.
     """
-    routing = (
-        (True, False),   # shoulder flexor
-        (True, False),   # shoulder extensor
-        (False, True),   # elbow flexor
-        (False, True),   # elbow extensor
-        (True, True),    # biarticular flexor
-        (True, True),    # biarticular extensor
+    return MuscleTopology(
+        routing=_DEFAULT_6MUSCLE_2LINK_ROUTING,
+        sign=_DEFAULT_6MUSCLE_2LINK_SIGN,
     )
-    sign = (
-        (+1, 0),    # shoulder flexor
-        (-1, 0),    # shoulder extensor
-        (0, +1),    # elbow flexor
-        (0, -1),    # elbow extensor
-        (+1, +1),   # biarticular flexor
-        (-1, -1),   # biarticular extensor
+
+
+def default_6muscle_2link_moment_arm_magnitudes() -> Float[Array, "6 2"]:
+    """Canonical unsigned 6-muscle, 2-link moment-arm magnitudes [m].
+
+    Rows follow ``default_6muscle_2link_topology``.  Non-spanned joints are
+    encoded as zero so callers can use this matrix directly for presets and
+    sampling bounds.
+    """
+    return jnp.array(_DEFAULT_6MUSCLE_2LINK_MOMENT_ARM_MAGNITUDES)
+
+
+def default_6muscle_2link_reference_lengths() -> Float[Array, "6"]:
+    """Canonical musculotendon reference lengths at zero angles [m]."""
+    return jnp.array(_DEFAULT_6MUSCLE_2LINK_REFERENCE_LENGTHS)
+
+
+def signed_moment_arm_matrix(
+    magnitudes: Array,
+    topology: MuscleTopology,
+) -> Float[Array, "n_muscles n_joints"]:
+    """Apply topology signs and routing to unsigned moment-arm magnitudes.
+
+    Args:
+        magnitudes: Unsigned moment-arm magnitudes, shape
+            ``(n_muscles, n_joints)`` [m].
+        topology: Static muscle-joint routing and signs.
+
+    Returns:
+        Signed moment-arm matrix with non-routed entries forced to zero,
+        shape ``(n_muscles, n_joints)`` [m].
+
+    Raises:
+        ValueError: If ``magnitudes`` does not match ``topology``.
+    """
+    magnitudes = jnp.asarray(magnitudes)
+    expected_shape = (topology.n_muscles, topology.n_joints)
+    if magnitudes.shape != expected_shape:
+        raise ValueError(
+            "moment arm magnitudes must match topology shape: "
+            f"{magnitudes.shape} != {expected_shape}"
+        )
+    return jnp.where(
+        topology.routing_array,
+        magnitudes * topology.sign_array,
+        0.0,
     )
-    return MuscleTopology(routing=routing, sign=sign)
+
+
+def default_6muscle_2link_moment_arms() -> Float[Array, "6 2"]:
+    """Canonical signed 6-muscle, 2-link moment-arm matrix [m]."""
+    return signed_moment_arm_matrix(
+        default_6muscle_2link_moment_arm_magnitudes(),
+        default_6muscle_2link_topology(),
+    )
+
+
+def default_6muscle_2link_muscled_arm_parameters() -> dict[str, Array]:
+    """Canonical parameters for legacy ``MuscledArm`` defaults.
+
+    ``MuscledArm`` stores moment arms as ``(n_joints, n_muscles)`` and uses
+    normalized muscle lengths.  The returned ``l0`` values are the canonical
+    musculotendon reference lengths, so its normalized length model matches
+    ``TwoLinkArmMuscleGeometry.default_six_muscle()`` divided by ``l0``.
+    """
+    moment_arms = default_6muscle_2link_moment_arms().T
+    l0 = default_6muscle_2link_reference_lengths()
+    return {
+        "moment_arms": moment_arms,
+        "theta0": jnp.zeros_like(moment_arms),
+        "l0": l0,
+        "f0": jnp.ones_like(l0),
+    }
 
 
 def default_monoarticular_topology(
@@ -171,6 +279,32 @@ class MuscleConfig(eqx.Module):
         """Number of joints."""
         return self.moment_arms.shape[1]
 
+    @property
+    def origin_frames(self) -> tuple[MuscleAttachmentFrame, ...]:
+        """Origin attachment frames for each muscle.
+
+        Returns:
+            One frame per muscle.  Each frame contains the body name and local
+            attachment position, shape ``(3,)`` [m].
+        """
+        return tuple(
+            MuscleAttachmentFrame(body=body, pos=self.origin_pos[i])
+            for i, body in enumerate(self.origin_body)
+        )
+
+    @property
+    def insertion_frames(self) -> tuple[MuscleAttachmentFrame, ...]:
+        """Insertion attachment frames for each muscle.
+
+        Returns:
+            One frame per muscle.  Each frame contains the body name and local
+            attachment position, shape ``(3,)`` [m].
+        """
+        return tuple(
+            MuscleAttachmentFrame(body=body, pos=self.insertion_pos[i])
+            for i, body in enumerate(self.insertion_body)
+        )
+
 
 def default_muscle_config(
     preset: BodyPreset,
@@ -180,11 +314,9 @@ def default_muscle_config(
     """Create a muscle attachment layout from topology.
 
     For monoarticular topologies, muscles span each joint with small
-    lateral offsets to create opposing moment arms.  For topologies with
-    biarticular muscles (e.g. ``default_6muscle_2link_topology``), the
-    moment arm matrix is built from the preset's
-    ``muscle_moment_arm_magnitudes`` if available, otherwise from a
-    default lateral offset.
+    lateral offsets to create opposing attachment sites.  The moment arm
+    matrix is built from the preset's ``muscle_moment_arm_magnitudes`` and
+    the topology's sign/routing matrix.
 
     Args:
         preset: Body parameters (segment lengths used for attachment positions).
@@ -242,17 +374,15 @@ def default_muscle_config(
             jnp.array([0.1 * child_len, lateral, 0.0])
         )
 
-    # Build the signed moment arm matrix using JAX array views of topology.
-    sign_arr = topology.sign_array
-    routing_arr = topology.routing_array
-
-    if hasattr(preset, "muscle_moment_arm_magnitudes"):
-        moment_arms = preset.muscle_moment_arm_magnitudes * sign_arr
-    else:
-        # Legacy fallback: uniform magnitude from lateral offset.
-        moment_arms = jnp.full((n_muscles, n_joints), y_offset) * sign_arr
-    # Zero out entries where muscle does not span the joint.
-    moment_arms = jnp.where(routing_arr, moment_arms, 0.0)
+    if not hasattr(preset, "muscle_moment_arm_magnitudes"):
+        raise ValueError(
+            "default_muscle_config requires preset.muscle_moment_arm_magnitudes; "
+            "construct a BodyPreset with explicit magnitudes."
+        )
+    moment_arms = signed_moment_arm_matrix(
+        preset.muscle_moment_arm_magnitudes,
+        topology,
+    )
 
     return MuscleConfig(
         origin_body=tuple(origin_body),

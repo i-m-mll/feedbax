@@ -6,6 +6,7 @@ import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { actionErrorMessage, withStoreActionFeedback } from '@/stores/storeActions';
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import { parseContract } from '@/generated/studioContracts';
 import type { TrainingWebSocketEvent } from '@/generated/studioContracts';
 import type { TaskSpec, TrainingConfig, TrainingProgress } from '@/types/training';
@@ -201,18 +202,7 @@ export function useTraining() {
         if (payload.type === 'training_trajectory') {
           const traj = payload.trajectory;
           if (traj) {
-            setLatestTrajectory({
-              batch: payload.batch,
-              effector: Array.isArray(traj.effector)
-                ? (traj.effector as [number, number][])
-                : [],
-              target: Array.isArray(traj.target)
-                ? (traj.target as [number, number][] | [number, number])
-                : null,
-              t: Array.isArray(traj.t) ? (traj.t as number[]) : [],
-              observables: traj.observables ?? {},
-              outputs: traj.outputs ?? {},
-            });
+            setLatestTrajectory(normalizeTrainingTrajectoryPayload(traj, payload.batch));
           }
         }
         if (payload.type === 'training_resync') {

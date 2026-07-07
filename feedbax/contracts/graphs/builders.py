@@ -187,7 +187,9 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
 def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
     plant_type = params.get("plant_type", "TwoLinkArm")
     if plant_type == "TwoLinkArm":
-        plant = DirectForceInput(TwoLinkArm())
+        plant = DirectForceInput(
+            TwoLinkArm(l=params.get("link_lengths", (0.30, 0.33)))
+        )
     elif plant_type == "PointMass":
         plant = DirectForceInput(
             PointMass(

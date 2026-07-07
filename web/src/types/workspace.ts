@@ -41,6 +41,36 @@ export interface StudioTopPaneState {
   metadata: Record<string, unknown>;
 }
 
+export const WORKSPACE_VIEW_STATE_SCHEMA_VERSION =
+  'feedbax.studio.workspace_view_state.v1' as const;
+
+export interface WorkspaceCameraState {
+  pan: { x: number; y: number };
+  zoom: number;
+}
+
+export interface WorkspacePlaybackState {
+  position: number;
+  speed: number;
+}
+
+export interface WorkspaceComparisonSelection {
+  baseline_ref: string | null;
+  candidate_ref: string | null;
+}
+
+export interface WorkspaceViewState {
+  schema_version: typeof WORKSPACE_VIEW_STATE_SCHEMA_VERSION;
+  camera: WorkspaceCameraState;
+  selected_artifact_ref: string | null;
+  selected_trial_ref: string | null;
+  overlay_visibility: Record<string, boolean>;
+  playback: WorkspacePlaybackState;
+  comparison_selection: WorkspaceComparisonSelection;
+}
+
+export type WorkspaceViewMode = 'authoring' | 'artifact' | 'playback' | 'comparison';
+
 export interface StudioValidationIssue {
   type: string;
   message: string;

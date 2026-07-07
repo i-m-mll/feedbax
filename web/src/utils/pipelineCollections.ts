@@ -870,7 +870,7 @@ function parentRefsForManifest(ref: StudioManifestRef): ParentRefLike[] {
 function parentRefArray(value: unknown): ParentRefLike[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => {
+    .map((item): ParentRefLike | null => {
       const ref = objectValue(item);
       const id = stringValue(ref?.id);
       const kind = stringValue(ref?.kind);

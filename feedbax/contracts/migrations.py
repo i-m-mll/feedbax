@@ -47,6 +47,11 @@ from feedbax.contracts.graph import (
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
+from feedbax.contracts.representation import (
+    REPRESENTATION_SCHEMA_ID,
+    REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V0,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
@@ -106,6 +111,11 @@ from feedbax.contracts.training import (
 from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
     WORKER_CONTRACT_SCHEMA_VERSION,
+)
+from feedbax.contracts.workspace_replay import (
+    WORKSPACE_REPLAY_SCHEMA_ID,
+    WORKSPACE_REPLAY_SCHEMA_VERSION,
+    WORKSPACE_REPLAY_SCHEMA_VERSION_V0,
 )
 from feedbax.execution.models import (
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
@@ -2174,6 +2184,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         )
     )
+    families.append(
+        _family(
+            "RepresentationSpec",
+            REPRESENTATION_SCHEMA_ID,
+            REPRESENTATION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.representation",
+            emitted_by=(
+                "feedbax.component_registry.registry.ComponentRegistry",
+                "scripts.generate_studio_contracts",
+            ),
+            consumed_by=("Studio frontend", "workspace renderer"),
+            description="Component-owned workspace representation declaration.",
+            rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
+            required_tests=(
+                "tests/test_component_registration.py",
+                "tests/test_structured_spec_migrations.py",
+                "web/src/generated/studioContracts.ts",
+            ),
+        )
+    )
 
     for kind, schema_id, description in (
         (
@@ -2264,20 +2294,57 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.manifest.studio.pipeline_materialization_result",
             "Result from Studio pipeline materialization.",
         ),
+        (
+            "WorkspaceReplayProduct",
+            WORKSPACE_REPLAY_SCHEMA_ID,
+            "Manifest-linked replay product for authored Studio workspace geometry.",
+        ),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
                 (
+                    WORKSPACE_REPLAY_SCHEMA_VERSION
+                    if kind == "WorkspaceReplayProduct"
+                    else
                     "feedbax.manifest.studio.execution.v1"
                     if kind.endswith("Result")
                     else "feedbax.spec.studio.execution.v1"
                 ),
-                owner_module="feedbax.studio.execution",
-                emitted_by=studio_execution_emitters,
-                consumed_by=("provider HTTP API", "Studio backend"),
+                owner_module=(
+                    "feedbax.contracts.workspace_replay"
+                    if kind == "WorkspaceReplayProduct"
+                    else "feedbax.studio.execution"
+                ),
+                emitted_by=(
+                    ("eval/validation replay materialization", "provider_manifest.schemas")
+                    if kind == "WorkspaceReplayProduct"
+                    else studio_execution_emitters
+                ),
+                consumed_by=(
+                    (
+                        "Studio workspace playback",
+                        "Mandible provider integration",
+                        "analysis materialization",
+                    )
+                    if kind == "WorkspaceReplayProduct"
+                    else ("provider HTTP API", "Studio backend")
+                ),
                 description=description,
+                rejected_old_versions=(
+                    (WORKSPACE_REPLAY_SCHEMA_VERSION_V0,)
+                    if kind == "WorkspaceReplayProduct"
+                    else None
+                ),
+                required_tests=(
+                    (
+                        "tests/test_workspace_replay_contract.py",
+                        "tests/test_structured_spec_migrations.py",
+                    )
+                    if kind == "WorkspaceReplayProduct"
+                    else ("tests/test_structured_spec_migrations.py",)
+                ),
             )
         )
 

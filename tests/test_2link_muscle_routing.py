@@ -5,11 +5,14 @@ for muscle-to-torque conversion, including biarticular muscles that
 span multiple joints.
 """
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
 
+from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.body import (
+    BodyPreset,
     default_2link_bounds,
     default_3link_bounds,
     flat_dim,
@@ -17,15 +20,20 @@ from feedbax.mechanics.body import (
     sample_preset,
     to_flat,
 )
+from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.model_builder import ChainConfig, SimConfig
 from feedbax.mechanics.mjx_plant import MJXPlant
 from feedbax.mechanics.muscle_config import (
     MuscleTopology,
+    default_6muscle_2link_moment_arm_magnitudes,
+    default_6muscle_2link_moment_arms,
+    default_6muscle_2link_muscled_arm_parameters,
+    default_6muscle_2link_reference_lengths,
     default_6muscle_2link_topology,
     default_monoarticular_topology,
     default_muscle_config,
 )
-from feedbax.mechanics.plant import PlantState
+from feedbax.mechanics.plant import MuscledArm, PlantState
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +81,17 @@ def plant_2link(preset_2link, chain_2link, sim_config):
     return MJXPlant.from_body_preset(
         preset_2link, chain_2link, sim_config, clip_states=False,
     )
+
+
+class _DummyMuscle(eqx.Module):
+    n_muscles: int = 1
+
+    def change_n_muscles(self, n_muscles: int) -> "_DummyMuscle":
+        return eqx.tree_at(lambda muscle: muscle.n_muscles, self, n_muscles)
+
+
+class _DummyActivator(eqx.Module):
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +153,107 @@ class TestMuscleTopology:
         leaves, treedef = jt.flatten(topo_2link)
         # Static fields produce no leaves.
         assert len(leaves) == 0
+
+
+class TestCanonicalSixMuscleDefaults:
+    def test_geometry_uses_canonical_moment_arms_and_lengths(self):
+        geometry = TwoLinkArmMuscleGeometry.default_six_muscle()
+        angles = jnp.array([0.4, -0.2])
+
+        assert jnp.allclose(
+            geometry.moment_arms(angles),
+            default_6muscle_2link_moment_arms(),
+        )
+        assert jnp.allclose(
+            geometry.musculotendon_lengths(jnp.zeros(2)),
+            default_6muscle_2link_reference_lengths(),
+        )
+
+    def test_geometry_rejects_legacy_default_overrides(self):
+        with pytest.raises(ValueError, match="from_moment_arm_matrix"):
+            TwoLinkArmMuscleGeometry.default_six_muscle(shoulder_moment_arm=0.05)
+
+    def test_2link_bounds_use_canonical_magnitudes(self):
+        bounds = default_2link_bounds()
+        magnitudes = default_6muscle_2link_moment_arm_magnitudes()
+
+        assert jnp.allclose(bounds.muscle_moment_arm_magnitudes_min, magnitudes * 0.7)
+        assert jnp.allclose(bounds.muscle_moment_arm_magnitudes_max, magnitudes * 1.3)
+
+    def test_default_muscle_config_uses_canonical_matrix(
+        self,
+        preset_2link,
+        chain_2link,
+    ):
+        preset = BodyPreset(
+            segment_lengths=preset_2link.segment_lengths,
+            segment_masses=preset_2link.segment_masses,
+            joint_damping=preset_2link.joint_damping,
+            joint_stiffness=preset_2link.joint_stiffness,
+            muscle_pcsa=preset_2link.muscle_pcsa,
+            muscle_optimal_fiber_length=preset_2link.muscle_optimal_fiber_length,
+            muscle_tendon_slack_length=preset_2link.muscle_tendon_slack_length,
+            muscle_moment_arm_magnitudes=default_6muscle_2link_moment_arm_magnitudes(),
+            tau_act=preset_2link.tau_act,
+            tau_deact=preset_2link.tau_deact,
+        )
+        muscle_config = default_muscle_config(preset, chain_2link)
+
+        assert jnp.allclose(
+            muscle_config.moment_arms,
+            default_6muscle_2link_moment_arms(),
+        )
+        assert len(muscle_config.origin_frames) == 6
+        assert len(muscle_config.insertion_frames) == 6
+        assert muscle_config.origin_frames[0].body == "world"
+        assert muscle_config.origin_frames[0].pos.shape == (3,)
+        assert muscle_config.insertion_frames[4].body == "link1"
+        assert muscle_config.insertion_frames[4].pos.shape == (3,)
+
+    def test_legacy_muscled_arm_defaults_match_canonical_geometry(self):
+        arm = MuscledArm(
+            muscle_model=_DummyMuscle(),
+            activator=_DummyActivator(),
+        )
+        params = default_6muscle_2link_muscled_arm_parameters()
+        geometry = TwoLinkArmMuscleGeometry.default_six_muscle()
+        angles = jnp.array([0.4, -0.2])
+
+        assert jnp.allclose(arm.moment_arms, params["moment_arms"])
+        assert jnp.allclose(arm.theta0, params["theta0"])
+        assert jnp.allclose(arm.l0, params["l0"])
+        assert jnp.allclose(
+            arm._muscle_length(angles),
+            geometry.musculotendon_lengths(angles) / params["l0"],
+        )
+
+    def test_analytical_plant_public_muscle_accessors(
+        self,
+        preset_2link,
+        chain_2link,
+        key,
+    ):
+        plant = AnalyticalMusculoskeletalPlant.from_body_preset(
+            preset_2link,
+            chain_2link,
+            clip_states=False,
+        )
+        state = plant.init(key=key)
+        muscle_config = default_muscle_config(preset_2link, chain_2link)
+
+        assert jnp.allclose(plant.moment_arms, muscle_config.moment_arms)
+        assert jnp.allclose(
+            plant.current_musculotendon_lengths(state),
+            plant.musculotendon_lengths(state.skeleton.angle),
+        )
+        assert jnp.allclose(
+            plant.musculotendon_velocities(state.skeleton.d_angle),
+            jnp.zeros(6),
+        )
+        assert jnp.allclose(
+            plant.current_muscle_activations(state),
+            jnp.zeros(6),
+        )
 
 
 # ---------------------------------------------------------------------------

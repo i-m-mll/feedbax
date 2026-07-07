@@ -139,13 +139,9 @@ class MJXPlant(AbstractPlant):
             effector_body_id=effector_body_id,
         )
 
-        # Bug: 138bbe5 -- Compute signed moment arms and muscle gear from preset.
-        topology = chain_config.muscle_topology
-        moment_arms = (
-            preset.muscle_moment_arm_magnitudes * topology.sign_array
-        )
-        # Zero out entries where muscle does not span the joint.
-        moment_arms = jnp.where(topology.routing_array, moment_arms, 0.0)
+        from feedbax.mechanics.muscle_config import default_muscle_config
+
+        muscle_config = default_muscle_config(preset, chain_config)
 
         specific_tension = 30.0  # N/cm^2
         muscle_gear = preset.muscle_pcsa * specific_tension
@@ -154,7 +150,7 @@ class MJXPlant(AbstractPlant):
             skeleton=skeleton,
             clip_states=clip_states,
             segment_lengths=jnp.asarray(preset.segment_lengths),
-            moment_arms=moment_arms,
+            moment_arms=muscle_config.moment_arms,
             muscle_gear=muscle_gear,
             key=key,
         )

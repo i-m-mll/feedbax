@@ -25,6 +25,7 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 import { PROJECT_TEMPLATES } from '@/data/project-templates';
+import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import type { AnalysisGraphSpec, AnalysisSnapshot } from '@/types/analysis';
 
 type ProjectOverlaySection = 'projects' | 'examples' | 'import';
@@ -160,12 +161,14 @@ export function Header() {
         }));
         const traj = demo.latest_trajectory;
         const latestTrajectory = traj
-          ? {
-              batch: totalBatches - 1,
-              effector: traj.effector_pos,
-              target: traj.target_pos,
-              t: traj.effector_pos.map((_, i) => (i / traj.effector_pos.length) * 0.8),
-            }
+          ? normalizeTrainingTrajectoryPayload(
+              {
+                effector: traj.effector_pos,
+                target: traj.target_pos,
+                t: traj.effector_pos.map((_, i) => (i / traj.effector_pos.length) * 0.8),
+              },
+              totalBatches - 1
+            )
           : null;
         useTrainingStore.getState().seedDemoData({ lossHistory, latestTrajectory });
       }

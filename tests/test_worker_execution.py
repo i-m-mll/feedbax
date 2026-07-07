@@ -27,14 +27,14 @@ from feedbax.web.worker.execution import (
 )
 
 
-def _linear_graph_spec(component_type: str = "Linear") -> dict:
+def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
     return GraphSpec(
         nodes={
             "readout": ComponentSpec(
                 type=component_type,
                 params={
                     "input_size": 1,
-                    "output_size": 1,
+                    "output_size": output_size,
                     "activation": "identity",
                     "trainable": True,
                 },
@@ -396,6 +396,16 @@ def test_run_training_graph_trains_tiny_full_graph(tmp_path: Path, monkeypatch) 
     assert result.final_loss < float(initial_loss)
     assert any(event["type"] == "training_progress" for event in events)
     trajectory = next(event for event in events if event["type"] == "training_trajectory")
+    assert trajectory["trajectory"]["schema_id"] == "feedbax.event.studio.training_trajectory"
+    assert trajectory["trajectory"]["schema_version"] == (
+        "feedbax.event.studio.training_trajectory.v1"
+    )
+    assert trajectory["trajectory"]["fidelity"] == "lower_fidelity_live_snapshot"
+    assert trajectory["trajectory"]["time"]["length"] == compiled.n_steps
+    assert trajectory["trajectory"]["tracks"] == {}
+    assert "effector" not in trajectory["trajectory"]
+    assert "target" not in trajectory["trajectory"]
+    assert "t" not in trajectory["trajectory"]
     assert trajectory["trajectory"]["outputs"]["output"]
     assert set(result.retained_observables) == {"observables", "outputs", "task_data"}
     assert "graph_output:output" in result.retained_observables["outputs"]
@@ -445,6 +455,41 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
     assert progress_batches == [1, 2, 3, 4, 5]
     assert log_batches == [1, 2, 3, 4, 5]
     assert trajectory_batches == [3, 5]
+
+
+def test_run_training_graph_emits_selector_keyed_live_trajectory_tracks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    compiled = compile_training_run(
+        graph_spec=_linear_graph_spec(output_size=2),
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_task_binding_spec(),
+        cfg=_cfg(snapshot_interval=5),
+    )
+    events: list[dict] = []
+
+    run_training_graph(
+        compiled,
+        job_id="test-job",
+        total_batches=5,
+        cfg=_cfg(snapshot_interval=5),
+        stop_event=threading.Event(),
+        emit=events.append,
+    )
+
+    trajectory = next(event for event in events if event["type"] == "training_trajectory")
+    payload = trajectory["trajectory"]
+    track = payload["tracks"]["graph_output:output"]
+
+    assert payload["schema_id"] == "feedbax.event.studio.training_trajectory"
+    assert payload["time"]["length"] == len(track["samples"])
+    assert track["selector"]["compact"] == "graph_output:output"
+    assert track["selector"]["role"] == "observed"
+    assert track["dim"] == 2
+    assert all(len(sample) == 2 for sample in track["samples"])
 
 
 def test_run_training_graph_stopped_run_returns_latest_batch_loss(

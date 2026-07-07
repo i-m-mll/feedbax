@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   previewStudioEvaluationMatrix,
   runStudioEvaluationLocalExecution,
+  sampleTaskTrials,
   stageStudioEvaluationMatrix,
   updateGraph,
 } from '@/api/client';
@@ -189,5 +190,36 @@ describe('Studio evaluation provider API', () => {
       reprocess: 'missing_failed',
     });
     expect(JSON.parse(options.body as string)).not.toHaveProperty('training_run_ids');
+  });
+});
+
+describe('task sampling API', () => {
+  it('posts task spec, seed, and count to the sampling endpoint', async () => {
+    const responsePayload = {
+      schema_version: 'feedbax.execution.sampled_task_trials.v1',
+      task_type: 'SimpleReaches',
+      seed: 9,
+      count: 2,
+      trials: [],
+    };
+    const fetchMock = vi.fn(async () => Response.json(responsePayload));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await sampleTaskTrials({
+      task_spec: { type: 'SimpleReaches', params: { n_steps: 8 } },
+      seed: 9,
+      count: 2,
+    });
+
+    expect(response).toEqual(responsePayload);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe('/api/execution/task-trials/sample');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body as string)).toEqual({
+      task_spec: { type: 'SimpleReaches', params: { n_steps: 8 } },
+      seed: 9,
+      count: 2,
+    });
   });
 });
