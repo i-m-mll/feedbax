@@ -646,6 +646,118 @@ export interface RepresentationValidationIssue {
   path: string;
 }
 
+export interface WorkspaceReplayWarning {
+  code: "missing_trial_metadata" | "missing_manifest_refs" | "missing_anchor_resolution" | "missing_overlay_metadata" | "npz_browser_downgrade";
+  message: string;
+  path?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrialIdentity {
+  index: number;
+  stable_id?: string | null;
+  source?: "stable_id" | "index_fallback";
+  label?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplaySampleAxis {
+  length: number;
+  units?: string | null;
+  dt?: number | null;
+  values?: number[] | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrack {
+  anchor_id: string;
+  selector: StudioSelectorRef;
+  samples: number[][];
+  dim: number;
+  dtype?: string;
+  units?: string | null;
+  frame?: string | null;
+  label?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayOverlayChannel {
+  id: string;
+  selector: StudioSelectorRef;
+  samples: unknown[];
+  dtype?: string;
+  shape?: unknown[] | null;
+  units?: string | null;
+  label?: string | null;
+  binding?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrialSpecSnapshot {
+  summary?: Record<string, unknown>;
+  targets?: Record<string, unknown>;
+  timeline?: Record<string, unknown> | null;
+  snapshot?: Record<string, unknown> | null;
+  schema_id?: string | null;
+  schema_version?: string | null;
+  sha256?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayManifestRefs {
+  spec_snapshot?: StudioArtifactRef | null;
+  checkpoint?: StudioArtifactRef | StudioManifestRef | null;
+  task_variant?: StudioArtifactRef | StudioManifestRef | null;
+  seed?: number | string | null;
+  environment?: StudioArtifactRef | StudioManifestRef | Record<string, unknown> | null;
+  producer_manifest?: StudioManifestRef | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrial {
+  identity: WorkspaceReplayTrialIdentity;
+  time: WorkspaceReplaySampleAxis;
+  tracks?: WorkspaceReplayTrack[];
+  overlays?: WorkspaceReplayOverlayChannel[];
+  trial_spec?: WorkspaceReplayTrialSpecSnapshot;
+  manifest_refs?: WorkspaceReplayManifestRefs;
+  warnings?: WorkspaceReplayWarning[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayImportedArtifact {
+  artifact: StudioArtifactRef;
+  source_format?: "npz" | "unknown";
+  missing_metadata?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayProduct {
+  schema_id?: "feedbax.manifest.studio.workspace_replay";
+  schema_version?: "feedbax.manifest.studio.workspace_replay.v1";
+  product_kind?: "workspace_replay";
+  source_mode?: "resolved_scene" | "imported_artifact";
+  trials?: WorkspaceReplayTrial[];
+  imported_artifact?: WorkspaceReplayImportedArtifact | null;
+  manifest_refs?: WorkspaceReplayManifestRefs;
+  warnings?: WorkspaceReplayWarning[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayRequiredSelector {
+  anchor_id: string;
+  selector: StudioSelectorRef;
+  label?: string | null;
+  retention_id?: string | null;
+  value_schema?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResolvedWorkspaceReplayScene {
+  required_selectors?: WorkspaceReplayRequiredSelector[];
+  metadata?: Record<string, unknown>;
+}
+
 export interface ComponentDefinition {
   name: string;
   category: string;
@@ -2192,6 +2304,166 @@ export const RepresentationValidationIssueSchema: z.ZodType<RepresentationValida
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationValidationIssue>;
+
+export const WorkspaceReplayWarningSchema: z.ZodType<WorkspaceReplayWarning> = z.lazy(() =>
+  z
+    .object({
+      "code": z.union([z.literal("missing_trial_metadata"), z.literal("missing_manifest_refs"), z.literal("missing_anchor_resolution"), z.literal("missing_overlay_metadata"), z.literal("npz_browser_downgrade")]),
+      "message": z.string(),
+      "path": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayWarning>;
+
+export const WorkspaceReplayTrialIdentitySchema: z.ZodType<WorkspaceReplayTrialIdentity> = z.lazy(() =>
+  z
+    .object({
+      "index": z.number().int(),
+      "stable_id": z.string().nullable().optional(),
+      "source": z.union([z.literal("stable_id"), z.literal("index_fallback")]).optional(),
+      "label": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrialIdentity>;
+
+export const WorkspaceReplaySampleAxisSchema: z.ZodType<WorkspaceReplaySampleAxis> = z.lazy(() =>
+  z
+    .object({
+      "length": z.number().int(),
+      "units": z.string().nullable().optional(),
+      "dt": z.number().nullable().optional(),
+      "values": z.array(z.number()).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplaySampleAxis>;
+
+export const WorkspaceReplayTrackSchema: z.ZodType<WorkspaceReplayTrack> = z.lazy(() =>
+  z
+    .object({
+      "anchor_id": z.string(),
+      "selector": StudioSelectorRefSchema,
+      "samples": z.array(z.array(z.number())),
+      "dim": z.number().int(),
+      "dtype": z.string().optional(),
+      "units": z.string().nullable().optional(),
+      "frame": z.string().nullable().optional(),
+      "label": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrack>;
+
+export const WorkspaceReplayOverlayChannelSchema: z.ZodType<WorkspaceReplayOverlayChannel> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "selector": StudioSelectorRefSchema,
+      "samples": z.array(z.unknown()),
+      "dtype": z.string().optional(),
+      "shape": z.array(z.unknown()).nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "label": z.string().nullable().optional(),
+      "binding": z.record(z.string(), z.unknown()).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayOverlayChannel>;
+
+export const WorkspaceReplayTrialSpecSnapshotSchema: z.ZodType<WorkspaceReplayTrialSpecSnapshot> = z.lazy(() =>
+  z
+    .object({
+      "summary": z.record(z.string(), z.unknown()).optional(),
+      "targets": z.record(z.string(), z.unknown()).optional(),
+      "timeline": z.record(z.string(), z.unknown()).nullable().optional(),
+      "snapshot": z.record(z.string(), z.unknown()).nullable().optional(),
+      "schema_id": z.string().nullable().optional(),
+      "schema_version": z.string().nullable().optional(),
+      "sha256": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrialSpecSnapshot>;
+
+export const WorkspaceReplayManifestRefsSchema: z.ZodType<WorkspaceReplayManifestRefs> = z.lazy(() =>
+  z
+    .object({
+      "spec_snapshot": StudioArtifactRefSchema.nullable().optional(),
+      "checkpoint": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
+      "task_variant": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
+      "seed": z.union([z.number().int(), z.string(), z.null()]).optional(),
+      "environment": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.record(z.string(), z.unknown()), z.null()]).optional(),
+      "producer_manifest": StudioManifestRefSchema.nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayManifestRefs>;
+
+export const WorkspaceReplayTrialSchema: z.ZodType<WorkspaceReplayTrial> = z.lazy(() =>
+  z
+    .object({
+      "identity": WorkspaceReplayTrialIdentitySchema,
+      "time": WorkspaceReplaySampleAxisSchema,
+      "tracks": z.array(WorkspaceReplayTrackSchema).optional(),
+      "overlays": z.array(WorkspaceReplayOverlayChannelSchema).optional(),
+      "trial_spec": WorkspaceReplayTrialSpecSnapshotSchema.optional(),
+      "manifest_refs": WorkspaceReplayManifestRefsSchema.optional(),
+      "warnings": z.array(WorkspaceReplayWarningSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrial>;
+
+export const WorkspaceReplayImportedArtifactSchema: z.ZodType<WorkspaceReplayImportedArtifact> = z.lazy(() =>
+  z
+    .object({
+      "artifact": StudioArtifactRefSchema,
+      "source_format": z.union([z.literal("npz"), z.literal("unknown")]).optional(),
+      "missing_metadata": z.array(z.string()).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayImportedArtifact>;
+
+export const WorkspaceReplayProductSchema: z.ZodType<WorkspaceReplayProduct> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.manifest.studio.workspace_replay").optional(),
+      "schema_version": z.literal("feedbax.manifest.studio.workspace_replay.v1").optional(),
+      "product_kind": z.literal("workspace_replay").optional(),
+      "source_mode": z.union([z.literal("resolved_scene"), z.literal("imported_artifact")]).optional(),
+      "trials": z.array(WorkspaceReplayTrialSchema).optional(),
+      "imported_artifact": WorkspaceReplayImportedArtifactSchema.nullable().optional(),
+      "manifest_refs": WorkspaceReplayManifestRefsSchema.optional(),
+      "warnings": z.array(WorkspaceReplayWarningSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayProduct>;
+
+export const WorkspaceReplayRequiredSelectorSchema: z.ZodType<WorkspaceReplayRequiredSelector> = z.lazy(() =>
+  z
+    .object({
+      "anchor_id": z.string(),
+      "selector": StudioSelectorRefSchema,
+      "label": z.string().nullable().optional(),
+      "retention_id": z.string().nullable().optional(),
+      "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayRequiredSelector>;
+
+export const ResolvedWorkspaceReplaySceneSchema: z.ZodType<ResolvedWorkspaceReplayScene> = z.lazy(() =>
+  z
+    .object({
+      "required_selectors": z.array(WorkspaceReplayRequiredSelectorSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ResolvedWorkspaceReplayScene>;
 
 export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(() =>
   z
