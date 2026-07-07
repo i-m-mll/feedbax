@@ -373,7 +373,16 @@ def execute_training_run_spec(
 
 def _validate_spec(spec: TrainingRunSpec | Mapping[str, Any]) -> TrainingRunSpec:
     try:
-        return spec if isinstance(spec, TrainingRunSpec) else TrainingRunSpec.model_validate(spec)
+        if isinstance(spec, TrainingRunSpec):
+            return spec
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        migrated = migrate_structured_spec_payload(
+            "TrainingRunSpec",
+            spec,
+            path="training_run_spec",
+        ).payload
+        return TrainingRunSpec.model_validate(migrated)
     except ValidationError as exc:
         raise TrainingRunExecutorError(f"/training_run_spec validation failed: {exc}") from exc
 

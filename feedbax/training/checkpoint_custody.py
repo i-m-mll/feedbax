@@ -30,6 +30,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkSourceRecord,
     CheckpointForkTransformRecord,
     CheckpointResumeResult,
+    CheckpointProvenanceNotice,
     CheckpointSlotBlobRef,
     CheckpointTransactionManifest,
     ContentIntegrityDigest,
@@ -42,7 +43,7 @@ from feedbax.contracts.checkpoints import (
     StructuralAbiFingerprint,
 )
 from feedbax.contracts.manifest import canonical_json_bytes, feedbax_version, sha256_bytes
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_VERSION_V1, TrainingRunSpec
 from feedbax.contracts.worker import (
     CheckpointBarrierSpec,
     CheckpointSlotSpec,
@@ -106,6 +107,7 @@ class CheckpointForkResult:
     manifest: CheckpointTransactionManifest
     latest_pointer: CheckpointLatestPointer
     slot_transfer_modes: Mapping[str, str]
+    source_provenance_notices: tuple[CheckpointProvenanceNotice, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,7 @@ class _LoadedCheckpointTransaction:
     manifest_path: Path
     manifest: CheckpointTransactionManifest
     slots: Mapping[str, Any]
+    provenance_notices: tuple[CheckpointProvenanceNotice, ...]
 
 
 def checkpoint_barrier(program: PhaseProgramSpec, barrier_name: str) -> CheckpointBarrierSpec:
@@ -354,7 +357,7 @@ def _load_checkpoint_from_pointer(
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} could not be deserialized"
             ) from exc
-    _validate_manifest_structural_abi(manifest, loaded_slots)
+    provenance_notices = _validate_manifest_structural_abi(manifest, loaded_slots)
     if resume_slot_transform is not None:
         try:
             loaded_slots = dict(resume_slot_transform(loaded_slots))
@@ -372,8 +375,14 @@ def _load_checkpoint_from_pointer(
     return CheckpointResumeResult(
         manifest=manifest,
         slots=loaded_slots,
+        provenance_notices=provenance_notices,
         new_lineage_required=allow_new_lineage_override
-        and manifest.run_contract_binding != run_contract_binding(
+        and not _contract_binding_matches(
+            manifest.run_contract_binding,
+            run_contract_binding(
+                expected_run_spec,
+                expected_phase_program,
+            ),
             expected_run_spec,
             expected_phase_program,
         ),
@@ -643,6 +652,7 @@ def fork_checkpoint_transaction(
             manifest=manifest,
             latest_pointer=latest_pointer,
             slot_transfer_modes=transfer_modes,
+            source_provenance_notices=source.provenance_notices,
         )
     except Exception:
         shutil.rmtree(final_dir if moved_to_final else tmp_dir, ignore_errors=True)
@@ -664,13 +674,14 @@ def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTr
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} could not be deserialized"
             ) from exc
-    _validate_manifest_structural_abi(manifest, loaded_slots)
+    provenance_notices = _validate_manifest_structural_abi(manifest, loaded_slots)
     return _LoadedCheckpointTransaction(
         root=root_path,
         latest_pointer=latest,
         manifest_path=manifest_path,
         manifest=manifest,
         slots=loaded_slots,
+        provenance_notices=tuple(provenance_notices),
     )
 
 
@@ -800,46 +811,64 @@ def run_contract_binding(
     run_spec: TrainingRunSpec,
     phase_program: PhaseProgramSpec,
 ) -> RunContractBinding:
-    """Return the canonical content binding for a run spec and phase program."""
-    method_payload = run_spec.method_payload.model_dump(mode="json", exclude_none=True)
-    objective = run_spec.objective.model_dump(mode="json", exclude_none=True)
-    graph = run_spec.graph.model_dump(mode="json", exclude_none=True)
+    """Return the canonical content binding for a migrated run spec projection."""
+    projection = run_contract_canonical_projection(run_spec, phase_program)
+    training_run_spec = projection["training_run_spec"]
+    method_payload = training_run_spec["method_payload"]
+    objective = training_run_spec["objective"]
+    graph = training_run_spec["graph"]
     optimizer_bindings = [
         binding.model_dump(mode="json", exclude_none=True)
         for binding in phase_program.optimizer_bindings
     ]
     return RunContractBinding(
-        training_run_spec_schema_id=run_spec.schema_id,
-        training_run_spec_schema_version=run_spec.schema_version,
-        training_run_spec_sha256=_canonical_hash(run_spec),
-        method_payload_schema_id=run_spec.method_payload.schema_id,
-        method_payload_schema_version=run_spec.method_payload.schema_version,
+        training_run_spec_schema_id=training_run_spec["schema_id"],
+        training_run_spec_schema_version=training_run_spec["schema_version"],
+        training_run_spec_sha256=_canonical_hash(training_run_spec),
+        method_payload_schema_id=method_payload["schema_id"],
+        method_payload_schema_version=method_payload["schema_version"],
         method_payload_sha256=_canonical_hash(method_payload),
         phase_program_sha256=_canonical_hash(phase_program),
         objective_sha256=_canonical_hash(objective),
         graph_sha256=_canonical_hash(graph),
         optimizer_bindings_sha256=_canonical_hash(optimizer_bindings),
+        canonical_projection=projection,
+        canonical_projection_sha256=_canonical_hash(projection),
     )
+
+
+def run_contract_canonical_projection(
+    run_spec: TrainingRunSpec,
+    phase_program: PhaseProgramSpec,
+) -> dict[str, Any]:
+    """Return the stored semantic projection for run-contract binding v2.
+
+    The projection intentionally includes the full migrated ``TrainingRunSpec``
+    payload and the phase program used by the checkpoint barrier. No
+    non-semantic fields are excluded today; adding exclusions would be a
+    binding-algorithm change and must bump ``RunContractBinding.algorithm_version``.
+    """
+    migrated_run_spec = _canonical_training_run_spec_payload(run_spec)
+    return {
+        "schema_id": "feedbax.manifest.training_checkpoint.run_contract_projection",
+        "schema_version": "feedbax.manifest.training_checkpoint.run_contract_projection.v1",
+        "algorithm_version": "feedbax.training_checkpoint.run_contract_binding.v2",
+        "training_run_spec": migrated_run_spec,
+        "phase_program": phase_program.model_dump(mode="json", exclude_none=True),
+    }
 
 
 def structural_abi_fingerprint(value: Any) -> StructuralAbiFingerprint:
     """Return a structural PyTree ABI fingerprint for a slot value."""
     pairs, treedef = jt.flatten_with_path(value)
     leaves = [_leaf_fingerprint(path, leaf) for path, leaf in pairs]
-    payload = {
-        "treedef": str(treedef),
-        "leaf_count": len(leaves),
-        "leaves": [leaf.model_dump(mode="json", exclude_none=True) for leaf in leaves],
-        "serializer_versions": _serializer_versions().model_dump(
-            mode="json",
-            exclude_none=True,
-        ),
-    }
+    environment_provenance = _serializer_versions()
+    payload = _structural_abi_content_payload(str(treedef), leaves)
     return StructuralAbiFingerprint(
         treedef=str(treedef),
         leaf_count=len(leaves),
         leaves=leaves,
-        serializer_versions=_serializer_versions(),
+        environment_provenance=environment_provenance,
         fingerprint_sha256=_canonical_hash(payload),
     )
 
@@ -890,7 +919,8 @@ def _validate_structural_abi(
 def _validate_manifest_structural_abi(
     manifest: CheckpointTransactionManifest,
     loaded_slots: Mapping[str, Any],
-) -> None:
+) -> list[CheckpointProvenanceNotice]:
+    notices: list[CheckpointProvenanceNotice] = []
     for slot in manifest.slots:
         if slot.slot not in loaded_slots:
             continue
@@ -902,6 +932,11 @@ def _validate_manifest_structural_abi(
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale"
             )
+        notice = _environment_provenance_notice(slot.slot, slot.structural_abi_fingerprint)
+        if notice is not None:
+            _LOGGER.warning(notice.message)
+            notices.append(notice)
+    return notices
 
 
 def _validate_contract_binding(
@@ -912,13 +947,220 @@ def _validate_contract_binding(
     allow_new_lineage_override: bool,
 ) -> None:
     expected = run_contract_binding(expected_run_spec, expected_phase_program)
-    if manifest.run_contract_binding == expected:
+    if _contract_binding_matches(
+        manifest.run_contract_binding,
+        expected,
+        expected_run_spec,
+        expected_phase_program,
+    ):
         return
     if allow_new_lineage_override:
         return
+    diffs = _run_contract_binding_diffs(manifest.run_contract_binding, expected)
+    if diffs:
+        diff_text = "; ".join(_format_binding_diff(diff) for diff in diffs[:8])
+        diff_suffix = f"; differing_fields={diff_text}"
+    else:
+        diff_suffix = (
+            "; stored canonical projection is unavailable for this legacy binding"
+        )
     raise CheckpointContractBindingError(
         "checkpoint run-contract content binding does not match expected run spec; "
         "pass allow_new_lineage_override=True to resume as new lineage"
+        f"{diff_suffix}"
+    )
+
+
+def _contract_binding_matches(
+    recorded: RunContractBinding,
+    expected: RunContractBinding,
+    expected_run_spec: TrainingRunSpec,
+    expected_phase_program: PhaseProgramSpec,
+) -> bool:
+    if (
+        recorded.canonical_projection_sha256 is not None
+        and expected.canonical_projection_sha256 is not None
+    ):
+        return recorded.canonical_projection_sha256 == expected.canonical_projection_sha256
+
+    if _binding_hash_fields(recorded) == _binding_hash_fields(expected):
+        return True
+
+    legacy_hashes = _legacy_binding_hash_fields(
+        expected_run_spec,
+        expected_phase_program,
+        recorded.training_run_spec_schema_version,
+    )
+    return _binding_hash_fields(recorded) == legacy_hashes
+
+
+def _binding_hash_fields(binding: RunContractBinding) -> dict[str, str | None]:
+    return {
+        "training_run_spec_sha256": binding.training_run_spec_sha256,
+        "method_payload_sha256": binding.method_payload_sha256,
+        "phase_program_sha256": binding.phase_program_sha256,
+        "objective_sha256": binding.objective_sha256,
+        "graph_sha256": binding.graph_sha256,
+        "optimizer_bindings_sha256": binding.optimizer_bindings_sha256,
+    }
+
+
+def _legacy_binding_hash_fields(
+    expected_run_spec: TrainingRunSpec,
+    expected_phase_program: PhaseProgramSpec,
+    source_schema_version: str,
+) -> dict[str, str | None]:
+    training_run_spec = _legacy_training_run_spec_payload(
+        expected_run_spec,
+        source_schema_version,
+    )
+    optimizer_bindings = [
+        binding.model_dump(mode="json", exclude_none=True)
+        for binding in expected_phase_program.optimizer_bindings
+    ]
+    return {
+        "training_run_spec_sha256": _canonical_hash(training_run_spec),
+        "method_payload_sha256": _canonical_hash(training_run_spec["method_payload"]),
+        "phase_program_sha256": _canonical_hash(expected_phase_program),
+        "objective_sha256": _canonical_hash(training_run_spec["objective"]),
+        "graph_sha256": _canonical_hash(training_run_spec["graph"]),
+        "optimizer_bindings_sha256": _canonical_hash(optimizer_bindings),
+    }
+
+
+def _run_contract_binding_diffs(
+    recorded: RunContractBinding,
+    expected: RunContractBinding,
+) -> list[tuple[str, Any, Any]]:
+    if recorded.canonical_projection is None or expected.canonical_projection is None:
+        return []
+    return _value_diffs(recorded.canonical_projection, expected.canonical_projection)
+
+
+def _value_diffs(
+    recorded: Any,
+    expected: Any,
+    *,
+    path: str = "",
+    limit: int = 32,
+) -> list[tuple[str, Any, Any]]:
+    if len(path) > 512:
+        return [(path, recorded, expected)]
+    if isinstance(recorded, Mapping) and isinstance(expected, Mapping):
+        diffs: list[tuple[str, Any, Any]] = []
+        for key in sorted(set(recorded) | set(expected), key=str):
+            if len(diffs) >= limit:
+                break
+            child_path = f"{path}/{key}" if path else f"/{key}"
+            if key not in recorded:
+                diffs.append((child_path, "<missing>", expected[key]))
+            elif key not in expected:
+                diffs.append((child_path, recorded[key], "<missing>"))
+            else:
+                diffs.extend(
+                    _value_diffs(
+                        recorded[key],
+                        expected[key],
+                        path=child_path,
+                        limit=limit - len(diffs),
+                    )
+                )
+        return diffs[:limit]
+    if isinstance(recorded, list) and isinstance(expected, list):
+        diffs = []
+        for index, (left, right) in enumerate(zip(recorded, expected, strict=False)):
+            if len(diffs) >= limit:
+                break
+            diffs.extend(
+                _value_diffs(
+                    left,
+                    right,
+                    path=f"{path}/{index}",
+                    limit=limit - len(diffs),
+                )
+            )
+        if len(recorded) != len(expected) and len(diffs) < limit:
+            diffs.append((f"{path}/length", len(recorded), len(expected)))
+        return diffs[:limit]
+    if recorded != expected:
+        return [(path or "/", recorded, expected)]
+    return []
+
+
+def _format_binding_diff(diff: tuple[str, Any, Any]) -> str:
+    path, recorded, expected = diff
+    return (
+        f"{path}: recorded={_short_json(recorded)}, "
+        f"expected={_short_json(expected)}"
+    )
+
+
+def _short_json(value: Any, *, limit: int = 160) -> str:
+    text = json.dumps(value, sort_keys=True, default=str)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _canonical_training_run_spec_payload(run_spec: TrainingRunSpec) -> dict[str, Any]:
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+    payload = run_spec.model_dump(mode="json", exclude_none=True)
+    migrated = migrate_structured_spec_payload(
+        "TrainingRunSpec",
+        payload,
+        path="checkpoint_binding/training_run_spec",
+    ).payload
+    return TrainingRunSpec.model_validate(migrated).model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+
+
+def _legacy_training_run_spec_payload(
+    run_spec: TrainingRunSpec,
+    source_schema_version: str,
+) -> dict[str, Any]:
+    payload = _canonical_training_run_spec_payload(run_spec)
+    if source_schema_version == TRAINING_RUN_SPEC_SCHEMA_VERSION_V1:
+        payload["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V1
+        payload.pop("on_nan", None)
+    return payload
+
+
+def _environment_provenance_notice(
+    slot: str,
+    fingerprint: StructuralAbiFingerprint,
+) -> CheckpointProvenanceNotice | None:
+    current = _serializer_versions().model_dump(mode="json", exclude_none=True)
+    if fingerprint.environment_provenance is None:
+        return CheckpointProvenanceNotice(
+            code="environment_provenance_unverifiable",
+            slot=slot,
+            message=(
+                f"checkpoint slot {slot!r} has no recorded environment provenance; "
+                "content integrity was verified"
+            ),
+            recorded=None,
+            current=current,
+            metadata={"provenance_status": fingerprint.provenance_status},
+        )
+
+    recorded = fingerprint.environment_provenance.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    if recorded == current:
+        return None
+    return CheckpointProvenanceNotice(
+        code="environment_provenance_mismatch",
+        slot=slot,
+        message=(
+            f"checkpoint slot {slot!r} was written under different serializer/runtime "
+            "provenance; content integrity was verified"
+        ),
+        recorded=recorded,
+        current=current,
     )
 
 
@@ -1076,6 +1318,36 @@ def _leaf_fingerprint(path: Any, leaf: Any) -> SlotLeafFingerprint:
         leaf_type=_qualified_type_name(leaf),
         static_repr_sha256=sha256_bytes(static_repr),
     )
+
+
+def _structural_abi_content_payload(
+    treedef: str,
+    leaves: Sequence[SlotLeafFingerprint],
+) -> dict[str, Any]:
+    return {
+        "fingerprint_algorithm_version": (
+            "feedbax.training_checkpoint.structural_abi.content.v2"
+        ),
+        "treedef": treedef,
+        "leaf_count": len(leaves),
+        "leaves": [_leaf_structural_content_payload(leaf) for leaf in leaves],
+    }
+
+
+def _leaf_structural_content_payload(leaf: SlotLeafFingerprint) -> dict[str, Any]:
+    payload = leaf.model_dump(mode="json", exclude_none=True)
+    return {
+        key: payload[key]
+        for key in (
+            "path",
+            "leaf_type",
+            "shape",
+            "dtype",
+            "weak_type",
+            "static_repr_sha256",
+        )
+        if key in payload
+    }
 
 
 def _leaf_content_digests(value: Any) -> list[SlotLeafContentDigest]:

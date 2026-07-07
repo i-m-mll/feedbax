@@ -14,6 +14,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
@@ -55,6 +56,8 @@ from feedbax.contracts.manifest import (
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
     ArtifactMigrationRecord,
+    canonical_json_bytes,
+    sha256_bytes,
 )
 from feedbax.contracts.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
@@ -90,6 +93,7 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
     LossTermSpec,
+    TrainingRunSpec,
 )
 from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
@@ -625,6 +629,154 @@ def _migrate_checkpoint_transaction_manifest_v1_to_v2_payload(
     migrated = dict(payload)
     migrated.setdefault("fork_provenance", None)
     return migrated
+
+
+def _migrate_checkpoint_transaction_manifest_v2_to_v3_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Split content fingerprints from environment provenance in v3 manifests."""
+    migrated = dict(payload)
+
+    migrated_slots: list[Any] = []
+    for raw_slot in list(migrated.get("slots") or ()):
+        if not isinstance(raw_slot, Mapping):
+            migrated_slots.append(raw_slot)
+            continue
+        slot = dict(raw_slot)
+        fingerprint = slot.get("structural_abi_fingerprint")
+        if isinstance(fingerprint, Mapping):
+            slot["structural_abi_fingerprint"] = (
+                _migrate_structural_abi_fingerprint_to_content_v2(fingerprint)
+            )
+        migrated_slots.append(slot)
+    migrated["slots"] = migrated_slots
+
+    binding = migrated.get("run_contract_binding")
+    if isinstance(binding, Mapping):
+        migrated["run_contract_binding"] = _migrate_run_contract_binding_to_v2(binding)
+
+    return migrated
+
+
+def _migrate_structural_abi_fingerprint_to_content_v2(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    legacy_serializer_versions = migrated.pop("serializer_versions", None)
+    environment_provenance = migrated.get("environment_provenance")
+    if environment_provenance is None and legacy_serializer_versions is not None:
+        migrated["environment_provenance"] = dict(legacy_serializer_versions)
+        migrated["provenance_status"] = "recorded"
+    elif environment_provenance is None:
+        migrated["environment_provenance"] = None
+        migrated["provenance_status"] = "unverifiable_legacy"
+    else:
+        migrated.setdefault("provenance_status", "recorded")
+
+    migrated["schema_version"] = "feedbax.manifest.training_checkpoint.structural_abi.v2"
+    migrated["fingerprint_algorithm_version"] = (
+        "feedbax.training_checkpoint.structural_abi.content.v2"
+    )
+    migrated["fingerprint_sha256"] = _structural_abi_content_sha256(migrated)
+    return migrated
+
+
+def _structural_abi_content_sha256(payload: Mapping[str, Any]) -> str:
+    leaves: list[dict[str, Any]] = []
+    for raw_leaf in list(payload.get("leaves") or ()):
+        if not isinstance(raw_leaf, Mapping):
+            continue
+        leaf = {
+            key: raw_leaf[key]
+            for key in (
+                "path",
+                "leaf_type",
+                "shape",
+                "dtype",
+                "weak_type",
+                "static_repr_sha256",
+            )
+            if key in raw_leaf and raw_leaf[key] is not None
+        }
+        leaves.append(leaf)
+    content_payload = {
+        "fingerprint_algorithm_version": (
+            "feedbax.training_checkpoint.structural_abi.content.v2"
+        ),
+        "treedef": payload.get("treedef"),
+        "leaf_count": payload.get("leaf_count"),
+        "leaves": leaves,
+    }
+    return sha256_bytes(canonical_json_bytes(content_payload))
+
+
+def _migrate_run_contract_binding_to_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_version"] = "feedbax.manifest.training_checkpoint.run_contract_binding.v2"
+    migrated.setdefault(
+        "algorithm_version",
+        "feedbax.training_checkpoint.run_contract_binding.legacy_v1",
+    )
+    migrated.setdefault("canonical_projection", None)
+    migrated.setdefault("canonical_projection_sha256", None)
+    if isinstance(migrated["canonical_projection"], Mapping):
+        projection = _migrate_run_contract_projection_to_v2(
+            migrated["canonical_projection"]
+        )
+        migrated["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
+        migrated["canonical_projection"] = projection
+        migrated["canonical_projection_sha256"] = _canonical_sha256(projection)
+        training_run_spec = projection["training_run_spec"]
+        migrated["training_run_spec_schema_id"] = training_run_spec["schema_id"]
+        migrated["training_run_spec_schema_version"] = training_run_spec["schema_version"]
+        migrated["training_run_spec_sha256"] = _canonical_sha256(training_run_spec)
+        migrated["method_payload_schema_id"] = training_run_spec["method_payload"][
+            "schema_id"
+        ]
+        migrated["method_payload_schema_version"] = training_run_spec["method_payload"][
+            "schema_version"
+        ]
+        migrated["method_payload_sha256"] = _canonical_sha256(
+            training_run_spec["method_payload"]
+        )
+        migrated["objective_sha256"] = _canonical_sha256(training_run_spec["objective"])
+        migrated["graph_sha256"] = _canonical_sha256(training_run_spec["graph"])
+        if isinstance(projection.get("phase_program"), Mapping):
+            migrated["phase_program_sha256"] = _canonical_sha256(
+                projection["phase_program"]
+            )
+            migrated["optimizer_bindings_sha256"] = _canonical_sha256(
+                list(projection["phase_program"].get("optimizer_bindings") or ())
+            )
+    if migrated["canonical_projection"] is None:
+        metadata = dict(migrated.get("metadata") or {})
+        metadata.setdefault("projection_status", "legacy_absent")
+        migrated["metadata"] = metadata
+    return migrated
+
+
+def _migrate_run_contract_projection_to_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    projection = dict(payload)
+    training_run_spec = projection.get("training_run_spec")
+    if isinstance(training_run_spec, Mapping):
+        migrated_spec = migrate_structured_spec_payload(
+            "TrainingRunSpec",
+            training_run_spec,
+            path="checkpoint_manifest/run_contract_binding/canonical_projection/training_run_spec",
+        ).payload
+        projection["training_run_spec"] = TrainingRunSpec.model_validate(
+            migrated_spec
+        ).model_dump(mode="json", exclude_none=True)
+    projection["schema_id"] = "feedbax.manifest.training_checkpoint.run_contract_projection"
+    projection["schema_version"] = (
+        "feedbax.manifest.training_checkpoint.run_contract_projection.v1"
+    )
+    projection["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
+    return projection
+
+
+def _canonical_sha256(value: Any) -> str:
+    return sha256_bytes(canonical_json_bytes(value))
 
 
 def _graph_spec_source_version(
@@ -1362,7 +1514,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "run-contract binding, slot ABI fingerprints, and content integrity."
             ),
             stance="migrate",
-            supported_old_versions=(TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+            ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
@@ -2258,10 +2413,23 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
         migration_id="training-checkpoint-transaction-v1-to-v2-fork-provenance",
         migrate=_migrate_checkpoint_transaction_manifest_v1_to_v2_payload,
         description="Add explicit fork provenance to training checkpoint manifests.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v2-to-v3-portable-custody",
+        migrate=_migrate_checkpoint_transaction_manifest_v2_to_v3_payload,
+        description=(
+            "Split structural content fingerprints from environment provenance and "
+            "version run-contract binding projections."
+        ),
     ),
 )
 default_spec_registry.register_migration(

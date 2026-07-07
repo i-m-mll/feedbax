@@ -13,6 +13,7 @@ import pytest
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -135,6 +136,13 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, sort_keys=True, indent=2))
 
 
+def _rewrite_manifest_and_latest(result, payload: dict[str, object]) -> None:
+    _write_json(result.manifest_path, payload)
+    latest_payload = json.loads(result.latest_pointer_path.read_text())
+    latest_payload["manifest_sha256"] = _sha256_file(result.manifest_path)
+    _write_json(result.latest_pointer_path, latest_payload)
+
+
 def _manifest_blob_path(manifest_path: Path, relative_path: str) -> Path:
     return manifest_path.parent / relative_path
 
@@ -228,10 +236,11 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
     assert family.policy.owner_module == "feedbax.contracts.checkpoints"
     assert family.policy.supported_old_versions == (
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     )
 
 
-def test_checkpoint_transaction_manifest_v1_migrates_to_v2_fork_provenance(
+def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody(
     tmp_path: Path,
 ) -> None:
     run_spec = _run_spec(minimax=True)
@@ -258,8 +267,61 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_v2_fork_provenance(
     assert migrated.target_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert migrated.payload["fork_provenance"] is None
     assert [record.migration_id for record in migrated.migration_records] == [
-        "training-checkpoint-transaction-v1-to-v2-fork-provenance"
+        "training-checkpoint-transaction-v1-to-v2-fork-provenance",
+        "training-checkpoint-transaction-v2-to-v3-portable-custody",
     ]
+
+
+def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_contracts(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = result.manifest.model_dump(mode="json", exclude_none=True)
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
+    fingerprint = payload["slots"][0]["structural_abi_fingerprint"]
+    fingerprint["schema_version"] = "feedbax.manifest.training_checkpoint.structural_abi.v1"
+    fingerprint["serializer_versions"] = fingerprint.pop("environment_provenance")
+    fingerprint.pop("fingerprint_algorithm_version")
+    fingerprint.pop("provenance_status")
+    fingerprint["fingerprint_sha256"] = "legacy-mixed-serializer-hash"
+    binding = payload["run_contract_binding"]
+    binding["schema_version"] = "feedbax.manifest.training_checkpoint.run_contract_binding.v1"
+    binding.pop("algorithm_version")
+    binding["canonical_projection"]["training_run_spec"][
+        "schema_version"
+    ] = "feedbax.spec.training_run.v1"
+    binding["canonical_projection"]["training_run_spec"].pop("on_nan")
+    binding["canonical_projection_sha256"] = "legacy-projection-hash"
+
+    migrated = migrate_structured_spec_payload(
+        "TrainingCheckpointTransactionManifest",
+        payload,
+        path="checkpoint_manifest",
+    )
+
+    assert migrated.source_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
+    assert migrated.target_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    migrated_fingerprint = migrated.payload["slots"][0]["structural_abi_fingerprint"]
+    assert migrated_fingerprint["fingerprint_algorithm_version"].endswith(".content.v2")
+    assert migrated_fingerprint["environment_provenance"]["serializer"].startswith(
+        "feedbax.training.checkpoint_custody.pickle"
+    )
+    assert migrated_fingerprint["fingerprint_sha256"] != "legacy-mixed-serializer-hash"
+    migrated_binding = migrated.payload["run_contract_binding"]
+    assert migrated_binding["algorithm_version"].endswith(".run_contract_binding.v2")
+    assert migrated_binding["canonical_projection"]["training_run_spec"][
+        "schema_version"
+    ] == run_spec.schema_version
+    assert migrated_binding["canonical_projection"]["training_run_spec"]["on_nan"] == "raise"
 
 
 def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path) -> None:
@@ -489,6 +551,87 @@ def test_checkpoint_fork_incompatible_target_and_copy_fallback(
     )
 
 
+def test_environment_provenance_drift_warns_but_load_and_fork_succeed(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    result = write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    for slot in payload["slots"]:
+        provenance = slot["structural_abi_fingerprint"]["environment_provenance"]
+        provenance["jax_version"] = "drifted-test-jax"
+    _rewrite_manifest_and_latest(result, payload)
+
+    loaded = load_latest_checkpoint(
+        source_root,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert loaded.slots["controller"].tolist() == [1.0, 2.0]
+    assert {notice.code for notice in loaded.provenance_notices} == {
+        "environment_provenance_mismatch"
+    }
+
+    forked = fork_checkpoint_transaction(
+        source_root,
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert forked.source_provenance_notices
+    assert forked.source_provenance_notices[0].code == "environment_provenance_mismatch"
+
+
+def test_defaulted_legacy_projection_migrates_and_resumes(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
+    binding = payload["run_contract_binding"]
+    binding["canonical_projection"]["training_run_spec"][
+        "schema_version"
+    ] = "feedbax.spec.training_run.v1"
+    binding["canonical_projection"]["training_run_spec"].pop("on_nan")
+    binding["canonical_projection_sha256"] = "legacy-v1-projection"
+    _rewrite_manifest_and_latest(result, payload)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert loaded.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert loaded.manifest.run_contract_binding.canonical_projection is not None
+    assert loaded.manifest.run_contract_binding.canonical_projection["training_run_spec"][
+        "on_nan"
+    ] == "raise"
+
+
 def test_checkpoint_fork_cli_batch_smoke_partial_failure(tmp_path: Path) -> None:
     run_spec = _run_spec(minimax=True)
     program = run_spec.worker_execution.method_contract.phase_program
@@ -565,6 +708,32 @@ def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=incompatible,
+        )
+
+
+def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    controller = next(slot for slot in payload["slots"] if slot["slot"] == "controller")
+    controller["structural_abi_fingerprint"]["leaves"][0]["dtype"] = "float64"
+    controller["structural_abi_fingerprint"]["fingerprint_sha256"] = "0" * 64
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointIntegrityError, match="structural ABI fingerprint is stale"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
         )
 
 
@@ -787,7 +956,7 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
         )
 
 
-def test_changed_method_payload_fails_closed_unless_new_lineage_override(
+def test_changed_learning_rate_fails_closed_with_field_diff_unless_override(
     tmp_path: Path,
 ) -> None:
     run_spec = _run_spec(minimax=True)
@@ -801,9 +970,9 @@ def test_changed_method_payload_fails_closed_unless_new_lineage_override(
         slots=_minimax_slots(),
     )
     changed = run_spec.model_copy(deep=True)
-    changed.method_payload.payload["learning_rate"] = 0.5
+    changed.training_config.learning_rate = 0.5
 
-    with pytest.raises(CheckpointContractBindingError, match="content binding"):
+    with pytest.raises(CheckpointContractBindingError, match="learning_rate"):
         load_latest_checkpoint(
             tmp_path,
             expected_run_spec=changed,
