@@ -11,25 +11,14 @@ import {
 } from 'recharts';
 import type { ScatterResponse } from '@/types/statistics';
 import { METRIC_LABELS } from '@/types/statistics';
-
-const TASK_COLORS: Record<number, string> = {
-  0: '#2f7cf6',
-  1: '#2fbf7f',
-  2: '#f2b92d',
-  3: '#9b59b6',
-};
-
-const TASK_TYPE_NAMES: Record<number, string> = {
-  0: 'Reach',
-  1: 'Hold',
-  2: 'Track',
-  3: 'Swing',
-};
-
-const GENERIC_PALETTE = [
-  '#2f7cf6', '#2fbf7f', '#f2b92d', '#9b59b6',
-  '#e74c3c', '#1abc9c', '#f39c12', '#3498db',
-];
+import {
+  TASK_TYPE_NAMES,
+  chartAxisLine,
+  chartAxisTick,
+  chartColorForTaskType,
+  chartLegendStyle,
+  chartTooltipContentStyle,
+} from '@/components/ui/chartTheme';
 
 export function ScatterPlotChart({ data }: { data: ScatterResponse }) {
   // Group points by task_type
@@ -58,34 +47,34 @@ export function ScatterPlotChart({ data }: { data: ScatterResponse }) {
           type="number"
           dataKey="x"
           name={xLabel}
-          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          tick={chartAxisTick}
           tickLine={false}
-          axisLine={{ stroke: '#e2e8f0' }}
+          axisLine={chartAxisLine}
           label={{ value: xLabel, position: 'insideBottomRight', offset: -4, fontSize: 10, fill: '#94a3b8' }}
         />
         <YAxis
           type="number"
           dataKey="y"
           name={yLabel}
-          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          tick={chartAxisTick}
           tickLine={false}
-          axisLine={{ stroke: '#e2e8f0' }}
+          axisLine={chartAxisLine}
           label={{ value: yLabel, angle: -90, position: 'insideLeft', offset: 0, fontSize: 10, fill: '#94a3b8' }}
         />
         <ZAxis range={[20, 20]} />
         <Tooltip
-          contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+          contentStyle={chartTooltipContentStyle}
           cursor={{ strokeDasharray: '3 3' }}
         />
         {groups.length > 1 && (
-          <Legend wrapperStyle={{ fontSize: 10 }} />
+          <Legend wrapperStyle={chartLegendStyle} />
         )}
         {groups.map(({ taskType, points }) => (
           <Scatter
             key={taskType}
             name={TASK_TYPE_NAMES[taskType] ?? `Task ${taskType}`}
             data={points}
-            fill={TASK_COLORS[taskType] ?? GENERIC_PALETTE[taskType % GENERIC_PALETTE.length]}
+            fill={chartColorForTaskType(taskType)}
             fillOpacity={0.6}
             isAnimationActive={false}
           />

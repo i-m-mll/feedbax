@@ -10,7 +10,6 @@
 
 import { memo, useCallback, useState } from 'react';
 import {
-  Handle,
   Position,
   ReactFlow,
   Background,
@@ -19,8 +18,8 @@ import {
 } from '@xyflow/react';
 import { CustomNode } from './CustomNode';
 import type { GraphNodeData } from '@/types/graph';
-import clsx from 'clsx';
 import { ChevronDown, ChevronRight, Layers } from 'lucide-react';
+import { NodeHeader, NodeShell, PortHandle } from '@/components/ui/NodePrimitives';
 
 // ---------------------------------------------------------------------------
 // Layout constants — match CustomNode for visual consistency
@@ -74,36 +73,29 @@ function SubgraphNodeComponent({ data, selected }: NodeProps) {
   const nestedEdges = subgraph?.edges as Parameters<typeof ReactFlow>[0]['edges'] | undefined;
 
   return (
-    <div
-      className={clsx(
-        'relative rounded-xl border shadow-soft bg-white/90 backdrop-blur transition-all duration-150',
-        selected ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-violet-200',
-      )}
-      style={{ width, height: totalHeight }}
-    >
+    <NodeShell tone="subgraph" selected={selected} style={{ width, height: totalHeight }}>
       {/* State handles (hidden but present for connection compatibility) */}
-      <Handle
+      <PortHandle
         type="target"
         position={Position.Left}
         id="__state_in"
         style={{ top: HEADER_HEIGHT / 2, left: HANDLE_OFFSET - 2, transform: 'translateY(-50%)' }}
-        className="w-4 h-4 rounded-full border-2 border-white shadow-soft cursor-crosshair bg-slate-300"
+        tone="dependency"
+        size="lg"
+        className="rounded-full border-2 cursor-crosshair"
       />
-      <Handle
+      <PortHandle
         type="source"
         position={Position.Right}
         id="__state_out"
         style={{ top: HEADER_HEIGHT / 2, right: HANDLE_OFFSET - 2, transform: 'translateY(-50%)' }}
-        className="w-4 h-4 rounded-full border-2 border-white shadow-soft cursor-crosshair bg-slate-300"
+        tone="dependency"
+        size="lg"
+        className="rounded-full border-2 cursor-crosshair"
       />
 
       {/* Header */}
-      <div
-        className={clsx(
-          'px-3 py-2 bg-violet-50/80 flex items-center justify-between gap-3 overflow-hidden border-b border-violet-100',
-          'rounded-t-xl',
-        )}
-      >
+      <NodeHeader tone="subgraph" className="justify-between">
         <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
           <Layers className="w-3.5 h-3.5 text-violet-400 shrink-0" />
           <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
@@ -129,7 +121,7 @@ function SubgraphNodeComponent({ data, selected }: NodeProps) {
             )}
           </button>
         </div>
-      </div>
+      </NodeHeader>
 
       {/* Port body */}
       <div
@@ -138,7 +130,7 @@ function SubgraphNodeComponent({ data, selected }: NodeProps) {
       >
         {/* Input handles and labels */}
         {inputPorts.map((port, index) => (
-          <Handle
+          <PortHandle
             key={`handle-in-${port}`}
             type="target"
             position={Position.Left}
@@ -148,11 +140,12 @@ function SubgraphNodeComponent({ data, selected }: NodeProps) {
               left: HANDLE_OFFSET,
               transform: 'translateY(-50%)',
             }}
-            className="w-3 h-3 z-20 border border-white shadow-soft bg-slate-300"
+            tone="dependency"
+            size="lg"
           />
         ))}
         {outputPorts.map((port, index) => (
-          <Handle
+          <PortHandle
             key={`handle-out-${port}`}
             type="source"
             position={Position.Right}
@@ -162,7 +155,8 @@ function SubgraphNodeComponent({ data, selected }: NodeProps) {
               right: HANDLE_OFFSET,
               transform: 'translateY(-50%)',
             }}
-            className="w-3 h-3 z-20 border border-white shadow-soft bg-slate-300"
+            tone="dependency"
+            size="lg"
           />
         ))}
         {inputPorts.map((port, index) => (
@@ -239,7 +233,7 @@ function SubgraphNodeComponent({ data, selected }: NodeProps) {
           <span className="text-xs text-violet-400">No internal graph data</span>
         </div>
       )}
-    </div>
+    </NodeShell>
   );
 }
 

@@ -7,6 +7,7 @@ import {
 import { memo, useCallback } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import type { GraphEdgeData } from '@/types/graph';
+import { routedEdgeStyle } from '@/components/ui/edgeStyle';
 
 function buildPolylinePath(points: { x: number; y: number }[]) {
   if (points.length === 0) return '';
@@ -140,13 +141,7 @@ function RoutedEdgeComponent({
       <path
         d={path}
         className="react-flow__edge-path"
-        style={{
-          stroke:
-            schemaStatus === 'warning' ? '#f59e0b' : schemaStatus === 'blocked' ? '#ef4444' : selected ? '#2563eb' : '#b8bcc6',
-          strokeWidth: selected || schemaStatus === 'warning' || schemaStatus === 'blocked' ? 2.5 : 1.5,
-          strokeDasharray: isRecurrent ? '7 5' : undefined,
-          fill: 'none',
-        }}
+        style={routedEdgeStyle({ selected, schemaStatus, recurrent: isRecurrent })}
         onDoubleClick={handleDoubleClick}
         aria-label={typeof schemaMessage === 'string' ? schemaMessage : undefined}
       />

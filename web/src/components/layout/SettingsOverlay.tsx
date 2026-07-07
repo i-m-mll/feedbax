@@ -1,6 +1,7 @@
-import { X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { Dialog } from '@/components/ui/Dialog';
+import { CloseButton } from '@/components/ui/PanelPrimitives';
 
 type Section = 'general' | 'canvas' | 'storage';
 
@@ -28,26 +29,13 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
     setDefaultEdgeStyle,
   } = useSettingsStore();
 
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   return (
-    <div
+    <Dialog
+      onClose={onClose}
+      ariaLabel="Settings"
       className="fixed inset-x-0 bottom-0 top-12 z-50 flex items-stretch bg-white"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      panelClassName="flex h-full w-full bg-white"
     >
-      {/* Panel */}
-      <div className="flex h-full w-full bg-white">
         {/* Left sidebar */}
         <nav className="flex-none w-44 border-r border-slate-100 pt-14 pb-6 px-4 flex flex-col gap-0.5">
           <div className="text-[10px] uppercase tracking-widest text-slate-400 px-2 pb-2">
@@ -72,13 +60,11 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
         {/* Content area */}
         <div className="flex-1 relative overflow-y-auto">
           {/* Close button */}
-          <button
+          <CloseButton
             onClick={onClose}
-            className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
             title="Close settings"
-          >
-            <X className="w-4 h-4" />
-          </button>
+            className="absolute top-4 right-4 p-1.5 rounded-lg"
+          />
 
           <div className="p-8 max-w-xl">
             {activeSection === 'general' && <GeneralSection
@@ -100,8 +86,7 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
             {activeSection === 'storage' && <StorageSection />}
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

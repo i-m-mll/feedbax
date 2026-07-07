@@ -1,8 +1,10 @@
 import type { NodeProps } from '@xyflow/react';
-import { Handle, Position } from '@xyflow/react';
+import { Position } from '@xyflow/react';
 import type { TapNodeData } from '@/types/graph';
 import clsx from 'clsx';
 import { memo } from 'react';
+import { PortHandle } from '@/components/ui/NodePrimitives';
+import { semanticTokens } from '@/components/ui/semanticTokens';
 
 function TapNodeComponent({ data, selected }: NodeProps) {
   const tapData = data as TapNodeData;
@@ -21,7 +23,7 @@ function TapNodeComponent({ data, selected }: NodeProps) {
         className={clsx(
           'flex items-center justify-center text-[9px] font-semibold text-white shadow-soft border',
           isProbe ? 'bg-sky-500 border-sky-200' : 'bg-amber-500 border-amber-200',
-          selected ? 'ring-2 ring-brand-400' : 'ring-0'
+          selected ? clsx('ring-2', semanticTokens.selected.ring) : 'ring-0'
         )}
         style={{
           width: size,
@@ -36,7 +38,7 @@ function TapNodeComponent({ data, selected }: NodeProps) {
         </span>
       </div>
       {outputs.map((name, index) => (
-        <Handle
+        <PortHandle
           key={`tap-out-${name}`}
           type="source"
           position={Position.Bottom}
@@ -46,7 +48,8 @@ function TapNodeComponent({ data, selected }: NodeProps) {
             bottom: -6,
             transform: 'translateX(-50%)',
           }}
-          className="w-2.5 h-2.5 bg-slate-500 border border-white shadow-soft"
+          tone="state"
+          size="md"
         />
       ))}
     </div>
