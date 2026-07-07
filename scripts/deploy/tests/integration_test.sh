@@ -807,6 +807,167 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "W8 declared baseline preflight fails before launch and stages valid baseline"
+
+W8="$WORK/w8"; mkdir -p "$W8/rlrmp" "$W8/jax"
+cat > "$W8/spec_missing.json" <<JSON
+{"user_confirmed":true,"resume":{"baseline_checkpoint":"_artifacts/run/checkpoints","completed_batches":42}}
+JSON
+
+set +e
+RLRMP_ROOT="$W8/rlrmp" \
+JAX_COOKBOOK_ROOT="$W8/jax" \
+RUNPOD_RUN_CONFIG_FILE="$W8/run-config.json" \
+SKIP_IMAGE_CHECK=1 \
+bash "$DEPLOY_DIR/runpod_deploy.sh" --dry-run --pod-id pod-w8 --ssh-host dry --ssh-port 22 \
+  --train-spec "$W8/spec_missing.json" --launch-command true \
+  >"$W8/missing.out" 2>"$W8/missing.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && grep -q 'baseline preflight failed: source checkpoint not found' "$W8/missing.err"; then
+  ok "W8: missing declared baseline fails before launch"
+else
+  no "W8: missing baseline should fail specifically" "rc=$rc; $(cat "$W8/missing.err" | tr '\n' '|')"
+fi
+if ! grep -q 'launching row training' "$W8/missing.err"; then
+  ok "W8: missing baseline stops before training launch"
+else
+  no "W8: missing baseline must not launch" "$(cat "$W8/missing.err" | tr '\n' '|')"
+fi
+
+mkdir -p "$W8/rlrmp/_artifacts/run/checkpoints"
+cat > "$W8/rlrmp/_artifacts/run/checkpoints/latest.json" <<JSON
+{"completed_coordinate":{"global_step":42}}
+JSON
+cat > "$W8/spec_ok.json" <<JSON
+{"user_confirmed":true,"resume":{"baseline_checkpoint":"_artifacts/run/checkpoints","completed_batches":42}}
+JSON
+set +e
+RLRMP_ROOT="$W8/rlrmp" \
+JAX_COOKBOOK_ROOT="$W8/jax" \
+RUNPOD_RUN_CONFIG_FILE="$W8/run-config.json" \
+REMOTE_DEPLOY_CONFIG_PATH="/workspace/feedbax_runs/latest-run-config.json" \
+SKIP_IMAGE_CHECK=1 \
+bash "$DEPLOY_DIR/runpod_deploy.sh" --dry-run --pod-id pod-w8 --ssh-host dry --ssh-port 22 \
+  --train-spec "$W8/spec_ok.json" --launch-command true \
+  >"$W8/ok.out" 2>"$W8/ok.err"
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then
+  ok "W8: valid declared baseline passes dry-run deploy"
+else
+  no "W8: valid baseline dry-run should pass" "rc=$rc; $(tail -10 "$W8/ok.err" | tr '\n' '|')"
+fi
+if cat "$W8/ok.out" "$W8/ok.err" | grep -q 'staging declared baseline' &&
+   cat "$W8/ok.out" "$W8/ok.err" | grep -q '_artifacts/run/checkpoints' &&
+   cat "$W8/ok.out" "$W8/ok.err" | grep -q 'latest-run-config.json'; then
+  ok "W8: valid baseline stages and syncs fixed deploy config"
+else
+  no "W8: valid baseline should stage baseline and config" "$(cat "$W8/ok.out" "$W8/ok.err" | grep -E 'baseline|run-config|rsync' | tr '\n' '|')"
+fi
+
+# ---------------------------------------------------------------------------
+section "W8 poll_run derives run dir from deploy config and refuses silent default"
+
+POLL="$WORK/poll"; mkdir -p "$POLL/stubs" "$POLL/remote/run/sentinels" "$POLL/remote/run/logs"
+CONFIG="$POLL/deploy-config.json"
+cat > "$CONFIG" <<JSON
+{"schema_version":1,"remote_run_dir":"$POLL/remote/run","remote_sentinel_dir":"$POLL/remote/run/sentinels","remote_checkpoint_dir":"$POLL/remote/run","remote_log_dir":"$POLL/remote/run/logs"}
+JSON
+printf '%s\n' "$$" > "$POLL/remote/run/sentinels/row_live.pid"
+: > "$POLL/remote/run/sentinels/row_stale.started"
+
+cat > "$POLL/stubs/runpodctl" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pod get") echo '{"desiredStatus":"RUNNING","ssh":{"ip":"localhost","port":22}}' ;;
+  *) echo '{}' ;;
+esac
+STUB
+chmod +x "$POLL/stubs/runpodctl"
+cat > "$POLL/stubs/ssh" <<'STUB'
+#!/usr/bin/env bash
+cmd="${!#}"
+bash -c "$cmd"
+STUB
+chmod +x "$POLL/stubs/ssh"
+
+set +e
+PATH="$POLL/stubs:$PATH" \
+REMOTE_DEPLOY_CONFIG_PATH="$CONFIG" \
+bash "$DEPLOY_DIR/poll_run.sh" --pod-id pod-poll --cadence-seconds 0 \
+  >"$POLL/out" 2>"$POLL/err"
+rc=$?
+set -e
+if [ "$rc" -eq 0 ] &&
+   grep -q 'rows_running=1 rows_stale=1' "$POLL/out" &&
+   grep -q 'row_stale:stale_started' "$POLL/out"; then
+  ok "W8: poll derives run dir and distinguishes stale started rows"
+else
+  no "W8: poll should derive config and report stale" "rc=$rc; out=[$(cat "$POLL/out" | tr '\n' '|')] err=[$(cat "$POLL/err" | tr '\n' '|')]"
+fi
+
+set +e
+PATH="$POLL/stubs:$PATH" \
+REMOTE_DEPLOY_CONFIG_PATH="$POLL/missing-config.json" \
+bash "$DEPLOY_DIR/poll_run.sh" --pod-id pod-poll --cadence-seconds 0 \
+  >"$POLL/missing.out" 2>"$POLL/missing.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && grep -q 'remote run dir is not set' "$POLL/missing.err"; then
+  ok "W8: poll refuses missing run dir/config instead of defaulting"
+else
+  no "W8: poll should refuse missing run dir/config" "rc=$rc; $(cat "$POLL/missing.err" | tr '\n' '|')"
+fi
+
+# ---------------------------------------------------------------------------
+section "W8 row signal trap writes failed sentinel"
+
+SIG="$WORK/signal"; mkdir -p "$SIG/stubs" "$SIG/remote/rlrmp"
+SIG_SENT="$SIG/remote/run/sentinels"
+cat > "$SIG/stubs/ssh" <<'STUB'
+#!/usr/bin/env bash
+cmd="${!#}"
+bash -c "$cmd"
+STUB
+chmod +x "$SIG/stubs/ssh"
+
+SIG_HARNESS="$SIG/harness.sh"
+{
+  echo 'set -uo pipefail'
+  echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  cat <<'H'
+DRY_RUN=0
+RUNPOD_SSH_KEY="/dev/null"
+SSH_CONNECT_TIMEOUT=10
+log() { printf '==> %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
+remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+H
+  sed -n "/^launch_row() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
+  echo 'launch_row "row_term" "$REMOTE_RLRMP_ROOT" "sleep 20"'
+} > "$SIG_HARNESS"
+
+PATH="$SIG/stubs:$PATH" \
+REMOTE_RLRMP_ROOT="$SIG/remote/rlrmp" \
+REMOTE_RUN_DIR="$SIG/remote/run" \
+REMOTE_SENTINEL_DIR="$SIG_SENT" \
+SSH_HOST=localhost SSH_PORT=22 \
+bash "$SIG_HARNESS" >"$SIG/out" 2>"$SIG/err"
+sleep 1
+pid=$(cat "$SIG_SENT/row_term.pid" 2>/dev/null || true)
+if [ -n "$pid" ]; then
+  kill -TERM "$pid" 2>/dev/null || true
+fi
+sleep 1
+if [ -f "$SIG_SENT/row_term.failed" ] && [ ! -f "$SIG_SENT/row_term.done" ]; then
+  ok "W8: TERM writes .failed and not .done"
+else
+  no "W8: TERM should leave failed sentinel" "pid=${pid:-none}; files=[$(find "$SIG_SENT" -maxdepth 1 -type f -print 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')]"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n== summary ==\n'
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

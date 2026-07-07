@@ -272,6 +272,25 @@ rows_manifest_field() {
     '
 }
 
+# latest_pointer_completed_batches <latest.json>
+# Supports current Feedbax checkpoint custody pointers and older RLRMP indexes.
+latest_pointer_completed_batches() {
+    local latest_json=$1
+    [ -f "$latest_json" ] || return 1
+    jq -r '
+        .completed_coordinate.global_step
+        // .completed_batches
+        // .completed_batch
+        // .completedBatch
+        // .n_batches
+        // .batch
+        // .metadata.completed_batches
+        // .metadata.completed_batch
+        // .metadata.completedBatch
+        // empty
+    ' "$latest_json" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # _artifacts symlink repair  (W7 - issue 02c2854)
 # ---------------------------------------------------------------------------
@@ -338,10 +357,10 @@ repair_artifacts_symlink() {
 # ---------------------------------------------------------------------------
 
 # rows_rollup_from_listing  (newline list of "<id> <state>" on stdin)
-# state in {done,failed,running,pending}. Prints a single machine-readable
-# roll-up: "rows_done=k rows_failed=j rows_running=r rows_pending=p rows_total=N".
+# state in {done,failed,running,stale_started,pending}. Prints a single
+# machine-readable roll-up including stale reservations.
 rows_rollup_from_listing() {
-    local id state done=0 failed=0 running=0 pending=0 total=0
+    local id state done=0 failed=0 running=0 stale=0 pending=0 total=0
     while read -r id state; do
         [ -z "$id" ] && continue
         total=$((total + 1))
@@ -349,11 +368,12 @@ rows_rollup_from_listing() {
             done) done=$((done + 1)) ;;
             failed) failed=$((failed + 1)) ;;
             running) running=$((running + 1)) ;;
+            stale_started) stale=$((stale + 1)) ;;
             *) pending=$((pending + 1)) ;;
         esac
     done
-    printf 'rows_done=%s rows_failed=%s rows_running=%s rows_pending=%s rows_total=%s\n' \
-        "$done" "$failed" "$running" "$pending" "$total"
+    printf 'rows_done=%s rows_failed=%s rows_running=%s rows_stale=%s rows_pending=%s rows_total=%s\n' \
+        "$done" "$failed" "$running" "$stale" "$pending" "$total"
 }
 
 # max_checkpoint_step <dir>  -> highest integer checkpoint step found under dir.
@@ -393,22 +413,30 @@ discover_row_ids() {
     done | sort -u
 }
 
-# row_state <sentinel_dir> <id>  -> done|failed|running|pending.
+# row_state <sentinel_dir> <id>  -> done|failed|running|stale_started|pending.
 #   <id>.done present              -> done
 #   <id>.failed present            -> failed
-#   <id>.started or <id>.pid       -> running (launched, no terminal sentinel)
+#   <id>.pid is live               -> running
+#   <id>.started or stale <id>.pid -> stale_started
 #   otherwise                      -> pending
 row_state() {
-    local sentinel_dir=$1 id=$2
+    local sentinel_dir=$1 id=$2 pid
     if [ -f "$sentinel_dir/$id.done" ]; then printf 'done\n'
     elif [ -f "$sentinel_dir/$id.failed" ]; then printf 'failed\n'
-    elif [ -f "$sentinel_dir/$id.started" ] || [ -f "$sentinel_dir/$id.pid" ]; then printf 'running\n'
+    elif [ -f "$sentinel_dir/$id.pid" ]; then
+        pid=$(cat "$sentinel_dir/$id.pid" 2>/dev/null || true)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            printf 'running\n'
+        else
+            printf 'stale_started\n'
+        fi
+    elif [ -f "$sentinel_dir/$id.started" ]; then printf 'stale_started\n'
     else printf 'pending\n'; fi
 }
 
 # progress_report <sentinel_dir> <checkpoint_dir> <log_dir>
 # Emits ONE machine-readable status line (no jq needed by the consumer):
-#   rows_done=k rows_failed=j rows_running=r rows_pending=p rows_total=N \
+#   rows_done=k rows_failed=j rows_running=r rows_stale=s rows_pending=p rows_total=N \
 #   last_checkpoint=<step|none> last_batch=<n|none> rows=<id:state,...>
 # Distinguishes "compiling" (running, last_batch=none, last_checkpoint=none)
 # from "training" (a batch/checkpoint advancing) from "stalled" (running but no
@@ -427,7 +455,7 @@ progress_report() {
     if [ -n "$listing" ]; then
         rollup=$(printf '%s' "$listing" | rows_rollup_from_listing)
     else
-        rollup="rows_done=0 rows_failed=0 rows_running=0 rows_pending=0 rows_total=0"
+        rollup="rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0"
     fi
 
     ckpt=$(max_checkpoint_step "$checkpoint_dir")
