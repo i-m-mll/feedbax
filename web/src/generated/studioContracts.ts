@@ -557,6 +557,95 @@ export interface ComponentMigrationInfo {
   description?: string;
 }
 
+export interface RepresentationParamPathBinding {
+  kind?: "param_path";
+  path: string;
+  expected_type?: string | null;
+  dim?: number | null;
+}
+
+export interface RepresentationStateAnchorSelectorBinding {
+  kind?: "selector";
+  selector: StudioSelectorRef;
+  anchor_subpath?: "position" | "velocity" | "orientation" | "origin" | "insertion" | "center" | "endpoint" | "target" | "path" | null;
+  dim?: number | null;
+}
+
+export interface RepresentationTrialSpecPathBinding {
+  kind?: "trial_spec_path";
+  path: string;
+  expected_type?: string | null;
+  dim?: number | null;
+}
+
+export interface RepresentationLiteralBinding {
+  kind?: "literal";
+  value: number | string | boolean | null | unknown[] | Record<string, unknown>;
+  dim?: number | null;
+}
+
+export interface RepresentationFrameProvider {
+  kind: "fixed" | "from_input_port" | "registered_renderer";
+  frame?: string | null;
+  input_port?: string | null;
+  renderer_id?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationAnchorSpec {
+  id: string;
+  semantic_role: "origin" | "insertion" | "center" | "endpoint" | "joint" | "body" | "target" | "path" | "region" | "glyph" | "vector_start" | "vector_end" | "label" | "custom";
+  interaction_roles?: "selectable" | "hoverable" | "draggable" | "editable" | "connectable" | "snap_target" | "read_only"[];
+  label?: string | null;
+  binding?: RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding | null;
+  frame?: string | null;
+  units?: string | null;
+  dim?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationStyleSpec {
+  channel: "stroke" | "fill" | "radius" | "opacity" | "line_width" | "dash" | "label" | "glyph" | "colormap" | "z_index" | "visibility";
+  value?: number | string | boolean | null | unknown[] | Record<string, unknown>;
+  binding?: RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationElementSpec {
+  id: string;
+  archetype: "point_body" | "planar_chain" | "muscle_path" | "marker" | "region" | "distribution_glyph" | "vector" | "trace" | "objective_link" | "annotation" | "registered_renderer";
+  anchors?: string[];
+  bindings?: Record<string, RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding>;
+  style?: RepresentationStyleSpec[];
+  frame?: string | null;
+  frame_provider?: RepresentationFrameProvider | null;
+  units?: string | null;
+  dim?: number | null;
+  scale_invariant?: boolean;
+  renderer_id?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationSpec {
+  schema_id?: "feedbax.spec.studio.representation";
+  schema_version?: "feedbax.spec.studio.representation.v1";
+  anchors?: RepresentationAnchorSpec[];
+  elements?: RepresentationElementSpec[];
+  style?: RepresentationStyleSpec[];
+  frame?: string | null;
+  frame_provider?: RepresentationFrameProvider | null;
+  units?: string | null;
+  dim?: number | null;
+  scale_invariant?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationValidationIssue {
+  type: string;
+  message: string;
+  path: string;
+}
+
 export interface ComponentDefinition {
   name: string;
   category: string;
@@ -579,6 +668,7 @@ export interface ComponentDefinition {
   supported_param_schema_versions?: string[];
   migrations?: ComponentMigrationInfo[];
   trainable_by_default?: boolean;
+  representation?: RepresentationSpec | null;
 }
 
 export interface OptimizerSpec {
@@ -1974,6 +2064,135 @@ export const ComponentMigrationInfoSchema: z.ZodType<ComponentMigrationInfo> = z
     .strict()
 ) as unknown as z.ZodType<ComponentMigrationInfo>;
 
+export const RepresentationParamPathBindingSchema: z.ZodType<RepresentationParamPathBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("param_path").optional(),
+      "path": z.string(),
+      "expected_type": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationParamPathBinding>;
+
+export const RepresentationStateAnchorSelectorBindingSchema: z.ZodType<RepresentationStateAnchorSelectorBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("selector").optional(),
+      "selector": StudioSelectorRefSchema,
+      "anchor_subpath": z.union([z.literal("position"), z.literal("velocity"), z.literal("orientation"), z.literal("origin"), z.literal("insertion"), z.literal("center"), z.literal("endpoint"), z.literal("target"), z.literal("path")]).nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationStateAnchorSelectorBinding>;
+
+export const RepresentationTrialSpecPathBindingSchema: z.ZodType<RepresentationTrialSpecPathBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("trial_spec_path").optional(),
+      "path": z.string(),
+      "expected_type": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationTrialSpecPathBinding>;
+
+export const RepresentationLiteralBindingSchema: z.ZodType<RepresentationLiteralBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("literal").optional(),
+      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationLiteralBinding>;
+
+export const RepresentationFrameProviderSchema: z.ZodType<RepresentationFrameProvider> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("fixed"), z.literal("from_input_port"), z.literal("registered_renderer")]),
+      "frame": z.string().nullable().optional(),
+      "input_port": z.string().nullable().optional(),
+      "renderer_id": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationFrameProvider>;
+
+export const RepresentationAnchorSpecSchema: z.ZodType<RepresentationAnchorSpec> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "semantic_role": z.union([z.literal("origin"), z.literal("insertion"), z.literal("center"), z.literal("endpoint"), z.literal("joint"), z.literal("body"), z.literal("target"), z.literal("path"), z.literal("region"), z.literal("glyph"), z.literal("vector_start"), z.literal("vector_end"), z.literal("label"), z.literal("custom")]),
+      "interaction_roles": z.array(z.union([z.literal("selectable"), z.literal("hoverable"), z.literal("draggable"), z.literal("editable"), z.literal("connectable"), z.literal("snap_target"), z.literal("read_only")])).optional(),
+      "label": z.string().nullable().optional(),
+      "binding": z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema, z.null()]).optional(),
+      "frame": z.string().nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationAnchorSpec>;
+
+export const RepresentationStyleSpecSchema: z.ZodType<RepresentationStyleSpec> = z.lazy(() =>
+  z
+    .object({
+      "channel": z.union([z.literal("stroke"), z.literal("fill"), z.literal("radius"), z.literal("opacity"), z.literal("line_width"), z.literal("dash"), z.literal("label"), z.literal("glyph"), z.literal("colormap"), z.literal("z_index"), z.literal("visibility")]),
+      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
+      "binding": z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema, z.null()]).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationStyleSpec>;
+
+export const RepresentationElementSpecSchema: z.ZodType<RepresentationElementSpec> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "archetype": z.union([z.literal("point_body"), z.literal("planar_chain"), z.literal("muscle_path"), z.literal("marker"), z.literal("region"), z.literal("distribution_glyph"), z.literal("vector"), z.literal("trace"), z.literal("objective_link"), z.literal("annotation"), z.literal("registered_renderer")]),
+      "anchors": z.array(z.string()).optional(),
+      "bindings": z.record(z.string(), z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema])).optional(),
+      "style": z.array(RepresentationStyleSpecSchema).optional(),
+      "frame": z.string().nullable().optional(),
+      "frame_provider": RepresentationFrameProviderSchema.nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+      "scale_invariant": z.boolean().optional(),
+      "renderer_id": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationElementSpec>;
+
+export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.representation").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.representation.v1").optional(),
+      "anchors": z.array(RepresentationAnchorSpecSchema).optional(),
+      "elements": z.array(RepresentationElementSpecSchema).optional(),
+      "style": z.array(RepresentationStyleSpecSchema).optional(),
+      "frame": z.string().nullable().optional(),
+      "frame_provider": RepresentationFrameProviderSchema.nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+      "scale_invariant": z.boolean().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationSpec>;
+
+export const RepresentationValidationIssueSchema: z.ZodType<RepresentationValidationIssue> = z.lazy(() =>
+  z
+    .object({
+      "type": z.string(),
+      "message": z.string(),
+      "path": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationValidationIssue>;
+
 export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(() =>
   z
     .object({
@@ -1998,6 +2217,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "supported_param_schema_versions": z.array(z.string()).optional(),
       "migrations": z.array(ComponentMigrationInfoSchema).optional(),
       "trainable_by_default": z.boolean().optional(),
+      "representation": RepresentationSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;

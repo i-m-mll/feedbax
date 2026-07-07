@@ -6,6 +6,20 @@ under their transport package.
 """
 
 from feedbax.contracts.component import ComponentDefinition, PortType, PortTypeSpec
+from feedbax.contracts.representation import (
+    REPRESENTATION_SCHEMA_ID,
+    REPRESENTATION_SCHEMA_VERSION,
+    RepresentationAnchorSpec,
+    RepresentationElementSpec,
+    RepresentationFrameProvider,
+    RepresentationLiteralBinding,
+    RepresentationParamPathBinding,
+    RepresentationSpec,
+    RepresentationStateAnchorSelectorBinding,
+    RepresentationStyleSpec,
+    RepresentationTrialSpecPathBinding,
+    RepresentationValidationIssue,
+)
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
@@ -343,6 +357,18 @@ __all__ = [
     "ReducerRequirement",
     "RetainedObservableSpec",
     "RetainedObservableTargetSpec",
+    "REPRESENTATION_SCHEMA_ID",
+    "REPRESENTATION_SCHEMA_VERSION",
+    "RepresentationAnchorSpec",
+    "RepresentationElementSpec",
+    "RepresentationFrameProvider",
+    "RepresentationLiteralBinding",
+    "RepresentationParamPathBinding",
+    "RepresentationSpec",
+    "RepresentationStateAnchorSelectorBinding",
+    "RepresentationStyleSpec",
+    "RepresentationTrialSpecPathBinding",
+    "RepresentationValidationIssue",
     "RetentionPolicySpec",
     "ResumeCoordinateSpec",
     "RiskAggregationSpec",
