@@ -44,13 +44,15 @@ def test_training_ws_sends_upstream_errors_and_closes(monkeypatch) -> None:
 
     asyncio.run(training.training_ws(websocket, "job-1"))
 
-    assert websocket.sent == [
-        {
-            "type": "training_error",
-            "job_id": "job-1",
-            "error": "worker failed",
-        }
-    ]
+    assert len(websocket.sent) == 1
+    error = websocket.sent[0]
+    assert error["type"] == "training_error"
+    assert error["job_id"] == "job-1"
+    assert error["error"] == "worker failed"
+    assert error["batch"] == 0
+    assert error["seq"] >= 0
+    assert isinstance(error["emitted_at_ms"], int)
+    assert error["schema_version"] == "feedbax.spec.studio.api_transport.v1"
     assert websocket.closed is True
 
 

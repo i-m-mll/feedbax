@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import feedbax.web.api.training as training_api
 import feedbax.web.services.training_service as training_service_module
+import feedbax.web.worker.client as worker_client
 import feedbax.web.worker.app as worker_app
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
@@ -229,6 +230,184 @@ def test_training_service_passes_job_id_to_worker_client(monkeypatch, tmp_path) 
         ("checkpoint", "job-a"),
         ("manifest", "job-b"),
         ("download", "job-a"),
+    ]
+
+
+def test_training_service_rejects_stale_rest_status_after_newer_ws_event(monkeypatch) -> None:
+    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
+        assert base_url == "http://worker"
+        yield {
+            "type": "training_progress",
+            "job_id": job_id,
+            "seq": 7,
+            "batch": 12,
+            "total_batches": 20,
+            "loss": 0.25,
+        }
+
+    async def fake_get_status(base_url: str, job_id: str, **kwargs: Any) -> dict:
+        assert base_url == "http://worker"
+        return {
+            "status": "running",
+            "batch": 3,
+            "total_batches": 20,
+            "last_loss": 0.9,
+            "job_id": job_id,
+        }
+
+    async def run() -> None:
+        monkeypatch.setattr(
+            training_service_module.worker_client,
+            "stream_events",
+            fake_stream_events,
+        )
+        monkeypatch.setattr(
+            training_service_module.worker_client,
+            "get_status",
+            fake_get_status,
+        )
+
+        service = TrainingService()
+        service.connect_remote("http://worker")
+        [event] = [event async for event in service.stream_progress("job-ws")]
+        assert event.raw["seq"] == 0
+        assert event.raw["worker_seq"] == 7
+        assert event.raw["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+
+        status = await service.get_status("job-ws")
+
+        assert status["batch"] == 12
+        assert status["last_loss"] == 0.25
+
+    asyncio.run(run())
+
+
+def test_training_service_surfaces_reconnect_resync_marker(monkeypatch) -> None:
+    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
+        yield {
+            "type": "training_resync",
+            "job_id": job_id,
+            "expected_worker_seq": 5,
+            "observed_worker_seq": 8,
+            "missed_events": 3,
+            "reason": "gap",
+            "message": "Training stream resumed after reconnect with 3 missed event(s).",
+        }
+
+    async def run() -> None:
+        monkeypatch.setattr(
+            training_service_module.worker_client,
+            "stream_events",
+            fake_stream_events,
+        )
+
+        service = TrainingService()
+        service.connect_remote("http://worker")
+        [event] = [event async for event in service.stream_progress("job-gap")]
+
+        assert event.raw == {
+            "type": "training_resync",
+            "job_id": "job-gap",
+            "schema_id": STUDIO_API_TRANSPORT_SCHEMA_ID,
+            "schema_version": STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+            "seq": 0,
+            "emitted_at_ms": event.raw["emitted_at_ms"],
+            "expected_worker_seq": 5,
+            "observed_worker_seq": 8,
+            "missed_events": 3,
+            "reason": "gap",
+            "message": "Training stream resumed after reconnect with 3 missed event(s).",
+        }
+
+    asyncio.run(run())
+
+
+def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
+    stream_calls: list[dict] = []
+    streams = [
+        (
+            ['data: {"type": "training_progress", "job_id": "job-gap", "seq": 0}\n'],
+            worker_client.httpx.ReadError("dropped"),
+        ),
+        (
+            [
+                'data: {"type": "training_complete", "job_id": "job-gap", '
+                '"seq": 3, "batch": 1}\n'
+            ],
+            None,
+        ),
+    ]
+
+    class FakeResponse:
+        def __init__(self, lines: list[str], error: Exception | None) -> None:
+            self._lines = lines
+            self._error = error
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+            if self._error is not None:
+                raise self._error
+
+    class FakeStream:
+        def __init__(self, response: FakeResponse) -> None:
+            self._response = response
+
+        async def __aenter__(self) -> FakeResponse:
+            return self._response
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        def stream(
+            self,
+            method: str,
+            url: str,
+            *,
+            params: dict,
+            headers: dict,
+        ) -> FakeStream:
+            stream_calls.append(params)
+            lines, error = streams.pop(0)
+            return FakeStream(FakeResponse(lines, error))
+
+    async def run() -> list[dict]:
+        monkeypatch.setattr(worker_client.httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0)
+        return [
+            event
+            async for event in worker_client.stream_events("http://worker", "job-gap")
+        ]
+
+    events = asyncio.run(run())
+
+    assert stream_calls == [{}, {"from_seq": 1}]
+    assert events == [
+        {"type": "training_progress", "job_id": "job-gap", "seq": 0},
+        {
+            "type": "training_resync",
+            "job_id": "job-gap",
+            "expected_worker_seq": 1,
+            "observed_worker_seq": 3,
+            "worker_seq": 0,
+            "missed_events": 2,
+            "reason": "gap",
+            "message": "Training stream resumed after reconnect with 2 missed event(s).",
+        },
+        {"type": "training_complete", "job_id": "job-gap", "seq": 3, "batch": 1},
     ]
 
 

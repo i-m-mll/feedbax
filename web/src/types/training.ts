@@ -32,9 +32,14 @@ export type {
 
 export type TrainingProgress = Omit<
   import('@/generated/studioContracts').TrainingProgressEvent,
-  'type' | 'job_id'
+  'type' | 'job_id' | 'seq' | 'emitted_at_ms'
 > &
-  Partial<Pick<import('@/generated/studioContracts').TrainingProgressEvent, 'type' | 'job_id'>>;
+  Partial<
+    Pick<
+      import('@/generated/studioContracts').TrainingProgressEvent,
+      'type' | 'job_id' | 'seq' | 'emitted_at_ms'
+    >
+  >;
 
 export interface TrainingLogLine {
   batch: number;

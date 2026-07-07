@@ -240,15 +240,19 @@ async def stream_events(
     while attempt <= _MAX_RECONNECT_ATTEMPTS:
         url = f"{base_url}/jobs/{job_id}/stream"
         params: dict = {}
+        expected_seq: Optional[int] = None
         if last_seq is not None:
-            params["from_seq"] = last_seq + 1
+            expected_seq = last_seq + 1
+            params["from_seq"] = expected_seq
 
         try:
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("GET", url, params=params, headers=headers) as resp:
                     resp.raise_for_status()
+                    resumed_after_disconnect = attempt > 0
                     # Successful connection — reset attempt counter.
                     attempt = 0
+                    reported_resume = False
                     async for line in resp.aiter_lines():
                         line = line.strip()
                         if not line.startswith("data:"):
@@ -262,9 +266,38 @@ async def stream_events(
                             continue
                         if not event:
                             continue
-                        # Track highest seq seen for reconnection.
+                        event_seq: Optional[int] = None
                         if "seq" in event:
-                            last_seq = int(event["seq"])
+                            event_seq = int(event["seq"])
+                        if resumed_after_disconnect and not reported_resume:
+                            missed_events = 0
+                            reason = "resumed"
+                            message = "Training stream resumed after reconnect."
+                            if (
+                                expected_seq is not None
+                                and event_seq is not None
+                                and event_seq > expected_seq
+                            ):
+                                missed_events = event_seq - expected_seq
+                                reason = "gap"
+                                message = (
+                                    "Training stream resumed after reconnect with "
+                                    f"{missed_events} missed event(s)."
+                                )
+                            yield {
+                                "type": "training_resync",
+                                "job_id": job_id,
+                                "expected_worker_seq": expected_seq,
+                                "observed_worker_seq": event_seq,
+                                "worker_seq": last_seq,
+                                "missed_events": missed_events,
+                                "reason": reason,
+                                "message": message,
+                            }
+                            reported_resume = True
+                        # Track highest seq seen for reconnection.
+                        if event_seq is not None:
+                            last_seq = event_seq
                         yield event
                         # Terminal events — stop cleanly, no reconnect.
                         if event.get("type") in ("training_complete", "training_error"):

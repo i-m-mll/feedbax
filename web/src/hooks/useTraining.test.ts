@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  TRAINING_PROGRESS_BATCH_INTERVAL_MS,
   TRAINING_WS_MAX_RECONNECT_ATTEMPTS,
+  createTrainingProgressBatcher,
   shouldReconnectTrainingWebSocket,
   trainingWebSocketReconnectDelayMs,
 } from '@/hooks/useTraining';
@@ -62,5 +64,52 @@ describe('training stream error state', () => {
     useTrainingStore.getState().clearHistory();
 
     expect(useTrainingStore.getState().trainingStreamError).toBeNull();
+  });
+});
+
+describe('training progress batching', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('coalesces tight-loop progress events into one store update per interval', () => {
+    vi.useFakeTimers();
+    const applied: Array<{ batch: number; loss: number }> = [];
+    let runningStatusWrites = 0;
+    const batcher = createTrainingProgressBatcher(
+      (progress) => applied.push({ batch: progress.batch, loss: progress.loss }),
+      () => {
+        runningStatusWrites += 1;
+      }
+    );
+
+    batcher.enqueue({
+      seq: 1,
+      emitted_at_ms: 1000,
+      batch: 1,
+      total_batches: 10,
+      loss: 0.9,
+    });
+    batcher.enqueue({
+      seq: 2,
+      emitted_at_ms: 1001,
+      batch: 2,
+      total_batches: 10,
+      loss: 0.8,
+    });
+    batcher.enqueue({
+      seq: 3,
+      emitted_at_ms: 1002,
+      batch: 3,
+      total_batches: 10,
+      loss: 0.7,
+    });
+
+    expect(applied).toEqual([]);
+
+    vi.advanceTimersByTime(TRAINING_PROGRESS_BATCH_INTERVAL_MS);
+
+    expect(applied).toEqual([{ batch: 3, loss: 0.7 }]);
+    expect(runningStatusWrites).toBe(1);
   });
 });

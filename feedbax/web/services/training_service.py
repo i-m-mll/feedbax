@@ -7,11 +7,16 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 import httpx
 
+from feedbax.contracts.studio_api import (
+    STUDIO_API_TRANSPORT_SCHEMA_ID,
+    STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+)
 import feedbax.web.worker.client as worker_client
 
 
@@ -25,6 +30,14 @@ class TrainingEvent:
     """A single event relayed from the worker SSE stream."""
 
     raw: dict  # parsed JSON from the SSE data: line
+
+
+@dataclass(frozen=True)
+class _StatusCoordinate:
+    """Monotonic coordinate for the cached status visible to REST callers."""
+
+    seq: int
+    batch: int
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +90,8 @@ class TrainingService:
         self._lock = asyncio.Lock()
         # Track last known job metadata for synchronous helpers and worker outages.
         self._last_status_by_job: dict[str, dict] = {}
+        self._last_status_coord_by_job: dict[str, _StatusCoordinate] = {}
+        self._event_seq_by_job: dict[str, int] = {}
         self._last_loss_by_job: dict[str, float] = {}
 
         # Honour the FEEDBAX_WORKER_URL env var: skip subprocess and connect
@@ -234,6 +249,8 @@ class TrainingService:
             "last_loss": 0.0,
             "job_id": job_id,
         }
+        self._last_status_coord_by_job[job_id] = _StatusCoordinate(seq=-1, batch=0)
+        self._event_seq_by_job[job_id] = -1
         self._last_loss_by_job[job_id] = 0.0
         return job_id
 
@@ -255,8 +272,10 @@ class TrainingService:
             cached = self._last_status_by_job.setdefault(
                 job_id,
                 {
-                    "batch": 0,
-                    "total_batches": 0,
+                    "batch": self._last_status_by_job.get(job_id, {}).get("batch", 0),
+                    "total_batches": self._last_status_by_job.get(job_id, {}).get(
+                        "total_batches", 0
+                    ),
                     "last_loss": self._last_loss_by_job.get(job_id, 0.0),
                     "job_id": job_id,
                 },
@@ -302,12 +321,77 @@ class TrainingService:
                 job_id,
                 auth_token=self._auth_token,
             )
-            self._last_status_by_job[job_id] = status
+            status = self._cache_status_from_rest(job_id, status)
             if "last_loss" in status:
                 self._last_loss_by_job[job_id] = float(status["last_loss"])
             return status
         except Exception:
             return fallback
+
+    def make_error_event(self, job_id: str, error: str) -> TrainingEvent:
+        """Return a schema-versioned WebSocket error event for handler-originated failures."""
+        return TrainingEvent(
+            raw=self._normalize_training_event(
+                job_id,
+                {
+                    "type": "training_error",
+                    "job_id": job_id,
+                    "error": error,
+                },
+            )
+        )
+
+    def _next_event_seq(self, job_id: str) -> int:
+        """Return the next Studio WebSocket event sequence for *job_id*."""
+        next_seq = self._event_seq_by_job.get(job_id, -1) + 1
+        self._event_seq_by_job[job_id] = next_seq
+        return next_seq
+
+    def _normalize_training_event(self, job_id: str, event: dict) -> dict:
+        """Add durable Studio protocol fields to a raw worker training event."""
+        normalized = dict(event)
+        worker_seq = normalized.pop("seq", None)
+        normalized["schema_id"] = STUDIO_API_TRANSPORT_SCHEMA_ID
+        normalized["schema_version"] = STUDIO_API_TRANSPORT_SCHEMA_VERSION
+        normalized["job_id"] = job_id
+        normalized["seq"] = self._next_event_seq(job_id)
+        normalized["emitted_at_ms"] = int(time.time() * 1000)
+        if worker_seq is not None:
+            normalized["worker_seq"] = int(worker_seq)
+        if normalized.get("type") == "training_error":
+            fallback_batch = self._last_status_by_job.get(job_id, {}).get("batch", 0)
+            normalized.setdefault("batch", fallback_batch)
+        return normalized
+
+    def _cache_status(
+        self,
+        job_id: str,
+        status: dict,
+        *,
+        seq: Optional[int] = None,
+    ) -> dict:
+        """Store *status* unless it would regress the cached batch coordinate."""
+        status = dict(status)
+        status["job_id"] = job_id
+        batch = int(status.get("batch", 0) or 0)
+        coord = self._last_status_coord_by_job.get(job_id)
+        if coord is not None:
+            if seq is not None and seq < coord.seq:
+                return self._last_status_by_job.get(job_id, status)
+            if batch < coord.batch:
+                return self._last_status_by_job.get(job_id, status)
+
+        self._last_status_by_job[job_id] = status
+        next_coord_seq = seq if seq is not None else (coord.seq if coord is not None else -1)
+        self._last_status_coord_by_job[job_id] = _StatusCoordinate(
+            seq=next_coord_seq,
+            batch=batch,
+        )
+        return status
+
+    def _cache_status_from_rest(self, job_id: str, status: dict) -> dict:
+        """Store a REST-polled worker status without allowing stale batch regression."""
+        return self._cache_status(job_id, status, seq=None)
 
     async def stream_progress(self, job_id: str) -> AsyncIterator[TrainingEvent]:
         """Relay the worker SSE stream as :class:`TrainingEvent` objects.
@@ -325,36 +409,44 @@ class TrainingService:
             job_id,
             auth_token=self._auth_token,
         ):
+            event = self._normalize_training_event(job_id, event)
             # Keep last_loss in sync for synchronous callers.
             if "loss" in event:
                 self._last_loss_by_job[job_id] = float(event["loss"])
             if event.get("type") == "training_progress":
-                self._last_status_by_job[job_id] = {
-                    "status": "running",
-                    "batch": event.get("batch", 0),
-                    "total_batches": event.get("total_batches", 0),
-                    "last_loss": event.get("loss", self._last_loss_by_job.get(job_id, 0.0)),
-                    "job_id": job_id,
-                }
-            elif event.get("type") == "training_complete":
-                self._last_status_by_job[job_id] = {
-                    "status": "completed",
-                    "batch": event.get("batch", 0),
-                    "total_batches": event.get("batch", 0),
-                    "last_loss": event.get("loss", self._last_loss_by_job.get(job_id, 0.0)),
-                    "job_id": job_id,
-                }
-            elif event.get("type") == "training_error":
-                cached = self._last_status_by_job.setdefault(
+                self._cache_status(
                     job_id,
                     {
+                        "status": "running",
                         "batch": event.get("batch", 0),
-                        "total_batches": 0,
-                        "last_loss": self._last_loss_by_job.get(job_id, 0.0),
-                        "job_id": job_id,
+                        "total_batches": event.get("total_batches", 0),
+                        "last_loss": event.get("loss", self._last_loss_by_job.get(job_id, 0.0)),
                     },
+                    seq=int(event["seq"]),
                 )
-                cached["status"] = "error"
+            elif event.get("type") == "training_complete":
+                self._cache_status(
+                    job_id,
+                    {
+                        "status": "completed",
+                        "batch": event.get("batch", 0),
+                        "total_batches": event.get("batch", 0),
+                        "last_loss": event.get("loss", self._last_loss_by_job.get(job_id, 0.0)),
+                    },
+                    seq=int(event["seq"]),
+                )
+            elif event.get("type") == "training_error":
+                previous = self._last_status_by_job.get(job_id, {})
+                self._cache_status(
+                    job_id,
+                    {
+                        "status": "error",
+                        "batch": event.get("batch", previous.get("batch", 0)),
+                        "total_batches": previous.get("total_batches", 0),
+                        "last_loss": self._last_loss_by_job.get(job_id, 0.0),
+                    },
+                    seq=int(event["seq"]),
+                )
             yield TrainingEvent(raw=event)
 
     async def latest_checkpoint(self, job_id: str) -> Optional[dict]:

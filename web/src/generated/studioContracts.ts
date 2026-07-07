@@ -887,6 +887,9 @@ export interface TrainingProgressEvent {
   schema_version?: "feedbax.spec.studio.api_transport.v1";
   type: "training_progress";
   job_id: string;
+  seq: number;
+  emitted_at_ms: number;
+  worker_seq?: number | null;
   batch: number;
   total_batches: number;
   loss: number;
@@ -903,6 +906,9 @@ export interface TrainingLogEvent {
   schema_version?: "feedbax.spec.studio.api_transport.v1";
   type: "training_log";
   job_id: string;
+  seq: number;
+  emitted_at_ms: number;
+  worker_seq?: number | null;
   batch: number;
   level?: "info" | "warning" | "error";
   message: string;
@@ -926,6 +932,9 @@ export interface TrainingTrajectoryEvent {
   schema_version?: "feedbax.spec.studio.api_transport.v1";
   type: "training_trajectory";
   job_id: string;
+  seq: number;
+  emitted_at_ms: number;
+  worker_seq?: number | null;
   batch: number;
   trajectory: TrainingTrajectoryPayload;
   execution?: string | null;
@@ -936,6 +945,9 @@ export interface TrainingCompleteEvent {
   schema_version?: "feedbax.spec.studio.api_transport.v1";
   type: "training_complete";
   job_id: string;
+  seq: number;
+  emitted_at_ms: number;
+  worker_seq?: number | null;
   batch: number;
   loss?: number | null;
   manifest_path?: string | null;
@@ -948,8 +960,26 @@ export interface TrainingErrorEvent {
   schema_version?: "feedbax.spec.studio.api_transport.v1";
   type: "training_error";
   job_id: string;
+  seq: number;
+  emitted_at_ms: number;
+  worker_seq?: number | null;
   batch?: number | null;
   error: string;
+}
+
+export interface TrainingResyncEvent {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  type: "training_resync";
+  job_id: string;
+  seq: number;
+  emitted_at_ms: number;
+  worker_seq?: number | null;
+  expected_worker_seq?: number | null;
+  observed_worker_seq?: number | null;
+  missed_events?: number;
+  reason: "resumed" | "gap";
+  message: string;
 }
 
 export interface ProbeResponse {
@@ -2430,6 +2460,9 @@ export const TrainingProgressEventSchema: z.ZodType<TrainingProgressEvent> = z.l
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
       "type": z.literal("training_progress"),
       "job_id": z.string(),
+      "seq": z.number().int(),
+      "emitted_at_ms": z.number().int(),
+      "worker_seq": z.number().int().nullable().optional(),
       "batch": z.number().int(),
       "total_batches": z.number().int(),
       "loss": z.number(),
@@ -2450,6 +2483,9 @@ export const TrainingLogEventSchema: z.ZodType<TrainingLogEvent> = z.lazy(() =>
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
       "type": z.literal("training_log"),
       "job_id": z.string(),
+      "seq": z.number().int(),
+      "emitted_at_ms": z.number().int(),
+      "worker_seq": z.number().int().nullable().optional(),
       "batch": z.number().int(),
       "level": z.union([z.literal("info"), z.literal("warning"), z.literal("error")]).optional(),
       "message": z.string(),
@@ -2481,6 +2517,9 @@ export const TrainingTrajectoryEventSchema: z.ZodType<TrainingTrajectoryEvent> =
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
       "type": z.literal("training_trajectory"),
       "job_id": z.string(),
+      "seq": z.number().int(),
+      "emitted_at_ms": z.number().int(),
+      "worker_seq": z.number().int().nullable().optional(),
       "batch": z.number().int(),
       "trajectory": TrainingTrajectoryPayloadSchema,
       "execution": z.string().nullable().optional(),
@@ -2495,6 +2534,9 @@ export const TrainingCompleteEventSchema: z.ZodType<TrainingCompleteEvent> = z.l
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
       "type": z.literal("training_complete"),
       "job_id": z.string(),
+      "seq": z.number().int(),
+      "emitted_at_ms": z.number().int(),
+      "worker_seq": z.number().int().nullable().optional(),
       "batch": z.number().int(),
       "loss": z.number().nullable().optional(),
       "manifest_path": z.string().nullable().optional(),
@@ -2511,11 +2553,33 @@ export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(()
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
       "type": z.literal("training_error"),
       "job_id": z.string(),
+      "seq": z.number().int(),
+      "emitted_at_ms": z.number().int(),
+      "worker_seq": z.number().int().nullable().optional(),
       "batch": z.number().int().nullable().optional(),
       "error": z.string(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingErrorEvent>;
+
+export const TrainingResyncEventSchema: z.ZodType<TrainingResyncEvent> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "type": z.literal("training_resync"),
+      "job_id": z.string(),
+      "seq": z.number().int(),
+      "emitted_at_ms": z.number().int(),
+      "worker_seq": z.number().int().nullable().optional(),
+      "expected_worker_seq": z.number().int().nullable().optional(),
+      "observed_worker_seq": z.number().int().nullable().optional(),
+      "missed_events": z.number().int().optional(),
+      "reason": z.union([z.literal("resumed"), z.literal("gap")]),
+      "message": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingResyncEvent>;
 
 export const ProbeResponseSchema: z.ZodType<ProbeResponse> = z.lazy(() =>
   z
@@ -2820,9 +2884,9 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
-export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingErrorEvent;
+export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingErrorEvent | TrainingResyncEvent;
 
-export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingErrorEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
+export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingErrorEventSchema, TrainingResyncEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
 
 export const contractSchemas = {
   GraphListResponse: GraphListResponseSchema,
