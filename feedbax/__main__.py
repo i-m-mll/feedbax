@@ -71,6 +71,12 @@ def _load_slot_transforms(refs: Sequence[str] | None) -> dict[str, Any]:
     return transforms
 
 
+def _load_training_method_plugins(module_names: Sequence[str] | None) -> None:
+    from feedbax.plugins import load_training_method_plugins
+
+    load_training_method_plugins(modules=module_names)
+
+
 def _checkpoint_fork_targets(args: argparse.Namespace) -> list[str]:
     targets: list[str] = []
     targets.extend(args.target or ())
@@ -179,6 +185,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     execute_parser.add_argument("--training-payload-schema-id")
     execute_parser.add_argument("--training-payload-schema-version")
     execute_parser.add_argument("--training-payload-ref")
+    execute_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods before "
+            "TrainingRunSpec validation; may be repeated."
+        ),
+    )
     execute_parser.add_argument("--resume", action="store_true")
     execute_parser.add_argument("--stop-after-barrier")
     execute_parser.add_argument(
@@ -252,6 +266,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     adopt_parser.add_argument("--optimizer-slot", default="optimizer")
     adopt_parser.add_argument("--path-mapping", help="Optional path mapping registry JSON")
     adopt_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods before "
+            "TrainingRunSpec validation; may be repeated."
+        ),
+    )
+    adopt_parser.add_argument(
         "--resume-slot-transform",
         help=(
             "Optional current-environment module:function that transforms loaded slots "
@@ -293,10 +315,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="Per-slot transform as SLOT=module:function; may be repeated.",
     )
+    fork_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods before "
+            "TrainingRunSpec validation; may be repeated."
+        ),
+    )
     fork_parser.add_argument("--tool-version", help="Tool version to record in provenance")
 
     args = parser.parse_args(argv)
     if args.command == "execute-training-run-spec":
+        _load_training_method_plugins(args.plugin)
         initial_slots = _read_json(args.initial_slots) if args.initial_slots else None
         training_payload = (
             _read_json(args.training_payload) if args.training_payload else None
@@ -363,6 +394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             return 0
         if args.adopt_command == "adopt":
+            _load_training_method_plugins(args.plugin)
             run_spec = TrainingRunSpec.model_validate(_read_json(args.run_spec))
             phase_program = run_spec.worker_execution.method_contract.phase_program
             model_mapping, optimizer_mapping = _load_path_mapping(args.path_mapping)
@@ -411,6 +443,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
     if args.command == "checkpoint":
         if args.checkpoint_command == "fork":
+            _load_training_method_plugins(args.plugin)
             expected_slots = (
                 _read_pickle(args.expected_slots) if args.expected_slots else None
             )
