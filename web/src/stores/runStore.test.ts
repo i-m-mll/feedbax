@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchEvalRuns, fetchTrainingRuns } from '@/api/runAPI';
 import { useRunStore } from '@/stores/runStore';
+import { useSelectionContextStore } from '@/stores/selectionContextStore';
 import { buildWorkspaceSnapshot, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { EvalRun, TrainingRun } from '@/types/runs';
@@ -106,6 +107,7 @@ beforeEach(() => {
     trainingError: null,
     evalError: null,
   });
+  useSelectionContextStore.getState().reset();
   vi.mocked(fetchTrainingRuns).mockResolvedValue([]);
   vi.mocked(fetchEvalRuns).mockResolvedValue([]);
 });
@@ -129,6 +131,30 @@ describe('useRunStore stage collection ownership', () => {
       role: 'training_run',
     });
     expect(evalStage?.selection_spec.training_run_ids).toEqual([trainingRun.id]);
+    expect(useSelectionContextStore.getState().context).toMatchObject({
+      stage: evalStage?.id,
+      collection: 'collection:selected-training-runs',
+      selectedIds: [trainingRun.id],
+      focusedId: trainingRun.id,
+    });
+  });
+
+  it('clears training selection through the unified selection context', async () => {
+    useRunStore.getState().addTrainingRun(trainingRun);
+    await useRunStore.getState().selectTrainingRun(trainingRun.id);
+
+    await useRunStore.getState().selectTrainingRun(null);
+
+    const workspace = useWorkspaceStore.getState().workspace;
+    const evalStage = getStageByKind(workspace, 'eval');
+    expect(useRunStore.getState().selectedTrainingRunId).toBeNull();
+    expect(evalStage?.selection_spec.training_run_ids).toEqual([]);
+    expect(useSelectionContextStore.getState().context).toMatchObject({
+      stage: evalStage?.id,
+      collection: 'collection:selected-training-runs',
+      selectedIds: [],
+      focusedId: null,
+    });
   });
 
   it('indexes eval runs on the eval stage and selects analysis-stage inputs', () => {
@@ -152,6 +178,49 @@ describe('useRunStore stage collection ownership', () => {
     expect(analysisStage?.selection_spec.input_collection_ids).toEqual([
       'collection:selected-evaluation-runs',
     ]);
+    expect(useSelectionContextStore.getState().context).toMatchObject({
+      stage: analysisStage?.id,
+      collection: 'collection:selected-evaluation-runs',
+      selectedIds: [evalRun.id],
+      focusedId: evalRun.id,
+    });
+  });
+
+  it('treats runStore selected ids as compatibility mirrors of SelectionContext', () => {
+    const workspace = useWorkspaceStore.getState().workspace;
+    const evalStage = getStageByKind(workspace, 'eval');
+    const analysisStage = getStageByKind(workspace, 'analysis');
+    useRunStore.setState({
+      selectedTrainingRunId: 'stale-training',
+      selectedEvalRunId: 'stale-eval',
+    });
+
+    useSelectionContextStore.getState().setContext({
+      stage: evalStage?.id ?? null,
+      collection: 'collection:selected-training-runs',
+      selectedIds: ['tr-a', 'tr-b'],
+      focusedId: 'tr-b',
+    });
+
+    expect(useRunStore.getState()).toMatchObject({
+      selectedTrainingRunId: 'tr-b',
+      selectedEvalRunId: null,
+    });
+
+    useSelectionContextStore.getState().setContext({
+      stage: analysisStage?.id ?? null,
+      collection: 'collection:selected-evaluation-runs',
+      selectedIds: ['ev-a'],
+      focusedId: null,
+    });
+
+    expect(useRunStore.getState().selectedEvalRunId).toBe('ev-a');
+
+    useSelectionContextStore.getState().reset();
+    expect(useRunStore.getState()).toMatchObject({
+      selectedTrainingRunId: null,
+      selectedEvalRunId: null,
+    });
   });
 
   it('hydrates run selector state from existing workspace collections', () => {
@@ -177,6 +246,33 @@ describe('useRunStore stage collection ownership', () => {
     });
     expect(useRunStore.getState().selectedTrainingRunId).toBe(trainingRun.id);
     expect(useRunStore.getState().selectedEvalRunId).toBe(evalRun.id);
+  });
+
+  it('clears stale selection context when hydrating a workspace with no run selection', () => {
+    const workspace = useWorkspaceStore.getState().workspace;
+    useRunStore.setState({
+      selectedTrainingRunId: 'stale-training',
+      selectedEvalRunId: 'stale-eval',
+    });
+    useSelectionContextStore.getState().setContext({
+      stage: 'stage:old',
+      collection: 'collection:selected-training-runs',
+      selectedIds: ['stale-training'],
+      focusedId: 'stale-training',
+    });
+
+    useRunStore.getState().hydrateFromWorkspace(workspace);
+
+    expect(useRunStore.getState()).toMatchObject({
+      selectedTrainingRunId: null,
+      selectedEvalRunId: null,
+    });
+    expect(useSelectionContextStore.getState().context).toMatchObject({
+      stage: null,
+      collection: null,
+      selectedIds: [],
+      focusedId: null,
+    });
   });
 
   it('preserves typed pending training-run fields through workspace refs and hydration', () => {

@@ -102,6 +102,22 @@ export async function fetchTrainingRunManifest(
   return result as Record<string, unknown>;
 }
 
+/** Fetch the durable evaluation manifest payload for snapshot actions. */
+export async function fetchEvalRunManifest(
+  evalRunId: string
+): Promise<Record<string, unknown>> {
+  const path = `/api/runs/evaluation/${encodeURIComponent(evalRunId)}/manifest`;
+  const result = await requestJson(path);
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw asApiRequestError(
+      new Error('Evaluation manifest response was not an object.'),
+      path,
+      'Evaluation manifest response did not match the expected shape.'
+    );
+  }
+  return result as Record<string, unknown>;
+}
+
 /** Preview the current manifest-index matches for a SelectionSpec. */
 export async function previewSelectionSpec(
   selectionSpec: SelectionSpec,

@@ -13,6 +13,7 @@ import {
   PanelRightOpen,
   Settings2,
   Trash2,
+  Eye,
 } from 'lucide-react';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
@@ -53,9 +54,16 @@ import {
   getTopPaneState,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
+import {
+  type FrozenSnapshotProjection,
+  type SnapshotSpecKey,
+  type SnapshotSpecPayload,
+  useSelectionContextStore,
+} from '@/stores/selectionContextStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import type {
+  GraphSpec,
   RetainedObservableSpec,
 } from '@/types/graph';
 import type {
@@ -64,6 +72,7 @@ import type {
   StudioScenarioEntity,
   StudioScenarioEntityRegistry,
   StudioSchemaRegistry,
+  StudioScenarioSpec,
   StudioTopPaneProjection,
 } from '@/types/workspace';
 import type { TimeAggregationSpec } from '@/types/training';
@@ -188,6 +197,44 @@ function ScenarioBadge({
         {scenarioLabel ?? stageLabel}
       </div>
       {summary && <div className="mt-0.5 truncate text-xs text-slate-500">{summary}</div>}
+    </div>
+  );
+}
+
+function FrozenSnapshotSpecProjection({
+  projection,
+  snapshot,
+}: {
+  projection: StudioTopPaneProjection;
+  snapshot: SnapshotSpecPayload;
+}) {
+  const entries: Array<{
+    key: SnapshotSpecKey;
+    label: string;
+    value: Record<string, unknown> | null | undefined;
+  }> =
+    projection === 'task'
+      ? [
+          { key: 'task_spec', label: 'Task spec', value: snapshot.task_spec },
+          { key: 'task_binding_spec', label: 'Task binding', value: snapshot.task_binding_spec },
+          { key: 'training_spec', label: 'Training spec', value: snapshot.training_spec },
+          { key: 'evaluation_spec', label: 'Evaluation spec', value: snapshot.evaluation_spec },
+        ]
+      : [{ key: 'graph_spec', label: 'Graph spec', value: snapshot.graph_spec }];
+  return (
+    <div className="h-full overflow-y-auto bg-slate-50 p-5">
+      <div className="mx-auto max-w-5xl space-y-3">
+        {entries.map(({ key, label, value }) => (
+          <section key={key} className="rounded-md border border-slate-200 bg-white p-4">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+              {label}
+            </div>
+            <pre className="max-h-[28rem] overflow-auto rounded bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
+              {value ? JSON.stringify(value, null, 2) : 'Not captured in snapshot'}
+            </pre>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
@@ -368,6 +415,7 @@ function ObservablesProjection({
   onAdd,
   onUpdate,
   onRemove,
+  readOnly = false,
 }: {
   registry: StudioScenarioEntityRegistry;
   selectedId: string | null;
@@ -378,6 +426,7 @@ function ObservablesProjection({
   onAdd: (observable: RetainedObservableSpec) => void;
   onUpdate: (observableId: string, updates: Partial<RetainedObservableSpec>) => void;
   onRemove: (observableId: string) => void;
+  readOnly?: boolean;
 }) {
   const observables = graph.retained_observables ?? [];
   const selectorOptions = useMemo(
@@ -402,6 +451,7 @@ function ObservablesProjection({
   }, [captureOptions, draftSelector]);
 
   const addObservable = () => {
+    if (readOnly) return;
     const option =
       captureOptions.find((candidate) => candidate.selector.compact === draftSelector) ??
       captureOptions[0];
@@ -429,7 +479,7 @@ function ObservablesProjection({
             <button
               type="button"
               onClick={addObservable}
-              disabled={captureOptions.length === 0}
+              disabled={readOnly || captureOptions.length === 0}
               className="inline-flex h-8 items-center justify-center rounded-md bg-slate-900 px-3 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               Add capture
@@ -459,7 +509,10 @@ function ObservablesProjection({
                 <div className="min-w-0">
                   <input
                     value={observable.label ?? observable.id}
-                    onChange={(event) => onUpdate(observable.id, { label: event.target.value })}
+                    readOnly={readOnly}
+                    onChange={(event) => {
+                      if (!readOnly) onUpdate(observable.id, { label: event.target.value });
+                    }}
                     onClick={(event) => event.stopPropagation()}
                     className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
                   />
@@ -471,6 +524,7 @@ function ObservablesProjection({
                   value={source}
                   options={captureOptions}
                   onChange={(option) => {
+                    if (readOnly) return;
                     if (!option) return;
                     const patch = retainedObservableSelectorPatch(option.selector);
                     if (patch) onUpdate(observable.id, patch);
@@ -481,10 +535,12 @@ function ObservablesProjection({
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (readOnly) return;
                     onRemove(observable.id);
                     if (active) onSelect(null);
                   }}
-                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  disabled={readOnly}
+                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Delete retained observable"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -509,12 +565,14 @@ function ObjectivesProjection({
   objectiveSpec,
   onSelect,
   onObjectiveSpecChange,
+  readOnly = false,
 }: {
   registry: StudioScenarioEntityRegistry;
   selectedId: string | null;
   objectiveSpec: StudioObjectiveSpec;
   onSelect: (entityId: string | null) => void;
   onObjectiveSpecChange: (spec: StudioObjectiveSpec) => void;
+  readOnly?: boolean;
 }) {
   const items = objectiveProjectionItems(registry);
   const relatedItems = relatedProjectionItems(registry, selectedId);
@@ -524,6 +582,7 @@ function ObjectivesProjection({
   );
 
   const updateTerm = (termId: string, updates: Partial<StudioObjectiveTermSpec>) => {
+    if (readOnly) return;
     onObjectiveSpecChange(updateObjectiveTerm(objectiveSpec, termId, updates));
   };
 
@@ -564,6 +623,7 @@ function ObjectivesProjection({
                   value={term.label}
                   onChange={(event) => updateTerm(term.id, { label: event.target.value })}
                   onClick={(event) => event.stopPropagation()}
+                  readOnly={readOnly}
                   className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
                 />
                 {item.summary && <div className="mt-0.5 truncate text-slate-400">{item.summary}</div>}
@@ -572,6 +632,7 @@ function ObjectivesProjection({
                 value={term.role}
                 onChange={(event) => updateTerm(term.id, { role: event.target.value })}
                 onClick={(event) => event.stopPropagation()}
+                disabled={readOnly}
                 className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
               >
                 <option value="loss">Loss</option>
@@ -590,12 +651,14 @@ function ObjectivesProjection({
                   if (Number.isFinite(weight)) updateTerm(term.id, { weight });
                 }}
                 onClick={(event) => event.stopPropagation()}
+                readOnly={readOnly}
                 className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
               />
               <select
                 value={term.penalty ?? 'squared_l2'}
                 onChange={(event) => updateTerm(term.id, { penalty: event.target.value })}
                 onClick={(event) => event.stopPropagation()}
+                disabled={readOnly}
                 className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
               >
                 {OBJECTIVE_PENALTY_OPTIONS.map((option) => (
@@ -614,6 +677,7 @@ function ObjectivesProjection({
                   })
                 }
                 onClick={(event) => event.stopPropagation()}
+                disabled={readOnly}
                 className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
               >
                 {OBJECTIVE_TEMPORAL_MODE_OPTIONS.map((option) => (
@@ -637,11 +701,13 @@ function ObjectivesProjection({
                   type="checkbox"
                   checked={objectiveTermEnabled(term)}
                   onChange={(event) =>
+                    !readOnly &&
                     onObjectiveSpecChange(
                       setObjectiveTermEnabled(objectiveSpec, term.id, event.target.checked)
                     )
                   }
                   onClick={(event) => event.stopPropagation()}
+                  disabled={readOnly}
                   className="h-4 w-4 rounded border-slate-300"
                   title="Enabled"
                 />
@@ -649,10 +715,12 @@ function ObjectivesProjection({
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (readOnly) return;
                     onObjectiveSpecChange(removeObjectiveTerm(objectiveSpec, term.id));
                     if (selectedId === item.entity_id) onSelect(null);
                   }}
-                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  disabled={readOnly}
+                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Delete objective"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -671,8 +739,111 @@ function ObjectivesProjection({
   );
 }
 
+function frozenSnapshotScenario(
+  activeScenario: StudioScenarioSpec | null,
+  frozenSnapshot: FrozenSnapshotProjection | null
+): StudioScenarioSpec | null {
+  if (!activeScenario || !frozenSnapshot) return activeScenario;
+  const { snapshot } = frozenSnapshot;
+  const graphSpec = snapshotRecord(snapshot.graph_spec);
+  const trainingSpec = snapshotRecord(snapshot.training_spec);
+  const taskSpec = snapshotRecord(snapshot.task_spec);
+  const taskBindingSpec = snapshotRecord(snapshot.task_binding_spec);
+  return {
+    ...activeScenario,
+    graph: snapshot.graph_spec === undefined ? activeScenario.graph : asScenarioGraph(graphSpec),
+    training_spec:
+      snapshot.training_spec === undefined
+        ? activeScenario.training_spec
+        : asScenarioTrainingSpec(trainingSpec),
+    task_spec:
+      snapshot.task_spec === undefined ? activeScenario.task_spec : asScenarioTaskSpec(taskSpec),
+    task_binding_spec:
+      snapshot.task_binding_spec === undefined
+        ? activeScenario.task_binding_spec
+        : asScenarioTaskBindingSpec(taskBindingSpec),
+    metadata: {
+      ...activeScenario.metadata,
+      projection_mode: 'frozen_snapshot',
+      projection_run_id: frozenSnapshot.runId,
+      projection_manifest_id: frozenSnapshot.manifestId,
+    },
+  };
+}
+
+function snapshotRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function asScenarioGraph(value: Record<string, unknown> | null): StudioScenarioSpec['graph'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['graph']);
+}
+
+function asScenarioTrainingSpec(
+  value: Record<string, unknown> | null
+): StudioScenarioSpec['training_spec'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['training_spec']);
+}
+
+function asScenarioTaskSpec(value: Record<string, unknown> | null): StudioScenarioSpec['task_spec'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['task_spec']);
+}
+
+function asScenarioTaskBindingSpec(
+  value: Record<string, unknown> | null
+): StudioScenarioSpec['task_binding_spec'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['task_binding_spec']);
+}
+
+function graphSpecForProjection(
+  frozenSnapshot: FrozenSnapshotProjection | null,
+  graph: GraphSpec
+): GraphSpec {
+  const graphSpec = snapshotRecord(frozenSnapshot?.snapshot.graph_spec);
+  return graphSpec ? (graphSpec as unknown as GraphSpec) : graph;
+}
+
+function RunSelectionScopeBanner({
+  syncMode,
+  focusedId,
+  previewId,
+  collection,
+}: {
+  syncMode: 'linked' | 'decoupled';
+  focusedId: string | null;
+  previewId: string | null;
+  collection: string | null;
+}) {
+  const scopedId = syncMode === 'linked' ? previewId ?? focusedId : null;
+  if (syncMode === 'linked' && scopedId) {
+    return (
+      <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center gap-2 rounded-md border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-800 shadow-sm">
+        <Eye className="h-3.5 w-3.5 shrink-0" />
+        <span className="font-semibold">{previewId ? 'Previewing run' : 'Focused run'}</span>
+        <span className="min-w-0 truncate">{scopedId}</span>
+        {collection && (
+          <span className="shrink-0 rounded-full bg-white px-2 py-0.5 font-medium text-brand-700">
+            {collection}
+          </span>
+        )}
+      </div>
+    );
+  }
+  if (syncMode === 'decoupled' && focusedId) {
+    return (
+      <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm">
+        <Eye className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+        <span className="font-semibold text-slate-700">Run sync decoupled</span>
+        <span className="min-w-0 truncate">{focusedId}</span>
+      </div>
+    );
+  }
+  return null;
+}
+
 export function ScenarioProjectionWorkspace() {
   const workspace = useWorkspaceStore((state) => state.workspace);
+  const setWorkspace = useWorkspaceStore((state) => state.setWorkspace);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const rightSidebarVisible = useLayoutStore((state) => state.rightSidebarVisible);
   const toggleRightSidebar = useLayoutStore((state) => state.toggleRightSidebar);
@@ -683,17 +854,30 @@ export function ScenarioProjectionWorkspace() {
   const addRetainedObservable = useGraphStore((state) => state.addRetainedObservable);
   const updateRetainedObservable = useGraphStore((state) => state.updateRetainedObservable);
   const removeRetainedObservable = useGraphStore((state) => state.removeRetainedObservable);
+  const selectionContext = useSelectionContextStore((state) => state.context);
+  const previewId = useSelectionContextStore((state) => state.previewId);
+  const syncMode = useSelectionContextStore((state) => state.syncMode);
+  const frozenSnapshot = useSelectionContextStore((state) => state.frozenSnapshot);
+  const setFrozenSnapshot = useSelectionContextStore((state) => state.setFrozenSnapshot);
   const topPane = getTopPaneState(workspace);
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
-  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const projectedScenario = useMemo(
+    () => frozenSnapshotScenario(activeScenario, frozenSnapshot),
+    [activeScenario, frozenSnapshot]
+  );
+  const graphForProjection = useMemo(
+    () => graphSpecForProjection(frozenSnapshot, graph),
+    [frozenSnapshot, graph]
+  );
+  const objectiveSpec = ensureObjectiveSpec(projectedScenario?.objective_spec);
   const schemaQuery = useStudioSchemaRegistry(
     workspace,
     activeStage?.scenario_id ?? activeScenario?.id ?? null
   );
   const registry = useMemo(
-    () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
-    [activeScenario, graph]
+    () => buildScenarioEntityRegistry({ scenario: projectedScenario, graph: graphForProjection }),
+    [graphForProjection, projectedScenario]
   );
   const stageSummary =
     typeof activeStage?.metadata.summary === 'string' ? activeStage.metadata.summary : null;
@@ -707,11 +891,19 @@ export function ScenarioProjectionWorkspace() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">
-        {(topPane.active_projection === 'model' || topPane.active_projection === 'task') && (
-          <div className="absolute inset-0">
-            <Canvas />
-          </div>
-        )}
+        {frozenSnapshot &&
+          (topPane.active_projection === 'model' || topPane.active_projection === 'task') && (
+            <FrozenSnapshotSpecProjection
+              projection={topPane.active_projection}
+              snapshot={frozenSnapshot.snapshot}
+            />
+          )}
+        {!frozenSnapshot &&
+          (topPane.active_projection === 'model' || topPane.active_projection === 'task') && (
+            <div className="absolute inset-0">
+              <Canvas />
+            </div>
+          )}
         {topPane.active_projection === 'workspace' && (
           <WorkspaceProjection
             registry={registry}
@@ -723,13 +915,14 @@ export function ScenarioProjectionWorkspace() {
           <ObservablesProjection
             registry={registry}
             selectedId={topPane.selected_entity_id}
-            graph={graph}
+            graph={graphForProjection}
             objectiveSpec={objectiveSpec}
             schemaRegistry={schemaQuery.data ?? null}
             onSelect={selectTopPaneEntity}
             onAdd={addRetainedObservable}
             onUpdate={updateRetainedObservable}
             onRemove={removeRetainedObservable}
+            readOnly={Boolean(frozenSnapshot)}
           />
         )}
         {topPane.active_projection === 'objectives' && (
@@ -739,13 +932,57 @@ export function ScenarioProjectionWorkspace() {
             objectiveSpec={objectiveSpec}
             onSelect={selectTopPaneEntity}
             onObjectiveSpecChange={updateActiveScenarioObjectiveSpec}
+            readOnly={Boolean(frozenSnapshot)}
           />
         )}
         <ScenarioBadge
           stageLabel={activeStage?.label ?? null}
           scenarioLabel={activeScenario?.label ?? null}
-          summary={stageSummary}
+            summary={stageSummary}
         />
+        {!frozenSnapshot && (
+          <RunSelectionScopeBanner
+            syncMode={syncMode}
+            focusedId={selectionContext.focusedId}
+            previewId={previewId}
+            collection={selectionContext.collection}
+          />
+        )}
+        {frozenSnapshot && (
+          <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center justify-between gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs shadow-sm">
+            <div className="flex min-w-0 items-center gap-2 text-sky-800">
+              <Eye className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate font-semibold">{frozenSnapshot.runLabel}</span>
+              <span className="shrink-0 rounded-full bg-white px-2 py-0.5 font-medium text-sky-700">
+                {frozenSnapshot.runStatus}
+              </span>
+              <span className="shrink-0 text-sky-700">frozen snapshot</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setFrozenSnapshot(null);
+                if (workspace) {
+                  const metadata = { ...topPane.metadata };
+                  delete metadata.run_snapshot_provenance;
+                  setWorkspace({
+                    ...workspace,
+                    ui_state: {
+                      ...workspace.ui_state,
+                      top_pane: {
+                        ...topPane,
+                        metadata,
+                      },
+                    },
+                  });
+                }
+              }}
+              className="rounded-md border border-sky-200 bg-white px-2 py-1 font-semibold text-sky-700 hover:bg-sky-100"
+            >
+              Back to draft
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

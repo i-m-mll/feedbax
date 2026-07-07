@@ -14,6 +14,8 @@ import {
   Info,
   Layers3,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   PlayCircle,
   RotateCcw,
@@ -25,13 +27,16 @@ import {
 } from 'lucide-react';
 import { getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
+import { useSelectionContextStore } from '@/stores/selectionContextStore';
 import { useTrainingStore } from '@/stores/trainingStore';
+import type { FrozenSnapshotProjection } from '@/stores/selectionContextStore';
 import {
   prepareStudioTrainingExecution,
 } from '@/api/client';
 import {
   cancelTrainingRun,
   deleteTrainingRun,
+  fetchEvalRunManifest,
   fetchTrainingRunManifest,
   supersedeTrainingRun,
 } from '@/api/runAPI';
@@ -93,15 +98,24 @@ import {
 } from '@/utils/trainRunTable';
 import type { TrainingProgress } from '@/types/training';
 import type { TrainingRun } from '@/types/runs';
-import type { StudioWorkspaceSpec } from '@/types/workspace';
+import type { StudioScenarioSpec, StudioTopPaneState, StudioWorkspaceSpec } from '@/types/workspace';
 
 type RunView = 'all' | 'selected' | 'best';
 type SortKey = string;
 type SortDirection = 'asc' | 'desc';
+type SpecHashStatus = 'changed' | 'unchanged' | 'missing-current' | 'missing-snapshot';
 
 interface SortState {
   key: SortKey;
   direction: SortDirection;
+}
+
+interface SpecHashComparison {
+  key: string;
+  label: string;
+  status: SpecHashStatus;
+  snapshotHash: string | null;
+  currentHash: string | null;
 }
 
 
@@ -123,11 +137,19 @@ export function TrainCollectionPanel() {
   const trainingProgress = useTrainingStore((state) => state.progress);
   const trainingJobId = useTrainingStore((state) => state.jobId);
   const lossHistory = useTrainingStore((state) => state.lossHistory);
+  const selectionContext = useSelectionContextStore((state) => state.context);
+  const previewRunId = useSelectionContextStore((state) => state.previewId);
+  const syncMode = useSelectionContextStore((state) => state.syncMode);
+  const frozenSnapshot = useSelectionContextStore((state) => state.frozenSnapshot);
+  const syncCollection = useSelectionContextStore((state) => state.syncCollection);
+  const toggleSelectionId = useSelectionContextStore((state) => state.toggleSelectedId);
+  const setSelectedIds = useSelectionContextStore((state) => state.setSelectedIds);
+  const focusSelectionId = useSelectionContextStore((state) => state.focusId);
+  const previewSelectionId = useSelectionContextStore((state) => state.previewFocus);
+  const setSyncMode = useSelectionContextStore((state) => state.setSyncMode);
+  const setFrozenSnapshot = useSelectionContextStore((state) => state.setFrozenSnapshot);
   const [view, setView] = useState<RunView>('all');
   const [sort, setSort] = useState<SortState>({ key: 'final_validation_loss', direction: 'asc' });
-  const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(() => new Set());
-  const [focusedRunId, setFocusedRunId] = useState<string | null>(null);
-  const [snapshotRunId, setSnapshotRunId] = useState<string | null>(null);
   const [collapsedSets, setCollapsedSets] = useState<Set<string>>(() => new Set());
   const [matrix, setMatrix] = useState<TrainMatrixSpec>(() => initialMatrixSpec(null, null));
   const [editingAxisId, setEditingAxisId] = useState<string | null>(null);
@@ -148,6 +170,18 @@ export function TrainCollectionPanel() {
   const protocol = trainingProtocolSnapshot(trainStage, trainScenario);
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
+  const trainingCollectionId =
+    trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
+    'collection:training-runs';
+  const contextMatchesTrain =
+    selectionContext.stage === trainStage?.id && selectionContext.collection === trainingCollectionId;
+  const selectedRunIds = useMemo(
+    () => new Set(contextMatchesTrain ? selectionContext.selectedIds : []),
+    [contextMatchesTrain, selectionContext.selectedIds]
+  );
+  const focusedRunId = contextMatchesTrain ? selectionContext.focusedId : null;
+  const effectiveFocusedRunId =
+    syncMode === 'linked' && previewRunId !== null ? previewRunId : focusedRunId;
   const ghostRows = useMemo(() => ghostRowsForMatrix(matrix), [matrix]);
   const axisColumns = useMemo(() => trainAxisColumns(rows, matrix.axes), [matrix.axes, rows]);
   const metricColumns = useMemo(() => runMetricColumns(metrics, rows), [metrics, rows]);
@@ -157,8 +191,12 @@ export function TrainCollectionPanel() {
     [rows, selectedRunIds]
   );
   const focusedRun = useMemo(
-    () => rows.find((row) => row.id === focusedRunId) ?? selectedRows[0] ?? rows[0] ?? null,
-    [focusedRunId, rows, selectedRows]
+    () => rows.find((row) => row.id === effectiveFocusedRunId) ?? selectedRows[0] ?? rows[0] ?? null,
+    [effectiveFocusedRunId, rows, selectedRows]
+  );
+  const currentSpecHashes = useMemo(
+    () => currentDraftSpecHashes(trainScenario),
+    [trainScenario]
   );
   const bulkAxis = useMemo(
     () => axisColumns.find((axis) => axis.id === bulkAxisId) ?? axisColumns[0] ?? null,
@@ -213,26 +251,25 @@ export function TrainCollectionPanel() {
     setMatrix((current) => (current.axes.length === 0 ? next : current));
   }, [trainScenario, trainStage]);
 
+  useEffect(() => {
+    syncCollection(trainStage?.id ?? null, trainingCollectionId, rows.map((row) => row.id));
+  }, [rows, syncCollection, trainStage?.id, trainingCollectionId]);
+
   const toggleRow = useCallback((id: string) => {
-    setSelectedRunIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+    toggleSelectionId(id);
+  }, [toggleSelectionId]);
 
   const selectAll = useCallback(() => {
-    setSelectedRunIds(new Set(rows.map((row) => row.id)));
-  }, [rows]);
+    setSelectedIds(rows.map((row) => row.id));
+  }, [rows, setSelectedIds]);
 
   const selectBest = useCallback(() => {
-    setSelectedRunIds(new Set(bestRow ? [bestRow.id] : []));
-  }, [bestRow]);
+    setSelectedIds(bestRow ? [bestRow.id] : []);
+  }, [bestRow, setSelectedIds]);
 
   const clearSelection = useCallback(() => {
-    setSelectedRunIds(new Set());
-  }, []);
+    setSelectedIds([]);
+  }, [setSelectedIds]);
 
   const toggleSetCollapsed = useCallback((runSetId: string) => {
     setCollapsedSets((current) => {
@@ -373,34 +410,57 @@ export function TrainCollectionPanel() {
       selected_pending_count: pendingSelectionCount,
       matrix_preview_count: bulkGhostRows.length,
     });
-    if (staged) setSelectedRunIds(new Set());
+    if (staged) setSelectedIds([]);
   }, [
     bulkGhostRows.length,
     bulkMatrixPlan.error,
     bulkMatrixPlan.matrix,
     bulkVerb,
     pendingSelectionCount,
+    setSelectedIds,
     stageMatrixSpec,
   ]);
 
-  const viewSnapshot = useCallback((run: TrainingRunSummary) => {
-    setFocusedRunId(run.id);
-    setSnapshotRunId(run.id);
-  }, []);
-
-  const restageRun = useCallback(async (run: TrainingRunSummary) => {
-    if (!workspace || !trainStage) return;
-    setFocusedRunId(run.id);
-    setSnapshotRunId(null);
+  const viewSnapshot = useCallback(async (run: TrainingRunSummary) => {
+    focusSelectionId(run.id);
     setStageState({ busy: true, error: null });
     try {
       const manifest = await fetchTrainingRunManifest(run.id);
-      const nextWorkspace = workspaceWithTrainingSnapshot(
-        workspace,
-        trainStage.id,
-        trainStage.scenario_id,
-        manifest,
-        run.axisCoordinates
+      const projection = frozenSnapshotProjectionForRun(run, manifest);
+      setFrozenSnapshot(projection);
+      if (workspace) {
+        setWorkspace(workspaceWithTopPaneProvenance(workspace, projection));
+      }
+      setStageState({ busy: false, error: null });
+    } catch (error) {
+      setStageState({
+        busy: false,
+        error: error instanceof Error ? error.message : 'Failed to load run snapshot.',
+      });
+    }
+  }, [focusSelectionId, setFrozenSnapshot, setWorkspace, workspace]);
+
+  const backToDraft = useCallback(() => {
+    setFrozenSnapshot(null);
+    if (workspace) setWorkspace(workspaceWithTopPaneProvenance(workspace, null));
+  }, [setFrozenSnapshot, setWorkspace, workspace]);
+
+  const restageRun = useCallback(async (run: TrainingRunSummary) => {
+    if (!workspace || !trainStage) return;
+    focusSelectionId(run.id);
+    setFrozenSnapshot(null);
+    setStageState({ busy: true, error: null });
+    try {
+      const manifest = await fetchTrainingRunManifest(run.id);
+      const nextWorkspace = workspaceWithTopPaneProvenance(
+        workspaceWithTrainingSnapshot(
+          workspace,
+          trainStage.id,
+          trainStage.scenario_id,
+          manifest,
+          run.axisCoordinates
+        ),
+        null
       );
       await stageWorkspace(nextWorkspace, trainStage.id, {
         source: 'train_collection_snapshot_restage',
@@ -414,7 +474,35 @@ export function TrainCollectionPanel() {
         error: error instanceof Error ? error.message : 'Failed to restage run snapshot.',
       });
     }
-  }, [stageWorkspace, trainStage, workspace]);
+  }, [focusSelectionId, setFrozenSnapshot, stageWorkspace, trainStage, workspace]);
+
+  const promoteToDraft = useCallback(async (run: TrainingRunSummary) => {
+    if (!workspace || !trainStage) return;
+    focusSelectionId(run.id);
+    setStageState({ busy: true, error: null });
+    try {
+      const manifest = await fetchTrainingRunManifest(run.id);
+      const nextWorkspace = workspaceWithTopPaneProvenance(
+        workspaceWithTrainingSnapshot(
+          workspace,
+          trainStage.id,
+          trainStage.scenario_id,
+          manifest,
+          run.axisCoordinates
+        ),
+        null
+      );
+      setWorkspace(nextWorkspace);
+      setFrozenSnapshot(null);
+      markDirty();
+      setStageState({ busy: false, error: null });
+    } catch (error) {
+      setStageState({
+        busy: false,
+        error: error instanceof Error ? error.message : 'Failed to promote run snapshot.',
+      });
+    }
+  }, [focusSelectionId, markDirty, setFrozenSnapshot, setWorkspace, trainStage, workspace]);
 
   const patchLifecycleRun = useCallback(
     (action: 'cancel' | 'delete' | 'supersede', run: TrainingRun) => {
@@ -430,17 +518,18 @@ export function TrainCollectionPanel() {
       };
       setWorkspace(nextWorkspace);
       if (action === 'delete') {
-        setSelectedRunIds((current) => {
-          const next = new Set(current);
-          next.delete(run.id);
-          return next;
-        });
-        setFocusedRunId((current) => (current === run.id ? null : current));
-        setSnapshotRunId((current) => (current === run.id ? null : current));
+        const selected = useSelectionContextStore
+          .getState()
+          .context.selectedIds.filter((id) => id !== run.id);
+        setSelectedIds(selected);
+        if (useSelectionContextStore.getState().context.focusedId === run.id) focusSelectionId(null);
+        if (useSelectionContextStore.getState().frozenSnapshot?.runId === run.id) {
+          setFrozenSnapshot(null);
+        }
       }
       markDirty();
     },
-    [markDirty, setWorkspace, trainStage, workspace]
+    [focusSelectionId, markDirty, setFrozenSnapshot, setSelectedIds, setWorkspace, trainStage, workspace]
   );
 
   const runLifecycleAction = useCallback(
@@ -528,6 +617,9 @@ export function TrainCollectionPanel() {
               axisColumns={axisColumns}
               metricColumns={metricColumns}
               selectedIds={selectedRunIds}
+              focusedId={focusedRunId}
+              previewId={previewRunId}
+              syncMode={syncMode}
               collapsedSets={collapsedSets}
               view={view}
               sort={sort}
@@ -540,8 +632,11 @@ export function TrainCollectionPanel() {
               onSelectAll={selectAll}
               onSelectBest={selectBest}
               onClear={clearSelection}
+              onPreview={(id) => previewSelectionId(id)}
+              onCommitFocus={(run) => focusSelectionId(run.id)}
+              onSyncModeChange={setSyncMode}
               onToggleSet={toggleSetCollapsed}
-              onOpenDetails={(run) => setFocusedRunId(run.id)}
+              onOpenDetails={(run) => focusSelectionId(run.id)}
               onViewSnapshot={viewSnapshot}
               onRestageRun={restageRun}
               onLifecycleAction={runLifecycleAction}
@@ -580,9 +675,12 @@ export function TrainCollectionPanel() {
             </section>
             <RunDetailPane
               run={focusedRun}
-              snapshotOpen={Boolean(focusedRun && snapshotRunId === focusedRun.id)}
+              frozenSnapshot={frozenSnapshot}
+              currentSpecHashes={currentSpecHashes}
               lossHistory={lossHistory}
               onViewSnapshot={viewSnapshot}
+              onBackToDraft={backToDraft}
+              onPromoteToDraft={promoteToDraft}
               onRestage={restageRun}
               onDownloadCheckpoint={(run) => {
                 if (run.uri) window.open(run.uri, '_blank', 'noopener,noreferrer');
@@ -614,11 +712,25 @@ export function TrainCollectionPanel() {
 
 export function EvaluateCollectionPanel() {
   const workspace = useWorkspaceStore((state) => state.workspace);
+  const setWorkspace = useWorkspaceStore((state) => state.setWorkspace);
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
+  const selectionContext = useSelectionContextStore((state) => state.context);
+  const previewRunId = useSelectionContextStore((state) => state.previewId);
+  const syncMode = useSelectionContextStore((state) => state.syncMode);
+  const setSelectionContext = useSelectionContextStore((state) => state.setContext);
+  const setSelectedIds = useSelectionContextStore((state) => state.setSelectedIds);
+  const focusSelectionId = useSelectionContextStore((state) => state.focusId);
+  const previewSelectionId = useSelectionContextStore((state) => state.previewFocus);
+  const setSyncMode = useSelectionContextStore((state) => state.setSyncMode);
+  const setFrozenSnapshot = useSelectionContextStore((state) => state.setFrozenSnapshot);
   const [view, setView] = useState<RunView>('all');
   const [sort, setSort] = useState<SortState>({ key: 'final_validation_loss', direction: 'asc' });
   const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
+  const [evalActionState, setEvalActionState] = useState({
+    busyRunId: null as string | null,
+    error: null as string | null,
+  });
 
   const trainStage = getStageByKind(workspace, 'train');
   const evalStage = getStageByKind(workspace, 'eval');
@@ -628,10 +740,24 @@ export function EvaluateCollectionPanel() {
   const metricColumns = useMemo(() => runMetricColumns(metrics, rows), [metrics, rows]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const evaluationRows = useMemo(() => evaluationRunSummaries(evalStage), [evalStage]);
-  const selectedIdsForEval = useMemo(
-    () => new Set(selectedIds(evalStage, 'training_run_ids')),
+  const evalSelectionCollectionId =
+    evalStage?.input_collections.find((collection) => collection.item_refs.length > 0)?.id ??
+    'collection:selected-training-runs';
+  const evaluationCollectionId =
+    evalStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
+    'collection:evaluation-runs';
+  const contextMatchesEval =
+    selectionContext.stage === evalStage?.id &&
+    selectionContext.collection === evalSelectionCollectionId;
+  const workspaceSelectedIds = useMemo(
+    () => selectedIds(evalStage, 'training_run_ids'),
     [evalStage]
   );
+  const selectedIdsForEval = useMemo(
+    () => new Set(contextMatchesEval ? selectionContext.selectedIds : workspaceSelectedIds),
+    [contextMatchesEval, selectionContext.selectedIds, workspaceSelectedIds]
+  );
+  const focusedRunId = contextMatchesEval ? selectionContext.focusedId : null;
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedIdsForEval.has(row.id)),
     [rows, selectedIdsForEval]
@@ -646,9 +772,33 @@ export function EvaluateCollectionPanel() {
     return sortTrainingRows(base, sort);
   }, [bestRow, rows, selectedRows, sort, view]);
 
+  useEffect(() => {
+    if (!evalStage) return;
+    const available = new Set(rows.map((row) => row.id));
+    const selected = workspaceSelectedIds.filter((id) => available.has(id));
+    setSelectionContext({
+      stage: evalStage.id,
+      collection: evalSelectionCollectionId,
+      selectedIds: selected,
+      focusedId:
+        contextMatchesEval && selectionContext.focusedId && available.has(selectionContext.focusedId)
+          ? selectionContext.focusedId
+          : selected[0] ?? null,
+    });
+  }, [
+    contextMatchesEval,
+    evalSelectionCollectionId,
+    evalStage,
+    rows,
+    selectionContext.focusedId,
+    setSelectionContext,
+    workspaceSelectedIds,
+  ]);
+
   const writeSelection = useCallback(
     (ids: string[]) => {
       if (!evalStage) return;
+      setSelectedIds(ids);
       const sourceCollectionId =
         trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
         evalStage.selection_spec.source_collection_id;
@@ -665,7 +815,7 @@ export function EvaluateCollectionPanel() {
         'evaluation_selection_changed'
       );
     },
-    [evalStage, rows, trainStage, updateStageDraft]
+    [evalStage, rows, setSelectedIds, trainStage, updateStageDraft]
   );
 
   const toggleRow = useCallback(
@@ -681,6 +831,36 @@ export function EvaluateCollectionPanel() {
   const openAnalyze = useCallback(() => {
     if (analysisStage) setActiveStage(analysisStage.id);
   }, [analysisStage, setActiveStage]);
+
+  const viewEvalSnapshot = useCallback(async (row: EvaluationRunSummary) => {
+    if (!evalStage || !workspace || !row.uri) return;
+    setSelectionContext({
+      stage: evalStage.id,
+      collection: evaluationCollectionId,
+      selectedIds: [row.id],
+      focusedId: row.id,
+    });
+    setEvalActionState({ busyRunId: row.id, error: null });
+    try {
+      const manifest = await fetchEvalRunManifest(row.id);
+      const projection = frozenSnapshotProjectionForEvaluationRun(row, manifest);
+      setFrozenSnapshot(projection);
+      setWorkspace(workspaceWithTopPaneProvenance(workspace, projection));
+      setEvalActionState({ busyRunId: null, error: null });
+    } catch (error) {
+      setEvalActionState({
+        busyRunId: null,
+        error: error instanceof Error ? error.message : 'Failed to load evaluation snapshot.',
+      });
+    }
+  }, [
+    evalStage,
+    evaluationCollectionId,
+    setFrozenSnapshot,
+    setSelectionContext,
+    setWorkspace,
+    workspace,
+  ]);
 
   const setTarget = useCallback(
     (target: ExecutionTargetChoice) => {
@@ -716,6 +896,9 @@ export function EvaluateCollectionPanel() {
             allRows={rows}
             metricColumns={metricColumns}
             selectedIds={selectedIdsForEval}
+            focusedId={focusedRunId}
+            previewId={previewRunId}
+            syncMode={syncMode}
             view={view}
             sort={sort}
             bestRunId={bestRow?.id ?? null}
@@ -725,7 +908,13 @@ export function EvaluateCollectionPanel() {
             onSelectAll={() => writeSelection(rows.map((row) => row.id))}
             onSelectBest={() => writeSelection(bestRow ? [bestRow.id] : [])}
             onClear={() => writeSelection([])}
-            onOpenDetails={setDetailsRun}
+            onPreview={(id) => previewSelectionId(id)}
+            onCommitFocus={(run) => focusSelectionId(run.id)}
+            onSyncModeChange={setSyncMode}
+            onOpenDetails={(run) => {
+              focusSelectionId(run.id);
+              setDetailsRun(run);
+            }}
           />
         </div>
 
@@ -762,6 +951,11 @@ export function EvaluateCollectionPanel() {
                 <div className="font-semibold text-slate-800">Results</div>
               </div>
               <div className="mt-3 space-y-3">
+                {evalActionState.error && (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                    {evalActionState.error}
+                  </div>
+                )}
                 {evaluationRows.length === 0 ? (
                   <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500">
                     No validation results yet.
@@ -775,6 +969,8 @@ export function EvaluateCollectionPanel() {
                         (candidate) => candidate.id === row.selectedTrainingRunId
                       )}
                       onOpenAnalyze={openAnalyze}
+                      onViewSnapshot={() => viewEvalSnapshot(row)}
+                      snapshotBusy={evalActionState.busyRunId === row.id}
                     />
                   ))
                 )}
@@ -840,6 +1036,171 @@ function workspaceWithTrainingSnapshot(
   };
 }
 
+function workspaceWithTopPaneProvenance(
+  workspace: StudioWorkspaceSpec,
+  projection: FrozenSnapshotProjection | null
+): StudioWorkspaceSpec {
+  const topPane = workspace.ui_state.top_pane as StudioTopPaneState | undefined;
+  const metadata = { ...(topPane?.metadata ?? {}) };
+  if (projection) {
+    metadata.run_snapshot_provenance = {
+      source: projection.source,
+      run_id: projection.runId,
+      run_label: projection.runLabel,
+      run_status: projection.runStatus,
+      manifest_id: projection.manifestId,
+      manifest_hash: projection.manifestHash,
+      spec_hashes: projection.specHashes,
+      mode: 'frozen_snapshot',
+      read_only: true,
+    };
+  } else {
+    delete metadata.run_snapshot_provenance;
+  }
+  return {
+    ...workspace,
+    ui_state: {
+      ...workspace.ui_state,
+      top_pane: {
+        active_projection: topPane?.active_projection ?? 'model',
+        selected_entity_id: topPane?.selected_entity_id ?? null,
+        hovered_entity_id: topPane?.hovered_entity_id ?? null,
+        pinned_inspector_entity_id: topPane?.pinned_inspector_entity_id ?? null,
+        metadata,
+      },
+    },
+  };
+}
+
+function frozenSnapshotProjectionForRun(
+  run: TrainingRunSummary,
+  manifest: Record<string, unknown>
+): FrozenSnapshotProjection {
+  const snapshot = {
+    graph_spec: specPayloadInlineValue(manifest, 'graph_spec') ?? null,
+    training_spec: specPayloadInlineValue(manifest, 'training_spec') ?? null,
+    task_spec: specPayloadInlineValue(manifest, 'task_spec') ?? null,
+    task_binding_spec: specPayloadInlineValue(manifest, 'task_binding_spec') ?? null,
+  };
+  const manifestId = typeof manifest.id === 'string' ? manifest.id : run.id;
+  const manifestHash =
+    typeof manifest.manifest_hash === 'string'
+      ? manifest.manifest_hash
+      : typeof manifest.hash === 'string'
+        ? manifest.hash
+        : stableHash(manifest);
+  return {
+    source: 'training_run',
+    runId: run.id,
+    runLabel: run.label,
+    runStatus: run.status,
+    manifestId,
+    manifestHash,
+    specHashes: {
+      graph_spec: snapshot.graph_spec ? stableHash(snapshot.graph_spec) : null,
+      training_spec: snapshot.training_spec ? stableHash(snapshot.training_spec) : null,
+      task_spec: snapshot.task_spec ? stableHash(snapshot.task_spec) : null,
+      task_binding_spec: snapshot.task_binding_spec ? stableHash(snapshot.task_binding_spec) : null,
+    },
+    snapshot,
+  };
+}
+
+function frozenSnapshotProjectionForEvaluationRun(
+  run: EvaluationRunSummary,
+  manifest: Record<string, unknown>
+): FrozenSnapshotProjection {
+  const snapshot = {
+    evaluation_spec: specPayloadInlineValue(manifest, 'evaluation_spec') ?? null,
+  };
+  const manifestId = typeof manifest.id === 'string' ? manifest.id : run.id;
+  const manifestHash =
+    typeof manifest.manifest_hash === 'string'
+      ? manifest.manifest_hash
+      : typeof manifest.hash === 'string'
+        ? manifest.hash
+        : stableHash(manifest);
+  return {
+    source: 'evaluation_run',
+    runId: run.id,
+    runLabel: run.label,
+    runStatus: run.status,
+    manifestId,
+    manifestHash,
+    specHashes: {
+      evaluation_spec: snapshot.evaluation_spec ? stableHash(snapshot.evaluation_spec) : null,
+    },
+    snapshot,
+  };
+}
+
+function currentDraftSpecHashes(
+  scenario: StudioScenarioSpec | null | undefined
+): Record<string, string | null> {
+  return {
+    graph_spec: scenario?.graph ? stableHash(scenario.graph) : null,
+    training_spec: scenario?.training_spec ? stableHash(scenario.training_spec) : null,
+    task_spec: scenario?.task_spec ? stableHash(scenario.task_spec) : null,
+    task_binding_spec: scenario?.task_binding_spec ? stableHash(scenario.task_binding_spec) : null,
+    evaluation_spec: null,
+  };
+}
+
+function compareSpecHashes(
+  snapshotHashes: Partial<Record<string, string | null>>,
+  currentHashes: Record<string, string | null>
+): SpecHashComparison[] {
+  const keys = Array.from(
+    new Set([
+      ...Object.keys(snapshotHashes),
+      ...Object.entries(currentHashes)
+        .filter(([, hash]) => hash !== null)
+        .map(([key]) => key),
+    ])
+  );
+  return keys.map((key) => {
+    const snapshotHash = snapshotHashes[key] ?? null;
+    const currentHash = currentHashes[key] ?? null;
+    let status: SpecHashStatus;
+    if (!snapshotHash) status = 'missing-snapshot';
+    else if (!currentHash) status = 'missing-current';
+    else status = snapshotHash === currentHash ? 'unchanged' : 'changed';
+    return {
+      key,
+      label: key.replace(/_/g, ' '),
+      status,
+      snapshotHash,
+      currentHash,
+    };
+  });
+}
+
+function specHashStatusLabel(status: SpecHashStatus): string {
+  switch (status) {
+    case 'changed':
+      return 'changed';
+    case 'unchanged':
+      return 'unchanged';
+    case 'missing-current':
+      return 'missing in draft';
+    case 'missing-snapshot':
+      return 'missing in snapshot';
+  }
+}
+
+function specHashStatusClass(status: SpecHashStatus): string {
+  switch (status) {
+    case 'changed':
+      return 'text-amber-700 ring-amber-200';
+    case 'unchanged':
+      return 'text-emerald-700 ring-emerald-200';
+    case 'missing-current':
+      return 'text-slate-600 ring-slate-200';
+    case 'missing-snapshot':
+      return 'text-red-700 ring-red-200';
+  }
+}
+
 function specPayloadInlineValue(
   manifest: Record<string, unknown>,
   key: string
@@ -851,6 +1212,26 @@ function specPayloadInlineValue(
   return inline && typeof inline === 'object' && !Array.isArray(inline)
     ? (inline as Record<string, unknown>)
     : undefined;
+}
+
+function stableHash(value: unknown): string {
+  const text = stableStringify(value);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(',')}}`;
 }
 
 function MatrixBuilderStrip({
@@ -1156,6 +1537,9 @@ function RunTable({
   axisColumns = [],
   metricColumns,
   selectedIds,
+  focusedId,
+  previewId,
+  syncMode = 'linked',
   collapsedSets = new Set<string>(),
   view,
   sort,
@@ -1168,6 +1552,9 @@ function RunTable({
   onSelectAll,
   onSelectBest,
   onClear,
+  onPreview,
+  onCommitFocus,
+  onSyncModeChange,
   onToggleSet,
   onOpenDetails,
   onViewSnapshot,
@@ -1181,6 +1568,9 @@ function RunTable({
   axisColumns?: TrainAxisColumn[];
   metricColumns: MetricColumnSpec[];
   selectedIds: Set<string>;
+  focusedId?: string | null;
+  previewId?: string | null;
+  syncMode?: 'linked' | 'decoupled';
   collapsedSets?: Set<string>;
   view: RunView;
   sort: SortState;
@@ -1193,6 +1583,9 @@ function RunTable({
   onSelectAll: () => void;
   onSelectBest: () => void;
   onClear: () => void;
+  onPreview?: (id: string | null) => void;
+  onCommitFocus?: (run: TrainingRunSummary) => void;
+  onSyncModeChange?: (mode: 'linked' | 'decoupled') => void;
   onToggleSet?: (runSetId: string) => void;
   onOpenDetails: (run: TrainingRunSummary) => void;
   onViewSnapshot?: (run: TrainingRunSummary) => void;
@@ -1242,6 +1635,30 @@ function RunTable({
           >
             Clear
           </button>
+          {onSyncModeChange && (
+            <button
+              type="button"
+              className={clsx(
+                'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold',
+                syncMode === 'linked'
+                  ? 'border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100'
+                  : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+              )}
+              onClick={() => onSyncModeChange(syncMode === 'linked' ? 'decoupled' : 'linked')}
+              title={
+                syncMode === 'linked'
+                  ? 'Hover previews and row focus update the top pane.'
+                  : 'Run table focus is decoupled from top-pane preview.'
+              }
+            >
+              {syncMode === 'linked' ? (
+                <Pin className="h-3.5 w-3.5" />
+              ) : (
+                <PinOff className="h-3.5 w-3.5" />
+              )}
+              {syncMode === 'linked' ? 'Linked' : 'Decoupled'}
+            </button>
+          )}
         </div>
       </div>
       {ghostRows.length > 0 && (
@@ -1315,9 +1732,14 @@ function RunTable({
                           metricColumns={metricColumns}
                           gridTemplateColumns={gridTemplateColumns}
                           selected={selectedIds.has(row.id)}
+                          focused={focusedId === row.id}
+                          previewed={previewId === row.id}
                           isBest={bestRunId === row.id}
                           progressLabel={progressByRunId?.get(row.id) ?? null}
                           onToggle={() => onToggle(row.id)}
+                          onPreview={onPreview ? () => onPreview(row.id) : undefined}
+                          onPreviewEnd={onPreview ? () => onPreview(null) : undefined}
+                          onCommitFocus={onCommitFocus ? () => onCommitFocus(row) : undefined}
                           onOpenDetails={() => onOpenDetails(row)}
                           onViewSnapshot={onViewSnapshot ? () => onViewSnapshot(row) : undefined}
                           onRestageRun={onRestageRun ? () => onRestageRun(row) : undefined}
@@ -1461,9 +1883,14 @@ function TrainingRunRow({
   metricColumns,
   gridTemplateColumns,
   selected,
+  focused,
+  previewed,
   isBest,
   progressLabel,
   onToggle,
+  onPreview,
+  onPreviewEnd,
+  onCommitFocus,
   onOpenDetails,
   onViewSnapshot,
   onRestageRun,
@@ -1474,9 +1901,14 @@ function TrainingRunRow({
   metricColumns: MetricColumnSpec[];
   gridTemplateColumns: string;
   selected: boolean;
+  focused: boolean;
+  previewed: boolean;
   isBest: boolean;
   progressLabel: string | null;
   onToggle: () => void;
+  onPreview?: () => void;
+  onPreviewEnd?: () => void;
+  onCommitFocus?: () => void;
   onOpenDetails: () => void;
   onViewSnapshot?: () => void;
   onRestageRun?: () => void;
@@ -1502,15 +1934,23 @@ function TrainingRunRow({
 
   return (
     <div
+      onMouseEnter={onPreview}
+      onMouseLeave={onPreviewEnd}
+      onClick={onCommitFocus}
       className={clsx(
-        'grid items-center gap-2 px-4 py-2 text-xs',
-        selected && 'bg-brand-50/40'
+        'grid items-center gap-2 px-4 py-2 text-xs transition-colors',
+        selected && 'bg-brand-50/40',
+        previewed && 'bg-sky-50/70',
+        focused && 'ring-1 ring-inset ring-brand-200'
       )}
       style={{ gridTemplateColumns }}
     >
       <button
         type="button"
-        onClick={onToggle}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggle();
+        }}
         className={clsx(
           'flex h-6 w-6 items-center justify-center rounded-md border transition-colors',
           selected
@@ -1559,7 +1999,10 @@ function TrainingRunRow({
       <div className="flex items-center gap-1">
         <button
           type="button"
-          onClick={onOpenDetails}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenDetails();
+          }}
           className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           aria-label={`Show details for ${row.label}`}
           title="Details"
@@ -1578,7 +2021,10 @@ function TrainingRunRow({
         {onViewSnapshot && (
           <button
             type="button"
-            onClick={onViewSnapshot}
+            onClick={(event) => {
+              event.stopPropagation();
+              onViewSnapshot();
+            }}
             className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-sky-50 hover:text-sky-700"
             aria-label={`View snapshot for ${row.label}`}
             title="View snapshot"
@@ -1589,7 +2035,10 @@ function TrainingRunRow({
         {onRestageRun && (
           <button
             type="button"
-            onClick={onRestageRun}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRestageRun();
+            }}
             className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
             aria-label={`Restage ${row.label}`}
             title="Restage run"
@@ -1601,7 +2050,10 @@ function TrainingRunRow({
           <>
             <button
               type="button"
-              onClick={() => onLifecycleAction('cancel', row)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onLifecycleAction('cancel', row);
+              }}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-amber-50 hover:text-amber-700"
               title="Cancel pending run"
             >
@@ -1609,7 +2061,10 @@ function TrainingRunRow({
             </button>
             <button
               type="button"
-              onClick={() => onLifecycleAction('delete', row)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onLifecycleAction('delete', row);
+              }}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-700"
               title="Delete pending run"
             >
@@ -1620,7 +2075,10 @@ function TrainingRunRow({
         {onLifecycleAction && row.status === 'completed' && (
           <button
             type="button"
-            onClick={() => onLifecycleAction('supersede', row)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onLifecycleAction('supersede', row);
+            }}
             className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
             title="Supersede run"
           >
@@ -1634,16 +2092,22 @@ function TrainingRunRow({
 
 function RunDetailPane({
   run,
-  snapshotOpen,
+  frozenSnapshot,
+  currentSpecHashes,
   lossHistory,
   onViewSnapshot,
+  onBackToDraft,
+  onPromoteToDraft,
   onRestage,
   onDownloadCheckpoint,
 }: {
   run: TrainingRunSummary | null;
-  snapshotOpen: boolean;
+  frozenSnapshot: FrozenSnapshotProjection | null;
+  currentSpecHashes: Record<string, string | null>;
   lossHistory: TrainingProgress[];
   onViewSnapshot: (run: TrainingRunSummary) => void;
+  onBackToDraft: () => void;
+  onPromoteToDraft: (run: TrainingRunSummary) => void;
   onRestage: (run: TrainingRunSummary) => void;
   onDownloadCheckpoint: (run: TrainingRunSummary) => void;
 }) {
@@ -1661,6 +2125,10 @@ function RunDetailPane({
     .map((point) => (typeof point.loss === 'number' ? point.loss : null))
     .filter((value): value is number => value !== null);
   const latestLoss = lossValues.at(-1) ?? run.finalValidationLoss;
+  const snapshotOpen = frozenSnapshot?.runId === run.id;
+  const specComparisons = snapshotOpen && frozenSnapshot
+    ? compareSpecHashes(frozenSnapshot.specHashes, currentSpecHashes)
+    : [];
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -1688,17 +2156,33 @@ function RunDetailPane({
         </div>
         <LossSparkline values={lossValues} />
       </div>
-      {snapshotOpen && (
+      {snapshotOpen && frozenSnapshot && (
         <div className="mt-4 rounded-md border border-sky-100 bg-sky-50 p-3 text-xs">
           <div className="flex items-center gap-2 font-semibold text-sky-800">
             <Eye className="h-3.5 w-3.5" />
-            Snapshot
+            Frozen snapshot
           </div>
           <div className="mt-2 grid gap-1 text-slate-600">
-            <DetailField label="Manifest id" value={run.id} />
+            <DetailField label="Manifest id" value={frozenSnapshot.manifestId ?? run.id} />
             <DetailField label="URI" value={run.uri ?? 'Not recorded'} />
-            <DetailField label="Status" value={run.status} />
+            <DetailField label="Status" value={frozenSnapshot.runStatus} />
           </div>
+          {specComparisons.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1">
+              {specComparisons.map((comparison) => (
+                <span
+                  key={comparison.key}
+                  className={clsx(
+                    'rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold ring-1',
+                    specHashStatusClass(comparison.status)
+                  )}
+                  title={`snapshot=${comparison.snapshotHash ?? 'missing'} current=${comparison.currentHash ?? 'missing'}`}
+                >
+                  {comparison.label} {specHashStatusLabel(comparison.status)}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
       <div className="mt-4 grid grid-cols-2 gap-2">
@@ -1708,7 +2192,26 @@ function RunDetailPane({
           className="inline-flex items-center justify-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100"
         >
           <Eye className="h-3.5 w-3.5" />
-          Snapshot
+          View snapshot
+        </button>
+        <button
+          type="button"
+          onClick={() => onPromoteToDraft(run)}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          Promote
+        </button>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          disabled={!snapshotOpen}
+          onClick={onBackToDraft}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <ChevronRight className="h-3.5 w-3.5 rotate-180" />
+          Back to draft
         </button>
         <button
           type="button"
@@ -1792,11 +2295,16 @@ function EvaluationResult({
   row,
   selectedRun,
   onOpenAnalyze,
+  onViewSnapshot,
+  snapshotBusy,
 }: {
   row: EvaluationRunSummary;
   selectedRun: TrainingRunSummary | undefined;
   onOpenAnalyze: () => void;
+  onViewSnapshot: () => void;
+  snapshotBusy: boolean;
 }) {
+  const snapshotAvailable = Boolean(row.uri);
   return (
     <div className="rounded-md border border-slate-200 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1809,14 +2317,30 @@ function EvaluationResult({
           Run: <span className="font-medium text-slate-700">{selectedRun?.label ?? 'Selection snapshot'}</span>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={onOpenAnalyze}
-        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-600"
-      >
-        Analyze result
-        <ChevronRight className="h-3.5 w-3.5" />
-      </button>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          disabled={!snapshotAvailable || snapshotBusy}
+          onClick={onViewSnapshot}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+          title={
+            snapshotAvailable
+              ? 'View the evaluation manifest snapshot'
+              : 'Legacy evaluation rows do not expose a durable manifest snapshot yet.'
+          }
+        >
+          <Eye className="h-3.5 w-3.5" />
+          {snapshotBusy ? 'Loading' : 'Snapshot'}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAnalyze}
+          className="inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-600"
+        >
+          Analyze
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
