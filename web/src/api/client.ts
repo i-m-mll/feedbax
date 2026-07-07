@@ -1,4 +1,4 @@
-import type { GraphSpec, GraphUIState } from '@/types/graph';
+import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import { parseContract } from '@/generated/studioContracts';
 import type {
@@ -89,7 +89,7 @@ export async function fetchGraph(graphId: string) {
     graph: GraphSpec;
     ui_state: GraphUIState | null;
     demo_training_data: DemoTrainingData | null;
-    metadata: { name: string; description?: string; created_at?: string; updated_at?: string } | null;
+    metadata: GraphMetadata | null;
     analysis_pages: Array<{
       id: string;
       name: string;
@@ -127,6 +127,7 @@ export async function updateGraph(
   analysisPages?: unknown[] | null,
   activeAnalysisPageId?: string | null,
   workspace?: StudioWorkspaceSpec | null,
+  expectedSaveRevision?: number | null,
 ) {
   const payload: Record<string, unknown> = {};
   if (graph !== null && graph !== undefined) payload.graph = graph;
@@ -134,10 +135,18 @@ export async function updateGraph(
   if (analysisPages !== undefined) payload.analysis_pages = analysisPages;
   if (activeAnalysisPageId !== undefined) payload.active_analysis_page_id = activeAnalysisPageId;
   if (workspace !== undefined) payload.workspace = workspace;
+  if (expectedSaveRevision !== undefined && expectedSaveRevision !== null) {
+    payload.expected_save_revision = expectedSaveRevision;
+  }
+  const headers: Record<string, string> = {};
+  if (expectedSaveRevision !== undefined && expectedSaveRevision !== null) {
+    headers['If-Match'] = String(expectedSaveRevision);
+  }
   const response = parseContract(
-    'SuccessResponse',
+    'GraphUpdateResponse',
     await requestJson(`/api/graphs/${graphId}`, {
       method: 'PUT',
+      headers,
       body: JSON.stringify(payload),
     }),
   );

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from fastapi.testclient import TestClient
+
 from feedbax.contracts.graph import (
     GraphMetadata,
     GraphSpec,
@@ -9,6 +12,9 @@ from feedbax.contracts.graph import (
     StudioStageSpec,
     StudioWorkspaceSpec,
 )
+from feedbax.web.app import create_app
+import feedbax.web.api.graphs as graphs_api
+from feedbax.web.services.graph_service import GraphSaveConflictError
 from feedbax.web.services.graph_service import GraphService
 
 
@@ -217,3 +223,123 @@ def test_update_graph_preserves_explicit_workspace_extensions(tmp_path):
         stage for stage in updated.project.workspace.stages if stage.id == "stage:custom-protocol"
     )
     assert custom_stage.metadata["future_product_field"]["do_not_drop"] is True
+
+
+def test_update_graph_bumps_and_checks_save_revision(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    record = service.create_graph(_graph(), _ui_state())
+
+    assert record.project.metadata.save_revision == 0
+
+    updated = service.update_graph(
+        record.graph_id,
+        _graph(),
+        _ui_state(),
+        expected_save_revision=0,
+        require_save_revision=True,
+    )
+
+    assert updated.project.metadata.save_revision == 1
+    assert updated.project.graph.metadata is not None
+    assert updated.project.graph.metadata.save_revision == 1
+
+    with pytest.raises(GraphSaveConflictError) as exc_info:
+        service.update_graph(
+            record.graph_id,
+            _graph(),
+            _ui_state(),
+            expected_save_revision=0,
+            require_save_revision=True,
+        )
+
+    assert exc_info.value.current_revision == 1
+    assert exc_info.value.expected_revision == 0
+
+
+def test_legacy_project_load_defaults_save_revision_and_updates(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    graph_id = "legacy-no-save-revision"
+    graph = _graph()
+    payload = {
+        "metadata": graph.metadata.model_dump(exclude={"save_revision"}),
+        "graph": graph.model_dump(),
+        "ui_state": _ui_state().model_dump(),
+    }
+    assert graph.metadata is not None
+    payload["graph"]["metadata"].pop("save_revision", None)
+    (tmp_path / f"{graph_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    record = service.get_graph(graph_id)
+
+    assert record.project.metadata.save_revision == 0
+    assert record.project.graph.metadata is not None
+    assert record.project.graph.metadata.save_revision == 0
+
+    updated = service.update_graph(
+        graph_id,
+        _graph(),
+        _ui_state(),
+        expected_save_revision=0,
+        require_save_revision=True,
+    )
+
+    assert updated.project.metadata.save_revision == 1
+
+
+def test_graph_update_api_rejects_stale_and_missing_revisions(tmp_path, monkeypatch):
+    service = GraphService(storage_dir=tmp_path)
+    record = service.create_graph(_graph(), _ui_state())
+    monkeypatch.setattr(graphs_api, "service", service)
+    client = TestClient(create_app())
+
+    missing = client.put(
+        f"/api/graphs/{record.graph_id}",
+        json={"graph": _graph().model_dump(), "ui_state": _ui_state().model_dump()},
+    )
+    assert missing.status_code == 409
+    assert missing.json()["detail"]["current_save_revision"] == 0
+
+    ok = client.put(
+        f"/api/graphs/{record.graph_id}",
+        headers={"If-Match": "0"},
+        json={"graph": _graph().model_dump(), "ui_state": _ui_state().model_dump()},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["data"]["metadata"]["save_revision"] == 1
+
+    stale = client.put(
+        f"/api/graphs/{record.graph_id}",
+        headers={"If-Match": "0"},
+        json={"graph": _graph().model_dump(), "ui_state": _ui_state().model_dump()},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["expected_save_revision"] == 0
+    assert stale.json()["detail"]["current_save_revision"] == 1
+
+
+def test_beacon_update_uses_payload_save_revision(tmp_path, monkeypatch):
+    service = GraphService(storage_dir=tmp_path)
+    record = service.create_graph(_graph(), _ui_state())
+    monkeypatch.setattr(graphs_api, "service", service)
+    client = TestClient(create_app())
+
+    stale = client.post(
+        f"/api/graphs/{record.graph_id}/beacon",
+        json={
+            "graph": _graph().model_dump(),
+            "ui_state": _ui_state().model_dump(),
+            "expected_save_revision": 1,
+        },
+    )
+    assert stale.status_code == 409
+
+    ok = client.post(
+        f"/api/graphs/{record.graph_id}/beacon",
+        json={
+            "graph": _graph().model_dump(),
+            "ui_state": _ui_state().model_dump(),
+            "expected_save_revision": 0,
+        },
+    )
+    assert ok.status_code == 204
+    assert service.get_graph(record.graph_id).project.metadata.save_revision == 1

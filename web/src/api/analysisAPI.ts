@@ -103,7 +103,8 @@ export async function fetchAnalysisPages(
 export async function saveAnalysisPages(
   graphId: string,
   snapshot: AnalysisSnapshot,
+  expectedSaveRevision?: number | null,
 ): Promise<void> {
   const wirePages = snapshot.pages.map(pageToWire);
-  await updateGraph(graphId, null, null, wirePages);
+  await updateGraph(graphId, null, null, wirePages, undefined, undefined, expectedSaveRevision);
 }

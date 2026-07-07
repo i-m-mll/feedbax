@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createGraph, fetchGraph, fetchGraphs, updateGraph } from '@/api/client';
+import { isHttpConflict } from '@/api/request';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useGraphStore } from '@/stores/graphStore';
@@ -51,14 +52,25 @@ export function useSaveGraph() {
       });
       useWorkspaceStore.getState().setWorkspace(workspace);
       if (graphId) {
-        return updateGraph(
-          graphId,
-          persistedGraph.graph,
-          persistedGraph.uiState,
-          undefined,
-          undefined,
-          workspace
-        );
+        try {
+          return await updateGraph(
+            graphId,
+            persistedGraph.graph,
+            persistedGraph.uiState,
+            undefined,
+            undefined,
+            workspace,
+            graphStore.saveRevision,
+          );
+        } catch (error) {
+          if (isHttpConflict(error)) {
+            await queryClient.fetchQuery({
+              queryKey: ['graph', graphId],
+              queryFn: () => fetchGraph(graphId),
+            }).catch(() => undefined);
+          }
+          throw error;
+        }
       }
       return createGraph(persistedGraph.graph, persistedGraph.uiState, workspace);
     },

@@ -201,6 +201,7 @@ export interface GraphMetadata {
   created_at: string;
   updated_at: string;
   version?: string;
+  save_revision?: number;
   author?: string | null;
   tags?: string[] | null;
 }
@@ -688,6 +689,19 @@ export interface GraphCreateResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v1";
   data: GraphCreatePayload;
+}
+
+export interface GraphUpdatePayload {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  success: boolean;
+  metadata: GraphMetadata;
+}
+
+export interface GraphUpdateResponse {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  data: GraphUpdatePayload;
 }
 
 export interface GraphDetailPayload {
@@ -1458,6 +1472,7 @@ export const GraphMetadataSchema: z.ZodType<GraphMetadata> = z.lazy(() =>
       "created_at": z.string(),
       "updated_at": z.string(),
       "version": z.string().optional(),
+      "save_revision": z.number().int().optional(),
       "author": z.string().nullable().optional(),
       "tags": z.array(z.string()).nullable().optional(),
     })
@@ -2152,6 +2167,27 @@ export const GraphCreateResponseSchema: z.ZodType<GraphCreateResponse> = z.lazy(
     })
     .strict()
 ) as unknown as z.ZodType<GraphCreateResponse>;
+
+export const GraphUpdatePayloadSchema: z.ZodType<GraphUpdatePayload> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "success": z.boolean(),
+      "metadata": GraphMetadataSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<GraphUpdatePayload>;
+
+export const GraphUpdateResponseSchema: z.ZodType<GraphUpdateResponse> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "data": GraphUpdatePayloadSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<GraphUpdateResponse>;
 
 export const GraphDetailPayloadSchema: z.ZodType<GraphDetailPayload> = z.lazy(() =>
   z
@@ -2891,6 +2927,7 @@ export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z
 export const contractSchemas = {
   GraphListResponse: GraphListResponseSchema,
   GraphCreateResponse: GraphCreateResponseSchema,
+  GraphUpdateResponse: GraphUpdateResponseSchema,
   GraphDetailResponse: GraphDetailResponseSchema,
   GraphValidationResponse: GraphValidationResponseSchema,
   GraphExportResponse: GraphExportResponseSchema,
@@ -2930,6 +2967,7 @@ export type ContractName = keyof typeof contractSchemas;
 export interface ContractTypeMap {
   GraphListResponse: GraphListResponse;
   GraphCreateResponse: GraphCreateResponse;
+  GraphUpdateResponse: GraphUpdateResponse;
   GraphDetailResponse: GraphDetailResponse;
   GraphValidationResponse: GraphValidationResponse;
   GraphExportResponse: GraphExportResponse;

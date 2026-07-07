@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel
 from typing import Optional
 
@@ -14,11 +14,12 @@ from feedbax.contracts.studio_api import (
     GraphDetailResponse,
     GraphExportResponse,
     GraphListResponse,
+    GraphUpdateResponse,
     GraphValidationResponse,
     SuccessPayload,
     SuccessResponse,
 )
-from feedbax.web.services.graph_service import GraphService
+from feedbax.web.services.graph_service import GraphSaveConflictError, GraphService
 
 router = APIRouter()
 service = GraphService()
@@ -36,6 +37,32 @@ class GraphUpdateRequest(BaseModel):
     analysis_pages: Optional[list[AnalysisPageSpec]] = None
     active_analysis_page_id: Optional[str] = None
     workspace: Optional[StudioWorkspaceSpec] = None
+    expected_save_revision: Optional[int] = None
+
+
+def _parse_if_match_revision(if_match: Optional[str]) -> Optional[int]:
+    if if_match is None:
+        return None
+    candidate = if_match.strip()
+    if candidate.startswith("W/"):
+        candidate = candidate[2:].strip()
+    candidate = candidate.strip('"')
+    try:
+        revision = int(candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid If-Match save revision") from exc
+    if revision < 0:
+        raise HTTPException(status_code=400, detail="Invalid If-Match save revision")
+    return revision
+
+
+def _conflict_detail(exc: GraphSaveConflictError) -> dict[str, object]:
+    return {
+        "message": "Project changed in another tab or session. Review the server copy before saving again.",
+        "graph_id": exc.graph_id,
+        "expected_save_revision": exc.expected_revision,
+        "current_save_revision": exc.current_revision,
+    }
 
 
 @router.get('', response_model=GraphListResponse)
@@ -53,6 +80,8 @@ async def create_graph(payload: GraphCreateRequest) -> GraphCreateResponse:
             None,
             None,
             workspace=payload.workspace,
+            expected_save_revision=record.project.metadata.save_revision,
+            require_save_revision=True,
         )
     return GraphCreateResponse(data={'id': record.graph_id, 'metadata': record.project.metadata})
 
@@ -77,16 +106,27 @@ async def get_graph(graph_id: str, response: Response) -> GraphDetailResponse:
     )
 
 
-@router.put('/{graph_id}', response_model=SuccessResponse)
-async def update_graph(graph_id: str, payload: GraphUpdateRequest) -> SuccessResponse:
+@router.put('/{graph_id}', response_model=GraphUpdateResponse)
+async def update_graph(
+    graph_id: str,
+    payload: GraphUpdateRequest,
+    if_match: Optional[str] = Header(default=None, alias="If-Match"),
+) -> GraphUpdateResponse:
+    expected_revision = _parse_if_match_revision(if_match)
+    if expected_revision is None:
+        expected_revision = payload.expected_save_revision
     try:
-        service.update_graph(
+        record = service.update_graph(
             graph_id, payload.graph, payload.ui_state, payload.analysis_pages,
             payload.active_analysis_page_id, payload.workspace,
+            expected_save_revision=expected_revision,
+            require_save_revision=True,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc
-    return SuccessResponse(data=SuccessPayload(success=True))
+    except GraphSaveConflictError as exc:
+        raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc
+    return GraphUpdateResponse(data={'success': True, 'metadata': record.project.metadata})
 
 
 @router.post('/{graph_id}/beacon')
@@ -96,9 +136,13 @@ async def beacon_update_graph(graph_id: str, payload: GraphUpdateRequest):
         service.update_graph(
             graph_id, payload.graph, payload.ui_state, payload.analysis_pages,
             payload.active_analysis_page_id, payload.workspace,
+            expected_save_revision=payload.expected_save_revision,
+            require_save_revision=True,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc
+    except GraphSaveConflictError as exc:
+        raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc
     return Response(status_code=204)
 
 

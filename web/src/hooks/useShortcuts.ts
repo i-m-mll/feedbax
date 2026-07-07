@@ -68,9 +68,9 @@ export function useAppShortcuts() {
     try {
       const response = await saveMutation.mutateAsync({ graphId, graph, uiState });
       if ('id' in response) {
-        markSaved(response.id);
+        markSaved(response.id, response.metadata.save_revision);
       } else if (graphId) {
-        markSaved(graphId);
+        markSaved(graphId, response.metadata.save_revision);
       }
       toast.success('Project saved.', { id: 'project-save-success' });
     } catch (error) {
