@@ -36,6 +36,7 @@ import {
 import {
   cancelTrainingRun,
   deleteTrainingRun,
+  fetchEvalRunManifest,
   fetchTrainingRunManifest,
   supersedeTrainingRun,
 } from '@/api/runAPI';
@@ -97,15 +98,24 @@ import {
 } from '@/utils/trainRunTable';
 import type { TrainingProgress } from '@/types/training';
 import type { TrainingRun } from '@/types/runs';
-import type { StudioTopPaneState, StudioWorkspaceSpec } from '@/types/workspace';
+import type { StudioScenarioSpec, StudioTopPaneState, StudioWorkspaceSpec } from '@/types/workspace';
 
 type RunView = 'all' | 'selected' | 'best';
 type SortKey = string;
 type SortDirection = 'asc' | 'desc';
+type SpecHashStatus = 'changed' | 'unchanged' | 'missing-current' | 'missing-snapshot';
 
 interface SortState {
   key: SortKey;
   direction: SortDirection;
+}
+
+interface SpecHashComparison {
+  key: string;
+  label: string;
+  status: SpecHashStatus;
+  snapshotHash: string | null;
+  currentHash: string | null;
 }
 
 
@@ -183,6 +193,10 @@ export function TrainCollectionPanel() {
   const focusedRun = useMemo(
     () => rows.find((row) => row.id === effectiveFocusedRunId) ?? selectedRows[0] ?? rows[0] ?? null,
     [effectiveFocusedRunId, rows, selectedRows]
+  );
+  const currentSpecHashes = useMemo(
+    () => currentDraftSpecHashes(trainScenario),
+    [trainScenario]
   );
   const bulkAxis = useMemo(
     () => axisColumns.find((axis) => axis.id === bulkAxisId) ?? axisColumns[0] ?? null,
@@ -662,6 +676,7 @@ export function TrainCollectionPanel() {
             <RunDetailPane
               run={focusedRun}
               frozenSnapshot={frozenSnapshot}
+              currentSpecHashes={currentSpecHashes}
               lossHistory={lossHistory}
               onViewSnapshot={viewSnapshot}
               onBackToDraft={backToDraft}
@@ -697,6 +712,7 @@ export function TrainCollectionPanel() {
 
 export function EvaluateCollectionPanel() {
   const workspace = useWorkspaceStore((state) => state.workspace);
+  const setWorkspace = useWorkspaceStore((state) => state.setWorkspace);
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
   const selectionContext = useSelectionContextStore((state) => state.context);
@@ -707,9 +723,14 @@ export function EvaluateCollectionPanel() {
   const focusSelectionId = useSelectionContextStore((state) => state.focusId);
   const previewSelectionId = useSelectionContextStore((state) => state.previewFocus);
   const setSyncMode = useSelectionContextStore((state) => state.setSyncMode);
+  const setFrozenSnapshot = useSelectionContextStore((state) => state.setFrozenSnapshot);
   const [view, setView] = useState<RunView>('all');
   const [sort, setSort] = useState<SortState>({ key: 'final_validation_loss', direction: 'asc' });
   const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
+  const [evalActionState, setEvalActionState] = useState({
+    busyRunId: null as string | null,
+    error: null as string | null,
+  });
 
   const trainStage = getStageByKind(workspace, 'train');
   const evalStage = getStageByKind(workspace, 'eval');
@@ -722,6 +743,9 @@ export function EvaluateCollectionPanel() {
   const evalSelectionCollectionId =
     evalStage?.input_collections.find((collection) => collection.item_refs.length > 0)?.id ??
     'collection:selected-training-runs';
+  const evaluationCollectionId =
+    evalStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
+    'collection:evaluation-runs';
   const contextMatchesEval =
     selectionContext.stage === evalStage?.id &&
     selectionContext.collection === evalSelectionCollectionId;
@@ -807,6 +831,36 @@ export function EvaluateCollectionPanel() {
   const openAnalyze = useCallback(() => {
     if (analysisStage) setActiveStage(analysisStage.id);
   }, [analysisStage, setActiveStage]);
+
+  const viewEvalSnapshot = useCallback(async (row: EvaluationRunSummary) => {
+    if (!evalStage || !workspace || !row.uri) return;
+    setSelectionContext({
+      stage: evalStage.id,
+      collection: evaluationCollectionId,
+      selectedIds: [row.id],
+      focusedId: row.id,
+    });
+    setEvalActionState({ busyRunId: row.id, error: null });
+    try {
+      const manifest = await fetchEvalRunManifest(row.id);
+      const projection = frozenSnapshotProjectionForEvaluationRun(row, manifest);
+      setFrozenSnapshot(projection);
+      setWorkspace(workspaceWithTopPaneProvenance(workspace, projection));
+      setEvalActionState({ busyRunId: null, error: null });
+    } catch (error) {
+      setEvalActionState({
+        busyRunId: null,
+        error: error instanceof Error ? error.message : 'Failed to load evaluation snapshot.',
+      });
+    }
+  }, [
+    evalStage,
+    evaluationCollectionId,
+    setFrozenSnapshot,
+    setSelectionContext,
+    setWorkspace,
+    workspace,
+  ]);
 
   const setTarget = useCallback(
     (target: ExecutionTargetChoice) => {
@@ -897,6 +951,11 @@ export function EvaluateCollectionPanel() {
                 <div className="font-semibold text-slate-800">Results</div>
               </div>
               <div className="mt-3 space-y-3">
+                {evalActionState.error && (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                    {evalActionState.error}
+                  </div>
+                )}
                 {evaluationRows.length === 0 ? (
                   <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500">
                     No validation results yet.
@@ -910,6 +969,8 @@ export function EvaluateCollectionPanel() {
                         (candidate) => candidate.id === row.selectedTrainingRunId
                       )}
                       onOpenAnalyze={openAnalyze}
+                      onViewSnapshot={() => viewEvalSnapshot(row)}
+                      snapshotBusy={evalActionState.busyRunId === row.id}
                     />
                   ))
                 )}
@@ -1043,6 +1104,101 @@ function frozenSnapshotProjectionForRun(
     },
     snapshot,
   };
+}
+
+function frozenSnapshotProjectionForEvaluationRun(
+  run: EvaluationRunSummary,
+  manifest: Record<string, unknown>
+): FrozenSnapshotProjection {
+  const snapshot = {
+    evaluation_spec: specPayloadInlineValue(manifest, 'evaluation_spec') ?? null,
+  };
+  const manifestId = typeof manifest.id === 'string' ? manifest.id : run.id;
+  const manifestHash =
+    typeof manifest.manifest_hash === 'string'
+      ? manifest.manifest_hash
+      : typeof manifest.hash === 'string'
+        ? manifest.hash
+        : stableHash(manifest);
+  return {
+    source: 'evaluation_run',
+    runId: run.id,
+    runLabel: run.label,
+    runStatus: run.status,
+    manifestId,
+    manifestHash,
+    specHashes: {
+      evaluation_spec: snapshot.evaluation_spec ? stableHash(snapshot.evaluation_spec) : null,
+    },
+    snapshot,
+  };
+}
+
+function currentDraftSpecHashes(
+  scenario: StudioScenarioSpec | null | undefined
+): Record<string, string | null> {
+  return {
+    graph_spec: scenario?.graph ? stableHash(scenario.graph) : null,
+    training_spec: scenario?.training_spec ? stableHash(scenario.training_spec) : null,
+    task_spec: scenario?.task_spec ? stableHash(scenario.task_spec) : null,
+    task_binding_spec: scenario?.task_binding_spec ? stableHash(scenario.task_binding_spec) : null,
+    evaluation_spec: null,
+  };
+}
+
+function compareSpecHashes(
+  snapshotHashes: Partial<Record<string, string | null>>,
+  currentHashes: Record<string, string | null>
+): SpecHashComparison[] {
+  const keys = Array.from(
+    new Set([
+      ...Object.keys(snapshotHashes),
+      ...Object.entries(currentHashes)
+        .filter(([, hash]) => hash !== null)
+        .map(([key]) => key),
+    ])
+  );
+  return keys.map((key) => {
+    const snapshotHash = snapshotHashes[key] ?? null;
+    const currentHash = currentHashes[key] ?? null;
+    let status: SpecHashStatus;
+    if (!snapshotHash) status = 'missing-snapshot';
+    else if (!currentHash) status = 'missing-current';
+    else status = snapshotHash === currentHash ? 'unchanged' : 'changed';
+    return {
+      key,
+      label: key.replace(/_/g, ' '),
+      status,
+      snapshotHash,
+      currentHash,
+    };
+  });
+}
+
+function specHashStatusLabel(status: SpecHashStatus): string {
+  switch (status) {
+    case 'changed':
+      return 'changed';
+    case 'unchanged':
+      return 'unchanged';
+    case 'missing-current':
+      return 'missing in draft';
+    case 'missing-snapshot':
+      return 'missing in snapshot';
+  }
+}
+
+function specHashStatusClass(status: SpecHashStatus): string {
+  switch (status) {
+    case 'changed':
+      return 'text-amber-700 ring-amber-200';
+    case 'unchanged':
+      return 'text-emerald-700 ring-emerald-200';
+    case 'missing-current':
+      return 'text-slate-600 ring-slate-200';
+    case 'missing-snapshot':
+      return 'text-red-700 ring-red-200';
+  }
 }
 
 function specPayloadInlineValue(
@@ -1937,6 +2093,7 @@ function TrainingRunRow({
 function RunDetailPane({
   run,
   frozenSnapshot,
+  currentSpecHashes,
   lossHistory,
   onViewSnapshot,
   onBackToDraft,
@@ -1946,6 +2103,7 @@ function RunDetailPane({
 }: {
   run: TrainingRunSummary | null;
   frozenSnapshot: FrozenSnapshotProjection | null;
+  currentSpecHashes: Record<string, string | null>;
   lossHistory: TrainingProgress[];
   onViewSnapshot: (run: TrainingRunSummary) => void;
   onBackToDraft: () => void;
@@ -1968,8 +2126,8 @@ function RunDetailPane({
     .filter((value): value is number => value !== null);
   const latestLoss = lossValues.at(-1) ?? run.finalValidationLoss;
   const snapshotOpen = frozenSnapshot?.runId === run.id;
-  const diffEntries = snapshotOpen
-    ? Object.entries(frozenSnapshot.specHashes).filter(([, hash]) => hash !== null)
+  const specComparisons = snapshotOpen && frozenSnapshot
+    ? compareSpecHashes(frozenSnapshot.specHashes, currentSpecHashes)
     : [];
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -2009,15 +2167,18 @@ function RunDetailPane({
             <DetailField label="URI" value={run.uri ?? 'Not recorded'} />
             <DetailField label="Status" value={frozenSnapshot.runStatus} />
           </div>
-          {diffEntries.length > 0 && (
+          {specComparisons.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1">
-              {diffEntries.map(([key, hash]) => (
+              {specComparisons.map((comparison) => (
                 <span
-                  key={key}
-                  className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-sky-100"
-                  title={hash ?? undefined}
+                  key={comparison.key}
+                  className={clsx(
+                    'rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold ring-1',
+                    specHashStatusClass(comparison.status)
+                  )}
+                  title={`snapshot=${comparison.snapshotHash ?? 'missing'} current=${comparison.currentHash ?? 'missing'}`}
                 >
-                  {key.replace(/_/g, ' ')} hash
+                  {comparison.label} {specHashStatusLabel(comparison.status)}
                 </span>
               ))}
             </div>
@@ -2134,11 +2295,16 @@ function EvaluationResult({
   row,
   selectedRun,
   onOpenAnalyze,
+  onViewSnapshot,
+  snapshotBusy,
 }: {
   row: EvaluationRunSummary;
   selectedRun: TrainingRunSummary | undefined;
   onOpenAnalyze: () => void;
+  onViewSnapshot: () => void;
+  snapshotBusy: boolean;
 }) {
+  const snapshotAvailable = Boolean(row.uri);
   return (
     <div className="rounded-md border border-slate-200 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2151,14 +2317,30 @@ function EvaluationResult({
           Run: <span className="font-medium text-slate-700">{selectedRun?.label ?? 'Selection snapshot'}</span>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={onOpenAnalyze}
-        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-600"
-      >
-        Analyze result
-        <ChevronRight className="h-3.5 w-3.5" />
-      </button>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          disabled={!snapshotAvailable || snapshotBusy}
+          onClick={onViewSnapshot}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+          title={
+            snapshotAvailable
+              ? 'View the evaluation manifest snapshot'
+              : 'Legacy evaluation rows do not expose a durable manifest snapshot yet.'
+          }
+        >
+          <Eye className="h-3.5 w-3.5" />
+          {snapshotBusy ? 'Loading' : 'Snapshot'}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAnalyze}
+          className="inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-600"
+        >
+          Analyze
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }

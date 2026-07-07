@@ -56,6 +56,8 @@ import {
 } from '@/stores/workspaceStore';
 import {
   type FrozenSnapshotProjection,
+  type SnapshotSpecKey,
+  type SnapshotSpecPayload,
   useSelectionContextStore,
 } from '@/stores/selectionContextStore';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -204,26 +206,26 @@ function FrozenSnapshotSpecProjection({
   snapshot,
 }: {
   projection: StudioTopPaneProjection;
-  snapshot: {
-    graph_spec?: Record<string, unknown> | null;
-    training_spec?: Record<string, unknown> | null;
-    task_spec?: Record<string, unknown> | null;
-    task_binding_spec?: Record<string, unknown> | null;
-  };
+  snapshot: SnapshotSpecPayload;
 }) {
-  const entries =
+  const entries: Array<{
+    key: SnapshotSpecKey;
+    label: string;
+    value: Record<string, unknown> | null | undefined;
+  }> =
     projection === 'task'
       ? [
-          ['Task spec', snapshot.task_spec],
-          ['Task binding', snapshot.task_binding_spec],
-          ['Training spec', snapshot.training_spec],
+          { key: 'task_spec', label: 'Task spec', value: snapshot.task_spec },
+          { key: 'task_binding_spec', label: 'Task binding', value: snapshot.task_binding_spec },
+          { key: 'training_spec', label: 'Training spec', value: snapshot.training_spec },
+          { key: 'evaluation_spec', label: 'Evaluation spec', value: snapshot.evaluation_spec },
         ]
-      : [['Graph spec', snapshot.graph_spec]];
+      : [{ key: 'graph_spec', label: 'Graph spec', value: snapshot.graph_spec }];
   return (
     <div className="h-full overflow-y-auto bg-slate-50 p-5">
       <div className="mx-auto max-w-5xl space-y-3">
-        {entries.map(([label, value]) => (
-          <section key={label} className="rounded-md border border-slate-200 bg-white p-4">
+        {entries.map(({ key, label, value }) => (
+          <section key={key} className="rounded-md border border-slate-200 bg-white p-4">
             <div className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
               {label}
             </div>
@@ -743,24 +745,23 @@ function frozenSnapshotScenario(
 ): StudioScenarioSpec | null {
   if (!activeScenario || !frozenSnapshot) return activeScenario;
   const { snapshot } = frozenSnapshot;
+  const graphSpec = snapshotRecord(snapshot.graph_spec);
+  const trainingSpec = snapshotRecord(snapshot.training_spec);
+  const taskSpec = snapshotRecord(snapshot.task_spec);
+  const taskBindingSpec = snapshotRecord(snapshot.task_binding_spec);
   return {
     ...activeScenario,
-    graph:
-      snapshot.graph_spec === undefined
-        ? activeScenario.graph
-        : (snapshot.graph_spec as typeof activeScenario.graph),
+    graph: snapshot.graph_spec === undefined ? activeScenario.graph : asScenarioGraph(graphSpec),
     training_spec:
       snapshot.training_spec === undefined
         ? activeScenario.training_spec
-        : (snapshot.training_spec as typeof activeScenario.training_spec),
+        : asScenarioTrainingSpec(trainingSpec),
     task_spec:
-      snapshot.task_spec === undefined
-        ? activeScenario.task_spec
-        : (snapshot.task_spec as typeof activeScenario.task_spec),
+      snapshot.task_spec === undefined ? activeScenario.task_spec : asScenarioTaskSpec(taskSpec),
     task_binding_spec:
       snapshot.task_binding_spec === undefined
         ? activeScenario.task_binding_spec
-        : (snapshot.task_binding_spec as typeof activeScenario.task_binding_spec),
+        : asScenarioTaskBindingSpec(taskBindingSpec),
     metadata: {
       ...activeScenario.metadata,
       projection_mode: 'frozen_snapshot',
@@ -768,6 +769,76 @@ function frozenSnapshotScenario(
       projection_manifest_id: frozenSnapshot.manifestId,
     },
   };
+}
+
+function snapshotRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function asScenarioGraph(value: Record<string, unknown> | null): StudioScenarioSpec['graph'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['graph']);
+}
+
+function asScenarioTrainingSpec(
+  value: Record<string, unknown> | null
+): StudioScenarioSpec['training_spec'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['training_spec']);
+}
+
+function asScenarioTaskSpec(value: Record<string, unknown> | null): StudioScenarioSpec['task_spec'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['task_spec']);
+}
+
+function asScenarioTaskBindingSpec(
+  value: Record<string, unknown> | null
+): StudioScenarioSpec['task_binding_spec'] {
+  return value === null ? null : (value as unknown as StudioScenarioSpec['task_binding_spec']);
+}
+
+function graphSpecForProjection(
+  frozenSnapshot: FrozenSnapshotProjection | null,
+  graph: GraphSpec
+): GraphSpec {
+  const graphSpec = snapshotRecord(frozenSnapshot?.snapshot.graph_spec);
+  return graphSpec ? (graphSpec as unknown as GraphSpec) : graph;
+}
+
+function RunSelectionScopeBanner({
+  syncMode,
+  focusedId,
+  previewId,
+  collection,
+}: {
+  syncMode: 'linked' | 'decoupled';
+  focusedId: string | null;
+  previewId: string | null;
+  collection: string | null;
+}) {
+  const scopedId = syncMode === 'linked' ? previewId ?? focusedId : null;
+  if (syncMode === 'linked' && scopedId) {
+    return (
+      <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center gap-2 rounded-md border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-800 shadow-sm">
+        <Eye className="h-3.5 w-3.5 shrink-0" />
+        <span className="font-semibold">{previewId ? 'Previewing run' : 'Focused run'}</span>
+        <span className="min-w-0 truncate">{scopedId}</span>
+        {collection && (
+          <span className="shrink-0 rounded-full bg-white px-2 py-0.5 font-medium text-brand-700">
+            {collection}
+          </span>
+        )}
+      </div>
+    );
+  }
+  if (syncMode === 'decoupled' && focusedId) {
+    return (
+      <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm">
+        <Eye className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+        <span className="font-semibold text-slate-700">Run sync decoupled</span>
+        <span className="min-w-0 truncate">{focusedId}</span>
+      </div>
+    );
+  }
+  return null;
 }
 
 export function ScenarioProjectionWorkspace() {
@@ -783,6 +854,9 @@ export function ScenarioProjectionWorkspace() {
   const addRetainedObservable = useGraphStore((state) => state.addRetainedObservable);
   const updateRetainedObservable = useGraphStore((state) => state.updateRetainedObservable);
   const removeRetainedObservable = useGraphStore((state) => state.removeRetainedObservable);
+  const selectionContext = useSelectionContextStore((state) => state.context);
+  const previewId = useSelectionContextStore((state) => state.previewId);
+  const syncMode = useSelectionContextStore((state) => state.syncMode);
   const frozenSnapshot = useSelectionContextStore((state) => state.frozenSnapshot);
   const setFrozenSnapshot = useSelectionContextStore((state) => state.setFrozenSnapshot);
   const topPane = getTopPaneState(workspace);
@@ -793,11 +867,8 @@ export function ScenarioProjectionWorkspace() {
     [activeScenario, frozenSnapshot]
   );
   const graphForProjection = useMemo(
-    () =>
-      frozenSnapshot?.snapshot.graph_spec
-        ? (frozenSnapshot.snapshot.graph_spec as GraphSpec)
-        : graph,
-    [frozenSnapshot?.snapshot.graph_spec, graph]
+    () => graphSpecForProjection(frozenSnapshot, graph),
+    [frozenSnapshot, graph]
   );
   const objectiveSpec = ensureObjectiveSpec(projectedScenario?.objective_spec);
   const schemaQuery = useStudioSchemaRegistry(
@@ -829,10 +900,10 @@ export function ScenarioProjectionWorkspace() {
           )}
         {!frozenSnapshot &&
           (topPane.active_projection === 'model' || topPane.active_projection === 'task') && (
-          <div className="absolute inset-0">
-            <Canvas />
-          </div>
-        )}
+            <div className="absolute inset-0">
+              <Canvas />
+            </div>
+          )}
         {topPane.active_projection === 'workspace' && (
           <WorkspaceProjection
             registry={registry}
@@ -841,10 +912,10 @@ export function ScenarioProjectionWorkspace() {
           />
         )}
         {topPane.active_projection === 'observables' && (
-            <ObservablesProjection
-              registry={registry}
-              selectedId={topPane.selected_entity_id}
-              graph={graphForProjection}
+          <ObservablesProjection
+            registry={registry}
+            selectedId={topPane.selected_entity_id}
+            graph={graphForProjection}
             objectiveSpec={objectiveSpec}
             schemaRegistry={schemaQuery.data ?? null}
             onSelect={selectTopPaneEntity}
@@ -867,8 +938,16 @@ export function ScenarioProjectionWorkspace() {
         <ScenarioBadge
           stageLabel={activeStage?.label ?? null}
           scenarioLabel={activeScenario?.label ?? null}
-          summary={stageSummary}
+            summary={stageSummary}
         />
+        {!frozenSnapshot && (
+          <RunSelectionScopeBanner
+            syncMode={syncMode}
+            focusedId={selectionContext.focusedId}
+            previewId={previewId}
+            collection={selectionContext.collection}
+          />
+        )}
         {frozenSnapshot && (
           <div className="absolute left-3 right-3 top-3 z-10 flex flex-wrap items-center justify-between gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs shadow-sm">
             <div className="flex min-w-0 items-center gap-2 text-sky-800">

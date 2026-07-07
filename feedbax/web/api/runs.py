@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
     TrainingRunManifest,
     default_manifest_root,
     load_manifest,
@@ -275,6 +276,20 @@ def _load_training_manifest_from_index(training_run_id: str) -> tuple[TrainingRu
     return manifest, path
 
 
+def _load_evaluation_manifest_from_index(eval_run_id: str) -> tuple[EvaluationRunManifest, Path]:
+    row = get_indexed_manifest_record(eval_run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Evaluation run {eval_run_id!r} not found")
+    path = Path(row["path"])
+    manifest = load_manifest(path)
+    if not isinstance(manifest, EvaluationRunManifest):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Manifest {eval_run_id!r} is {type(manifest).__name__}, not EvaluationRunManifest",
+        )
+    return manifest, path
+
+
 def _legacy_training_runs_from_model_db() -> list[TrainingRunInfo]:
     """Return legacy completed rows for model DB records without manifests."""
     from sqlalchemy import func
@@ -410,6 +425,14 @@ async def get_training_run_manifest(training_run_id: str) -> dict[str, Any]:
     """Return the durable training manifest payload for a Studio run row."""
 
     manifest, _path = _load_training_manifest_from_index(training_run_id)
+    return manifest.model_dump(mode="json", exclude_none=True)
+
+
+@router.get("/evaluation/{eval_run_id}/manifest")
+async def get_evaluation_run_manifest(eval_run_id: str) -> dict[str, Any]:
+    """Return the durable evaluation manifest payload for a Studio run row."""
+
+    manifest, _path = _load_evaluation_manifest_from_index(eval_run_id)
     return manifest.model_dump(mode="json", exclude_none=True)
 
 

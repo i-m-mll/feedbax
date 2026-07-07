@@ -5,6 +5,7 @@ import {
   createEvalRun,
   createTrainingRun,
   deleteTrainingRun,
+  fetchEvalRunManifest,
   fetchEvalRuns,
   fetchTrainingRunManifest,
   fetchTrainingRuns,
@@ -129,6 +130,28 @@ describe('runAPI failure behavior', () => {
       id: 'feedbax-training-run:pending',
       training_spec: { inline: { n_batches: 25 } },
     });
+  });
+
+  it('fetches durable evaluation manifests for snapshot provenance', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({
+        id: 'feedbax-evaluation-run:completed',
+        evaluation_spec: { inline: { evaluation_type: 'feedbax.validation.default' } },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchEvalRunManifest('feedbax-evaluation-run:completed')).resolves.toMatchObject({
+      id: 'feedbax-evaluation-run:completed',
+      evaluation_spec: { inline: { evaluation_type: 'feedbax.validation.default' } },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/runs/evaluation/feedbax-evaluation-run%3Acompleted/manifest',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      }),
+    );
   });
 
   it('does not fabricate successful training-run creation', async () => {

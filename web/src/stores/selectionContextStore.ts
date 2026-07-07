@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 
 export type SelectionSyncMode = 'linked' | 'decoupled';
+export type SnapshotSpecKey =
+  | 'graph_spec'
+  | 'training_spec'
+  | 'task_spec'
+  | 'task_binding_spec'
+  | 'evaluation_spec';
+export type SnapshotSpecPayload = Partial<Record<SnapshotSpecKey, Record<string, unknown> | null>>;
 
 export interface SelectionContext {
   stage: string | null;
@@ -16,13 +23,8 @@ export interface FrozenSnapshotProjection {
   runStatus: string;
   manifestId: string | null;
   manifestHash: string | null;
-  specHashes: Record<string, string | null>;
-  snapshot: {
-    graph_spec?: Record<string, unknown> | null;
-    training_spec?: Record<string, unknown> | null;
-    task_spec?: Record<string, unknown> | null;
-    task_binding_spec?: Record<string, unknown> | null;
-  };
+  specHashes: Partial<Record<SnapshotSpecKey, string | null>>;
+  snapshot: SnapshotSpecPayload;
 }
 
 interface SelectionContextState {
