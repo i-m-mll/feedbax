@@ -19,7 +19,7 @@ router = APIRouter()
 class SimulationRequest(BaseModel):
     graph: GraphSpec
     n_steps: int
-    inputs: Optional[Dict[str, Any]] = None
+    inputs: Optional[dict[str, Any]] = None
 
 
 @router.post('/simulate')
