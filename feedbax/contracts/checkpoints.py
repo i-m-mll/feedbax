@@ -20,8 +20,11 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = (
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.training_checkpoint_transaction.v1"
 )
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2 = (
     "feedbax.manifest.training_checkpoint_transaction.v2"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint_transaction.v3"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = (
     "feedbax.manifest.training_checkpoint_latest_pointer"
@@ -138,12 +141,27 @@ class StructuralAbiFingerprint(StrictModel):
     """Compatibility fingerprint for a slot PyTree."""
 
     schema_id: str = "feedbax.manifest.training_checkpoint.structural_abi"
-    schema_version: str = "feedbax.manifest.training_checkpoint.structural_abi.v1"
+    schema_version: str = "feedbax.manifest.training_checkpoint.structural_abi.v2"
+    fingerprint_algorithm_version: str = (
+        "feedbax.training_checkpoint.structural_abi.content.v2"
+    )
     treedef: str
     leaf_count: int
     leaves: list[SlotLeafFingerprint]
-    serializer_versions: SerializerVersionRecord
+    environment_provenance: SerializerVersionRecord | None = None
+    provenance_status: Literal["recorded", "unverifiable_legacy"] = "recorded"
     fingerprint_sha256: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointProvenanceNotice(StrictModel):
+    """Non-fatal provenance drift observed while validating checkpoint structure."""
+
+    code: Literal["environment_provenance_mismatch", "environment_provenance_unverifiable"]
+    slot: str
+    message: str
+    recorded: dict[str, Any] | None = None
+    current: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -178,7 +196,8 @@ class RunContractBinding(StrictModel):
     """Content binding between a checkpoint and the run contract that produced it."""
 
     schema_id: str = "feedbax.manifest.training_checkpoint.run_contract_binding"
-    schema_version: str = "feedbax.manifest.training_checkpoint.run_contract_binding.v1"
+    schema_version: str = "feedbax.manifest.training_checkpoint.run_contract_binding.v2"
+    algorithm_version: str = "feedbax.training_checkpoint.run_contract_binding.v2"
     hash_domain: Literal["migrated-canonical-json"] = "migrated-canonical-json"
     training_run_spec_schema_id: str
     training_run_spec_schema_version: str
@@ -190,6 +209,8 @@ class RunContractBinding(StrictModel):
     objective_sha256: str | None = None
     graph_sha256: str | None = None
     optimizer_bindings_sha256: str | None = None
+    canonical_projection: dict[str, Any] | None = None
+    canonical_projection_sha256: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -338,5 +359,6 @@ class CheckpointResumeResult(StrictModel):
 
     manifest: CheckpointTransactionManifest
     slots: dict[str, Any]
+    provenance_notices: list[CheckpointProvenanceNotice] = Field(default_factory=list)
     new_lineage_required: bool = False
     previous_transaction_id: str | None = None

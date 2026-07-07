@@ -131,14 +131,29 @@ remote execution outputs become recurring durable artifacts.
 |---|---|
 | Primary registry family | `TrainingCheckpointTransactionManifest` |
 | Identity | `feedbax.manifest.training_checkpoint_transaction` |
-| Current version | `feedbax.manifest.training_checkpoint_transaction.v2` |
+| Current version | `feedbax.manifest.training_checkpoint_transaction.v3` |
 | Namespace | `feedbax.manifest.*` |
 | Owner module | `feedbax.contracts.checkpoints` |
 | Emitter | `feedbax.training.checkpoint_custody` |
 | Consumers | Feedbax resume loaders, cloud-backed workers, downstream checkpoint adoption lanes |
-| Old-version policy | migrate `feedbax.manifest.training_checkpoint_transaction.v1` to v2 by stamping `fork_provenance: null` |
+| Old-version policy | migrate v1 to v2 by stamping `fork_provenance: null`, then migrate v2 to v3 by splitting structural content fingerprints from environment provenance and upgrading run-contract bindings |
 | Tests | `tests/test_checkpoint_custody.py`, `tests/test_structured_spec_migrations.py` |
 | Custody carrier | Checkpoint transaction manifest plus latest pointer; forked transactions also carry source identity, per-slot source/target hashes, transfer mode, transform metadata, and tool version. `TrainingRunManifest.checkpoint_custody[]` links the transaction by `ParentRef` or `ArtifactRef`. |
+
+Checkpoint transaction v3 keeps hard integrity separate from portability
+provenance. Slot blob SHA-256, transaction-root SHA-256, and structural
+fingerprints over PyTree treedef, leaf path, leaf type, shape, dtype, weak type,
+and static-leaf representation remain hard gates. Serializer/runtime versions
+are recorded as `environment_provenance`; mismatches produce resume/fork notices
+but do not reject a byte-intact, structurally matching checkpoint.
+
+Run-contract bindings use `feedbax.training_checkpoint.run_contract_binding.v2`.
+The stored canonical projection is canonical JSON over the migrated
+`TrainingRunSpec` plus the phase program used for the barrier. No non-semantic
+fields are excluded in v2; changing that inclusion rule requires a binding
+algorithm bump. Binding mismatches compare the stored projection with the
+expected projection and report field paths such as
+`/training_run_spec/training_config/learning_rate`.
 
 The older checkpoint-selection custody families remain registered and distinct:
 `CheckpointSelectionSpec` (`feedbax.spec.checkpoint_selection.v1`) and
@@ -193,11 +208,14 @@ This audit added focused assertions to `tests/test_structured_spec_migrations.py
 - namespace-category coverage includes the successor spec and manifest families;
 - `LocalExecutionResult` has explicit v1 rejection coverage alongside
   `ExecutionSpec` and `ExecutionPlan`;
-- `TrainingCheckpointTransactionManifest` now has explicit v1-to-v2 migration
-  coverage for fork provenance.
+- `TrainingCheckpointTransactionManifest` now has explicit v1-to-v2-to-v3
+  migration coverage for fork provenance, portable structural fingerprints, and
+  canonical run-contract bindings.
 
 Later checkpoint fork work updated the checkpoint transaction registry row from
-v1 reject-only behavior to a v2 manifest with registered v1 migration.
+v1 reject-only behavior to a v2 manifest with registered v1 migration. Follow-up
+checkpoint portability work updated the current manifest to v3 so environment
+drift is provenance, not content-integrity failure.
 
 ## Follow-Up Candidates
 
