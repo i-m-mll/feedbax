@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client';
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
+import { actionErrorMessage } from '@/stores/storeActions';
 import {
   getLastProjectId,
   persistLocalProjectTabs,
@@ -89,10 +90,11 @@ export function Header() {
         markSaved(graphId);
       }
       persistLocalProjectTabs();
+      toast.success('Project saved.', { id: 'project-save-success' });
     } catch (error) {
       console.error(error);
       persistLocalProjectTabs();
-      toast.error('Saved locally; backend is unreachable', { id: 'save-local-fallback' });
+      toast.error('Saved locally; backend is unreachable.', { id: 'save-local-fallback' });
     }
   };
 
@@ -159,6 +161,9 @@ export function Header() {
       return true;
     } catch (error) {
       console.error(error);
+      toast.error(actionErrorMessage(error, 'Failed to open project.'), {
+        id: `open-project-error-${id}`,
+      });
       return false;
     }
   };
@@ -200,6 +205,11 @@ export function Header() {
       link.download = data.filename || 'graph.json';
       link.click();
       URL.revokeObjectURL(url);
+      toast.success('Project exported.', { id: 'project-export-success' });
+    } catch (error) {
+      toast.error(actionErrorMessage(error, 'Failed to export project.'), {
+        id: 'project-export-error',
+      });
     } finally {
       setExporting(false);
     }
@@ -483,6 +493,9 @@ function ProjectOpenOverlay({
         setLastProjectId(graphId);
       } catch (error) {
         console.error('Failed to save example project to backend:', error);
+        toast.error('Template opened locally; backend save failed.', {
+          id: `template-load-error-${template.id}`,
+        });
         openProjectInTab(
           '',
           modelGraph,
@@ -544,8 +557,8 @@ function ProjectOpenOverlay({
                   key={item.id}
                   type="button"
                   onClick={async () => {
-                    await onOpenSaved(item.id);
-                    onClose();
+                    const opened = await onOpenSaved(item.id);
+                    if (opened) onClose();
                   }}
                   className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:border-brand-200 hover:bg-slate-50"
                 >

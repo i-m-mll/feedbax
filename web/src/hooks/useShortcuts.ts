@@ -1,5 +1,7 @@
 import { useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import { useGraphStore } from '@/stores/graphStore';
+import { actionErrorMessage } from '@/stores/storeActions';
 import {
   getTopPaneState,
   getTrainingScenario,
@@ -29,11 +31,18 @@ export function useAppShortcuts() {
   const saveMutation = useSaveGraph();
 
   const saveGraph = useCallback(async () => {
-    const response = await saveMutation.mutateAsync({ graphId, graph, uiState });
-    if ('id' in response) {
-      markSaved(response.id);
-    } else if (graphId) {
-      markSaved(graphId);
+    try {
+      const response = await saveMutation.mutateAsync({ graphId, graph, uiState });
+      if ('id' in response) {
+        markSaved(response.id);
+      } else if (graphId) {
+        markSaved(graphId);
+      }
+      toast.success('Project saved.', { id: 'project-save-success' });
+    } catch (error) {
+      toast.error(actionErrorMessage(error, 'Failed to save project.'), {
+        id: 'project-save-error',
+      });
     }
   }, [graphId, graph, uiState, markSaved, saveMutation]);
 
@@ -95,6 +104,14 @@ export function useAppShortcuts() {
     }
 
     deleteSelected();
+    if (selectedNodeIds.length > 0) {
+      toast.success(
+        selectedNodeIds.length === 1
+          ? 'Node deleted - Cmd+Z to undo.'
+          : 'Nodes deleted - Cmd+Z to undo.',
+        { id: 'node-delete-success' },
+      );
+    }
   }, [
     deleteSelected,
     graph,

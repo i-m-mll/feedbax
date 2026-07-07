@@ -13,6 +13,7 @@ import {
   fetchStatsScatter,
   fetchStatsDiagnostics,
 } from '@/api/client';
+import { withStoreActionFeedback } from '@/stores/storeActions';
 import { useTrajectoryStore } from '@/stores/trajectoryStore';
 
 interface StatisticsStoreState {
@@ -87,18 +88,22 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
 
     const { groupBy } = get();
     set({ loading: true, error: null });
-    try {
-      const summaryData = await fetchStatsSummary(dataset, groupBy);
-      // Bug: 4cb86c8 — discard stale response if params changed during fetch
-      const current = get();
-      if (current.groupBy !== groupBy || useTrajectoryStore.getState().activeDataset !== dataset) {
-        set({ loading: false });
-        return;
-      }
-      set({ summaryData, loading: false });
-    } catch (err) {
-      set({ error: String(err), loading: false });
+    const summaryData = await withStoreActionFeedback(
+      () => fetchStatsSummary(dataset, groupBy),
+      {
+        errorToast: 'Failed to load statistics summary.',
+        toastId: 'stats-summary-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!summaryData) return;
+    // Bug: 4cb86c8 - discard stale response if params changed during fetch
+    const current = get();
+    if (current.groupBy !== groupBy || useTrajectoryStore.getState().activeDataset !== dataset) {
+      set({ loading: false });
+      return;
     }
+    set({ summaryData, loading: false });
   },
 
   loadTimeseries: async () => {
@@ -107,17 +112,21 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
 
     const { selectedMetric, groupBy } = get();
     set({ loading: true, error: null });
-    try {
-      const timeseriesData = await fetchStatsTimeseries(dataset, selectedMetric, groupBy);
-      const current = get();
-      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
-        set({ loading: false });
-        return;
-      }
-      set({ timeseriesData, loading: false });
-    } catch (err) {
-      set({ error: String(err), loading: false });
+    const timeseriesData = await withStoreActionFeedback(
+      () => fetchStatsTimeseries(dataset, selectedMetric, groupBy),
+      {
+        errorToast: 'Failed to load timeseries statistics.',
+        toastId: 'stats-timeseries-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!timeseriesData) return;
+    const current = get();
+    if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
+      set({ loading: false });
+      return;
     }
+    set({ timeseriesData, loading: false });
   },
 
   loadHistogram: async () => {
@@ -126,17 +135,21 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
 
     const { selectedMetric, groupBy } = get();
     set({ loading: true, error: null });
-    try {
-      const histogramData = await fetchStatsHistogram(dataset, selectedMetric, groupBy);
-      const current = get();
-      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
-        set({ loading: false });
-        return;
-      }
-      set({ histogramData, loading: false });
-    } catch (err) {
-      set({ error: String(err), loading: false });
+    const histogramData = await withStoreActionFeedback(
+      () => fetchStatsHistogram(dataset, selectedMetric, groupBy),
+      {
+        errorToast: 'Failed to load histogram statistics.',
+        toastId: 'stats-histogram-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!histogramData) return;
+    const current = get();
+    if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
+      set({ loading: false });
+      return;
     }
+    set({ histogramData, loading: false });
   },
 
   loadScatter: async () => {
@@ -145,17 +158,21 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
 
     const { scatterXMetric, scatterYMetric } = get();
     set({ loading: true, error: null });
-    try {
-      const scatterData = await fetchStatsScatter(dataset, scatterXMetric, scatterYMetric);
-      const current = get();
-      if (current.scatterXMetric !== scatterXMetric || current.scatterYMetric !== scatterYMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
-        set({ loading: false });
-        return;
-      }
-      set({ scatterData, loading: false });
-    } catch (err) {
-      set({ error: String(err), loading: false });
+    const scatterData = await withStoreActionFeedback(
+      () => fetchStatsScatter(dataset, scatterXMetric, scatterYMetric),
+      {
+        errorToast: 'Failed to load scatter statistics.',
+        toastId: 'stats-scatter-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!scatterData) return;
+    const current = get();
+    if (current.scatterXMetric !== scatterXMetric || current.scatterYMetric !== scatterYMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
+      set({ loading: false });
+      return;
     }
+    set({ scatterData, loading: false });
   },
 
   loadDiagnostics: async () => {
@@ -163,16 +180,20 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     if (!dataset) return;
 
     set({ loading: true, error: null });
-    try {
-      const diagnosticsData = await fetchStatsDiagnostics(dataset);
-      if (useTrajectoryStore.getState().activeDataset !== dataset) {
-        set({ loading: false });
-        return;
-      }
-      set({ diagnosticsData, loading: false });
-    } catch (err) {
-      set({ error: String(err), loading: false });
+    const diagnosticsData = await withStoreActionFeedback(
+      () => fetchStatsDiagnostics(dataset),
+      {
+        errorToast: 'Failed to load diagnostics.',
+        toastId: 'stats-diagnostics-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!diagnosticsData) return;
+    if (useTrajectoryStore.getState().activeDataset !== dataset) {
+      set({ loading: false });
+      return;
     }
+    set({ diagnosticsData, loading: false });
   },
 }));
 

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { TrainingRun, EvalRun } from '@/types/runs';
 import { fetchTrainingRuns, fetchEvalRuns } from '@/api/runAPI';
+import { withStoreActionFeedback } from '@/stores/storeActions';
 import { getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { StudioCollectionRef, StudioManifestRef, StudioWorkspaceSpec } from '@/types/workspace';
 
@@ -318,20 +319,24 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
 
   loadTrainingRuns: async () => {
     set({ loading: true });
-    try {
-      const runs = await fetchTrainingRuns();
-      set({ trainingRuns: runs, loading: false });
-      writeTrainingRunsToWorkspace(runs);
-      const workspaceSelected = selectedTrainingRunIdFromWorkspace();
-      if (runs.length > 0 && get().selectedTrainingRunId === null) {
-        const selectedId =
-          workspaceSelected && runs.some((run) => run.id === workspaceSelected)
-            ? workspaceSelected
-            : runs[0].id;
-        await get().selectTrainingRun(selectedId);
-      }
-    } catch {
-      set({ loading: false });
+    const runs = await withStoreActionFeedback(
+      () => fetchTrainingRuns(),
+      {
+        errorToast: 'Failed to load training runs.',
+        toastId: 'training-runs-load-error',
+        onError: () => set({ loading: false }),
+      },
+    );
+    if (!runs) return;
+    set({ trainingRuns: runs, loading: false });
+    writeTrainingRunsToWorkspace(runs);
+    const workspaceSelected = selectedTrainingRunIdFromWorkspace();
+    if (runs.length > 0 && get().selectedTrainingRunId === null) {
+      const selectedId =
+        workspaceSelected && runs.some((run) => run.id === workspaceSelected)
+          ? workspaceSelected
+          : runs[0].id;
+      await get().selectTrainingRun(selectedId);
     }
   },
 
@@ -340,20 +345,23 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
     const selected = get().trainingRuns.find((run) => run.id === id) ?? null;
     writeSelectedTrainingRunToWorkspace(selected);
     if (id === null) return;
-    try {
-      const evals = await fetchEvalRuns(id);
-      set({ evalRuns: evals });
-      writeEvalRunsToWorkspace(evals);
-      const workspaceSelected = selectedEvalRunIdFromWorkspace();
-      if (evals.length > 0) {
-        const selectedId =
-          workspaceSelected && evals.some((run) => run.id === workspaceSelected)
-            ? workspaceSelected
-            : evals[0].id;
-        get().selectEvalRun(selectedId);
-      }
-    } catch {
-      // eval fetch failed silently
+    const evals = await withStoreActionFeedback(
+      () => fetchEvalRuns(id),
+      {
+        errorToast: 'Failed to load evaluation runs.',
+        toastId: 'eval-runs-load-error',
+      },
+    );
+    if (!evals) return;
+    set({ evalRuns: evals });
+    writeEvalRunsToWorkspace(evals);
+    const workspaceSelected = selectedEvalRunIdFromWorkspace();
+    if (evals.length > 0) {
+      const selectedId =
+        workspaceSelected && evals.some((run) => run.id === workspaceSelected)
+          ? workspaceSelected
+          : evals[0].id;
+      get().selectEvalRun(selectedId);
     }
   },
 

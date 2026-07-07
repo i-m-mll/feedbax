@@ -8,8 +8,10 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useRunStore } from '@/stores/runStore';
+import { actionErrorMessage } from '@/stores/storeActions';
 import { EvalRunSelector } from '@/components/panels/RunSelector';
 import { createEvalRun } from '@/api/runAPI';
 import { Plus, Trash2, Play, Loader2, CheckCircle2 } from 'lucide-react';
@@ -182,7 +184,9 @@ export function AnalysisPageSettings() {
         setTimeout(() => setEvalSuccess(false), 3000);
       }, 1500);
     } catch (err) {
-      setEvalError(err instanceof Error ? err.message : 'Failed to create evaluation run');
+      const message = actionErrorMessage(err, 'Failed to create evaluation run');
+      setEvalError(message);
+      toast.error(message, { id: 'eval-run-create-error' });
       setEvalRunning(false);
     }
   }, [

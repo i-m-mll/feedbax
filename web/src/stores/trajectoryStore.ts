@@ -11,6 +11,7 @@ import {
   fetchTrajectory,
   filterTrajectories,
 } from '@/api/client';
+import { withStoreActionFeedback } from '@/stores/storeActions';
 
 interface TrajectoryStoreState {
   // Data
@@ -82,12 +83,16 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
   // Actions
   loadDatasets: async () => {
     set({ loading: true, error: null });
-    try {
-      const datasets = await fetchTrajectoryDatasets();
-      set({ datasets, loading: false });
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
+    const datasets = await withStoreActionFeedback(
+      () => fetchTrajectoryDatasets(),
+      {
+        errorToast: 'Failed to load trajectory datasets.',
+        toastId: 'trajectory-datasets-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!datasets) return;
+    set({ datasets, loading: false });
   },
 
   selectDataset: async (name: string) => {
@@ -101,15 +106,19 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
       error: null,
       playback: { ...defaultPlayback },
     });
-    try {
-      const metadata = await fetchTrajectoryMetadata(name);
-      set({ metadata, loading: false });
-      // Apply current filters after loading metadata
-      const { filterBodyIdx, filterTaskType } = get();
-      await get().applyFilter(filterBodyIdx, filterTaskType);
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
+    const metadata = await withStoreActionFeedback(
+      () => fetchTrajectoryMetadata(name),
+      {
+        errorToast: 'Failed to load trajectory metadata.',
+        toastId: 'trajectory-metadata-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!metadata) return;
+    set({ metadata, loading: false });
+    // Apply current filters after loading metadata
+    const { filterBodyIdx, filterTaskType } = get();
+    await get().applyFilter(filterBodyIdx, filterTaskType);
   },
 
   applyFilter: async (bodyIdx: number | null, taskType: number | null) => {
@@ -123,22 +132,26 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
       error: null,
     });
 
-    try {
-      const filters: { body_idx?: number; task_type?: number } = {};
-      if (bodyIdx !== null) filters.body_idx = bodyIdx;
-      if (taskType !== null) filters.task_type = taskType;
+    const filters: { body_idx?: number; task_type?: number } = {};
+    if (bodyIdx !== null) filters.body_idx = bodyIdx;
+    if (taskType !== null) filters.task_type = taskType;
 
-      const result = await filterTrajectories(activeDataset, filters);
-      set({ filteredIndices: result.indices, loading: false });
+    const result = await withStoreActionFeedback(
+      () => filterTrajectories(activeDataset, filters),
+      {
+        errorToast: 'Failed to filter trajectories.',
+        toastId: 'trajectory-filter-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!result) return;
+    set({ filteredIndices: result.indices, loading: false });
 
-      // Auto-select first trajectory from filtered results
-      if (result.indices.length > 0) {
-        await get().selectTrajectory(result.indices[0]);
-      } else {
-        set({ activeIndex: null, trajectoryData: null });
-      }
-    } catch (err) {
-      set({ error: String(err), loading: false });
+    // Auto-select first trajectory from filtered results
+    if (result.indices.length > 0) {
+      await get().selectTrajectory(result.indices[0]);
+    } else {
+      set({ activeIndex: null, trajectoryData: null });
     }
   },
 
@@ -147,19 +160,23 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
     if (!activeDataset) return;
 
     set({ activeIndex: index, loading: true, error: null });
-    try {
-      const data = await fetchTrajectory(activeDataset, index);
-      set({
-        trajectoryData: data,
-        loading: false,
-        playback: {
-          ...defaultPlayback,
-          totalFrames: data.timestamps.length,
-        },
-      });
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
+    const data = await withStoreActionFeedback(
+      () => fetchTrajectory(activeDataset, index),
+      {
+        errorToast: 'Failed to load trajectory.',
+        toastId: 'trajectory-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!data) return;
+    set({
+      trajectoryData: data,
+      loading: false,
+      playback: {
+        ...defaultPlayback,
+        totalFrames: data.timestamps.length,
+      },
+    });
   },
 
   // Playback actions
