@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { WorkspaceReplayProduct } from '@/generated/studioContracts';
 import {
   objectiveLossWindowBands,
+  resolveWorkspaceReplayComparison,
   resolveWorkspaceReplayModel,
+  resolveWorkspaceReplaySources,
   selectWorkspaceReplayTrial,
   workspaceReplayDuration,
   workspaceReplayEventTicks,
@@ -82,6 +84,30 @@ const stage: StudioStageSpec = {
   metadata: { workspace_replay_product: embeddedProduct },
 };
 
+const candidateProduct: WorkspaceReplayProduct = {
+  ...embeddedProduct,
+  trials: [
+    {
+      ...embeddedProduct.trials![0],
+      tracks: [
+        {
+          ...embeddedProduct.trials![0].tracks![0],
+          samples: [[0, 0], [1, 1.5], [2, 0.5]],
+        },
+      ],
+      manifest_refs: {
+        checkpoint: {
+          kind: 'checkpoint',
+          id: 'artifact:ckpt-candidate',
+          provider: 'test',
+          metadata: {},
+        },
+      },
+      metadata: { run_ref: 'run:candidate' },
+    },
+  ],
+};
+
 describe('workspace replay helpers', () => {
   it('prefers embedded replay products and falls back to a typed fixture', () => {
     expect(resolveWorkspaceReplayModel(workspace, stage).source).toBe('embedded');
@@ -103,6 +129,47 @@ describe('workspace replay helpers', () => {
     const fallback = resolveWorkspaceReplayModel(workspace, { ...stage, metadata: {} });
     expect(fallback.source).toBe('fixture');
     expect(fallback.product.trials?.length).toBeGreaterThan(0);
+  });
+
+  it('resolves ref-addressable replay products for comparison selection', () => {
+    const comparisonStage: StudioStageSpec = {
+      ...stage,
+      metadata: {},
+      artifact_refs: [
+        {
+          kind: 'workspace_replay',
+          id: 'artifact:baseline',
+          provider: 'test',
+          metadata: { label: 'Baseline run', product: embeddedProduct },
+        },
+        {
+          kind: 'workspace_replay',
+          id: 'artifact:candidate',
+          provider: 'test',
+          metadata: { label: 'Candidate run', product: candidateProduct },
+        },
+      ],
+    };
+
+    const sources = resolveWorkspaceReplaySources(workspace, comparisonStage);
+    expect(sources.map((source) => source.ref)).toEqual([
+      'artifact:baseline',
+      'artifact:candidate',
+    ]);
+
+    const comparison = resolveWorkspaceReplayComparison(
+      sources,
+      { baseline_ref: 'artifact:baseline', candidate_ref: 'artifact:candidate' },
+      'trial:stable-a'
+    );
+
+    expect(comparison.members.map((member) => [member.role, member.label])).toEqual([
+      ['baseline', 'Baseline run'],
+      ['candidate', 'Candidate run'],
+    ]);
+    expect(workspaceReplaySampleAt(comparison.members[0].track, 1)).toEqual([1, 1]);
+    expect(workspaceReplaySampleAt(comparison.members[1].track, 1)).toEqual([1, 1.5]);
+    expect(comparison.primaryTrial?.identity.stable_id).toBe('stable-a');
   });
 
   it('selects trials and honors replay dt when stepping frames', () => {

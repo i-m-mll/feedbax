@@ -4,10 +4,14 @@ import type {
   WorkspaceReplayTrial,
 } from '@/generated/studioContracts';
 import type {
+  StudioArtifactRef,
+  StudioCollectionRef,
+  StudioManifestRef,
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
   StudioStageSpec,
   StudioWorkspaceSpec,
+  WorkspaceComparisonSelection,
 } from '@/types/workspace';
 
 export interface WorkspaceReplayTimelineBand {
@@ -30,6 +34,33 @@ export interface WorkspaceReplayModel {
   message: string;
   warnings: string[];
 }
+
+export interface WorkspaceReplaySourceModel extends WorkspaceReplayModel {
+  ref: string;
+  label: string;
+}
+
+export interface WorkspaceReplayComparisonMember {
+  role: 'baseline' | 'candidate';
+  ref: string;
+  label: string;
+  color: string;
+  product: WorkspaceReplayProduct;
+  trial: WorkspaceReplayTrial;
+  track: WorkspaceReplayTrack | null;
+}
+
+export interface WorkspaceReplayComparisonModel {
+  members: WorkspaceReplayComparisonMember[];
+  sources: WorkspaceReplaySourceModel[];
+  primaryTrial: WorkspaceReplayTrial | null;
+  warnings: string[];
+}
+
+const REPLAY_COMPARISON_COLORS = {
+  baseline: '#0f766e',
+  candidate: '#7c3aed',
+} as const;
 
 export const WORKSPACE_REPLAY_FIXTURE: WorkspaceReplayProduct = {
   schema_id: 'feedbax.manifest.studio.workspace_replay',
@@ -212,10 +243,151 @@ function replayProductFromArtifactRefs(
   return null;
 }
 
+function replayWarnings(product: WorkspaceReplayProduct): string[] {
+  return [
+    ...(product.warnings ?? []).map((warning) => warning.message),
+    ...(product.trials ?? []).flatMap((trial) =>
+      (trial.warnings ?? []).map((warning) => warning.message)
+    ),
+  ];
+}
+
+function refDisplayLabel(
+  ref: StudioArtifactRef | StudioManifestRef,
+  fallbackPrefix: string
+): string {
+  const metadataLabel = ref.metadata.label;
+  if (typeof metadataLabel === 'string' && metadataLabel.length > 0) return metadataLabel;
+  if (ref.role) return `${ref.role}: ${ref.id}`;
+  if (ref.kind) return `${ref.kind}: ${ref.id}`;
+  return `${fallbackPrefix}: ${ref.id}`;
+}
+
+function pushReplaySource(
+  sources: WorkspaceReplaySourceModel[],
+  seen: Set<string>,
+  ref: string,
+  label: string,
+  product: WorkspaceReplayProduct,
+  message: string
+) {
+  if (seen.has(ref)) return;
+  seen.add(ref);
+  sources.push({
+    ref,
+    label,
+    product,
+    source: 'embedded',
+    message,
+    warnings: replayWarnings(product),
+  });
+}
+
+function collectReplaySourcesFromRefs(
+  sources: WorkspaceReplaySourceModel[],
+  seen: Set<string>,
+  refs: Array<StudioArtifactRef | StudioManifestRef> | undefined,
+  owner: string
+) {
+  for (const ref of refs ?? []) {
+    const product = replayProductFromMetadata(ref.metadata);
+    if (!product) continue;
+    pushReplaySource(
+      sources,
+      seen,
+      ref.id,
+      refDisplayLabel(ref, owner),
+      product,
+      `Eval playback uses ${owner} replay product ${ref.id}.`
+    );
+    if (ref.uri) {
+      pushReplaySource(
+        sources,
+        seen,
+        ref.uri,
+        refDisplayLabel(ref, owner),
+        product,
+        `Eval playback uses ${owner} replay product ${ref.id}.`
+      );
+    }
+  }
+}
+
+function collectReplaySourcesFromCollections(
+  sources: WorkspaceReplaySourceModel[],
+  seen: Set<string>,
+  collections: StudioCollectionRef[] | undefined,
+  owner: string
+) {
+  for (const collection of collections ?? []) {
+    collectReplaySourcesFromRefs(
+      sources,
+      seen,
+      collection.item_refs,
+      `${owner} ${collection.label ?? collection.kind}`
+    );
+  }
+}
+
+function collectReplaySourcesFromMetadata(
+  sources: WorkspaceReplaySourceModel[],
+  seen: Set<string>,
+  ref: string,
+  label: string,
+  metadata: Record<string, unknown> | undefined
+) {
+  const product = replayProductFromMetadata(metadata);
+  if (!product) return;
+  pushReplaySource(
+    sources,
+    seen,
+    ref,
+    label,
+    product,
+    'Eval playback uses attached workspace replay product.'
+  );
+}
+
+export function resolveWorkspaceReplaySources(
+  workspace: StudioWorkspaceSpec | null | undefined,
+  stage: StudioStageSpec | null | undefined
+): WorkspaceReplaySourceModel[] {
+  const sources: WorkspaceReplaySourceModel[] = [];
+  const seen = new Set<string>();
+
+  collectReplaySourcesFromMetadata(
+    sources,
+    seen,
+    stage ? `stage:${stage.id}:metadata` : 'stage:metadata',
+    stage?.label ? `${stage.label} metadata` : 'Stage metadata',
+    stage?.metadata
+  );
+  collectReplaySourcesFromRefs(sources, seen, stage?.artifact_refs, 'stage artifact');
+  collectReplaySourcesFromRefs(sources, seen, stage?.manifest_refs, 'stage manifest');
+  collectReplaySourcesFromCollections(sources, seen, stage?.input_collections, 'stage input');
+  collectReplaySourcesFromCollections(sources, seen, stage?.output_collections, 'stage output');
+
+  collectReplaySourcesFromMetadata(
+    sources,
+    seen,
+    'workspace:metadata',
+    workspace?.label ? `${workspace.label} metadata` : 'Workspace metadata',
+    workspace?.metadata
+  );
+  collectReplaySourcesFromRefs(sources, seen, workspace?.artifact_refs, 'workspace artifact');
+  collectReplaySourcesFromRefs(sources, seen, workspace?.manifest_refs, 'workspace manifest');
+  collectReplaySourcesFromCollections(sources, seen, workspace?.collections, 'workspace');
+
+  return sources;
+}
+
 export function resolveWorkspaceReplayModel(
   workspace: StudioWorkspaceSpec | null | undefined,
   stage: StudioStageSpec | null | undefined
 ): WorkspaceReplayModel {
+  const source = resolveWorkspaceReplaySources(workspace, stage)[0];
+  if (source) return source;
+
   const product =
     replayProductFromMetadata(stage?.metadata) ??
     replayProductFromArtifactRefs(stage?.artifact_refs) ??
@@ -224,17 +396,11 @@ export function resolveWorkspaceReplayModel(
     null;
 
   if (product) {
-    const warnings = [
-      ...(product.warnings ?? []).map((warning) => warning.message),
-      ...(product.trials ?? []).flatMap((trial) =>
-        (trial.warnings ?? []).map((warning) => warning.message)
-      ),
-    ];
     return {
       product,
       source: 'embedded',
       message: 'Eval playback uses attached workspace replay product.',
-      warnings,
+      warnings: replayWarnings(product),
     };
   }
 
@@ -266,6 +432,89 @@ export function selectWorkspaceReplayTrial(
     trials[0] ??
     null
   );
+}
+
+function sameTrialIdentity(left: WorkspaceReplayTrial, right: WorkspaceReplayTrial): boolean {
+  return (
+    workspaceReplayTrialRef(left) === workspaceReplayTrialRef(right) ||
+    Boolean(left.identity.stable_id && left.identity.stable_id === right.identity.stable_id) ||
+    left.identity.index === right.identity.index
+  );
+}
+
+function selectComparableWorkspaceReplayTrial(
+  product: WorkspaceReplayProduct,
+  selectedRef: string | null | undefined,
+  baselineTrial: WorkspaceReplayTrial | null
+): WorkspaceReplayTrial | null {
+  const selected = selectWorkspaceReplayTrial(product, selectedRef);
+  const trials = product.trials ?? [];
+  if (!baselineTrial) return selected;
+  return (
+    trials.find((trial) => sameTrialIdentity(trial, baselineTrial)) ??
+    selected ??
+    null
+  );
+}
+
+export function resolveWorkspaceReplayComparison(
+  sources: WorkspaceReplaySourceModel[],
+  selection: WorkspaceComparisonSelection,
+  selectedTrialRef: string | null | undefined
+): WorkspaceReplayComparisonModel {
+  const sourceByRef = new Map(sources.map((source) => [source.ref, source]));
+  const baselineSource =
+    (selection.baseline_ref ? sourceByRef.get(selection.baseline_ref) : undefined) ??
+    null;
+  const candidateSource =
+    (selection.candidate_ref ? sourceByRef.get(selection.candidate_ref) : undefined) ??
+    null;
+  const baselineTrial = baselineSource
+    ? selectWorkspaceReplayTrial(baselineSource.product, selectedTrialRef)
+    : null;
+  const candidateTrial = candidateSource
+    ? selectComparableWorkspaceReplayTrial(
+        candidateSource.product,
+        selectedTrialRef,
+        baselineTrial
+      )
+    : null;
+
+  const members: WorkspaceReplayComparisonMember[] = [];
+  if (baselineSource && baselineTrial) {
+    members.push({
+      role: 'baseline',
+      ref: baselineSource.ref,
+      label: baselineSource.label,
+      color: REPLAY_COMPARISON_COLORS.baseline,
+      product: baselineSource.product,
+      trial: baselineTrial,
+      track: primaryWorkspaceReplayTrack(baselineTrial),
+    });
+  }
+  if (candidateSource && candidateTrial && candidateSource.ref !== baselineSource?.ref) {
+    members.push({
+      role: 'candidate',
+      ref: candidateSource.ref,
+      label: candidateSource.label,
+      color: REPLAY_COMPARISON_COLORS.candidate,
+      product: candidateSource.product,
+      trial: candidateTrial,
+      track: primaryWorkspaceReplayTrack(candidateTrial),
+    });
+  }
+
+  const warnings = [
+    ...(baselineSource?.warnings ?? []),
+    ...(candidateSource?.warnings ?? []),
+  ];
+
+  return {
+    members,
+    sources,
+    primaryTrial: baselineTrial ?? candidateTrial,
+    warnings,
+  };
 }
 
 export function primaryWorkspaceReplayTrack(

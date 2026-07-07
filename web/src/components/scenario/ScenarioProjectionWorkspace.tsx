@@ -73,7 +73,9 @@ import {
 import {
   objectiveLossWindowBands,
   primaryWorkspaceReplayTrack,
+  resolveWorkspaceReplayComparison,
   resolveWorkspaceReplayModel,
+  resolveWorkspaceReplaySources,
   selectWorkspaceReplayTrial,
   workspaceReplayDuration,
   workspaceReplayEventTicks,
@@ -85,6 +87,7 @@ import {
   workspaceReplayTimelineBands,
   workspaceReplayTrialLabel,
   workspaceReplayTrialRef,
+  type WorkspaceReplayComparisonMember,
 } from '@/features/scenario/workspaceReplay';
 import { semanticTokens } from '@/components/ui/semanticTokens';
 import { useComponents } from '@/hooks/useComponents';
@@ -383,30 +386,54 @@ function WorkspaceProjection({
         ]
       : []
   );
-  const replayModel = useMemo(
-    () => resolveWorkspaceReplayModel(workspace, activeStage),
+  const replaySources = useMemo(
+    () => resolveWorkspaceReplaySources(workspace, activeStage),
     [activeStage, workspace]
+  );
+  const replayModel = useMemo(
+    () => replaySources[0] ?? resolveWorkspaceReplayModel(workspace, activeStage),
+    [activeStage, replaySources, workspace]
   );
   const replayTrials = replayModel.product.trials ?? [];
   const selectedReplayTrial = selectWorkspaceReplayTrial(
     replayModel.product,
     viewState.selected_trial_ref
   );
-  const selectedReplayTrack = primaryWorkspaceReplayTrack(selectedReplayTrial);
-  const replayFrameTimes = workspaceReplayFrameTimes(selectedReplayTrial);
-  const replayDuration = workspaceReplayDuration(selectedReplayTrial);
-  const replayFrameIndex = selectedReplayTrial
-    ? workspaceReplayFrameIndex(selectedReplayTrial, viewState.playback.position)
+  const replayComparison = useMemo(
+    () =>
+      resolveWorkspaceReplayComparison(
+        replaySources,
+        viewState.comparison_selection,
+        viewState.selected_trial_ref
+      ),
+    [replaySources, viewState.comparison_selection, viewState.selected_trial_ref]
+  );
+  const comparisonActive =
+    overlayVisible('comparisons') && replayComparison.members.length >= 2;
+  const displayedReplayTrial = comparisonActive
+    ? replayComparison.primaryTrial
+    : selectedReplayTrial;
+  const playbackTrialOptions = comparisonActive
+    ? replayComparison.members[0]?.product.trials ?? replayTrials
+    : replayTrials;
+  const selectedReplayTrack = primaryWorkspaceReplayTrack(displayedReplayTrial);
+  const replayFrameTimes = workspaceReplayFrameTimes(displayedReplayTrial);
+  const replayDuration = workspaceReplayDuration(displayedReplayTrial);
+  const replayFrameIndex = displayedReplayTrial
+    ? workspaceReplayFrameIndex(displayedReplayTrial, viewState.playback.position)
     : 0;
   const replayCursorPoint = workspaceReplaySampleAt(selectedReplayTrack, replayFrameIndex);
   const replayTimelineBands = [
-    ...workspaceReplayTimelineBands(selectedReplayTrial),
+    ...workspaceReplayTimelineBands(displayedReplayTrial),
     ...objectiveLossWindowBands(objectiveSpec, replayDuration),
   ];
-  const replayEventTicks = workspaceReplayEventTicks(selectedReplayTrial);
+  const replayEventTicks = workspaceReplayEventTicks(displayedReplayTrial);
   const bounds = sceneBounds(scene);
   if (previewMode === 'sampled') includeSampledTrials(bounds, sampledTrials);
   if (previewMode === 'playback') includeReplayTrials(bounds, replayTrials);
+  if (previewMode === 'playback' && comparisonActive) {
+    includeReplayTrials(bounds, replayComparison.members.map((member) => member.trial));
+  }
   const baseScale = fitScale(bounds);
   const scale = baseScale * view.zoom;
   const center: ScenePoint = [
@@ -841,8 +868,57 @@ function WorkspaceProjection({
     );
   };
 
+  const renderComparisonMemberTrace = (member: WorkspaceReplayComparisonMember) => {
+    const points = workspaceReplayPolyline(member.track);
+    if (points.length === 0) return null;
+    const projected = points.map(project).map((point) => point.join(',')).join(' ');
+    return (
+      <g key={`comparison:${member.role}:${member.ref}`} opacity={0.92}>
+        <polyline
+          points={projected}
+          fill="none"
+          stroke={member.color}
+          strokeWidth={member.role === 'baseline' ? 3.25 : 2.75}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray={member.role === 'baseline' ? undefined : '7 5'}
+          vectorEffect="non-scaling-stroke"
+        />
+        <title>{`${member.role}: ${member.label}`}</title>
+      </g>
+    );
+  };
+
+  const renderComparisonMemberCursor = (member: WorkspaceReplayComparisonMember) => {
+    const frameIndex = workspaceReplayFrameIndex(member.trial, viewState.playback.position);
+    const point = workspaceReplaySampleAt(member.track, frameIndex);
+    if (!point) return null;
+    const [x, y] = project(point);
+    return (
+      <g key={`comparison-cursor:${member.role}:${member.ref}`}>
+        <circle
+          cx={x}
+          cy={y}
+          r={member.role === 'baseline' ? 10 : 8}
+          fill="#ffffff"
+          stroke={member.color}
+          strokeWidth={2.25}
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle cx={x} cy={y} r={4} fill={member.color} />
+        <text
+          x={x + 12}
+          y={member.role === 'baseline' ? y - 12 : y + 18}
+          className="select-none fill-slate-800 text-[11px] font-semibold capitalize"
+        >
+          {member.role}
+        </text>
+      </g>
+    );
+  };
+
   const renderReplayCursor = () => {
-    if (!replayCursorPoint || !selectedReplayTrial) return null;
+    if (!replayCursorPoint || !displayedReplayTrial) return null;
     const [x, y] = project(replayCursorPoint);
     return (
       <g>
@@ -861,7 +937,7 @@ function WorkspaceProjection({
           y={y - 12}
           className="select-none fill-slate-800 text-[11px] font-semibold"
         >
-          {workspaceReplayTrialLabel(selectedReplayTrial)}
+          {workspaceReplayTrialLabel(displayedReplayTrial)}
         </text>
       </g>
     );
@@ -872,7 +948,9 @@ function WorkspaceProjection({
     previewMode === 'sampled'
       ? 'Sampled preview'
       : previewMode === 'playback'
-        ? 'Playback'
+        ? comparisonActive
+          ? 'Comparison playback'
+          : 'Playback'
         : 'Authoring rest pose';
 
   return (
@@ -934,8 +1012,16 @@ function WorkspaceProjection({
             {visibleElements.map(renderElement)}
           </g>
           {renderedSamples.map(renderSampledTrial)}
-          {previewMode === 'playback' && replayTrials.map(renderReplayTrace)}
-          {previewMode === 'playback' && renderReplayCursor()}
+          {previewMode === 'playback' && comparisonActive
+            ? replayComparison.members.map(renderComparisonMemberTrace)
+            : previewMode === 'playback'
+              ? replayTrials.map(renderReplayTrace)
+              : null}
+          {previewMode === 'playback' && comparisonActive
+            ? replayComparison.members.map(renderComparisonMemberCursor)
+            : previewMode === 'playback'
+              ? renderReplayCursor()
+              : null}
           {objectiveDrag && (() => {
             const sourceAnchor = scene.anchors.find((anchor) => anchor.id === objectiveDrag.sourceAnchorId);
             if (!sourceAnchor?.position) return null;
@@ -980,7 +1066,7 @@ function WorkspaceProjection({
                 {previewMode === 'sampled'
                   ? `${renderedSamples.length} trials - seed ${previewSeed}`
                   : previewMode === 'playback'
-                    ? workspaceReplayProvenance(selectedReplayTrial)
+                    ? workspaceReplayProvenance(displayedReplayTrial)
                     : 'Authored geometry without sampled trial instances'}
                 {nonSpatialObjectiveCount > 0
                   ? ` - ${nonSpatialObjectiveCount} non-spatial objectives`
@@ -1077,7 +1163,7 @@ function WorkspaceProjection({
             <div className="space-y-2">
               <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] items-center gap-2">
                 <select
-                  value={selectedReplayTrial ? workspaceReplayTrialRef(selectedReplayTrial) : ''}
+                  value={displayedReplayTrial ? workspaceReplayTrialRef(displayedReplayTrial) : ''}
                   onChange={(event) => {
                     onViewStateChange({
                       selected_trial_ref: event.target.value || null,
@@ -1088,7 +1174,7 @@ function WorkspaceProjection({
                   aria-label="Playback trial"
                   title="Playback trial"
                 >
-                  {replayTrials.map((trial) => (
+                  {playbackTrialOptions.map((trial) => (
                     <option
                       key={workspaceReplayTrialRef(trial)}
                       value={workspaceReplayTrialRef(trial)}
@@ -1098,9 +1184,84 @@ function WorkspaceProjection({
                   ))}
                 </select>
                 <div className="truncate text-right text-[11px] font-medium text-slate-500">
-                  {replayModel.source === 'fixture' ? 'fixture data' : 'artifact data'}
+                  {comparisonActive
+                    ? 'comparison'
+                    : replayModel.source === 'fixture'
+                      ? 'fixture data'
+                      : 'artifact data'}
                 </div>
               </div>
+              {replaySources.length > 0 && (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="min-w-0 text-[10px] font-semibold uppercase text-slate-500">
+                    Baseline
+                    <select
+                      value={viewState.comparison_selection.baseline_ref ?? ''}
+                      onChange={(event) =>
+                        onViewStateChange({
+                          comparison_selection: {
+                            ...viewState.comparison_selection,
+                            baseline_ref: event.target.value || null,
+                          },
+                        })
+                      }
+                      className="mt-1 h-8 w-full min-w-0 rounded border border-slate-200 bg-white px-2 text-xs font-normal normal-case text-slate-700"
+                      aria-label="Comparison baseline replay"
+                    >
+                      <option value="">None</option>
+                      {replaySources.map((source) => (
+                        <option key={`baseline:${source.ref}`} value={source.ref}>
+                          {source.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="min-w-0 text-[10px] font-semibold uppercase text-slate-500">
+                    Candidate
+                    <select
+                      value={viewState.comparison_selection.candidate_ref ?? ''}
+                      onChange={(event) =>
+                        onViewStateChange({
+                          comparison_selection: {
+                            ...viewState.comparison_selection,
+                            candidate_ref: event.target.value || null,
+                          },
+                        })
+                      }
+                      className="mt-1 h-8 w-full min-w-0 rounded border border-slate-200 bg-white px-2 text-xs font-normal normal-case text-slate-700"
+                      aria-label="Comparison candidate replay"
+                    >
+                      <option value="">None</option>
+                      {replaySources.map((source) => (
+                        <option key={`candidate:${source.ref}`} value={source.ref}>
+                          {source.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+              {comparisonActive && (
+                <div className="grid grid-cols-2 gap-2">
+                  {replayComparison.members.map((member) => (
+                    <div
+                      key={`legend:${member.role}:${member.ref}`}
+                      className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-1"
+                    >
+                      <span
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: member.color }}
+                      />
+                      <span className="truncate text-[11px] text-slate-600">
+                        <span className="font-semibold capitalize text-slate-700">
+                          {member.role}
+                        </span>{' '}
+                        {member.label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <PlaybackControls
                 position={viewState.playback.position}
                 duration={replayDuration}
@@ -1108,8 +1269,8 @@ function WorkspaceProjection({
                 frameTimes={replayFrameTimes}
                 bands={replayTimelineBands}
                 eventTicks={replayEventTicks}
-                cursorLabel={workspaceReplayProvenance(selectedReplayTrial)}
-                disabled={!selectedReplayTrial || !selectedReplayTrack}
+                cursorLabel={workspaceReplayProvenance(displayedReplayTrial)}
+                disabled={!displayedReplayTrial || !selectedReplayTrack}
                 onPositionChange={(position) =>
                   onViewStateChange({ playback: { ...viewState.playback, position } })
                 }
