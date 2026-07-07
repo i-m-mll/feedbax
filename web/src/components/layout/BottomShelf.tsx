@@ -1,17 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
-import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
-import { ConsolePanel } from '@/components/panels/ConsolePanel';
-import { BottomSidebar } from '@/components/layout/BottomSidebar';
-import {
-  EvaluateCollectionPanel,
-  TrainCollectionPanel,
-} from '@/components/panels/RunCollectionStagePanel';
-import {
-  StageDraftPanel,
-  StageProvenancePanel,
-} from '@/components/panels/PipelineStageWorkspace';
 import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
 import type { StudioStageKind } from '@/types/workspace';
@@ -30,6 +19,42 @@ import {
   Workflow,
 } from 'lucide-react';
 
+const AnalysisPanel = lazy(() =>
+  import('@/components/panels/AnalysisPanel').then((module) => ({
+    default: module.AnalysisPanel,
+  }))
+);
+const BottomSidebar = lazy(() =>
+  import('@/components/layout/BottomSidebar').then((module) => ({
+    default: module.BottomSidebar,
+  }))
+);
+const ConsolePanel = lazy(() =>
+  import('@/components/panels/ConsolePanel').then((module) => ({
+    default: module.ConsolePanel,
+  }))
+);
+const EvaluateCollectionPanel = lazy(() =>
+  import('@/components/panels/RunCollectionStagePanel').then((module) => ({
+    default: module.EvaluateCollectionPanel,
+  }))
+);
+const TrainCollectionPanel = lazy(() =>
+  import('@/components/panels/RunCollectionStagePanel').then((module) => ({
+    default: module.TrainCollectionPanel,
+  }))
+);
+const StageDraftPanel = lazy(() =>
+  import('@/components/panels/PipelineStageWorkspace').then((module) => ({
+    default: module.StageDraftPanel,
+  }))
+);
+const StageProvenancePanel = lazy(() =>
+  import('@/components/panels/PipelineStageWorkspace').then((module) => ({
+    default: module.StageProvenancePanel,
+  }))
+);
+
 const stageIcons: Record<StudioStageKind, typeof PlayCircle> = {
   train: FlaskConical,
   eval: PlayCircle,
@@ -42,6 +67,10 @@ const stageIcons: Record<StudioStageKind, typeof PlayCircle> = {
 };
 
 type WorkspaceMode = 'stage' | 'console';
+
+function PanelLoading() {
+  return <div className="h-full w-full bg-slate-50/60" />;
+}
 
 export function BottomShelf({
   height,
@@ -209,19 +238,25 @@ export function BottomShelf({
             mode === 'console' || activeStage?.kind === 'analysis' ? 'overflow-hidden' : 'overflow-y-auto'
           )}
         >
-          {mode === 'stage' && activeStage?.kind === 'analysis' && <BottomSidebar />}
+          {mode === 'stage' && activeStage?.kind === 'analysis' && (
+            <Suspense fallback={null}>
+              <BottomSidebar />
+            </Suspense>
+          )}
           <div className="flex-1 min-w-0 h-full">
-            {activeContent}
+            <Suspense fallback={<PanelLoading />}>{activeContent}</Suspense>
           </div>
           {mode === 'stage' &&
             activeStage?.kind !== 'train' &&
             activeStage?.kind !== 'eval' &&
             activeStage?.kind !== 'analysis' && (
-            <StageProvenancePanel
-              stage={activeStage}
-              scenario={activeScenario}
-              workspace={workspace}
-            />
+            <Suspense fallback={null}>
+              <StageProvenancePanel
+                stage={activeStage}
+                scenario={activeScenario}
+                workspace={workspace}
+              />
+            </Suspense>
           )}
         </div>
       )}
