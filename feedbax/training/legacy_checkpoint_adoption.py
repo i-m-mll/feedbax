@@ -242,10 +242,10 @@ def read_legacy_stream(
     """Compatibility helper returning verified stream arrays keyed by manifest path."""
     del tree
     records = read_raw_np_save_stream(path, manifest_entries)
-    entries = [entry for entry in manifest_entries if entry.kind == "array"]
     return {
         entry.tree_path: jnp.asarray(record.value)
-        for entry, record in zip(entries, records, strict=True)
+        for entry, record in zip(manifest_entries, records, strict=True)
+        if entry.kind == "array"
     }
 
 
@@ -253,9 +253,8 @@ def read_raw_np_save_stream(
     path: Path | str,
     manifest_entries: Sequence[LeafManifestEntry],
 ) -> tuple[StreamRecord, ...]:
-    """Read consecutive ``np.save`` records and verify them against array entries."""
+    """Read consecutive ``np.save`` records and verify full manifest order."""
     stream_path = Path(path)
-    expected = [entry for entry in manifest_entries if entry.kind == "array"]
     records: list[StreamRecord] = []
     with stream_path.open("rb") as stream:
         while True:
@@ -278,7 +277,7 @@ def read_raw_np_save_stream(
                     dtype=str(array.dtype),
                 )
             )
-    _verify_stream_records(stream_path, expected, records)
+    _verify_stream_records(stream_path, manifest_entries, records)
     return tuple(records)
 
 
@@ -295,13 +294,14 @@ def adopt_tree_from_legacy_stream(
     current_arrays = _array_paths(current_template)
     current_statics = _static_paths(current_template)
     path_map = _compile_path_map(mapping_rules)
-    array_entries = [entry for entry in manifest_entries if entry.kind == "array"]
     replacements: dict[str, np.ndarray] = {}
     unmatched_old: list[str] = []
     duplicate_new: list[str] = []
     incompatible_current: list[str] = []
 
-    for entry, record in zip(array_entries, records, strict=True):
+    for entry, record in zip(manifest_entries, records, strict=True):
+        if entry.kind != "array":
+            continue
         new_path = path_map.resolve(entry.tree_path)
         if new_path in replacements:
             duplicate_new.append(new_path)
@@ -552,13 +552,19 @@ def _verify_stream_records(
     diffs: list[str] = []
     if len(records) != len(expected):
         diffs.append(
-            f"record count mismatch: file={len(records)} manifest_arrays={len(expected)}"
+            f"record count mismatch: file={len(records)} manifest_entries={len(expected)}"
         )
     for index, (entry, record) in enumerate(zip(expected, records)):
-        if tuple(entry.shape or ()) != record.shape:
+        if entry.shape is None or entry.dtype is None:
+            diffs.append(
+                f"record {index} {entry.tree_path}: manifest entry lacks stream "
+                "shape/dtype metadata"
+            )
+            continue
+        if tuple(entry.shape) != record.shape:
             diffs.append(
                 f"record {index} {entry.tree_path}: shape file={record.shape} "
-                f"manifest={tuple(entry.shape or ())}"
+                f"manifest={tuple(entry.shape)}"
             )
         if str(np.dtype(entry.dtype)) != record.dtype:
             diffs.append(
@@ -628,16 +634,35 @@ def _entries_from_tree(tree: Any) -> list[LeafManifestEntry]:
                 )
             )
         else:
+            static_array = _static_stream_array(leaf)
+            static_shape = (
+                None
+                if static_array is None
+                else tuple(int(dim) for dim in static_array.shape)
+            )
+            static_dtype = None if static_array is None else str(static_array.dtype)
             entries.append(
                 LeafManifestEntry(
                     tree_path=tree_path,
                     kind="static",
+                    shape=static_shape,
+                    dtype=static_dtype,
                     static_repr_sha256=sha256_bytes(
                         repr(leaf).encode("utf-8", errors="replace")
                     ),
                 )
             )
     return entries
+
+
+def _static_stream_array(value: Any) -> np.ndarray | None:
+    try:
+        array = np.asarray(value)
+    except Exception:
+        return None
+    if array.dtype == object:
+        return None
+    return array
 
 
 def _static_report(
@@ -883,6 +908,16 @@ def _static_hash(value: Any) -> str:
     return hashlib.sha256(repr(value).encode("utf-8", errors="replace")).hexdigest()
 
 
+def _static_array(value: Any):
+    try:
+        array = np.asarray(value)
+    except Exception:
+        return None
+    if array.dtype == object:
+        return None
+    return array
+
+
 def _entries(tree: Any) -> list[dict[str, Any]]:
     entries = []
     for path, leaf in jax.tree_util.tree_flatten_with_path(tree)[0]:
@@ -897,13 +932,16 @@ def _entries(tree: Any) -> list[dict[str, Any]]:
                 }
             )
         else:
-            entries.append(
-                {
-                    "tree_path": _path_text(path),
-                    "kind": "static",
-                    "static_repr_sha256": _static_hash(leaf),
-                }
-            )
+            entry = {
+                "tree_path": _path_text(path),
+                "kind": "static",
+                "static_repr_sha256": _static_hash(leaf),
+            }
+            array = _static_array(leaf)
+            if array is not None:
+                entry["shape"] = [int(dim) for dim in array.shape]
+                entry["dtype"] = str(array.dtype)
+            entries.append(entry)
     return entries
 
 

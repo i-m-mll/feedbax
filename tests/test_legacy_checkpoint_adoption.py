@@ -130,15 +130,17 @@ def _manifest_payload(
         if model_entries is not None
         else [
             {
+                "tree_path": "/old/static",
+                "kind": "static",
+                "shape": [],
+                "dtype": "bool",
+                "static_repr_sha256": "not-current",
+            },
+            {
                 "tree_path": "/old/controller",
                 "kind": "array",
                 "shape": [2],
                 "dtype": "float32",
-            },
-            {
-                "tree_path": "/old/static",
-                "kind": "static",
-                "static_repr_sha256": "not-current",
             },
         ],
         "optimizer": optimizer_entries
@@ -179,7 +181,20 @@ def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> Non
         }
     )
     assert migrated.schema_id == LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID
-    assert migrated.model[0].tree_path == "/old/controller"
+    assert migrated.model[0].tree_path == "/old/static"
+    assert migrated.model[0].shape == ()
+    assert migrated.model[0].dtype == "bool"
+
+    static_without_stream_metadata = _manifest_payload(
+        model_entries=[
+            {
+                "tree_path": "/old/static",
+                "kind": "static",
+                "static_repr_sha256": "not-current",
+            }
+        ]
+    )
+    assert accept_leaf_manifest(static_without_stream_metadata).model[0].shape is None
 
     tampered = _manifest_payload(
         schema_version="feedbax.manifest.legacy_checkpoint_leaf_manifest.tampered"
@@ -193,11 +208,21 @@ def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> Non
     [
         ([], "record count mismatch"),
         (
-            [np.array([1.0, 2.0], dtype=np.float32), np.array([3.0], dtype=np.float32)],
+            [
+                np.array(True, dtype=np.bool_),
+                np.array([1.0, 2.0], dtype=np.float32),
+                np.array([3.0], dtype=np.float32),
+            ],
             "extra records",
         ),
-        ([np.array([1.0], dtype=np.float32)], "shape file=\\(1,\\)"),
-        ([np.array([1, 2], dtype=np.int32)], "dtype file=int32"),
+        (
+            [np.array(True, dtype=np.bool_), np.array([1.0], dtype=np.float32)],
+            "record 1 /old/controller: shape file=\\(1,\\)",
+        ),
+        (
+            [np.array(True, dtype=np.bool_), np.array([1, 2], dtype=np.int32)],
+            "record 1 /old/controller: dtype file=int32",
+        ),
     ],
 )
 def test_raw_stream_reader_fails_closed_for_count_shape_and_dtype(
@@ -215,7 +240,10 @@ def test_raw_stream_reader_fails_closed_for_count_shape_and_dtype(
 
 def test_path_keyed_tree_adoption_rejects_ambiguous_mapping_rule(tmp_path: Path) -> None:
     stream = tmp_path / "model.eqx"
-    _write_stream(stream, [np.array([1.0, 2.0], dtype=np.float32)])
+    _write_stream(
+        stream,
+        [np.array(True, dtype=np.bool_), np.array([1.0, 2.0], dtype=np.float32)],
+    )
     manifest = accept_leaf_manifest(_manifest_payload(optimizer_entries=[]))
 
     with pytest.raises(LegacyPathMappingError, match="ambiguous mapping rules"):
@@ -258,7 +286,10 @@ def test_path_keyed_tree_adoption_lists_unmatched_and_unfilled_leaves(
     tmp_path: Path,
 ) -> None:
     stream = tmp_path / "model.eqx"
-    _write_stream(stream, [np.array([1.0, 2.0], dtype=np.float32)])
+    _write_stream(
+        stream,
+        [np.array(True, dtype=np.bool_), np.array([1.0, 2.0], dtype=np.float32)],
+    )
     manifest = accept_leaf_manifest(_manifest_payload(optimizer_entries=[]))
 
     with pytest.raises(LegacyPathMappingError) as excinfo:
@@ -273,12 +304,67 @@ def test_path_keyed_tree_adoption_lists_unmatched_and_unfilled_leaves(
     assert "unfilled current array leaves" in message
 
 
+def test_static_stream_entries_verify_in_order_but_do_not_populate_current_statics(
+    tmp_path: Path,
+) -> None:
+    stream = tmp_path / "model.eqx"
+    _write_stream(
+        stream,
+        [
+            np.array([1.0], dtype=np.float32),
+            np.array(True, dtype=np.bool_),
+            np.array([2.0], dtype=np.float32),
+        ],
+    )
+    manifest = accept_leaf_manifest(
+        _manifest_payload(
+            model_entries=[
+                {
+                    "tree_path": "/left",
+                    "kind": "array",
+                    "shape": [1],
+                    "dtype": "float32",
+                },
+                {
+                    "tree_path": "/flag",
+                    "kind": "static",
+                    "shape": [],
+                    "dtype": "bool",
+                    "static_repr_sha256": "legacy-true",
+                },
+                {
+                    "tree_path": "/right",
+                    "kind": "array",
+                    "shape": [1],
+                    "dtype": "float32",
+                },
+            ],
+            optimizer_entries=[],
+        )
+    )
+    current = {
+        "left": jnp.array([0.0], dtype=jnp.float32),
+        "flag": False,
+        "right": jnp.array([0.0], dtype=jnp.float32),
+    }
+
+    adopted, report = adopt_tree_from_legacy_stream(stream, manifest.model, current)
+
+    assert adopted["left"].tolist() == [1.0]
+    assert adopted["right"].tolist() == [2.0]
+    assert adopted["flag"] is False
+    assert report.static_paths[0].status == "different"
+
+
 def test_end_to_end_synthetic_legacy_checkpoint_round_trips_through_custody(
     tmp_path: Path,
 ) -> None:
     model_stream = tmp_path / "model.eqx"
     optimizer_stream = tmp_path / "optimizer_state.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     _write_stream(optimizer_stream, [np.array(7, dtype=np.int32)])
     run_spec = _run_spec()
     slots = _slots()
@@ -310,7 +396,10 @@ def test_optimizer_adoption_allows_resize_through_resume_slot_transform(
 ) -> None:
     model_stream = tmp_path / "model.eqx"
     optimizer_stream = tmp_path / "optimizer_state.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     _write_stream(
         optimizer_stream,
         [
@@ -374,7 +463,10 @@ def test_optimizer_adoption_allows_resize_through_resume_slot_transform(
 
 def test_fresh_optimizer_must_be_explicit(tmp_path: Path) -> None:
     model_stream = tmp_path / "model.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     run_spec = _run_spec()
 
     with pytest.raises(LegacyPathMappingError, match="fresh_optimizer=True"):
@@ -395,7 +487,10 @@ def test_fresh_optimizer_must_be_explicit(tmp_path: Path) -> None:
 def test_optimizer_adoption_allows_post_load_resume_transform(tmp_path: Path) -> None:
     model_stream = tmp_path / "model.eqx"
     optimizer_stream = tmp_path / "optimizer_state.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     _write_stream(optimizer_stream, [np.array([7], dtype=np.int32)])
     run_spec = _run_spec()
     slots = _slots()
