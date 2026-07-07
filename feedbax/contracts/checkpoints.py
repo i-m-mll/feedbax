@@ -14,7 +14,6 @@ from pydantic import Field, model_validator
 from feedbax.contracts.manifest import ArtifactRef, ParentRef, StrictModel
 from feedbax.contracts.worker import ConsistencyPredicateSpec, ProgressCoordinate
 
-
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = (
     "feedbax.manifest.training_checkpoint_transaction"
 )
@@ -26,6 +25,15 @@ TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = (
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION = (
     "feedbax.manifest.training_checkpoint_latest_pointer.v1"
+)
+LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID = (
+    "feedbax.manifest.legacy_checkpoint_leaf_manifest"
+)
+LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION = (
+    "feedbax.manifest.legacy_checkpoint_leaf_manifest.v1"
+)
+LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0 = (
+    "feedbax.manifest.legacy_checkpoint_leaf_manifest.v0"
 )
 
 CheckpointSlotRole = Literal[
@@ -65,6 +73,60 @@ class SlotLeafFingerprint(StrictModel):
     sharding: str | None = None
     layout: str | None = None
     static_repr_sha256: str | None = None
+
+
+class LeafManifestEntry(StrictModel):
+    """One ordered leaf slot in a legacy Equinox checkpoint stream ABI."""
+
+    tree_path: str
+    kind: Literal["array", "static"]
+    shape: tuple[int, ...] | None = None
+    dtype: str | None = None
+    static_repr_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_leaf_metadata(self) -> "LeafManifestEntry":
+        if self.kind == "array" and (self.shape is None or self.dtype is None):
+            raise ValueError("array manifest entries must include shape and dtype")
+        if self.kind == "static" and (self.shape is not None or self.dtype is not None):
+            raise ValueError("static manifest entries must not include shape or dtype")
+        return self
+
+
+class LeafManifestProvenance(StrictModel):
+    """Where and how a legacy leaf manifest was produced."""
+
+    producing_commit: str
+    spec_ref: str | None = None
+    spec_hash: str | None = None
+    dumped_at: str
+    dumper_version: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LeafManifest(StrictModel):
+    """Versioned ABI manifest for legacy ``tree_serialise_leaves`` streams."""
+
+    kind: Literal["LegacyCheckpointLeafManifest"] = "LegacyCheckpointLeafManifest"
+    schema_id: str = LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID
+    schema_version: str = LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION
+    model: list[LeafManifestEntry]
+    optimizer: list[LeafManifestEntry] = Field(default_factory=list)
+    provenance: LeafManifestProvenance
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "LeafManifest":
+        if self.schema_id != LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID:
+            raise ValueError(
+                f"unsupported legacy checkpoint leaf manifest schema_id {self.schema_id!r}"
+            )
+        if self.schema_version != LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported legacy checkpoint leaf manifest schema_version "
+                f"{self.schema_version!r}"
+            )
+        return self
 
 
 class StructuralAbiFingerprint(StrictModel):
@@ -227,4 +289,3 @@ class CheckpointResumeResult(StrictModel):
     slots: dict[str, Any]
     new_lineage_required: bool = False
     previous_transaction_id: str | None = None
-
