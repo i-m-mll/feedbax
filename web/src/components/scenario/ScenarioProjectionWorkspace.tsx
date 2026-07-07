@@ -24,6 +24,7 @@ import {
 import type { SampledTaskTrial } from '@/api/client';
 import { sampleTaskTrials } from '@/api/client';
 import { Canvas } from '@/components/canvas/Canvas';
+import { PlaybackControls } from '@/components/viewer/PlaybackControls';
 import {
   objectiveEntityId,
   retainedObservableEntityId,
@@ -69,6 +70,22 @@ import {
   sampledPreviewTrialLabel,
   timelineCueOffset,
 } from '@/features/scenario/samplePreview';
+import {
+  objectiveLossWindowBands,
+  primaryWorkspaceReplayTrack,
+  resolveWorkspaceReplayModel,
+  selectWorkspaceReplayTrial,
+  workspaceReplayDuration,
+  workspaceReplayEventTicks,
+  workspaceReplayFrameIndex,
+  workspaceReplayFrameTimes,
+  workspaceReplayPolyline,
+  workspaceReplayProvenance,
+  workspaceReplaySampleAt,
+  workspaceReplayTimelineBands,
+  workspaceReplayTrialLabel,
+  workspaceReplayTrialRef,
+} from '@/features/scenario/workspaceReplay';
 import { semanticTokens } from '@/components/ui/semanticTokens';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
@@ -89,7 +106,9 @@ import type {
   StudioObjectiveTermSpec,
   StudioScenarioEntityRegistry,
   StudioSchemaRegistry,
+  StudioStageSpec,
   StudioTopPaneProjection,
+  StudioWorkspaceSpec,
   WorkspaceViewState,
 } from '@/types/workspace';
 import type { TimeAggregationSpec } from '@/types/training';
@@ -157,6 +176,16 @@ function includeSampledTrials(bounds: SceneBounds, trials: SampledTaskTrial[]) {
   for (const trial of trials) {
     includePoint(bounds, trial.start);
     includePoint(bounds, trial.goal);
+  }
+}
+
+function includeReplayTrials(
+  bounds: SceneBounds,
+  trials: NonNullable<ReturnType<typeof resolveWorkspaceReplayModel>['product']['trials']>
+) {
+  for (const trial of trials) {
+    const track = primaryWorkspaceReplayTrack(trial);
+    for (const point of workspaceReplayPolyline(track)) includePoint(bounds, point);
   }
 }
 
@@ -272,6 +301,8 @@ function ScenarioBadge({
 }
 
 function WorkspaceProjection({
+  workspace,
+  activeStage,
   registry,
   scene,
   selectedId,
@@ -292,6 +323,8 @@ function WorkspaceProjection({
   onObjectiveSpecChange,
   onViewStateChange,
 }: {
+  workspace: StudioWorkspaceSpec | null;
+  activeStage: StudioStageSpec | null;
   registry: StudioScenarioEntityRegistry;
   scene: ResolvedScene;
   selectedId: string | null;
@@ -350,8 +383,30 @@ function WorkspaceProjection({
         ]
       : []
   );
+  const replayModel = useMemo(
+    () => resolveWorkspaceReplayModel(workspace, activeStage),
+    [activeStage, workspace]
+  );
+  const replayTrials = replayModel.product.trials ?? [];
+  const selectedReplayTrial = selectWorkspaceReplayTrial(
+    replayModel.product,
+    viewState.selected_trial_ref
+  );
+  const selectedReplayTrack = primaryWorkspaceReplayTrack(selectedReplayTrial);
+  const replayFrameTimes = workspaceReplayFrameTimes(selectedReplayTrial);
+  const replayDuration = workspaceReplayDuration(selectedReplayTrial);
+  const replayFrameIndex = selectedReplayTrial
+    ? workspaceReplayFrameIndex(selectedReplayTrial, viewState.playback.position)
+    : 0;
+  const replayCursorPoint = workspaceReplaySampleAt(selectedReplayTrack, replayFrameIndex);
+  const replayTimelineBands = [
+    ...workspaceReplayTimelineBands(selectedReplayTrial),
+    ...objectiveLossWindowBands(objectiveSpec, replayDuration),
+  ];
+  const replayEventTicks = workspaceReplayEventTicks(selectedReplayTrial);
   const bounds = sceneBounds(scene);
   if (previewMode === 'sampled') includeSampledTrials(bounds, sampledTrials);
+  if (previewMode === 'playback') includeReplayTrials(bounds, replayTrials);
   const baseScale = fitScale(bounds);
   const scale = baseScale * view.zoom;
   const center: ScenePoint = [
@@ -758,6 +813,60 @@ function WorkspaceProjection({
     );
   };
 
+  const renderReplayTrace = (
+    trial: NonNullable<typeof selectedReplayTrial>,
+    index: number
+  ) => {
+    const track = primaryWorkspaceReplayTrack(trial);
+    const points = workspaceReplayPolyline(track);
+    if (points.length === 0) return null;
+    const selected = selectedReplayTrial
+      ? workspaceReplayTrialRef(trial) === workspaceReplayTrialRef(selectedReplayTrial)
+      : index === 0;
+    const projected = points.map(project).map((point) => point.join(',')).join(' ');
+    const color = index % 2 === 0 ? '#0f766e' : '#7c3aed';
+    return (
+      <g key={workspaceReplayTrialRef(trial)} opacity={selected ? 0.95 : 0.38}>
+        <polyline
+          points={projected}
+          fill="none"
+          stroke={color}
+          strokeWidth={selected ? 3 : 2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+        {!selected && <title>{workspaceReplayTrialLabel(trial)}</title>}
+      </g>
+    );
+  };
+
+  const renderReplayCursor = () => {
+    if (!replayCursorPoint || !selectedReplayTrial) return null;
+    const [x, y] = project(replayCursorPoint);
+    return (
+      <g>
+        <circle
+          cx={x}
+          cy={y}
+          r={10}
+          fill="#ffffff"
+          stroke="#0f172a"
+          strokeWidth={2.25}
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle cx={x} cy={y} r={4.5} fill="#0f172a" />
+        <text
+          x={x + 12}
+          y={y - 12}
+          className="select-none fill-slate-800 text-[11px] font-semibold"
+        >
+          {workspaceReplayTrialLabel(selectedReplayTrial)}
+        </text>
+      </g>
+    );
+  };
+
   const renderedSamples = previewMode === 'sampled' ? sampledTrials.slice(0, previewCount) : [];
   const modeLabel =
     previewMode === 'sampled'
@@ -821,8 +930,12 @@ function WorkspaceProjection({
             strokeWidth="1"
             vectorEffect="non-scaling-stroke"
           />
-          {visibleElements.map(renderElement)}
+          <g opacity={previewMode === 'playback' ? 0.32 : 1}>
+            {visibleElements.map(renderElement)}
+          </g>
           {renderedSamples.map(renderSampledTrial)}
+          {previewMode === 'playback' && replayTrials.map(renderReplayTrace)}
+          {previewMode === 'playback' && renderReplayCursor()}
           {objectiveDrag && (() => {
             const sourceAnchor = scene.anchors.find((anchor) => anchor.id === objectiveDrag.sourceAnchorId);
             if (!sourceAnchor?.position) return null;
@@ -865,12 +978,12 @@ function WorkspaceProjection({
               <div className="truncate text-xs font-semibold text-slate-800">{modeLabel}</div>
               <div className="truncate text-[11px] text-slate-500">
                 {previewMode === 'sampled'
-                  ? `${renderedSamples.length} trials · seed ${previewSeed}`
+                  ? `${renderedSamples.length} trials - seed ${previewSeed}`
                   : previewMode === 'playback'
-                    ? 'Run playback will use selected trial artifacts'
+                    ? workspaceReplayProvenance(selectedReplayTrial)
                     : 'Authored geometry without sampled trial instances'}
                 {nonSpatialObjectiveCount > 0
-                  ? ` · ${nonSpatialObjectiveCount} non-spatial objectives`
+                  ? ` - ${nonSpatialObjectiveCount} non-spatial objectives`
                   : ''}
               </div>
             </div>
@@ -958,6 +1071,56 @@ function WorkspaceProjection({
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+          {previewMode === 'playback' && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] items-center gap-2">
+                <select
+                  value={selectedReplayTrial ? workspaceReplayTrialRef(selectedReplayTrial) : ''}
+                  onChange={(event) => {
+                    onViewStateChange({
+                      selected_trial_ref: event.target.value || null,
+                      playback: { ...viewState.playback, position: 0 },
+                    });
+                  }}
+                  className="h-8 min-w-0 rounded border border-slate-200 bg-white px-2 text-xs"
+                  aria-label="Playback trial"
+                  title="Playback trial"
+                >
+                  {replayTrials.map((trial) => (
+                    <option
+                      key={workspaceReplayTrialRef(trial)}
+                      value={workspaceReplayTrialRef(trial)}
+                    >
+                      {workspaceReplayTrialLabel(trial)}
+                    </option>
+                  ))}
+                </select>
+                <div className="truncate text-right text-[11px] font-medium text-slate-500">
+                  {replayModel.source === 'fixture' ? 'fixture data' : 'artifact data'}
+                </div>
+              </div>
+              <PlaybackControls
+                position={viewState.playback.position}
+                duration={replayDuration}
+                speed={viewState.playback.speed}
+                frameTimes={replayFrameTimes}
+                bands={replayTimelineBands}
+                eventTicks={replayEventTicks}
+                cursorLabel={workspaceReplayProvenance(selectedReplayTrial)}
+                disabled={!selectedReplayTrial || !selectedReplayTrack}
+                onPositionChange={(position) =>
+                  onViewStateChange({ playback: { ...viewState.playback, position } })
+                }
+                onSpeedChange={(speed) =>
+                  onViewStateChange({ playback: { ...viewState.playback, speed } })
+                }
+              />
+              <div className="max-h-10 overflow-hidden text-[11px] leading-5 text-slate-500">
+                {replayModel.message}
+                {replayModel.warnings.length > 0 ? ` ${replayModel.warnings[0]}` : ''}
+              </div>
             </div>
           )}
           {objectiveNotice && (
@@ -1525,6 +1688,8 @@ export function ScenarioProjectionWorkspace() {
         )}
         {topPane.active_projection === 'workspace' && (
           <WorkspaceProjection
+            workspace={workspace}
+            activeStage={activeStage}
             registry={registry}
             scene={scene}
             selectedId={topPane.selected_entity_id}

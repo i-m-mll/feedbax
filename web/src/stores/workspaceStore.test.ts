@@ -589,7 +589,7 @@ describe('buildWorkspaceSnapshot', () => {
 
     expect(viewState.camera).toEqual({ zoom: 8, pan: { x: 4, y: 0 } });
     expect(viewState.selected_artifact_ref).toBe('artifact:valid');
-    expect(viewState.selected_trial_ref).toBeNull();
+    expect(viewState.selected_trial_ref).toBe('trial:missing');
     expect(viewState.comparison_selection).toEqual({
       baseline_ref: 'artifact:valid',
       candidate_ref: null,
