@@ -7,16 +7,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from feedbax.contracts.graph import (
-    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
-    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
-    GRAPH_SPEC_SCHEMA_ID,
-    GRAPH_SPEC_SCHEMA_VERSION,
-    GRAPH_SPEC_SCHEMA_VERSION_V2,
-    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-    GraphSpec,
-)
 from feedbax.contracts.checkpoints import (
+    LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
+    LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
+    LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
 )
@@ -42,52 +36,63 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.graph import (
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_ID,
+    GRAPH_SPEC_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_VERSION_V2,
+    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+    GraphSpec,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
-    ArtifactMigrationRecord,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
+    ArtifactMigrationRecord,
+)
+from feedbax.contracts.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
 )
 from feedbax.contracts.retention_artifact_schema import (
     LOSS_TERM_PLAN_SCHEMA_ID,
     LOSS_TERM_PLAN_SCHEMA_VERSION,
-    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
-    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
     RETAINED_OBSERVABLE_PLAN_SCHEMA_ID,
     RETAINED_OBSERVABLE_PLAN_SCHEMA_VERSION,
+    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
+    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
     RETENTION_PLAN_SCHEMA_ID,
     RETENTION_PLAN_SCHEMA_VERSION,
     RETENTION_POLICY_PLAN_SCHEMA_ID,
     RETENTION_POLICY_PLAN_SCHEMA_VERSION,
-)
-from feedbax.contracts.training import (
-    LOSS_TERM_SPEC_SCHEMA_ID,
-    LOSS_TERM_SPEC_SCHEMA_VERSION,
-    LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
-    LossTermSpec,
-    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
-    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
-    TRAINING_RUN_SPEC_SCHEMA_ID,
-    TRAINING_RUN_SPEC_SCHEMA_VERSION,
-    TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.schema_namespace import (
     SchemaNamespaceKind,
     validate_schema_identity,
     validate_schema_version,
 )
-from feedbax.contracts.worker import (
-    WORKER_CONTRACT_SCHEMA_ID,
-    WORKER_CONTRACT_SCHEMA_VERSION,
-)
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
+)
+from feedbax.contracts.training import (
+    LOSS_TERM_SPEC_SCHEMA_ID,
+    LOSS_TERM_SPEC_SCHEMA_VERSION,
+    LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+    LossTermSpec,
+)
+from feedbax.contracts.worker import (
+    WORKER_CONTRACT_SCHEMA_ID,
+    WORKER_CONTRACT_SCHEMA_VERSION,
 )
 from feedbax.execution.models import (
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
@@ -98,7 +103,6 @@ from feedbax.execution.models import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
 )
-
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -584,6 +588,33 @@ def _payload_metadata_version(payload: Mapping[str, Any]) -> str | None:
         if isinstance(version, str) and version:
             return version
     return None
+
+
+def _migrate_legacy_checkpoint_leaf_manifest_v0_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Promote the initial legacy leaf manifest shape to the current envelope."""
+    migrated = dict(payload)
+    migrated["kind"] = "LegacyCheckpointLeafManifest"
+    migrated["schema_id"] = LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID
+    leaves = migrated.pop("leaves", None)
+    if isinstance(leaves, Mapping):
+        migrated.setdefault("model", list(leaves.get("model", ())))
+        migrated.setdefault("optimizer", list(leaves.get("optimizer", ())))
+    migrated.setdefault("model", [])
+    migrated.setdefault("optimizer", [])
+    provenance = migrated.get("provenance")
+    if not isinstance(provenance, Mapping):
+        provenance = {
+            "producing_commit": migrated.pop("producing_commit", "unknown"),
+            "spec_ref": migrated.pop("spec_ref", None),
+            "spec_hash": migrated.pop("spec_hash", None),
+            "dumped_at": migrated.pop("dumped_at", "1970-01-01T00:00:00+00:00"),
+            "dumper_version": migrated.pop("dumper_version", "legacy-v0"),
+            "metadata": {"migrated_from": LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0},
+        }
+    migrated["provenance"] = dict(provenance)
+    return migrated
 
 
 def _graph_spec_source_version(
@@ -1324,6 +1355,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "LegacyCheckpointLeafManifest",
+            LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
+            LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoints",
+            emitted_by=("feedbax.training.legacy_checkpoint_adoption",),
+            consumed_by=("feedbax.training.legacy_checkpoint_adoption",),
+            description=(
+                "ABI manifest for pre-custody Equinox tree_serialise_leaves "
+                "checkpoint streams, dumped from the producing commit."
+            ),
+            stance="migrate",
+            supported_old_versions=(LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,),
+            rejected_old_versions=("feedbax.manifest.legacy_checkpoint_leaf_manifest.tampered",),
+            required_tests=("tests/test_legacy_checkpoint_adoption.py",),
         ),
         _family(
             "TrainingSpec",
@@ -2195,6 +2242,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "LegacyCheckpointLeafManifest",
+    SchemaMigration(
+        source_version=LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
+        target_version=LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
+        migration_id="legacy-checkpoint-leaf-manifest-v0-to-v1",
+        migrate=_migrate_legacy_checkpoint_leaf_manifest_v0_payload,
+        description="Promote initial legacy leaf manifests to the current ABI envelope.",
+    ),
+)
 default_spec_registry.register_migration(
     "TrainingRunSpec",
     SchemaMigration(
