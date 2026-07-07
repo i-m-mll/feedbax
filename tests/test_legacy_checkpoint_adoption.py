@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import sys
 from pathlib import Path
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -30,16 +33,19 @@ from feedbax.contracts.worker import (
     toy_minimax_method_contract,
 )
 from feedbax.training.legacy_checkpoint_adoption import (
+    DROP_PATH,
     LegacyManifestSchemaError,
     LegacyPathMappingError,
     LegacyStreamMismatchError,
     ManifestDumpRequest,
     PathMappingRegistry,
     PathMappingRule,
+    _DUMP_SCRIPT,
     accept_leaf_manifest,
     adopt_legacy_checkpoint,
     adopt_tree_from_legacy_stream,
     dump_leaf_manifests_via_worktrees,
+    manifest_from_trees,
     read_raw_np_save_stream,
 )
 
@@ -130,15 +136,17 @@ def _manifest_payload(
         if model_entries is not None
         else [
             {
+                "tree_path": "/old/static",
+                "kind": "static",
+                "shape": [],
+                "dtype": "bool",
+                "static_repr_sha256": "not-current",
+            },
+            {
                 "tree_path": "/old/controller",
                 "kind": "array",
                 "shape": [2],
                 "dtype": "float32",
-            },
-            {
-                "tree_path": "/old/static",
-                "kind": "static",
-                "static_repr_sha256": "not-current",
             },
         ],
         "optimizer": optimizer_entries
@@ -167,6 +175,19 @@ def _write_stream(path: Path, arrays: list[np.ndarray]) -> None:
             np.save(stream, array, allow_pickle=False)
 
 
+def _read_stream_records(path: Path) -> list[tuple[tuple[int, ...], str]]:
+    records: list[tuple[tuple[int, ...], str]] = []
+    with path.open("rb") as stream:
+        while True:
+            position = stream.tell()
+            if not stream.read(1):
+                break
+            stream.seek(position)
+            array = np.load(stream, allow_pickle=False)
+            records.append((tuple(int(dim) for dim in array.shape), str(array.dtype)))
+    return records
+
+
 def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> None:
     current = accept_leaf_manifest(_manifest_payload())
     assert current.schema_version == LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION
@@ -179,7 +200,20 @@ def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> Non
         }
     )
     assert migrated.schema_id == LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID
-    assert migrated.model[0].tree_path == "/old/controller"
+    assert migrated.model[0].tree_path == "/old/static"
+    assert migrated.model[0].shape == ()
+    assert migrated.model[0].dtype == "bool"
+
+    static_without_stream_metadata = _manifest_payload(
+        model_entries=[
+            {
+                "tree_path": "/old/static",
+                "kind": "static",
+                "static_repr_sha256": "not-current",
+            }
+        ]
+    )
+    assert accept_leaf_manifest(static_without_stream_metadata).model[0].shape is None
 
     tampered = _manifest_payload(
         schema_version="feedbax.manifest.legacy_checkpoint_leaf_manifest.tampered"
@@ -188,16 +222,160 @@ def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> Non
         accept_leaf_manifest(tampered)
 
 
+def test_manifest_from_trees_matches_equinox_default_serialized_leaves(
+    tmp_path: Path,
+) -> None:
+    class ProbeModule(eqx.Module):
+        array: object
+        np_array: object
+        scalar_jax_array: object
+        scalar_np: object
+        flag: bool
+        integer: int
+        floating: float
+        complex_value: complex
+        static_text: str = eqx.field(static=True)
+        static_object: object = eqx.field(static=True)
+
+    tree = {
+        "module": ProbeModule(
+            array=jnp.array([1.0, 2.0], dtype=jnp.float32),
+            np_array=np.array([3, 4], dtype=np.int16),
+            scalar_jax_array=jnp.array(5.0, dtype=jnp.float32),
+            scalar_np=np.float32(6.0),
+            flag=True,
+            integer=7,
+            floating=8.5,
+            complex_value=complex(1, 2),
+            static_text="ignored-static-field",
+            static_object=object(),
+        ),
+        "ignored_text": "ignored-tree-leaf",
+        "ignored_object": object(),
+    }
+    stream = tmp_path / "model.eqx"
+    eqx.tree_serialise_leaves(stream, tree)
+
+    manifest = manifest_from_trees(model=tree, optimizer=None, producing_commit="abc123")
+
+    assert [
+        (entry.tree_path, entry.kind, entry.shape, entry.dtype)
+        for entry in manifest.model
+    ] == [
+        ("/module/array", "array", (2,), "float32"),
+        ("/module/np_array", "array", (2,), "int16"),
+        ("/module/scalar_jax_array", "array", (), "float32"),
+        ("/module/scalar_np", "static", (), "float32"),
+        ("/module/flag", "static", (), "bool"),
+        ("/module/integer", "static", (), "int64"),
+        ("/module/floating", "static", (), "float64"),
+        ("/module/complex_value", "static", (), "complex128"),
+    ]
+    assert _read_stream_records(stream) == [
+        (entry.shape, entry.dtype) for entry in manifest.model
+    ]
+
+
+def test_manifest_from_trees_skips_default_equinox_ignored_static_leaves() -> None:
+    manifest = manifest_from_trees(
+        model={
+            "weight": jnp.array([1.0], dtype=jnp.float32),
+            "flag": True,
+            "scale": 2.0,
+            "name": "ignored",
+            "opaque": object(),
+        },
+        optimizer=None,
+        producing_commit="abc123",
+    )
+
+    paths = [entry.tree_path for entry in manifest.model]
+    assert paths == ["/flag", "/scale", "/weight"]
+    by_path = {entry.tree_path: entry for entry in manifest.model}
+    assert by_path["/flag"].kind == "static"
+    assert by_path["/flag"].shape == ()
+    assert by_path["/flag"].dtype == "bool"
+    assert by_path["/scale"].kind == "static"
+    assert by_path["/scale"].dtype == "float64"
+    assert by_path["/weight"].kind == "array"
+
+
+def test_self_contained_dump_script_skips_ignored_static_leaves(tmp_path: Path) -> None:
+    script = tmp_path / "dump_script.py"
+    builder = tmp_path / "builder.py"
+    spec = tmp_path / "spec.json"
+    output = tmp_path / "manifest.json"
+    script.write_text(_DUMP_SCRIPT, encoding="utf-8")
+    builder.write_text(
+        """
+import jax.numpy as jnp
+import numpy as np
+
+
+def build(_spec):
+    return {
+        "weight": jnp.array([1.0], dtype=jnp.float32),
+        "np_weight": np.array([2.0], dtype=np.float32),
+        "flag": True,
+        "count": 3,
+        "name": "ignored",
+        "opaque": object(),
+    }, None
+""",
+        encoding="utf-8",
+    )
+    spec.write_text(json.dumps({"manifest_builder": "builder:build"}), encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--spec",
+            str(spec),
+            "--output",
+            str(output),
+            "--commit",
+            "abc123",
+        ],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    paths = [entry["tree_path"] for entry in payload["model"]]
+    assert paths == ["/count", "/flag", "/np_weight", "/weight"]
+    by_path = {entry["tree_path"]: entry for entry in payload["model"]}
+    assert by_path["/count"]["kind"] == "static"
+    assert by_path["/count"]["shape"] == []
+    assert by_path["/count"]["dtype"] == "int64"
+    assert by_path["/flag"]["kind"] == "static"
+    assert by_path["/flag"]["dtype"] == "bool"
+    assert by_path["/np_weight"]["kind"] == "array"
+    assert by_path["/weight"]["kind"] == "array"
+
+
 @pytest.mark.parametrize(
     ("arrays", "match"),
     [
         ([], "record count mismatch"),
         (
-            [np.array([1.0, 2.0], dtype=np.float32), np.array([3.0], dtype=np.float32)],
+            [
+                np.array(True, dtype=np.bool_),
+                np.array([1.0, 2.0], dtype=np.float32),
+                np.array([3.0], dtype=np.float32),
+            ],
             "extra records",
         ),
-        ([np.array([1.0], dtype=np.float32)], "shape file=\\(1,\\)"),
-        ([np.array([1, 2], dtype=np.int32)], "dtype file=int32"),
+        (
+            [np.array(True, dtype=np.bool_), np.array([1.0], dtype=np.float32)],
+            "record 1 /old/controller: shape file=\\(1,\\)",
+        ),
+        (
+            [np.array(True, dtype=np.bool_), np.array([1, 2], dtype=np.int32)],
+            "record 1 /old/controller: dtype file=int32",
+        ),
     ],
 )
 def test_raw_stream_reader_fails_closed_for_count_shape_and_dtype(
@@ -215,7 +393,10 @@ def test_raw_stream_reader_fails_closed_for_count_shape_and_dtype(
 
 def test_path_keyed_tree_adoption_rejects_ambiguous_mapping_rule(tmp_path: Path) -> None:
     stream = tmp_path / "model.eqx"
-    _write_stream(stream, [np.array([1.0, 2.0], dtype=np.float32)])
+    _write_stream(
+        stream,
+        [np.array(True, dtype=np.bool_), np.array([1.0, 2.0], dtype=np.float32)],
+    )
     manifest = accept_leaf_manifest(_manifest_payload(optimizer_entries=[]))
 
     with pytest.raises(LegacyPathMappingError, match="ambiguous mapping rules"):
@@ -258,7 +439,10 @@ def test_path_keyed_tree_adoption_lists_unmatched_and_unfilled_leaves(
     tmp_path: Path,
 ) -> None:
     stream = tmp_path / "model.eqx"
-    _write_stream(stream, [np.array([1.0, 2.0], dtype=np.float32)])
+    _write_stream(
+        stream,
+        [np.array(True, dtype=np.bool_), np.array([1.0, 2.0], dtype=np.float32)],
+    )
     manifest = accept_leaf_manifest(_manifest_payload(optimizer_entries=[]))
 
     with pytest.raises(LegacyPathMappingError) as excinfo:
@@ -273,12 +457,153 @@ def test_path_keyed_tree_adoption_lists_unmatched_and_unfilled_leaves(
     assert "unfilled current array leaves" in message
 
 
+def test_explicit_drop_rule_verifies_stream_without_assignment(tmp_path: Path) -> None:
+    stream = tmp_path / "model.eqx"
+    _write_stream(
+        stream,
+        [
+            np.array([9, 10], dtype=np.int64),
+            np.array([1.0, 2.0], dtype=np.float32),
+        ],
+    )
+    manifest = accept_leaf_manifest(
+        _manifest_payload(
+            model_entries=[
+                {
+                    "tree_path": "/old/structure_indices",
+                    "kind": "array",
+                    "shape": [2],
+                    "dtype": "int64",
+                },
+                {
+                    "tree_path": "/old/controller",
+                    "kind": "array",
+                    "shape": [2],
+                    "dtype": "float32",
+                },
+            ],
+            optimizer_entries=[],
+        )
+    )
+
+    adopted, report = adopt_tree_from_legacy_stream(
+        stream,
+        manifest.model,
+        jnp.array([0.0, 0.0], dtype=jnp.float32),
+        mapping_rules=[
+            PathMappingRule("/old/structure_indices", DROP_PATH),
+            PathMappingRule("/old/controller", "/"),
+        ],
+    )
+
+    assert adopted.tolist() == [1.0, 2.0]
+    assert report.assigned_paths == ("/",)
+    assert report.dropped_paths == ("/old/structure_indices",)
+
+
+def test_keep_current_paths_are_explicit_for_unfilled_current_arrays(tmp_path: Path) -> None:
+    stream = tmp_path / "model.eqx"
+    _write_stream(stream, [np.array([1.0, 2.0], dtype=np.float32)])
+    manifest = accept_leaf_manifest(
+        _manifest_payload(
+            model_entries=[
+                {
+                    "tree_path": "/old/controller",
+                    "kind": "array",
+                    "shape": [2],
+                    "dtype": "float32",
+                },
+            ],
+            optimizer_entries=[],
+        )
+    )
+    current = {
+        "controller": jnp.array([0.0, 0.0], dtype=jnp.float32),
+        "new_state": jnp.array([3.0], dtype=jnp.float32),
+    }
+
+    with pytest.raises(LegacyPathMappingError, match="unfilled current array leaves"):
+        adopt_tree_from_legacy_stream(
+            stream,
+            manifest.model,
+            current,
+            mapping_rules=[PathMappingRule("/old/controller", "/controller")],
+        )
+
+    adopted, report = adopt_tree_from_legacy_stream(
+        stream,
+        manifest.model,
+        current,
+        mapping_rules=[PathMappingRule("/old/controller", "/controller")],
+        keep_current_paths=["/new_state"],
+    )
+
+    assert adopted["controller"].tolist() == [1.0, 2.0]
+    assert adopted["new_state"].tolist() == [3.0]
+    assert report.assigned_paths == ("/controller",)
+
+
+def test_static_stream_entries_verify_in_order_but_do_not_populate_current_statics(
+    tmp_path: Path,
+) -> None:
+    stream = tmp_path / "model.eqx"
+    _write_stream(
+        stream,
+        [
+            np.array([1.0], dtype=np.float32),
+            np.array(True, dtype=np.bool_),
+            np.array([2.0], dtype=np.float32),
+        ],
+    )
+    manifest = accept_leaf_manifest(
+        _manifest_payload(
+            model_entries=[
+                {
+                    "tree_path": "/left",
+                    "kind": "array",
+                    "shape": [1],
+                    "dtype": "float32",
+                },
+                {
+                    "tree_path": "/flag",
+                    "kind": "static",
+                    "shape": [],
+                    "dtype": "bool",
+                    "static_repr_sha256": "legacy-true",
+                },
+                {
+                    "tree_path": "/right",
+                    "kind": "array",
+                    "shape": [1],
+                    "dtype": "float32",
+                },
+            ],
+            optimizer_entries=[],
+        )
+    )
+    current = {
+        "left": jnp.array([0.0], dtype=jnp.float32),
+        "flag": False,
+        "right": jnp.array([0.0], dtype=jnp.float32),
+    }
+
+    adopted, report = adopt_tree_from_legacy_stream(stream, manifest.model, current)
+
+    assert adopted["left"].tolist() == [1.0]
+    assert adopted["right"].tolist() == [2.0]
+    assert adopted["flag"] is False
+    assert report.static_paths[0].status == "different"
+
+
 def test_end_to_end_synthetic_legacy_checkpoint_round_trips_through_custody(
     tmp_path: Path,
 ) -> None:
     model_stream = tmp_path / "model.eqx"
     optimizer_stream = tmp_path / "optimizer_state.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     _write_stream(optimizer_stream, [np.array(7, dtype=np.int32)])
     run_spec = _run_spec()
     slots = _slots()
@@ -310,7 +635,10 @@ def test_optimizer_adoption_allows_resize_through_resume_slot_transform(
 ) -> None:
     model_stream = tmp_path / "model.eqx"
     optimizer_stream = tmp_path / "optimizer_state.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     _write_stream(
         optimizer_stream,
         [
@@ -374,7 +702,10 @@ def test_optimizer_adoption_allows_resize_through_resume_slot_transform(
 
 def test_fresh_optimizer_must_be_explicit(tmp_path: Path) -> None:
     model_stream = tmp_path / "model.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     run_spec = _run_spec()
 
     with pytest.raises(LegacyPathMappingError, match="fresh_optimizer=True"):
@@ -395,7 +726,10 @@ def test_fresh_optimizer_must_be_explicit(tmp_path: Path) -> None:
 def test_optimizer_adoption_allows_post_load_resume_transform(tmp_path: Path) -> None:
     model_stream = tmp_path / "model.eqx"
     optimizer_stream = tmp_path / "optimizer_state.eqx"
-    _write_stream(model_stream, [np.array([5.0, 6.0], dtype=np.float32)])
+    _write_stream(
+        model_stream,
+        [np.array(True, dtype=np.bool_), np.array([5.0, 6.0], dtype=np.float32)],
+    )
     _write_stream(optimizer_stream, [np.array([7], dtype=np.int32)])
     run_spec = _run_spec()
     slots = _slots()

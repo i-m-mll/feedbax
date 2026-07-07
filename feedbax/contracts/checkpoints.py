@@ -88,8 +88,10 @@ class LeafManifestEntry(StrictModel):
     def _validate_leaf_metadata(self) -> "LeafManifestEntry":
         if self.kind == "array" and (self.shape is None or self.dtype is None):
             raise ValueError("array manifest entries must include shape and dtype")
-        if self.kind == "static" and (self.shape is not None or self.dtype is not None):
-            raise ValueError("static manifest entries must not include shape or dtype")
+        if self.kind == "static" and ((self.shape is None) != (self.dtype is None)):
+            raise ValueError(
+                "static manifest entries must include both shape and dtype, or neither"
+            )
         return self
 
 
