@@ -4,6 +4,10 @@ import { parseContract } from '@/generated/studioContracts';
 import type {
   StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
+  StudioEvaluationCheckpointPolicy,
+  StudioEvaluationLocalRunResult,
+  StudioEvaluationMatrixPreview,
+  StudioEvaluationStagingResult,
   StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioWorkspaceSpec,
@@ -179,6 +183,64 @@ export async function runStudioTrainingLocalExecution(payload: {
   metadata?: Record<string, unknown>;
 }) {
   return request<StudioTrainingLocalRunResult>('/api/provider/studio/training/run-local', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function previewStudioEvaluationMatrix(payload: {
+  workspace: StudioWorkspaceSpec;
+  stage_id?: string | null;
+  training_run_ids?: string[];
+  eval_params?: Record<string, unknown>;
+  condition_matrix?: Record<string, unknown>;
+  checkpoint_policy?: StudioEvaluationCheckpointPolicy;
+  reprocess?: 'missing' | 'missing_failed' | 'all';
+  job_id?: string | null;
+  root?: string | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioEvaluationMatrixPreview>('/api/provider/studio/evaluation/preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function stageStudioEvaluationMatrix(payload: {
+  workspace: StudioWorkspaceSpec;
+  stage_id?: string | null;
+  training_run_ids?: string[];
+  eval_params?: Record<string, unknown>;
+  condition_matrix?: Record<string, unknown>;
+  checkpoint_policy?: StudioEvaluationCheckpointPolicy;
+  reprocess?: 'missing' | 'missing_failed' | 'all';
+  job_id?: string | null;
+  root?: string | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioEvaluationStagingResult>('/api/provider/studio/evaluation/stage', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runStudioEvaluationLocalExecution(payload: {
+  workspace: StudioWorkspaceSpec;
+  stage_id?: string | null;
+  training_run_ids?: string[];
+  eval_params?: Record<string, unknown>;
+  condition_matrix?: Record<string, unknown>;
+  checkpoint_policy?: StudioEvaluationCheckpointPolicy;
+  reprocess?: 'missing' | 'missing_failed' | 'all';
+  job_id?: string | null;
+  root?: string | null;
+  timeout?: number | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioEvaluationLocalRunResult>('/api/provider/studio/evaluation/run-local', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

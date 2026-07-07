@@ -10,11 +10,15 @@ from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
     StudioExecutionPreparationError,
+    StudioEvaluationCheckpointPolicy,
+    StudioEvaluationMatrixRequest,
     StudioTrainingLocalRunRequest,
     StudioTrainingExecutionRequest,
     materialize_studio_pipeline,
     prepare_studio_training_execution,
+    preview_studio_evaluation_matrix,
     run_studio_training_local_execution,
+    stage_studio_evaluation_matrix,
 )
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
@@ -27,6 +31,8 @@ from feedbax.analysis.specs import (
     unregister_analysis_recipe,
 )
 from feedbax.contracts.manifest import (
+    CheckpointSelectionManifest,
+    EvaluationRunManifest,
     EvaluationRunSpec,
     TrainingRunManifest,
     TrainingRunSetManifest,
@@ -422,6 +428,118 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     assert restaged_manifest.status == "pending"
     assert restaged_manifest.completed_at is None
     assert restaged_manifest.metadata["restaged_from_status"] == "cancelled"
+
+
+def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    training_request = StudioTrainingExecutionRequest(
+        workspace=_workspace(),
+        job_id="studio-plan",
+        issues=["717e8fb"],
+    )
+    prepared_training = prepare_studio_training_execution(training_request)
+    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
+    eval_stage.input_collections = [
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
+    ]
+    eval_stage.selection_spec["training_run_ids"] = [training_ref.id]
+    request = StudioEvaluationMatrixRequest(
+        workspace=prepared_training.workspace,
+        training_run_ids=[training_ref.id],
+        eval_params={"targets": "8-direction center-out"},
+        condition_matrix={
+            "axes": [
+                {
+                    "id": "sisu",
+                    "label": "SISU",
+                    "path": "eval_params.sisu",
+                    "values": [0.25, 0.5],
+                }
+            ],
+            "mode": "cross",
+        },
+        checkpoint_policy=StudioEvaluationCheckpointPolicy(
+            mode="best-by-metric",
+            metric="final_validation_loss",
+            objective="minimize",
+        ),
+        issues=["717e8fb"],
+    )
+
+    preview = preview_studio_evaluation_matrix(request)
+    first = stage_studio_evaluation_matrix(request)
+    second = stage_studio_evaluation_matrix(request)
+
+    assert preview.total_eval_count == 2
+    assert preview.new_manifest_count == 2
+    assert first.preview.pending_count == 2
+    assert second.preview.new_manifest_count == 0
+    assert {ref.id for ref in first.manifest_refs} == {ref.id for ref in second.manifest_refs}
+
+    eval_manifest = load_manifest(first.manifest_refs[0].uri)
+    checkpoint_manifest = load_manifest(first.checkpoint_selection_refs[0].uri)
+    assert isinstance(eval_manifest, EvaluationRunManifest)
+    assert isinstance(checkpoint_manifest, CheckpointSelectionManifest)
+    assert eval_manifest.status == "pending"
+    assert eval_manifest.evaluation_spec.inline["params"]["checkpoint_policy"] == {
+        "mode": "best-by-metric",
+        "metric": "final_validation_loss",
+        "objective": "minimize",
+        "params": {},
+    }
+    assert eval_manifest.provenance.metadata["checkpoint_policy"]["mode"] == "best-by-metric"
+    assert checkpoint_manifest.metadata["checkpoint_policy"]["metric"] == "final_validation_loss"
+
+
+def test_studio_evaluation_endpoints_preview_stage_and_run_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    studio_default_eval_recipe,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    prepared_training = prepare_studio_training_execution(
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+    )
+    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
+    eval_stage.input_collections = [
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
+    ]
+    payload = {
+        "workspace": prepared_training.workspace.model_dump(mode="json", exclude_none=True),
+        "training_run_ids": [training_ref.id],
+        "eval_params": {"perturbation": "none"},
+        "checkpoint_policy": {"mode": "last"},
+        "issues": ["717e8fb"],
+        "root": str(tmp_path),
+    }
+    client = TestClient(create_app())
+
+    preview = client.post("/api/provider/studio/evaluation/preview", json=payload)
+    staged = client.post("/api/provider/studio/evaluation/stage", json=payload)
+    launched = client.post("/api/provider/studio/evaluation/run-local", json=payload)
+
+    assert preview.status_code == 200
+    assert preview.json()["total_eval_count"] == 1
+    assert staged.status_code == 200
+    assert staged.json()["preview"]["pending_count"] == 1
+    assert launched.status_code == 200
+    assert launched.json()["completed_count"] == 1
+    eval_stage_payload = next(
+        stage for stage in launched.json()["workspace"]["stages"] if stage["kind"] == "eval"
+    )
+    assert eval_stage_payload["status"] == "completed"
+    assert eval_stage_payload["output_collections"][0]["item_refs"][0]["metadata"]["status"] == "completed"
 
 
 def test_studio_training_plan_endpoint_rejects_missing_training_spec():
