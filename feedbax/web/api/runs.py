@@ -12,12 +12,18 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from feedbax.contracts.manifest import (
+    BaseManifest,
     EvaluationRunManifest,
     TrainingRunManifest,
     default_manifest_root,
     load_manifest,
     utc_now,
     write_manifest,
+)
+from feedbax.contracts.manifest_packet import (
+    ManifestPacketConflictError,
+    ManifestPacketValidationError,
+    import_manifest_packet,
 )
 from feedbax.contracts.selection import (
     SelectionPreview,
@@ -34,8 +40,10 @@ from feedbax.persistence.database import (
 )
 from feedbax.persistence.manifest_index import (
     get_indexed_manifest_record,
+    iter_manifest_files,
     iter_indexed_manifest_records_by_kind,
     remove_manifest_from_index,
+    rebuild_manifest_index,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +121,51 @@ class SelectionRefreshRequest(BaseModel):
     stale_parent_ids: list[str] = Field(default_factory=list)
 
 
+class TrainingRunCompareRequest(BaseModel):
+    """Bounded field request for comparing selected training runs."""
+
+    run_ids: list[str] = Field(min_length=2)
+    param_fields: list[str] = Field(default_factory=list, max_length=64)
+    metric_fields: list[str] = Field(default_factory=list, max_length=64)
+
+
+class TrainingRunCompareRow(BaseModel):
+    """Selected parameter and metric values for one compared training run."""
+
+    id: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingRunCompareResponse(BaseModel):
+    """Comparison response containing only requested fields."""
+
+    rows: list[TrainingRunCompareRow]
+
+
+class ManifestImportRequest(BaseModel):
+    """Import manifests from a packet or a local runs directory."""
+
+    path: str
+    root: Optional[str] = None
+
+
+class ManifestImportResponse(BaseModel):
+    """Summary returned after importing manifests into the active root."""
+
+    root: str
+    source_path: str
+    imported_manifest_ids: list[str] = Field(default_factory=list)
+    skipped_manifest_ids: list[str] = Field(default_factory=list)
+    manifest_count: int = 0
+    artifact_count: int = 0
+    included_artifact_count: int = 0
+    external_artifact_count: int = 0
+    index_path: Optional[str] = None
+    training_runs: list[TrainingRunInfo] = Field(default_factory=list)
+    eval_runs: list[EvalRunInfo] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -160,6 +213,26 @@ def _payload_inline(payload: dict[str, Any], key: str) -> dict[str, Any]:
     if isinstance(value, dict) and isinstance(value.get("inline"), dict):
         return value["inline"]
     return {}
+
+
+def _path_value(payload: dict[str, Any], path: str) -> Any:
+    current: Any = payload
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def _selected_values(source: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    selected: dict[str, Any] = {}
+    for field in fields:
+        value = source.get(field)
+        if value is None and "." in field:
+            value = _path_value(source, field)
+        selected[field] = value
+    return selected
 
 
 def _studio_metadata(payload: dict[str, Any]) -> dict[str, Any]:
@@ -262,6 +335,33 @@ def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
     )
 
 
+def _compare_row_from_index_row(
+    row: dict[str, Any],
+    *,
+    param_fields: list[str],
+    metric_fields: list[str],
+) -> TrainingRunCompareRow:
+    payload = json.loads(row["payload_json"])
+    studio = _studio_metadata(payload)
+    hyperparams = _training_hyperparams(payload)
+    axis_coordinates = studio.get("axis_coordinates")
+    axis_coordinates = axis_coordinates if isinstance(axis_coordinates, dict) else {}
+    params = {
+        **hyperparams,
+        **{
+            str(key): value
+            for key, value in axis_coordinates.items()
+        },
+    }
+    metrics = payload.get("summary_metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    return TrainingRunCompareRow(
+        id=str(payload["id"]),
+        params=_selected_values(params, param_fields),
+        metrics=_selected_values(metrics, metric_fields),
+    )
+
+
 def _eval_summary_from_index_row(row: dict[str, Any]) -> EvalRunInfo:
     payload = json.loads(row["payload_json"])
     spec = _payload_inline(payload, "evaluation_spec")
@@ -318,6 +418,111 @@ def _load_evaluation_manifest_from_index(eval_run_id: str) -> tuple[EvaluationRu
             detail=f"Manifest {eval_run_id!r} is {type(manifest).__name__}, not EvaluationRunManifest",
         )
     return manifest, path
+
+
+def _summaries_for_manifest_ids(
+    manifest_ids: set[str],
+    *,
+    root: Path | str | None = None,
+) -> tuple[list[TrainingRunInfo], list[EvalRunInfo]]:
+    training_runs = [
+        _training_summary_from_index_row(row)
+        for row in iter_indexed_manifest_records_by_kind("TrainingRunManifest", root=root)
+        if row["id"] in manifest_ids
+    ]
+    eval_runs = [
+        _eval_summary_from_index_row(row)
+        for row in iter_indexed_manifest_records_by_kind("EvaluationRunManifest", root=root)
+        if row["id"] in manifest_ids
+    ]
+    return training_runs, eval_runs
+
+
+def _resolved_import_paths(request: ManifestImportRequest) -> tuple[Path, Path]:
+    source = Path(request.path).expanduser()
+    root = Path(request.root).expanduser() if request.root else default_manifest_root()
+    return source, root
+
+
+def _manifest_with_import_metadata(
+    manifest: BaseManifest,
+    *,
+    source_root: Path,
+    source_path: Path,
+) -> BaseManifest:
+    return manifest.model_copy(
+        update={
+            "metadata": {
+                **manifest.metadata,
+                "imported_from": {
+                    "source": "runs_dir",
+                    "source_root": str(source_root),
+                    "source_path": str(source_path),
+                    "imported_at": utc_now().isoformat(),
+                },
+            }
+        }
+    )
+
+
+def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResponse:
+    if not source_root.exists() or not source_root.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Runs directory does not exist: {source_root}",
+        )
+    if source_root.resolve() == target_root.resolve():
+        index_path = rebuild_manifest_index(target_root)
+        all_ids = {
+            row["id"]
+            for kind in ("TrainingRunManifest", "EvaluationRunManifest")
+            for row in iter_indexed_manifest_records_by_kind(kind, root=target_root)
+        }
+        training_runs, eval_runs = _summaries_for_manifest_ids(all_ids, root=target_root)
+        return ManifestImportResponse(
+            root=str(target_root),
+            source_path=str(source_root),
+            imported_manifest_ids=[],
+            skipped_manifest_ids=[],
+            manifest_count=len(iter_manifest_files(target_root)),
+            index_path=str(index_path),
+            training_runs=training_runs,
+            eval_runs=eval_runs,
+        )
+
+    imported_ids: list[str] = []
+    skipped_ids: list[str] = []
+    manifest_paths = iter_manifest_files(source_root)
+    if iter_manifest_files(target_root):
+        rebuild_manifest_index(target_root)
+    for manifest_path in manifest_paths:
+        manifest = load_manifest(manifest_path)
+        if get_indexed_manifest_record(manifest.id, root=target_root) is not None:
+            skipped_ids.append(manifest.id)
+            continue
+        imported = _manifest_with_import_metadata(
+            manifest,
+            source_root=source_root,
+            source_path=manifest_path,
+        )
+        write_manifest(imported, root=target_root)
+        imported_ids.append(manifest.id)
+
+    index_path = rebuild_manifest_index(target_root)
+    training_runs, eval_runs = _summaries_for_manifest_ids(
+        set(imported_ids + skipped_ids),
+        root=target_root,
+    )
+    return ManifestImportResponse(
+        root=str(target_root),
+        source_path=str(source_root),
+        imported_manifest_ids=imported_ids,
+        skipped_manifest_ids=skipped_ids,
+        manifest_count=len(manifest_paths),
+        index_path=str(index_path),
+        training_runs=training_runs,
+        eval_runs=eval_runs,
+    )
 
 
 def _legacy_training_runs_from_model_db() -> list[TrainingRunInfo]:
@@ -404,6 +609,80 @@ async def refresh_selection(request: SelectionRefreshRequest) -> SelectionRefres
         failed_parent_ids=request.failed_parent_ids,
         stale_parent_ids=request.stale_parent_ids,
     )
+
+
+@router.post("/training/compare", response_model=TrainingRunCompareResponse)
+async def compare_training_runs(
+    request: TrainingRunCompareRequest,
+) -> TrainingRunCompareResponse:
+    """Return only requested fields for selected training-run comparison."""
+
+    rows: list[TrainingRunCompareRow] = []
+    missing: list[str] = []
+    for run_id in request.run_ids:
+        row = get_indexed_manifest_record(run_id)
+        if row is None:
+            missing.append(run_id)
+            continue
+        if row["kind"] != "TrainingRunManifest":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Manifest {run_id!r} is {row['kind']}, not TrainingRunManifest",
+            )
+        rows.append(
+            _compare_row_from_index_row(
+                row,
+                param_fields=request.param_fields,
+                metric_fields=request.metric_fields,
+            )
+        )
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Training manifests not found: {missing}",
+        )
+    return TrainingRunCompareResponse(rows=rows)
+
+
+@router.post("/import/packet", response_model=ManifestImportResponse)
+async def import_manifest_packet_route(
+    request: ManifestImportRequest,
+) -> ManifestImportResponse:
+    """Import a manifest packet directory into the active manifest root."""
+
+    source, root = _resolved_import_paths(request)
+    try:
+        result = import_manifest_packet(source, root=root)
+    except (ManifestPacketConflictError, ManifestPacketValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    imported_ids = set(result.imported_manifest_ids + result.skipped_manifest_ids)
+    training_runs, eval_runs = _summaries_for_manifest_ids(imported_ids, root=root)
+    return ManifestImportResponse(
+        root=result.root,
+        source_path=str(source),
+        imported_manifest_ids=result.imported_manifest_ids,
+        skipped_manifest_ids=result.skipped_manifest_ids,
+        manifest_count=len(result.imported_manifest_ids) + len(result.skipped_manifest_ids),
+        artifact_count=result.artifact_count,
+        included_artifact_count=result.included_artifact_count,
+        external_artifact_count=result.external_artifact_count,
+        index_path=result.index_path,
+        training_runs=training_runs,
+        eval_runs=eval_runs,
+    )
+
+
+@router.post("/import/runs-dir", response_model=ManifestImportResponse)
+async def import_runs_dir_route(
+    request: ManifestImportRequest,
+) -> ManifestImportResponse:
+    """Import or re-index a FEEDBAX_RUNS_DIR-style manifest root."""
+
+    source, root = _resolved_import_paths(request)
+    try:
+        return _import_runs_dir(source, root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/training/{training_run_id}/evals")

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
 import {
   cancelTrainingRun,
+  compareTrainingRuns,
   createEvalRun,
   createTrainingRun,
   deleteTrainingRun,
@@ -9,6 +10,8 @@ import {
   fetchEvalRuns,
   fetchTrainingRunManifest,
   fetchTrainingRuns,
+  importManifestPacket,
+  importRunsDir,
   supersedeTrainingRun,
 } from '@/api/runAPI';
 
@@ -204,6 +207,87 @@ describe('runAPI failure behavior', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       '/api/runs/training/feedbax-training-run%3Acompleted/supersede',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('requests only selected compare fields', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(
+      JSON.stringify({
+        rows: [
+          {
+            id: 'run:a',
+            params: { learning_rate: 0.001 },
+            metrics: { final_validation_loss: 0.2 },
+          },
+          {
+            id: 'run:b',
+            params: { learning_rate: 0.0003 },
+            metrics: { final_validation_loss: 0.1 },
+          },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(compareTrainingRuns({
+      runIds: ['run:a', 'run:b'],
+      paramFields: ['learning_rate'],
+      metricFields: ['final_validation_loss'],
+    })).resolves.toMatchObject({
+      rows: [
+        { id: 'run:a', params: { learning_rate: 0.001 } },
+        { id: 'run:b', metrics: { final_validation_loss: 0.1 } },
+      ],
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      run_ids: ['run:a', 'run:b'],
+      param_fields: ['learning_rate'],
+      metric_fields: ['final_validation_loss'],
+    });
+  });
+
+  it('maps import responses from packet and runs-dir endpoints', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({
+        root: '/tmp/target',
+        source_path: '/tmp/source',
+        imported_manifest_ids: ['run:a'],
+        skipped_manifest_ids: [],
+        manifest_count: 1,
+        artifact_count: 0,
+        included_artifact_count: 0,
+        external_artifact_count: 0,
+        index_path: '/tmp/target/index/feedbax.sqlite',
+        training_runs: [{
+          id: 'run:a',
+          name: 'Run A',
+          created_at: '2026-07-07T12:00:00+00:00',
+          status: 'completed',
+          hyperparams: {},
+          metrics: {},
+        }],
+        eval_runs: [],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(importManifestPacket('/tmp/packet')).resolves.toMatchObject({
+      importedManifestIds: ['run:a'],
+      trainingRuns: [{ id: 'run:a' }],
+    });
+    await importRunsDir('/tmp/runs');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/runs/import/packet',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/runs/import/runs-dir',
       expect.objectContaining({ method: 'POST' }),
     );
   });

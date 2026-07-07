@@ -42,3 +42,27 @@ export interface CreateEvalRunParams {
   name: string;
   evalParams: Record<string, unknown>;
 }
+
+export interface TrainingRunCompareRow {
+  id: string;
+  params: Record<string, unknown>;
+  metrics: Record<string, unknown>;
+}
+
+export interface TrainingRunCompareResponse {
+  rows: TrainingRunCompareRow[];
+}
+
+export interface ManifestImportResponse {
+  root: string;
+  sourcePath: string;
+  importedManifestIds: string[];
+  skippedManifestIds: string[];
+  manifestCount: number;
+  artifactCount: number;
+  includedArtifactCount: number;
+  externalArtifactCount: number;
+  indexPath?: string | null;
+  trainingRuns: TrainingRun[];
+  evalRuns: EvalRun[];
+}

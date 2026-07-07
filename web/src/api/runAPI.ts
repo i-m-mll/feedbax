@@ -4,7 +4,14 @@
  * Calls the backend endpoints and reports backend failures to callers.
  */
 
-import type { EvalRunInfo, TrainingRun, TrainingRunInfo, EvalRun } from '@/types/runs';
+import type {
+  EvalRunInfo,
+  EvalRun,
+  ManifestImportResponse,
+  TrainingRun,
+  TrainingRunCompareResponse,
+  TrainingRunInfo,
+} from '@/types/runs';
 import type {
   SelectionPreview,
   SelectionRefreshDiff,
@@ -55,6 +62,62 @@ function evalRunFromWire(wire: EvalRunInfo): EvalRun {
     description: wire.description ?? undefined,
     trainingRunIds: wire.training_run_ids ?? [wire.training_run_id],
     uri: wire.uri ?? undefined,
+  };
+}
+
+function compareResponseFromWire(wire: unknown): TrainingRunCompareResponse {
+  if (!wire || typeof wire !== 'object' || Array.isArray(wire)) {
+    throw new Error('Compare response was not an object.');
+  }
+  const rows = (wire as { rows?: unknown }).rows;
+  if (!Array.isArray(rows)) throw new Error('Compare response rows were not an array.');
+  return {
+    rows: rows.map((row) => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) {
+        throw new Error('Compare row was not an object.');
+      }
+      const payload = row as Record<string, unknown>;
+      if (typeof payload.id !== 'string') throw new Error('Compare row id was not a string.');
+      return {
+        id: payload.id,
+        params:
+          payload.params && typeof payload.params === 'object' && !Array.isArray(payload.params)
+            ? payload.params as Record<string, unknown>
+            : {},
+        metrics:
+          payload.metrics && typeof payload.metrics === 'object' && !Array.isArray(payload.metrics)
+            ? payload.metrics as Record<string, unknown>
+            : {},
+      };
+    }),
+  };
+}
+
+function importResponseFromWire(wire: unknown): ManifestImportResponse {
+  if (!wire || typeof wire !== 'object' || Array.isArray(wire)) {
+    throw new Error('Import response was not an object.');
+  }
+  const payload = wire as Record<string, unknown>;
+  const training = Array.isArray(payload.training_runs) ? payload.training_runs : [];
+  const evals = Array.isArray(payload.eval_runs) ? payload.eval_runs : [];
+  const stringList = (key: string) =>
+    Array.isArray(payload[key])
+      ? payload[key].filter((item): item is string => typeof item === 'string')
+      : [];
+  return {
+    root: typeof payload.root === 'string' ? payload.root : '',
+    sourcePath: typeof payload.source_path === 'string' ? payload.source_path : '',
+    importedManifestIds: stringList('imported_manifest_ids'),
+    skippedManifestIds: stringList('skipped_manifest_ids'),
+    manifestCount: typeof payload.manifest_count === 'number' ? payload.manifest_count : 0,
+    artifactCount: typeof payload.artifact_count === 'number' ? payload.artifact_count : 0,
+    includedArtifactCount:
+      typeof payload.included_artifact_count === 'number' ? payload.included_artifact_count : 0,
+    externalArtifactCount:
+      typeof payload.external_artifact_count === 'number' ? payload.external_artifact_count : 0,
+    indexPath: typeof payload.index_path === 'string' ? payload.index_path : null,
+    trainingRuns: training.map((item) => trainingRunFromWire(parseContract('TrainingRunInfo', item))),
+    evalRuns: evals.map((item) => evalRunFromWire(parseContract('EvalRunInfo', item))),
   };
 }
 
@@ -116,6 +179,54 @@ export async function fetchEvalRunManifest(
     );
   }
   return result as Record<string, unknown>;
+}
+
+/** Fetch only selected parameter and metric fields for table compare mode. */
+export async function compareTrainingRuns(payload: {
+  runIds: string[];
+  paramFields: string[];
+  metricFields: string[];
+}): Promise<TrainingRunCompareResponse> {
+  const path = '/api/runs/training/compare';
+  const result = await requestJson(path, {
+    method: 'POST',
+    body: JSON.stringify({
+      run_ids: payload.runIds,
+      param_fields: payload.paramFields,
+      metric_fields: payload.metricFields,
+    }),
+  });
+  try {
+    return compareResponseFromWire(result);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Compare response did not match the expected shape.');
+  }
+}
+
+export async function importManifestPacket(pathname: string): Promise<ManifestImportResponse> {
+  const path = '/api/runs/import/packet';
+  const result = await requestJson(path, {
+    method: 'POST',
+    body: JSON.stringify({ path: pathname }),
+  });
+  try {
+    return importResponseFromWire(result);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Manifest packet import response did not match the expected shape.');
+  }
+}
+
+export async function importRunsDir(pathname: string): Promise<ManifestImportResponse> {
+  const path = '/api/runs/import/runs-dir';
+  const result = await requestJson(path, {
+    method: 'POST',
+    body: JSON.stringify({ path: pathname }),
+  });
+  try {
+    return importResponseFromWire(result);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Runs directory import response did not match the expected shape.');
+  }
 }
 
 /** Preview the current manifest-index matches for a SelectionSpec. */
