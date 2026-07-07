@@ -81,6 +81,9 @@ from feedbax.contracts.graph import (
     WireSpec,
 )
 from feedbax.contracts.studio_api import (
+    AnalysisBundleDryRunPayload,
+    AnalysisBundleDryRunRequest,
+    AnalysisBundleDryRunResponse,
     AnalysisClassInfo,
     AnalysisJobStatusPayload,
     AnalysisJobStatusResponse,
@@ -124,6 +127,10 @@ from feedbax.contracts.studio_api import (
     WorkerConnectResponse,
     WorkerStatusEnvelope,
     WorkerStatusResponse,
+    BundleMissingRoleRecord,
+    BundleStageDryRunOutputRecord,
+    BundleStageDryRunRecord,
+    AnalysisBundleDryRunResult,
 )
 from feedbax.contracts.training import (
     EarlyStoppingSpec,
@@ -292,6 +299,13 @@ MODEL_TYPES: list[type[BaseModel]] = [
     AnalysisPackageInfo,
     AnalysisPackagesPayload,
     AnalysisPackagesResponse,
+    BundleMissingRoleRecord,
+    BundleStageDryRunOutputRecord,
+    BundleStageDryRunRecord,
+    AnalysisBundleDryRunResult,
+    AnalysisBundleDryRunRequest,
+    AnalysisBundleDryRunPayload,
+    AnalysisBundleDryRunResponse,
     GenerateAnalysisRequest,
     GenerateAnalysisPayload,
     GenerateAnalysisResponse,
@@ -360,6 +374,7 @@ CONTRACT_MODEL_NAMES = [
     "WorkerConnectEnvelope",
     "WorkerStatusEnvelope",
     "AnalysisPackagesResponse",
+    "AnalysisBundleDryRunResponse",
     "GenerateAnalysisResponse",
     "AnalysisJobStatusResponse",
     "TrainingRunInfo",

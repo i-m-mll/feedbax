@@ -19,6 +19,8 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
     ValidationResult,
 )
+from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.selection import SelectionPreview, SelectionSpec
 
 
 STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
@@ -242,6 +244,69 @@ class AnalysisPackagesResponse(StudioApiModel):
     """Standard API envelope for analysis package discovery."""
 
     data: AnalysisPackagesPayload
+
+
+class BundleMissingRoleRecord(StudioApiModel):
+    """Required role dependency unavailable in an analysis bundle dry-run."""
+
+    stage: str
+    role: str
+    required: bool = True
+    bind_as: Optional[str] = None
+    reason: str
+
+
+class BundleStageDryRunOutputRecord(StudioApiModel):
+    """Predicted output-role status for one analysis bundle dry-run stage."""
+
+    role: str
+    required: bool = True
+    status: Literal["would_run", "would_skip", "missing", "not_applicable"]
+    reason: Optional[str] = None
+
+
+class BundleStageDryRunRecord(StudioApiModel):
+    """Side-effect-free stage plan for analysis bundle preflight."""
+
+    name: str
+    kind: Literal["evaluation", "analysis", "materialization", "report"]
+    status: Literal["would_run", "would_skip", "missing", "not_applicable"]
+    depends_on: list[str] = Field(default_factory=list)
+    inputs: list[ParentRef] = Field(default_factory=list)
+    outputs: list[BundleStageDryRunOutputRecord] = Field(default_factory=list)
+    missing_roles: list[BundleMissingRoleRecord] = Field(default_factory=list)
+    reason: Optional[str] = None
+
+
+class AnalysisBundleDryRunResult(StudioApiModel):
+    """Side-effect-free analysis bundle preflight over a matched selection."""
+
+    bundle_name: str
+    match_preview: SelectionPreview
+    matched_run_ids: list[str] = Field(default_factory=list)
+    stages: list[BundleStageDryRunRecord] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalysisBundleDryRunRequest(StudioApiModel):
+    """Body for side-effect-free analysis bundle preflight."""
+
+    bundle: dict[str, Any]
+    selection_spec: Optional[SelectionSpec] = None
+    root: Optional[str] = None
+    preview_limit: int = Field(default=50, ge=0, le=500)
+
+
+class AnalysisBundleDryRunPayload(StudioApiModel):
+    """Payload for analysis bundle preflight results."""
+
+    dry_run: AnalysisBundleDryRunResult
+
+
+class AnalysisBundleDryRunResponse(StudioApiModel):
+    """Standard API envelope for analysis bundle dry-run results."""
+
+    data: AnalysisBundleDryRunPayload
 
 
 class GenerateAnalysisRequest(StudioApiModel):

@@ -4,9 +4,12 @@ from typing import get_args, get_origin
 
 import pytest
 from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.studio_api import (
+    AnalysisBundleDryRunPayload,
+    AnalysisBundleDryRunResponse,
     AnalysisPackagesResponse,
     AnalysisPackagesPayload,
     GraphListResponse,
@@ -67,13 +70,68 @@ def test_studio_api_envelopes_are_data_wrapped() -> None:
     analysis_packages = AnalysisPackagesResponse(
         data=AnalysisPackagesPayload(packages=[])
     ).model_dump()
+    analysis_dry_run = AnalysisBundleDryRunResponse(
+        data=AnalysisBundleDryRunPayload(
+            dry_run={
+                "bundle_name": "bundle",
+                "match_preview": {
+                    "selection_spec": {
+                        "mode": "explicit",
+                        "manifest_kind": "EvaluationRunManifest",
+                        "ids": ["eval-1"],
+                    },
+                    "match_count": 1,
+                    "parent_refs": [
+                        {
+                            "kind": "EvaluationRunManifest",
+                            "id": "eval-1",
+                            "role": "evaluation_run",
+                        }
+                    ],
+                },
+                "matched_run_ids": ["eval-1"],
+                "stages": [],
+            }
+        )
+    ).model_dump()
 
     assert graph_list["data"]["graphs"] == []
     assert training_start["data"]["job_id"] == "job-1"
     assert analysis_packages["data"]["packages"] == []
+    assert analysis_dry_run["data"]["dry_run"]["matched_run_ids"] == ["eval-1"]
     assert graph_list["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
     assert graph_list["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
     assert graph_list["data"]["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
+
+
+def test_analysis_bundle_dry_run_endpoint_returns_stage_status() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/analyses/bundles/dry-run",
+        json={
+            "bundle": {
+                "schema_id": "feedbax.spec.analysis_bundle",
+                "schema_version": "feedbax.spec.analysis_bundle.v2",
+                "name": "dry-run-test",
+                "predicate": {"manifest_kind": "EvaluationRunManifest"},
+                "stages": [
+                    {
+                        "name": "disabled",
+                        "kind": "analysis",
+                        "skip_reason": "disabled for this bundle",
+                    }
+                ],
+            },
+            "preview_limit": 10,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]["dry_run"]
+    assert payload["bundle_name"] == "dry-run-test"
+    assert payload["stages"][0]["status"] == "would_skip"
+    assert payload["stages"][0]["reason"] == "disabled for this bundle"
 
 
 def test_training_progress_event_contract_accepts_worker_shape() -> None:

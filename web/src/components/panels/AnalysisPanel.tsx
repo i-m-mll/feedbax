@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ReactFlowProvider, type Edge } from '@xyflow/react';
 import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
+import { AnalysisBundlePanel } from '@/components/panels/AnalysisBundlePanel';
 import { AnalysisCanvas } from '@/components/analysis/AnalysisCanvas';
 import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
@@ -251,6 +252,7 @@ export function AnalysisPanel() {
         onRemove={removePage}
         onRename={renamePage}
       />
+      <AnalysisBundlePanel />
 
       {/* Main content area: canvas + right sidebar */}
       <div className="flex flex-1 min-h-0">

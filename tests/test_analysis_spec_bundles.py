@@ -16,6 +16,7 @@ from feedbax.analysis.bundles import (
     BundleStageOutputSpec,
     BundleStageSpec,
     StageArtifactDependency,
+    dry_run_staged_analysis_bundle,
     execute_analysis_bundle,
     execute_staged_analysis_bundle,
     ManifestPredicate,
@@ -1119,6 +1120,45 @@ def test_staged_bundle_runtime_condition_skips_required_outputs_and_optional_rol
         unregister_analysis_recipe(TOY_ARTIFACT_ANALYSIS_TYPE)
 
 
+def test_staged_bundle_dry_run_reports_condition_skip_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    _write_toy_training(tmp_path, method="minimax")
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*.json"))
+    condition = Compare(
+        item="params",
+        path="enabled",
+        op="eq",
+        value=True,
+    )
+    bundle = AnalysisBundleSpec(
+        name="toy_condition_dry_run",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="gated",
+                kind="analysis",
+                analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
+                params={"enabled": False},
+                run_condition=condition,
+                outputs=[BundleStageOutputSpec(role="analysis_summary")],
+            ),
+        ],
+    )
+
+    result = dry_run_staged_analysis_bundle(bundle, root=tmp_path)
+
+    assert result.match_preview.match_count == 1
+    assert result.matched_run_ids
+    assert result.stages[0].status == "would_skip"
+    assert result.stages[0].outputs[0].status == "would_skip"
+    assert "run_condition evaluated false" in str(result.stages[0].reason)
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*.json")) == before
+
+
 def test_staged_bundle_required_role_dependency_fails_closed(tmp_path: Path) -> None:
     _register_toy_evaluation_recipe()
     _register_toy_artifact_analysis_recipe()
@@ -1174,6 +1214,51 @@ def test_staged_bundle_required_role_dependency_fails_closed(tmp_path: Path) -> 
         unregister_analysis_recipe(TOY_ARTIFACT_ANALYSIS_TYPE)
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_dry_run_reports_missing_required_role(
+    tmp_path: Path,
+) -> None:
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_missing_required_role_dry_run",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="producer",
+                kind="analysis",
+                analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
+                run_condition=Compare(
+                    item="params",
+                    path="enabled",
+                    op="eq",
+                    value=True,
+                ),
+                params={"enabled": False},
+                outputs=[BundleStageOutputSpec(role="analysis_summary")],
+            ),
+            BundleStageSpec(
+                name="consumer",
+                kind="analysis",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                depends_on_roles=[
+                    StageArtifactDependency(stage="producer", role="analysis_summary")
+                ],
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    result = dry_run_staged_analysis_bundle(bundle, root=tmp_path)
+
+    assert result.stages[0].status == "would_skip"
+    assert result.stages[1].status == "missing"
+    assert result.stages[1].missing_roles[0].stage == "producer"
+    assert result.stages[1].missing_roles[0].role == "analysis_summary"
+    assert result.stages[1].outputs[0].status == "missing"
 
 
 def test_staged_bundle_role_dependency_binds_artifact_input_alias(tmp_path: Path) -> None:
