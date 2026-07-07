@@ -121,13 +121,12 @@ def compile_training_run(
             "Generic graph worker currently supports batch_size=1; "
             f"got batch_size={training_model.batch_size}"
         )
-    binding_model = (
-        task_binding_spec
-        if isinstance(task_binding_spec, StudioTaskBindingSpec)
-        else StudioTaskBindingSpec.model_validate(
-            migrate_studio_task_binding_spec(task_binding_spec).payload
-        )
-    )
+    if isinstance(task_binding_spec, StudioTaskBindingSpec):
+        binding_model = task_binding_spec
+    else:
+        binding_payload = migrate_studio_task_binding_spec(task_binding_spec).payload
+        _reject_unsupported_task_data_value_spec_modes(binding_payload)
+        binding_model = StudioTaskBindingSpec.model_validate(binding_payload)
     binding_errors = [
         issue
         for issue in validate_task_binding_schema(
@@ -494,6 +493,21 @@ def _materialize_task_data(
         data[item.id] = value
         data[item.path] = value
     return data
+
+
+def _reject_unsupported_task_data_value_spec_modes(task_binding_spec: Mapping[str, Any]) -> None:
+    for item in task_binding_spec.get("exposed_data", []):
+        if not isinstance(item, Mapping):
+            continue
+        value_spec = item.get("value_spec")
+        if not isinstance(value_spec, Mapping):
+            continue
+        mode = value_spec.get("mode")
+        if mode is not None and mode not in {"constant", "function"}:
+            raise ValueError(
+                f"Task data {item.get('id')!r} at {item.get('path')!r} uses unsupported "
+                f"value_spec mode={mode!r}"
+            )
 
 
 def _materialize_one_task_data(
