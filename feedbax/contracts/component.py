@@ -7,6 +7,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from feedbax.contracts.graph import GraphSpec, GraphUIState, ParamSchema, ParamValue
+from feedbax.contracts.representation import RepresentationSpec
 
 
 class PortType(BaseModel):
@@ -72,3 +73,4 @@ class ComponentDefinition(BaseModel):
     supported_param_schema_versions: List[str] = Field(default_factory=lambda: ["1"])
     migrations: List[ComponentMigrationInfo] = Field(default_factory=list)
     trainable_by_default: bool = False
+    representation: Optional[RepresentationSpec] = None

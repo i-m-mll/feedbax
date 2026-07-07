@@ -23,6 +23,10 @@ from feedbax.contracts.migrations import (
     MissingComponentOwner,
     UnsupportedComponentMigration,
 )
+from feedbax.contracts.representation import (
+    RepresentationSpec,
+    validate_representation_against_component,
+)
 
 from .builtins import register_builtin_components
 from .meta import ComponentBuilder, ComponentMeta, OutputPrototypeFn
@@ -103,6 +107,7 @@ class ComponentRegistry:
             meta.provenance = _current_provenance()
         self._complete_identity(meta)
         meta.migrations = self._migration_infos_for_target(meta.name)
+        self._validate_representation(meta)
         self._components[meta.name] = meta
 
     def register_component_type(
@@ -128,11 +133,14 @@ class ComponentRegistry:
         param_schema_version: str = "1",
         supported_param_schema_versions: Iterable[str] | None = None,
         trainable_by_default: bool = False,
+        representation: RepresentationSpec | dict[str, Any] | None = None,
     ) -> ComponentMeta:
         if not callable(builder):
             raise TypeError(f"Builder for component type {name!r} must be callable")
         if port_types is not None and not isinstance(port_types, PortTypeSpec):
             port_types = PortTypeSpec.model_validate(port_types)
+        if representation is not None and not isinstance(representation, RepresentationSpec):
+            representation = RepresentationSpec.model_validate(representation)
         meta = ComponentMeta(
             name=name,
             category=category,
@@ -161,6 +169,7 @@ class ComponentRegistry:
                 else [param_schema_version]
             ),
             trainable_by_default=trainable_by_default,
+            representation=representation,
         )
         self.register(meta)
         return meta
@@ -455,6 +464,7 @@ class ComponentRegistry:
                     ),
                     output_prototype_fn=meta.get("output_prototype_fn"),
                     provenance=f"file:{py_file}",
+                    representation=meta.get("representation"),
                 )
 
     def discover_entry_point_components(
@@ -550,7 +560,23 @@ class ComponentRegistry:
             supported_param_schema_versions=list(meta.supported_param_schema_versions),
             migrations=list(meta.migrations),
             trainable_by_default=meta.trainable_by_default,
+            representation=meta.representation,
         )
+
+    def _validate_representation(self, meta: ComponentMeta) -> None:
+        if meta.representation is None:
+            return
+        issues = validate_representation_against_component(
+            meta.representation,
+            component_name=meta.name,
+            param_schema=meta.param_schema,
+            input_ports=meta.input_ports,
+        )
+        if issues:
+            formatted = "; ".join(f"{issue.path}: {issue.message}" for issue in issues)
+            raise ValueError(
+                f"Invalid representation contract for component {meta.name!r}: {formatted}"
+            )
 
     def _migration_infos_for_target(self, target_type: str) -> list[ComponentMigrationInfo]:
         return [
@@ -674,6 +700,7 @@ def register_component_type(
     param_schema_version: str = "1",
     supported_param_schema_versions: Iterable[str] | None = None,
     trainable_by_default: bool = False,
+    representation: RepresentationSpec | dict[str, Any] | None = None,
 ) -> ComponentMeta:
     """Register an executable component type in the process-wide registry."""
 
@@ -694,4 +721,5 @@ def register_component_type(
         param_schema_version=param_schema_version,
         supported_param_schema_versions=supported_param_schema_versions,
         trainable_by_default=trainable_by_default,
+        representation=representation,
     )

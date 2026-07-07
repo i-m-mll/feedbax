@@ -47,6 +47,11 @@ from feedbax.contracts.graph import (
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
+from feedbax.contracts.representation import (
+    REPRESENTATION_SCHEMA_ID,
+    REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V0,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
@@ -2123,6 +2128,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=(
                 "tests/test_studio_api_contracts.py",
                 "tests/test_structured_spec_migrations.py",
+            ),
+        )
+    )
+    families.append(
+        _family(
+            "RepresentationSpec",
+            REPRESENTATION_SCHEMA_ID,
+            REPRESENTATION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.representation",
+            emitted_by=(
+                "feedbax.component_registry.registry.ComponentRegistry",
+                "scripts.generate_studio_contracts",
+            ),
+            consumed_by=("Studio frontend", "workspace renderer"),
+            description="Component-owned workspace representation declaration.",
+            rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
+            required_tests=(
+                "tests/test_component_registration.py",
+                "tests/test_structured_spec_migrations.py",
+                "web/src/generated/studioContracts.ts",
             ),
         )
     )
