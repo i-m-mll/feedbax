@@ -26,7 +26,7 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
-from feedbax.contracts.manifest import EvaluationRunSpec, store_json_artifact
+from feedbax.contracts.manifest import EvaluationRunSpec, load_manifest, store_json_artifact
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
@@ -262,6 +262,76 @@ def test_studio_training_plan_endpoint_returns_updated_workspace():
     )
     assert train_stage["status"] == "ready"
     assert train_stage["artifact_refs"][0]["role"] == "execution_plan"
+
+
+def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    request = StudioTrainingExecutionRequest(
+        workspace=_workspace(),
+        job_id="studio-plan",
+        local_cwd="/tmp/feedbax-studio",
+        issues=["9aa8ff2"],
+    )
+
+    first = prepare_studio_training_execution(request)
+    second = prepare_studio_training_execution(request)
+
+    train_stage = next(stage for stage in first.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    training_collection = next(
+        collection for collection in train_stage.output_collections if collection.kind == "training_runs"
+    )
+    second_ref = next(
+        ref
+        for stage in second.workspace.stages
+        if stage.kind == "train"
+        for ref in stage.manifest_refs
+        if ref.role == "training_run"
+    )
+
+    assert training_ref.id == second_ref.id
+    assert training_collection.item_refs[0].id == training_ref.id
+    assert training_ref.metadata["status"] == "pending"
+    manifest = load_manifest(training_ref.uri)
+    assert manifest.status == "pending"
+    assert manifest.training_spec.inline["n_batches"] == 25
+    assert manifest.task_binding_spec.inline["bindings"][0]["target_port"] == "input"
+    assert manifest.provenance.issues == ["9aa8ff2"]
+
+
+def test_prepare_studio_training_execution_restages_cancelled_deterministic_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    request = StudioTrainingExecutionRequest(
+        workspace=_workspace(),
+        job_id="studio-plan",
+        local_cwd="/tmp/feedbax-studio",
+        issues=["9aa8ff2"],
+    )
+
+    first = prepare_studio_training_execution(request)
+    train_stage = next(stage for stage in first.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    client = TestClient(create_app())
+
+    cancelled = client.post(f"/api/runs/training/{training_ref.id}/cancel")
+    assert cancelled.status_code == 200
+    assert load_manifest(training_ref.uri).status == "cancelled"
+
+    restaged = prepare_studio_training_execution(request)
+    restaged_stage = next(stage for stage in restaged.workspace.stages if stage.kind == "train")
+    restaged_ref = next(ref for ref in restaged_stage.manifest_refs if ref.role == "training_run")
+    restaged_manifest = load_manifest(restaged_ref.uri)
+
+    assert restaged_ref.id == training_ref.id
+    assert restaged_manifest.status == "pending"
+    assert restaged_manifest.completed_at is None
+    assert restaged_manifest.metadata["restaged_from_status"] == "cancelled"
 
 
 def test_studio_training_plan_endpoint_rejects_missing_training_spec():

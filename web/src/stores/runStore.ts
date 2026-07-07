@@ -13,35 +13,46 @@ const SELECTED_EVALUATION_COLLECTION_ID = 'collection:selected-evaluation-runs';
 
 function manifestRefForTrainingRun(run: TrainingRun): StudioManifestRef {
   return {
-    kind: 'TrainingRun',
+    kind: run.uri ? 'TrainingRunManifest' : 'TrainingRun',
     id: run.id,
     role: 'training_run',
     provider: 'feedbax',
-    uri: null,
+    uri: run.uri ?? null,
     metadata: {
       name: run.name,
       status: run.status,
       created_at: run.createdAt,
       hyperparams: run.hyperparams,
-      legacy_run_record: true,
+      metrics: run.metrics ?? {},
+      stage_id: run.stageId ?? null,
+      scenario_id: run.scenarioId ?? null,
+      planned: run.planned ?? false,
+      checkpoint_available: run.checkpointAvailable ?? false,
+      source_issue: run.sourceIssue ?? null,
+      provenance_id: run.provenanceId ?? run.id,
+      superseded_by: run.supersededBy ?? null,
+      legacy_run_record: !run.uri,
+      ...run.hyperparams,
+      ...(run.metrics ?? {}),
     },
   };
 }
 
 function manifestRefForEvalRun(run: EvalRun): StudioManifestRef {
   return {
-    kind: 'EvaluationRun',
+    kind: run.uri ? 'EvaluationRunManifest' : 'EvaluationRun',
     id: run.id,
     role: 'evaluation_run',
     provider: 'feedbax',
-    uri: null,
+    uri: run.uri ?? null,
     metadata: {
       name: run.name,
       status: run.status,
       created_at: run.createdAt,
       training_run_id: run.trainingRunId,
+      training_run_ids: run.trainingRunIds ?? [run.trainingRunId],
       description: run.description ?? null,
-      legacy_run_record: true,
+      legacy_run_record: !run.uri,
     },
   };
 }
@@ -82,11 +93,24 @@ function manifestRefsFromCollections(collections: StudioCollectionRef[]): Studio
 }
 
 function runStatus(value: unknown): TrainingRun['status'] {
-  return value === 'running' || value === 'failed' || value === 'stopped' ? value : 'completed';
+  return value === 'pending' ||
+    value === 'running' ||
+    value === 'completed' ||
+    value === 'failed' ||
+    value === 'cancelled' ||
+    value === 'stopped'
+    ? value
+    : 'completed';
 }
 
 function evalStatus(value: unknown): EvalRun['status'] {
-  return value === 'running' || value === 'failed' ? value : 'completed';
+  return value === 'pending' ||
+    value === 'running' ||
+    value === 'completed' ||
+    value === 'failed' ||
+    value === 'cancelled'
+    ? value
+    : 'completed';
 }
 
 function displayNameFromRef(ref: StudioManifestRef): string {
@@ -126,6 +150,21 @@ function hyperparamsFromRef(ref: StudioManifestRef): Record<string, string | num
   );
 }
 
+function metricsFromRef(ref: StudioManifestRef): Record<string, unknown> {
+  const metrics = ref.metadata.metrics;
+  return metrics && typeof metrics === 'object' && !Array.isArray(metrics)
+    ? { ...(metrics as Record<string, unknown>) }
+    : {};
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 function trainingRunFromManifestRef(ref: StudioManifestRef): TrainingRun {
   return {
     id: ref.id,
@@ -133,6 +172,15 @@ function trainingRunFromManifestRef(ref: StudioManifestRef): TrainingRun {
     createdAt: createdAtFromRef(ref),
     status: runStatus(ref.metadata.status),
     hyperparams: hyperparamsFromRef(ref),
+    metrics: metricsFromRef(ref),
+    uri: ref.uri ?? undefined,
+    stageId: optionalString(ref.metadata.stage_id),
+    scenarioId: optionalString(ref.metadata.scenario_id),
+    planned: optionalBoolean(ref.metadata.planned),
+    checkpointAvailable: optionalBoolean(ref.metadata.checkpoint_available),
+    sourceIssue: optionalString(ref.metadata.source_issue),
+    provenanceId: optionalString(ref.metadata.provenance_id) ?? ref.id,
+    supersededBy: optionalString(ref.metadata.superseded_by),
   };
 }
 
@@ -156,6 +204,12 @@ function evalRunFromManifestRef(ref: StudioManifestRef): EvalRun {
         : typeof ref.metadata.name === 'string'
           ? ref.metadata.name
           : undefined,
+    trainingRunIds: Array.isArray(ref.metadata.training_run_ids)
+      ? ref.metadata.training_run_ids.filter((item): item is string => typeof item === 'string')
+      : trainingRunId
+        ? [trainingRunId]
+        : [],
+    uri: ref.uri ?? undefined,
   };
 }
 

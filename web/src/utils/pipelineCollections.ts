@@ -137,33 +137,48 @@ function uniqueRefs(refs: StudioManifestRef[]): StudioManifestRef[] {
 }
 
 function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
+  const hyperparams = objectValue(ref.metadata.hyperparams);
+  const typedCheckpointAvailable = booleanValue(ref.metadata.checkpoint_available);
   return {
     id: ref.id,
     label: stringValue(ref.metadata.name) ?? ref.id,
     status: stringValue(ref.metadata.status) ?? 'unknown',
-    variant: stringValue(ref.metadata.run_variant),
-    rampShape: stringValue(ref.metadata.ramp_shape),
-    rampDurationSteps: numberValue(ref.metadata.ramp_duration_steps),
-    nnOutputPreGo: numberValue(ref.metadata.nn_output_pre_go),
-    finalValidationLoss: numberValue(ref.metadata.final_validation_loss),
-    velocityRmse: numberValue(ref.metadata.within_cell_velocity_rmse_m_per_s),
-    peakVelocityMean: nestedNumber(ref.metadata.peak_velocity_m_per_s, 'mean'),
-    peakVelocitySd: nestedNumber(ref.metadata.peak_velocity_m_per_s, 'sd'),
-    holdDriftMeanMm: nestedNumber(ref.metadata.hold_drift_mm, 'mean'),
-    holdDriftSdMm: nestedNumber(ref.metadata.hold_drift_mm, 'sd'),
+    variant: stringValue(metadataValue(ref, 'run_variant')),
+    rampShape: stringValue(metadataValue(ref, 'ramp_shape')),
+    rampDurationSteps: numberValue(metadataValue(ref, 'ramp_duration_steps')),
+    nnOutputPreGo: numberValue(metadataValue(ref, 'nn_output_pre_go')),
+    finalValidationLoss: numberValue(metadataValue(ref, 'final_validation_loss')),
+    velocityRmse: numberValue(metadataValue(ref, 'within_cell_velocity_rmse_m_per_s')),
+    peakVelocityMean: nestedNumber(metadataValue(ref, 'peak_velocity_m_per_s'), 'mean'),
+    peakVelocitySd: nestedNumber(metadataValue(ref, 'peak_velocity_m_per_s'), 'sd'),
+    holdDriftMeanMm: nestedNumber(metadataValue(ref, 'hold_drift_mm'), 'mean'),
+    holdDriftSdMm: nestedNumber(metadataValue(ref, 'hold_drift_mm'), 'sd'),
     metrics: trainingRunMetrics(ref),
-    replicateCount: numberValue(ref.metadata.n_replicates),
-    batchSize: numberValue(ref.metadata.batch_size),
-    warmupBatches: numberValue(ref.metadata.n_warmup_batches),
-    checkpointAvailable: Boolean(ref.uri) || stringValue(ref.metadata.checkpoint_uri) !== null,
+    replicateCount: numberValue(hyperparams?.n_replicates ?? ref.metadata.n_replicates),
+    batchSize: numberValue(hyperparams?.batch_size ?? ref.metadata.batch_size),
+    warmupBatches: numberValue(
+      hyperparams?.n_warmup_batches ?? ref.metadata.n_warmup_batches
+    ),
+    checkpointAvailable:
+      typedCheckpointAvailable ??
+      (Boolean(ref.uri) || stringValue(ref.metadata.checkpoint_uri) !== null),
     sourceIssue: stringValue(ref.metadata.source_issue),
-    provenanceId: ref.id,
+    provenanceId: stringValue(ref.metadata.provenance_id) ?? ref.id,
     uri: ref.uri ?? null,
   };
 }
 
 function trainingRunMetrics(ref: StudioManifestRef): Record<string, number | null> {
   const metrics: Record<string, number | null> = {};
+  const typedMetrics = objectValue(ref.metadata.metrics);
+  if (typedMetrics) {
+    for (const [key, value] of Object.entries(typedMetrics)) {
+      const direct = numberValue(value);
+      const mean = nestedNumber(value, 'mean');
+      if (direct !== null) metrics[key] = direct;
+      else if (mean !== null) metrics[key] = mean;
+    }
+  }
   for (const [key, value] of Object.entries(ref.metadata)) {
     const direct = numberValue(value);
     const mean = nestedNumber(value, 'mean');
@@ -171,6 +186,15 @@ function trainingRunMetrics(ref: StudioManifestRef): Record<string, number | nul
     else if (mean !== null) metrics[key] = mean;
   }
   return metrics;
+}
+
+function metadataValue(ref: StudioManifestRef, key: string): unknown {
+  const direct = ref.metadata[key];
+  if (direct !== undefined) return direct;
+  const metrics = objectValue(ref.metadata.metrics);
+  if (metrics && metrics[key] !== undefined) return metrics[key];
+  const hyperparams = objectValue(ref.metadata.hyperparams);
+  return hyperparams?.[key];
 }
 
 function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
@@ -203,6 +227,10 @@ function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function booleanValue(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
 }
 
 function nestedNumber(value: unknown, key: string): number | null {

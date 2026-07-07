@@ -37,8 +37,12 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     ReportSpec,
+    TrainingRunManifest,
     default_manifest_root,
+    planned_training_run_manifest_id,
+    spec_payload,
     utc_now,
+    write_manifest,
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
@@ -240,6 +244,39 @@ def prepare_studio_training_execution(
             metadata=plan_ref.metadata,
         ),
     )
+    pending_manifest, pending_path = _write_pending_training_manifest(
+        workspace=workspace,
+        stage=stage,
+        scenario_id=stage.scenario_id,
+        graph_spec=scenario.graph.model_dump(mode="json", exclude_none=True),
+        training_spec=scenario.training_spec,
+        task_spec=scenario.task_spec,
+        task_binding_spec=scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
+        if scenario.task_binding_spec is not None
+        else None,
+        request=request,
+    )
+    pending_ref = _studio_manifest_ref(
+        pending_manifest.kind,
+        pending_manifest.id,
+        "training_run",
+        pending_path,
+        plan.job_id,
+    )
+    pending_ref.metadata = {
+        **pending_ref.metadata,
+        "status": pending_manifest.status,
+        "stage_id": stage.id,
+        "scenario_id": stage.scenario_id,
+        "planned": True,
+        **pending_manifest.metadata,
+    }
+    stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, pending_ref)
+    stage.output_collections = _upsert_training_manifest_in_outputs(
+        stage.output_collections,
+        pending_ref,
+        stage.id,
+    )
     stage.metadata = {
         **stage.metadata,
         "last_execution_plan": {
@@ -248,8 +285,19 @@ def prepare_studio_training_execution(
             "prepared_at": prepared_at,
             "run_directory": plan.run_directory,
         },
+        "last_staged_training_run": {
+            "manifest_id": pending_manifest.id,
+            "status": pending_manifest.status,
+            "path": str(pending_path),
+            "staged_at": prepared_at,
+        },
     }
     workspace.artifact_refs = _upsert_artifact_ref(workspace.artifact_refs, plan_ref)
+    workspace.manifest_refs = _upsert_manifest_ref(workspace.manifest_refs, pending_ref)
+    workspace.collections = _upsert_many_collection_refs(
+        workspace.collections,
+        stage.output_collections,
+    )
     _replace_stage(workspace, stage)
 
     return StudioTrainingExecutionPreparation(
@@ -341,7 +389,7 @@ def run_studio_training_local_execution(
         _local_result_artifact_refs(result, snapshot_dir, stage.id, preparation.scenario_id),
     )
     stage.output_collections = _upsert_training_manifest_in_outputs(
-        stage.output_collections,
+        _drop_pending_training_manifest_for_job(stage.output_collections, result.job_id),
         manifest_ref,
         stage.id,
     )
@@ -700,6 +748,114 @@ def _materialize_local_execution_snapshot(
     }
     for filename, payload in files.items():
         _write_json(snapshot_dir / filename, payload)
+
+
+def _write_pending_training_manifest(
+    *,
+    workspace: StudioWorkspaceSpec,
+    stage: StudioStageSpec,
+    scenario_id: str | None,
+    graph_spec: dict[str, Any],
+    training_spec: dict[str, Any],
+    task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None,
+    request: StudioTrainingExecutionRequest,
+) -> tuple[TrainingRunManifest, Path]:
+    seed = _training_seed(training_spec)
+    axis_coordinates = _stage_axis_coordinates(stage)
+    manifest_id = planned_training_run_manifest_id(
+        graph_spec=graph_spec,
+        training_spec=training_spec,
+        task_spec=task_spec,
+        task_binding_spec=task_binding_spec,
+        seed=seed,
+        axis_coordinates=axis_coordinates,
+    )
+
+    root_path = default_manifest_root()
+    from feedbax.contracts.manifest import load_manifest
+    from feedbax.persistence.manifest_index import find_manifest_paths_by_id
+
+    existing_paths = find_manifest_paths_by_id(manifest_id, root=root_path)
+    if existing_paths:
+        existing = load_manifest(existing_paths[0])
+        if isinstance(existing, TrainingRunManifest):
+            if existing.status == "cancelled":
+                restaged = existing.model_copy(
+                    update={
+                        "status": "pending",
+                        "completed_at": None,
+                        "metadata": {
+                            **existing.metadata,
+                            "planned": True,
+                            "restaged_at": utc_now().isoformat(),
+                            "restaged_from_status": "cancelled",
+                        },
+                    }
+                )
+                return restaged, write_manifest(restaged, root=root_path)
+            return existing, existing_paths[0]
+
+    now = utc_now()
+    metadata = {
+        "studio": {
+            "workspace_id": workspace.id,
+            "workspace_schema_version": workspace.schema_version,
+            "stage_id": stage.id,
+            "stage_kind": stage.kind,
+            "scenario_id": scenario_id,
+            "selection_spec": stage.selection_spec,
+            "axis_coordinates": axis_coordinates,
+            "seed": seed,
+            "planned_training_run_id": manifest_id,
+        },
+        "planned": True,
+        "staged_at": now.isoformat(),
+    }
+    manifest = TrainingRunManifest(
+        id=manifest_id,
+        job_id=request.job_id,
+        status="pending",
+        graph_spec=spec_payload("GraphSpec", graph_spec),
+        training_spec=spec_payload("TrainingSpec", training_spec),
+        task_spec=spec_payload("TaskSpec", task_spec),
+        task_binding_spec=spec_payload("StudioTaskBindingSpec", task_binding_spec)
+        if task_binding_spec is not None
+        else None,
+        summary_metrics={
+            key: value
+            for key, value in {"total_batches": training_spec.get("n_batches")}.items()
+            if value is not None
+        },
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-studio-pipeline",
+                name="stage_training_run",
+                metadata={"job_id": request.job_id},
+            ),
+            issues=list(request.issues),
+            metadata={**request.metadata, "studio": metadata["studio"]},
+        ),
+        metadata=metadata,
+    )
+    return manifest, write_manifest(manifest, root=root_path)
+
+
+def _training_seed(training_spec: dict[str, Any]) -> Any | None:
+    if "seed" in training_spec:
+        return training_spec["seed"]
+    params = training_spec.get("params")
+    if isinstance(params, dict) and "seed" in params:
+        return params["seed"]
+    return None
+
+
+def _stage_axis_coordinates(stage: StudioStageSpec) -> dict[str, Any]:
+    for key in ("axis_coordinates", "sweep_coordinates", "axis_values"):
+        value = stage.selection_spec.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -1272,6 +1428,29 @@ def _upsert_training_manifest_in_outputs(
                 item_refs=[manifest_ref],
             )
         )
+    return updated
+
+
+def _drop_pending_training_manifest_for_job(
+    collections: list[StudioCollectionRef],
+    job_id: str,
+) -> list[StudioCollectionRef]:
+    updated: list[StudioCollectionRef] = []
+    for collection in collections:
+        if collection.kind != "training_runs":
+            updated.append(collection)
+            continue
+        collection = collection.model_copy(deep=True)
+        collection.item_refs = [
+            ref
+            for ref in collection.item_refs
+            if not (
+                ref.role == "training_run"
+                and ref.metadata.get("planned") is True
+                and ref.metadata.get("job_id") == job_id
+            )
+        ]
+        updated.append(collection)
     return updated
 
 

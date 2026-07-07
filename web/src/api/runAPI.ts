@@ -28,6 +28,15 @@ function trainingRunFromWire(wire: TrainingRunInfo): TrainingRun {
     createdAt: wire.created_at,
     status: wire.status as TrainingRun['status'],
     hyperparams: displayHyperparams(wire.hyperparams),
+    metrics: wire.metrics ?? {},
+    uri: wire.uri ?? undefined,
+    stageId: wire.stage_id ?? undefined,
+    scenarioId: wire.scenario_id ?? undefined,
+    planned: wire.planned ?? false,
+    checkpointAvailable: wire.checkpoint_available ?? false,
+    sourceIssue: wire.source_issue ?? undefined,
+    provenanceId: wire.provenance_id ?? wire.id,
+    supersededBy: wire.superseded_by ?? undefined,
   };
 }
 
@@ -39,6 +48,8 @@ function evalRunFromWire(wire: EvalRunInfo): EvalRun {
     createdAt: wire.created_at,
     status: wire.status as EvalRun['status'],
     description: wire.description ?? undefined,
+    trainingRunIds: wire.training_run_ids ?? [wire.training_run_id],
+    uri: wire.uri ?? undefined,
   };
 }
 
@@ -81,6 +92,45 @@ export async function createTrainingRun(name: string): Promise<TrainingRun> {
     return trainingRunFromWire(parseContract('TrainingRunInfo', result));
   } catch (error) {
     throw asApiRequestError(error, path, 'Created training run did not match the Studio contract.');
+  }
+}
+
+/** Cancel a pending or running training run. */
+export async function cancelTrainingRun(trainingRunId: string): Promise<TrainingRun> {
+  const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}/cancel`;
+  const result = await requestJson(path, { method: 'POST' });
+  try {
+    return trainingRunFromWire(parseContract('TrainingRunInfo', result));
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Cancelled training run did not match the Studio contract.');
+  }
+}
+
+/** Delete a pending training run. */
+export async function deleteTrainingRun(trainingRunId: string): Promise<TrainingRun> {
+  const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}`;
+  const result = await requestJson(path, { method: 'DELETE' });
+  try {
+    return trainingRunFromWire(parseContract('TrainingRunInfo', result));
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Deleted training run did not match the Studio contract.');
+  }
+}
+
+/** Mark a completed training run as superseded without deleting it. */
+export async function supersedeTrainingRun(
+  trainingRunId: string,
+  payload: { superseded_by?: string | null; reason?: string | null },
+): Promise<TrainingRun> {
+  const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}/supersede`;
+  const result = await requestJson(path, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  try {
+    return trainingRunFromWire(parseContract('TrainingRunInfo', result));
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Superseded training run did not match the Studio contract.');
   }
 }
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from feedbax.contracts.manifest import ArtifactRef, BaseManifest, default_manifest_root, load_manifest
 
@@ -172,6 +173,103 @@ def find_manifest_paths_by_id(
     finally:
         conn.close()
     return [Path(row[0]) for row in rows]
+
+
+def get_indexed_manifest_record(
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+    db_path: Path | str | None = None,
+) -> dict[str, Any] | None:
+    """Return one indexed manifest row with its JSON payload."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    conn_path = Path(db_path) if db_path is not None else default_index_path(root_path)
+    if not conn_path.exists():
+        return None
+    conn = connect_index(conn_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, kind, schema_version, provider_version, created_at, status,
+                   path, payload_json
+            FROM manifests
+            WHERE id = ?
+            """,
+            (manifest_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "kind": row[1],
+        "schema_version": row[2],
+        "provider_version": row[3],
+        "created_at": row[4],
+        "status": row[5],
+        "path": row[6],
+        "payload_json": row[7],
+    }
+
+
+def iter_indexed_manifest_records_by_kind(
+    manifest_kind: str,
+    *,
+    root: Path | str | None = None,
+    db_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    """Return indexed manifest rows for one manifest kind with JSON payloads."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    conn_path = Path(db_path) if db_path is not None else default_index_path(root_path)
+    if not conn_path.exists():
+        return []
+    conn = connect_index(conn_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, kind, schema_version, provider_version, created_at, status,
+                   path, payload_json
+            FROM manifests
+            WHERE kind = ?
+            ORDER BY created_at DESC, path DESC
+            """,
+            (manifest_kind,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "id": row[0],
+            "kind": row[1],
+            "schema_version": row[2],
+            "provider_version": row[3],
+            "created_at": row[4],
+            "status": row[5],
+            "path": row[6],
+            "payload_json": row[7],
+        }
+        for row in rows
+    ]
+
+
+def remove_manifest_from_index(
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+    db_path: Path | str | None = None,
+) -> None:
+    """Remove a manifest and dependent index rows without deleting bytes."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    conn_path = Path(db_path) if db_path is not None else default_index_path(root_path)
+    if not conn_path.exists():
+        return
+    conn = connect_index(conn_path)
+    try:
+        with conn:
+            conn.execute("DELETE FROM manifests WHERE id = ?", (manifest_id,))
+    finally:
+        conn.close()
 
 
 def iter_indexed_manifest_paths_by_kind(

@@ -1313,6 +1313,31 @@ def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
     return f"feedbax-evaluation-run:{digest[:32]}"
 
 
+def planned_training_run_manifest_id(
+    *,
+    graph_spec: dict[str, Any],
+    training_spec: dict[str, Any],
+    task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None = None,
+    seed: Any | None = None,
+    axis_coordinates: dict[str, Any] | None = None,
+) -> str:
+    """Return deterministic identity for a planned Studio training run."""
+    digest = sha256_bytes(
+        canonical_json_bytes(
+            {
+                "graph_spec": graph_spec,
+                "training_spec": training_spec,
+                "task_spec": task_spec,
+                "task_binding_spec": task_binding_spec,
+                "seed": seed,
+                "axis_coordinates": axis_coordinates or {},
+            }
+        )
+    )
+    return f"feedbax-training-run:{digest[:32]}"
+
+
 def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
     """Return deterministic run identity for an analysis spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))

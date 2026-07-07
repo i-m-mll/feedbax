@@ -1022,6 +1022,15 @@ export interface TrainingRunInfo {
   created_at: string;
   status: string;
   hyperparams: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  uri?: string | null;
+  stage_id?: string | null;
+  scenario_id?: string | null;
+  planned?: boolean;
+  checkpoint_available?: boolean;
+  source_issue?: string | null;
+  provenance_id?: string | null;
+  superseded_by?: string | null;
 }
 
 export interface EvalRunInfo {
@@ -1031,6 +1040,8 @@ export interface EvalRunInfo {
   created_at: string;
   status: string;
   description?: string | null;
+  training_run_ids?: string[];
+  uri?: string | null;
 }
 
 export interface CreateEvalRunRequest {
@@ -2657,6 +2668,15 @@ export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
       "created_at": z.string(),
       "status": z.string(),
       "hyperparams": z.record(z.string(), z.unknown()),
+      "metrics": z.record(z.string(), z.unknown()).optional(),
+      "uri": z.string().nullable().optional(),
+      "stage_id": z.string().nullable().optional(),
+      "scenario_id": z.string().nullable().optional(),
+      "planned": z.boolean().optional(),
+      "checkpoint_available": z.boolean().optional(),
+      "source_issue": z.string().nullable().optional(),
+      "provenance_id": z.string().nullable().optional(),
+      "superseded_by": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingRunInfo>;
@@ -2670,6 +2690,8 @@ export const EvalRunInfoSchema: z.ZodType<EvalRunInfo> = z.lazy(() =>
       "created_at": z.string(),
       "status": z.string(),
       "description": z.string().nullable().optional(),
+      "training_run_ids": z.array(z.string()).optional(),
+      "uri": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvalRunInfo>;
