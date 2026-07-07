@@ -120,6 +120,150 @@ def test_dry_run_prints_deterministic_deploy_commands(tmp_path: Path) -> None:
     assert "uv run --no-sync python" in normalized
 
 
+def test_resume_baseline_missing_source_fails_preflight(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    missing = tmp_path / "rlrmp" / "_artifacts" / "missing-run" / "checkpoint_100"
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "user_confirmed": True,
+                "resume": {
+                    "baseline_checkpoint_path": str(missing),
+                    "baseline_completed_batch": 100,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--launch-command",
+        "uv run --no-sync python train.py --resume",
+    )
+
+    assert result.returncode == 1
+    assert "baseline preflight failed: source checkpoint not found" in result.stderr
+    assert str(missing) in result.stderr
+    assert "runpodctl pod create" not in result.stdout + result.stderr
+
+
+def test_resume_baseline_missing_custody_pointer_fails_preflight(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    baseline = tmp_path / "rlrmp" / "_artifacts" / "run-a" / "checkpoint_100"
+    baseline.mkdir(parents=True)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "user_confirmed": True,
+                "resume": {
+                    "baseline_checkpoint_path": str(baseline),
+                    "baseline_completed_batch": 100,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--launch-command",
+        "uv run --no-sync python train.py --resume",
+    )
+
+    assert result.returncode == 1
+    assert "baseline preflight failed: custody latest.json not found" in result.stderr
+    assert "runpodctl pod create" not in result.stdout + result.stderr
+
+
+def test_resume_baseline_completed_batch_mismatch_fails_preflight(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    baseline = tmp_path / "rlrmp" / "_artifacts" / "run-a" / "checkpoint_100"
+    baseline.mkdir(parents=True)
+    (baseline / "latest.json").write_text(json.dumps({"completed_batch": 99}), encoding="utf-8")
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "user_confirmed": True,
+                "resume": {
+                    "baseline_checkpoint_path": str(baseline),
+                    "baseline_completed_batch": 100,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--launch-command",
+        "uv run --no-sync python train.py --resume",
+    )
+
+    assert result.returncode == 1
+    assert "baseline preflight failed: completed_batch mismatch" in result.stderr
+    assert "declared 100 but latest.json has 99" in result.stderr
+    assert "runpodctl pod create" not in result.stdout + result.stderr
+
+
+def test_resume_baseline_is_preflighted_and_staged_despite_artifact_exclude(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path)
+    baseline = tmp_path / "rlrmp" / "_artifacts" / "run-a" / "checkpoint_100"
+    baseline.mkdir(parents=True)
+    (baseline / "latest.json").write_text(json.dumps({"completed_batch": 100}), encoding="utf-8")
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "user_confirmed": True,
+                "resume": {
+                    "baseline_checkpoint_path": str(baseline),
+                    "baseline_completed_batch": 100,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--launch-command",
+        "uv run --no-sync python train.py --resume",
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "--exclude /_artifacts" in output
+    assert "staging declared baseline" in output
+    assert str(baseline) in output
+    assert "/workspace/rlrmp/_artifacts/run-a/checkpoint_100/" in output
+    run_config = tmp_path / "feedbax" / ".runpod" / "run-config.json"
+    payload = json.loads(run_config.read_text(encoding="utf-8"))
+    assert payload["remote_run_dir"] == "/workspace/feedbax_runs/test-runpod-deploy"
+    assert payload["baselines"][0]["completed_batch"] == "100"
+
+
 def test_reused_pod_dry_run_probes_before_install_and_skips_on_success(tmp_path: Path) -> None:
     config = write_config(tmp_path)
     spec = tmp_path / "train-spec.json"
@@ -237,6 +381,52 @@ def test_acquire_only_classifies_missing_direct_endpoint_quickly(tmp_path: Path)
 
 
 def test_poll_run_dry_run_prints_status_before_sleep() -> None:
+    run_config = REPO_ROOT / ".pytest-runpod-run-config.json"
+    run_config.write_text(
+        json.dumps(
+            {
+                "remote_run_dir": "/workspace/feedbax_runs/non-default",
+                "remote_sentinel_dir": "/workspace/feedbax_runs/non-default/sentinels",
+                "remote_checkpoint_dir": "/workspace/feedbax_runs/non-default",
+                "remote_log_dir": "/workspace/feedbax_runs/non-default/logs",
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            [
+                str(POLL_RUN),
+                "--dry-run",
+                "--pod-id",
+                "pod-123",
+                "--run-config",
+                str(run_config),
+                "--cadence-seconds",
+                "0",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        run_config.unlink(missing_ok=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "/workspace/feedbax_runs/non-default/sentinels" in result.stderr
+    assert "+ sleep 0" in result.stdout
+    status_lines = [line for line in result.stdout.splitlines() if " pod=pod-123 " in line]
+    assert len(status_lines) == 1
+    assert "pod_status=DRY_RUN" in status_lines[0]
+    assert "endpoint_source=ssh_object" in status_lines[0]
+    assert "endpoint_classification=direct_endpoint_discovered" in status_lines[0]
+    assert "ssh_error=none" in status_lines[0]
+    assert "gpu=dry-run" in status_lines[0]
+    assert result.stdout.index(" pod=pod-123 ") < result.stdout.index("+ sleep 0")
+
+
+def test_poll_run_requires_run_dir_or_config() -> None:
     result = subprocess.run(
         [
             str(POLL_RUN),
@@ -252,13 +442,79 @@ def test_poll_run_dry_run_prints_status_before_sleep() -> None:
         check=False,
     )
 
+    assert result.returncode == 1
+    assert "remote run dir is required" in result.stderr
+
+
+def test_poll_run_reports_started_without_terminal_sentinel_as_stale(
+    tmp_path: Path,
+) -> None:
+    sentinel_dir = tmp_path / "sentinels"
+    checkpoint_dir = tmp_path / "run"
+    log_dir = checkpoint_dir / "logs"
+    sentinel_dir.mkdir()
+    log_dir.mkdir(parents=True)
+    (sentinel_dir / "row_a.started").touch()
+    (sentinel_dir / "row_b.started").touch()
+    (sentinel_dir / "row_b.done").touch()
+
+    function_source = subprocess.run(
+        [
+            "sed",
+            "-n",
+            "/^build_remote_status_command() {/,/^}/p",
+            str(POLL_RUN),
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    script = (
+        f"{function_source}\n"
+        "cmd=$(build_remote_status_command "
+        f"{str(sentinel_dir)!r} {str(checkpoint_dir)!r} {str(log_dir)!r})\n"
+        'bash -c "$cmd"\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
     assert result.returncode == 0, result.stderr
-    assert "+ sleep 0" in result.stdout
-    status_lines = [line for line in result.stdout.splitlines() if " pod=pod-123 " in line]
-    assert len(status_lines) == 1
-    assert "pod_status=DRY_RUN" in status_lines[0]
-    assert "endpoint_source=ssh_object" in status_lines[0]
-    assert "endpoint_classification=direct_endpoint_discovered" in status_lines[0]
-    assert "ssh_error=none" in status_lines[0]
-    assert "gpu=dry-run" in status_lines[0]
-    assert result.stdout.index(" pod=pod-123 ") < result.stdout.index("+ sleep 0")
+    assert "rows_done=1 rows_failed=0 rows_running=0 rows_stale=1" in result.stdout
+    assert "row_a:stale_started" in result.stdout
+    assert "row_b:done" in result.stdout
+    assert "train_process=" in result.stdout
+
+
+def test_deploy_launch_wrapper_marks_failure_on_signals(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--launch-command",
+        "uv run --no-sync python train.py",
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    script = RUNPOD_DEPLOY.read_text(encoding="utf-8")
+    assert "mark_failed()" in script
+    assert "trap mark_failed EXIT" in script
+    assert "trap 'exit 143' TERM" in script
+    assert "training.failed" in output
+
+
+def test_poll_run_pgrep_pattern_cannot_match_the_inspection_command() -> None:
+    script = POLL_RUN.read_text(encoding="utf-8")
+
+    assert "pgrep -af '[t]rain_|[p]ython .*train|[u]v run .*train'" in script
+    assert 'pgrep -af "train_"' not in script
