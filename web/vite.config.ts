@@ -64,6 +64,24 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('/node_modules/recharts/')) {
+            return 'recharts';
+          }
+          if (id.includes('/node_modules/@xyflow/')) {
+            return 'xyflow';
+          }
+          if (id.includes('/node_modules/lucide-react/')) {
+            return 'icons';
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     port: 3008,
     proxy: isE2E
