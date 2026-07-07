@@ -1277,7 +1277,14 @@ def _materialize_eval_stage(
         ),
         metadata={"studio": _stage_manifest_metadata(workspace, eval_stage, job_id)},
     )
-    manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "evaluation_run", path, job_id)
+    manifest_ref = _studio_manifest_ref(
+        manifest.kind,
+        manifest.id,
+        "evaluation_run",
+        path,
+        job_id,
+        manifest=manifest,
+    )
     artifact_refs = [
         _studio_artifact_ref(artifact, kind="EvaluationResult")
         for artifact in manifest.artifacts
@@ -1352,7 +1359,14 @@ def _materialize_analysis_stage(
         },
         fig_dump_formats=("json",),
     )
-    manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "analysis_run", path, job_id)
+    manifest_ref = _studio_manifest_ref(
+        manifest.kind,
+        manifest.id,
+        "analysis_run",
+        path,
+        job_id,
+        manifest=manifest,
+    )
     artifact_refs = [
         _studio_artifact_ref(artifact, kind="AnalysisArtifact")
         for artifact in manifest.artifacts
@@ -1436,7 +1450,14 @@ def _materialize_report_stage(
         ),
         metadata={"studio": _stage_manifest_metadata(workspace, report_stage, job_id)},
     )
-    manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "report", path, job_id)
+    manifest_ref = _studio_manifest_ref(
+        manifest.kind,
+        manifest.id,
+        "report",
+        path,
+        job_id,
+        manifest=manifest,
+    )
     artifact_refs = [
         _studio_artifact_ref(artifact, kind="ReportArtifact")
         for artifact in manifest.artifacts
@@ -1552,14 +1573,33 @@ def _studio_manifest_ref(
     role: str,
     path: Path,
     job_id: str,
+    *,
+    manifest: Any | None = None,
 ) -> StudioManifestRef:
+    metadata: dict[str, Any] = {"job_id": job_id}
+    if manifest is not None:
+        metadata.update(_manifest_parent_ref_metadata(manifest))
     return StudioManifestRef(
         kind=kind,
         id=manifest_id,
         role=role,
         uri=str(path),
-        metadata={"job_id": job_id},
+        metadata=metadata,
     )
+
+
+def _manifest_parent_ref_metadata(manifest: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    parents = getattr(getattr(manifest, "provenance", None), "parents", [])
+    if parents:
+        metadata["parent_refs"] = [
+            parent.model_dump(mode="json", exclude_none=True) for parent in parents
+        ]
+    for field in ("inputs", "input_training_runs"):
+        refs = getattr(manifest, field, [])
+        if refs:
+            metadata[field] = [ref.model_dump(mode="json", exclude_none=True) for ref in refs]
+    return metadata
 
 
 def _studio_artifact_ref(

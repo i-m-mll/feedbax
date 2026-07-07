@@ -54,6 +54,7 @@ import {
   trainingRunSummaries,
   type EvaluationRunSummary,
   type LineageProjection,
+  type LineageProjectionEdge,
   type LineageProjectionNode,
   type TrainingRunSummary,
 } from '@/utils/pipelineCollections';
@@ -1702,17 +1703,12 @@ function LineageProjectionPanel({
                 return (
                   <div
                     key={edge.id}
-                    className="grid gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)]"
+                    className="grid gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[minmax(0,1fr)_12rem_minmax(0,1fr)]"
                   >
                     <span className="truncate font-medium text-slate-700" title={edge.parentId}>
                       {parent?.label ?? edge.parentId}
                     </span>
-                    <span
-                      className="truncate text-center text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400"
-                      title={edge.reason ?? undefined}
-                    >
-                      {edge.role ?? 'parent'} -&gt;
-                    </span>
+                    <LineageEdgeSummary edge={edge} />
                     <span className="truncate font-medium text-slate-700" title={edge.childId}>
                       {child?.label ?? edge.childId}
                     </span>
@@ -1724,6 +1720,35 @@ function LineageProjectionPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function LineageEdgeSummary({ edge }: { edge: LineageProjectionEdge }) {
+  return (
+    <div className="min-w-0 text-center">
+      <div className="truncate text-[11px] font-semibold uppercase text-slate-400">
+        {edge.role ?? 'parent'} -&gt;
+      </div>
+      {(edge.status || edge.reason) && (
+        <div className="mt-1 flex min-w-0 flex-wrap justify-center gap-1">
+          {edge.status && (
+            <span
+              className={clsx(
+                'max-w-full truncate rounded-full px-2 py-0.5 text-[10px] font-semibold',
+                lineageStatusClass(edge.status)
+              )}
+            >
+              {lineageStatusLabel(edge.status)}
+            </span>
+          )}
+          {edge.reason && (
+            <span className="max-w-full truncate rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">
+              {edge.reason}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

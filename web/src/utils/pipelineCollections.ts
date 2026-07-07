@@ -453,7 +453,8 @@ function parentRefArray(value: unknown): ParentRefLike[] {
 function uniqueParentRefs(refs: ParentRefLike[]): ParentRefLike[] {
   const byKey = new Map<string, ParentRefLike>();
   for (const ref of refs) {
-    byKey.set(`${ref.kind}:${ref.id}:${ref.role ?? ''}`, ref);
+    const key = `${ref.kind}:${ref.id}:${ref.role ?? ''}`;
+    if (!byKey.has(key)) byKey.set(key, ref);
   }
   return Array.from(byKey.values());
 }

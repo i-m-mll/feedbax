@@ -119,26 +119,24 @@ describe('pipeline collection summaries', () => {
       ...evalStage.output_collections[0].item_refs[0],
       kind: 'EvaluationRunManifest',
       metadata: {
-        ...evalStage.output_collections[0].item_refs[0].metadata,
+        job_id: 'studio-pipeline',
         status: 'stale',
         staleness_reason: 'training manifest was superseded',
-        provenance: {
-          parents: [
-            {
-              kind: 'TrainingRunManifest',
-              id: trainRef.id,
-              role: 'training_run',
-              metadata: { status: 'completed' },
-            },
-          ],
-        },
+        parent_refs: [
+          {
+            kind: 'TrainingRunManifest',
+            id: trainRef.id,
+            role: 'training_run',
+            metadata: { status: 'completed' },
+          },
+        ],
       },
     };
     const analysisRef = {
       ...analysisStage.output_collections[0].item_refs[0],
       kind: 'AnalysisRunManifest',
       metadata: {
-        ...analysisStage.output_collections[0].item_refs[0].metadata,
+        job_id: 'studio-pipeline',
         status: 'skipped',
         skip_reason: 'optional output disabled',
         inputs: [{ kind: 'EvaluationRunManifest', id: evalRef.id, role: 'evaluation_run' }],
@@ -178,6 +176,7 @@ describe('pipeline collection summaries', () => {
         if (stage.id === analysisStage.id) {
           return {
             ...stage,
+            input_collections: [{ ...stage.input_collections[0], item_refs: [evalRef] }],
             output_collections: [{ ...stage.output_collections[0], item_refs: [analysisRef] }],
             manifest_refs: [analysisRef],
           };
@@ -197,6 +196,7 @@ describe('pipeline collection summaries', () => {
           parentId: trainRef.id,
           childId: evalRef.id,
           role: 'training_run',
+          status: 'completed',
         }),
         expect.objectContaining({
           parentId: evalRef.id,
