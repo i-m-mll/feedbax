@@ -92,6 +92,12 @@ safe_status_value() {
     printf '%s\n' "$value" | tr '[:space:]' '_' | tr -cd '[:alnum:]_.:/=@,+-'
 }
 
+sq() {
+    local value=${1-}
+    value=${value//\'/\'\\\'\'}
+    printf "'%s'" "$value"
+}
+
 remote_capture() {
     local command=$1 key_path
     key_path=$(expand_path "$RUNPOD_SSH_KEY")

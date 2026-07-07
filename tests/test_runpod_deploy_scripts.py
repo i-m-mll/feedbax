@@ -509,7 +509,7 @@ def test_deploy_launch_wrapper_marks_failure_on_signals(tmp_path: Path) -> None:
     script = RUNPOD_DEPLOY.read_text(encoding="utf-8")
     assert "mark_failed()" in script
     assert "trap mark_failed EXIT" in script
-    assert "trap 'exit 143' TERM" in script
+    assert "trap 'signal_failed 143' TERM" in script
     assert "training.failed" in output
 
 

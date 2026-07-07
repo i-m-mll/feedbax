@@ -1189,7 +1189,7 @@ remote_nohup_sentinel() {
     local failed_file=$5
     local log_file=$6
     local remote sentinel_command
-    sentinel_command="cd $(sq "$workdir") && success=0; mark_failed() { rc=\$?; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; trap mark_failed EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP; { $command; }; rc=\$?; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \"\$rc\"; fi"
+    sentinel_command="cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; { $command; } & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \"\$rc\"; fi"
     remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "$sentinel_command") >$(sq "$log_file") 2>&1 &"
     log "starting $label"
     remote_cmd "$remote"
@@ -1385,7 +1385,7 @@ launch_row() {
     # Foreground reservation + setup, THEN background the job. The leading
     # `mkdir/rm/touch .started` run synchronously and finish before the SSH
     # command returns, so the slot is held the instant launch_row returns.
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; mark_failed() { rc=\$?; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; trap mark_failed EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP; echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && ( $command ); rc=\$?; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") >$(sq "$log_file") 2>&1 &"
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && ( $command ) & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") >$(sq "$log_file") 2>&1 &"
     log "launching row $row_id"
     remote_cmd "$remote"
 }
