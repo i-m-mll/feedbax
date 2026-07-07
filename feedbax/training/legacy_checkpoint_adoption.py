@@ -289,6 +289,7 @@ def adopt_tree_from_legacy_stream(
     current_template: Any,
     *,
     mapping_rules: Sequence[PathMappingRule | Mapping[str, str]] = (),
+    keep_current_paths: Sequence[str] = (),
     allow_current_shape_dtype_mismatch: bool = False,
 ) -> tuple[Any, TreeAdoptionReport]:
     """Populate a current slot template from a legacy stream by manifest path."""
@@ -333,7 +334,9 @@ def adopt_tree_from_legacy_stream(
             continue
         replacements[new_path] = record.value
 
-    unfilled_current = sorted(set(current_arrays) - set(replacements))
+    keep_current = set(keep_current_paths)
+    unknown_keep_current = sorted(keep_current - set(current_arrays))
+    unfilled_current = sorted(set(current_arrays) - set(replacements) - keep_current)
     errors: list[str] = []
     if unmatched_old:
         errors.append(f"unmatched old array leaves: {unmatched_old!r}")
@@ -341,6 +344,8 @@ def adopt_tree_from_legacy_stream(
         errors.append(f"ambiguous current array assignments: {sorted(duplicate_new)!r}")
     if incompatible_current:
         errors.append(f"incompatible current array leaves: {incompatible_current!r}")
+    if unknown_keep_current:
+        errors.append(f"unknown keep-current array paths: {unknown_keep_current!r}")
     if unfilled_current:
         errors.append(f"unfilled current array leaves: {unfilled_current!r}")
     if errors:
@@ -381,6 +386,8 @@ def adopt_legacy_checkpoint(
     fresh_optimizer: bool = False,
     model_mapping_rules: Sequence[PathMappingRule | Mapping[str, str]] = (),
     optimizer_mapping_rules: Sequence[PathMappingRule | Mapping[str, str]] = (),
+    model_keep_current_paths: Sequence[str] = (),
+    optimizer_keep_current_paths: Sequence[str] = (),
     resume_slot_transform: ResumeSlotTransform | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> LegacyCheckpointAdoptionResult:
@@ -394,6 +401,7 @@ def adopt_legacy_checkpoint(
         manifest.model,
         current_slots[model_slot],
         mapping_rules=model_mapping_rules,
+        keep_current_paths=model_keep_current_paths,
     )
     slots[model_slot] = adopted_model
 
@@ -408,6 +416,7 @@ def adopt_legacy_checkpoint(
             manifest.optimizer,
             current_slots[optimizer_slot],
             mapping_rules=optimizer_mapping_rules,
+            keep_current_paths=optimizer_keep_current_paths,
             allow_current_shape_dtype_mismatch=resume_slot_transform is not None,
         )
         slots[optimizer_slot] = adopted_optimizer
@@ -423,9 +432,15 @@ def adopt_legacy_checkpoint(
             "model_slot": model_slot,
             "optimizer_slot": optimizer_slot if optimizer_stream is not None else None,
             "model_assigned_paths": list(model_report.assigned_paths),
+            "model_dropped_paths": list(model_report.dropped_paths),
+            "model_keep_current_paths": list(model_keep_current_paths),
             "optimizer_assigned_paths": (
                 list(optimizer_report.assigned_paths) if optimizer_report is not None else []
             ),
+            "optimizer_dropped_paths": (
+                list(optimizer_report.dropped_paths) if optimizer_report is not None else []
+            ),
+            "optimizer_keep_current_paths": list(optimizer_keep_current_paths),
         }
     }
     adoption_metadata.update(dict(metadata or {}))
