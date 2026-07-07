@@ -405,6 +405,14 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
     return results
 
 
+@router.get("/training/{training_run_id}/manifest")
+async def get_training_run_manifest(training_run_id: str) -> dict[str, Any]:
+    """Return the durable training manifest payload for a Studio run row."""
+
+    manifest, _path = _load_training_manifest_from_index(training_run_id)
+    return manifest.model_dump(mode="json", exclude_none=True)
+
+
 @router.post("/training/{training_run_id}/cancel", response_model=TrainingRunInfo)
 async def cancel_training_run(training_run_id: str) -> TrainingRunInfo:
     """Mark a pending or running training manifest as cancelled."""

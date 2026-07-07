@@ -6,6 +6,7 @@ import {
   createTrainingRun,
   deleteTrainingRun,
   fetchEvalRuns,
+  fetchTrainingRunManifest,
   fetchTrainingRuns,
   supersedeTrainingRun,
 } from '@/api/runAPI';
@@ -112,6 +113,22 @@ describe('runAPI failure behavior', () => {
         uri: '/tmp/runs/manifests/evaluation_runs/eval.json',
       }),
     ]);
+  });
+
+  it('fetches durable training manifests for snapshot restage', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({
+        id: 'feedbax-training-run:pending',
+        training_spec: { inline: { n_batches: 25 } },
+        task_spec: { inline: { type: 'ReachingTask' } },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )));
+
+    await expect(fetchTrainingRunManifest('feedbax-training-run:pending')).resolves.toMatchObject({
+      id: 'feedbax-training-run:pending',
+      training_spec: { inline: { n_batches: 25 } },
+    });
   });
 
   it('does not fabricate successful training-run creation', async () => {

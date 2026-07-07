@@ -47,6 +47,8 @@ describe('pipeline collection summaries', () => {
       }),
       rampDurationSteps: 80,
       sourceIssue: 'b399efc',
+      jobId: null,
+      axisCoordinates: {},
     });
     expect(bestTrainingRun(rows)?.id).toBe(
       'rlrmp:b399efc:movement_ramp__power6_dur80'
@@ -61,6 +63,31 @@ describe('pipeline collection summaries', () => {
     expect(selectedIds(evalStage, 'training_run_ids')).toEqual([
       'rlrmp:b399efc:movement_ramp__power6_dur80',
     ]);
+  });
+
+  it('keeps manifest job ids for progress binding', () => {
+    const rows = trainingRunSummaries({
+      output_collections: [{
+        item_refs: [{
+          kind: 'TrainingRun',
+          id: 'feedbax-training-run:pending',
+          role: 'training_run',
+          uri: '/tmp/pending.json',
+          metadata: {
+            name: 'Pending train',
+            status: 'pending',
+            job_id: 'studio-train-123',
+            planned: true,
+          },
+        }],
+      }],
+    } as any);
+
+    expect(rows[0]).toMatchObject({
+      id: 'feedbax-training-run:pending',
+      jobId: 'studio-train-123',
+      planned: true,
+    });
   });
 
   it('summarizes completed evaluation protocol details', () => {
