@@ -101,7 +101,7 @@ describe('projectsStore local restore state', () => {
     expect(useProjectsStore.getState().tabs).toHaveLength(1);
   });
 
-  it('normalizes restored local tab graphs before exposing project state', async () => {
+  it('normalizes restored local tab aliases without synthesizing network subgraphs', async () => {
     const runtimePayload = JSON.parse(savedTabsPayload);
     runtimePayload.tabs[0].graphSnapshot.graph.nodes = {
       network: {
@@ -131,12 +131,12 @@ describe('projectsStore local restore state', () => {
     const { useGraphStore } = await import('@/stores/graphStore');
 
     expect(useProjectsStore.getState().tabs[0].graphSnapshot.graph.nodes.network.type).toBe(
-      'Network'
+      'SimpleStagedNetwork'
     );
-    expect(useGraphStore.getState().graph.nodes.network.type).toBe('Network');
-    expect(useGraphStore.getState().graph.subgraphs?.network.nodes.cell.type).toBe('GRU');
+    expect(useGraphStore.getState().graph.nodes.network.type).toBe('SimpleStagedNetwork');
+    expect(useGraphStore.getState().graph.subgraphs?.network).toBeUndefined();
     expect(useGraphStore.getState().graph.input_bindings).toEqual({
-      input: ['network', 'input'],
+      input: ['network', 'target'],
     });
   });
 

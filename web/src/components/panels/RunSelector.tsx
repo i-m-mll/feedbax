@@ -48,6 +48,7 @@ export function TrainingRunSelector({ activeTab }: TrainingRunSelectorProps) {
       trainingRuns: state.trainingRuns,
       selectedTrainingRunId: state.selectedTrainingRunId,
       loading: state.loading,
+      trainingError: state.trainingError,
       loadTrainingRuns: state.loadTrainingRuns,
       selectTrainingRun: state.selectTrainingRun,
       addTrainingRun: state.addTrainingRun,
