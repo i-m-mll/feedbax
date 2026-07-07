@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useRunStore } from '@/stores/runStore';
 import { EvalRunSelector } from '@/components/panels/RunSelector';
@@ -175,7 +176,9 @@ export function AnalysisPageSettings() {
       setEvalSuccess(true);
       setTimeout(() => setEvalSuccess(false), 3000);
     } catch (err) {
-      setEvalError(apiErrorMessage(err, 'Failed to create evaluation run'));
+      const message = apiErrorMessage(err, 'Failed to create evaluation run');
+      setEvalError(message);
+      toast.error(message, { id: 'eval-run-create-error' });
       setEvalRunning(false);
     }
   }, [

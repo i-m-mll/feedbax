@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import { startTraining, stopTraining } from '@/api/client';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { actionErrorMessage, withStoreActionFeedback } from '@/stores/storeActions';
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { parseContract } from '@/generated/studioContracts';
 import type { TrainingWebSocketEvent } from '@/generated/studioContracts';
@@ -249,6 +251,7 @@ export function useTraining() {
   const start = useCallback(async () => {
     if (!graphId) {
       setStatus('error');
+      toast.error('Save the project before starting training.', { id: 'training-start-error' });
       return;
     }
     try {
@@ -267,20 +270,34 @@ export function useTraining() {
         trainingSpec.batch_size,
         learningRate
       );
-      const response = await startTraining(
-        graphId,
-        trainingSpec,
-        taskSpec,
-        graph,
-        trainingConfig,
-        ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph, taskSpec)
+      const response = await withStoreActionFeedback(
+        () => startTraining(
+          graphId,
+          trainingSpec,
+          taskSpec,
+          graph,
+          trainingConfig,
+          ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph, taskSpec)
+        ),
+        {
+          errorToast: (error) => actionErrorMessage(error, 'Failed to start training.'),
+          toastId: 'training-start-error',
+          onError: (error) => {
+            setTrainingStreamError(actionErrorMessage(error, 'Failed to start training.'));
+            setStatus('error');
+          },
+        },
       );
+      if (!response) return;
       setJobId(response.job_id);
       setStatus('running');
+      toast.success('Training started.', { id: 'training-start-success' });
       connect(response.job_id);
-    } catch {
-      setTrainingStreamError('Failed to start training.');
+    } catch (error) {
+      const message = actionErrorMessage(error, 'Failed to start training.');
+      setTrainingStreamError(message);
       setStatus('error');
+      toast.error(message, { id: 'training-start-error' });
     }
   }, [
     graphId,
@@ -300,12 +317,22 @@ export function useTraining() {
     if (!jobId) return;
     intentionalCloseRef.current = true;
     clearReconnectTimer();
-    await stopTraining(jobId);
+    const stopped = await withStoreActionFeedback(
+      () => stopTraining(jobId),
+      {
+        errorToast: (error) =>
+          `${actionErrorMessage(error, 'Failed to stop training.')} Marked idle locally.`,
+        toastId: 'training-stop-error',
+      },
+    );
     wsRef.current?.close();
     wsJobIdRef.current = null;
     setStatus('idle');
     setJobId(null);
     setTrainingStreamError(null);
+    if (stopped) {
+      toast.success('Training stopped.', { id: 'training-stop-success' });
+    }
   }, [jobId, setJobId, setStatus, clearReconnectTimer, setTrainingStreamError]);
 
   return {

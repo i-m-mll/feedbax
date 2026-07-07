@@ -10,11 +10,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ReactFlowProvider, type Edge } from '@xyflow/react';
+import { toast } from 'sonner';
 import { AnalysisCanvas } from '@/components/analysis/AnalysisCanvas';
 import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useDemandStore } from '@/stores/demandStore';
+import { actionErrorMessage } from '@/stores/storeActions';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
 import { apiErrorMessage } from '@/api/request';
 import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
@@ -629,8 +631,11 @@ function NodeDetailPanel({
         const result = await getFigureStatus(requestId);
         if (result.status === 'complete' && result.figure_hashes?.length) {
           setResult(nodeId, result.figure_hashes[0]);
+          toast.success('Figure generated.', { id: `figure-generated-${nodeId}` });
         } else if (result.status === 'error') {
-          setError(nodeId, result.error ?? 'Generation failed');
+          const message = result.error ?? 'Generation failed';
+          setError(nodeId, message);
+          toast.error(message, { id: `figure-generation-error-${nodeId}` });
         }
       } catch {
         // Keep polling on transient errors
@@ -709,7 +714,9 @@ function NodeDetailPanel({
         },
       }));
     } catch (err) {
-      setError(nodeId, err instanceof Error ? err.message : 'Request failed');
+      const message = actionErrorMessage(err, 'Failed to request figure generation.');
+      setError(nodeId, message);
+      toast.error(message, { id: `figure-generation-error-${nodeId}` });
     }
   }, [nodeId, evalRunId, requestGeneration, setError]);
 
@@ -859,6 +866,9 @@ function NodeDetailPanel({
         onClick={() => {
           if (selectedNodeId) {
             useAnalysisStore.getState().removeNode(selectedNodeId);
+            toast.success('Analysis node deleted - Cmd+Z to undo.', {
+              id: 'analysis-node-delete-success',
+            });
           }
         }}
       >
