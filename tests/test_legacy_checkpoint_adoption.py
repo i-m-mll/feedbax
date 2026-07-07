@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -174,6 +175,19 @@ def _write_stream(path: Path, arrays: list[np.ndarray]) -> None:
             np.save(stream, array, allow_pickle=False)
 
 
+def _read_stream_records(path: Path) -> list[tuple[tuple[int, ...], str]]:
+    records: list[tuple[tuple[int, ...], str]] = []
+    with path.open("rb") as stream:
+        while True:
+            position = stream.tell()
+            if not stream.read(1):
+                break
+            stream.seek(position)
+            array = np.load(stream, allow_pickle=False)
+            records.append((tuple(int(dim) for dim in array.shape), str(array.dtype)))
+    return records
+
+
 def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> None:
     current = accept_leaf_manifest(_manifest_payload())
     assert current.schema_version == LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION
@@ -206,6 +220,60 @@ def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> Non
     )
     with pytest.raises(LegacyManifestSchemaError, match="Unsupported Feedbax"):
         accept_leaf_manifest(tampered)
+
+
+def test_manifest_from_trees_matches_equinox_default_serialized_leaves(
+    tmp_path: Path,
+) -> None:
+    class ProbeModule(eqx.Module):
+        array: object
+        np_array: object
+        scalar_jax_array: object
+        scalar_np: object
+        flag: bool
+        integer: int
+        floating: float
+        complex_value: complex
+        static_text: str = eqx.field(static=True)
+        static_object: object = eqx.field(static=True)
+
+    tree = {
+        "module": ProbeModule(
+            array=jnp.array([1.0, 2.0], dtype=jnp.float32),
+            np_array=np.array([3, 4], dtype=np.int16),
+            scalar_jax_array=jnp.array(5.0, dtype=jnp.float32),
+            scalar_np=np.float32(6.0),
+            flag=True,
+            integer=7,
+            floating=8.5,
+            complex_value=complex(1, 2),
+            static_text="ignored-static-field",
+            static_object=object(),
+        ),
+        "ignored_text": "ignored-tree-leaf",
+        "ignored_object": object(),
+    }
+    stream = tmp_path / "model.eqx"
+    eqx.tree_serialise_leaves(stream, tree)
+
+    manifest = manifest_from_trees(model=tree, optimizer=None, producing_commit="abc123")
+
+    assert [
+        (entry.tree_path, entry.kind, entry.shape, entry.dtype)
+        for entry in manifest.model
+    ] == [
+        ("/module/array", "array", (2,), "float32"),
+        ("/module/np_array", "array", (2,), "int16"),
+        ("/module/scalar_jax_array", "array", (), "float32"),
+        ("/module/scalar_np", "static", (), "float32"),
+        ("/module/flag", "static", (), "bool"),
+        ("/module/integer", "static", (), "int64"),
+        ("/module/floating", "static", (), "float64"),
+        ("/module/complex_value", "static", (), "complex128"),
+    ]
+    assert _read_stream_records(stream) == [
+        (entry.shape, entry.dtype) for entry in manifest.model
+    ]
 
 
 def test_manifest_from_trees_skips_default_equinox_ignored_static_leaves() -> None:

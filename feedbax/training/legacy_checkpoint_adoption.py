@@ -444,27 +444,27 @@ def adopt_legacy_checkpoint(
         }
     }
     adoption_metadata.update(dict(metadata or {}))
+    write_slots = _expected_round_trip_slots(
+        slots,
+        resume_slot_transform=resume_slot_transform,
+    )
     write = write_checkpoint_transaction(
         checkpoint_root,
         run_spec=run_spec,
         phase_program=phase_program,
         barrier_name=barrier_name,
         coordinate=coordinate,
-        slots=slots,
+        slots=write_slots,
         status="partial",
         metadata=adoption_metadata,
         publish_latest=False,
-    )
-    expected_slots = _expected_round_trip_slots(
-        slots,
-        resume_slot_transform=resume_slot_transform,
     )
     loaded_slots = _round_trip_before_publish(
         write,
         run_spec=run_spec,
         phase_program=phase_program,
-        expected_slots=expected_slots,
-        resume_slot_transform=resume_slot_transform,
+        expected_slots=write_slots,
+        resume_slot_transform=None,
     )
     return LegacyCheckpointAdoptionResult(
         write=write,
@@ -672,7 +672,10 @@ def _entries_from_tree(tree: Any) -> list[LeafManifestEntry]:
 
 
 def _is_serialized_array_leaf(value: Any) -> bool:
-    return eqx.is_array(value) and not isinstance(value, np.generic)
+    return (
+        (eqx.is_array(value) and not isinstance(value, np.generic))
+        or hasattr(value, "__jax_array__")
+    )
 
 
 def _is_serialized_static_scalar(value: Any) -> bool:
