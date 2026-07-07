@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react';
 import clsx from 'clsx';
 import {
   Database,
   FoldVertical,
+  LocateFixed,
   UnfoldVertical,
   GitBranch,
   ListChecks,
@@ -13,6 +15,8 @@ import {
   PanelRightOpen,
   Settings2,
   Trash2,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
@@ -20,9 +24,12 @@ import {
   buildScenarioEntityRegistry,
 } from '@/features/scenario/entities';
 import {
+  buildResolvedScene,
   objectiveProjectionItems,
   relatedProjectionItems,
-  type ScenarioProjectionItem,
+  type ResolvedScene,
+  type ResolvedSceneElement,
+  type ResolvedSceneEntity,
 } from '@/features/scenario/projections';
 import {
   ensureObjectiveSpec,
@@ -46,6 +53,7 @@ import {
   retainedObservableTargetKindLabel,
   selectorToRetainedObservableTarget,
 } from '@/features/scenario/observables';
+import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getActiveStage,
@@ -61,7 +69,6 @@ import type {
 import type {
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
-  StudioScenarioEntity,
   StudioScenarioEntityRegistry,
   StudioSchemaRegistry,
   StudioTopPaneProjection,
@@ -80,23 +87,69 @@ const PROJECTIONS: Array<{
   { id: 'objectives', label: 'Objectives', icon: ListChecks },
 ];
 
-function numberParam(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+const WORKSPACE_SVG_WIDTH = 860;
+const WORKSPACE_SVG_HEIGHT = 520;
+const WORKSPACE_PADDING = 56;
+
+type ScenePoint = [number, number];
+
+interface SceneBounds {
+  min: ScenePoint;
+  max: ScenePoint;
 }
 
-function taskParams(entity: StudioScenarioEntity | null): Record<string, unknown> {
-  const task = entity?.metadata.task_spec;
-  if (!task || typeof task !== 'object' || !('params' in task)) return {};
-  const params = task.params;
-  return params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+function includePoint(bounds: SceneBounds, point: ScenePoint) {
+  bounds.min = [Math.min(bounds.min[0], point[0]), Math.min(bounds.min[1], point[1])];
+  bounds.max = [Math.max(bounds.max[0], point[0]), Math.max(bounds.max[1], point[1])];
 }
 
-function isSelectedOrRelated(
-  item: ScenarioProjectionItem,
-  selectedId: string | null,
-  relatedIds: Set<string>
-) {
-  return item.entity_id === selectedId || relatedIds.has(item.entity_id);
+function sceneBounds(scene: ResolvedScene): SceneBounds {
+  const bounds: SceneBounds = {
+    min: [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
+    max: [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
+  };
+
+  for (const anchor of scene.anchors) {
+    if (anchor.position) includePoint(bounds, anchor.position);
+  }
+  for (const element of scene.elements) {
+    if (element.geometry.kind === 'polyline' || element.geometry.kind === 'points' || element.geometry.kind === 'link') {
+      for (const point of element.geometry.points) includePoint(bounds, point);
+    } else if (element.geometry.kind === 'bounds') {
+      includePoint(bounds, element.geometry.min);
+      includePoint(bounds, element.geometry.max);
+    }
+  }
+
+  if (!Number.isFinite(bounds.min[0]) || !Number.isFinite(bounds.min[1])) {
+    return { min: [-1, -1], max: [1, 1] };
+  }
+
+  const width = Math.max(bounds.max[0] - bounds.min[0], 0.25);
+  const height = Math.max(bounds.max[1] - bounds.min[1], 0.25);
+  const pad = Math.max(width, height) * 0.12;
+  return {
+    min: [bounds.min[0] - pad, bounds.min[1] - pad],
+    max: [bounds.max[0] + pad, bounds.max[1] + pad],
+  };
+}
+
+function fitScale(bounds: SceneBounds): number {
+  const width = Math.max(bounds.max[0] - bounds.min[0], 0.1);
+  const height = Math.max(bounds.max[1] - bounds.min[1], 0.1);
+  return Math.min(
+    (WORKSPACE_SVG_WIDTH - WORKSPACE_PADDING * 2) / width,
+    (WORKSPACE_SVG_HEIGHT - WORKSPACE_PADDING * 2) / height
+  );
+}
+
+function niceScaleLength(targetMeters: number): number {
+  if (!Number.isFinite(targetMeters) || targetMeters <= 0) return 0.1;
+  const exponent = Math.floor(Math.log10(targetMeters));
+  const base = 10 ** exponent;
+  const normalized = targetMeters / base;
+  const step = normalized >= 5 ? 5 : normalized >= 2 ? 2 : 1;
+  return step * base;
 }
 
 export function ScenarioProjectionToolbar({ availableHeight }: { availableHeight: number }) {
@@ -194,114 +247,377 @@ function ScenarioBadge({
 
 function WorkspaceProjection({
   registry,
+  scene,
   selectedId,
   onSelect,
 }: {
   registry: StudioScenarioEntityRegistry;
+  scene: ResolvedScene;
   selectedId: string | null;
   onSelect: (entityId: string | null) => void;
 }) {
+  const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
+  const dragStartRef = useRef<{ x: number; y: number; pan: { x: number; y: number } } | null>(
+    null
+  );
   const relatedItems = relatedProjectionItems(registry, selectedId);
   const relatedIds = new Set(relatedItems.map((item) => item.entity_id));
-  const taskEntity = Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
-  const mechanicsEntity =
-    Object.values(registry.entities).find((entity) => entity.kind === 'mechanics_object') ?? null;
-  const params = taskParams(taskEntity);
-  const targetCount = Math.max(1, Math.min(16, Math.round(numberParam(params.n_targets, 8))));
-  const targetRadius = Math.max(2, Math.min(18, numberParam(params.target_radius, 0.02) * 420));
-  const targets = Array.from({ length: targetCount }, (_, index) => {
-    const theta = (Math.PI * 2 * index) / targetCount - Math.PI / 2;
-    return {
-      x: 250 + Math.cos(theta) * 130,
-      y: 210 + Math.sin(theta) * 130,
+  const hoveredRelatedIds = new Set(
+    hoveredEntityId
+      ? [
+          ...(scene.entities.find((entity) => entity.id === hoveredEntityId)?.related_entity_ids ?? []),
+          hoveredEntityId,
+        ]
+      : []
+  );
+  const bounds = sceneBounds(scene);
+  const baseScale = fitScale(bounds);
+  const scale = baseScale * view.zoom;
+  const center: ScenePoint = [
+    (bounds.min[0] + bounds.max[0]) / 2,
+    (bounds.min[1] + bounds.max[1]) / 2,
+  ];
+  const project = (point: ScenePoint): ScenePoint => [
+    WORKSPACE_SVG_WIDTH / 2 + (point[0] - center[0]) * scale + view.pan.x,
+    WORKSPACE_SVG_HEIGHT / 2 - (point[1] - center[1]) * scale + view.pan.y,
+  ];
+  const scaleMeters = niceScaleLength(90 / Math.max(scale, 1));
+  const scalePixels = scaleMeters * scale;
+  const warningCount = scene.validation.filter((message) => message.severity === 'warning').length;
+
+  const entityActive = (entity: Pick<ResolvedSceneEntity, 'id' | 'related_entity_ids'>) =>
+    entity.id === selectedId ||
+    relatedIds.has(entity.id) ||
+    hoveredRelatedIds.has(entity.id) ||
+    entity.related_entity_ids.some((id) => hoveredRelatedIds.has(id));
+
+  const elementActive = (element: ResolvedSceneElement) => {
+    const entity = scene.entities.find((candidate) => candidate.id === element.entity_id);
+    return entity ? entityActive(entity) : false;
+  };
+
+  const zoomBy = (factor: number) => {
+    setView((current) => ({
+      ...current,
+      zoom: Math.max(0.35, Math.min(8, current.zoom * factor)),
+    }));
+  };
+
+  const resetView = () => setView({ zoom: 1, pan: { x: 0, y: 0 } });
+
+  const beginPan = (event: PointerEvent<SVGSVGElement>) => {
+    if (event.button !== 0) return;
+    dragStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      pan: view.pan,
     };
-  });
-  const taskSelected = taskEntity
-    ? isSelectedOrRelated(
-        { entity_id: taskEntity.id, kind: taskEntity.kind, label: taskEntity.label, summary: null, related_entity_ids: [] },
-        selectedId,
-        relatedIds
-      )
-    : false;
-  const mechanicsSelected = mechanicsEntity
-    ? isSelectedOrRelated(
-        {
-          entity_id: mechanicsEntity.id,
-          kind: mechanicsEntity.kind,
-          label: mechanicsEntity.label,
-          summary: null,
-          related_entity_ids: [],
-        },
-        selectedId,
-        relatedIds
-      )
-    : false;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const movePan = (event: PointerEvent<SVGSVGElement>) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    setView((current) => ({
+      ...current,
+      pan: {
+        x: start.pan.x + event.clientX - start.x,
+        y: start.pan.y + event.clientY - start.y,
+      },
+    }));
+  };
+
+  const endPan = () => {
+    dragStartRef.current = null;
+  };
+
+  const wheelZoom = (event: WheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    zoomBy(event.deltaY > 0 ? 0.9 : 1.1);
+  };
+
+  const renderElement = (element: ResolvedSceneElement) => {
+    const active = elementActive(element);
+    const stroke = active ? '#0f766e' : '#64748b';
+    const fill = active ? '#ccfbf1' : '#f8fafc';
+    const markerRadius = element.scale_invariant ? 7 : Math.max(4, Math.min(18, scale * 0.02));
+    const commonProps = {
+      onMouseEnter: () => setHoveredEntityId(element.entity_id),
+      onMouseLeave: () => setHoveredEntityId(null),
+      onClick: (event: MouseEvent) => {
+        event.stopPropagation();
+        onSelect(element.entity_id);
+      },
+      className: 'cursor-pointer outline-none',
+      role: 'button',
+      tabIndex: 0,
+      onKeyDown: (event: KeyboardEvent) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect(element.entity_id);
+        }
+      },
+    };
+
+    if (element.geometry.kind === 'bounds') {
+      const [x0, y0] = project(element.geometry.min);
+      const [x1, y1] = project(element.geometry.max);
+      return (
+        <g key={element.id} {...commonProps}>
+          <rect
+            x={Math.min(x0, x1)}
+            y={Math.min(y0, y1)}
+            width={Math.abs(x1 - x0)}
+            height={Math.abs(y1 - y0)}
+            fill={active ? '#dcfce7' : '#f0fdf4'}
+            stroke={active ? '#16a34a' : '#86efac'}
+            strokeWidth={1.5}
+            vectorEffect="non-scaling-stroke"
+          />
+        </g>
+      );
+    }
+
+    if (element.geometry.kind === 'polyline') {
+      const geometry = element.geometry;
+      const points = geometry.points.map(project).map((point) => point.join(',')).join(' ');
+      return (
+        <g key={element.id} {...commonProps}>
+          <polyline
+            points={points}
+            fill="none"
+            stroke={active ? '#b45309' : stroke}
+            strokeWidth={active ? 8 : 6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+          {geometry.points.map((point, index) => {
+            const [x, y] = project(point);
+            return (
+              <circle
+                key={`${element.id}:joint:${index}`}
+                cx={x}
+                cy={y}
+                r={index === geometry.points.length - 1 ? markerRadius : 4.5}
+                fill={index === geometry.points.length - 1 ? '#475569' : '#ffffff'}
+                stroke={active ? '#92400e' : '#64748b'}
+                strokeWidth={1.5}
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+        </g>
+      );
+    }
+
+    if (element.geometry.kind === 'points') {
+      const glyph = String(element.style.glyph ?? element.metadata.glyph ?? '');
+      return (
+        <g key={element.id} {...commonProps}>
+          {element.geometry.points.map((point, index) => {
+            const [x, y] = project(point);
+            const target = glyph === 'target' || element.metadata.canonical_goal === true;
+            return (
+              <g key={`${element.id}:point:${index}`}>
+                {target ? (
+                  <>
+                    <circle
+                      cx={x}
+                      cy={y}
+                      r={markerRadius + 3}
+                      fill="none"
+                      stroke={active ? '#059669' : '#34d399'}
+                      strokeWidth={1.5}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <circle
+                      cx={x}
+                      cy={y}
+                      r={markerRadius * 0.45}
+                      fill={active ? '#059669' : '#a7f3d0'}
+                    />
+                  </>
+                ) : (
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={markerRadius}
+                    fill={fill}
+                    stroke={stroke}
+                    strokeWidth={1.5}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
+              </g>
+            );
+          })}
+        </g>
+      );
+    }
+
+    if (element.geometry.kind === 'link') {
+      const points = element.geometry.points.map(project);
+      if (points.length < 2) return null;
+      return (
+        <g key={element.id} {...commonProps}>
+          <line
+            x1={points[0][0]}
+            y1={points[0][1]}
+            x2={points[1][0]}
+            y2={points[1][1]}
+            stroke={active ? '#14b8a6' : '#cbd5e1'}
+            strokeWidth={2}
+            strokeDasharray="5 6"
+            vectorEffect="non-scaling-stroke"
+          />
+        </g>
+      );
+    }
+
+    return null;
+  };
 
   return (
-    <div className="h-full min-h-0 bg-slate-50">
-      <div className="relative h-full min-h-0 overflow-hidden">
-        <svg viewBox="0 0 500 420" className="h-full w-full" role="img" aria-label="Workspace projection">
-          <rect x="78" y="38" width="344" height="344" rx="8" fill="#ffffff" stroke="#dbe3ee" />
-          <path d="M250 80 L250 340 M120 210 L380 210" stroke="#e2e8f0" strokeWidth="1" />
-          <circle cx="250" cy="210" r="130" fill="none" stroke="#e2e8f0" strokeDasharray="6 8" />
-          {targets.map((target, index) => (
-            <g
-              key={index}
-              role="button"
-              tabIndex={0}
-              onClick={() => taskEntity && onSelect(taskEntity.id)}
-              onKeyDown={(event) => {
-                if ((event.key === 'Enter' || event.key === ' ') && taskEntity) {
-                  onSelect(taskEntity.id);
-                }
-              }}
-            >
-              <circle
-                cx={target.x}
-                cy={target.y}
-                r={targetRadius}
-                fill={taskSelected ? '#10b981' : '#d1fae5'}
-                stroke={taskSelected ? '#047857' : '#34d399'}
-                strokeWidth="2"
-              />
-            </g>
-          ))}
+    <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_17rem] bg-slate-50">
+      <div className="relative min-h-0 overflow-hidden">
+        <svg
+          viewBox={`0 0 ${WORKSPACE_SVG_WIDTH} ${WORKSPACE_SVG_HEIGHT}`}
+          className="h-full w-full touch-none bg-white"
+          role="img"
+          aria-label="Workspace projection"
+          onPointerDown={beginPan}
+          onPointerMove={movePan}
+          onPointerUp={endPan}
+          onPointerCancel={endPan}
+          onWheel={wheelZoom}
+          onClick={() => onSelect(null)}
+        >
+          <defs>
+            <pattern id="workspace-grid" width="32" height="32" patternUnits="userSpaceOnUse">
+              <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#eef2f7" strokeWidth="1" />
+            </pattern>
+          </defs>
+          <rect width={WORKSPACE_SVG_WIDTH} height={WORKSPACE_SVG_HEIGHT} fill="url(#workspace-grid)" />
           <line
-            x1="250"
-            y1="250"
-            x2="250"
-            y2="210"
-            stroke={mechanicsSelected ? '#b45309' : '#64748b'}
-            strokeWidth="9"
-            strokeLinecap="round"
+            x1={project([bounds.min[0], 0])[0]}
+            y1={project([0, 0])[1]}
+            x2={project([bounds.max[0], 0])[0]}
+            y2={project([0, 0])[1]}
+            stroke="#e2e8f0"
+            strokeWidth="1"
+            vectorEffect="non-scaling-stroke"
           />
           <line
-            x1="250"
-            y1="210"
-            x2="302"
-            y2="170"
-            stroke={mechanicsSelected ? '#d97706' : '#94a3b8'}
-            strokeWidth="7"
-            strokeLinecap="round"
+            x1={project([0, 0])[0]}
+            y1={project([0, bounds.min[1]])[1]}
+            x2={project([0, 0])[0]}
+            y2={project([0, bounds.max[1]])[1]}
+            stroke="#e2e8f0"
+            strokeWidth="1"
+            vectorEffect="non-scaling-stroke"
           />
-          <g
-            role="button"
-            tabIndex={0}
-            onClick={() => mechanicsEntity && onSelect(mechanicsEntity.id)}
-            onKeyDown={(event) => {
-              if ((event.key === 'Enter' || event.key === ' ') && mechanicsEntity) {
-                onSelect(mechanicsEntity.id);
-              }
-            }}
-          >
-            <circle cx="302" cy="170" r="10" fill={mechanicsSelected ? '#f59e0b' : '#475569'} />
+          {scene.elements.map(renderElement)}
+          <g transform={`translate(28 ${WORKSPACE_SVG_HEIGHT - 32})`}>
+            <line
+              x1="0"
+              y1="0"
+              x2={scalePixels}
+              y2="0"
+              stroke="#334155"
+              strokeWidth="2"
+              vectorEffect="non-scaling-stroke"
+            />
+            <line x1="0" y1="-5" x2="0" y2="5" stroke="#334155" strokeWidth="2" />
+            <line x1={scalePixels} y1="-5" x2={scalePixels} y2="5" stroke="#334155" strokeWidth="2" />
+            <text x="0" y="-9" className="fill-slate-600 text-[11px] font-medium">
+              {scaleMeters >= 1 ? `${scaleMeters} m` : `${Math.round(scaleMeters * 100)} cm`}
+            </text>
           </g>
-          <circle cx="250" cy="210" r="4" fill="#047857" />
         </svg>
-        <div className="absolute left-4 top-4 rounded border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-600 shadow-sm">
-          <div className="font-semibold text-slate-800">{taskEntity?.label ?? 'Task'}</div>
-          <div className="mt-0.5 text-slate-500">{mechanicsEntity?.summary ?? 'Mechanics'}</div>
+        <div className="absolute left-4 top-4 flex h-9 items-center gap-1 rounded border border-slate-200 bg-white/90 px-1.5 shadow-sm backdrop-blur">
+          <button
+            type="button"
+            onClick={() => zoomBy(1.2)}
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            title="Zoom in"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => zoomBy(0.85)}
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            title="Zoom out"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={resetView}
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            title="Reset view"
+          >
+            <LocateFixed className="h-4 w-4" />
+          </button>
         </div>
+        <div className="pointer-events-none absolute bottom-4 right-4 rounded border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-600 shadow-sm backdrop-blur">
+          <div className="font-semibold text-slate-800">World frame</div>
+          <div className="mt-0.5">meters, y-up · {scene.frame}</div>
+        </div>
+      </div>
+      <div className="min-h-0 overflow-y-auto border-l border-slate-200 bg-white">
+        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white px-3 py-2">
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+            Scene
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            {scene.entities.length} entities · {warningCount} warnings
+          </div>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {scene.entities.map((entity) => {
+            const active = entity.id === selectedId;
+            const related = relatedIds.has(entity.id) || hoveredRelatedIds.has(entity.id);
+            return (
+              <button
+                key={entity.id}
+                type="button"
+                onClick={() => onSelect(entity.id)}
+                onMouseEnter={() => setHoveredEntityId(entity.id)}
+                onMouseLeave={() => setHoveredEntityId(null)}
+                className={clsx(
+                  'block w-full px-3 py-2.5 text-left text-xs transition-colors',
+                  active
+                    ? 'bg-brand-50 text-slate-900'
+                    : related
+                      ? 'bg-teal-50/70 text-slate-800'
+                      : 'bg-white text-slate-600 hover:bg-slate-50'
+                )}
+              >
+                <div className="truncate font-medium">{entity.label}</div>
+                <div className="mt-0.5 truncate text-[11px] text-slate-400">
+                  {entity.summary ?? entity.kind}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {scene.validation.length > 0 && (
+          <div className="border-t border-slate-200 px-3 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              Validation
+            </div>
+            <div className="mt-2 space-y-1.5">
+              {scene.validation.slice(0, 4).map((message, index) => (
+                <div key={`${message.type}:${index}`} className="text-xs text-amber-600">
+                  {message.message}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -683,6 +999,7 @@ export function ScenarioProjectionWorkspace() {
   const addRetainedObservable = useGraphStore((state) => state.addRetainedObservable);
   const updateRetainedObservable = useGraphStore((state) => state.updateRetainedObservable);
   const removeRetainedObservable = useGraphStore((state) => state.removeRetainedObservable);
+  const { components } = useComponents();
   const topPane = getTopPaneState(workspace);
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
@@ -694,6 +1011,10 @@ export function ScenarioProjectionWorkspace() {
   const registry = useMemo(
     () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
     [activeScenario, graph]
+  );
+  const scene = useMemo(
+    () => buildResolvedScene({ scenario: activeScenario, graph, registry, components }),
+    [activeScenario, components, graph, registry]
   );
   const stageSummary =
     typeof activeStage?.metadata.summary === 'string' ? activeStage.metadata.summary : null;
@@ -715,6 +1036,7 @@ export function ScenarioProjectionWorkspace() {
         {topPane.active_projection === 'workspace' && (
           <WorkspaceProjection
             registry={registry}
+            scene={scene}
             selectedId={topPane.selected_entity_id}
             onSelect={selectTopPaneEntity}
           />
