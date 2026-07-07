@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { ComponentLibrary } from '@/components/panels/ComponentLibrary';
+import { TaskLibrary } from '@/components/panels/TaskLibrary';
 import { useLayoutStore } from '@/stores/layoutStore';
 import {
   getActiveStage,
@@ -30,11 +31,8 @@ export function Sidebar() {
     return null;
   }
 
-  if (topPane.active_projection === 'task') {
-    return null;
-  }
-
   const isModelProjection = topPane.active_projection === 'model';
+  const isTaskProjection = topPane.active_projection === 'task';
 
   return (
     <aside
@@ -59,6 +57,10 @@ export function Sidebar() {
               </button>
             ))}
           </div>
+        ) : isTaskProjection ? (
+          <div className="text-xs uppercase tracking-[0.2em] px-2 py-1 text-emerald-700 font-semibold">
+            Tasks
+          </div>
         ) : (
           <div className="text-xs uppercase tracking-[0.2em] px-2 py-1 text-slate-400">
             {topPane.active_projection}
@@ -66,6 +68,7 @@ export function Sidebar() {
         )}
       </div>
       {isModelProjection && <ComponentLibrary mode={activeTab} />}
+      {isTaskProjection && <TaskLibrary />}
       {(topPane.active_projection === 'workspace' ||
         topPane.active_projection === 'objectives') && (
         <ProjectionSidebar projection={topPane.active_projection} />

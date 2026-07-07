@@ -54,6 +54,7 @@ import {
   BarChart,
 } from 'lucide-react';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useLayoutStore } from '@/stores/layoutStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
 import { apiErrorMessage } from '@/api/request';
 import type { AnalysisClassDef } from '@/types/analysis';
@@ -204,8 +205,15 @@ function sortedCategoryEntries(
 export function AnalysisLibrary() {
   const [search, setSearch] = useState('');
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['Visualization'])
+  const expandedCategoryList = useLayoutStore(
+    (state) => state.analysisLibraryExpandedCategories
+  );
+  const setExpandedCategories = useLayoutStore(
+    (state) => state.setAnalysisLibraryExpandedCategories
+  );
+  const expandedCategories = useMemo(
+    () => new Set(expandedCategoryList),
+    [expandedCategoryList]
   );
   const { analysisClasses, setAnalysisClasses } = useAnalysisStore();
 
@@ -247,24 +255,22 @@ export function AnalysisLibrary() {
   // Auto-expand matching categories while searching
   useEffect(() => {
     if (search) {
-      setExpandedCategories(new Set(Object.keys(categories)));
+      setExpandedCategories(Object.keys(categories));
     }
-  }, [search, categories]);
+  }, [search, categories, setExpandedCategories]);
 
   const toggleCategory = (category: string) => {
-    setExpandedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(category)) {
-        next.delete(category);
-      } else {
-        next.add(category);
-      }
-      return next;
-    });
+    const next = new Set(expandedCategories);
+    if (next.has(category)) {
+      next.delete(category);
+    } else {
+      next.add(category);
+    }
+    setExpandedCategories([...next]);
   };
 
-  const expandAll = () => setExpandedCategories(new Set(Object.keys(categories)));
-  const collapseAll = () => setExpandedCategories(new Set());
+  const expandAll = () => setExpandedCategories(Object.keys(categories));
+  const collapseAll = () => setExpandedCategories([]);
 
   return (
     <div className="flex flex-col h-full overflow-x-hidden">
