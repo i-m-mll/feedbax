@@ -5,10 +5,13 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 
+const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
+
 export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
   },
   plugins: [
     react(),
@@ -63,15 +66,17 @@ export default defineConfig({
   },
   server: {
     port: 3008,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/ws': {
-        target: 'ws://localhost:8000',
-        ws: true,
-      },
-    },
+    proxy: isE2E
+      ? undefined
+      : {
+          '/api': {
+            target: 'http://localhost:8000',
+            changeOrigin: true,
+          },
+          '/ws': {
+            target: 'ws://localhost:8000',
+            ws: true,
+          },
+        },
   },
 });
