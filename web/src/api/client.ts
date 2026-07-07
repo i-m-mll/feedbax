@@ -163,6 +163,8 @@ export async function prepareStudioTrainingExecution(payload: {
   backend?: 'local' | 'ssh' | 'runpod' | 'modal';
   job_id?: string | null;
   local_cwd?: string | null;
+  queue_target?: 'local' | 'gcp' | 'runpod' | 'manual' | null;
+  queue_manifest_ids?: string[];
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {

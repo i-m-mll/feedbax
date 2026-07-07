@@ -649,19 +649,25 @@ export function TrainCollectionPanel() {
       });
       return;
     }
+    const trainingLaunchItems = launchableItems.filter(
+      (item) =>
+        item.target === launchTarget &&
+        item.stageKind === 'train' &&
+        item.stageId === trainItem.stageId
+    );
     setQueueLaunchState({ busy: true, error: null });
     try {
       const preparation = await prepareStudioTrainingExecution({
         workspace,
         stage_id: trainItem.stageId,
         backend,
+        queue_target: launchTarget,
+        queue_manifest_ids: trainingLaunchItems.map((item) => item.manifestId),
         issues: ['12e49a2'],
         metadata: {
           source: 'pipeline_queue',
           queue_target: launchTarget,
-          queue_item_ids: launchableItems
-            .filter((item) => item.target === launchTarget)
-            .map((item) => item.manifestId),
+          queue_item_ids: trainingLaunchItems.map((item) => item.manifestId),
           spec_lock: {
             required: queueSpecLock.required,
             run_count: queueSpecLock.runCount,

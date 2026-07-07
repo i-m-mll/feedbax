@@ -47,6 +47,8 @@ from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
     GraphMetadata,
     GraphSpec,
+    StudioCollectionRef,
+    StudioManifestRef,
     StudioStageSpec,
     StudioTaskBindingSpec,
     build_default_studio_workspace,
@@ -373,6 +375,97 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
         1e-5,
     ]
     assert {run.run_set_id for run in runs} == {run_set.id}
+
+
+def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_stage_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    workspace = _workspace()
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    train_stage.execution_spec = {"protocol": {"compute_target": "gcp"}}
+    runpod_ref = StudioManifestRef(
+        kind="TrainingRunManifest",
+        id="train:runpod",
+        role="training_run",
+        uri="/tmp/feedbax/runpod.json",
+        metadata={"status": "pending", "planned": True, "execution_target": "runpod"},
+    )
+    gcp_ref = StudioManifestRef(
+        kind="TrainingRunManifest",
+        id="train:gcp",
+        role="training_run",
+        uri="/tmp/feedbax/gcp.json",
+        metadata={"status": "pending", "planned": True, "execution_target": "gcp"},
+    )
+    train_stage.manifest_refs = [runpod_ref, gcp_ref]
+    train_stage.output_collections = [
+        StudioCollectionRef(
+            id="collection:training-runs",
+            kind="training_runs",
+            label="Training runs",
+            source_stage_id=train_stage.id,
+            item_refs=[runpod_ref, gcp_ref],
+        )
+    ]
+
+    prepared = prepare_studio_training_execution(
+        StudioTrainingExecutionRequest(
+            workspace=workspace,
+            backend="runpod",
+            job_id="studio-plan",
+            queue_target="runpod",
+            queue_manifest_ids=["train:runpod"],
+            issues=["12e49a2"],
+        )
+    )
+
+    prepared_train_stage = next(
+        stage for stage in prepared.workspace.stages if stage.kind == "train"
+    )
+    staged_summary = prepared_train_stage.metadata["last_staged_training"]
+    assert prepared.plan.backend == "runpod"
+    assert staged_summary["source"] == "queue_manifest_subset"
+    assert staged_summary["execution_target"] == "runpod"
+    assert staged_summary["manifest_ids"] == ["train:runpod"]
+    assert not (tmp_path / "manifests").exists()
+
+
+def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    workspace = _workspace()
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    train_stage.execution_spec = {"protocol": {"compute_target": "gcp"}}
+    train_stage.manifest_refs = [
+        StudioManifestRef(
+            kind="TrainingRunManifest",
+            id="train:gcp",
+            role="training_run",
+            uri="/tmp/feedbax/gcp.json",
+            metadata={"status": "pending", "planned": True, "execution_target": "gcp"},
+        )
+    ]
+
+    with pytest.raises(
+        StudioExecutionPreparationError,
+        match="targets 'gcp', not selected target 'runpod'",
+    ):
+        prepare_studio_training_execution(
+            StudioTrainingExecutionRequest(
+                workspace=workspace,
+                backend="runpod",
+                job_id="studio-plan",
+                queue_target="runpod",
+                queue_manifest_ids=["train:gcp"],
+                issues=["12e49a2"],
+            )
+        )
+
+    assert not (tmp_path / "manifests").exists()
 
 
 def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
