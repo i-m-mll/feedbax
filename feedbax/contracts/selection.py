@@ -29,7 +29,12 @@ SelectionReprocessMode = Literal["missing", "missing_failed", "all", "stale"]
 
 
 class TopKByMetricPerGroup(StrictModel):
-    """Select the top K rows in each group after other predicates match."""
+    """Select the top K rows in each group after other predicates match.
+
+    Rows with a numeric metric but no value at ``group_by_path`` are skipped.
+    They cannot be ranked within a declared group, and skipping keeps preview,
+    refresh, and bundle selection deterministic for partially indexed manifests.
+    """
 
     metric_path: str
     group_by_path: str
@@ -65,6 +70,42 @@ class SelectionSpec(StrictModel):
     frozen_refs: list[ParentRef] = Field(default_factory=list)
     frozen_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_mode_fields(cls, data: Any) -> Any:
+        if not isinstance(data, Mapping):
+            return data
+        normalized = dict(data)
+        mode = normalized.get("mode", "explicit")
+
+        if mode == "explicit":
+            _reject_present_value(normalized, "query", "explicit SelectionSpec must not include query")
+            _reject_non_empty(
+                normalized,
+                "frozen_refs",
+                "explicit SelectionSpec must not include frozen_refs",
+            )
+            _reject_present_value(
+                normalized,
+                "frozen_at",
+                "explicit SelectionSpec must not include frozen_at",
+            )
+        elif mode == "query":
+            _reject_non_empty(normalized, "ids", "query SelectionSpec must not include ids")
+            _reject_non_empty(
+                normalized,
+                "frozen_refs",
+                "query SelectionSpec must not include frozen_refs",
+            )
+            _reject_present_value(
+                normalized,
+                "frozen_at",
+                "query SelectionSpec must not include frozen_at",
+            )
+        elif mode == "frozen":
+            _reject_non_empty(normalized, "ids", "frozen SelectionSpec must not include ids")
+        return normalized
 
     @model_validator(mode="after")
     def _validate_selection_spec(self) -> "SelectionSpec":
@@ -374,7 +415,10 @@ def _apply_top_k(top_k: TopKByMetricPerGroup, rows: Sequence[ManifestIndexRow]) 
         metric = _number_at_path(row.payload, top_k.metric_path)
         if metric is None:
             continue
-        group = _value_at_path(row.payload, top_k.group_by_path)
+        try:
+            group = _value_at_path(row.payload, top_k.group_by_path)
+        except (KeyError, TypeError, ValueError):
+            continue
         groups.setdefault(_hashable_group(group), []).append(
             _ScoredRow(row=row, metric=metric, group=group)
         )
@@ -527,6 +571,17 @@ def _hashable_group(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool, type(None))):
         return value
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _reject_present_value(data: Mapping[str, Any], key: str, message: str) -> None:
+    if key in data and data[key] is not None:
+        raise ValueError(message)
+
+
+def _reject_non_empty(data: Mapping[str, Any], key: str, message: str) -> None:
+    value = data.get(key)
+    if value:
+        raise ValueError(message)
 
 
 def _legacy_selection_ids(payload: Mapping[str, Any]) -> list[str] | None:

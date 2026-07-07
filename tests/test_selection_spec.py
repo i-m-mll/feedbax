@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
+from feedbax.contracts.manifest import ParentRef
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.selection import (
     SELECTION_SPEC_SCHEMA_VERSION,
@@ -27,9 +29,13 @@ def _record(
     status: str = "completed",
     loss: float = 1.0,
     group: str = "baseline",
+    include_group: bool = True,
     checkpoint: bool = True,
     tags: list[str] | None = None,
 ) -> dict[str, object]:
+    metadata: dict[str, object] = {"tags": tags or []}
+    if include_group:
+        metadata["studio"] = {"axis_coordinates": {"shape": group}}
     payload = {
         "id": id_,
         "kind": kind,
@@ -40,10 +46,7 @@ def _record(
         if checkpoint
         else [],
         "summary_metrics": {"loss": loss},
-        "metadata": {
-            "tags": tags or [],
-            "studio": {"axis_coordinates": {"shape": group}},
-        },
+        "metadata": metadata,
     }
     return {
         "id": id_,
@@ -118,6 +121,29 @@ def test_manifest_predicate_filters_rows_and_applies_top_k_per_group() -> None:
     assert [ref.id for ref in refs] == ["run-b", "run-c"]
 
 
+def test_top_k_skips_rows_missing_group_by_path() -> None:
+    rows = manifest_index_rows_from_records(
+        [
+            _record("run-a", loss=0.1, include_group=False, tags=["keep"]),
+            _record("run-b", loss=0.2, group="short", tags=["keep"]),
+            _record("run-c", loss=0.3, group="long", tags=["keep"]),
+        ]
+    )
+    predicate = ManifestPredicate(
+        tags=["keep"],
+        top_k_by_metric_per_group=TopKByMetricPerGroup(
+            metric_path="summary_metrics.loss",
+            group_by_path="metadata.studio.axis_coordinates.shape",
+            k=1,
+            order="asc",
+        ),
+    )
+
+    refs = select_parent_refs(predicate, rows)
+
+    assert [ref.id for ref in refs] == ["run-b", "run-c"]
+
+
 def test_freeze_and_refresh_report_new_gone_and_reprocess_counts() -> None:
     initial_rows = manifest_index_rows_from_records([_record("run-a"), _record("run-b")])
     query = ManifestPredicate(source_set_ids=["sweep-a"], statuses=["completed"])
@@ -153,3 +179,49 @@ def test_freeze_query_preserves_query_manifest_kind() -> None:
 
     assert frozen.manifest_kind == "EvaluationRunManifest"
     assert frozen.frozen_refs[0].kind == "EvaluationRunManifest"
+
+
+def test_selection_spec_rejects_non_empty_cross_mode_fields() -> None:
+    query = {"manifest_kind": "TrainingRunManifest", "tags": ["keep"]}
+    frozen_ref = {"kind": "TrainingRunManifest", "id": "run-a", "role": "training_run"}
+
+    invalid_payloads = [
+        (
+            {"mode": "explicit", "ids": ["run-a"], "query": query},
+            "explicit SelectionSpec must not include query",
+        ),
+        (
+            {"mode": "explicit", "ids": ["run-a"], "frozen_refs": [frozen_ref]},
+            "explicit SelectionSpec must not include frozen_refs",
+        ),
+        (
+            {"mode": "query", "ids": ["run-a"], "query": query},
+            "query SelectionSpec must not include ids",
+        ),
+        (
+            {"mode": "query", "query": query, "frozen_refs": [frozen_ref]},
+            "query SelectionSpec must not include frozen_refs",
+        ),
+        (
+            {"mode": "frozen", "ids": ["run-a"], "query": query, "frozen_refs": [frozen_ref]},
+            "frozen SelectionSpec must not include ids",
+        ),
+    ]
+
+    for payload, message in invalid_payloads:
+        with pytest.raises(ValidationError, match=message):
+            SelectionSpec.model_validate(payload)
+
+
+def test_selection_spec_normalizes_empty_cross_mode_fields() -> None:
+    query = ManifestPredicate(tags=["keep"])
+    frozen_ref = ParentRef(kind="TrainingRunManifest", id="run-a", role="training_run")
+
+    query_spec = SelectionSpec(mode="query", ids=[], query=query, frozen_refs=[])
+    frozen_spec = SelectionSpec(mode="frozen", ids=[], query=query, frozen_refs=[frozen_ref])
+    explicit_spec = SelectionSpec(mode="explicit", ids=["run-a"], query=None, frozen_refs=[])
+
+    assert query_spec.ids == []
+    assert query_spec.frozen_refs == []
+    assert frozen_spec.frozen_refs == [frozen_ref]
+    assert explicit_spec.ids == ["run-a"]
