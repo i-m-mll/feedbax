@@ -48,27 +48,56 @@ export interface ValidationWarning {
   location?: { node?: string; port?: string } & Record<string, unknown>;
 }
 
+interface GraphValidationIndex {
+  wiredInputs: Set<string>;
+  wiredOutputs: Set<string>;
+  inputBindings: Set<string>;
+  outputBindings: Set<string>;
+}
+
+function portKey(nodeId: string, port: string): string {
+  return `${nodeId}.${port}`;
+}
+
+function buildGraphValidationIndex(graph: GraphSpec): GraphValidationIndex {
+  const wiredInputs = new Set<string>();
+  const wiredOutputs = new Set<string>();
+  for (const wire of graph.wires) {
+    wiredInputs.add(portKey(wire.target_node, wire.target_port));
+    wiredOutputs.add(portKey(wire.source_node, wire.source_port));
+  }
+
+  return {
+    wiredInputs,
+    wiredOutputs,
+    inputBindings: new Set(
+      Object.values(graph.input_bindings).map(([nodeId, port]) => portKey(nodeId, port))
+    ),
+    outputBindings: new Set(
+      Object.values(graph.output_bindings).map(([nodeId, port]) => portKey(nodeId, port))
+    ),
+  };
+}
+
 export function validateGraph(
   graph: GraphSpec,
   schemaRegistry?: Pick<StudioSchemaRegistry, 'issues' | 'ports'> | null
 ): ValidationResult {
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
+  const graphIndex = buildGraphValidationIndex(graph);
   const taskBoundInputs = new Set(
     (schemaRegistry?.ports ?? [])
       .filter((port) => port.direction === 'input' && port.node_id && port.bound_task_data_id)
-      .map((port) => `${port.node_id}.${port.port}`)
+      .map((port) => portKey(port.node_id!, port.port))
   );
 
   for (const [nodeName, node] of Object.entries(graph.nodes)) {
     for (const inputPort of node.input_ports) {
-      const hasWire = graph.wires.some(
-        (w) => w.target_node === nodeName && w.target_port === inputPort
-      );
-      const hasBinding = Object.values(graph.input_bindings).some(
-        ([n, p]) => n === nodeName && p === inputPort
-      );
-      const hasTaskDataBinding = taskBoundInputs.has(`${nodeName}.${inputPort}`);
+      const key = portKey(nodeName, inputPort);
+      const hasWire = graphIndex.wiredInputs.has(key);
+      const hasBinding = graphIndex.inputBindings.has(key);
+      const hasTaskDataBinding = taskBoundInputs.has(key);
 
       if (!hasWire && !hasBinding && !hasTaskDataBinding) {
         errors.push({
@@ -80,12 +109,9 @@ export function validateGraph(
     }
 
     for (const outputPort of node.output_ports) {
-      const hasWire = graph.wires.some(
-        (w) => w.source_node === nodeName && w.source_port === outputPort
-      );
-      const hasBinding = Object.values(graph.output_bindings).some(
-        ([n, p]) => n === nodeName && p === outputPort
-      );
+      const key = portKey(nodeName, outputPort);
+      const hasWire = graphIndex.wiredOutputs.has(key);
+      const hasBinding = graphIndex.outputBindings.has(key);
 
       if (!hasWire && !hasBinding) {
         warnings.push({

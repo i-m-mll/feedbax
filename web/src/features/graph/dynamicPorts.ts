@@ -33,23 +33,42 @@ export function muxPortCountFromSpec(spec: ComponentSpec): number {
   );
 }
 
-function maxBoundMuxInputIndex(
+interface MuxBindingIndex {
+  maxInputIndexByNode: Map<string, number>;
+  occupiedInputPortsByNode: Map<string, Set<string>>;
+}
+
+function addMuxInputReference(index: MuxBindingIndex, nodeId: string, port: string): void {
+  const inputIndex = muxInputIndex(port);
+  if (inputIndex === null) return;
+  index.maxInputIndexByNode.set(
+    nodeId,
+    Math.max(index.maxInputIndexByNode.get(nodeId) ?? -1, inputIndex)
+  );
+  const occupiedPorts = index.occupiedInputPortsByNode.get(nodeId) ?? new Set<string>();
+  occupiedPorts.add(port);
+  index.occupiedInputPortsByNode.set(nodeId, occupiedPorts);
+}
+
+function buildMuxBindingIndex(
   graph: GraphSpec,
-  nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
-): number {
-  let maxIndex = -1;
+): MuxBindingIndex {
+  const index: MuxBindingIndex = {
+    maxInputIndexByNode: new Map(),
+    occupiedInputPortsByNode: new Map(),
+  };
   for (const wire of graph.wires) {
-    if (wire.target_node !== nodeId) continue;
-    const index = muxInputIndex(wire.target_port);
-    if (index !== null) maxIndex = Math.max(maxIndex, index);
+    addMuxInputReference(index, wire.target_node, wire.target_port);
   }
   for (const binding of taskBindingSpec?.bindings ?? []) {
-    if (binding.target_node_id !== nodeId) continue;
-    const index = muxInputIndex(binding.target_port);
-    if (index !== null) maxIndex = Math.max(maxIndex, index);
+    addMuxInputReference(index, binding.target_node_id, binding.target_port);
   }
-  return maxIndex;
+  return index;
+}
+
+function maxBoundMuxInputIndex(index: MuxBindingIndex, nodeId: string): number {
+  return index.maxInputIndexByNode.get(nodeId) ?? -1;
 }
 
 function currentMuxInputPortSet(spec: ComponentSpec): Set<string> {
@@ -78,12 +97,13 @@ export function normalizeDynamicPorts(
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): GraphSpec {
   let changed = false;
+  const muxBindingIndex = buildMuxBindingIndex(graph, taskBindingSpec);
   const nodes = Object.fromEntries(
     Object.entries(graph.nodes).map(([nodeId, spec]) => {
       if (!isMuxSpec(spec)) return [nodeId, spec];
       const requiredCount = Math.max(
         MIN_MUX_INPUT_PORTS,
-        maxBoundMuxInputIndex(graph, nodeId, taskBindingSpec) + 1
+        maxBoundMuxInputIndex(muxBindingIndex, nodeId) + 1
       );
       const normalized = normalizeMuxSpec(spec, requiredCount);
       if (
@@ -98,16 +118,28 @@ export function normalizeDynamicPorts(
   return changed ? { ...graph, nodes } : graph;
 }
 
-export function materializeMuxSpecForBindings(
+function materializeMuxSpecForBindingsWithIndex(
   graph: GraphSpec,
   nodeId: string,
-  taskBindingSpec?: StudioTaskBindingSpec | null
+  muxBindingIndex: MuxBindingIndex
 ): ComponentSpec | null {
   const spec = graph.nodes[nodeId];
   if (!isMuxSpec(spec)) return null;
   return normalizeMuxSpec(
     spec,
-    Math.max(muxPortCountFromSpec(spec), maxBoundMuxInputIndex(graph, nodeId, taskBindingSpec) + 1)
+    Math.max(muxPortCountFromSpec(spec), maxBoundMuxInputIndex(muxBindingIndex, nodeId) + 1)
+  );
+}
+
+export function materializeMuxSpecForBindings(
+  graph: GraphSpec,
+  nodeId: string,
+  taskBindingSpec?: StudioTaskBindingSpec | null
+): ComponentSpec | null {
+  return materializeMuxSpecForBindingsWithIndex(
+    graph,
+    nodeId,
+    buildMuxBindingIndex(graph, taskBindingSpec)
   );
 }
 
@@ -116,17 +148,27 @@ export function visibleMuxInputPorts(
   nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): { ports: string[]; nextPort: string | null } | null {
-  const spec = materializeMuxSpecForBindings(graph, nodeId, taskBindingSpec);
+  const muxBindingIndex = buildMuxBindingIndex(graph, taskBindingSpec);
+  const spec = materializeMuxSpecForBindingsWithIndex(graph, nodeId, muxBindingIndex);
   if (!spec) return null;
-  const materializedGraph =
-    spec === graph.nodes[nodeId]
-      ? graph
-      : { ...graph, nodes: { ...graph.nodes, [nodeId]: spec } };
-  const nextPort = nextMuxInputPort(materializedGraph, nodeId, taskBindingSpec);
+  const nextPort = nextMuxInputPortWithIndex(graph, nodeId, muxBindingIndex, spec);
   return {
     ports: nextPort ? [...spec.input_ports, nextPort] : spec.input_ports,
     nextPort,
   };
+}
+
+function muxHasSpareInputWithIndex(
+  spec: ComponentSpec,
+  nodeId: string,
+  muxBindingIndex: MuxBindingIndex
+): boolean {
+  const currentPorts = currentMuxInputPortSet(spec);
+  const occupiedPorts = muxBindingIndex.occupiedInputPortsByNode.get(nodeId) ?? new Set<string>();
+  for (const port of currentPorts) {
+    if (!occupiedPorts.has(port)) return true;
+  }
+  return false;
 }
 
 export function muxHasSpareInput(
@@ -136,17 +178,19 @@ export function muxHasSpareInput(
 ): boolean {
   const spec = graph.nodes[nodeId];
   if (!isMuxSpec(spec)) return false;
-  const currentPorts = currentMuxInputPortSet(spec);
-  for (const port of currentPorts) {
-    const wired = graph.wires.some(
-      (wire) => wire.target_node === nodeId && wire.target_port === port
-    );
-    const taskBound = (taskBindingSpec?.bindings ?? []).some(
-      (binding) => binding.target_node_id === nodeId && binding.target_port === port
-    );
-    if (!wired && !taskBound) return true;
-  }
-  return false;
+  return muxHasSpareInputWithIndex(spec, nodeId, buildMuxBindingIndex(graph, taskBindingSpec));
+}
+
+function nextMuxInputPortWithIndex(
+  graph: GraphSpec,
+  nodeId: string,
+  muxBindingIndex: MuxBindingIndex,
+  materializedSpec?: ComponentSpec | null
+): string | null {
+  const spec = materializedSpec ?? graph.nodes[nodeId];
+  if (!isMuxSpec(spec)) return null;
+  if (muxHasSpareInputWithIndex(spec, nodeId, muxBindingIndex)) return null;
+  return muxInputPort(muxPortCountFromSpec(spec));
 }
 
 export function nextMuxInputPort(
@@ -154,15 +198,13 @@ export function nextMuxInputPort(
   nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): string | null {
-  const materializedSpec = materializeMuxSpecForBindings(graph, nodeId, taskBindingSpec);
-  const spec = materializedSpec ?? graph.nodes[nodeId];
-  if (!isMuxSpec(spec)) return null;
-  const materializedGraph =
-    materializedSpec && materializedSpec !== graph.nodes[nodeId]
-      ? { ...graph, nodes: { ...graph.nodes, [nodeId]: materializedSpec } }
-      : graph;
-  if (muxHasSpareInput(materializedGraph, nodeId, taskBindingSpec)) return null;
-  return muxInputPort(muxPortCountFromSpec(spec));
+  const muxBindingIndex = buildMuxBindingIndex(graph, taskBindingSpec);
+  return nextMuxInputPortWithIndex(
+    graph,
+    nodeId,
+    muxBindingIndex,
+    materializeMuxSpecForBindingsWithIndex(graph, nodeId, muxBindingIndex)
+  );
 }
 
 export function isNextMuxInputPort(

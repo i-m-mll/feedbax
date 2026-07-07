@@ -8,7 +8,7 @@ import {
 } from './dimensions';
 import type { ComponentDefinition } from '@/types/components';
 import type { GraphSpec } from '@/types/graph';
-import type { StudioTaskBindingSpec } from '@/types/workspace';
+import type { StudioSchemaRegistry, StudioTaskBindingSpec } from '@/types/workspace';
 
 const components: ComponentDefinition[] = [
   {
@@ -346,6 +346,53 @@ describe('projectStudioSchema', () => {
     );
 
     expect(issues.map((issue) => issue.type)).toContain('graph_wire_dtype_mismatch');
+  });
+
+  it('projects large graph schemas without repeated port-array scans per wire', () => {
+    const nodeCount = 140;
+    const largeGraph: GraphSpec = {
+      nodes: Object.fromEntries(
+        Array.from({ length: nodeCount }, (_, index) => [
+          `node_${index}`,
+          {
+            type: 'VectorSource',
+            params: {},
+            input_ports: ['input'],
+            output_ports: ['output'],
+          },
+        ])
+      ),
+      wires: Array.from({ length: nodeCount - 1 }, (_, index) => ({
+        source_node: `node_${index}`,
+        source_port: 'output',
+        target_node: `node_${index + 1}`,
+        target_port: 'input',
+      })),
+      input_ports: ['input'],
+      output_ports: ['output'],
+      input_bindings: { input: ['node_0', 'input'] },
+      output_bindings: { output: [`node_${nodeCount - 1}`, 'output'] },
+    };
+    const originalFind = Array.prototype.find;
+    let findCalls = 0;
+    let registry: StudioSchemaRegistry | null = null;
+
+    Array.prototype.find = function countedFind<T>(
+      this: T[],
+      predicate: (value: T, index: number, array: T[]) => unknown,
+      thisArg?: unknown
+    ): T | undefined {
+      findCalls += 1;
+      return originalFind.call(this, predicate, thisArg);
+    };
+    try {
+      registry = projectStudioSchema(largeGraph, components);
+    } finally {
+      Array.prototype.find = originalFind;
+    }
+
+    expect(registry?.ports).toHaveLength(nodeCount * 2 + 2);
+    expect(findCalls).toBeLessThan(20);
   });
 
   it('projects dynamic mux input ports with the mux input schema', () => {
