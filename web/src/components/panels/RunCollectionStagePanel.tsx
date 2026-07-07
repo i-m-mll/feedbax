@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react';
 import clsx from 'clsx';
 import {
   Activity,
@@ -23,6 +23,7 @@ import {
   Server,
   SlidersHorizontal,
   Trash2,
+  Upload,
   X,
   XCircle,
 } from 'lucide-react';
@@ -30,6 +31,7 @@ import { getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspa
 import { useGraphStore } from '@/stores/graphStore';
 import { useSelectionContextStore } from '@/stores/selectionContextStore';
 import { useTrainingStore } from '@/stores/trainingStore';
+import { useRunStore } from '@/stores/runStore';
 import type { FrozenSnapshotProjection } from '@/stores/selectionContextStore';
 import {
   prepareStudioTrainingExecution,
@@ -39,11 +41,15 @@ import {
 } from '@/api/client';
 import {
   cancelTrainingRun,
+  compareTrainingRuns,
   deleteTrainingRun,
   fetchEvalRunManifest,
   fetchTrainingRunManifest,
+  importManifestPacket,
+  importRunsDir,
   supersedeTrainingRun,
 } from '@/api/runAPI';
+import { apiErrorMessage } from '@/api/request';
 import {
   bestTrainingRun,
   buildLineageProjection,
@@ -104,6 +110,12 @@ import {
   trainingRunGroupId,
   UNGROUPED_RUN_GROUP_ID,
 } from '@/utils/trainRunTable';
+import {
+  buildTrainingRunComparison,
+  trainingCompareFields,
+  visibleCompareFields,
+  type TrainingRunComparison,
+} from '@/utils/runComparison';
 import type { TrainingProgress } from '@/types/training';
 import type { TrainingRun } from '@/types/runs';
 import type {
@@ -164,9 +176,23 @@ export function TrainCollectionPanel() {
   const previewSelectionId = useSelectionContextStore((state) => state.previewFocus);
   const setSyncMode = useSelectionContextStore((state) => state.setSyncMode);
   const setFrozenSnapshot = useSelectionContextStore((state) => state.setFrozenSnapshot);
+  const reloadTrainingRuns = useRunStore((state) => state.loadTrainingRuns);
   const [view, setView] = useState<RunView>('all');
   const [sort, setSort] = useState<SortState>({ key: 'final_validation_loss', direction: 'asc' });
   const [collapsedSets, setCollapsedSets] = useState<Set<string>>(() => new Set());
+  const [compareState, setCompareState] = useState<{
+    busy: boolean;
+    error: string | null;
+    response: Awaited<ReturnType<typeof compareTrainingRuns>> | null;
+  }>({ busy: false, error: null, response: null });
+  const [showIdenticalCompareFields, setShowIdenticalCompareFields] = useState(false);
+  const [importState, setImportState] = useState({
+    packetPath: '',
+    runsDirPath: '',
+    busy: false as false | 'packet' | 'runs-dir',
+    error: null as string | null,
+    summary: null as string | null,
+  });
   const [matrix, setMatrix] = useState<TrainMatrixSpec>(() => initialMatrixSpec(null, null));
   const [editingAxisId, setEditingAxisId] = useState<string | null>(null);
   const [axisDraft, setAxisDraft] = useState({
@@ -202,10 +228,21 @@ export function TrainCollectionPanel() {
   const ghostRows = useMemo(() => ghostRowsForMatrix(matrix), [matrix]);
   const axisColumns = useMemo(() => trainAxisColumns(rows, matrix.axes), [matrix.axes, rows]);
   const metricColumns = useMemo(() => runMetricColumns(metrics, rows), [metrics, rows]);
+  const compareFields = useMemo(
+    () => trainingCompareFields(axisColumns, metricColumns),
+    [axisColumns, metricColumns]
+  );
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedRunIds.has(row.id)),
     [rows, selectedRunIds]
+  );
+  const comparison = useMemo<TrainingRunComparison | null>(
+    () =>
+      selectedRows.length >= 2
+        ? buildTrainingRunComparison(selectedRows, compareFields, compareState.response)
+        : null,
+    [compareFields, compareState.response, selectedRows]
   );
   const focusedRun = useMemo(
     () => rows.find((row) => row.id === effectiveFocusedRunId) ?? selectedRows[0] ?? rows[0] ?? null,
@@ -286,6 +323,7 @@ export function TrainCollectionPanel() {
 
   const clearSelection = useCallback(() => {
     setSelectedIds([]);
+    setCompareState({ busy: false, error: null, response: null });
   }, [setSelectedIds]);
 
   const toggleSetCollapsed = useCallback((runSetId: string) => {
@@ -316,6 +354,58 @@ export function TrainCollectionPanel() {
     );
     setActiveStage(evalStage.id);
   }, [evalStage, rows, selectedRunIds, setActiveStage, trainStage, updateStageDraft]);
+
+  const runCompare = useCallback(async () => {
+    if (selectedRows.length < 2) return;
+    setCompareState({ busy: true, error: null, response: null });
+    try {
+      const response = await compareTrainingRuns({
+        runIds: selectedRows.map((row) => row.id),
+        paramFields: compareFields.params.map((field) => field.id),
+        metricFields: compareFields.metrics.map((field) => field.id),
+      });
+      setCompareState({ busy: false, error: null, response });
+    } catch (error) {
+      setCompareState({
+        busy: false,
+        error: `${apiErrorMessage(error, 'Could not fetch compare data')}; showing table values.`,
+        response: null,
+      });
+    }
+  }, [compareFields, selectedRows]);
+
+  const importRuns = useCallback(
+    async (kind: 'packet' | 'runs-dir', path: string) => {
+      const trimmed = path.trim();
+      if (!trimmed) return;
+      setImportState((current) => ({ ...current, busy: kind, error: null, summary: null }));
+      try {
+        const result =
+          kind === 'packet'
+            ? await importManifestPacket(trimmed)
+            : await importRunsDir(trimmed);
+        await reloadTrainingRuns();
+        const imported = result.importedManifestIds.length;
+        const skipped = result.skippedManifestIds.length;
+        setImportState((current) => ({
+          ...current,
+          busy: false,
+          error: null,
+          summary: `Imported ${imported} manifest${imported === 1 ? '' : 's'}${
+            skipped ? `, skipped ${skipped} existing` : ''
+          }.`,
+        }));
+      } catch (error) {
+        setImportState((current) => ({
+          ...current,
+          busy: false,
+          error: apiErrorMessage(error, 'Import failed'),
+          summary: null,
+        }));
+      }
+    },
+    [reloadTrainingRuns]
+  );
 
   const commitAxisDraft = useCallback(() => {
     if (matrixPathError) return;
@@ -640,6 +730,26 @@ export function TrainCollectionPanel() {
               </div>
             )}
 
+            <ManifestImportPanel
+              packetPath={importState.packetPath}
+              runsDirPath={importState.runsDirPath}
+              busy={importState.busy}
+              error={importState.error}
+              summary={importState.summary}
+              onPacketPathChange={(packetPath) =>
+                setImportState((current) => ({ ...current, packetPath }))
+              }
+              onRunsDirPathChange={(runsDirPath) =>
+                setImportState((current) => ({ ...current, runsDirPath }))
+              }
+              onImportPacket={() => importRuns('packet', importState.packetPath)}
+              onImportRunsDir={() => importRuns('runs-dir', importState.runsDirPath)}
+              onDropPath={(path) => {
+                setImportState((current) => ({ ...current, packetPath: path }));
+                void importRuns('packet', path);
+              }}
+            />
+
             <RunTable
               title="Training runs"
               rows={visibleRows}
@@ -663,6 +773,8 @@ export function TrainCollectionPanel() {
               onSelectAll={selectAll}
               onSelectBest={selectBest}
               onClear={clearSelection}
+              onCompare={runCompare}
+              compareBusy={compareState.busy}
               onPreview={(id) => previewSelectionId(id)}
               onCommitFocus={(run) => focusSelectionId(run.id)}
               onSyncModeChange={setSyncMode}
@@ -672,6 +784,16 @@ export function TrainCollectionPanel() {
               onRestageRun={restageRun}
               onLifecycleAction={runLifecycleAction}
             />
+
+            {comparison && (
+              <RunComparePanel
+                comparison={comparison}
+                rows={selectedRows}
+                showIdentical={showIdenticalCompareFields}
+                error={compareState.error}
+                onToggleIdentical={() => setShowIdenticalCompareFields((value) => !value)}
+              />
+            )}
 
             <LineageProjectionPanel
               projection={lineage}
@@ -2011,6 +2133,208 @@ function lineageStatusClass(status: string): string {
   return 'bg-slate-100 text-slate-600';
 }
 
+function ManifestImportPanel({
+  packetPath,
+  runsDirPath,
+  busy,
+  error,
+  summary,
+  onPacketPathChange,
+  onRunsDirPathChange,
+  onImportPacket,
+  onImportRunsDir,
+  onDropPath,
+}: {
+  packetPath: string;
+  runsDirPath: string;
+  busy: false | 'packet' | 'runs-dir';
+  error: string | null;
+  summary: string | null;
+  onPacketPathChange: (value: string) => void;
+  onRunsDirPathChange: (value: string) => void;
+  onImportPacket: () => void;
+  onImportRunsDir: () => void;
+  onDropPath: (path: string) => void;
+}) {
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined;
+      const path = file?.path ?? file?.webkitRelativePath ?? '';
+      if (path) onDropPath(path);
+    },
+    [onDropPath]
+  );
+  return (
+    <section
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={handleDrop}
+      className="rounded-lg border border-dashed border-slate-300 bg-white p-4 shadow-sm"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Upload className="h-4 w-4 shrink-0 text-slate-400" />
+          <div>
+            <div className="text-sm font-semibold text-slate-800">Import runs</div>
+            <div className="text-xs text-slate-500">
+              Import manifest packets or a FEEDBAX_RUNS_DIR into the run table.
+            </div>
+          </div>
+        </div>
+        {summary && (
+          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+            {summary}
+          </span>
+        )}
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        <div className="flex min-w-0 gap-2">
+          <input
+            value={packetPath}
+            onChange={(event) => onPacketPathChange(event.target.value)}
+            placeholder="/path/to/manifest-packet"
+            className="min-w-0 flex-1 rounded-md border border-slate-200 px-3 py-2 text-xs text-slate-700"
+          />
+          <button
+            type="button"
+            disabled={busy !== false || packetPath.trim().length === 0}
+            onClick={onImportPacket}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy === 'packet' ? 'Importing' : 'Packet'}
+          </button>
+        </div>
+        <div className="flex min-w-0 gap-2">
+          <input
+            value={runsDirPath}
+            onChange={(event) => onRunsDirPathChange(event.target.value)}
+            placeholder="/path/to/FEEDBAX_RUNS_DIR"
+            className="min-w-0 flex-1 rounded-md border border-slate-200 px-3 py-2 text-xs text-slate-700"
+          />
+          <button
+            type="button"
+            disabled={busy !== false || runsDirPath.trim().length === 0}
+            onClick={onImportRunsDir}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy === 'runs-dir' ? 'Indexing' : 'Runs dir'}
+          </button>
+        </div>
+      </div>
+      {error && (
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {error}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RunComparePanel({
+  comparison,
+  rows,
+  showIdentical,
+  error,
+  onToggleIdentical,
+}: {
+  comparison: TrainingRunComparison;
+  rows: TrainingRunSummary[];
+  showIdentical: boolean;
+  error: string | null;
+  onToggleIdentical: () => void;
+}) {
+  const paramFields = visibleCompareFields(comparison.paramFields, showIdentical);
+  const metricFields = visibleCompareFields(comparison.metricFields, showIdentical);
+  return (
+    <section className="max-w-full overflow-hidden rounded-lg border border-sky-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-sky-100 px-4 py-3">
+        <div>
+          <div className="font-semibold text-slate-800">Compare selected runs</div>
+          <div className="text-xs text-slate-500">
+            {rows.length} selected; identical fields are {showIdentical ? 'shown' : 'collapsed'}.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onToggleIdentical}
+          className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+        >
+          {showIdentical ? 'Hide identical' : 'Show identical'}
+        </button>
+      </div>
+      {error && (
+        <div className="border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-700">
+          {error}
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-xs">
+          <thead className="border-b border-slate-100 bg-slate-50 text-slate-500">
+            <tr>
+              <th className="w-48 px-4 py-2 font-semibold">Field</th>
+              {rows.map((row) => (
+                <th key={row.id} className="min-w-36 px-3 py-2 font-semibold">
+                  <span className="block truncate" title={row.label}>{row.label}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            <CompareSectionRows title="Parameters" fields={paramFields} rows={rows} />
+            <CompareSectionRows title="Metrics" fields={metricFields} rows={rows} />
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function CompareSectionRows({
+  title,
+  fields,
+  rows,
+}: {
+  title: string;
+  fields: ReturnType<typeof visibleCompareFields>;
+  rows: TrainingRunSummary[];
+}) {
+  return (
+    <>
+      <tr className="bg-slate-50/70">
+        <td colSpan={rows.length + 1} className="px-4 py-2 font-semibold text-slate-700">
+          {title}
+        </td>
+      </tr>
+      {fields.length === 0 ? (
+        <tr>
+          <td colSpan={rows.length + 1} className="px-4 py-3 text-slate-400">
+            No differing {title.toLowerCase()}.
+          </td>
+        </tr>
+      ) : (
+        fields.map((field) => (
+          <tr key={`${field.kind}:${field.id}`}>
+            <td className="px-4 py-2 font-medium text-slate-700">{field.label}</td>
+            {rows.map((row) => (
+              <td key={row.id} className="px-3 py-2 text-slate-600">
+                {formatCompareValue(field.values[row.id])}
+              </td>
+            ))}
+          </tr>
+        ))
+      )}
+    </>
+  );
+}
+
+function formatCompareValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return 'Not recorded';
+  if (typeof value === 'number') return formatMetric(value, 4);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
 function RunTable({
   title,
   rows,
@@ -2034,6 +2358,8 @@ function RunTable({
   onSelectAll,
   onSelectBest,
   onClear,
+  onCompare,
+  compareBusy = false,
   onPreview,
   onCommitFocus,
   onSyncModeChange,
@@ -2065,6 +2391,8 @@ function RunTable({
   onSelectAll: () => void;
   onSelectBest: () => void;
   onClear: () => void;
+  onCompare?: () => void;
+  compareBusy?: boolean;
   onPreview?: (id: string | null) => void;
   onCommitFocus?: (run: TrainingRunSummary) => void;
   onSyncModeChange?: (mode: 'linked' | 'decoupled') => void;
@@ -2117,6 +2445,17 @@ function RunTable({
           >
             Clear
           </button>
+          {onCompare && (
+            <button
+              type="button"
+              disabled={selectedIds.size < 2 || compareBusy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={onCompare}
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              {compareBusy ? 'Comparing' : 'Compare'}
+            </button>
+          )}
           {onSyncModeChange && (
             <button
               type="button"

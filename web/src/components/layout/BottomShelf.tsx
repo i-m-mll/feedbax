@@ -106,6 +106,7 @@ export function BottomShelf({
   const activeContent = useMemo(() => {
     if (mode === 'console') return <ConsolePanel />;
     if (activeStage?.kind === 'train') return <TrainCollectionPanel />;
+    if (activeStage?.kind === 'compare') return <TrainCollectionPanel />;
     if (activeStage?.kind === 'eval') return <EvaluateCollectionPanel />;
     if (activeStage?.kind === 'analysis') return <AnalysisPanel />;
     return <StageDraftPanel stage={activeStage} scenario={activeScenario} />;
@@ -250,6 +251,7 @@ export function BottomShelf({
           </div>
           {mode === 'stage' &&
             activeStage?.kind !== 'train' &&
+            activeStage?.kind !== 'compare' &&
             activeStage?.kind !== 'eval' &&
             activeStage?.kind !== 'analysis' && (
             <Suspense fallback={null}>

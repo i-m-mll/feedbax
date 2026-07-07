@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -127,6 +128,10 @@ def _packet_index(packet: Path) -> dict[str, object]:
     return json.loads((packet / "packet.json").read_text(encoding="utf-8"))
 
 
+def _write_packet_index(packet: Path, index: dict[str, object]) -> None:
+    (packet / "packet.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+
+
 def test_manifest_packet_exports_descendant_closure_and_imports_fresh_root(
     tmp_path: Path,
 ) -> None:
@@ -230,6 +235,89 @@ def test_manifest_packet_import_fails_closed_for_tampered_manifest_and_artifact(
     assert not (tmp_path / "artifact_target" / "manifests").exists()
 
 
+def test_manifest_packet_import_rejects_manifest_path_traversal_without_writes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    packet = tmp_path / "packet_parent" / "packet"
+    target = tmp_path / "target_parent" / "target"
+    ids = _write_run_tree(source)
+    export_manifest_packet([ids["training"]], root=source, dest=packet)
+
+    index = _packet_index(packet)
+    entry = next(
+        entry
+        for entry in index["manifests"]
+        if entry["id"] == ids["training"]
+    )
+    outside_packet = packet.parent / "escape.json"
+    outside_packet.write_bytes((packet / entry["path"]).read_bytes())
+    entry["path"] = "../escape.json"
+    entry["sha256"] = hashlib.sha256(outside_packet.read_bytes()).hexdigest()
+    _write_packet_index(packet, index)
+
+    outside_target = target.parent / "escape.json"
+    assert not outside_target.exists()
+
+    with pytest.raises(ManifestPacketValidationError, match="Unsafe packet manifest path"):
+        import_manifest_packet(packet, root=target)
+
+    assert not outside_target.exists()
+    assert not (target / "manifests").exists()
+
+
+def test_manifest_packet_import_rejects_absolute_manifest_paths(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    packet = tmp_path / "packet"
+    target = tmp_path / "target"
+    ids = _write_run_tree(source)
+    export_manifest_packet([ids["training"]], root=source, dest=packet)
+
+    index = _packet_index(packet)
+    entry = next(
+        entry
+        for entry in index["manifests"]
+        if entry["id"] == ids["training"]
+    )
+    outside_packet = tmp_path / "absolute_escape.json"
+    outside_packet.write_bytes((packet / entry["path"]).read_bytes())
+    entry["path"] = str(outside_packet)
+    entry["sha256"] = hashlib.sha256(outside_packet.read_bytes()).hexdigest()
+    _write_packet_index(packet, index)
+
+    with pytest.raises(ManifestPacketValidationError, match="Unsafe packet manifest path"):
+        import_manifest_packet(packet, root=target)
+
+    assert not (target / "manifests").exists()
+
+
+def test_manifest_packet_import_rejects_artifact_path_traversal_without_writes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    packet = tmp_path / "packet_parent" / "packet"
+    target = tmp_path / "target"
+    ids = _write_run_tree(source)
+    export_manifest_packet([ids["training"]], root=source, dest=packet)
+
+    index = _packet_index(packet)
+    entry = next(entry for entry in index["artifacts"] if entry["mode"] == "included")
+    outside_packet = packet.parent / "artifact.bin"
+    outside_packet.write_bytes((packet / entry["path"]).read_bytes())
+    entry["path"] = "../artifact.bin"
+    entry["sha256"] = hashlib.sha256(outside_packet.read_bytes()).hexdigest()
+    entry["size_bytes"] = outside_packet.stat().st_size
+    _write_packet_index(packet, index)
+
+    with pytest.raises(ManifestPacketValidationError, match="Unsafe packet artifact path"):
+        import_manifest_packet(packet, root=target)
+
+    assert not (target / "artifacts").exists()
+    assert not (target / "manifests").exists()
+
+
 def test_manifest_packet_import_rejects_packet_version_and_unknown_spec_family(
     tmp_path: Path,
 ) -> None:
@@ -262,11 +350,8 @@ def test_manifest_packet_import_rejects_packet_version_and_unknown_spec_family(
     packet_index = _packet_index(packet_unknown)
     for entry in packet_index["manifests"]:
         if entry["id"] == ids["evaluation"]:
-            entry["sha256"] = __import__("hashlib").sha256(eval_path.read_bytes()).hexdigest()
-    (packet_unknown / "packet.json").write_text(
-        json.dumps(packet_index, indent=2) + "\n",
-        encoding="utf-8",
-    )
+            entry["sha256"] = hashlib.sha256(eval_path.read_bytes()).hexdigest()
+    _write_packet_index(packet_unknown, packet_index)
 
     with pytest.raises(ManifestPacketValidationError, match="DownstreamEvaluationSpec"):
         import_manifest_packet(packet_unknown, root=tmp_path / "target_unknown")
