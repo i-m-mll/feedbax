@@ -47,6 +47,7 @@ describe('pipeline collection summaries', () => {
       }),
       rampDurationSteps: 80,
       sourceIssue: 'b399efc',
+      axisCoordinates: {},
     });
     expect(bestTrainingRun(rows)?.id).toBe(
       'rlrmp:b399efc:movement_ramp__power6_dur80'

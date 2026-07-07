@@ -22,6 +22,10 @@ export interface TrainingRunSummary {
   sourceIssue: string | null;
   provenanceId: string;
   uri: string | null;
+  axisCoordinates: Record<string, unknown>;
+  runSetId: string | null;
+  planned: boolean;
+  supersededBy: string | null;
 }
 
 export interface EvaluationRunSummary {
@@ -139,6 +143,7 @@ function uniqueRefs(refs: StudioManifestRef[]): StudioManifestRef[] {
 function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
   const hyperparams = objectValue(ref.metadata.hyperparams);
   const typedCheckpointAvailable = booleanValue(ref.metadata.checkpoint_available);
+  const axisCoordinates = axisCoordinatesFromRef(ref);
   return {
     id: ref.id,
     label: stringValue(ref.metadata.name) ?? ref.id,
@@ -165,6 +170,10 @@ function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: stringValue(ref.metadata.provenance_id) ?? ref.id,
     uri: ref.uri ?? null,
+    axisCoordinates,
+    runSetId: stringValue(ref.metadata.run_set_id),
+    planned: booleanValue(ref.metadata.planned) ?? false,
+    supersededBy: stringValue(ref.metadata.superseded_by),
   };
 }
 
@@ -195,6 +204,23 @@ function metadataValue(ref: StudioManifestRef, key: string): unknown {
   if (metrics && metrics[key] !== undefined) return metrics[key];
   const hyperparams = objectValue(ref.metadata.hyperparams);
   return hyperparams?.[key];
+}
+
+function axisCoordinatesFromRef(ref: StudioManifestRef): Record<string, unknown> {
+  const studio = objectValue(ref.metadata.studio);
+  const direct = objectValue(ref.metadata.axis_coordinates);
+  const nested = objectValue(studio?.axis_coordinates);
+  const coordinates = nested ?? direct ?? {};
+  const hyperparams = objectValue(ref.metadata.hyperparams);
+  const axisHyperparams = Object.fromEntries(
+    Object.entries(hyperparams ?? ref.metadata)
+      .filter(([key]) => key.startsWith('axis_'))
+      .map(([key, value]) => [key.slice('axis_'.length), value])
+  );
+  return {
+    ...axisHyperparams,
+    ...coordinates,
+  };
 }
 
 function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {

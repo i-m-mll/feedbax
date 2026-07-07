@@ -25,6 +25,10 @@ const baseRun: TrainingRunSummary = {
   sourceIssue: null,
   provenanceId: 'run:1',
   uri: null,
+  axisCoordinates: {},
+  runSetId: null,
+  planned: false,
+  supersededBy: null,
 };
 
 function metric(id: string, source: ScenarioMetricSpec['source']): ScenarioMetricSpec {
