@@ -15,6 +15,8 @@ import type {
 } from '@/generated/studioContracts';
 import {
   mechanicsEntityId,
+  objectiveEntityId,
+  selectorToEntityId,
   taskEntityId,
 } from '@/features/scenario/entities';
 import type {
@@ -23,6 +25,8 @@ import type {
   StudioScenarioEntityRegistry,
   StudioScenarioSpec,
   StudioSelectorRef,
+  StudioObjectiveSpec,
+  StudioObjectiveTermSpec,
 } from '@/types/workspace';
 
 export interface ScenarioProjectionItem {
@@ -52,6 +56,8 @@ export interface ResolvedSceneAnchor {
   position: [number, number] | null;
   selectable: boolean;
   hoverable: boolean;
+  interaction_roles: string[];
+  objective_roles: string[];
   frame: string;
   selector: StudioSelectorRef | null;
   metadata: Record<string, unknown>;
@@ -394,6 +400,105 @@ function interactionRoleSet(roles: unknown): Set<string> {
   return new Set();
 }
 
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
+  return typeof value === 'string' ? [value] : [];
+}
+
+function objectiveRolesForAnchor(
+  anchor: { semantic_role: string; interaction_roles?: unknown; metadata?: Record<string, unknown> },
+  selector: StudioSelectorRef | null
+): string[] {
+  const roles = new Set<string>();
+  for (const role of stringList(anchor.metadata?.objective_roles)) roles.add(role);
+  for (const role of stringList(anchor.metadata?.objective_role)) roles.add(role);
+  for (const role of stringList(anchor.metadata?.interaction_roles)) roles.add(role);
+  for (const role of stringList(anchor.interaction_roles)) {
+    if (
+      role.startsWith('objective-') ||
+      role.startsWith('canonical-for:') ||
+      role === 'illustrative'
+    ) {
+      roles.add(role);
+    }
+  }
+  const canonicalFor =
+    typeof anchor.metadata?.canonical_for === 'string'
+      ? anchor.metadata.canonical_for
+      : null;
+  if (canonicalFor) roles.add(`canonical-for:${canonicalFor}`);
+  if (anchor.metadata?.illustrative === true) roles.add('illustrative');
+  if (
+    selector &&
+    (anchor.semantic_role === 'endpoint' || anchor.semantic_role === 'center')
+  ) {
+    roles.add('objective-source');
+  }
+  if (anchor.semantic_role === 'target' || anchor.metadata?.canonical_goal === true) {
+    roles.add('objective-target');
+  }
+  return [...roles];
+}
+
+function selectorWithRepresentationMetadata(
+  selector: StudioSelectorRef | null,
+  anchorSubpath: string | null,
+  entity: StudioScenarioEntity
+): StudioSelectorRef | null {
+  if (!selector) return null;
+  const nodeId =
+    typeof entity.metadata.node_id === 'string' ? entity.metadata.node_id : null;
+  const outputPort =
+    selector.compact.startsWith('output:') ? selector.compact.replace(/^output:/, '') : null;
+  return {
+    ...selector,
+    metadata: {
+      ...selector.metadata,
+      ...(anchorSubpath ? { anchor_subpath: anchorSubpath } : {}),
+      ...(nodeId && outputPort
+        ? {
+            graph_port_node_id: nodeId,
+            graph_port_name: outputPort,
+            graph_port_direction: 'output',
+          }
+        : {}),
+    },
+  };
+}
+
+function anchorSelector(
+  binding: RepresentationBinding,
+  entity: StudioScenarioEntity
+): StudioSelectorRef | null {
+  if (binding?.kind === 'selector') {
+    return selectorWithRepresentationMetadata(
+      binding.selector,
+      binding.anchor_subpath ?? null,
+      entity
+    );
+  }
+  if (binding?.kind === 'trial_spec_path') {
+    return {
+      namespace: 'task_data',
+      compact: `task_data:${binding.path}`,
+      target_id: entity.scenario_id ?? null,
+      path: binding.path,
+      role: binding.path.startsWith('targets.') ? 'observed' : 'editable',
+      expected_shape: binding.dim ? ['time', binding.dim] : null,
+      dtype: null,
+      units: null,
+      frame: null,
+      metadata: {
+        label: entity.label,
+        source: 'representation_trial_spec_path',
+        trial_spec_path: binding.path,
+        ...(binding.dim ? { dim: binding.dim } : {}),
+      },
+    };
+  }
+  return null;
+}
+
 function anchorPositionsForElement(
   component: ComponentDefinition,
   nodeOrTask: ComponentSpec | { params?: Record<string, unknown> | null },
@@ -464,9 +569,19 @@ function resolveComponentRepresentation({
       position = taskAuthoringAnchorPosition(component, nodeOrTask, anchor);
     }
     localAnchorPositions.set(anchor.id, position);
-    const interactionRoles = interactionRoleSet(anchor.interaction_roles);
     const id = anchorGlobalId(entity.id, anchor.id);
     entityAnchorIds.push(id);
+    const selector = anchorSelector(anchor.binding, entity);
+    const interactionRoles = interactionRoleSet(anchor.interaction_roles);
+    const anchorMetadata = {
+      ...(representation.metadata?.temporality
+        ? { temporality: representation.metadata.temporality }
+        : {}),
+      ...(representation.metadata?.canonical_goal_anchor
+        ? { canonical_goal_anchor: representation.metadata.canonical_goal_anchor }
+        : {}),
+      ...(anchor.metadata ?? {}),
+    };
     scene.anchors.push({
       id,
       entity_id: entity.id,
@@ -476,9 +591,11 @@ function resolveComponentRepresentation({
       position,
       selectable: interactionRoles.has('selectable'),
       hoverable: interactionRoles.has('hoverable'),
+      interaction_roles: [...interactionRoles],
+      objective_roles: objectiveRolesForAnchor({ ...anchor, metadata: anchorMetadata }, selector),
       frame: anchor.frame ?? frame,
-      selector: bindingSelector(anchor.binding),
-      metadata: anchor.metadata ?? {},
+      selector,
+      metadata: anchorMetadata,
     });
   }
 
@@ -515,8 +632,7 @@ function resolveComponentRepresentation({
     } else if (element.archetype === 'distribution_glyph') {
       geometry = reachDistributionGeometry(component, nodeOrTask, element);
     } else if (element.archetype === 'objective_link') {
-      const points = anchorPositionsForElement(component, nodeOrTask, element, localAnchorPositions);
-      geometry = points.length >= 2 ? { kind: 'link', points } : { kind: 'none' };
+      continue;
     }
 
     const id = elementGlobalId(entity.id, element.id);
@@ -592,6 +708,8 @@ function addPlaceholderEntity(
     hoverable: true,
     frame: scene.frame,
     selector: entity.selector,
+    interaction_roles: ['selectable', 'hoverable'],
+    objective_roles: [],
     metadata: {},
   });
   scene.elements.push({
@@ -615,6 +733,93 @@ function addPlaceholderEntity(
     anchor_ids: [anchorId],
     element_ids: [elementId],
   });
+}
+
+function isObjectiveSpec(value: StudioScenarioSpec['objective_spec']): value is StudioObjectiveSpec {
+  return Boolean(value && typeof value === 'object' && Array.isArray((value as StudioObjectiveSpec).terms));
+}
+
+function anchorSelectorMatches(
+  anchor: ResolvedSceneAnchor,
+  selector: StudioSelectorRef | null | undefined
+): boolean {
+  if (!selector || !anchor.selector) return false;
+  if (anchor.selector.compact === selector.compact) return true;
+  if (selectorToEntityId(anchor.selector) && selectorToEntityId(anchor.selector) === selectorToEntityId(selector)) {
+    return true;
+  }
+  const selectorMetadata = selector.metadata ?? {};
+  const anchorMetadata = anchor.selector.metadata ?? {};
+  return (
+    selectorMetadata.graph_port_node_id === anchorMetadata.graph_port_node_id &&
+    selectorMetadata.graph_port_name === anchorMetadata.graph_port_name &&
+    selectorMetadata.graph_port_name === anchor.local_id
+  );
+}
+
+function anchorForObjectiveSelector(
+  scene: ResolvedScene,
+  selector: StudioSelectorRef | null | undefined,
+  role: 'source' | 'target'
+): ResolvedSceneAnchor | null {
+  const candidates = scene.anchors.filter(
+    (anchor) =>
+      anchor.position &&
+      anchorSelectorMatches(anchor, selector) &&
+      (role === 'source'
+        ? anchor.objective_roles.includes('objective-source')
+        : anchor.objective_roles.includes('objective-target'))
+  );
+  return candidates[0] ?? null;
+}
+
+function addObjectiveProjectionEntity(
+  scene: ResolvedScene,
+  registry: StudioScenarioEntityRegistry,
+  term: StudioObjectiveTermSpec
+) {
+  const entity = registry.entities[objectiveEntityId(term.id)];
+  if (!entity) return;
+  const sourceAnchor = anchorForObjectiveSelector(scene, term.source_selector, 'source');
+  const targetAnchor = anchorForObjectiveSelector(scene, term.target_selector, 'target');
+  if (!sourceAnchor?.position || !targetAnchor?.position) return;
+  const elementId = `${entity.id}::element:objective_link`;
+  scene.elements.push({
+    id: elementId,
+    entity_id: entity.id,
+    local_id: 'objective_link',
+    archetype: 'objective_link',
+    anchor_ids: [sourceAnchor.id, targetAnchor.id],
+    frame: sourceAnchor.frame,
+    scale_invariant: true,
+    style: {},
+    geometry: { kind: 'link', points: [sourceAnchor.position, targetAnchor.position] },
+    metadata: {
+      term_id: term.id,
+      source_anchor_id: sourceAnchor.id,
+      target_anchor_id: targetAnchor.id,
+      timing: term.temporal_selector ?? term.metadata.target_timing ?? null,
+    },
+  });
+  scene.entities.push({
+    id: entity.id,
+    label: entity.label,
+    kind: entity.kind,
+    summary: entity.summary ?? null,
+    related_entity_ids: entityRelations(entity),
+    anchor_ids: [sourceAnchor.id, targetAnchor.id],
+    element_ids: [elementId],
+  });
+}
+
+function addObjectiveProjections(
+  scene: ResolvedScene,
+  registry: StudioScenarioEntityRegistry,
+  objectiveSpec: StudioObjectiveSpec | null
+) {
+  for (const term of objectiveSpec?.terms ?? []) {
+    addObjectiveProjectionEntity(scene, registry, term);
+  }
 }
 
 function reachabilityMessages(
@@ -746,6 +951,11 @@ export function buildResolvedScene({
     resolvedGraph,
     componentsByName,
     scenario?.task_spec ?? null
+  );
+  addObjectiveProjections(
+    scene,
+    registry,
+    isObjectiveSpec(scenario?.objective_spec) ? scenario.objective_spec : null
   );
 
   return scene;

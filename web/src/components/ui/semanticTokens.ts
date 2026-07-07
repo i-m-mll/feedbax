@@ -29,7 +29,16 @@ export const semanticTokens = {
   },
   objective: {
     fill: 'bg-violet-500',
+    text: 'text-violet-700',
+    icon: 'text-violet-500',
+    background: 'bg-violet-50',
+    softBackground: 'bg-violet-50/60',
+    border: 'border-violet-200',
     ring: 'ring-violet-200',
+    stroke: '#8b5cf6',
+    strongStroke: '#7c3aed',
+    softFill: '#ede9fe',
+    paleFill: '#f5f3ff',
   },
   task: {
     fill: 'bg-emerald-500',
@@ -44,4 +53,3 @@ export const semanticTokens = {
     ring: 'ring-amber-200',
   },
 } as const;
-

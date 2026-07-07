@@ -1,11 +1,14 @@
 import {
+  preferredSelectorForGraphPort,
   selectorSchemaMetadata,
   selectorValueSchema,
+  type StudioSelectorOption,
 } from '@/features/scenario/selectors';
 import {
   graphPortEntityId,
   objectiveEntityId,
 } from '@/features/scenario/entities';
+import type { ResolvedSceneAnchor } from '@/features/scenario/projections';
 import type { ComponentSpec, WireSpec } from '@/types/graph';
 import {
   LOSS_TERM_SPEC_SCHEMA_ID,
@@ -49,6 +52,18 @@ export const OBJECTIVE_DISCOUNT_OPTIONS: Array<{
   { value: 'none', label: 'None' },
 ];
 
+export interface ObjectiveAnchorCanonicalization {
+  anchor: ResolvedSceneAnchor;
+  canonicalized: boolean;
+  message: string | null;
+}
+
+export interface ObjectiveAnchorAuthoringResult {
+  term: StudioObjectiveTermSpec;
+  source: ObjectiveAnchorCanonicalization;
+  target: ObjectiveAnchorCanonicalization;
+}
+
 export function isStudioObjectiveSpec(value: unknown): value is StudioObjectiveSpec {
   return Boolean(value && typeof value === 'object' && Array.isArray((value as StudioObjectiveSpec).terms));
 }
@@ -90,6 +105,193 @@ function uniqueTermId(spec: StudioObjectiveSpec, label: string): string {
     counter += 1;
   }
   return id;
+}
+
+function anchorRoleSet(anchor: ResolvedSceneAnchor | null | undefined): Set<string> {
+  return new Set([...(anchor?.interaction_roles ?? []), ...(anchor?.objective_roles ?? [])]);
+}
+
+export function objectiveAnchorCanSource(
+  anchor: ResolvedSceneAnchor | null | undefined
+): boolean {
+  if (!anchor?.position) return false;
+  const roles = anchorRoleSet(anchor);
+  if (roles.has('illustrative')) return false;
+  return roles.has('objective-source') && Boolean(anchor.selector);
+}
+
+export function objectiveAnchorCanTarget(
+  anchor: ResolvedSceneAnchor | null | undefined
+): boolean {
+  if (!anchor?.position) return false;
+  const roles = anchorRoleSet(anchor);
+  if (roles.has('illustrative')) return false;
+  return roles.has('objective-target') && Boolean(anchor.selector);
+}
+
+function canonicalReference(anchor: ResolvedSceneAnchor): string | null {
+  for (const role of anchorRoleSet(anchor)) {
+    if (role.startsWith('canonical-for:')) return role.replace(/^canonical-for:/, '');
+  }
+  const metadata = anchor.metadata ?? {};
+  return typeof metadata.canonical_anchor_id === 'string'
+    ? metadata.canonical_anchor_id
+    : null;
+}
+
+function anchorMatchesReference(anchor: ResolvedSceneAnchor, reference: string): boolean {
+  return (
+    anchor.id === reference ||
+    anchor.local_id === reference ||
+    anchor.entity_id === reference ||
+    `${anchor.entity_id}:${anchor.local_id}` === reference ||
+    `${anchor.entity_id}::anchor:${anchor.local_id}` === reference
+  );
+}
+
+export function canonicalizeObjectiveAnchor(
+  anchor: ResolvedSceneAnchor,
+  anchors: ResolvedSceneAnchor[],
+  role: 'source' | 'target'
+): ObjectiveAnchorCanonicalization {
+  const acceptsRole = role === 'source' ? objectiveAnchorCanSource : objectiveAnchorCanTarget;
+  if (acceptsRole(anchor)) return { anchor, canonicalized: false, message: null };
+
+  const reference = canonicalReference(anchor);
+  const candidates = anchors.filter(acceptsRole);
+  const sameReference = reference
+    ? candidates.find((candidate) => anchorMatchesReference(candidate, reference))
+    : null;
+  const sameEntity = candidates.find((candidate) => candidate.entity_id === anchor.entity_id);
+  const semanticTarget =
+    role === 'target'
+      ? candidates.find((candidate) => candidate.semantic_role === 'target')
+      : null;
+  const canonical = sameReference ?? sameEntity ?? semanticTarget ?? null;
+  if (!canonical) return { anchor, canonicalized: false, message: null };
+  return {
+    anchor: canonical,
+    canonicalized: true,
+    message: `${anchor.label} is illustrative; using canonical ${canonical.label}.`,
+  };
+}
+
+function graphPortSelectorFromAnchor(anchor: ResolvedSceneAnchor): StudioSelectorRef | null {
+  const selector = anchor.selector;
+  const metadata = selector?.metadata ?? {};
+  const nodeId =
+    typeof metadata.graph_port_node_id === 'string' ? metadata.graph_port_node_id : null;
+  const portName =
+    typeof metadata.graph_port_name === 'string' ? metadata.graph_port_name : null;
+  if (!nodeId || !portName) return null;
+  const direction = metadata.graph_port_direction === 'input' ? 'input' : 'output';
+  return {
+    namespace: 'graph_port',
+    compact: `port:${nodeId}.${portName}`,
+    target_id: nodeId,
+    path: portName,
+    role: direction === 'input' ? 'editable' : 'observed',
+    expected_shape: selector?.expected_shape ?? null,
+    dtype: selector?.dtype ?? null,
+    units: selector?.units ?? null,
+    frame: selector?.frame ?? null,
+    metadata: {
+      ...metadata,
+      direction,
+    },
+  };
+}
+
+function sourceSelectorForAnchor(
+  anchor: ResolvedSceneAnchor,
+  selectorOptions: StudioSelectorOption[]
+): StudioSelectorRef | null {
+  const graphPortSelector = graphPortSelectorFromAnchor(anchor);
+  const selector = graphPortSelector ?? anchor.selector;
+  if (!selector) return null;
+  const anchorSubpath =
+    typeof selector.metadata.anchor_subpath === 'string'
+      ? selector.metadata.anchor_subpath
+      : typeof selector.metadata.subpath === 'string'
+        ? selector.metadata.subpath
+        : null;
+  const selected =
+    selector.namespace === 'graph_port'
+      ? preferredSelectorForGraphPort(selector, selectorOptions)
+      : selector;
+  return anchorSubpath ? selectorWithSubpath(selected, anchorSubpath) : selected;
+}
+
+function targetTimingMetadata(anchor: ResolvedSceneAnchor): Record<string, unknown> | null {
+  const metadata = { ...(anchor.selector?.metadata ?? {}), ...(anchor.metadata ?? {}) };
+  const keys = [
+    'target_spec',
+    'time_mask',
+    'discount',
+    'discount_exp',
+    'target_on_epochs',
+    'move_epochs',
+    'temporality',
+  ];
+  const timing = Object.fromEntries(
+    keys
+      .filter((key) => metadata[key] !== undefined)
+      .map((key) => [key, metadata[key]])
+  );
+  return Object.keys(timing).length > 0 ? timing : null;
+}
+
+function temporalSelectorFromTargetAnchor(
+  anchor: ResolvedSceneAnchor
+): TimeAggregationSpec | null {
+  const value = anchor.metadata.time_aggregation ?? anchor.selector?.metadata.time_aggregation;
+  if (!value || typeof value !== 'object' || !('mode' in value)) return null;
+  return value as TimeAggregationSpec;
+}
+
+export function createObjectiveTermFromAnchors({
+  spec,
+  sourceAnchor,
+  targetAnchor,
+  anchors,
+  selectorOptions = [],
+}: {
+  spec: StudioObjectiveSpec;
+  sourceAnchor: ResolvedSceneAnchor;
+  targetAnchor: ResolvedSceneAnchor;
+  anchors: ResolvedSceneAnchor[];
+  selectorOptions?: StudioSelectorOption[];
+}): ObjectiveAnchorAuthoringResult | null {
+  const source = canonicalizeObjectiveAnchor(sourceAnchor, anchors, 'source');
+  const target = canonicalizeObjectiveAnchor(targetAnchor, anchors, 'target');
+  const sourceSelector = sourceSelectorForAnchor(source.anchor, selectorOptions);
+  const targetSelector = target.anchor.selector;
+  if (!sourceSelector || !targetSelector) return null;
+  const timing = targetTimingMetadata(target.anchor);
+  const term = createObjectiveTerm({
+    spec,
+    label: `Objective: ${source.anchor.label} to ${target.anchor.label}`,
+    sourceSelector,
+    targetSelector,
+  });
+  return {
+    source,
+    target,
+    term: enrichObjectiveTermWithSelectorSchema({
+      ...term,
+      ...(temporalSelectorFromTargetAnchor(target.anchor)
+        ? { temporal_selector: temporalSelectorFromTargetAnchor(target.anchor) }
+        : {}),
+      metadata: {
+        ...term.metadata,
+        authored_from_anchor_ids: {
+          source: source.anchor.id,
+          target: target.anchor.id,
+        },
+        ...(timing ? { target_timing: timing } : {}),
+      },
+    }),
+  };
 }
 
 export function objectiveTermEnabled(term: StudioObjectiveTermSpec): boolean {

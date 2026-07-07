@@ -16,6 +16,7 @@ import {
   entityKindLabel,
 } from '@/features/scenario/entities';
 import { objectiveProjectionItems, workspaceProjectionItems } from '@/features/scenario/projections';
+import { semanticTokens } from '@/components/ui/semanticTokens';
 import clsx from 'clsx';
 
 type ActiveTab = 'components' | 'templates';
@@ -122,7 +123,9 @@ function ProjectionSidebar({
             className={clsx(
               'w-full rounded-md border px-3 py-2 text-left text-xs transition-colors',
               topPane.selected_entity_id === item.entity_id
-                ? 'border-brand-300 bg-brand-50 text-slate-900'
+                ? item.kind === 'objective_term'
+                  ? clsx(semanticTokens.objective.border, semanticTokens.objective.background, 'text-slate-900')
+                  : 'border-brand-300 bg-brand-50 text-slate-900'
                 : 'border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50'
             )}
           >

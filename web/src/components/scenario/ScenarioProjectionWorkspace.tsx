@@ -25,6 +25,7 @@ import type { SampledTaskTrial } from '@/api/client';
 import { sampleTaskTrials } from '@/api/client';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
+  objectiveEntityId,
   retainedObservableEntityId,
   buildScenarioEntityRegistry,
 } from '@/features/scenario/entities';
@@ -33,11 +34,16 @@ import {
   objectiveProjectionItems,
   relatedProjectionItems,
   type ResolvedScene,
+  type ResolvedSceneAnchor,
   type ResolvedSceneElement,
   type ResolvedSceneEntity,
 } from '@/features/scenario/projections';
 import {
+  addObjectiveTerm,
+  createObjectiveTermFromAnchors,
   ensureObjectiveSpec,
+  objectiveAnchorCanSource,
+  objectiveAnchorCanTarget,
   OBJECTIVE_PENALTY_OPTIONS,
   OBJECTIVE_TEMPORAL_MODE_OPTIONS,
   objectiveTermEnabled,
@@ -63,6 +69,7 @@ import {
   sampledPreviewTrialLabel,
   timelineCueOffset,
 } from '@/features/scenario/samplePreview';
+import { semanticTokens } from '@/components/ui/semanticTokens';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
 import {
@@ -268,6 +275,8 @@ function WorkspaceProjection({
   registry,
   scene,
   selectedId,
+  objectiveSpec,
+  schemaRegistry,
   viewState,
   sampledTrials,
   previewStatus,
@@ -280,11 +289,14 @@ function WorkspaceProjection({
   onPreviewCountChange,
   onReseed,
   onSelect,
+  onObjectiveSpecChange,
   onViewStateChange,
 }: {
   registry: StudioScenarioEntityRegistry;
   scene: ResolvedScene;
   selectedId: string | null;
+  objectiveSpec: StudioObjectiveSpec;
+  schemaRegistry: StudioSchemaRegistry | null;
   viewState: WorkspaceViewState;
   sampledTrials: SampledTaskTrial[];
   previewStatus: 'idle' | 'loading' | 'ready' | 'error';
@@ -297,9 +309,17 @@ function WorkspaceProjection({
   onPreviewCountChange: (count: number) => void;
   onReseed: () => void;
   onSelect: (entityId: string | null) => void;
+  onObjectiveSpecChange: (spec: StudioObjectiveSpec) => void;
   onViewStateChange: (patch: Partial<WorkspaceViewState>) => void;
 }) {
   const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [objectiveDrag, setObjectiveDrag] = useState<{
+    sourceAnchorId: string;
+    pointer: ScenePoint;
+  } | null>(null);
+  const [objectiveNotice, setObjectiveNotice] = useState<string | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const suppressNextClickRef = useRef(false);
   const view = viewState.camera;
   const dragStartRef = useRef<{ x: number; y: number; pan: { x: number; y: number } } | null>(
     null
@@ -345,6 +365,19 @@ function WorkspaceProjection({
   const scaleMeters = niceScaleLength(90 / Math.max(scale, 1));
   const scalePixels = scaleMeters * scale;
   const warningCount = scene.validation.filter((message) => message.severity === 'warning').length;
+  const selectorOptions = useMemo(
+    () => selectorOptionsForRegistry({ registry, schemaRegistry, objectiveSpec }),
+    [objectiveSpec, registry, schemaRegistry]
+  );
+  const spatialObjectiveTermIds = new Set(
+    scene.elements
+      .filter((element) => element.archetype === 'objective_link')
+      .map((element) => element.metadata.term_id)
+      .filter((termId): termId is string => typeof termId === 'string')
+  );
+  const nonSpatialObjectiveCount = objectiveSpec.terms.filter(
+    (term) => !spatialObjectiveTermIds.has(term.id)
+  ).length;
 
   const entityActive = (entity: Pick<ResolvedSceneEntity, 'id' | 'related_entity_ids'>) =>
     entity.id === selectedId ||
@@ -408,6 +441,76 @@ function WorkspaceProjection({
   const wheelZoom = (event: WheelEvent<SVGSVGElement>) => {
     event.preventDefault();
     zoomBy(event.deltaY > 0 ? 0.9 : 1.1);
+  };
+
+  const svgPointFromEvent = (event: PointerEvent<SVGSVGElement> | PointerEvent<SVGGElement>): ScenePoint => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return [event.clientX, event.clientY];
+    return [
+      ((event.clientX - rect.left) / rect.width) * WORKSPACE_SVG_WIDTH,
+      ((event.clientY - rect.top) / rect.height) * WORKSPACE_SVG_HEIGHT,
+    ];
+  };
+
+  const objectiveRelevantAnchor = (anchor: ResolvedSceneAnchor) =>
+    objectiveAnchorCanSource(anchor) ||
+    objectiveAnchorCanTarget(anchor) ||
+    anchor.objective_roles.includes('illustrative') ||
+    anchor.objective_roles.some((role) => role.startsWith('canonical-for:'));
+
+  const nearestObjectiveAnchor = (point: ScenePoint): ResolvedSceneAnchor | null => {
+    let best: { anchor: ResolvedSceneAnchor; distance: number } | null = null;
+    for (const anchor of scene.anchors) {
+      if (!anchor.position || !objectiveRelevantAnchor(anchor)) continue;
+      const [x, y] = project(anchor.position);
+      const distance = Math.hypot(point[0] - x, point[1] - y);
+      if (distance > 26) continue;
+      if (!best || distance < best.distance) best = { anchor, distance };
+    }
+    return best?.anchor ?? null;
+  };
+
+  const beginObjectiveDrag = (anchor: ResolvedSceneAnchor, event: PointerEvent<SVGGElement>) => {
+    if (!objectiveRelevantAnchor(anchor)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setObjectiveNotice(null);
+    setObjectiveDrag({ sourceAnchorId: anchor.id, pointer: svgPointFromEvent(event) });
+  };
+
+  const moveObjectiveDrag = (event: PointerEvent<SVGSVGElement>) => {
+    if (!objectiveDrag) return false;
+    setObjectiveDrag({ ...objectiveDrag, pointer: svgPointFromEvent(event) });
+    return true;
+  };
+
+  const completeObjectiveDrag = (event: PointerEvent<SVGSVGElement>) => {
+    const drag = objectiveDrag;
+    if (!drag) return false;
+    const sourceAnchor = scene.anchors.find((anchor) => anchor.id === drag.sourceAnchorId);
+    const targetAnchor = nearestObjectiveAnchor(svgPointFromEvent(event));
+    setObjectiveDrag(null);
+    if (!sourceAnchor || !targetAnchor || sourceAnchor.id === targetAnchor.id) {
+      setObjectiveNotice('Drop on a different objective anchor.');
+      return true;
+    }
+    const result = createObjectiveTermFromAnchors({
+      spec: objectiveSpec,
+      sourceAnchor,
+      targetAnchor,
+      anchors: scene.anchors,
+      selectorOptions,
+    });
+    if (!result) {
+      setObjectiveNotice('Those anchors do not expose compatible objective selectors.');
+      return true;
+    }
+    onObjectiveSpecChange(addObjectiveTerm(objectiveSpec, result.term));
+    onSelect(objectiveEntityId(result.term.id));
+    suppressNextClickRef.current = true;
+    const notices = [result.source.message, result.target.message].filter(Boolean);
+    setObjectiveNotice(notices.join(' ') || 'Objective created from workspace anchors.');
+    return true;
   };
 
   const renderElement = (element: ResolvedSceneElement) => {
@@ -540,9 +643,10 @@ function WorkspaceProjection({
             y1={points[0][1]}
             x2={points[1][0]}
             y2={points[1][1]}
-            stroke={active ? '#14b8a6' : '#cbd5e1'}
-            strokeWidth={2}
-            strokeDasharray="5 6"
+            stroke={active ? semanticTokens.objective.strongStroke : semanticTokens.objective.stroke}
+            strokeWidth={active ? 3 : 2.25}
+            strokeDasharray="6 5"
+            opacity={active ? 0.95 : 0.72}
             vectorEffect="non-scaling-stroke"
           />
         </g>
@@ -550,6 +654,62 @@ function WorkspaceProjection({
     }
 
     return null;
+  };
+
+  const renderObjectiveAnchor = (anchor: ResolvedSceneAnchor) => {
+    if (!anchor.position || !objectiveRelevantAnchor(anchor)) return null;
+    const [x, y] = project(anchor.position);
+    const source = objectiveAnchorCanSource(anchor);
+    const target = objectiveAnchorCanTarget(anchor);
+    const illustrative = anchor.objective_roles.includes('illustrative');
+    const active = anchor.entity_id === selectedId || hoveredRelatedIds.has(anchor.entity_id);
+    const radius = target ? 8 : 6;
+    return (
+      <g
+        key={`${anchor.id}:objective-anchor`}
+        onPointerDown={(event) => beginObjectiveDrag(anchor, event)}
+        onClick={(event) => event.stopPropagation()}
+        onMouseEnter={() => setHoveredEntityId(anchor.entity_id)}
+        onMouseLeave={() => setHoveredEntityId(null)}
+        className="cursor-crosshair"
+      >
+        <circle
+          cx={x}
+          cy={y}
+          r={radius + (active ? 4 : 2)}
+          fill={target ? semanticTokens.objective.paleFill : '#ffffff'}
+          stroke={semanticTokens.objective.stroke}
+          strokeWidth={illustrative ? 1 : 1.5}
+          strokeDasharray={illustrative ? '3 3' : undefined}
+          opacity={illustrative ? 0.7 : 0.92}
+          vectorEffect="non-scaling-stroke"
+        />
+        {source && (
+          <circle
+            cx={x}
+            cy={y}
+            r={2.75}
+            fill={semanticTokens.objective.strongStroke}
+          />
+        )}
+        {target && (
+          <path
+            d={`M ${x - 5} ${y} L ${x + 5} ${y} M ${x} ${y - 5} L ${x} ${y + 5}`}
+            stroke={semanticTokens.objective.strongStroke}
+            strokeWidth={1.4}
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+        <title>
+          {target
+            ? `Objective target: ${anchor.label}`
+            : source
+              ? `Objective source: ${anchor.label}`
+              : `Objective anchor: ${anchor.label}`}
+        </title>
+      </g>
+    );
   };
 
   const renderSampledTrial = (trial: SampledTaskTrial) => {
@@ -610,16 +770,32 @@ function WorkspaceProjection({
     <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_17rem] bg-slate-50">
       <div className="relative min-h-0 overflow-hidden">
         <svg
+          ref={svgRef}
           viewBox={`0 0 ${WORKSPACE_SVG_WIDTH} ${WORKSPACE_SVG_HEIGHT}`}
           className="h-full w-full touch-none bg-white"
           role="img"
           aria-label="Workspace projection"
           onPointerDown={beginPan}
-          onPointerMove={movePan}
-          onPointerUp={endPan}
-          onPointerCancel={endPan}
+          onPointerMove={(event) => {
+            if (moveObjectiveDrag(event)) return;
+            movePan(event);
+          }}
+          onPointerUp={(event) => {
+            if (completeObjectiveDrag(event)) return;
+            endPan();
+          }}
+          onPointerCancel={() => {
+            setObjectiveDrag(null);
+            endPan();
+          }}
           onWheel={wheelZoom}
-          onClick={() => onSelect(null)}
+          onClick={() => {
+            if (suppressNextClickRef.current) {
+              suppressNextClickRef.current = false;
+              return;
+            }
+            onSelect(null);
+          }}
         >
           <defs>
             <pattern id="workspace-grid" width="32" height="32" patternUnits="userSpaceOnUse">
@@ -647,6 +823,25 @@ function WorkspaceProjection({
           />
           {visibleElements.map(renderElement)}
           {renderedSamples.map(renderSampledTrial)}
+          {objectiveDrag && (() => {
+            const sourceAnchor = scene.anchors.find((anchor) => anchor.id === objectiveDrag.sourceAnchorId);
+            if (!sourceAnchor?.position) return null;
+            const [x0, y0] = project(sourceAnchor.position);
+            return (
+              <line
+                x1={x0}
+                y1={y0}
+                x2={objectiveDrag.pointer[0]}
+                y2={objectiveDrag.pointer[1]}
+                stroke={semanticTokens.objective.strongStroke}
+                strokeWidth={2}
+                strokeDasharray="4 5"
+                opacity="0.82"
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })()}
+          {scene.anchors.map(renderObjectiveAnchor)}
           <g transform={`translate(28 ${WORKSPACE_SVG_HEIGHT - 32})`}>
             <line
               x1="0"
@@ -674,6 +869,9 @@ function WorkspaceProjection({
                   : previewMode === 'playback'
                     ? 'Run playback will use selected trial artifacts'
                     : 'Authored geometry without sampled trial instances'}
+                {nonSpatialObjectiveCount > 0
+                  ? ` · ${nonSpatialObjectiveCount} non-spatial objectives`
+                  : ''}
               </div>
             </div>
             <div className="grid h-7 grid-cols-3 rounded border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-medium">
@@ -760,6 +958,18 @@ function WorkspaceProjection({
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+          {objectiveNotice && (
+            <div
+              className={clsx(
+                'rounded border px-2 py-1 text-[11px]',
+                semanticTokens.objective.border,
+                semanticTokens.objective.background,
+                semanticTokens.objective.text
+              )}
+            >
+              {objectiveNotice}
             </div>
           )}
         </div>
@@ -1109,11 +1319,11 @@ function ObjectivesProjection({
               onClick={() => onSelect(item.entity_id)}
               className={clsx(
                 'grid w-full grid-cols-[minmax(10rem,1.4fr)_6.5rem_5.5rem_7.25rem_8.5rem_minmax(8rem,1fr)_4rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-left text-xs last:border-b-0',
-                active
-                  ? 'bg-brand-50 text-slate-900'
-                  : related
-                    ? 'bg-violet-50/60 text-slate-800'
-                    : 'bg-white text-slate-600 hover:bg-slate-50'
+                  active
+                    ? 'bg-brand-50 text-slate-900'
+                    : related
+                      ? clsx(semanticTokens.objective.softBackground, 'text-slate-800')
+                      : 'bg-white text-slate-600 hover:bg-slate-50'
               )}
             >
               <div className="min-w-0">
@@ -1318,6 +1528,8 @@ export function ScenarioProjectionWorkspace() {
             registry={registry}
             scene={scene}
             selectedId={topPane.selected_entity_id}
+            objectiveSpec={objectiveSpec}
+            schemaRegistry={schemaQuery.data ?? null}
             viewState={workspaceViewState}
             sampledTrials={sampledTrials}
             previewStatus={previewStatus}
@@ -1330,6 +1542,7 @@ export function ScenarioProjectionWorkspace() {
             onPreviewCountChange={setPreviewCount}
             onReseed={() => setPreviewSeed((seed) => seed + 1)}
             onSelect={selectTopPaneEntity}
+            onObjectiveSpecChange={updateActiveScenarioObjectiveSpec}
             onViewStateChange={updateActiveWorkspaceViewState}
           />
         )}

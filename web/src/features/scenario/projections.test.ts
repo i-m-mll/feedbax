@@ -308,10 +308,83 @@ describe('resolved scene projection', () => {
     expect(region?.geometry).toEqual({ kind: 'bounds', min: [-0.5, -0.5], max: [0.5, 0.5] });
     expect(distribution?.geometry.kind).toBe('points');
     expect(goalAnchor?.position).toEqual([0.8, 0]);
+    expect(goalAnchor?.selector).toMatchObject({
+      namespace: 'task_data',
+      compact: 'task_data:targets.effector.pos',
+      target_id: scenario.id,
+    });
+    expect(goalAnchor?.objective_roles).toContain('objective-target');
     expect(
       scene.required_selectors.map((selector) => selector.compact).sort()
     ).toEqual(['output:effector', 'output:state']);
+    expect(scene.elements.some((element) => element.archetype === 'objective_link')).toBe(false);
     expect(scene.validation.map((message) => message.type)).toContain('workspace_goal_out_of_reach');
+  });
+
+  it('projects objective links from objective terms instead of representation elements', () => {
+    const scenarioWithObjective: StudioScenarioSpec = {
+      ...scenario,
+      objective_spec: {
+        schema_version: 'feedbax.studio.objective.v1',
+        legacy_loss_spec: null,
+        metadata: {},
+        terms: [
+          {
+            id: 'reach_goal',
+            type_id: 'TargetStateLoss',
+            label: 'Reach goal',
+            role: 'loss',
+            source_selector: {
+              namespace: 'state_path',
+              compact: 'path:states.mechanics.effector.pos',
+              target_id: 'mechanics',
+              path: 'states.mechanics.effector.pos',
+              metadata: {
+                graph_port_node_id: 'mechanics',
+                graph_port_name: 'effector',
+                graph_port_direction: 'output',
+              },
+            },
+            target_selector: {
+              namespace: 'task_data',
+              compact: 'task_data:targets.effector.pos',
+              target_id: scenario.id,
+              path: 'targets.effector.pos',
+              metadata: {},
+            },
+            operator: 'distance',
+            penalty: 'squared_l2',
+            temporal_selector: { mode: 'range', start: 10, end: 20 },
+            weight: 1,
+            units: 'm',
+            validation: null,
+            metadata: {},
+          },
+        ],
+      },
+    };
+    const sceneRegistry = buildScenarioEntityRegistry({ scenario: scenarioWithObjective, graph });
+    const scene = buildResolvedScene({
+      scenario: scenarioWithObjective,
+      graph,
+      registry: sceneRegistry,
+      components,
+    });
+    const objectiveElement = scene.elements.find(
+      (element) => element.entity_id === objectiveEntityId('reach_goal')
+    );
+
+    expect(objectiveElement).toMatchObject({
+      archetype: 'objective_link',
+      geometry: { kind: 'link', points: [[0.7, 0], [0.8, 0]] },
+      metadata: {
+        timing: { mode: 'range', start: 10, end: 20 },
+      },
+    });
+    expect(scene.entities.find((entity) => entity.id === objectiveEntityId('reach_goal'))).toMatchObject({
+      kind: 'objective_term',
+      element_ids: [objectiveElement?.id],
+    });
   });
 
   it('creates selectable placeholders for represented entity kinds without catalog metadata', () => {
