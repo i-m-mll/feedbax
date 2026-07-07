@@ -19,10 +19,13 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
     ValidationResult,
 )
+from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
 
 
 STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
 STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v1"
+TRAINING_TRAJECTORY_SCHEMA_ID = "feedbax.event.studio.training_trajectory"
+TRAINING_TRAJECTORY_SCHEMA_VERSION = "feedbax.event.studio.training_trajectory.v1"
 
 
 class StudioApiModel(BaseModel):
@@ -323,11 +326,18 @@ class TrainingLogEvent(StudioApiModel):
 class TrainingTrajectoryPayload(StudioApiModel):
     """Trajectory snapshot carried by a training WebSocket event."""
 
-    effector: list[Any] = Field(default_factory=list)
-    target: Optional[Any] = None
-    t: list[Any] = Field(default_factory=list)
+    schema_id: Literal[TRAINING_TRAJECTORY_SCHEMA_ID] = TRAINING_TRAJECTORY_SCHEMA_ID
+    schema_version: Literal[TRAINING_TRAJECTORY_SCHEMA_VERSION] = TRAINING_TRAJECTORY_SCHEMA_VERSION
+    source_kind: Literal["live_snapshot"] = "live_snapshot"
+    fidelity: Literal["lower_fidelity_live_snapshot"] = "lower_fidelity_live_snapshot"
+    n_steps: Optional[int] = None
+    time: Optional[WorkspaceReplaySampleAxis] = None
+    tracks: dict[str, WorkspaceReplayTrack] = Field(default_factory=dict)
     observables: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
+    effector: Optional[list[Any]] = None
+    target: Optional[Any] = None
+    t: Optional[list[Any]] = None
 
 
 class TrainingTrajectoryEvent(StudioApiModel):

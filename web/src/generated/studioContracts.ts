@@ -1134,13 +1134,18 @@ export interface TrainingLogEvent {
 }
 
 export interface TrainingTrajectoryPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
-  effector?: unknown[];
-  target?: unknown | null;
-  t?: unknown[];
+  schema_id?: "feedbax.event.studio.training_trajectory";
+  schema_version?: "feedbax.event.studio.training_trajectory.v1";
+  source_kind?: "live_snapshot";
+  fidelity?: "lower_fidelity_live_snapshot";
+  n_steps?: number | null;
+  time?: WorkspaceReplaySampleAxis | null;
+  tracks?: Record<string, WorkspaceReplayTrack>;
   observables?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
+  effector?: unknown[] | null;
+  target?: unknown | null;
+  t?: unknown[] | null;
 }
 
 export interface TrainingTrajectoryEvent {
@@ -3027,13 +3032,18 @@ export const TrainingLogEventSchema: z.ZodType<TrainingLogEvent> = z.lazy(() =>
 export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayload> = z.lazy(() =>
   z
     .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
-      "effector": z.array(z.unknown()).optional(),
-      "target": z.unknown().nullable().optional(),
-      "t": z.array(z.unknown()).optional(),
+      "schema_id": z.literal("feedbax.event.studio.training_trajectory").optional(),
+      "schema_version": z.literal("feedbax.event.studio.training_trajectory.v1").optional(),
+      "source_kind": z.literal("live_snapshot").optional(),
+      "fidelity": z.literal("lower_fidelity_live_snapshot").optional(),
+      "n_steps": z.number().int().nullable().optional(),
+      "time": WorkspaceReplaySampleAxisSchema.nullable().optional(),
+      "tracks": z.record(z.string(), WorkspaceReplayTrackSchema).optional(),
       "observables": z.record(z.string(), z.unknown()).optional(),
       "outputs": z.record(z.string(), z.unknown()).optional(),
+      "effector": z.array(z.unknown()).nullable().optional(),
+      "target": z.unknown().nullable().optional(),
+      "t": z.array(z.unknown()).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingTrajectoryPayload>;

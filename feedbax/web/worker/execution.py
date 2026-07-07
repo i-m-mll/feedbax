@@ -34,6 +34,10 @@ from feedbax.contracts.graph import (
     StudioTaskBindingSpec,
     StudioTaskDataSpec,
 )
+from feedbax.contracts.studio_api import (
+    TRAINING_TRAJECTORY_SCHEMA_ID,
+    TRAINING_TRAJECTORY_SCHEMA_VERSION,
+)
 from feedbax.contracts.training import (
     TaskSpec,
     TrainingConfig,
@@ -739,19 +743,81 @@ def _trajectory_snapshot(
     rollout = rollout_graph(graph, compiled, key=key)
     observables = {key: _jsonable_value(value) for key, value in rollout["trace"].items()}
     outputs = {key: _jsonable_value(value) for key, value in rollout["outputs"].items()}
+    tracks: dict[str, Any] = {}
+    time_length = compiled.n_steps
+
+    def add_track(
+        *,
+        namespace: str,
+        name: str,
+        anchor_id: str,
+        role: str,
+        label: str,
+        value: Any,
+    ) -> None:
+        nonlocal time_length
+        samples = _live_xy_samples(value, length=time_length)
+        if samples is None:
+            return
+        if not tracks:
+            time_length = len(samples)
+        elif len(samples) != time_length:
+            return
+        selector = {
+            "namespace": namespace,
+            "compact": f"{namespace}:{name}",
+            "target_id": name,
+            "role": role,
+        }
+        tracks[selector["compact"]] = {
+            "anchor_id": anchor_id,
+            "selector": selector,
+            "samples": samples,
+            "dim": 2,
+            "dtype": "float32",
+            "units": None,
+            "frame": "world",
+            "label": label,
+            "metadata": {"source": "live_training_snapshot"},
+        }
+
+    for name, value in rollout["outputs"].items():
+        add_track(
+            namespace="graph_output",
+            name=str(name),
+            anchor_id=str(name),
+            role="observed",
+            label=str(name).replace("_", " ").title(),
+            value=_legacy_xy_trajectory(value),
+        )
+    target = _legacy_target_trajectory(rollout["task_data"])
+    if target is not None:
+        target_name, target_value = target
+        add_track(
+            namespace="task_data",
+            name=target_name,
+            anchor_id=target_name,
+            role="target",
+            label=target_name.replace("_", " ").title(),
+            value=target_value,
+        )
+
     trajectory: dict[str, Any] = {
+        "schema_id": TRAINING_TRAJECTORY_SCHEMA_ID,
+        "schema_version": TRAINING_TRAJECTORY_SCHEMA_VERSION,
+        "source_kind": "live_snapshot",
+        "fidelity": "lower_fidelity_live_snapshot",
+        "time": {
+            "length": time_length,
+            "units": "step",
+            "values": list(range(time_length)),
+            "metadata": {"source": "live_training_snapshot"},
+        },
+        "tracks": tracks,
         "n_steps": compiled.n_steps,
-        "t": list(range(compiled.n_steps)),
         "observables": observables,
         "outputs": outputs,
     }
-    if "effector" in rollout["outputs"]:
-        effector = _legacy_xy_trajectory(rollout["outputs"]["effector"])
-        if effector is not None:
-            trajectory["effector"] = _jsonable_value(effector)
-    target = _legacy_target_trajectory(rollout["task_data"])
-    if target is not None:
-        trajectory["target"] = _jsonable_value(target)
     return trajectory
 
 
@@ -795,6 +861,8 @@ def _jsonable_value(value: Any) -> Any:
 
 
 def _legacy_xy_trajectory(value: Any) -> Any | None:
+    if value is None:
+        return None
     value = jax.device_get(value)
     for attr in ("pos", "position", "effector_pos"):
         if hasattr(value, attr):
@@ -812,14 +880,31 @@ def _legacy_xy_trajectory(value: Any) -> Any | None:
     return None
 
 
-def _legacy_target_trajectory(task_data: dict[str, Any]) -> Any | None:
+def _legacy_target_trajectory(task_data: dict[str, Any]) -> tuple[str, Any] | None:
     for key, value in task_data.items():
         if not (str(key).endswith("target") or "target" in str(key)):
             continue
         target = _legacy_xy_trajectory(value)
         if target is not None:
-            return target
+            return str(key), target
     return None
+
+
+def _live_xy_samples(value: Any, *, length: int) -> list[list[float]] | None:
+    if value is None:
+        return None
+    array = jnp.asarray(jax.device_get(value))
+    if array.ndim == 0 or array.shape[-1] < 2:
+        return None
+    array = array[..., :2]
+    if array.ndim == 1:
+        array = array.reshape((1, 2))
+    elif array.ndim > 2:
+        array = array.reshape((-1, 2))
+    samples = [[float(point[0]), float(point[1])] for point in jax.device_get(array)]
+    if len(samples) == 1 and length > 1:
+        samples = samples * length
+    return samples
 
 
 def _write_checkpoint(job_id: str, graph: Graph) -> str | None:
