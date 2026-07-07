@@ -623,7 +623,7 @@ def _entries_from_tree(tree: Any) -> list[LeafManifestEntry]:
     entries: list[LeafManifestEntry] = []
     for path, leaf in jt.leaves_with_path(tree):
         tree_path = _key_path_to_text(path)
-        if eqx.is_array(leaf):
+        if _is_serialized_array_leaf(leaf):
             array = np.asarray(leaf)
             entries.append(
                 LeafManifestEntry(
@@ -633,20 +633,14 @@ def _entries_from_tree(tree: Any) -> list[LeafManifestEntry]:
                     dtype=str(array.dtype),
                 )
             )
-        else:
+        elif _is_serialized_static_scalar(leaf):
             static_array = _static_stream_array(leaf)
-            static_shape = (
-                None
-                if static_array is None
-                else tuple(int(dim) for dim in static_array.shape)
-            )
-            static_dtype = None if static_array is None else str(static_array.dtype)
             entries.append(
                 LeafManifestEntry(
                     tree_path=tree_path,
                     kind="static",
-                    shape=static_shape,
-                    dtype=static_dtype,
+                    shape=tuple(int(dim) for dim in static_array.shape),
+                    dtype=str(static_array.dtype),
                     static_repr_sha256=sha256_bytes(
                         repr(leaf).encode("utf-8", errors="replace")
                     ),
@@ -655,14 +649,16 @@ def _entries_from_tree(tree: Any) -> list[LeafManifestEntry]:
     return entries
 
 
-def _static_stream_array(value: Any) -> np.ndarray | None:
-    try:
-        array = np.asarray(value)
-    except Exception:
-        return None
-    if array.dtype == object:
-        return None
-    return array
+def _is_serialized_array_leaf(value: Any) -> bool:
+    return eqx.is_array(value) and not isinstance(value, np.generic)
+
+
+def _is_serialized_static_scalar(value: Any) -> bool:
+    return isinstance(value, (np.generic, bool, int, float, complex))
+
+
+def _static_stream_array(value: Any) -> np.ndarray:
+    return np.asarray(value)
 
 
 def _static_report(
@@ -879,6 +875,7 @@ import numpy as np
 SCHEMA_ID = "feedbax.manifest.legacy_checkpoint_leaf_manifest"
 SCHEMA_VERSION = "feedbax.manifest.legacy_checkpoint_leaf_manifest.v1"
 DUMPER_VERSION = "feedbax-legacy-leaf-dumper.v1"
+JAX_ARRAY_TYPE = getattr(jax, "Array", ())
 
 
 def _path_text(path: Any) -> str:
@@ -901,7 +898,15 @@ def _path_text(path: Any) -> str:
 
 
 def _is_array(value: Any) -> bool:
-    return hasattr(value, "shape") and hasattr(value, "dtype")
+    return (
+        isinstance(value, np.ndarray)
+        or (JAX_ARRAY_TYPE and isinstance(value, JAX_ARRAY_TYPE))
+        or hasattr(value, "__jax_array__")
+    )
+
+
+def _is_static_scalar(value: Any) -> bool:
+    return isinstance(value, (np.generic, bool, int, float, complex))
 
 
 def _static_hash(value: Any) -> str:
@@ -931,16 +936,15 @@ def _entries(tree: Any) -> list[dict[str, Any]]:
                     "dtype": str(array.dtype),
                 }
             )
-        else:
+        elif _is_static_scalar(leaf):
+            array = np.asarray(leaf)
             entry = {
                 "tree_path": _path_text(path),
                 "kind": "static",
+                "shape": [int(dim) for dim in array.shape],
+                "dtype": str(array.dtype),
                 "static_repr_sha256": _static_hash(leaf),
             }
-            array = _static_array(leaf)
-            if array is not None:
-                entry["shape"] = [int(dim) for dim in array.shape]
-                entry["dtype"] = str(array.dtype)
             entries.append(entry)
     return entries
 

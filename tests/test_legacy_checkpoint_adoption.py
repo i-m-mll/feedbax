@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -36,10 +38,12 @@ from feedbax.training.legacy_checkpoint_adoption import (
     ManifestDumpRequest,
     PathMappingRegistry,
     PathMappingRule,
+    _DUMP_SCRIPT,
     accept_leaf_manifest,
     adopt_legacy_checkpoint,
     adopt_tree_from_legacy_stream,
     dump_leaf_manifests_via_worktrees,
+    manifest_from_trees,
     read_raw_np_save_stream,
 )
 
@@ -201,6 +205,86 @@ def test_leaf_manifest_accepts_current_migrates_v0_and_rejects_tampered() -> Non
     )
     with pytest.raises(LegacyManifestSchemaError, match="Unsupported Feedbax"):
         accept_leaf_manifest(tampered)
+
+
+def test_manifest_from_trees_skips_default_equinox_ignored_static_leaves() -> None:
+    manifest = manifest_from_trees(
+        model={
+            "weight": jnp.array([1.0], dtype=jnp.float32),
+            "flag": True,
+            "scale": 2.0,
+            "name": "ignored",
+            "opaque": object(),
+        },
+        optimizer=None,
+        producing_commit="abc123",
+    )
+
+    paths = [entry.tree_path for entry in manifest.model]
+    assert paths == ["/flag", "/scale", "/weight"]
+    by_path = {entry.tree_path: entry for entry in manifest.model}
+    assert by_path["/flag"].kind == "static"
+    assert by_path["/flag"].shape == ()
+    assert by_path["/flag"].dtype == "bool"
+    assert by_path["/scale"].kind == "static"
+    assert by_path["/scale"].dtype == "float64"
+    assert by_path["/weight"].kind == "array"
+
+
+def test_self_contained_dump_script_skips_ignored_static_leaves(tmp_path: Path) -> None:
+    script = tmp_path / "dump_script.py"
+    builder = tmp_path / "builder.py"
+    spec = tmp_path / "spec.json"
+    output = tmp_path / "manifest.json"
+    script.write_text(_DUMP_SCRIPT, encoding="utf-8")
+    builder.write_text(
+        """
+import jax.numpy as jnp
+import numpy as np
+
+
+def build(_spec):
+    return {
+        "weight": jnp.array([1.0], dtype=jnp.float32),
+        "np_weight": np.array([2.0], dtype=np.float32),
+        "flag": True,
+        "count": 3,
+        "name": "ignored",
+        "opaque": object(),
+    }, None
+""",
+        encoding="utf-8",
+    )
+    spec.write_text(json.dumps({"manifest_builder": "builder:build"}), encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--spec",
+            str(spec),
+            "--output",
+            str(output),
+            "--commit",
+            "abc123",
+        ],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    paths = [entry["tree_path"] for entry in payload["model"]]
+    assert paths == ["/count", "/flag", "/np_weight", "/weight"]
+    by_path = {entry["tree_path"]: entry for entry in payload["model"]}
+    assert by_path["/count"]["kind"] == "static"
+    assert by_path["/count"]["shape"] == []
+    assert by_path["/count"]["dtype"] == "int64"
+    assert by_path["/flag"]["kind"] == "static"
+    assert by_path["/flag"]["dtype"] == "bool"
+    assert by_path["/np_weight"]["kind"] == "array"
+    assert by_path["/weight"]["kind"] == "array"
 
 
 @pytest.mark.parametrize(
