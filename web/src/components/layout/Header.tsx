@@ -95,16 +95,18 @@ export function Header() {
         uiState,
       });
       if ('id' in response) {
-        markSaved(response.id);
+        markSaved(response.id, response.metadata.save_revision);
       } else if (graphId) {
-        markSaved(graphId);
+        markSaved(graphId, response.metadata.save_revision);
       }
       persistLocalProjectTabs();
       toast.success('Project saved.', { id: 'project-save-success' });
     } catch (error) {
       console.error(error);
       persistLocalProjectTabs();
-      toast.error('Saved locally; backend is unreachable.', { id: 'save-local-fallback' });
+      toast.error(actionErrorMessage(error, 'Failed to save project; changes remain local.'), {
+        id: 'save-local-fallback',
+      });
     }
   };
 
@@ -140,7 +142,7 @@ export function Header() {
         data.metadata?.name ?? undefined,
         analysisSnapshot,
         data.workspace,
-        options,
+        { ...options, saveRevision: data.metadata?.save_revision ?? null },
       );
       useRunStore.getState().hydrateFromWorkspace(data.workspace);
       if (data.demo_training_data) {
@@ -483,13 +485,14 @@ function ProjectOpenOverlay({
           eval_run_id: page.evalRunId ?? null,
           expanded_field_paths: page.expandedFieldPaths ?? [],
         }));
-        await updateGraph(
+        const updateResponse = await updateGraph(
           graphId,
           null,
           null,
           analysisPages,
           analysisSnapshot.activePageId,
           workspace,
+          response.metadata.save_revision,
         );
         openProjectInTab(
           graphId,
@@ -498,6 +501,7 @@ function ProjectOpenOverlay({
           template.name,
           analysisSnapshot,
           workspace,
+          { saveRevision: updateResponse.metadata.save_revision },
         );
         useRunStore.getState().hydrateFromWorkspace(workspace);
         setLastProjectId(graphId);

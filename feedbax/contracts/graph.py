@@ -332,6 +332,11 @@ class GraphMetadata(BaseModel):
     created_at: str
     updated_at: str
     version: str = "1.0.0"
+    save_revision: int = Field(
+        default=0,
+        ge=0,
+        description="Optimistic-concurrency revision for Studio project saves.",
+    )
     author: Optional[str] = None
     tags: Optional[List[str]] = None
 

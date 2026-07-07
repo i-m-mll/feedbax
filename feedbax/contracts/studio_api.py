@@ -80,6 +80,19 @@ class GraphCreateResponse(StudioApiModel):
     data: GraphCreatePayload
 
 
+class GraphUpdatePayload(StudioApiModel):
+    """Payload returned after updating a graph."""
+
+    success: bool
+    metadata: GraphMetadata
+
+
+class GraphUpdateResponse(StudioApiModel):
+    """Standard API envelope for graph updates."""
+
+    data: GraphUpdatePayload
+
+
 class GraphDetailPayload(StudioApiModel):
     """Payload for ``GET /api/graphs/{graph_id}``."""
 

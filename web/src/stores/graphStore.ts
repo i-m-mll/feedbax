@@ -1441,6 +1441,7 @@ export interface GraphSnapshot {
   graph: GraphSpec;
   uiState: GraphUIState;
   graphId: string | null;
+  saveRevision: number | null;
   isDirty: boolean;
   lastSavedAt: string | null;
   graphStack: GraphLayer[];
@@ -1462,6 +1463,7 @@ export interface PersistableGraphSnapshot {
 
 interface GraphStoreState {
   graphId: string | null;
+  saveRevision: number | null;
   graph: GraphSpec;
   uiState: GraphUIState;
   nodes: Node<GraphNodeData | TapNodeData>[];
@@ -1486,12 +1488,13 @@ interface GraphStoreState {
     graph: GraphSpec,
     uiState?: GraphUIState | null,
     graphId?: string | null,
-    graphStackPath?: string[] | null
+    graphStackPath?: string[] | null,
+    saveRevision?: number | null
   ) => void;
   capturePersistedGraph: () => PersistableGraphSnapshot;
   captureGraphStackPath: () => string[];
   restoreSnapshot: (snapshot: GraphSnapshot) => void;
-  markSaved: (graphId: string) => void;
+  markSaved: (graphId: string, saveRevision?: number | null) => void;
   markDirty: () => void;
   resetGraph: () => void;
   undo: () => void;
@@ -1810,6 +1813,7 @@ export function createGraphSnapshotFromPersistedGraph({
   graph,
   uiState,
   graphId,
+  saveRevision,
   label,
   graphStackPath,
   edgeStyle = DEFAULT_EDGE_STYLE,
@@ -1817,6 +1821,7 @@ export function createGraphSnapshotFromPersistedGraph({
   graph: GraphSpec;
   uiState: GraphUIState | null;
   graphId: string | null;
+  saveRevision?: number | null;
   label: string;
   graphStackPath?: string[] | null;
   edgeStyle?: 'bezier' | 'elbow';
@@ -1836,6 +1841,7 @@ export function createGraphSnapshotFromPersistedGraph({
     graph: restored.graph,
     uiState: restored.uiState,
     graphId,
+    saveRevision: saveRevision ?? null,
     isDirty: false,
     lastSavedAt: null,
     graphStack: restored.graphStack,
@@ -1852,6 +1858,7 @@ export function createGraphSnapshotFromPersistedGraph({
 
 export const useGraphStore = create<GraphStoreState>((set, get) => ({
   graphId: null,
+  saveRevision: null,
   graph: initial.graph,
   uiState: initial.uiState,
   nodes: buildNodes(initial.graph, initial.uiState),
@@ -1872,7 +1879,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   selectedTapId: null,
   selectedEdgeId: null,
   pendingStateMerge: null,
-  hydrateGraph: (graph, uiState, graphId, graphStackPath = []) => {
+  hydrateGraph: (graph, uiState, graphId, graphStackPath = [], saveRevision = null) => {
     const edgeStyle = get().edgeStyle;
     const migrated = normalizeGraphForStudioAuthoring(graph);
     const normalized = normalizeUiState(migrated, uiState, edgeStyle);
@@ -1886,6 +1893,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     });
     set({
       graphId: graphId ?? null,
+      saveRevision,
       graph: restored.graph,
       uiState: restored.uiState,
       nodes: restored.nodes,
@@ -1911,6 +1919,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
     set({
       graphId: snapshot.graphId,
+      saveRevision: snapshot.saveRevision ?? null,
       graph,
       uiState: normalized,
       nodes: buildNodes(graph, normalized),
@@ -1930,9 +1939,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       pendingStateMerge: snapshot.pendingStateMerge,
     });
   },
-  markSaved: (graphId) => {
+  markSaved: (graphId, saveRevision) => {
     set({
       graphId,
+      ...(saveRevision !== undefined ? { saveRevision } : {}),
       isDirty: false,
       lastSavedAt: new Date().toISOString(),
     });
@@ -1944,6 +1954,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const fresh = createInitialGraph();
     set({
       graphId: null,
+      saveRevision: null,
       graph: fresh.graph,
       uiState: fresh.uiState,
       nodes: buildNodes(fresh.graph, fresh.uiState),

@@ -37,7 +37,8 @@ export interface OpenTab {
   workspaceSnapshot: StudioWorkspaceSpec | null;
 }
 
-type StoredGraphSnapshot = Omit<GraphSnapshot, 'past' | 'future'> & {
+type StoredGraphSnapshot = Omit<GraphSnapshot, 'past' | 'future' | 'saveRevision'> & {
+  saveRevision?: number | null;
   past?: GraphSnapshot['past'];
   future?: GraphSnapshot['future'];
   graphHistory?: unknown;
@@ -64,6 +65,7 @@ function captureGraphSnapshot(): GraphSnapshot {
     graph: s.graph,
     uiState: s.uiState,
     graphId: s.graphId,
+    saveRevision: s.saveRevision,
     isDirty: s.isDirty,
     lastSavedAt: s.lastSavedAt,
     graphStack: s.graphStack,
@@ -97,6 +99,7 @@ function makeInitialGraphSnapshot(): GraphSnapshot {
     graph,
     uiState,
     graphId: null,
+    saveRevision: null,
     isDirty: false,
     lastSavedAt: null,
     graphStack: [],
@@ -122,6 +125,7 @@ function makeBlankGraphSnapshot(name: string): GraphSnapshot {
     graph,
     uiState,
     graphId: null,
+    saveRevision: null,
     isDirty: false,
     lastSavedAt: null,
     graphStack: [],
@@ -284,6 +288,7 @@ function compactGraphLayerForStorage(layer: GraphSnapshot['graphStack'][number])
 function graphSnapshotForRuntime(snapshot: StoredGraphSnapshot): GraphSnapshot {
   return {
     ...snapshot,
+    saveRevision: snapshot.saveRevision ?? null,
     graph: normalizeGraphForStudioAuthoring(snapshot.graph),
     graphStack: (snapshot.graphStack ?? []).map(compactGraphLayerForStorage),
     past: [],
@@ -428,7 +433,7 @@ interface ProjectsStoreState {
     projectName?: string,
     analysisSnapshot?: AnalysisSnapshot | null,
     workspaceSnapshot?: StudioWorkspaceSpec | null,
-    options?: { replaceActiveTab?: boolean },
+    options?: { replaceActiveTab?: boolean; saveRevision?: number | null },
   ) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -533,6 +538,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         graph: authoringGraph,
         uiState,
         graphId,
+        saveRevision: options?.saveRevision ?? null,
         label: tabLabel,
         graphStackPath: graphStackPathFromWorkspace(authoringWorkspace),
       });
@@ -746,6 +752,7 @@ if (localStorageOrNull()) {
   subscribeToLocalProjectPersistence(useGraphStore, (state) => [
     state.graph,
     state.graphId,
+    state.saveRevision,
     state.lastSavedAt,
     state.graphStack,
     state.currentGraphLabel,

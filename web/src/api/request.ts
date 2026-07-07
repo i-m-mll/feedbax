@@ -23,6 +23,20 @@ export class ApiRequestError extends Error {
 async function parseErrorBody(response: Response): Promise<string> {
   try {
     const text = await response.text();
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === 'string') return parsed.detail.trim();
+      if (
+        parsed.detail &&
+        typeof parsed.detail === 'object' &&
+        'message' in parsed.detail &&
+        typeof parsed.detail.message === 'string'
+      ) {
+        return parsed.detail.message.trim();
+      }
+    } catch {
+      // Fall through to the raw body below.
+    }
     return text.trim();
   } catch {
     return '';
@@ -69,6 +83,10 @@ export async function requestJson(path: string, options?: RequestInit): Promise<
 export function asApiRequestError(error: unknown, path: string, context: string): ApiRequestError {
   if (error instanceof ApiRequestError) return error;
   return new ApiRequestError('contract', path, context, { cause: error });
+}
+
+export function isHttpConflict(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.kind === 'http' && error.status === 409;
 }
 
 export function apiErrorMessage(error: unknown, fallback = 'Request failed'): string {

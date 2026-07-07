@@ -33,6 +33,32 @@ class GraphRecord:
     project: GraphProject
 
 
+class GraphSaveConflictError(RuntimeError):
+    """Raised when a Studio save does not match the current project revision."""
+
+    def __init__(
+        self,
+        *,
+        graph_id: str,
+        current_revision: int,
+        expected_revision: Optional[int],
+    ) -> None:
+        self.graph_id = graph_id
+        self.current_revision = current_revision
+        self.expected_revision = expected_revision
+        if expected_revision is None:
+            message = (
+                f"Graph {graph_id} save is missing an optimistic-concurrency revision; "
+                f"current revision is {current_revision}."
+            )
+        else:
+            message = (
+                f"Graph {graph_id} save revision {expected_revision} is stale; "
+                f"current revision is {current_revision}."
+            )
+        super().__init__(message)
+
+
 class GraphService:
     def __init__(self, storage_dir: Path = GRAPHS_DIR) -> None:
         self._storage_dir = storage_dir
@@ -86,9 +112,24 @@ class GraphService:
         analysis_pages: Optional[List[AnalysisPageSpec]] = None,
         active_analysis_page_id: Optional[str] = None,
         workspace: Optional[StudioWorkspaceSpec] = None,
+        expected_save_revision: Optional[int] = None,
+        require_save_revision: bool = False,
     ) -> GraphRecord:
         record = self.get_graph(graph_id)
         project = record.project
+        current_revision = project.metadata.save_revision
+        if require_save_revision and expected_save_revision is None:
+            raise GraphSaveConflictError(
+                graph_id=graph_id,
+                current_revision=current_revision,
+                expected_revision=None,
+            )
+        if expected_save_revision is not None and expected_save_revision != current_revision:
+            raise GraphSaveConflictError(
+                graph_id=graph_id,
+                current_revision=current_revision,
+                expected_revision=expected_save_revision,
+            )
         if graph is not None:
             project.graph = normalize_graph_for_studio_authoring(graph)
         if ui_state is not None:
@@ -100,9 +141,12 @@ class GraphService:
         if workspace is not None:
             project.workspace = normalize_workspace_for_studio_authoring(workspace)
         updated_at = datetime.now(timezone.utc).isoformat()
+        next_revision = current_revision + 1
         project.metadata.updated_at = updated_at
+        project.metadata.save_revision = next_revision
         if project.graph.metadata is not None:
             project.graph.metadata.updated_at = updated_at
+            project.graph.metadata.save_revision = next_revision
         self._ensure_workspace(project)
         self._save_project(self._path_for(graph_id), project)
         return GraphRecord(graph_id=graph_id, project=project)
