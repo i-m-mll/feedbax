@@ -33,6 +33,11 @@ export interface TrainingRunSummary {
   runSetId: string | null;
   planned: boolean;
   supersededBy: string | null;
+  supersedes: string | null;
+  statusReason: string | null;
+  stale: boolean;
+  staleReason: string | null;
+  specHashComparisons: SpecHashComparison[];
 }
 
 export interface EvaluationRunSummary {
@@ -47,6 +52,26 @@ export interface EvaluationRunSummary {
   sourceIssue: string | null;
   provenanceId: string;
   uri: string | null;
+  supersededBy: string | null;
+  supersedes: string | null;
+  statusReason: string | null;
+  stale: boolean;
+  staleReason: string | null;
+}
+
+export type SpecHashStatus = 'changed' | 'unchanged' | 'missing-current' | 'missing-snapshot';
+
+export interface SpecHashComparison {
+  key: string;
+  label: string;
+  status: SpecHashStatus;
+  snapshotHash: string | null;
+  currentHash: string | null;
+}
+
+export interface RunSummaryOptions {
+  currentSpecHashes?: Record<string, string | null>;
+  includeSuperseded?: boolean;
 }
 
 export type LineageNodeSource = 'collection-input' | 'collection-output' | 'stage-manifest' | 'workspace-manifest' | 'parent-ref';
@@ -96,13 +121,17 @@ export function selectedIds(stage: StudioStageSpec | null | undefined, key: stri
     : [];
 }
 
-export function trainingRunSummaries(stage: StudioStageSpec | null | undefined): TrainingRunSummary[] {
+export function trainingRunSummaries(
+  stage: StudioStageSpec | null | undefined,
+  options: RunSummaryOptions = {}
+): TrainingRunSummary[] {
   const refs = uniqueRefs(
     stage?.output_collections.flatMap((collection) => collection.item_refs) ?? []
   );
   return refs
     .filter((ref) => ref.role === 'training_run' || ref.kind === 'TrainingRun')
-    .map(trainingRunSummary)
+    .filter((ref) => options.includeSuperseded || !isSupersededRef(ref))
+    .map((ref) => trainingRunSummary(ref, options))
     .sort((a, b) => {
       if (a.finalValidationLoss === null && b.finalValidationLoss === null) {
         return a.label.localeCompare(b.label);
@@ -114,14 +143,16 @@ export function trainingRunSummaries(stage: StudioStageSpec | null | undefined):
 }
 
 export function trainingInputSummaries(
-  stage: StudioStageSpec | null | undefined
+  stage: StudioStageSpec | null | undefined,
+  options: RunSummaryOptions = {}
 ): TrainingRunSummary[] {
   const refs = uniqueRefs(
     stage?.input_collections.flatMap((collection) => collection.item_refs) ?? []
   );
   return refs
     .filter((ref) => ref.role === 'training_run' || ref.kind === 'TrainingRun')
-    .map(trainingRunSummary)
+    .filter((ref) => options.includeSuperseded || !isSupersededRef(ref))
+    .map((ref) => trainingRunSummary(ref, options))
     .sort((a, b) => {
       if (a.finalValidationLoss === null && b.finalValidationLoss === null) {
         return a.label.localeCompare(b.label);
@@ -133,14 +164,16 @@ export function trainingInputSummaries(
 }
 
 export function evaluationRunSummaries(
-  stage: StudioStageSpec | null | undefined
+  stage: StudioStageSpec | null | undefined,
+  options: RunSummaryOptions = {}
 ): EvaluationRunSummary[] {
   const refs = uniqueRefs(
     stage?.output_collections.flatMap((collection) => collection.item_refs) ?? []
   );
   return refs
     .filter((ref) => ref.role === 'evaluation_run' || ref.kind === 'EvaluationRun')
-    .map(evaluationRunSummary);
+    .filter((ref) => options.includeSuperseded || !isSupersededRef(ref))
+    .map((ref) => evaluationRunSummary(ref));
 }
 
 export function bestTrainingRun(rows: TrainingRunSummary[]): TrainingRunSummary | null {
@@ -285,14 +318,27 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
 }
 
-function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
+function trainingRunSummary(
+  ref: StudioManifestRef,
+  options: RunSummaryOptions = {}
+): TrainingRunSummary {
   const hyperparams = objectValue(ref.metadata.hyperparams);
   const typedCheckpointAvailable = booleanValue(ref.metadata.checkpoint_available);
   const axisCoordinates = axisCoordinatesFromRef(ref);
+  const baseStatus = stringValue(ref.metadata.status) ?? 'unknown';
+  const specHashComparisons = compareSpecHashes(
+    specHashesFromMetadata(ref.metadata),
+    options.currentSpecHashes ?? {}
+  );
+  const draftChanged = specHashComparisons.some((comparison) => comparison.status === 'changed');
+  const staleReason =
+    stringValue(ref.metadata.staleness_reason) ??
+    (isPendingLikeStatus(baseStatus) && draftChanged ? 'draft changed' : null);
+  const status = staleReason ? 'stale' : baseStatus;
   return {
     id: ref.id,
     label: stringValue(ref.metadata.name) ?? ref.id,
-    status: stringValue(ref.metadata.status) ?? 'unknown',
+    status,
     variant: stringValue(metadataValue(ref, 'run_variant')),
     rampShape: stringValue(metadataValue(ref, 'ramp_shape')),
     rampDurationSteps: numberValue(metadataValue(ref, 'ramp_duration_steps')),
@@ -320,6 +366,11 @@ function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
     runSetId: stringValue(ref.metadata.run_set_id),
     planned: booleanValue(ref.metadata.planned) ?? false,
     supersededBy: stringValue(ref.metadata.superseded_by),
+    supersedes: stringValue(ref.metadata.supersedes),
+    statusReason: staleReason ?? statusReason(ref.metadata),
+    stale: staleReason !== null,
+    staleReason,
+    specHashComparisons,
   };
 }
 
@@ -578,10 +629,18 @@ function axisCoordinatesFromRef(ref: StudioManifestRef): Record<string, unknown>
 function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
   const protocol = objectValue(ref.metadata.eval_protocol);
   const trainingRunIds = arrayOfStrings(ref.metadata.training_run_ids);
+  const baseStatus = stringValue(ref.metadata.status) ?? 'unknown';
+  const upstreamSuperseded = parentRefsForManifest(ref).some((parent) =>
+    Boolean(stringValue(parent.metadata?.superseded_by))
+  );
+  const staleReason =
+    stringValue(ref.metadata.staleness_reason) ??
+    (upstreamSuperseded ? 'upstream superseded' : null);
+  const status = staleReason ? 'stale' : baseStatus;
   return {
     id: ref.id,
     label: stringValue(ref.metadata.name) ?? ref.id,
-    status: stringValue(ref.metadata.status) ?? 'unknown',
+    status,
     selectedTrainingRunId: stringValue(ref.metadata.selected_training_run_id),
     trainingRunIds,
     targets: stringValue(protocol?.targets),
@@ -590,7 +649,97 @@ function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: ref.id,
     uri: ref.uri ?? null,
+    supersededBy: stringValue(ref.metadata.superseded_by),
+    supersedes: stringValue(ref.metadata.supersedes),
+    statusReason: staleReason ?? statusReason(ref.metadata),
+    stale: staleReason !== null,
+    staleReason,
   };
+}
+
+export function currentDraftSpecHashesForScenario(
+  scenario: {
+    graph?: unknown;
+    training_spec?: unknown;
+    task_spec?: unknown;
+    task_binding_spec?: unknown;
+  } | null | undefined
+): Record<string, string | null> {
+  return {
+    graph_spec: scenario?.graph ? stableHash(scenario.graph) : null,
+    training_spec: scenario?.training_spec ? stableHash(scenario.training_spec) : null,
+    task_spec: scenario?.task_spec ? stableHash(scenario.task_spec) : null,
+    task_binding_spec: scenario?.task_binding_spec ? stableHash(scenario.task_binding_spec) : null,
+    evaluation_spec: null,
+  };
+}
+
+export function compareSpecHashes(
+  snapshotHashes: Partial<Record<string, string | null>>,
+  currentHashes: Record<string, string | null>
+): SpecHashComparison[] {
+  const keys = Array.from(
+    new Set([
+      ...Object.keys(snapshotHashes),
+      ...Object.entries(currentHashes)
+        .filter(([, hash]) => hash !== null)
+        .map(([key]) => key),
+    ])
+  );
+  return keys.map((key) => {
+    const snapshotHash = snapshotHashes[key] ?? null;
+    const currentHash = currentHashes[key] ?? null;
+    let status: SpecHashStatus;
+    if (!snapshotHash) status = 'missing-snapshot';
+    else if (!currentHash) status = 'missing-current';
+    else status = snapshotHash === currentHash ? 'unchanged' : 'changed';
+    return {
+      key,
+      label: key.replace(/_/g, ' '),
+      status,
+      snapshotHash,
+      currentHash,
+    };
+  });
+}
+
+function specHashesFromMetadata(metadata: Record<string, unknown>): Record<string, string | null> {
+  const hashes = objectValue(metadata.spec_hashes) ?? objectValue(metadata.snapshot_spec_hashes);
+  if (!hashes) return {};
+  return Object.fromEntries(
+    Object.entries(hashes)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      .map(([key, value]) => [key, value])
+  );
+}
+
+function isPendingLikeStatus(status: string): boolean {
+  return status === 'pending' || status === 'planned';
+}
+
+function isSupersededRef(ref: StudioManifestRef): boolean {
+  return stringValue(ref.metadata.superseded_by) !== null;
+}
+
+export function stableHash(value: unknown): string {
+  const text = stableStringify(value);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(',')}}`;
 }
 
 function stringValue(value: unknown): string | null {

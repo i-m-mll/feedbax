@@ -431,6 +431,9 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     assert restaged_manifest.status == "pending"
     assert restaged_manifest.completed_at is None
     assert restaged_manifest.metadata["restaged_from_status"] == "cancelled"
+    assert restaged_manifest.metadata["superseded_by"] == training_ref.id
+    assert restaged_manifest.metadata["supersedes"] == training_ref.id
+    assert restaged_ref.metadata["spec_hashes"]["training_spec"].startswith("fnv1a:")
 
 
 def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempotent(
@@ -497,8 +500,57 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
         "objective": "minimize",
         "params": {},
     }
+    assert first.manifest_refs[0].metadata["parent_refs"][0]["id"] == training_ref.id
+    assert first.manifest_refs[0].metadata["spec_hashes"]["evaluation_spec"].startswith("fnv1a:")
     assert eval_manifest.provenance.metadata["checkpoint_policy"]["mode"] == "best-by-metric"
     assert checkpoint_manifest.metadata["checkpoint_policy"]["metric"] == "final_validation_loss"
+
+
+def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    prepared_training = prepare_studio_training_execution(
+        StudioTrainingExecutionRequest(workspace=_workspace(), job_id="studio-plan")
+    )
+    train_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    eval_stage = next(stage for stage in prepared_training.workspace.stages if stage.kind == "eval")
+    eval_stage.input_collections = [
+        collection
+        for collection in train_stage.output_collections
+        if collection.kind == "training_runs"
+    ]
+    request = StudioEvaluationMatrixRequest(
+        workspace=prepared_training.workspace,
+        training_run_ids=[training_ref.id],
+        eval_params={"perturbation": "none"},
+        checkpoint_policy=StudioEvaluationCheckpointPolicy(mode="last"),
+        reprocess="missing",
+        root=str(tmp_path),
+    )
+    staged = stage_studio_evaluation_matrix(request)
+    existing_manifest = load_manifest(staged.manifest_refs[0].uri)
+    assert isinstance(existing_manifest, EvaluationRunManifest)
+    stale_manifest = existing_manifest.model_copy(
+        update={
+            "status": "stale",
+            "metadata": {
+                **existing_manifest.metadata,
+                "staleness_reason": "upstream superseded",
+            },
+        }
+    )
+    write_manifest(stale_manifest, root=tmp_path)
+
+    default_preview = preview_studio_evaluation_matrix(request)
+    stale_preview = preview_studio_evaluation_matrix(
+        request.model_copy(update={"reprocess": "stale"})
+    )
+
+    assert default_preview.launch_count == 0
+    assert stale_preview.launch_count == 1
 
 
 @pytest.mark.parametrize(

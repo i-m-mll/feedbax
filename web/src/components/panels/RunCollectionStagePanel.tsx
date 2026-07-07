@@ -47,11 +47,14 @@ import {
 import {
   bestTrainingRun,
   buildLineageProjection,
+  compareSpecHashes,
+  currentDraftSpecHashesForScenario,
   evaluationProtocolLabel,
   evaluationRunSummaries,
   formatMetric,
   runParameterSummary,
   selectedIds,
+  stableHash,
   trainingRunMetricValue,
   trainingInputSummaries,
   trainingRunSummaries,
@@ -59,6 +62,7 @@ import {
   type LineageProjection,
   type LineageProjectionEdge,
   type LineageProjectionNode,
+  type SpecHashStatus,
   type TrainingRunSummary,
 } from '@/utils/pipelineCollections';
 import {
@@ -110,7 +114,6 @@ import type {
   EvalCheckpointPolicyMode,
   EvalReprocessMode,
   StudioEvaluationMatrixPreview,
-  StudioScenarioSpec,
   StudioTopPaneState,
   StudioWorkspaceSpec,
 } from '@/types/workspace';
@@ -118,19 +121,10 @@ import type {
 type RunView = 'all' | 'selected' | 'best';
 type SortKey = string;
 type SortDirection = 'asc' | 'desc';
-type SpecHashStatus = 'changed' | 'unchanged' | 'missing-current' | 'missing-snapshot';
 
 interface SortState {
   key: SortKey;
   direction: SortDirection;
-}
-
-interface SpecHashComparison {
-  key: string;
-  label: string;
-  status: SpecHashStatus;
-  snapshotHash: string | null;
-  currentHash: string | null;
 }
 
 
@@ -179,6 +173,7 @@ export function TrainCollectionPanel() {
   const [bulkValues, setBulkValues] = useState('0.001, 0.0003');
   const [stageState, setStageState] = useState({ busy: false, error: null as string | null });
   const [runActionState, setRunActionState] = useState({ busy: false, error: null as string | null });
+  const [showHistory, setShowHistory] = useState(false);
 
   const trainStage = getStageByKind(workspace, 'train');
   const trainScenario = getScenario(workspace, trainStage?.scenario_id);
@@ -186,7 +181,18 @@ export function TrainCollectionPanel() {
   const protocol = trainingProtocolSnapshot(trainStage, trainScenario);
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
-  const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
+  const currentSpecHashes = useMemo(
+    () => currentDraftSpecHashesForScenario(trainScenario),
+    [trainScenario]
+  );
+  const rows = useMemo(
+    () =>
+      trainingRunSummaries(trainStage, {
+        currentSpecHashes,
+        includeSuperseded: showHistory,
+      }),
+    [currentSpecHashes, showHistory, trainStage]
+  );
   const trainingCollectionId =
     trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
     'collection:training-runs';
@@ -210,10 +216,6 @@ export function TrainCollectionPanel() {
   const focusedRun = useMemo(
     () => rows.find((row) => row.id === effectiveFocusedRunId) ?? selectedRows[0] ?? rows[0] ?? null,
     [effectiveFocusedRunId, rows, selectedRows]
-  );
-  const currentSpecHashes = useMemo(
-    () => currentDraftSpecHashes(trainScenario),
-    [trainScenario]
   );
   const bulkAxis = useMemo(
     () => axisColumns.find((axis) => axis.id === bulkAxisId) ?? axisColumns[0] ?? null,
@@ -653,11 +655,13 @@ export function TrainCollectionPanel() {
               syncMode={syncMode}
               collapsedSets={collapsedSets}
               view={view}
+              showHistory={showHistory}
               sort={sort}
               bestRunId={bestRow?.id ?? null}
               progressByRunId={progressBindings.byRunId}
               progressByGroupId={progressBindings.byGroupId}
               onViewChange={setView}
+              onToggleHistory={() => setShowHistory((current) => !current)}
               onSortChange={setSort}
               onToggle={toggleRow}
               onSelectAll={selectAll}
@@ -779,16 +783,23 @@ export function EvaluateCollectionPanel() {
   const [checkpointMetric, setCheckpointMetric] = useState('final_validation_loss');
   const [checkpointEveryK, setCheckpointEveryK] = useState(5);
   const [reprocessMode, setReprocessMode] = useState<EvalReprocessMode>('missing');
+  const [showHistory, setShowHistory] = useState(false);
 
   const trainStage = getStageByKind(workspace, 'train');
   const evalStage = getStageByKind(workspace, 'eval');
   const analysisStage = getStageByKind(workspace, 'analysis');
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
-  const rows = useMemo(() => trainingInputSummaries(evalStage), [evalStage]);
+  const rows = useMemo(
+    () => trainingInputSummaries(evalStage, { includeSuperseded: showHistory }),
+    [evalStage, showHistory]
+  );
   const metricColumns = useMemo(() => runMetricColumns(metrics, rows), [metrics, rows]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
-  const evaluationRows = useMemo(() => evaluationRunSummaries(evalStage), [evalStage]);
+  const evaluationRows = useMemo(
+    () => evaluationRunSummaries(evalStage, { includeSuperseded: showHistory }),
+    [evalStage, showHistory]
+  );
   const evalSelectionCollectionId =
     evalStage?.input_collections.find((collection) => collection.item_refs.length > 0)?.id ??
     'collection:selected-training-runs';
@@ -1090,9 +1101,11 @@ export function EvaluateCollectionPanel() {
             previewId={previewRunId}
             syncMode={syncMode}
             view={view}
+            showHistory={showHistory}
             sort={sort}
             bestRunId={bestRow?.id ?? null}
             onViewChange={setView}
+            onToggleHistory={() => setShowHistory((current) => !current)}
             onSortChange={setSort}
             onToggle={toggleRow}
             onSelectAll={() => writeSelection(rows.map((row) => row.id))}
@@ -1170,6 +1183,7 @@ export function EvaluateCollectionPanel() {
                   >
                     <option value="missing">Missing</option>
                     <option value="missing_failed">Missing + failed</option>
+                    <option value="stale">Stale</option>
                     <option value="all">All</option>
                   </select>
                 </label>
@@ -1408,47 +1422,6 @@ function frozenSnapshotProjectionForEvaluationRun(
   };
 }
 
-function currentDraftSpecHashes(
-  scenario: StudioScenarioSpec | null | undefined
-): Record<string, string | null> {
-  return {
-    graph_spec: scenario?.graph ? stableHash(scenario.graph) : null,
-    training_spec: scenario?.training_spec ? stableHash(scenario.training_spec) : null,
-    task_spec: scenario?.task_spec ? stableHash(scenario.task_spec) : null,
-    task_binding_spec: scenario?.task_binding_spec ? stableHash(scenario.task_binding_spec) : null,
-    evaluation_spec: null,
-  };
-}
-
-function compareSpecHashes(
-  snapshotHashes: Partial<Record<string, string | null>>,
-  currentHashes: Record<string, string | null>
-): SpecHashComparison[] {
-  const keys = Array.from(
-    new Set([
-      ...Object.keys(snapshotHashes),
-      ...Object.entries(currentHashes)
-        .filter(([, hash]) => hash !== null)
-        .map(([key]) => key),
-    ])
-  );
-  return keys.map((key) => {
-    const snapshotHash = snapshotHashes[key] ?? null;
-    const currentHash = currentHashes[key] ?? null;
-    let status: SpecHashStatus;
-    if (!snapshotHash) status = 'missing-snapshot';
-    else if (!currentHash) status = 'missing-current';
-    else status = snapshotHash === currentHash ? 'unchanged' : 'changed';
-    return {
-      key,
-      label: key.replace(/_/g, ' '),
-      status,
-      snapshotHash,
-      currentHash,
-    };
-  });
-}
-
 function specHashStatusLabel(status: SpecHashStatus): string {
   switch (status) {
     case 'changed':
@@ -1486,26 +1459,6 @@ function specPayloadInlineValue(
   return inline && typeof inline === 'object' && !Array.isArray(inline)
     ? (inline as Record<string, unknown>)
     : undefined;
-}
-
-function stableHash(value: unknown): string {
-  const text = stableStringify(value);
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`;
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-    .join(',')}}`;
 }
 
 function MatrixBuilderStrip({
@@ -2024,11 +1977,13 @@ function RunTable({
   syncMode = 'linked',
   collapsedSets = new Set<string>(),
   view,
+  showHistory,
   sort,
   bestRunId,
   progressByRunId,
   progressByGroupId,
   onViewChange,
+  onToggleHistory,
   onSortChange,
   onToggle,
   onSelectAll,
@@ -2055,11 +2010,13 @@ function RunTable({
   syncMode?: 'linked' | 'decoupled';
   collapsedSets?: Set<string>;
   view: RunView;
+  showHistory: boolean;
   sort: SortState;
   bestRunId: string | null;
   progressByRunId?: Map<string, string>;
   progressByGroupId?: Map<string, string>;
   onViewChange: (view: RunView) => void;
+  onToggleHistory: () => void;
   onSortChange: (sort: SortState) => void;
   onToggle: (id: string) => void;
   onSelectAll: () => void;
@@ -2096,6 +2053,18 @@ function RunTable({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <SegmentedFilter value={view} onChange={onViewChange} />
+          <button
+            type="button"
+            className={clsx(
+              'rounded-md border px-3 py-1.5 text-xs font-semibold',
+              showHistory
+                ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+            )}
+            onClick={onToggleHistory}
+          >
+            {showHistory ? 'Hide history' : 'Show history'}
+          </button>
           <button
             type="button"
             className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
@@ -2300,7 +2269,9 @@ function RunSetHeader({
                 ? 'bg-red-50 text-red-700'
                 : status === 'running'
                   ? 'bg-brand-50 text-brand-700'
-                  : 'bg-slate-100 text-slate-600'
+                  : status === 'stale'
+                    ? 'bg-amber-50 text-amber-700'
+                    : 'bg-slate-100 text-slate-600'
           )}>
             {status} {count}
           </span>
@@ -2400,7 +2371,9 @@ function TrainingRunRow({
   ) => void;
 }) {
   const progress = progressLabel ??
-    (row.status === 'running'
+    (row.status === 'stale'
+      ? `Stale${row.staleReason ? ` (${row.staleReason})` : ''}`
+      : row.status === 'running'
       ? 'Running'
       : row.warmupBatches !== null
         ? `${row.warmupBatches.toLocaleString()}/${row.warmupBatches.toLocaleString()}`
@@ -2451,11 +2424,30 @@ function TrainingRunRow({
               lowest loss
             </span>
           )}
+          {row.stale && (
+            <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+              stale
+            </span>
+          )}
+          {row.supersededBy && (
+            <span
+              className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600"
+              title={`superseded by ${row.supersededBy}`}
+            >
+              superseded
+            </span>
+          )}
         </div>
+        {row.statusReason && (
+          <div className="mt-0.5 truncate text-[11px] text-amber-700" title={row.statusReason}>
+            {row.statusReason}
+          </div>
+        )}
       </div>
       <div className="flex min-w-0 items-center gap-1.5 font-medium text-slate-700" title={progress}>
         {complete && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
         {row.status === 'running' && <Activity className="h-3.5 w-3.5 shrink-0 text-brand-500" />}
+        {row.status === 'stale' && <RotateCcw className="h-3.5 w-3.5 shrink-0 text-amber-600" />}
         <span className="truncate">{progress}</span>
       </div>
       {axisColumns.map((axis) => (

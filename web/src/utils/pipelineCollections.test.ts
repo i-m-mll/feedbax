@@ -9,9 +9,11 @@ import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
 import {
   bestTrainingRun,
   buildLineageProjection,
+  currentDraftSpecHashesForScenario,
   evaluationProtocolLabel,
   evaluationRunSummaries,
   selectedIds,
+  stableHash,
   trainingInputSummaries,
   trainingRunSummaries,
 } from '@/utils/pipelineCollections';
@@ -91,6 +93,82 @@ describe('pipeline collection summaries', () => {
     });
   });
 
+  it('marks pending training rows stale when draft spec hashes changed', () => {
+    const currentTrainingSpec = { n_batches: 50 };
+    const rows = trainingRunSummaries(
+      {
+        output_collections: [{
+          item_refs: [{
+            kind: 'TrainingRun',
+            id: 'feedbax-training-run:pending',
+            role: 'training_run',
+            provider: 'manifest',
+            uri: '/tmp/pending.json',
+            metadata: {
+              name: 'Pending train',
+              status: 'pending',
+              planned: true,
+              spec_hashes: {
+                training_spec: stableHash({ n_batches: 25 }),
+              },
+            },
+          }],
+        }],
+      } as any,
+      {
+        currentSpecHashes: currentDraftSpecHashesForScenario({
+          training_spec: currentTrainingSpec,
+        }),
+      }
+    );
+
+    expect(rows[0]).toMatchObject({
+      status: 'stale',
+      stale: true,
+      staleReason: 'draft changed',
+      statusReason: 'draft changed',
+    });
+    expect(rows[0].specHashComparisons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'training_spec',
+          status: 'changed',
+        }),
+      ])
+    );
+  });
+
+  it('filters superseded training rows unless history is requested', () => {
+    const stage = {
+      output_collections: [{
+        item_refs: [
+          {
+            kind: 'TrainingRun',
+            id: 'run:old',
+            role: 'training_run',
+            provider: 'manifest',
+            metadata: {
+              name: 'Old run',
+              status: 'completed',
+              superseded_by: 'run:new',
+            },
+          },
+          {
+            kind: 'TrainingRun',
+            id: 'run:new',
+            role: 'training_run',
+            provider: 'manifest',
+            metadata: { name: 'New run', status: 'pending', supersedes: 'run:old' },
+          },
+        ],
+      }],
+    } as any;
+
+    expect(trainingRunSummaries(stage).map((row) => row.id)).toEqual(['run:new']);
+    expect(trainingRunSummaries(stage, { includeSuperseded: true }).map((row) => row.id).sort())
+      .toEqual(['run:new', 'run:old']);
+  });
+
   it('summarizes completed evaluation protocol details', () => {
     const workspace = seededWorkspace();
     const evalStage = workspace.stages.find((stage) => stage.kind === 'eval');
@@ -100,6 +178,37 @@ describe('pipeline collection summaries', () => {
     expect(evaluationProtocolLabel(summary)).toBe(
       '8-direction center-out - SISU 0.5 - no perturbation'
     );
+  });
+
+  it('marks downstream evaluation rows stale when an upstream parent was superseded', () => {
+    const rows = evaluationRunSummaries({
+      output_collections: [{
+        item_refs: [{
+          kind: 'EvaluationRunManifest',
+          id: 'eval:old-parent',
+          role: 'evaluation_run',
+          provider: 'manifest',
+          metadata: {
+            name: 'Validation',
+            status: 'pending',
+            parent_refs: [
+              {
+                kind: 'TrainingRunManifest',
+                id: 'train:old',
+                role: 'training_run',
+                metadata: { superseded_by: 'train:new' },
+              },
+            ],
+          },
+        }],
+      }],
+    } as any);
+
+    expect(rows[0]).toMatchObject({
+      status: 'stale',
+      staleReason: 'upstream superseded',
+      statusReason: 'upstream superseded',
+    });
   });
 
   it('projects manifest ParentRefs as run-set grouped lineage edges', () => {

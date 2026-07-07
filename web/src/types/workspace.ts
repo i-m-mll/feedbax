@@ -552,7 +552,7 @@ export interface StudioTrainingExecutionPreparation {
 
 export interface LocalExecutionResult {
   job_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale';
   return_code: number;
   stdout_path: string;
   stderr_path: string;
@@ -571,7 +571,7 @@ export interface StudioTrainingLocalRunResult {
 }
 
 export type EvalCheckpointPolicyMode = 'last' | 'best-by-metric' | 'every-k';
-export type EvalReprocessMode = 'missing' | 'missing_failed' | 'all';
+export type EvalReprocessMode = 'missing' | 'missing_failed' | 'all' | 'stale';
 
 export interface StudioEvaluationCheckpointPolicy {
   mode: EvalCheckpointPolicyMode;

@@ -34,6 +34,11 @@ const baseRun: TrainingRunSummary = {
   runSetId: null,
   planned: true,
   supersededBy: null,
+  supersedes: null,
+  statusReason: null,
+  stale: false,
+  staleReason: null,
+  specHashComparisons: [],
 };
 
 function run(patch: Partial<TrainingRunSummary>): TrainingRunSummary {

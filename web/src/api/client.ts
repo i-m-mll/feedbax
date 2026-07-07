@@ -196,7 +196,7 @@ export async function previewStudioEvaluationMatrix(payload: {
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
   checkpoint_policy?: StudioEvaluationCheckpointPolicy;
-  reprocess?: 'missing' | 'missing_failed' | 'all';
+  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
   job_id?: string | null;
   root?: string | null;
   issues?: string[];
@@ -216,7 +216,7 @@ export async function stageStudioEvaluationMatrix(payload: {
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
   checkpoint_policy?: StudioEvaluationCheckpointPolicy;
-  reprocess?: 'missing' | 'missing_failed' | 'all';
+  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
   job_id?: string | null;
   root?: string | null;
   issues?: string[];
@@ -236,7 +236,7 @@ export async function runStudioEvaluationLocalExecution(payload: {
   eval_params?: Record<string, unknown>;
   condition_matrix?: Record<string, unknown>;
   checkpoint_policy?: StudioEvaluationCheckpointPolicy;
-  reprocess?: 'missing' | 'missing_failed' | 'all';
+  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
   job_id?: string | null;
   root?: string | null;
   timeout?: number | null;
