@@ -49,6 +49,7 @@ from feedbax.contracts.manifest import (
     load_graph_spec_from_manifest,
     utc_now,
 )
+from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     migrate_graph_spec,
@@ -255,6 +256,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "ComponentSelectorSyntax": ComponentSelectorSyntax,
         "SelectorFallbackPolicyIdentity": SelectorFallbackPolicyIdentity,
         "CheckpointSelectionSpec": CheckpointSelectionSpec,
+        "SelectionSpec": SelectionSpec,
         "ArtifactRef": ArtifactRef,
         "ArrayRecord": ArrayRecord,
         "ArrayStorePayload": ArrayStorePayload,

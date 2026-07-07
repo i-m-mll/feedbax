@@ -8,7 +8,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
@@ -44,6 +44,12 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
+from feedbax.contracts.selection import (
+    ManifestIndexRow,
+    ManifestPredicate,
+    predicate_matches_row,
+    select_parent_refs,
+)
 from feedbax.persistence.manifest_index import (
     iter_indexed_manifest_paths_by_kind,
     iter_manifest_files,
@@ -59,15 +65,6 @@ ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_exe
 AnalysisBundleMode = Literal["per-run", "grouped"]
 BundleStageKind = Literal["evaluation", "analysis", "materialization", "report"]
 BundleOutputStatus = Literal["materialized", "skipped", "missing", "not_applicable"]
-
-
-class ManifestPredicate(StrictModel):
-    """Predicate selecting upstream run manifests for an analysis bundle."""
-
-    manifest_kind: str = "EvaluationRunManifest"
-    run_ids: list[str] = Field(default_factory=list)
-    metadata_equals: dict[str, Any] = Field(default_factory=dict)
-    params_equals: dict[str, Any] = Field(default_factory=dict)
 
 
 class AnalysisSpecTemplate(StrictModel):
@@ -156,7 +153,9 @@ class AnalysisBundleSpec(StrictModel):
     schema_version: str = ANALYSIS_BUNDLE_SCHEMA_VERSION
     name: str
     description: str | None = None
-    predicate: ManifestPredicate = Field(default_factory=ManifestPredicate)
+    predicate: ManifestPredicate = Field(
+        default_factory=lambda: ManifestPredicate(manifest_kind="EvaluationRunManifest")
+    )
     templates: list[AnalysisSpecTemplate] = Field(default_factory=list)
     stages: list[BundleStageSpec] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -185,6 +184,13 @@ class AnalysisBundleSpec(StrictModel):
                     )
             seen.add(stage.name)
         return self
+
+    @field_validator("predicate", mode="before")
+    @classmethod
+    def _default_bundle_predicate_manifest_kind(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "manifest_kind" not in value:
+            return {"manifest_kind": "EvaluationRunManifest", **value}
+        return value
 
 
 @dataclass(frozen=True)
@@ -370,16 +376,10 @@ def predicate_matches_manifest(
     run_ids: set[str] | None = None,
 ) -> bool:
     """Return whether a manifest satisfies explicit IDs and equality predicates."""
-    if manifest.kind != predicate.manifest_kind:
-        return False
     allowed_ids = run_ids if run_ids is not None else set(predicate.run_ids)
     if allowed_ids and manifest.id not in allowed_ids:
         return False
-    if not _equals_all(manifest.metadata, predicate.metadata_equals):
-        return False
-    if not _equals_all(_params_payload(manifest), predicate.params_equals):
-        return False
-    return True
+    return predicate_matches_row(predicate, _manifest_index_row_for_manifest(manifest))
 
 
 def select_bundle_manifests(
@@ -391,11 +391,34 @@ def select_bundle_manifests(
     """Select manifests in a root that match a bundle predicate."""
     allowed_ids = set(run_ids) if run_ids is not None else None
     candidates = iter_candidate_manifests(root, manifest_kind=bundle.predicate.manifest_kind)
+    if bundle.predicate.top_k_by_metric_per_group is not None:
+        effective_predicate = bundle.predicate
+        if allowed_ids is not None:
+            effective_predicate = effective_predicate.model_copy(
+                update={"run_ids": sorted(allowed_ids)}
+            )
+        by_id = {manifest.id: manifest for manifest in candidates}
+        selected = select_parent_refs(
+            effective_predicate,
+            [_manifest_index_row_for_manifest(manifest) for manifest in candidates],
+        )
+        return [by_id[ref.id] for ref in selected if ref.id in by_id]
     return [
         manifest
         for manifest in candidates
         if predicate_matches_manifest(bundle.predicate, manifest, run_ids=allowed_ids)
     ]
+
+
+def _manifest_index_row_for_manifest(manifest: AnyManifest) -> ManifestIndexRow:
+    return ManifestIndexRow(
+        id=manifest.id,
+        kind=manifest.kind,
+        schema_version=manifest.schema_version,
+        created_at=manifest.created_at.isoformat(),
+        status=manifest.status,
+        payload=manifest.model_dump(mode="json"),
+    )
 
 
 def _parent_ref_for_manifest(manifest: AnyManifest) -> ParentRef:

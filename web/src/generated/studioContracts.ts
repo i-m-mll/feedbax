@@ -667,6 +667,63 @@ export interface TrainingConfig {
   snapshot_interval?: number;
 }
 
+export interface ParentRef {
+  kind: string;
+  id: string;
+  role?: string | null;
+  uri?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TopKByMetricPerGroup {
+  metric_path: string;
+  group_by_path: string;
+  k?: number;
+  order?: "asc" | "desc";
+}
+
+export interface ManifestPredicate {
+  manifest_kind?: string;
+  run_ids?: string[];
+  source_set_ids?: string[];
+  statuses?: string[];
+  has_checkpoint?: boolean | null;
+  tags?: string[];
+  metadata_equals?: Record<string, unknown>;
+  params_equals?: Record<string, unknown>;
+  path_equals?: Record<string, unknown>;
+  expression?: Record<string, unknown> | null;
+  top_k_by_metric_per_group?: TopKByMetricPerGroup | null;
+}
+
+export interface SelectionSpec {
+  schema_id?: "feedbax.spec.selection";
+  schema_version?: "feedbax.spec.selection.v2";
+  mode?: "explicit" | "query" | "frozen";
+  manifest_kind?: string;
+  ids?: string[];
+  query?: ManifestPredicate | null;
+  frozen_refs?: ParentRef[];
+  frozen_at?: unknown | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SelectionPreview {
+  selection_spec: SelectionSpec;
+  match_count: number;
+  parent_refs: ParentRef[];
+  truncated?: boolean;
+}
+
+export interface SelectionRefreshDiff {
+  frozen_refs: ParentRef[];
+  current_refs: ParentRef[];
+  new_refs: ParentRef[];
+  gone_refs: ParentRef[];
+  unchanged_refs: ParentRef[];
+  reprocess_counts: Record<string, number>;
+}
+
 export interface SuccessPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v1";
@@ -1068,6 +1125,17 @@ export interface CreateEvalRunRequest {
   training_run_id: string;
   name: string;
   eval_params?: Record<string, unknown>;
+}
+
+export interface SelectionPreviewRequest {
+  selection_spec: SelectionSpec;
+  limit?: number;
+}
+
+export interface SelectionRefreshRequest {
+  selection_spec: SelectionSpec;
+  failed_parent_ids?: string[];
+  stale_parent_ids?: string[];
 }
 
 export interface DatasetInfo {
@@ -2155,6 +2223,87 @@ export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<TrainingConfig>;
 
+export const ParentRefSchema: z.ZodType<ParentRef> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.string(),
+      "id": z.string(),
+      "role": z.string().nullable().optional(),
+      "uri": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ParentRef>;
+
+export const TopKByMetricPerGroupSchema: z.ZodType<TopKByMetricPerGroup> = z.lazy(() =>
+  z
+    .object({
+      "metric_path": z.string(),
+      "group_by_path": z.string(),
+      "k": z.number().int().optional(),
+      "order": z.union([z.literal("asc"), z.literal("desc")]).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TopKByMetricPerGroup>;
+
+export const ManifestPredicateSchema: z.ZodType<ManifestPredicate> = z.lazy(() =>
+  z
+    .object({
+      "manifest_kind": z.string().optional(),
+      "run_ids": z.array(z.string()).optional(),
+      "source_set_ids": z.array(z.string()).optional(),
+      "statuses": z.array(z.string()).optional(),
+      "has_checkpoint": z.boolean().nullable().optional(),
+      "tags": z.array(z.string()).optional(),
+      "metadata_equals": z.record(z.string(), z.unknown()).optional(),
+      "params_equals": z.record(z.string(), z.unknown()).optional(),
+      "path_equals": z.record(z.string(), z.unknown()).optional(),
+      "expression": z.record(z.string(), z.unknown()).nullable().optional(),
+      "top_k_by_metric_per_group": TopKByMetricPerGroupSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ManifestPredicate>;
+
+export const SelectionSpecSchema: z.ZodType<SelectionSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.selection").optional(),
+      "schema_version": z.literal("feedbax.spec.selection.v2").optional(),
+      "mode": z.union([z.literal("explicit"), z.literal("query"), z.literal("frozen")]).optional(),
+      "manifest_kind": z.string().optional(),
+      "ids": z.array(z.string()).optional(),
+      "query": ManifestPredicateSchema.nullable().optional(),
+      "frozen_refs": z.array(ParentRefSchema).optional(),
+      "frozen_at": z.unknown().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionSpec>;
+
+export const SelectionPreviewSchema: z.ZodType<SelectionPreview> = z.lazy(() =>
+  z
+    .object({
+      "selection_spec": SelectionSpecSchema,
+      "match_count": z.number().int(),
+      "parent_refs": z.array(ParentRefSchema),
+      "truncated": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionPreview>;
+
+export const SelectionRefreshDiffSchema: z.ZodType<SelectionRefreshDiff> = z.lazy(() =>
+  z
+    .object({
+      "frozen_refs": z.array(ParentRefSchema),
+      "current_refs": z.array(ParentRefSchema),
+      "new_refs": z.array(ParentRefSchema),
+      "gone_refs": z.array(ParentRefSchema),
+      "unchanged_refs": z.array(ParentRefSchema),
+      "reprocess_counts": z.record(z.string(), z.number().int()),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionRefreshDiff>;
+
 export const SuccessPayloadSchema: z.ZodType<SuccessPayload> = z.lazy(() =>
   z
     .object({
@@ -2754,6 +2903,25 @@ export const CreateEvalRunRequestSchema: z.ZodType<CreateEvalRunRequest> = z.laz
     .strict()
 ) as unknown as z.ZodType<CreateEvalRunRequest>;
 
+export const SelectionPreviewRequestSchema: z.ZodType<SelectionPreviewRequest> = z.lazy(() =>
+  z
+    .object({
+      "selection_spec": SelectionSpecSchema,
+      "limit": z.number().int().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionPreviewRequest>;
+
+export const SelectionRefreshRequestSchema: z.ZodType<SelectionRefreshRequest> = z.lazy(() =>
+  z
+    .object({
+      "selection_spec": SelectionSpecSchema,
+      "failed_parent_ids": z.array(z.string()).optional(),
+      "stale_parent_ids": z.array(z.string()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionRefreshRequest>;
+
 export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
   z
     .object({
@@ -3015,6 +3183,11 @@ export const contractSchemas = {
   TrainingRunInfo: TrainingRunInfoSchema,
   EvalRunInfo: EvalRunInfoSchema,
   CreateEvalRunRequest: CreateEvalRunRequestSchema,
+  SelectionSpec: SelectionSpecSchema,
+  SelectionPreview: SelectionPreviewSchema,
+  SelectionRefreshDiff: SelectionRefreshDiffSchema,
+  SelectionPreviewRequest: SelectionPreviewRequestSchema,
+  SelectionRefreshRequest: SelectionRefreshRequestSchema,
   DatasetInfo: DatasetInfoSchema,
   TrajectoryMetadata: TrajectoryMetadataSchema,
   FilterResult: FilterResultSchema,
@@ -3055,6 +3228,11 @@ export interface ContractTypeMap {
   TrainingRunInfo: TrainingRunInfo;
   EvalRunInfo: EvalRunInfo;
   CreateEvalRunRequest: CreateEvalRunRequest;
+  SelectionSpec: SelectionSpec;
+  SelectionPreview: SelectionPreview;
+  SelectionRefreshDiff: SelectionRefreshDiff;
+  SelectionPreviewRequest: SelectionPreviewRequest;
+  SelectionRefreshRequest: SelectionRefreshRequest;
   DatasetInfo: DatasetInfo;
   TrajectoryMetadata: TrajectoryMetadata;
   FilterResult: FilterResult;
