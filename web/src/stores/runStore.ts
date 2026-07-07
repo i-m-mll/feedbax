@@ -3,6 +3,10 @@ import type { TrainingRun, EvalRun } from '@/types/runs';
 import { fetchTrainingRuns, fetchEvalRuns } from '@/api/runAPI';
 import { apiErrorMessage } from '@/api/request';
 import { withStoreActionFeedback } from '@/stores/storeActions';
+import {
+  type SelectionContext,
+  useSelectionContextStore,
+} from '@/stores/selectionContextStore';
 import { getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { StudioCollectionRef, StudioManifestRef, StudioWorkspaceSpec } from '@/types/workspace';
 
@@ -282,6 +286,12 @@ function writeSelectedTrainingRunToWorkspace(run: TrainingRun | null) {
     },
     'eval_input_collection_selected'
   );
+  useSelectionContextStore.getState().setContext({
+    stage: evalStage.id,
+    collection: SELECTED_TRAINING_COLLECTION_ID,
+    selectedIds: run ? [run.id] : [],
+    focusedId: run?.id ?? null,
+  });
 }
 
 function writeEvalRunsToWorkspace(runs: EvalRun[]) {
@@ -341,6 +351,16 @@ function writeSelectedEvalRunToWorkspace(run: EvalRun | null) {
     },
     'analysis_input_collection_selected'
   );
+  useSelectionContextStore.getState().setContext({
+    stage: analysisStage.id,
+    collection: SELECTED_EVALUATION_COLLECTION_ID,
+    selectedIds: run ? [run.id] : [],
+    focusedId: run?.id ?? null,
+  });
+}
+
+function primarySelectedId(context: SelectionContext): string | null {
+  return context.focusedId ?? context.selectedIds[0] ?? null;
 }
 
 interface RunStoreState {
@@ -497,5 +517,49 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
       trainingError: null,
       evalError: null,
     });
+    const selectionStore = useSelectionContextStore.getState();
+    if (selectedEvalRunId && analysisStage) {
+      selectionStore.setContext({
+        stage: analysisStage.id,
+        collection: SELECTED_EVALUATION_COLLECTION_ID,
+        selectedIds: [selectedEvalRunId],
+        focusedId: selectedEvalRunId,
+      });
+    } else if (selectedTrainingRunId && evalStage) {
+      selectionStore.setContext({
+        stage: evalStage.id,
+        collection: SELECTED_TRAINING_COLLECTION_ID,
+        selectedIds: [selectedTrainingRunId],
+        focusedId: selectedTrainingRunId,
+      });
+    } else {
+      selectionStore.setContext({
+        stage: null,
+        collection: null,
+        selectedIds: [],
+        focusedId: null,
+      });
+    }
   },
 }));
+
+useSelectionContextStore.subscribe((state) => {
+  const selectedId = primarySelectedId(state.context);
+  if (state.context.collection === null && selectedId === null) {
+    useRunStore.setState({
+      selectedTrainingRunId: null,
+      selectedEvalRunId: null,
+    });
+    return;
+  }
+  if (state.context.collection === SELECTED_TRAINING_COLLECTION_ID) {
+    useRunStore.setState({
+      selectedTrainingRunId: selectedId,
+      selectedEvalRunId: null,
+    });
+    return;
+  }
+  if (state.context.collection === SELECTED_EVALUATION_COLLECTION_ID) {
+    useRunStore.setState({ selectedEvalRunId: selectedId });
+  }
+});
