@@ -8,12 +8,52 @@ import { actionErrorMessage, withStoreActionFeedback } from '@/stores/storeActio
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { parseContract } from '@/generated/studioContracts';
 import type { TrainingWebSocketEvent } from '@/generated/studioContracts';
-import type { TaskSpec, TrainingConfig } from '@/types/training';
+import type { TaskSpec, TrainingConfig, TrainingProgress } from '@/types/training';
 import type { TrainingStatus } from '@/stores/trainingStore';
 
 export const TRAINING_WS_MAX_RECONNECT_ATTEMPTS = 4;
 export const TRAINING_WS_BASE_RECONNECT_DELAY_MS = 500;
 export const TRAINING_WS_MAX_RECONNECT_DELAY_MS = 4_000;
+export const TRAINING_PROGRESS_BATCH_INTERVAL_MS = 50;
+
+export function createTrainingProgressBatcher(
+  applyProgress: (progress: TrainingProgress) => void,
+  applyRunningStatus: () => void,
+  delayMs = TRAINING_PROGRESS_BATCH_INTERVAL_MS
+) {
+  let pendingProgress: TrainingProgress | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushPending = () => {
+    timer = null;
+    const nextProgress = pendingProgress;
+    pendingProgress = null;
+    if (!nextProgress) return;
+    applyProgress(nextProgress);
+    applyRunningStatus();
+  };
+
+  return {
+    enqueue(progress: TrainingProgress) {
+      pendingProgress = progress;
+      if (timer !== null) return;
+      timer = globalThis.setTimeout(flushPending, delayMs);
+    },
+    flush() {
+      if (timer !== null) {
+        globalThis.clearTimeout(timer);
+      }
+      flushPending();
+    },
+    cancel() {
+      if (timer !== null) {
+        globalThis.clearTimeout(timer);
+      }
+      timer = null;
+      pendingProgress = null;
+    },
+  };
+}
 
 export function trainingWebSocketReconnectDelayMs(attempt: number): number {
   return Math.min(
@@ -81,6 +121,14 @@ export function useTraining() {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const intentionalCloseRef = useRef(false);
+  const lastEventSeqRef = useRef(-1);
+  const progressBatcherRef = useRef<ReturnType<typeof createTrainingProgressBatcher> | null>(null);
+  if (progressBatcherRef.current === null) {
+    progressBatcherRef.current = createTrainingProgressBatcher(
+      setProgress,
+      () => setStatus('running'),
+    );
+  }
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -107,7 +155,6 @@ export function useTraining() {
 
       ws.onmessage = (event) => {
         reconnectAttemptRef.current = 0;
-        setTrainingStreamError(null);
         let payload: TrainingWebSocketEvent;
         try {
           payload = parseContract('TrainingWebSocketEvent', JSON.parse(event.data) as unknown);
@@ -126,8 +173,13 @@ export function useTraining() {
           ws.close();
           return;
         }
+        if (payload.job_id !== nextJobId || payload.seq <= lastEventSeqRef.current) {
+          return;
+        }
+        lastEventSeqRef.current = payload.seq;
+        setTrainingStreamError(null);
         if (payload.type === 'training_progress') {
-          setProgress({
+          progressBatcherRef.current?.enqueue({
             batch: payload.batch,
             total_batches: payload.total_batches,
             loss: payload.loss,
@@ -137,7 +189,6 @@ export function useTraining() {
             metrics: payload.metrics ?? {},
             status: payload.status ?? 'running',
           });
-          setStatus('running');
         }
         if (payload.type === 'training_log') {
           appendLog({
@@ -164,12 +215,23 @@ export function useTraining() {
             });
           }
         }
+        if (payload.type === 'training_resync') {
+          setTrainingStreamError(payload.reason === 'gap' ? payload.message : null);
+          appendLog({
+            batch: useTrainingStore.getState().progress?.batch ?? 0,
+            level: payload.reason === 'gap' ? 'warning' : 'info',
+            message: payload.message,
+            timestamp: Date.now(),
+          });
+        }
         if (payload.type === 'training_complete') {
+          progressBatcherRef.current?.flush();
           setStatus('completed');
           intentionalCloseRef.current = true;
           ws.close();
         }
         if (payload.type === 'training_error') {
+          progressBatcherRef.current?.flush();
           setTrainingStreamError(payload.error);
           appendLog({
             batch: payload.batch ?? 0,
@@ -242,6 +304,7 @@ export function useTraining() {
     () => () => {
       intentionalCloseRef.current = true;
       clearReconnectTimer();
+      progressBatcherRef.current?.cancel();
       wsRef.current?.close();
       wsRef.current = null;
     },
@@ -257,6 +320,8 @@ export function useTraining() {
     try {
       intentionalCloseRef.current = false;
       reconnectAttemptRef.current = 0;
+      lastEventSeqRef.current = -1;
+      progressBatcherRef.current?.cancel();
       clearReconnectTimer();
       setTrainingStreamError(null);
       clearHistory();
@@ -317,6 +382,7 @@ export function useTraining() {
     if (!jobId) return;
     intentionalCloseRef.current = true;
     clearReconnectTimer();
+    progressBatcherRef.current?.flush();
     const stopped = await withStoreActionFeedback(
       () => stopTraining(jobId),
       {

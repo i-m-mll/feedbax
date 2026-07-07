@@ -109,6 +109,7 @@ from feedbax.contracts.studio_api import (
     TrainingErrorEvent,
     TrainingLogEvent,
     TrainingProgressEvent,
+    TrainingResyncEvent,
     TrainingStartPayload,
     TrainingStartResponse,
     TrainingStatusPayload,
@@ -274,6 +275,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrainingTrajectoryEvent,
     TrainingCompleteEvent,
     TrainingErrorEvent,
+    TrainingResyncEvent,
     ProbeResponse,
     ValidationErrorResponse,
     ValidateLossResponse,
@@ -309,6 +311,7 @@ EVENT_MODEL_NAMES = [
     "TrainingTrajectoryEvent",
     "TrainingCompleteEvent",
     "TrainingErrorEvent",
+    "TrainingResyncEvent",
 ]
 
 CONTRACT_MODEL_NAMES = [

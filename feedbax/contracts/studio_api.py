@@ -277,6 +277,9 @@ class TrainingProgressEvent(StudioApiModel):
 
     type: Literal["training_progress"]
     job_id: str
+    seq: int
+    emitted_at_ms: int
+    worker_seq: Optional[int] = None
     batch: int
     total_batches: int
     loss: float
@@ -293,6 +296,9 @@ class TrainingLogEvent(StudioApiModel):
 
     type: Literal["training_log"]
     job_id: str
+    seq: int
+    emitted_at_ms: int
+    worker_seq: Optional[int] = None
     batch: int
     level: Literal["info", "warning", "error"] = "info"
     message: str
@@ -316,6 +322,9 @@ class TrainingTrajectoryEvent(StudioApiModel):
 
     type: Literal["training_trajectory"]
     job_id: str
+    seq: int
+    emitted_at_ms: int
+    worker_seq: Optional[int] = None
     batch: int
     trajectory: TrainingTrajectoryPayload
     execution: Optional[str] = None
@@ -326,6 +335,9 @@ class TrainingCompleteEvent(StudioApiModel):
 
     type: Literal["training_complete"]
     job_id: str
+    seq: int
+    emitted_at_ms: int
+    worker_seq: Optional[int] = None
     batch: int
     loss: Optional[float] = None
     manifest_path: Optional[str] = None
@@ -338,5 +350,23 @@ class TrainingErrorEvent(StudioApiModel):
 
     type: Literal["training_error"]
     job_id: str
+    seq: int
+    emitted_at_ms: int
+    worker_seq: Optional[int] = None
     batch: Optional[int] = None
     error: str
+
+
+class TrainingResyncEvent(StudioApiModel):
+    """Training stream reconnect/resync marker sent over the Studio WebSocket."""
+
+    type: Literal["training_resync"]
+    job_id: str
+    seq: int
+    emitted_at_ms: int
+    worker_seq: Optional[int] = None
+    expected_worker_seq: Optional[int] = None
+    observed_worker_seq: Optional[int] = None
+    missed_events: int = 0
+    reason: Literal["resumed", "gap"]
+    message: str

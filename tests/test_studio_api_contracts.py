@@ -14,7 +14,9 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
     StudioApiModel,
+    TrainingErrorEvent,
     TrainingProgressEvent,
+    TrainingResyncEvent,
     TrainingStartResponse,
     TrainingStartPayload,
 )
@@ -79,6 +81,9 @@ def test_training_progress_event_contract_accepts_worker_shape() -> None:
         {
             "type": "training_progress",
             "job_id": "job-1",
+            "seq": 3,
+            "emitted_at_ms": 1783430000000,
+            "worker_seq": 9,
             "batch": 1,
             "total_batches": 10,
             "loss": 0.5,
@@ -91,8 +96,42 @@ def test_training_progress_event_contract_accepts_worker_shape() -> None:
     )
 
     assert event.job_id == "job-1"
+    assert event.seq == 3
+    assert event.worker_seq == 9
     assert event.loss_terms["position"] == 0.4
     assert event.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+
+
+def test_training_error_and_resync_events_have_stable_coordinates() -> None:
+    error = TrainingErrorEvent.model_validate(
+        {
+            "type": "training_error",
+            "job_id": "job-1",
+            "seq": 4,
+            "emitted_at_ms": 1783430000100,
+            "worker_seq": 10,
+            "batch": 2,
+            "error": "worker failed",
+        }
+    )
+    resync = TrainingResyncEvent.model_validate(
+        {
+            "type": "training_resync",
+            "job_id": "job-1",
+            "seq": 5,
+            "emitted_at_ms": 1783430000200,
+            "expected_worker_seq": 11,
+            "observed_worker_seq": 14,
+            "missed_events": 3,
+            "reason": "gap",
+            "message": "Training stream resumed after reconnect with 3 missed event(s).",
+        }
+    )
+
+    assert error.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+    assert error.job_id == resync.job_id
+    assert resync.reason == "gap"
+    assert resync.missed_events == 3
 
 
 def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() -> None:
