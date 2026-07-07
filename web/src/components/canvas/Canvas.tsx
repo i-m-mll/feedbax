@@ -29,6 +29,7 @@ import {
   getBezierPath,
   BackgroundVariant,
 } from '@xyflow/react';
+import { useShallow } from 'zustand/react/shallow';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -77,7 +78,6 @@ import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-r
 
 interface TaskSourceNodeData extends Record<string, unknown> {
   label: string;
-  handleSize: number;
   beginTaskConnection?: () => void;
   prepareTaskConnection?: () => void;
   releaseTaskConnection?: () => void;
@@ -104,7 +104,8 @@ type ConnectionFeedback = {
 
 function TaskSourceNode({ data }: NodeProps) {
   const nodeData = data as TaskSourceNodeData;
-  const handleSize = Number(nodeData.handleSize) || TASK_SOURCE_HANDLE_SCREEN_SIZE;
+  const viewport = useViewport();
+  const handleSize = TASK_SOURCE_HANDLE_SCREEN_SIZE / Math.max(0.1, viewport.zoom || 1);
   return (
     <div
       className="relative"
@@ -353,6 +354,10 @@ const TASK_CONNECT_AUTOPAN_EDGE_DISTANCE = 36;
 const TASK_CONNECT_AUTOPAN_ARM_DISTANCE = TASK_CONNECT_AUTOPAN_EDGE_DISTANCE + 24;
 const TASK_CONNECT_AUTOPAN_MAX_SPEED = 16;
 
+function isDefaultViewport(viewport: { x: number; y: number; zoom: number }): boolean {
+  return viewport.x === 0 && viewport.y === 0 && viewport.zoom === 1;
+}
+
 function taskSourceNodeId(dataId: string): string {
   return `${TASK_SOURCE_NODE_PREFIX}${dataId}`;
 }
@@ -545,12 +550,10 @@ function TaskBindingVisualOverlay({
       if (active) frame = requestAnimationFrame(tick);
     };
     update();
-    const interval = window.setInterval(update, 100);
     frame = requestAnimationFrame(tick);
     return () => {
       active = false;
       if (frame) cancelAnimationFrame(frame);
-      window.clearInterval(interval);
     };
   }, [bindingKey, bindings, containerRef]);
 
@@ -607,27 +610,65 @@ export function Canvas() {
     confirmStateMerge,
     cancelStateMerge,
     graph,
+    uiState,
     graphStack,
     currentGraphLabel,
     exitToBreadcrumb,
     wrapInParentGraph,
-  } = useGraphStore();
-  const { resizeMode, toggleResizeMode } = useLayoutStore();
+  } = useGraphStore(
+    useShallow((state) => ({
+      graphId: state.graphId,
+      nodes: state.nodes,
+      edges: state.edges,
+      onNodesChange: state.onNodesChange,
+      onEdgesChange: state.onEdgesChange,
+      onConnect: state.onConnect,
+      updateNodeParamsBatch: state.updateNodeParamsBatch,
+      addNodeFromComponent: state.addNodeFromComponent,
+      markDirty: state.markDirty,
+      setSelectedNode: state.setSelectedNode,
+      setSelectedTap: state.setSelectedTap,
+      setSelectedEdge: state.setSelectedEdge,
+      addTapForEdge: state.addTapForEdge,
+      setAllNodesCollapsed: state.setAllNodesCollapsed,
+      pendingStateMerge: state.pendingStateMerge,
+      confirmStateMerge: state.confirmStateMerge,
+      cancelStateMerge: state.cancelStateMerge,
+      graph: state.graph,
+      uiState: state.uiState,
+      graphStack: state.graphStack,
+      currentGraphLabel: state.currentGraphLabel,
+      exitToBreadcrumb: state.exitToBreadcrumb,
+      wrapInParentGraph: state.wrapInParentGraph,
+    }))
+  );
+  const { resizeMode, toggleResizeMode } = useLayoutStore(
+    useShallow((state) => ({
+      resizeMode: state.resizeMode,
+      toggleResizeMode: state.toggleResizeMode,
+    }))
+  );
   const showMinimap = useSettingsStore((state) => state.showMinimap);
   const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
-  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
-  const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
-  const updateTaskBindingSpec = useWorkspaceStore(
-    (state) => state.updateActiveScenarioTaskBindingSpec
+  const {
+    selectTopPaneEntity,
+    hoverTopPaneEntity,
+    updateTaskBindingSpec,
+    workspace,
+  } = useWorkspaceStore(
+    useShallow((state) => ({
+      selectTopPaneEntity: state.selectTopPaneEntity,
+      hoverTopPaneEntity: state.hoverTopPaneEntity,
+      updateTaskBindingSpec: state.updateActiveScenarioTaskBindingSpec,
+      workspace: state.workspace,
+    }))
   );
-  const workspace = useWorkspaceStore((state) => state.workspace);
   const topPane = getTopPaneState(workspace);
   const selectedTaskBindingId = topPane.selected_entity_id?.startsWith(TASK_BINDING_ENTITY_PREFIX)
     ? topPane.selected_entity_id.slice(TASK_BINDING_ENTITY_PREFIX.length)
     : null;
   const { components } = useComponents();
   const reactFlow = useReactFlow();
-  const viewport = useViewport();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
   const fittedGraphKey = useRef<string | null>(null);
@@ -691,8 +732,6 @@ export function Canvas() {
     [taskDataSignature]
   );
   const bindableTaskDataKey = bindableTaskData.map((data) => data.id).join('|');
-  const taskSourceHandleSize =
-    TASK_SOURCE_HANDLE_SCREEN_SIZE / Math.max(0.1, viewport.zoom || 1);
 
   const updateTaskSourcePositions = useCallback(() => {
     if (topPane.active_projection !== 'task') {
@@ -937,7 +976,7 @@ export function Canvas() {
                 );
               } else {
                 position = {
-                  x: -taskSourceHandleSize,
+                  x: -TASK_SOURCE_HANDLE_SCREEN_SIZE,
                   y: 88 + index * 28,
                 };
               }
@@ -948,7 +987,6 @@ export function Canvas() {
               position,
               data: {
                 label: data.label,
-                handleSize: taskSourceHandleSize,
                 beginTaskConnection,
                 prepareTaskConnection,
                 releaseTaskConnection,
@@ -958,8 +996,6 @@ export function Canvas() {
               deletable: false,
               focusable: false,
               style: {
-                width: taskSourceHandleSize,
-                height: taskSourceHandleSize,
                 opacity: 0,
                 pointerEvents: 'all',
               },
@@ -972,7 +1008,6 @@ export function Canvas() {
       bindableTaskData,
       prepareTaskConnection,
       releaseTaskConnection,
-      taskSourceHandleSize,
       taskSourcePositions,
       topPane.active_projection,
     ]
@@ -1106,6 +1141,8 @@ export function Canvas() {
       ),
     [graphId, graphStack, currentGraphLabel]
   );
+  const hasRestoredSubgraphViewport =
+    graphStack.length > 0 && !isDefaultViewport(uiState.viewport);
   const connectionLineStyle = useMemo(() => {
     if (connectionFeedback?.status === 'valid') {
       return { stroke: '#10b981', strokeWidth: 2.5 };
@@ -1120,7 +1157,12 @@ export function Canvas() {
   }, [connectionFeedback?.status]);
 
   useEffect(() => {
-    if (nodes.length === 0 || fittedGraphKey.current === graphViewKey) {
+    if (
+      nodes.length === 0 ||
+      fittedGraphKey.current === graphViewKey ||
+      hasRestoredSubgraphViewport
+    ) {
+      if (hasRestoredSubgraphViewport) fittedGraphKey.current = graphViewKey;
       return;
     }
     fittedGraphKey.current = graphViewKey;
@@ -1141,7 +1183,7 @@ export function Canvas() {
       if (frame) cancelAnimationFrame(frame);
       timeouts.forEach((timeout) => window.clearTimeout(timeout));
     };
-  }, [graphViewKey, nodes.length, reactFlow]);
+  }, [graphViewKey, hasRestoredSubgraphViewport, nodes.length, reactFlow]);
 
   const isStateHandle = (handleId?: string | null) =>
     typeof handleId === 'string' && handleId.startsWith('__state');
@@ -1528,6 +1570,7 @@ export function Canvas() {
         style={{ zIndex: 10 }}
         nodes={displayNodes}
         edges={displayEdges}
+        defaultViewport={uiState.viewport}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={handleNodesChange}

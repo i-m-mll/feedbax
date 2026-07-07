@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useDemandStore } from '@/stores/demandStore';
-import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
+import { generateFigure, getFigureData } from '@/api/figureAPI';
+import { useFigureGenerationStatus } from '@/hooks/useFigureGenerationStatus';
 import type { FigureRequestStatus } from '@/types/analysis';
 import clsx from 'clsx';
 import { Image, RefreshCw, Play, X, Loader2, AlertCircle } from 'lucide-react';
@@ -136,7 +137,6 @@ export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPin
   const figureHash = useDemandStore((s) => s.requests[nodeId]?.figureHash);
   const error = useDemandStore((s) => s.requests[nodeId]?.error);
   const requestGeneration = useDemandStore((s) => s.requestGeneration);
-  const setResult = useDemandStore((s) => s.setResult);
   const setError = useDemandStore((s) => s.setError);
   const clearRequest = useDemandStore((s) => s.clearRequest);
 
@@ -149,41 +149,7 @@ export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPin
   const [previewData, setPreviewData] = useState<unknown>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Poll for figure status when running
-  useEffect(() => {
-    if (status !== 'running') {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return;
-    }
-
-    const requestId = useDemandStore.getState().requests[nodeId]?.figureHash;
-    if (!requestId) return;
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const result = await getFigureStatus(requestId);
-        if (result.status === 'complete' && result.figure_hashes?.length) {
-          setResult(nodeId, result.figure_hashes[0]);
-        } else if (result.status === 'error') {
-          setError(nodeId, result.error ?? 'Generation failed');
-        }
-      } catch {
-        // Keep polling on transient errors
-      }
-    }, 2000);
-
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [status, nodeId, setResult, setError]);
+  useFigureGenerationStatus(nodeId, status);
 
   // Close context menu on outside click
   useEffect(() => {

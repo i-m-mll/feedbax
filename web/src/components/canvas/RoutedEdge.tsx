@@ -183,14 +183,28 @@ export function RoutedEdge({
                   removeEdgePoint(id, index);
                   return;
                 }
-                const handleMove = (moveEvent: PointerEvent) => {
+                let frame = 0;
+                let pendingEvent: PointerEvent | null = null;
+                const flushMove = () => {
+                  frame = 0;
+                  const moveEvent = pendingEvent;
+                  if (!moveEvent) return;
+                  pendingEvent = null;
                   const next = screenToFlowPosition({
                     x: moveEvent.clientX,
                     y: moveEvent.clientY,
                   });
                   updateEdgePoint(id, index, next);
                 };
+                const handleMove = (moveEvent: PointerEvent) => {
+                  pendingEvent = moveEvent;
+                  if (!frame) frame = requestAnimationFrame(flushMove);
+                };
                 const handleUp = () => {
+                  if (frame) {
+                    cancelAnimationFrame(frame);
+                    flushMove();
+                  }
                   window.removeEventListener('pointermove', handleMove);
                   window.removeEventListener('pointerup', handleUp);
                 };
