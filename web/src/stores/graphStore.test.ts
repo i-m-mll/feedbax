@@ -410,6 +410,71 @@ describe('graphStore boundary aliases', () => {
       'parent graph no longer contains subgraph node "network"'
     );
   });
+
+  it('preserves active subgraph undo history across enter and exit', () => {
+    const gain: ComponentDefinition = {
+      name: 'Gain',
+      category: 'Math',
+      description: 'Gain',
+      param_schema: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      icon: 'math',
+      default_params: { gain: 7 },
+    };
+
+    useGraphStore.getState().enterSubgraph('network');
+    useGraphStore.getState().addNodeFromComponent(gain, { x: 520, y: 160 });
+    expect(useGraphStore.getState().graph.nodes.gain).toBeDefined();
+    expect(useGraphStore.getState().past).toHaveLength(1);
+
+    useGraphStore.getState().exitToBreadcrumb(0);
+    expect(useGraphStore.getState().graph.nodes.network).toBeDefined();
+
+    useGraphStore.getState().enterSubgraph('network');
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+
+    expect(useGraphStore.getState().graph.nodes.gain).toBeUndefined();
+  });
+
+  it('duplicates a composite node with its internal graph and UI state', () => {
+    useGraphStore.getState().setSelectedNode('network');
+    useGraphStore.getState().duplicateSelected();
+
+    const state = useGraphStore.getState();
+    expect(state.past).toHaveLength(1);
+    expect(state.graph.nodes.network2).toMatchObject({
+      type: 'Network',
+      input_ports: ['input', 'feedback'],
+      output_ports: ['output'],
+    });
+    expect(state.graph.subgraphs?.network2).toEqual(state.graph.subgraphs?.network);
+    expect(state.graph.subgraphs?.network2).not.toBe(state.graph.subgraphs?.network);
+    expect(state.uiState.subgraph_states?.network2).toEqual(
+      state.uiState.subgraph_states?.network
+    );
+    expect(state.uiState.subgraph_states?.network2).not.toBe(
+      state.uiState.subgraph_states?.network
+    );
+    expect(state.uiState.node_states.network2.position).toEqual({ x: 40, y: 40 });
+    expect(state.uiState.node_states.network2.selected).toBe(true);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().graph.nodes.network2).toBeUndefined();
+  });
+
+  it('raises when duplicating a composite node with no source subgraph', () => {
+    const graph = graphWithNetworkSubgraph();
+    delete graph.subgraphs;
+    useGraphStore.getState().hydrateGraph(graph, uiState);
+    useGraphStore.getState().setCompositeTypes(new Set(['Network']));
+    useGraphStore.getState().setSelectedNode('network');
+
+    expect(() => useGraphStore.getState().duplicateSelected()).toThrow(
+      'Cannot duplicate composite node "network": source subgraph is missing.'
+    );
+  });
 });
 
 describe('graphStore React Flow identity preservation', () => {
@@ -459,6 +524,28 @@ describe('graphStore React Flow identity preservation', () => {
     const edgeSelected = useGraphStore.getState();
     expect(edgeSelected.nodes).toBe(previousNodes);
     expect(edgeSelected.edges[0]).not.toBe(previousEdge);
+  });
+
+  it('records undo snapshots for collapse and reverse UI mutations', () => {
+    useGraphStore.getState().toggleNodeCollapse('a');
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(true);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(false);
+
+    useGraphStore.getState().toggleNodeReversed('a');
+    expect(useGraphStore.getState().uiState.node_states.a.reversed).toBe(true);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().uiState.node_states.a.reversed).toBe(false);
+
+    useGraphStore.getState().setAllNodesCollapsed(true);
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(true);
+    expect(useGraphStore.getState().uiState.node_states.b.collapsed).toBe(true);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().uiState.node_states.a.collapsed).toBe(false);
+    expect(useGraphStore.getState().uiState.node_states.b.collapsed).toBe(false);
   });
 });
 
