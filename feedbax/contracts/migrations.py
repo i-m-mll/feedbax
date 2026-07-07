@@ -81,6 +81,12 @@ from feedbax.contracts.schema_namespace import (
     validate_schema_identity,
     validate_schema_version,
 )
+from feedbax.contracts.selection import (
+    SELECTION_SPEC_SCHEMA_ID,
+    SELECTION_SPEC_SCHEMA_VERSION,
+    SELECTION_SPEC_SCHEMA_VERSION_V1,
+    migrate_selection_spec_payload,
+)
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
@@ -1831,6 +1837,25 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Declarative generic checkpoint-selection request.",
         ),
         _family(
+            "SelectionSpec",
+            SELECTION_SPEC_SCHEMA_ID,
+            SELECTION_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.selection",
+            emitted_by=("Studio stage selection_spec", "provider_manifest.schemas"),
+            consumed_by=(
+                "Studio pipeline staging",
+                "evaluation/analysis/queue/lineage consumers",
+            ),
+            description="Explicit, query, and frozen manifest input selection.",
+            stance="migrate",
+            supported_old_versions=(SELECTION_SPEC_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(),
+            required_tests=(
+                "tests/test_selection_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "WorkerMethodContractSpec",
             WORKER_CONTRACT_SCHEMA_ID,
             WORKER_CONTRACT_SCHEMA_VERSION,
@@ -2521,6 +2546,18 @@ default_spec_registry.register_migration(
         description=(
             "Promote array-only evaluation-state container metadata to the v2 "
             "mixed array/JSON metadata leaf envelope."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "SelectionSpec",
+    SchemaMigration(
+        source_version=SELECTION_SPEC_SCHEMA_VERSION_V1,
+        target_version=SELECTION_SPEC_SCHEMA_VERSION,
+        migration_id="selection-spec-v1-to-v2-query-forms",
+        migrate=migrate_selection_spec_payload,
+        description=(
+            "Promote legacy id-list selection payloads to explicit SelectionSpec v2."
         ),
     ),
 )

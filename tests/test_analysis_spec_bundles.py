@@ -54,6 +54,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
     write_manifest,
 )
+from feedbax.contracts.selection import TopKByMetricPerGroup
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
 
@@ -596,7 +597,7 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(tmp_path: Path,
             )
         ] == [first.id]
         assert predicate_matches_manifest(
-            ManifestPredicate(run_ids=[other.id]),
+            ManifestPredicate(manifest_kind="EvaluationRunManifest", run_ids=[other.id]),
             other,
         )
 
@@ -611,6 +612,65 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(tmp_path: Path,
         assert expansions[0].spec.params["requested_outputs"] == ["toy"]
     finally:
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_bundle_selection_uses_shared_manifest_predicate_query_terms(tmp_path: Path) -> None:
+    def write_training_run(
+        run_id: str,
+        *,
+        source_set: str = "sweep-a",
+        status: str = "completed",
+        checkpoint: bool = True,
+        loss: float = 1.0,
+        group: str = "baseline",
+        tags: list[str] | None = None,
+    ) -> None:
+        write_manifest(
+            TrainingRunManifest(
+                id=run_id,
+                run_set_id=source_set,
+                status=status,
+                checkpoint_custody=[
+                    ParentRef(kind="CheckpointManifest", id=f"{run_id}:checkpoint")
+                ]
+                if checkpoint
+                else [],
+                summary_metrics={"loss": loss},
+                metadata={
+                    "tags": tags or [],
+                    "studio": {"axis_coordinates": {"shape": group}},
+                },
+            ),
+            root=tmp_path,
+        )
+
+    write_training_run("run-a", loss=0.4, group="short", tags=["keep"])
+    write_training_run("run-b", loss=0.2, group="short", tags=["keep"])
+    write_training_run("run-c", loss=0.3, group="long", tags=["keep"])
+    write_training_run("run-d", loss=0.1, group="long", checkpoint=False, tags=["keep"])
+    write_training_run("run-e", source_set="other", loss=0.05, group="short", tags=["keep"])
+
+    bundle = AnalysisBundleSpec(
+        name="shared_predicate_terms",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            source_set_ids=["sweep-a"],
+            statuses=["completed"],
+            has_checkpoint=True,
+            tags=["keep"],
+            top_k_by_metric_per_group=TopKByMetricPerGroup(
+                metric_path="summary_metrics.loss",
+                group_by_path="metadata.studio.axis_coordinates.shape",
+                k=1,
+                order="asc",
+            ),
+        ),
+    )
+
+    matched = select_bundle_manifests(bundle, tmp_path)
+
+    assert [manifest.id for manifest in matched] == ["run-b", "run-c"]
+    assert predicate_matches_manifest(bundle.predicate, matched[0])
 
 
 def test_simple_bundle_rejects_explicit_unsupported_old_schema_version() -> None:

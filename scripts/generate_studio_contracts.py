@@ -134,13 +134,27 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingSpec,
 )
+from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.selection import (
+    ManifestPredicate,
+    SelectionPreview,
+    SelectionRefreshDiff,
+    SelectionSpec,
+    TopKByMetricPerGroup,
+)
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.web.api.training import (
     ProbeResponse,
     ValidateLossResponse,
     ValidationErrorResponse,
 )
-from feedbax.web.api.runs import CreateEvalRunRequest, EvalRunInfo, TrainingRunInfo
+from feedbax.web.api.runs import (
+    CreateEvalRunRequest,
+    EvalRunInfo,
+    SelectionPreviewRequest,
+    SelectionRefreshRequest,
+    TrainingRunInfo,
+)
 from feedbax.web.models.inspection import (
     CycleAnnotationModel,
     InlineTreescopeRequest,
@@ -241,6 +255,12 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrainingSpec,
     TaskSpec,
     TrainingConfig,
+    ParentRef,
+    TopKByMetricPerGroup,
+    ManifestPredicate,
+    SelectionSpec,
+    SelectionPreview,
+    SelectionRefreshDiff,
     SuccessPayload,
     SuccessResponse,
     GraphListItem,
@@ -290,6 +310,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrainingRunInfo,
     EvalRunInfo,
     CreateEvalRunRequest,
+    SelectionPreviewRequest,
+    SelectionRefreshRequest,
     DatasetInfo,
     TrajectoryMetadata,
     FilterResult,
@@ -343,6 +365,11 @@ CONTRACT_MODEL_NAMES = [
     "TrainingRunInfo",
     "EvalRunInfo",
     "CreateEvalRunRequest",
+    "SelectionSpec",
+    "SelectionPreview",
+    "SelectionRefreshDiff",
+    "SelectionPreviewRequest",
+    "SelectionRefreshRequest",
     "DatasetInfo",
     "TrajectoryMetadata",
     "FilterResult",

@@ -18,6 +18,14 @@ from feedbax.contracts.manifest import (
     utc_now,
     write_manifest,
 )
+from feedbax.contracts.selection import (
+    SelectionPreview,
+    SelectionRefreshDiff,
+    SelectionSpec,
+    manifest_index_rows_from_records,
+    preview_selection_spec,
+    refresh_selection_spec,
+)
 from feedbax.persistence.database import (
     EvaluationRecord,
     ModelRecord,
@@ -87,6 +95,21 @@ class SupersedeTrainingRunRequest(BaseModel):
 
     superseded_by: Optional[str] = None
     reason: Optional[str] = None
+
+
+class SelectionPreviewRequest(BaseModel):
+    """Body for previewing a SelectionSpec over indexed manifests."""
+
+    selection_spec: SelectionSpec
+    limit: int = Field(default=50, ge=0)
+
+
+class SelectionRefreshRequest(BaseModel):
+    """Body for comparing a frozen SelectionSpec with current index matches."""
+
+    selection_spec: SelectionSpec
+    failed_parent_ids: list[str] = Field(default_factory=list)
+    stale_parent_ids: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +298,13 @@ def _load_training_manifest_from_index(training_run_id: str) -> tuple[TrainingRu
     return manifest, path
 
 
+def _selection_index_rows(spec: SelectionSpec):
+    manifest_kind = spec.query.manifest_kind if spec.query is not None else spec.manifest_kind
+    return manifest_index_rows_from_records(
+        iter_indexed_manifest_records_by_kind(manifest_kind)
+    )
+
+
 def _legacy_training_runs_from_model_db() -> list[TrainingRunInfo]:
     """Return legacy completed rows for model DB records without manifests."""
     from sqlalchemy import func
@@ -338,6 +368,27 @@ async def list_training_runs() -> list[TrainingRunInfo]:
     for legacy in _legacy_training_runs_from_model_db():
         by_id.setdefault(legacy.id, legacy)
     return list(by_id.values())
+
+
+@router.post("/selection/preview", response_model=SelectionPreview)
+async def preview_selection(request: SelectionPreviewRequest) -> SelectionPreview:
+    """Preview the current manifest-index matches for a selection spec."""
+
+    rows = _selection_index_rows(request.selection_spec)
+    return preview_selection_spec(request.selection_spec, rows, limit=request.limit)
+
+
+@router.post("/selection/refresh", response_model=SelectionRefreshDiff)
+async def refresh_selection(request: SelectionRefreshRequest) -> SelectionRefreshDiff:
+    """Compare a frozen selection snapshot with current manifest-index matches."""
+
+    rows = _selection_index_rows(request.selection_spec)
+    return refresh_selection_spec(
+        request.selection_spec,
+        rows,
+        failed_parent_ids=request.failed_parent_ids,
+        stale_parent_ids=request.stale_parent_ids,
+    )
 
 
 @router.get("/training/{training_run_id}/evals")
