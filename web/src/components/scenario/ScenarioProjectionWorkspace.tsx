@@ -15,11 +15,14 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  RefreshCw,
   Settings2,
   Trash2,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
+import type { SampledTaskTrial } from '@/api/client';
+import { sampleTaskTrials } from '@/api/client';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
   retainedObservableEntityId,
@@ -55,6 +58,11 @@ import {
   retainedObservableTargetKindLabel,
   selectorToRetainedObservableTarget,
 } from '@/features/scenario/observables';
+import {
+  compactTimelineCues,
+  sampledPreviewTrialLabel,
+  timelineCueOffset,
+} from '@/features/scenario/samplePreview';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
 import {
@@ -136,6 +144,13 @@ function sceneBounds(scene: ResolvedScene): SceneBounds {
     min: [bounds.min[0] - pad, bounds.min[1] - pad],
     max: [bounds.max[0] + pad, bounds.max[1] + pad],
   };
+}
+
+function includeSampledTrials(bounds: SceneBounds, trials: SampledTaskTrial[]) {
+  for (const trial of trials) {
+    includePoint(bounds, trial.start);
+    includePoint(bounds, trial.goal);
+  }
 }
 
 function fitScale(bounds: SceneBounds): number {
@@ -254,6 +269,16 @@ function WorkspaceProjection({
   scene,
   selectedId,
   viewState,
+  sampledTrials,
+  previewStatus,
+  previewError,
+  previewMode,
+  previewSeed,
+  previewCount,
+  onPreviewModeChange,
+  onPreviewSeedChange,
+  onPreviewCountChange,
+  onReseed,
   onSelect,
   onViewStateChange,
 }: {
@@ -261,6 +286,16 @@ function WorkspaceProjection({
   scene: ResolvedScene;
   selectedId: string | null;
   viewState: WorkspaceViewState;
+  sampledTrials: SampledTaskTrial[];
+  previewStatus: 'idle' | 'loading' | 'ready' | 'error';
+  previewError: string | null;
+  previewMode: 'authoring' | 'sampled' | 'playback';
+  previewSeed: number;
+  previewCount: number;
+  onPreviewModeChange: (mode: 'authoring' | 'sampled' | 'playback') => void;
+  onPreviewSeedChange: (seed: number) => void;
+  onPreviewCountChange: (count: number) => void;
+  onReseed: () => void;
   onSelect: (entityId: string | null) => void;
   onViewStateChange: (patch: Partial<WorkspaceViewState>) => void;
 }) {
@@ -296,6 +331,7 @@ function WorkspaceProjection({
       : []
   );
   const bounds = sceneBounds(scene);
+  if (previewMode === 'sampled') includeSampledTrials(bounds, sampledTrials);
   const baseScale = fitScale(bounds);
   const scale = baseScale * view.zoom;
   const center: ScenePoint = [
@@ -516,6 +552,60 @@ function WorkspaceProjection({
     return null;
   };
 
+  const renderSampledTrial = (trial: SampledTaskTrial) => {
+    const [x0, y0] = project(trial.start);
+    const [x1, y1] = project(trial.goal);
+    const hue = trial.index % 2 === 0 ? '#0f766e' : '#7c3aed';
+    return (
+      <g key={trial.id} opacity="0.72">
+        <line
+          x1={x0}
+          y1={y0}
+          x2={x1}
+          y2={y1}
+          stroke={hue}
+          strokeWidth={2}
+          strokeDasharray="5 5"
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle
+          cx={x0}
+          cy={y0}
+          r={6}
+          fill="#ffffff"
+          stroke={hue}
+          strokeWidth={1.75}
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle
+          cx={x1}
+          cy={y1}
+          r={9}
+          fill="none"
+          stroke={hue}
+          strokeWidth={1.75}
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle cx={x1} cy={y1} r={3.5} fill={hue} />
+        <text
+          x={x1 + 10}
+          y={y1 - 8}
+          className="select-none fill-slate-700 text-[11px] font-semibold"
+        >
+          {sampledPreviewTrialLabel(trial)}
+        </text>
+      </g>
+    );
+  };
+
+  const renderedSamples = previewMode === 'sampled' ? sampledTrials.slice(0, previewCount) : [];
+  const modeLabel =
+    previewMode === 'sampled'
+      ? 'Sampled preview'
+      : previewMode === 'playback'
+        ? 'Playback'
+        : 'Authoring rest pose';
+
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_17rem] bg-slate-50">
       <div className="relative min-h-0 overflow-hidden">
@@ -556,6 +646,7 @@ function WorkspaceProjection({
             vectorEffect="non-scaling-stroke"
           />
           {visibleElements.map(renderElement)}
+          {renderedSamples.map(renderSampledTrial)}
           <g transform={`translate(28 ${WORKSPACE_SVG_HEIGHT - 32})`}>
             <line
               x1="0"
@@ -573,6 +664,105 @@ function WorkspaceProjection({
             </text>
           </g>
         </svg>
+        <div className="absolute left-4 top-16 flex w-[27rem] max-w-[calc(100%-2rem)] flex-col gap-2 rounded border border-slate-200 bg-white/95 p-2 shadow-sm backdrop-blur">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-xs font-semibold text-slate-800">{modeLabel}</div>
+              <div className="truncate text-[11px] text-slate-500">
+                {previewMode === 'sampled'
+                  ? `${renderedSamples.length} trials · seed ${previewSeed}`
+                  : previewMode === 'playback'
+                    ? 'Run playback will use selected trial artifacts'
+                    : 'Authored geometry without sampled trial instances'}
+              </div>
+            </div>
+            <div className="grid h-7 grid-cols-3 rounded border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-medium">
+              {(['authoring', 'sampled', 'playback'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onPreviewModeChange(mode)}
+                  className={clsx(
+                    'h-6 w-16 rounded px-1 capitalize',
+                    previewMode === mode
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800'
+                  )}
+                >
+                  {mode === 'authoring' ? 'Rest' : mode}
+                </button>
+              ))}
+            </div>
+          </div>
+          {previewMode === 'sampled' && (
+            <div className="grid grid-cols-[5.5rem_4.5rem_2rem_minmax(0,1fr)] items-center gap-2">
+              <input
+                type="number"
+                value={previewSeed}
+                onChange={(event) => {
+                  const value = Number.parseInt(event.target.value, 10);
+                  if (Number.isFinite(value)) onPreviewSeedChange(value);
+                }}
+                className="h-8 rounded border border-slate-200 px-2 text-xs"
+                aria-label="Preview seed"
+                title="Preview seed"
+              />
+              <input
+                type="number"
+                min={1}
+                max={16}
+                value={previewCount}
+                onChange={(event) => {
+                  const value = Number.parseInt(event.target.value, 10);
+                  if (Number.isFinite(value)) onPreviewCountChange(Math.max(1, Math.min(16, value)));
+                }}
+                className="h-8 rounded border border-slate-200 px-2 text-xs"
+                aria-label="Preview trial count"
+                title="Preview trial count"
+              />
+              <button
+                type="button"
+                onClick={onReseed}
+                className="inline-flex h-8 w-8 items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                title="Reseed preview"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+              <div className="truncate text-[11px] text-slate-500">
+                {previewStatus === 'loading'
+                  ? 'Sampling...'
+                  : previewStatus === 'error'
+                    ? previewError
+                    : 'Ghosted start and goal pairs are sampled from the task only'}
+              </div>
+            </div>
+          )}
+          {previewMode === 'sampled' && renderedSamples.length > 0 && (
+            <div className="grid max-h-20 grid-cols-2 gap-1 overflow-hidden">
+              {renderedSamples.slice(0, 4).map((trial) => (
+                <div
+                  key={`${trial.id}:timeline`}
+                  className="grid grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-1 text-[10px] text-slate-500"
+                >
+                  <div className="font-semibold text-slate-600">{sampledPreviewTrialLabel(trial)}</div>
+                  <div className="relative h-2 rounded-full bg-slate-100">
+                    {compactTimelineCues(trial).map((cue) => (
+                      <span
+                        key={`${cue.kind}:${cue.label}:${cue.step}`}
+                        className={clsx(
+                          'absolute top-0 h-2 w-1 rounded-full',
+                          cue.kind === 'event' ? 'bg-amber-500' : 'bg-teal-500'
+                        )}
+                        style={{ left: `${timelineCueOffset(cue, trial.n_steps) * 100}%` }}
+                        title={`${cue.label} · step ${cue.step}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="absolute left-4 top-4 flex h-9 items-center gap-1 rounded border border-slate-200 bg-white/90 px-1.5 shadow-sm backdrop-blur">
           <button
             type="button"
@@ -1071,8 +1261,43 @@ export function ScenarioProjectionWorkspace() {
     () => buildResolvedScene({ scenario: activeScenario, graph, registry, components }),
     [activeScenario, components, graph, registry]
   );
+  const [previewMode, setPreviewMode] = useState<'authoring' | 'sampled' | 'playback'>('sampled');
+  const [previewSeed, setPreviewSeed] = useState(0);
+  const [previewCount, setPreviewCount] = useState(6);
+  const [sampledTrials, setSampledTrials] = useState<SampledTaskTrial[]>([]);
+  const [previewStatus, setPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const stageSummary =
     typeof activeStage?.metadata.summary === 'string' ? activeStage.metadata.summary : null;
+
+  useEffect(() => {
+    if (previewMode !== 'sampled' || !activeScenario?.task_spec) {
+      setPreviewStatus('idle');
+      return;
+    }
+    let cancelled = false;
+    setPreviewStatus('loading');
+    setPreviewError(null);
+    sampleTaskTrials({
+      task_spec: activeScenario.task_spec,
+      seed: previewSeed,
+      count: previewCount,
+    })
+      .then((response) => {
+        if (cancelled) return;
+        setSampledTrials(response.trials);
+        setPreviewStatus('ready');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSampledTrials([]);
+        setPreviewStatus('error');
+        setPreviewError(error instanceof Error ? error.message : 'Preview sampling failed');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeScenario?.task_spec, previewCount, previewMode, previewSeed]);
 
   useEffect(() => {
     if (topPane.selected_entity_id && !rightSidebarVisible) {
@@ -1094,6 +1319,16 @@ export function ScenarioProjectionWorkspace() {
             scene={scene}
             selectedId={topPane.selected_entity_id}
             viewState={workspaceViewState}
+            sampledTrials={sampledTrials}
+            previewStatus={previewStatus}
+            previewError={previewError}
+            previewMode={previewMode}
+            previewSeed={previewSeed}
+            previewCount={previewCount}
+            onPreviewModeChange={setPreviewMode}
+            onPreviewSeedChange={setPreviewSeed}
+            onPreviewCountChange={setPreviewCount}
+            onReseed={() => setPreviewSeed((seed) => seed + 1)}
             onSelect={selectTopPaneEntity}
             onViewStateChange={updateActiveWorkspaceViewState}
           />
