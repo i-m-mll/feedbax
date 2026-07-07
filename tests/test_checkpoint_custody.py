@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import jax.numpy as jnp
 import pytest
 
+from feedbax.contracts.checkpoints import (
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+)
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     LossTermSpec,
@@ -34,6 +42,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointContractBindingError,
     CheckpointIntegrityError,
     checkpoint_slot_names,
+    fork_checkpoint_transaction,
     load_latest_checkpoint,
     write_checkpoint_transaction,
 )
@@ -126,6 +135,29 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, sort_keys=True, indent=2))
 
 
+def _manifest_blob_path(manifest_path: Path, relative_path: str) -> Path:
+    return manifest_path.parent / relative_path
+
+
+def _slot_blob_path(manifest_path: Path, slot_name: str) -> Path:
+    payload = json.loads(manifest_path.read_text())
+    for slot in payload["slots"]:
+        if slot["slot"] == slot_name:
+            return _manifest_blob_path(manifest_path, slot["relative_path"])
+    raise AssertionError(f"slot not found in manifest: {slot_name}")
+
+
+def _write_run_spec(path: Path, run_spec: TrainingRunSpec) -> None:
+    _write_json(path, run_spec.model_dump(mode="json", exclude_none=True))
+
+
+def _incompatible_slot_run_spec(run_spec: TrainingRunSpec) -> TrainingRunSpec:
+    changed = run_spec.model_copy(deep=True)
+    barrier = changed.worker_execution.method_contract.phase_program.checkpoint_barriers[0]
+    barrier.slots[0].slot = "controller_v2"
+    return changed
+
+
 def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_path: Path) -> None:
     run_spec = _run_spec(minimax=True)
     program = run_spec.worker_execution.method_contract.phase_program
@@ -191,9 +223,43 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
 
     family = families["TrainingCheckpointTransactionManifest"]
     assert family.identity == "feedbax.manifest.training_checkpoint_transaction"
-    assert family.current_version == "feedbax.manifest.training_checkpoint_transaction.v1"
+    assert family.current_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert family.policy is not None
     assert family.policy.owner_module == "feedbax.contracts.checkpoints"
+    assert family.policy.supported_old_versions == (
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+    )
+
+
+def test_checkpoint_transaction_manifest_v1_migrates_to_v2_fork_provenance(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = result.manifest.model_dump(mode="json", exclude_none=True)
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1
+    payload.pop("fork_provenance", None)
+
+    migrated = migrate_structured_spec_payload(
+        "TrainingCheckpointTransactionManifest",
+        payload,
+        path="checkpoint_manifest",
+    )
+
+    assert migrated.source_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1
+    assert migrated.target_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert migrated.payload["fork_provenance"] is None
+    assert [record.migration_id for record in migrated.migration_records] == [
+        "training-checkpoint-transaction-v1-to-v2-fork-provenance"
+    ]
 
 
 def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path) -> None:
@@ -212,6 +278,269 @@ def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path)
 
     assert loaded.kind == "TrainingCheckpointTransactionManifest"
     assert loaded.transaction_id == result.manifest.transaction_id
+
+
+def test_checkpoint_fork_hardlinks_three_targets_and_survives_source_quarantine(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    source = write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+        population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+    )
+
+    targets = []
+    for index in range(3):
+        result = fork_checkpoint_transaction(
+            source_root,
+            tmp_path / f"target-{index}",
+            target_run_spec=run_spec,
+            target_phase_program=program,
+            expected_slots=_minimax_slots(),
+            expected_population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+        )
+        targets.append(result)
+        assert set(result.slot_transfer_modes.values()) == {"hardlink"}
+        loaded = load_latest_checkpoint(
+            result.root,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+            expected_population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+        )
+        assert loaded.slots["controller"].tolist() == [1.0, 2.0]
+
+    for source_slot in source.manifest.slots:
+        source_blob = _manifest_blob_path(source.manifest_path, source_slot.relative_path)
+        assert source_blob.stat().st_nlink > 1
+        source_stat = source_blob.stat()
+        for target in targets:
+            target_blob = _slot_blob_path(target.manifest_path, source_slot.slot)
+            target_stat = target_blob.stat()
+            assert (target_stat.st_dev, target_stat.st_ino) == (
+                source_stat.st_dev,
+                source_stat.st_ino,
+            )
+
+    quarantined = tmp_path / "source-quarantined"
+    source_root.rename(quarantined)
+    shutil.rmtree(quarantined)
+    for target in targets:
+        loaded = load_latest_checkpoint(
+            target.root,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+            expected_population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+        )
+        assert loaded.slots["rng"].tolist() == [11, 22]
+
+
+def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    source = write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.array([1.0, 2.0, 0.0])
+
+    def resize_controller(slots):
+        transformed = dict(slots)
+        transformed["controller"] = jnp.pad(transformed["controller"], (0, 1))
+        return transformed
+
+    forked = fork_checkpoint_transaction(
+        source_root,
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=expected,
+        slot_transforms={"controller": resize_controller},
+        transform_metadata={
+            "controller": {
+                "identity": "test:resize_controller",
+                "parameters": {"from": 2, "to": 3},
+            }
+        },
+    )
+
+    assert forked.slot_transfer_modes["controller"] == "serialized"
+    assert {
+        mode for slot, mode in forked.slot_transfer_modes.items() if slot != "controller"
+    } == {"hardlink"}
+    source_controller = _slot_blob_path(source.manifest_path, "controller")
+    target_controller = _slot_blob_path(forked.manifest_path, "controller")
+    assert source_controller.stat().st_ino != target_controller.stat().st_ino
+    for slot in ("controller_optimizer", "adversary_population", "adversary_optimizer", "rng"):
+        assert _slot_blob_path(source.manifest_path, slot).stat().st_ino == (
+            _slot_blob_path(forked.manifest_path, slot).stat().st_ino
+        )
+    loaded = load_latest_checkpoint(
+        forked.root,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+    )
+    assert loaded.slots["controller"].tolist() == [1.0, 2.0, 0.0]
+    assert forked.manifest.fork_provenance is not None
+    controller_provenance = {
+        slot.slot: slot for slot in forked.manifest.fork_provenance.slots
+    }["controller"]
+    source_controller_slot = {
+        slot.slot: slot for slot in source.manifest.slots
+    }["controller"]
+    assert controller_provenance.source_sha256 == source_controller_slot.sha256
+    assert controller_provenance.target_sha256 != source_controller_slot.sha256
+    assert controller_provenance.transform is not None
+    assert controller_provenance.transform.identity == "test:resize_controller"
+    assert controller_provenance.transform.parameters == {"from": 2, "to": 3}
+
+
+def test_checkpoint_fork_fails_closed_on_source_blob_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    source = write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    controller_blob = _slot_blob_path(source.manifest_path, "controller")
+    original = controller_blob.read_bytes()
+    controller_blob.write_bytes(bytes([original[0] ^ 0xFF]) + original[1:])
+    target_root = tmp_path / "target"
+
+    with pytest.raises(CheckpointIntegrityError, match="hash mismatch"):
+        fork_checkpoint_transaction(
+            source_root,
+            target_root,
+            target_run_spec=run_spec,
+            target_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+    assert not (target_root / "latest.json").exists()
+
+
+def test_checkpoint_fork_incompatible_target_and_copy_fallback(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    source = write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    incompatible = _incompatible_slot_run_spec(run_spec)
+    target_root = tmp_path / "bad-target"
+
+    with pytest.raises(CheckpointCompatibilityError, match="controller_v2"):
+        fork_checkpoint_transaction(
+            source_root,
+            target_root,
+            target_run_spec=incompatible,
+            target_phase_program=incompatible.worker_execution.method_contract.phase_program,
+            expected_slots=_minimax_slots(),
+        )
+    assert not (target_root / "latest.json").exists()
+
+    def copy_strategy(source_blob: Path, target_blob: Path) -> str:
+        shutil.copy2(source_blob, target_blob)
+        return "copy"
+
+    copied = fork_checkpoint_transaction(
+        source_root,
+        tmp_path / "copied-target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=_minimax_slots(),
+        link_strategy=copy_strategy,
+    )
+
+    assert set(copied.slot_transfer_modes.values()) == {"copy"}
+    assert _slot_blob_path(copied.manifest_path, "controller").stat().st_ino != (
+        _slot_blob_path(source.manifest_path, "controller").stat().st_ino
+    )
+
+
+def test_checkpoint_fork_cli_batch_smoke_partial_failure(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    good_spec = tmp_path / "good-spec.json"
+    bad_spec = tmp_path / "bad-spec.json"
+    _write_run_spec(good_spec, run_spec)
+    _write_run_spec(bad_spec, _incompatible_slot_run_spec(run_spec))
+    good_a = tmp_path / "good-a"
+    bad = tmp_path / "bad"
+    good_b = tmp_path / "good-b"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "feedbax",
+            "checkpoint",
+            "fork",
+            "--source",
+            str(source_root),
+            "--target",
+            f"{good_spec}:{good_a}",
+            "--target",
+            f"{bad_spec}:{bad}",
+            "--target",
+            f"{good_spec}:{good_b}",
+        ],
+        check=False,
+        cwd=Path(__file__).parents[1],
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 1
+    payload = json.loads(completed.stdout)
+    assert [target["status"] for target in payload["targets"]] == [
+        "ok",
+        "error",
+        "ok",
+    ]
+    assert (good_a / "latest.json").is_file()
+    assert not (bad / "latest.json").exists()
+    assert (good_b / "latest.json").is_file()
 
 
 def test_resume_rejects_structural_abi_mismatch_before_returning_slots(

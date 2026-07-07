@@ -48,6 +48,13 @@ Training runs are described by structured executor specs and run through
 custody, and manifest emission so training state can be resumed and audited
 through the same contract surfaces used by workers.
 
+Checkpoint custody can fork one validated transaction into multiple target
+run-contract roots without rewriting unchanged blobs. On remote pods, stage the
+source checkpoint once and run `python -m feedbax checkpoint fork` on the pod so
+hardlinks are created on the target filesystem. Sync the source checkpoint as
+the durable transfer unit; ordinary `rsync` without `-H` re-duplicates
+hardlinked fork trees.
+
 ## Interventions
 
 A core feature of Feedbax is the ability to modify models and tasks with [interventions](/feedbax/examples/3_intervening). Interventions are regular components inserted into graphs via graph surgery, and their parameters live in the unified `State`.
