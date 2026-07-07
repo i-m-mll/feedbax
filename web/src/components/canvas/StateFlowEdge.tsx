@@ -1,6 +1,7 @@
 import { getBezierPath, type EdgeProps } from '@xyflow/react';
+import { memo } from 'react';
 
-export function StateFlowEdge({
+function StateFlowEdgeComponent({
   sourceX,
   sourceY,
   targetX,
@@ -38,3 +39,19 @@ export function StateFlowEdge({
     />
   );
 }
+
+function areStateFlowEdgePropsEqual(previous: EdgeProps, next: EdgeProps) {
+  return (
+    previous.id === next.id &&
+    previous.sourceX === next.sourceX &&
+    previous.sourceY === next.sourceY &&
+    previous.targetX === next.targetX &&
+    previous.targetY === next.targetY &&
+    previous.sourcePosition === next.sourcePosition &&
+    previous.targetPosition === next.targetPosition &&
+    previous.selected === next.selected &&
+    previous.data === next.data
+  );
+}
+
+export const StateFlowEdge = memo(StateFlowEdgeComponent, areStateFlowEdgePropsEqual);

@@ -17,7 +17,7 @@ import { objectiveGraphPortTarget } from '@/features/scenario/objectives';
 import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { visibleMuxInputPorts } from '@/features/graph/dynamicPorts';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
 import { FigureOutputPin } from '@/components/analysis/FigureOutputPin';
 
@@ -35,7 +35,7 @@ const COLLAPSED_TASK_SOURCE_ROW_HEIGHT = 20;
 const COLLAPSED_TASK_SOURCE_ROW_GAP = 4;
 const COLLAPSED_STATE_HANDLE_CENTER_OFFSET = 4;
 
-export function CustomNode({ id, data, selected }: NodeProps) {
+function CustomNodeComponent({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const { spec, label, collapsed } = nodeData;
   const resizeMode = useLayoutStore((state) => state.resizeMode);
@@ -603,3 +603,15 @@ export function CustomNode({ id, data, selected }: NodeProps) {
     </div>
   );
 }
+
+function areCustomNodePropsEqual(previous: NodeProps, next: NodeProps) {
+  return (
+    previous.id === next.id &&
+    previous.data === next.data &&
+    previous.selected === next.selected &&
+    previous.dragging === next.dragging &&
+    previous.isConnectable === next.isConnectable
+  );
+}
+
+export const CustomNode = memo(CustomNodeComponent, areCustomNodePropsEqual);

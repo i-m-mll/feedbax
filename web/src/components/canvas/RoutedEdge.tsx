@@ -4,7 +4,7 @@ import {
   type EdgeProps,
   useReactFlow,
 } from '@xyflow/react';
-import { useCallback } from 'react';
+import { memo, useCallback } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import type { GraphEdgeData } from '@/types/graph';
 
@@ -59,7 +59,7 @@ function polylineLabelPoint(points: { x: number; y: number }[]) {
   };
 }
 
-export function RoutedEdge({
+function RoutedEdgeComponent({
   id,
   sourceX,
   sourceY,
@@ -218,3 +218,19 @@ export function RoutedEdge({
     </>
   );
 }
+
+function areRoutedEdgePropsEqual(previous: EdgeProps, next: EdgeProps) {
+  return (
+    previous.id === next.id &&
+    previous.sourceX === next.sourceX &&
+    previous.sourceY === next.sourceY &&
+    previous.targetX === next.targetX &&
+    previous.targetY === next.targetY &&
+    previous.sourcePosition === next.sourcePosition &&
+    previous.targetPosition === next.targetPosition &&
+    previous.selected === next.selected &&
+    previous.data === next.data
+  );
+}
+
+export const RoutedEdge = memo(RoutedEdgeComponent, areRoutedEdgePropsEqual);

@@ -8,7 +8,7 @@
  * and edges drawn from data.subgraph.
  */
 
-import { useCallback, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import {
   Handle,
   Position,
@@ -45,7 +45,7 @@ const NESTED_NODE_TYPES = {
 // SubgraphNode component
 // ---------------------------------------------------------------------------
 
-export function SubgraphNode({ data, selected }: NodeProps) {
+function SubgraphNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const { label, spec, subgraph } = nodeData;
 
@@ -242,3 +242,15 @@ export function SubgraphNode({ data, selected }: NodeProps) {
     </div>
   );
 }
+
+function areSubgraphNodePropsEqual(previous: NodeProps, next: NodeProps) {
+  return (
+    previous.id === next.id &&
+    previous.data === next.data &&
+    previous.selected === next.selected &&
+    previous.dragging === next.dragging &&
+    previous.isConnectable === next.isConnectable
+  );
+}
+
+export const SubgraphNode = memo(SubgraphNodeComponent, areSubgraphNodePropsEqual);

@@ -237,6 +237,9 @@ function applyEdgeStates(
     }
     const routing =
       edgeStates[edge.id]?.routing ?? { style: defaultStyle, points: [] };
+    if (edge.type === 'routed' && edge.data?.routing === routing) {
+      return edge;
+    }
     return {
       ...edge,
       type: 'routed',
@@ -246,6 +249,225 @@ function applyEdgeStates(
       },
     };
   });
+}
+
+function samePoint(
+  a: { x: number; y: number } | undefined,
+  b: { x: number; y: number } | undefined
+) {
+  return a?.x === b?.x && a?.y === b?.y;
+}
+
+function sameSize(
+  a: { width: number; height: number } | undefined,
+  b: { width: number; height: number } | undefined
+) {
+  return a?.width === b?.width && a?.height === b?.height;
+}
+
+function sameStringArray(a: string[] | undefined, b: string[] | undefined) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function sameRouting(a: EdgeRouting | undefined, b: EdgeRouting | undefined) {
+  if (a === b) return true;
+  if (!a || !b || a.style !== b.style || a.points.length !== b.points.length) return false;
+  return a.points.every((point, index) => samePoint(point, b.points[index]));
+}
+
+function sameStateSlots(
+  a: GraphNodeData['state_slots'] | undefined,
+  b: GraphNodeData['state_slots'] | undefined
+) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((slot, index) => {
+    const other = b[index];
+    return (
+      slot.id === other.id &&
+      slot.label === other.label &&
+      JSON.stringify(slot.shape ?? null) === JSON.stringify(other.shape ?? null) &&
+      JSON.stringify(slot.initializer ?? null) === JSON.stringify(other.initializer ?? null)
+    );
+  });
+}
+
+function sameSubgraphPreview(a: SubgraphPreview | undefined, b: SubgraphPreview | undefined) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    sameStringArray(a.inputPorts, b.inputPorts) &&
+    sameStringArray(a.outputPorts, b.outputPorts) &&
+    sameGraphNodes(
+      a.nodes as Node<GraphNodeData | TapNodeData>[],
+      b.nodes as Node<GraphNodeData | TapNodeData>[]
+    ) &&
+    sameGraphEdges(a.edges as Edge<GraphEdgeData>[], b.edges as Edge<GraphEdgeData>[])
+  );
+}
+
+function sameGraphNodeData(
+  previous: GraphNodeData | TapNodeData,
+  next: GraphNodeData | TapNodeData
+) {
+  if ('tap' in previous || 'tap' in next) {
+    return 'tap' in previous && 'tap' in next && previous.tap === next.tap;
+  }
+  return (
+    previous.label === next.label &&
+    previous.spec === next.spec &&
+    previous.collapsed === next.collapsed &&
+    previous.reversed === next.reversed &&
+    sameSize(previous.size, next.size) &&
+    sameStringArray(previous.connected_inputs, next.connected_inputs) &&
+    sameStringArray(previous.connected_outputs, next.connected_outputs) &&
+    previous.state_in === next.state_in &&
+    previous.state_out === next.state_out &&
+    sameStateSlots(previous.state_slots, next.state_slots) &&
+    sameSubgraphPreview(previous.subgraph, next.subgraph)
+  );
+}
+
+function sameGraphNode(
+  previous: Node<GraphNodeData | TapNodeData>,
+  next: Node<GraphNodeData | TapNodeData>
+) {
+  return (
+    previous.id === next.id &&
+    previous.type === next.type &&
+    previous.selected === next.selected &&
+    samePoint(previous.position, next.position) &&
+    sameSize(
+      previous.style as { width: number; height: number } | undefined,
+      next.style as { width: number; height: number } | undefined
+    ) &&
+    sameGraphNodeData(previous.data, next.data)
+  );
+}
+
+function sameGraphNodes(
+  previous: Node<GraphNodeData | TapNodeData>[],
+  next: Node<GraphNodeData | TapNodeData>[]
+) {
+  return (
+    previous.length === next.length &&
+    previous.every((node, index) => sameGraphNode(node, next[index]))
+  );
+}
+
+function sameGraphEdgeData(
+  previous: GraphEdgeData | undefined,
+  next: GraphEdgeData | undefined
+) {
+  if (previous === next) return true;
+  if (!previous || !next) return false;
+  return (
+    sameRouting(previous.routing, next.routing) &&
+    previous.primary === next.primary &&
+    previous.strength === next.strength &&
+    previous.schema_status === next.schema_status &&
+    previous.schema_message === next.schema_message &&
+    previous.temporality === next.temporality &&
+    previous.recurrent_initializer === next.recurrent_initializer
+  );
+}
+
+function sameGraphEdge(previous: Edge<GraphEdgeData>, next: Edge<GraphEdgeData>) {
+  const previousPositions = previous as Edge<GraphEdgeData> & {
+    sourcePosition?: Position;
+    targetPosition?: Position;
+  };
+  const nextPositions = next as Edge<GraphEdgeData> & {
+    sourcePosition?: Position;
+    targetPosition?: Position;
+  };
+  return (
+    previous.id === next.id &&
+    previous.type === next.type &&
+    previous.source === next.source &&
+    previous.target === next.target &&
+    previous.sourceHandle === next.sourceHandle &&
+    previous.targetHandle === next.targetHandle &&
+    previousPositions.sourcePosition === nextPositions.sourcePosition &&
+    previousPositions.targetPosition === nextPositions.targetPosition &&
+    previous.selected === next.selected &&
+    previous.selectable === next.selectable &&
+    previous.deletable === next.deletable &&
+    previous.zIndex === next.zIndex &&
+    sameGraphEdgeData(previous.data, next.data)
+  );
+}
+
+function sameGraphEdges(previous: Edge<GraphEdgeData>[], next: Edge<GraphEdgeData>[]) {
+  return (
+    previous.length === next.length &&
+    previous.every((edge, index) => sameGraphEdge(edge, next[index]))
+  );
+}
+
+function reconcileById<T extends { id: string }>(
+  previous: T[],
+  next: T[],
+  sameEntity: (previous: T, next: T) => boolean
+) {
+  const previousById = new Map(previous.map((entity) => [entity.id, entity]));
+  let changed = previous.length !== next.length;
+  const reconciled = next.map((entity) => {
+    const existing = previousById.get(entity.id);
+    if (existing && sameEntity(existing, entity)) {
+      return existing;
+    }
+    changed = true;
+    return entity;
+  });
+  if (!changed && previous.every((entity, index) => entity === reconciled[index])) {
+    return previous;
+  }
+  return reconciled;
+}
+
+function reconcileNodes(
+  previous: Node<GraphNodeData | TapNodeData>[],
+  graph: GraphSpec,
+  uiState: GraphUIState
+) {
+  return reconcileById(previous, buildNodes(graph, uiState), sameGraphNode);
+}
+
+function reconcileEdges(
+  previous: Edge<GraphEdgeData>[],
+  graph: GraphSpec,
+  uiState: GraphUIState,
+  edgeStyle: EdgeRouting['style']
+) {
+  return reconcileById(previous, buildEdges(graph, uiState, edgeStyle), sameGraphEdge);
+}
+
+function setNodeSelection(
+  nodes: Node<GraphNodeData | TapNodeData>[],
+  selectedId: string | null
+) {
+  let changed = false;
+  const next = nodes.map((node) => {
+    const selected = node.id === selectedId;
+    if (node.selected === selected) return node;
+    changed = true;
+    return { ...node, selected };
+  });
+  return changed ? next : nodes;
+}
+
+function setEdgeSelection(edges: Edge<GraphEdgeData>[], selectedId: string | null) {
+  let changed = false;
+  const next = edges.map((edge) => {
+    const selected = edge.id === selectedId;
+    if (edge.selected === selected) return edge;
+    changed = true;
+    return { ...edge, selected };
+  });
+  return changed ? next : edges;
 }
 
 export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
@@ -1327,6 +1549,77 @@ interface GraphStoreState {
   setComponentRegistry: (components: ComponentDefinition[]) => void;
 }
 
+export const graphStoreSlices = {
+  topology: (state: GraphStoreState) => ({
+    graph: state.graph,
+    updateNodeParams: state.updateNodeParams,
+    updateNodeParamsBatch: state.updateNodeParamsBatch,
+    addNodeFromComponent: state.addNodeFromComponent,
+    deleteSelected: state.deleteSelected,
+    renameNode: state.renameNode,
+    renameSubgraphBoundaryPort: state.renameSubgraphBoundaryPort,
+    onConnect: state.onConnect,
+    addTap: state.addTap,
+    addTapForEdge: state.addTapForEdge,
+    updateTap: state.updateTap,
+    removeTap: state.removeTap,
+  }),
+  flowAdapter: (state: GraphStoreState) => ({
+    nodes: state.nodes,
+    edges: state.edges,
+    edgeStyle: state.edgeStyle,
+    uiState: state.uiState,
+    onNodesChange: state.onNodesChange,
+    onEdgesChange: state.onEdgesChange,
+    setEdgeStyle: state.setEdgeStyle,
+    addEdgePoint: state.addEdgePoint,
+    updateEdgePoint: state.updateEdgePoint,
+    removeEdgePoint: state.removeEdgePoint,
+    toggleEdgeStyleForEdge: state.toggleEdgeStyleForEdge,
+    toggleNodeCollapse: state.toggleNodeCollapse,
+    toggleNodeReversed: state.toggleNodeReversed,
+    setAllNodesCollapsed: state.setAllNodesCollapsed,
+  }),
+  subgraphNavigation: (state: GraphStoreState) => ({
+    graphStack: state.graphStack,
+    currentGraphLabel: state.currentGraphLabel,
+    currentContext: state.currentContext,
+    lastSubgraphError: state.lastSubgraphError,
+    enterSubgraph: state.enterSubgraph,
+    wrapInParentGraph: state.wrapInParentGraph,
+    exitToBreadcrumb: state.exitToBreadcrumb,
+    captureGraphStackPath: state.captureGraphStackPath,
+  }),
+  selection: (state: GraphStoreState) => ({
+    selectedTapId: state.selectedTapId,
+    selectedEdgeId: state.selectedEdgeId,
+    pendingStateMerge: state.pendingStateMerge,
+    setSelectedNode: state.setSelectedNode,
+    setSelectedTap: state.setSelectedTap,
+    setSelectedEdge: state.setSelectedEdge,
+    confirmStateMerge: state.confirmStateMerge,
+    cancelStateMerge: state.cancelStateMerge,
+  }),
+  history: (state: GraphStoreState) => ({
+    past: state.past,
+    future: state.future,
+    undo: state.undo,
+    redo: state.redo,
+  }),
+  registryPersistence: (state: GraphStoreState) => ({
+    graphId: state.graphId,
+    isDirty: state.isDirty,
+    lastSavedAt: state.lastSavedAt,
+    hydrateGraph: state.hydrateGraph,
+    capturePersistedGraph: state.capturePersistedGraph,
+    restoreSnapshot: state.restoreSnapshot,
+    markSaved: state.markSaved,
+    markDirty: state.markDirty,
+    setCompositeTypes: state.setCompositeTypes,
+    setComponentRegistry: state.setComponentRegistry,
+  }),
+} as const;
+
 const initial = createInitialGraph();
 
 function capturePersistedGraphFromState(state: GraphStoreState): PersistableGraphSnapshot {
@@ -1636,8 +1929,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ...state,
         graph,
         uiState: normalized,
-        nodes: buildNodes(graph, normalized),
-        edges: buildEdges(graph, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, normalized),
+        edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -1658,8 +1951,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ...state,
         graph,
         uiState: normalized,
-        nodes: buildNodes(graph, normalized),
-        edges: buildEdges(graph, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, normalized),
+        edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -1864,8 +2157,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ],
         graph: derivedNext,
         uiState: normalized,
-        nodes: buildNodes(derivedNext, normalized),
-        edges: buildEdges(derivedNext, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, derivedNext, normalized),
+        edges: reconcileEdges(state.edges, derivedNext, normalized, state.edgeStyle),
         currentGraphLabel: nodeId,
         currentContext: context,
         lastSubgraphError: null,
@@ -1974,8 +2267,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         graph: derivedCurrent,
         uiState: normalizedCurrent,
-        nodes: buildNodes(derivedCurrent, normalizedCurrent),
-        edges: buildEdges(derivedCurrent, normalizedCurrent, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, derivedCurrent, normalizedCurrent),
+        edges: reconcileEdges(state.edges, derivedCurrent, normalizedCurrent, state.edgeStyle),
         graphStack: updatedStack,
         currentGraphLabel: state.currentGraphLabel,
         past,
@@ -2044,8 +2337,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         graphStack: nextStack,
         graph: nextLayer.graph,
         uiState: normalized,
-        nodes: buildNodes(nextLayer.graph, normalized),
-        edges: buildEdges(nextLayer.graph, normalized, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, nextLayer.graph, normalized),
+        edges: reconcileEdges(state.edges, nextLayer.graph, normalized, state.edgeStyle),
         graphId: nextLayer.graphId,
         currentGraphLabel: nextLayer.label,
         currentContext: nextStack.length > 0
@@ -2252,8 +2545,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         graph,
         uiState,
-        nodes: buildNodes(graph, uiState),
-        edges: buildEdges(graph, uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, uiState),
+        edges: reconcileEdges(state.edges, graph, uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -2301,8 +2594,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         graph,
         uiState,
-        nodes: buildNodes(graph, uiState),
-        edges: buildEdges(graph, uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, uiState),
+        edges: reconcileEdges(state.edges, graph, uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -2533,8 +2826,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const selectedEdgeId = nextEdges.find((edge) => edge.selected)?.id ?? null;
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileById(
+          state.edges,
+          applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+          sameGraphEdge
+        ),
         uiState: {
           ...state.uiState,
           edge_states,
@@ -2573,8 +2870,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
           return {
             graph,
-            nodes: buildNodes(graph, state.uiState),
-            edges: buildEdges(graph, state.uiState, state.edgeStyle),
+            nodes: reconcileNodes(state.nodes, graph, state.uiState),
+            edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
             uiState: {
               ...state.uiState,
               edge_states,
@@ -2649,8 +2946,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileById(
+          state.edges,
+          applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
+          sameGraphEdge
+        ),
         uiState: {
           ...state.uiState,
           edge_states,
@@ -2772,8 +3073,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       graph = normalizeDynamicPorts(graph, taskBindingSpec);
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: buildEdges(graph, state.uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -2791,8 +3092,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       }
       return {
         graph,
-        nodes: buildNodes(graph, state.uiState),
-        edges: buildEdges(graph, state.uiState, state.edgeStyle),
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -2801,10 +3102,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   setSelectedNode: (nodeId) => {
     set((state) => {
-      const nodes = state.nodes.map((node) => ({
-        ...node,
-        selected: node.id === nodeId,
-      }));
+      const nodes = setNodeSelection(state.nodes, nodeId);
       const node_states = { ...state.uiState.node_states };
       for (const node of nodes) {
         if (isTapNodeId(node.id)) continue;
@@ -2844,10 +3142,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   setSelectedTap: (tapId) => {
     set((state) => {
       const targetId = tapId ? tapNodeId(tapId) : null;
-      const nodes = state.nodes.map((node) => ({
-        ...node,
-        selected: node.id === targetId,
-      }));
+      const nodes = setNodeSelection(state.nodes, targetId);
       const node_states = { ...state.uiState.node_states };
       for (const node of nodes) {
         if (isTapNodeId(node.id)) continue;
@@ -2883,10 +3178,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   setSelectedEdge: (edgeId) => {
     set((state) => {
-      const edges = state.edges.map((edge) => ({
-        ...edge,
-        selected: edge.id === edgeId,
-      }));
+      const edges = setEdgeSelection(state.edges, edgeId);
       return {
         edges,
         selectedEdgeId: edgeId,

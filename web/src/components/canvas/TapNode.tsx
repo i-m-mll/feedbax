@@ -2,8 +2,9 @@ import type { NodeProps } from '@xyflow/react';
 import { Handle, Position } from '@xyflow/react';
 import type { TapNodeData } from '@/types/graph';
 import clsx from 'clsx';
+import { memo } from 'react';
 
-export function TapNode({ data, selected }: NodeProps) {
+function TapNodeComponent({ data, selected }: NodeProps) {
   const tapData = data as TapNodeData;
   const tap = tapData.tap;
   const outputs = Object.keys(tap.paths ?? {});
@@ -51,3 +52,15 @@ export function TapNode({ data, selected }: NodeProps) {
     </div>
   );
 }
+
+function areTapNodePropsEqual(previous: NodeProps, next: NodeProps) {
+  return (
+    previous.id === next.id &&
+    previous.data === next.data &&
+    previous.selected === next.selected &&
+    previous.dragging === next.dragging &&
+    previous.isConnectable === next.isConnectable
+  );
+}
+
+export const TapNode = memo(TapNodeComponent, areTapNodePropsEqual);
