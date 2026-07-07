@@ -341,4 +341,58 @@ describe('pipeline collection summaries', () => {
       confirmationToken: 'confirm-runpod-queue-launch',
     });
   });
+
+  it('requires target-specific spec locks for mixed GCP and RunPod billable queues', () => {
+    const runpodItem = {
+      manifestId: 'runpod-a',
+      target: 'runpod',
+      targetLabel: 'RunPod',
+      billable: true,
+      runCount: 2,
+      axisCoordinates: { learning_rate: 0.001, seed: 1 },
+      estimatedDurationMinutes: 45,
+      estimatedCostUsd: 1.6,
+    } as any;
+    const gcpItem = {
+      manifestId: 'gcp-a',
+      target: 'gcp',
+      targetLabel: 'GCP',
+      billable: true,
+      runCount: 3,
+      axisCoordinates: { learning_rate: 0.003, seed: 2 },
+      estimatedDurationMinutes: 30,
+      estimatedCostUsd: 4.5,
+    } as any;
+
+    expect(buildBillableSpecLock([runpodItem, gcpItem])).toMatchObject({
+      required: true,
+      target: null,
+      targetLabel: 'Choose billable target',
+      runCount: 5,
+      confirmationToken: null,
+      targetOptions: [
+        { target: 'gcp', targetLabel: 'GCP', itemCount: 1, runCount: 3 },
+        { target: 'runpod', targetLabel: 'RunPod', itemCount: 1, runCount: 2 },
+      ],
+    });
+
+    expect(buildBillableSpecLock([runpodItem, gcpItem], 'runpod')).toMatchObject({
+      required: true,
+      target: 'runpod',
+      runCount: 2,
+      estimatedDurationMinutes: 45,
+      estimatedCostUsd: 1.6,
+      confirmationToken: 'confirm-runpod-queue-launch',
+      variedAxes: [],
+    });
+    expect(buildBillableSpecLock([runpodItem, gcpItem], 'gcp')).toMatchObject({
+      required: true,
+      target: 'gcp',
+      runCount: 3,
+      estimatedDurationMinutes: 30,
+      estimatedCostUsd: 4.5,
+      confirmationToken: 'confirm-gcp-queue-launch',
+      variedAxes: [],
+    });
+  });
 });

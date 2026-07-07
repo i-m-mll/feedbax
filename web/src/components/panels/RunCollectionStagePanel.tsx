@@ -184,6 +184,7 @@ export function TrainCollectionPanel() {
   const [bulkValues, setBulkValues] = useState('0.001, 0.0003');
   const [stageState, setStageState] = useState({ busy: false, error: null as string | null });
   const [runActionState, setRunActionState] = useState({ busy: false, error: null as string | null });
+  const [queueLaunchTarget, setQueueLaunchTarget] = useState<ExecutionTargetChoice | null>(null);
   const [queueConfirmed, setQueueConfirmed] = useState(false);
   const [queueLaunchState, setQueueLaunchState] = useState({
     busy: false,
@@ -198,9 +199,31 @@ export function TrainCollectionPanel() {
   const lineage = useMemo(() => buildLineageProjection(workspace), [workspace]);
   const queueProjection = useMemo(() => buildQueueProjection(workspace), [workspace]);
   const queueSpecLock = useMemo(
-    () => buildBillableSpecLock(queueProjection.items),
-    [queueProjection.items]
+    () => buildBillableSpecLock(queueProjection.items, queueLaunchTarget),
+    [queueLaunchTarget, queueProjection.items]
   );
+  useEffect(() => {
+    if (!queueSpecLock.required) {
+      if (queueLaunchTarget !== null) setQueueLaunchTarget(null);
+      if (queueConfirmed) setQueueConfirmed(false);
+      return;
+    }
+    if (queueSpecLock.targetOptions.length === 1) {
+      const onlyTarget = queueSpecLock.targetOptions[0].target;
+      if (queueLaunchTarget !== onlyTarget) {
+        setQueueLaunchTarget(onlyTarget);
+        setQueueConfirmed(false);
+      }
+      return;
+    }
+    if (
+      queueLaunchTarget &&
+      !queueSpecLock.targetOptions.some((option) => option.target === queueLaunchTarget)
+    ) {
+      setQueueLaunchTarget(null);
+      setQueueConfirmed(false);
+    }
+  }, [queueConfirmed, queueLaunchTarget, queueSpecLock]);
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
   const trainingCollectionId =
     trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
@@ -588,7 +611,17 @@ export function TrainCollectionPanel() {
 
   const prepareQueueLaunch = useCallback(async () => {
     if (!workspace) return;
-    const launchableItems = queueProjection.items.filter((item) => item.canLaunch);
+    if (queueSpecLock.required && !queueSpecLock.target) {
+      setQueueLaunchState({
+        busy: false,
+        error: 'Select a billable queue target before launch.',
+      });
+      return;
+    }
+    const target = queueSpecLock.target ?? null;
+    const launchableItems = queueProjection.items.filter(
+      (item) => item.canLaunch && (target === null || item.target === target)
+    );
     if (launchableItems.length === 0) {
       setQueueLaunchState({ busy: false, error: 'No queued items can be launched from here.' });
       return;
@@ -597,8 +630,8 @@ export function TrainCollectionPanel() {
       setQueueLaunchState({ busy: false, error: 'Confirm the billable spec-lock before launch.' });
       return;
     }
-    const target = queueSpecLock.target ?? launchableItems[0].target;
-    const backend = executionBackendForTarget(target);
+    const launchTarget = target ?? launchableItems[0].target;
+    const backend = executionBackendForTarget(launchTarget);
     if (backend === null) {
       setQueueLaunchState({
         busy: false,
@@ -607,7 +640,7 @@ export function TrainCollectionPanel() {
       return;
     }
     const trainItem = launchableItems.find(
-      (item) => item.target === target && item.stageKind === 'train' && item.stageId
+      (item) => item.target === launchTarget && item.stageKind === 'train' && item.stageId
     );
     if (!trainItem?.stageId) {
       setQueueLaunchState({
@@ -625,9 +658,9 @@ export function TrainCollectionPanel() {
         issues: ['12e49a2'],
         metadata: {
           source: 'pipeline_queue',
-          queue_target: target,
+          queue_target: launchTarget,
           queue_item_ids: launchableItems
-            .filter((item) => item.target === target)
+            .filter((item) => item.target === launchTarget)
             .map((item) => item.manifestId),
           spec_lock: {
             required: queueSpecLock.required,
@@ -778,6 +811,10 @@ export function TrainCollectionPanel() {
               busy={queueLaunchState.busy}
               error={queueLaunchState.error}
               onConfirmChange={setQueueConfirmed}
+              onTargetChange={(target) => {
+                setQueueLaunchTarget(target);
+                setQueueConfirmed(false);
+              }}
               onPrepareLaunch={prepareQueueLaunch}
             />
 
@@ -1909,6 +1946,7 @@ function QueueProjectionPanel({
   busy,
   error,
   onConfirmChange,
+  onTargetChange,
   onPrepareLaunch,
 }: {
   projection: QueueProjection;
@@ -1917,12 +1955,17 @@ function QueueProjectionPanel({
   busy: boolean;
   error: string | null;
   onConfirmChange: (confirmed: boolean) => void;
+  onTargetChange: (target: ExecutionTargetChoice | null) => void;
   onPrepareLaunch: () => void;
 }) {
+  const selectedTargetHasLaunchableItems =
+    specLock.target === null
+      ? projection.launchableCount > 0
+      : projection.items.some((item) => item.canLaunch && item.target === specLock.target);
   const launchDisabled =
     busy ||
-    projection.launchableCount === 0 ||
-    (specLock.required && !confirmed);
+    !selectedTargetHasLaunchableItems ||
+    (specLock.required && (!specLock.target || !confirmed));
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2010,6 +2053,29 @@ function QueueProjectionPanel({
       {specLock.required && (
         <div className="mt-3 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
           <div className="font-semibold">Spec lock: {specLock.targetLabel}</div>
+          {specLock.targetOptions.length > 1 && (
+            <label className="mt-2 block font-medium">
+              <span className="block text-[11px] uppercase text-sky-700">Launch target</span>
+              <select
+                value={specLock.target ?? ''}
+                onChange={(event) =>
+                  onTargetChange(
+                    event.target.value === ''
+                      ? null
+                      : (event.target.value as ExecutionTargetChoice)
+                  )
+                }
+                className="mt-1 h-8 w-full rounded-md border border-sky-200 bg-white px-2 text-xs text-slate-800"
+              >
+                <option value="">Choose target</option>
+                {specLock.targetOptions.map((option) => (
+                  <option key={option.target} value={option.target}>
+                    {option.targetLabel} · {option.runCount} run{option.runCount === 1 ? '' : 's'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <div className="mt-1 grid gap-1 sm:grid-cols-3">
             <div>{specLock.runCount} run{specLock.runCount === 1 ? '' : 's'}</div>
             <div>{formatSpecLockDuration(specLock.estimatedDurationMinutes)}</div>
@@ -2026,8 +2092,9 @@ function QueueProjectionPanel({
             <input
               type="checkbox"
               checked={confirmed}
+              disabled={!specLock.target}
               onChange={(event) => onConfirmChange(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-300"
+              className="h-4 w-4 rounded border-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
             />
             Confirm billable launch
           </label>

@@ -153,10 +153,18 @@ export interface SpecLockAxisSummary {
   values: string[];
 }
 
+export interface BillableSpecLockTargetOption {
+  target: ExecutionTargetChoice;
+  targetLabel: string;
+  itemCount: number;
+  runCount: number;
+}
+
 export interface BillableSpecLock {
   required: boolean;
   target: ExecutionTargetChoice | null;
   targetLabel: string;
+  targetOptions: BillableSpecLockTargetOption[];
   runCount: number;
   variedAxes: SpecLockAxisSummary[];
   estimatedDurationMinutes: number | null;
@@ -420,13 +428,18 @@ export function buildQueueProjection(
   };
 }
 
-export function buildBillableSpecLock(items: QueueProjectionItem[]): BillableSpecLock {
+export function buildBillableSpecLock(
+  items: QueueProjectionItem[],
+  selectedTarget: ExecutionTargetChoice | null = null
+): BillableSpecLock {
   const billableItems = items.filter((item) => item.billable);
+  const targetOptions = billableSpecLockTargetOptions(billableItems);
   if (billableItems.length === 0) {
     return {
       required: false,
       target: null,
       targetLabel: 'Unpaid target',
+      targetOptions: [],
       runCount: items.reduce((total, item) => total + item.runCount, 0),
       variedAxes: variedAxesForQueue(items),
       estimatedDurationMinutes: sumNullable(items.map((item) => item.estimatedDurationMinutes)),
@@ -434,19 +447,51 @@ export function buildBillableSpecLock(items: QueueProjectionItem[]): BillableSpe
       confirmationToken: null,
     };
   }
-  const target = billableItems[0]?.target ?? null;
+  const target =
+    selectedTarget && targetOptions.some((option) => option.target === selectedTarget)
+      ? selectedTarget
+      : targetOptions.length === 1
+        ? targetOptions[0].target
+        : null;
+  const lockedItems = target
+    ? billableItems.filter((item) => item.target === target)
+    : billableItems;
   return {
     required: true,
     target,
-    targetLabel: target ? executionTargetLabel(target) : 'Billable target',
-    runCount: billableItems.reduce((total, item) => total + item.runCount, 0),
-    variedAxes: variedAxesForQueue(billableItems),
+    targetLabel: target ? executionTargetLabel(target) : 'Choose billable target',
+    targetOptions,
+    runCount: lockedItems.reduce((total, item) => total + item.runCount, 0),
+    variedAxes: variedAxesForQueue(lockedItems),
     estimatedDurationMinutes: sumNullable(
-      billableItems.map((item) => item.estimatedDurationMinutes)
+      lockedItems.map((item) => item.estimatedDurationMinutes)
     ),
-    estimatedCostUsd: sumNullable(billableItems.map((item) => item.estimatedCostUsd)),
-    confirmationToken: target ? `confirm-${target}-queue-launch` : 'confirm-billable-queue-launch',
+    estimatedCostUsd: sumNullable(lockedItems.map((item) => item.estimatedCostUsd)),
+    confirmationToken: target ? `confirm-${target}-queue-launch` : null,
   };
+}
+
+function billableSpecLockTargetOptions(
+  billableItems: QueueProjectionItem[]
+): BillableSpecLockTargetOption[] {
+  const optionsByTarget = new Map<ExecutionTargetChoice, BillableSpecLockTargetOption>();
+  for (const item of billableItems) {
+    const existing = optionsByTarget.get(item.target);
+    if (existing) {
+      existing.itemCount += 1;
+      existing.runCount += item.runCount;
+      continue;
+    }
+    optionsByTarget.set(item.target, {
+      target: item.target,
+      targetLabel: executionTargetLabel(item.target),
+      itemCount: 1,
+      runCount: item.runCount,
+    });
+  }
+  return Array.from(optionsByTarget.values()).sort(
+    (a, b) => targetSortRank(a.target) - targetSortRank(b.target)
+  );
 }
 
 function uniqueRefs(refs: StudioManifestRef[]): StudioManifestRef[] {
@@ -583,6 +628,10 @@ function compareQueueItems(a: QueueProjectionItem, b: QueueProjectionItem): numb
   const stage = stageRank(a.stageKind) - stageRank(b.stageKind);
   if (stage !== 0) return stage;
   return a.label.localeCompare(b.label);
+}
+
+function targetSortRank(target: ExecutionTargetChoice): number {
+  return { local: 0, gcp: 1, runpod: 2, manual: 3 }[target];
 }
 
 function variedAxesForQueue(items: QueueProjectionItem[]): SpecLockAxisSummary[] {
