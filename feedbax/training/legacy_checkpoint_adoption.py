@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import shutil
 import subprocess
 import tempfile
@@ -826,12 +827,22 @@ def _assert_tree_equal(expected: Mapping[str, Any], loaded: Mapping[str, Any]) -
                     mismatches.append(f"{path_text}: shape/dtype mismatch")
                 elif not bool(jnp.all(left == right)):
                     mismatches.append(f"{path_text}: value mismatch")
-            elif expected_leaf != loaded_leaf:
+            elif expected_leaf != loaded_leaf and not _pickle_equal(expected_leaf, loaded_leaf):
                 mismatches.append(f"{path_text}: static value mismatch")
     if mismatches:
         raise LegacyCheckpointAdoptionError(
             "adopted checkpoint round-trip values differ: " + "; ".join(mismatches)
         )
+
+
+def _pickle_equal(left: Any, right: Any) -> bool:
+    try:
+        return pickle.dumps(left, protocol=pickle.HIGHEST_PROTOCOL) == pickle.dumps(
+            right,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    except Exception:
+        return False
 
 
 def _write_latest_pointer(path: Path, latest: CheckpointLatestPointer) -> None:
