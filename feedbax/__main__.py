@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.training.executor import execute_training_run_spec
+from feedbax.training.checkpoint_custody import fork_checkpoint_transaction
 from feedbax.training.legacy_checkpoint_adoption import (
     ManifestDumpRequest,
     PathMappingRule,
@@ -58,6 +59,34 @@ def _load_callable(ref: str | None):
         raise ValueError("callable references must be module:function")
     module = importlib.import_module(module_name)
     return getattr(module, function_name)
+
+
+def _load_slot_transforms(refs: Sequence[str] | None) -> dict[str, Any]:
+    transforms: dict[str, Any] = {}
+    for ref in refs or ():
+        slot, sep, callable_ref = ref.partition("=")
+        if not sep or not slot or not callable_ref:
+            raise ValueError("--slot-transform entries must use SLOT=module:function")
+        transforms[slot] = _load_callable(callable_ref)
+    return transforms
+
+
+def _checkpoint_fork_targets(args: argparse.Namespace) -> list[str]:
+    targets: list[str] = []
+    targets.extend(args.target or ())
+    targets.extend(args.targets or ())
+    if not targets:
+        raise ValueError("checkpoint fork requires at least one --target or --targets entry")
+    return targets
+
+
+def _parse_checkpoint_fork_target(raw: str) -> tuple[Path, Path]:
+    spec, sep, root = raw.partition(":")
+    if not sep or not spec or not root:
+        raise ValueError(
+            "checkpoint fork targets must use '<run-spec-json>:<checkpoint-root>'"
+        )
+    return Path(spec), Path(root)
 
 
 def _progress_loss(metrics: Mapping[str, Any]) -> float | None:
@@ -229,6 +258,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             "before strict round-trip validation, for downstream optimizer resize hooks."
         ),
     )
+    checkpoint_root = subparsers.add_parser(
+        "checkpoint",
+        help="Checkpoint custody maintenance commands.",
+    )
+    checkpoint_subparsers = checkpoint_root.add_subparsers(
+        dest="checkpoint_command",
+        required=True,
+    )
+    fork_parser = checkpoint_subparsers.add_parser(
+        "fork",
+        help="Fork one custody checkpoint to one or more target run contracts.",
+    )
+    fork_parser.add_argument("--source", required=True, help="Source checkpoint root")
+    fork_parser.add_argument(
+        "--target",
+        action="append",
+        help="Target as '<TrainingRunSpec JSON>:<checkpoint root>'; may be repeated.",
+    )
+    fork_parser.add_argument(
+        "--targets",
+        nargs="+",
+        help="One or more '<TrainingRunSpec JSON>:<checkpoint root>' targets.",
+    )
+    fork_parser.add_argument(
+        "--expected-slots",
+        help=(
+            "Optional pickle containing target checkpoint slot templates. If omitted, "
+            "the source slots after transforms are used as strict-load templates."
+        ),
+    )
+    fork_parser.add_argument(
+        "--slot-transform",
+        action="append",
+        help="Per-slot transform as SLOT=module:function; may be repeated.",
+    )
+    fork_parser.add_argument("--tool-version", help="Tool version to record in provenance")
 
     args = parser.parse_args(argv)
     if args.command == "execute-training-run-spec":
@@ -344,6 +409,58 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print()
             return 0
+    if args.command == "checkpoint":
+        if args.checkpoint_command == "fork":
+            expected_slots = (
+                _read_pickle(args.expected_slots) if args.expected_slots else None
+            )
+            slot_transforms = _load_slot_transforms(args.slot_transform)
+            target_summaries: list[dict[str, Any]] = []
+            had_error = False
+            for raw_target in _checkpoint_fork_targets(args):
+                summary: dict[str, Any] = {"target": raw_target}
+                try:
+                    spec_path, checkpoint_root = _parse_checkpoint_fork_target(raw_target)
+                    run_spec = TrainingRunSpec.model_validate(_read_json(str(spec_path)))
+                    phase_program = run_spec.worker_execution.method_contract.phase_program
+                    result = fork_checkpoint_transaction(
+                        args.source,
+                        checkpoint_root,
+                        target_run_spec=run_spec,
+                        target_phase_program=phase_program,
+                        expected_slots=expected_slots,
+                        slot_transforms=slot_transforms,
+                        tool_version=args.tool_version,
+                    )
+                    summary.update(
+                        {
+                            "status": "ok",
+                            "spec": str(spec_path),
+                            "root": str(checkpoint_root),
+                            "transaction_id": result.manifest.transaction_id,
+                            "manifest_path": str(result.manifest_path),
+                            "latest_pointer_path": str(result.latest_pointer_path),
+                            "slot_transfer_modes": dict(result.slot_transfer_modes),
+                        }
+                    )
+                except Exception as exc:
+                    had_error = True
+                    summary.update(
+                        {
+                            "status": "error",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    )
+                target_summaries.append(summary)
+            json.dump(
+                {"targets": target_summaries},
+                fp=sys.stdout,
+                indent=2,
+                sort_keys=True,
+            )
+            print()
+            return 1 if had_error else 0
     parser.error(f"Unhandled command: {args.command}")
     return 2
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import pickle
 import platform
@@ -24,6 +25,10 @@ from pydantic import BaseModel, ValidationError
 from feedbax.contracts.checkpoints import (
     CheckpointLatestPointer,
     CheckpointLineageRef,
+    CheckpointForkProvenance,
+    CheckpointForkSlotProvenance,
+    CheckpointForkSourceRecord,
+    CheckpointForkTransformRecord,
     CheckpointResumeResult,
     CheckpointSlotBlobRef,
     CheckpointTransactionManifest,
@@ -51,6 +56,7 @@ from feedbax.contracts.worker import (
 LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
+_LOGGER = logging.getLogger(__name__)
 
 
 class CheckpointCustodyError(ValueError):
@@ -86,6 +92,29 @@ class CheckpointWriteResult:
 
 
 ResumeSlotTransform = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+CheckpointBlobLinkStrategy = Callable[[Path, Path], str]
+
+
+@dataclass(frozen=True)
+class CheckpointForkResult:
+    """Paths and manifest returned by a successful checkpoint fork."""
+
+    root: Path
+    transaction_dir: Path
+    manifest_path: Path
+    latest_pointer_path: Path
+    manifest: CheckpointTransactionManifest
+    latest_pointer: CheckpointLatestPointer
+    slot_transfer_modes: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class _LoadedCheckpointTransaction:
+    root: Path
+    latest_pointer: CheckpointLatestPointer
+    manifest_path: Path
+    manifest: CheckpointTransactionManifest
+    slots: Mapping[str, Any]
 
 
 def checkpoint_barrier(program: PhaseProgramSpec, barrier_name: str) -> CheckpointBarrierSpec:
@@ -262,22 +291,31 @@ def load_latest_checkpoint(
     """Load and validate the latest published transaction before resume."""
     root_path = Path(root)
     latest = _load_latest_pointer(root_path)
-    manifest_path = root_path / latest.manifest_relative_path
-    if not manifest_path.is_file():
-        raise CheckpointIntegrityError(
-            f"latest pointer references missing manifest: {latest.manifest_relative_path}"
-        )
-    if _sha256_file(manifest_path) != latest.manifest_sha256:
-        raise CheckpointIntegrityError("latest pointer manifest hash does not match bytes")
-    manifest = _load_transaction_manifest(manifest_path)
-    if manifest.transaction_id != latest.transaction_id:
-        raise CheckpointIntegrityError("latest pointer transaction_id does not match manifest")
-    if manifest.content_integrity_digest.transaction_root_sha256 != (
-        latest.transaction_root_sha256
-    ):
-        raise CheckpointIntegrityError("latest pointer transaction root is stale")
-    if manifest.status not in {"partial", "final"}:
-        raise CheckpointIntegrityError(f"unsupported checkpoint status {manifest.status!r}")
+    return _load_checkpoint_from_pointer(
+        root_path,
+        latest,
+        expected_run_spec=expected_run_spec,
+        expected_phase_program=expected_phase_program,
+        expected_slots=expected_slots,
+        expected_population_member_ids=expected_population_member_ids,
+        resume_slot_transform=resume_slot_transform,
+        allow_new_lineage_override=allow_new_lineage_override,
+    )
+
+
+def _load_checkpoint_from_pointer(
+    root_path: Path,
+    latest: CheckpointLatestPointer,
+    *,
+    expected_run_spec: TrainingRunSpec,
+    expected_phase_program: PhaseProgramSpec,
+    expected_slots: Mapping[str, Any],
+    expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
+    resume_slot_transform: ResumeSlotTransform | None = None,
+    allow_new_lineage_override: bool = False,
+) -> CheckpointResumeResult:
+    """Load and validate a transaction through the same gates as latest resume."""
+    manifest_path, manifest = _manifest_from_latest_pointer(root_path, latest)
 
     _validate_contract_binding(
         manifest,
@@ -343,6 +381,419 @@ def load_latest_checkpoint(
             manifest.transaction_id if allow_new_lineage_override else None
         ),
     )
+
+
+def _manifest_from_latest_pointer(
+    root_path: Path,
+    latest: CheckpointLatestPointer,
+) -> tuple[Path, CheckpointTransactionManifest]:
+    manifest_path = root_path / latest.manifest_relative_path
+    if not manifest_path.is_file():
+        raise CheckpointIntegrityError(
+            f"latest pointer references missing manifest: {latest.manifest_relative_path}"
+        )
+    if _sha256_file(manifest_path) != latest.manifest_sha256:
+        raise CheckpointIntegrityError("latest pointer manifest hash does not match bytes")
+    manifest = _load_transaction_manifest(manifest_path)
+    if manifest.transaction_id != latest.transaction_id:
+        raise CheckpointIntegrityError("latest pointer transaction_id does not match manifest")
+    if manifest.content_integrity_digest.transaction_root_sha256 != (
+        latest.transaction_root_sha256
+    ):
+        raise CheckpointIntegrityError("latest pointer transaction root is stale")
+    if manifest.status not in {"partial", "final"}:
+        raise CheckpointIntegrityError(f"unsupported checkpoint status {manifest.status!r}")
+    return manifest_path, manifest
+
+
+def fork_checkpoint_transaction(
+    source_root: str | Path,
+    target_root: str | Path,
+    *,
+    target_run_spec: TrainingRunSpec,
+    target_phase_program: PhaseProgramSpec | None = None,
+    expected_slots: Mapping[str, Any] | None = None,
+    target_coordinate: ProgressCoordinate | None = None,
+    expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
+    slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
+    transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    link_strategy: CheckpointBlobLinkStrategy | None = None,
+    tool_version: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> CheckpointForkResult:
+    """Fork one valid custody checkpoint into a target run contract/root.
+
+    Untransformed slots are hardlinked into the target transaction when possible
+    and copied when hardlinking is unavailable. Transformed slots are serialized
+    fresh. ``latest.json`` is written only after strict target-bound resume
+    validation succeeds.
+    """
+    source = _load_latest_checkpoint_transaction(source_root)
+    phase_program = target_phase_program or (
+        target_run_spec.worker_execution.method_contract.phase_program
+    )
+    barrier = checkpoint_barrier(phase_program, source.manifest.barrier)
+    coordinate = target_coordinate or source.manifest.completed_coordinate
+    transforms = dict(slot_transforms or {})
+    transform_meta = dict(transform_metadata or {})
+    loaded_slots = dict(source.slots)
+    prepared_slots = _apply_slot_transforms(
+        loaded_slots,
+        transforms=transforms,
+    )
+    validation_slots = dict(expected_slots or prepared_slots)
+    _validate_required_slots(
+        tuple(barrier.slots),
+        prepared_slots,
+        error_cls=CheckpointCompatibilityError,
+    )
+    _validate_expected_slot_set(barrier, validation_slots)
+
+    target_root_path = Path(target_root)
+    target_root_path.mkdir(parents=True, exist_ok=True)
+    transactions_root = target_root_path / TRANSACTIONS_DIR_NAME
+    transactions_root.mkdir(exist_ok=True)
+    transaction_id = f"tx-{uuid.uuid4().hex}"
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f".{transaction_id}.", dir=transactions_root))
+    final_dir = transactions_root / transaction_id
+    moved_to_final = False
+
+    try:
+        blob_dir = tmp_dir / "blobs"
+        blob_dir.mkdir()
+        slot_roles = _slot_roles(target_run_spec)
+        population_slots = _population_slot_names(target_run_spec)
+        source_slots_by_name = {slot.slot: slot for slot in source.manifest.slots}
+        source_transaction_dir = source.manifest_path.parent
+        transfer = link_strategy or _hardlink_first_copy_fallback
+        slot_records: list[CheckpointSlotBlobRef] = []
+        slot_digests: list[SlotContentDigest] = []
+        slot_provenance: list[CheckpointForkSlotProvenance] = []
+        transfer_modes: dict[str, str] = {}
+        transform_records = {
+            slot: _transform_record(slot, transforms[slot], transform_meta.get(slot, {}))
+            for slot in transforms
+        }
+
+        for spec in barrier.slots:
+            if spec.slot not in prepared_slots and not spec.required:
+                continue
+            if spec.slot not in prepared_slots:
+                raise CheckpointCompatibilityError(
+                    f"target checkpoint slot {spec.slot!r} is missing after transforms"
+                )
+            if spec.slot in transforms:
+                source_slot = source_slots_by_name.get(spec.slot)
+                slot_record, content_digest = _write_fresh_slot_blob(
+                    spec,
+                    prepared_slots[spec.slot],
+                    blob_dir=blob_dir,
+                    transaction_dir=tmp_dir,
+                    coordinate=coordinate,
+                    slot_roles=slot_roles,
+                    population_slots=population_slots,
+                    population_member_ids=expected_population_member_ids or {},
+                )
+                provenance = CheckpointForkSlotProvenance(
+                    slot=spec.slot,
+                    source_sha256=source_slot.sha256 if source_slot is not None else None,
+                    target_sha256=slot_record.sha256,
+                    source_relative_path=(
+                        source_slot.relative_path if source_slot is not None else None
+                    ),
+                    target_relative_path=slot_record.relative_path,
+                    transfer_mode="serialized",
+                    transform=transform_records[spec.slot],
+                )
+            else:
+                source_slot = source_slots_by_name.get(spec.slot)
+                if source_slot is None:
+                    raise CheckpointCompatibilityError(
+                        f"source checkpoint does not contain target slot {spec.slot!r}"
+                    )
+                source_blob_path = source_transaction_dir / source_slot.relative_path
+                _verify_source_blob_before_transfer(source_slot, source_blob_path)
+                target_blob_path = blob_dir / Path(source_slot.relative_path).name
+                mode = transfer(source_blob_path, target_blob_path)
+                if target_blob_path.is_symlink():
+                    raise CheckpointIntegrityError(
+                        f"checkpoint fork produced symlink for slot {spec.slot!r}"
+                    )
+                if mode not in {"hardlink", "copy"}:
+                    raise CheckpointIntegrityError(
+                        "checkpoint fork link strategy must return 'hardlink' or 'copy'; "
+                        f"got {mode!r} for slot {spec.slot!r}"
+                    )
+                slot_record = CheckpointSlotBlobRef(
+                    slot=spec.slot,
+                    role=slot_roles.get(spec.slot, "auxiliary"),
+                    required=spec.required,
+                    relative_path=str(target_blob_path.relative_to(tmp_dir)),
+                    sha256=source_slot.sha256,
+                    size_bytes=source_slot.size_bytes,
+                    coordinate=coordinate,
+                    structural_abi_fingerprint=source_slot.structural_abi_fingerprint,
+                    content_digest=source_slot.content_digest,
+                    population=_population_record(
+                        spec.slot,
+                        prepared_slots[spec.slot],
+                        population_member_ids=expected_population_member_ids or {},
+                        population_slots=population_slots,
+                    ),
+                    metadata=dict(spec.metadata),
+                )
+                content_digest = source_slot.content_digest
+                provenance = CheckpointForkSlotProvenance(
+                    slot=spec.slot,
+                    source_sha256=source_slot.sha256,
+                    target_sha256=source_slot.sha256,
+                    source_relative_path=source_slot.relative_path,
+                    target_relative_path=slot_record.relative_path,
+                    transfer_mode=mode,  # type: ignore[arg-type]
+                )
+            slot_records.append(slot_record)
+            slot_digests.append(content_digest)
+            slot_provenance.append(provenance)
+            transfer_modes[spec.slot] = provenance.transfer_mode
+
+        _validate_slot_coordinate_consistency(
+            barrier=barrier,
+            completed_coordinate=coordinate,
+            slot_records=slot_records,
+        )
+        transaction_root = _transaction_root_sha256(slot_digests)
+        manifest_metadata = dict(source.manifest.metadata)
+        manifest_metadata["phase"] = barrier.phase
+        manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
+        manifest_metadata.update(dict(metadata or {}))
+        manifest = CheckpointTransactionManifest(
+            transaction_id=transaction_id,
+            run_id=coordinate.run_id,
+            status=source.manifest.status,
+            barrier=barrier.name,
+            completed_coordinate=coordinate,
+            consistency_predicate=derive_consistency_predicate(phase_program),
+            run_contract_binding=run_contract_binding(target_run_spec, phase_program),
+            slots=slot_records,
+            content_integrity_digest=ContentIntegrityDigest(
+                slots=slot_digests,
+                transaction_root_sha256=transaction_root,
+            ),
+            history_availability=dict(source.manifest.history_availability),
+            parent_lineage=[
+                CheckpointLineageRef(
+                    transaction_id=source.manifest.transaction_id,
+                    relationship="new_lineage_override",
+                    metadata={"fork_source": True},
+                ),
+                *source.manifest.parent_lineage,
+            ],
+            source_training_run=source.manifest.source_training_run,
+            fork_provenance=CheckpointForkProvenance(
+                source=CheckpointForkSourceRecord(
+                    transaction_id=source.manifest.transaction_id,
+                    run_id=source.manifest.run_id,
+                    manifest_sha256=source.latest_pointer.manifest_sha256,
+                    transaction_root_sha256=(
+                        source.manifest.content_integrity_digest.transaction_root_sha256
+                    ),
+                    manifest_relative_path=source.latest_pointer.manifest_relative_path,
+                    slot_content_digests=list(
+                        source.manifest.content_integrity_digest.slots
+                    ),
+                ),
+                slots=slot_provenance,
+                tool_version=tool_version or feedbax_version(),
+            ),
+            metadata=manifest_metadata,
+        )
+        manifest_path = tmp_dir / MANIFEST_NAME
+        _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
+        manifest_sha256 = _sha256_file(manifest_path)
+        os.replace(tmp_dir, final_dir)
+        moved_to_final = True
+        manifest_path = final_dir / MANIFEST_NAME
+        latest_pointer = CheckpointLatestPointer(
+            run_id=coordinate.run_id,
+            transaction_id=transaction_id,
+            manifest_relative_path=str(manifest_path.relative_to(target_root_path)),
+            manifest_sha256=manifest_sha256,
+            transaction_root_sha256=transaction_root,
+            completed_coordinate=coordinate,
+        )
+        _load_checkpoint_from_pointer(
+            target_root_path,
+            latest_pointer,
+            expected_run_spec=target_run_spec,
+            expected_phase_program=phase_program,
+            expected_slots=validation_slots,
+            expected_population_member_ids=expected_population_member_ids,
+            allow_new_lineage_override=False,
+        )
+        latest_path = target_root_path / LATEST_POINTER_NAME
+        _write_json_atomic(
+            latest_path,
+            latest_pointer.model_dump(mode="json", exclude_none=True),
+        )
+        return CheckpointForkResult(
+            root=target_root_path,
+            transaction_dir=final_dir,
+            manifest_path=manifest_path,
+            latest_pointer_path=latest_path,
+            manifest=manifest,
+            latest_pointer=latest_pointer,
+            slot_transfer_modes=transfer_modes,
+        )
+    except Exception:
+        shutil.rmtree(final_dir if moved_to_final else tmp_dir, ignore_errors=True)
+        raise
+
+
+def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTransaction:
+    root_path = Path(root)
+    latest = _load_latest_pointer(root_path)
+    manifest_path, manifest = _manifest_from_latest_pointer(root_path, latest)
+    loaded_slots: dict[str, Any] = {}
+    transaction_dir = manifest_path.parent
+    for slot in manifest.slots:
+        blob_path = transaction_dir / slot.relative_path
+        blob_bytes = _read_blob(slot, blob_path)
+        try:
+            loaded_slots[slot.slot] = pickle.loads(blob_bytes)
+        except Exception as exc:
+            raise CheckpointIntegrityError(
+                f"checkpoint slot {slot.slot!r} could not be deserialized"
+            ) from exc
+    _validate_manifest_structural_abi(manifest, loaded_slots)
+    return _LoadedCheckpointTransaction(
+        root=root_path,
+        latest_pointer=latest,
+        manifest_path=manifest_path,
+        manifest=manifest,
+        slots=loaded_slots,
+    )
+
+
+def _apply_slot_transforms(
+    loaded_slots: Mapping[str, Any],
+    *,
+    transforms: Mapping[str, ResumeSlotTransform],
+) -> dict[str, Any]:
+    transformed_slots = dict(loaded_slots)
+    for slot, transform in transforms.items():
+        if slot not in transformed_slots:
+            raise CheckpointCompatibilityError(
+                f"cannot transform missing checkpoint slot {slot!r}"
+            )
+        try:
+            transformed_mapping = dict(transform(transformed_slots))
+        except CheckpointCustodyError:
+            raise
+        except Exception as exc:
+            raise CheckpointCompatibilityError(
+                f"checkpoint fork transform failed for slot {slot!r}"
+            ) from exc
+        if slot not in transformed_mapping:
+            raise CheckpointCompatibilityError(
+                f"checkpoint fork transform dropped slot {slot!r}"
+            )
+        transformed_slots[slot] = transformed_mapping[slot]
+    return transformed_slots
+
+
+def _write_fresh_slot_blob(
+    spec: CheckpointSlotSpec,
+    value: Any,
+    *,
+    blob_dir: Path,
+    transaction_dir: Path,
+    coordinate: ProgressCoordinate,
+    slot_roles: Mapping[str, str],
+    population_slots: set[str],
+    population_member_ids: Mapping[str, Sequence[str]],
+) -> tuple[CheckpointSlotBlobRef, SlotContentDigest]:
+    blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    blob_sha256 = sha256_bytes(blob_bytes)
+    blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
+    _write_bytes_atomic(blob_path, blob_bytes)
+    leaf_digests = _leaf_content_digests(value)
+    content_digest = SlotContentDigest(
+        slot=spec.slot,
+        blob_sha256=blob_sha256,
+        blob_size_bytes=len(blob_bytes),
+        leaf_hashes=leaf_digests,
+        slot_root_sha256=_slot_root_sha256(spec.slot, blob_sha256, leaf_digests),
+    )
+    slot_record = CheckpointSlotBlobRef(
+        slot=spec.slot,
+        role=slot_roles.get(spec.slot, "auxiliary"),
+        required=spec.required,
+        relative_path=str(blob_path.relative_to(transaction_dir)),
+        sha256=blob_sha256,
+        size_bytes=len(blob_bytes),
+        coordinate=coordinate,
+        structural_abi_fingerprint=structural_abi_fingerprint(value),
+        content_digest=content_digest,
+        population=_population_record(
+            spec.slot,
+            value,
+            population_member_ids=population_member_ids,
+            population_slots=population_slots,
+        ),
+        metadata=dict(spec.metadata),
+    )
+    return slot_record, content_digest
+
+
+def _verify_source_blob_before_transfer(
+    slot: CheckpointSlotBlobRef,
+    blob_path: Path,
+) -> None:
+    _read_blob(slot, blob_path)
+
+
+def _hardlink_first_copy_fallback(source: Path, target: Path) -> str:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, target)
+        return "hardlink"
+    except OSError as exc:
+        _LOGGER.info(
+            "checkpoint fork hardlink failed; copying blob instead",
+            extra={"source": str(source), "target": str(target), "error": str(exc)},
+        )
+        shutil.copy2(source, target)
+        return "copy"
+
+
+def _transform_record(
+    slot: str,
+    transform: ResumeSlotTransform,
+    metadata: Mapping[str, Any],
+) -> CheckpointForkTransformRecord:
+    parameters = metadata.get("parameters", {})
+    if not isinstance(parameters, Mapping):
+        raise CheckpointCompatibilityError(
+            f"checkpoint fork transform parameters for slot {slot!r} must be a mapping"
+        )
+    identity = metadata.get("identity")
+    if not isinstance(identity, str) or not identity:
+        identity = _qualified_callable_name(transform)
+    record_metadata = {
+        key: value for key, value in metadata.items() if key not in {"identity", "parameters"}
+    }
+    return CheckpointForkTransformRecord(
+        slot=slot,
+        identity=identity,
+        parameters=dict(parameters),
+        metadata=record_metadata,
+    )
+
+
+def _qualified_callable_name(value: Callable[..., Any]) -> str:
+    module = getattr(value, "__module__", "")
+    qualname = getattr(value, "__qualname__", getattr(value, "__name__", repr(value)))
+    return f"{module}:{qualname}" if module else str(qualname)
 
 
 def run_contract_binding(
@@ -556,6 +1007,13 @@ def _reject_legacy_supervised_checkpoint(root: Path) -> None:
 def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:
     try:
         payload = json.loads(path.read_text())
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        payload = migrate_structured_spec_payload(
+            "TrainingCheckpointTransactionManifest",
+            payload,
+            path="checkpoint_manifest",
+        ).payload
         return CheckpointTransactionManifest.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValidationError) as exc:
         raise CheckpointIntegrityError("checkpoint transaction manifest is corrupt") from exc

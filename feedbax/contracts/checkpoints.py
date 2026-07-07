@@ -17,8 +17,11 @@ from feedbax.contracts.worker import ConsistencyPredicateSpec, ProgressCoordinat
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = (
     "feedbax.manifest.training_checkpoint_transaction"
 )
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.training_checkpoint_transaction.v1"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint_transaction.v2"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = (
     "feedbax.manifest.training_checkpoint_latest_pointer"
@@ -232,6 +235,51 @@ class CheckpointLineageRef(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CheckpointForkSourceRecord(StrictModel):
+    """Identity of the source transaction used to create a forked checkpoint."""
+
+    transaction_id: str
+    run_id: str
+    manifest_sha256: str
+    transaction_root_sha256: str
+    manifest_relative_path: str | None = None
+    slot_content_digests: list[SlotContentDigest] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointForkTransformRecord(StrictModel):
+    """One slot transform applied while forking a checkpoint."""
+
+    slot: str
+    identity: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointForkSlotProvenance(StrictModel):
+    """Per-slot payload provenance for a forked checkpoint."""
+
+    slot: str
+    source_sha256: str | None = None
+    target_sha256: str
+    source_relative_path: str | None = None
+    target_relative_path: str
+    transfer_mode: Literal["hardlink", "copy", "serialized"]
+    transform: CheckpointForkTransformRecord | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointForkProvenance(StrictModel):
+    """Provenance for a checkpoint transaction forked from an existing one."""
+
+    schema_id: str = "feedbax.manifest.training_checkpoint.fork_provenance"
+    schema_version: str = "feedbax.manifest.training_checkpoint.fork_provenance.v1"
+    source: CheckpointForkSourceRecord
+    slots: list[CheckpointForkSlotProvenance]
+    tool_version: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CheckpointTransactionManifest(StrictModel):
     """Durable manifest for one atomic multi-slot checkpoint transaction."""
 
@@ -252,6 +300,7 @@ class CheckpointTransactionManifest(StrictModel):
     history_availability: dict[str, bool] = Field(default_factory=dict)
     parent_lineage: list[CheckpointLineageRef] = Field(default_factory=list)
     source_training_run: ParentRef | ArtifactRef | None = None
+    fork_provenance: CheckpointForkProvenance | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

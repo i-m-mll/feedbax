@@ -13,6 +13,7 @@ from feedbax.contracts.checkpoints import (
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
@@ -614,6 +615,15 @@ def _migrate_legacy_checkpoint_leaf_manifest_v0_payload(
             "metadata": {"migrated_from": LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0},
         }
     migrated["provenance"] = dict(provenance)
+    return migrated
+
+
+def _migrate_checkpoint_transaction_manifest_v1_to_v2_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add the explicit fork-provenance slot introduced in v2 manifests."""
+    migrated = dict(payload)
+    migrated.setdefault("fork_provenance", None)
     return migrated
 
 
@@ -1351,6 +1361,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Atomic multi-slot training checkpoint transaction manifest with "
                 "run-contract binding, slot ABI fingerprints, and content integrity."
             ),
+            stance="migrate",
+            supported_old_versions=(TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
@@ -2242,6 +2254,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v1-to-v2-fork-provenance",
+        migrate=_migrate_checkpoint_transaction_manifest_v1_to_v2_payload,
+        description="Add explicit fork provenance to training checkpoint manifests.",
+    ),
+)
 default_spec_registry.register_migration(
     "LegacyCheckpointLeafManifest",
     SchemaMigration(

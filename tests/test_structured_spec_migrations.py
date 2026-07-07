@@ -49,6 +49,9 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
+from feedbax.contracts.checkpoints import (
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+)
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.execution.models import (
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
@@ -644,6 +647,9 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
     execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
     execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
+    checkpoint_policy = default_spec_registry.resolve(
+        "TrainingCheckpointTransactionManifest"
+    ).policy
     cloud_payload_policy = default_spec_registry.resolve("ExecutionCloudPayload").policy
     reproducibility_policy = default_spec_registry.resolve("ExecutionReproducibility").policy
     local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
@@ -669,6 +675,11 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert training_run_policy is not None
     assert training_run_policy.stance == "migrate"
     assert training_run_policy.supported_old_versions == (TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,)
+    assert checkpoint_policy is not None
+    assert checkpoint_policy.stance == "migrate"
+    assert checkpoint_policy.supported_old_versions == (
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+    )
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
     assert report_policy is not None

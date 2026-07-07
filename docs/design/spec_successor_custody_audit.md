@@ -131,14 +131,14 @@ remote execution outputs become recurring durable artifacts.
 |---|---|
 | Primary registry family | `TrainingCheckpointTransactionManifest` |
 | Identity | `feedbax.manifest.training_checkpoint_transaction` |
-| Current version | `feedbax.manifest.training_checkpoint_transaction.v1` |
+| Current version | `feedbax.manifest.training_checkpoint_transaction.v2` |
 | Namespace | `feedbax.manifest.*` |
 | Owner module | `feedbax.contracts.checkpoints` |
 | Emitter | `feedbax.training.checkpoint_custody` |
 | Consumers | Feedbax resume loaders, cloud-backed workers, downstream checkpoint adoption lanes |
-| Old-version policy | reject `feedbax.manifest.training_checkpoint_transaction.v0` |
+| Old-version policy | migrate `feedbax.manifest.training_checkpoint_transaction.v1` to v2 by stamping `fork_provenance: null` |
 | Tests | `tests/test_checkpoint_custody.py`, `tests/test_structured_spec_migrations.py` |
-| Custody carrier | Checkpoint transaction manifest plus latest pointer; `TrainingRunManifest.checkpoint_custody[]` links the transaction by `ParentRef` or `ArtifactRef`. |
+| Custody carrier | Checkpoint transaction manifest plus latest pointer; forked transactions also carry source identity, per-slot source/target hashes, transfer mode, transform metadata, and tool version. `TrainingRunManifest.checkpoint_custody[]` links the transaction by `ParentRef` or `ArtifactRef`. |
 
 The older checkpoint-selection custody families remain registered and distinct:
 `CheckpointSelectionSpec` (`feedbax.spec.checkpoint_selection.v1`) and
@@ -191,10 +191,13 @@ This audit added focused assertions to `tests/test_structured_spec_migrations.py
   descriptors, analysis data products, execution v2, checkpoint transaction
   custody, and `TrainingRunManifest`;
 - namespace-category coverage includes the successor spec and manifest families;
-- `LocalExecutionResult` now has explicit v1 rejection coverage alongside
-  `ExecutionSpec` and `ExecutionPlan`.
+- `LocalExecutionResult` has explicit v1 rejection coverage alongside
+  `ExecutionSpec` and `ExecutionPlan`;
+- `TrainingCheckpointTransactionManifest` now has explicit v1-to-v2 migration
+  coverage for fork provenance.
 
-No production registry row needed to be changed in this lane.
+Later checkpoint fork work updated the checkpoint transaction registry row from
+v1 reject-only behavior to a v2 manifest with registered v1 migration.
 
 ## Follow-Up Candidates
 
@@ -216,4 +219,3 @@ Focused verification for this lane:
 - `uv run --no-sync pytest tests/test_structured_spec_migrations.py -q`
 - touched-suite lint: `uv run --no-sync ruff check tests/test_structured_spec_migrations.py`
 - final diff hygiene: `git diff --check`
-
