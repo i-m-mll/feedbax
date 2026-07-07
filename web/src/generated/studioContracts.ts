@@ -932,6 +932,69 @@ export interface AnalysisPackagesResponse {
   data: AnalysisPackagesPayload;
 }
 
+export interface BundleMissingRoleRecord {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  stage: string;
+  role: string;
+  required?: boolean;
+  bind_as?: string | null;
+  reason: string;
+}
+
+export interface BundleStageDryRunOutputRecord {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  role: string;
+  required?: boolean;
+  status: "would_run" | "would_skip" | "missing" | "not_applicable";
+  reason?: string | null;
+}
+
+export interface BundleStageDryRunRecord {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  name: string;
+  kind: "evaluation" | "analysis" | "materialization" | "report";
+  status: "would_run" | "would_skip" | "missing" | "not_applicable";
+  depends_on?: string[];
+  inputs?: ParentRef[];
+  outputs?: BundleStageDryRunOutputRecord[];
+  missing_roles?: BundleMissingRoleRecord[];
+  reason?: string | null;
+}
+
+export interface AnalysisBundleDryRunResult {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  bundle_name: string;
+  match_preview: SelectionPreview;
+  matched_run_ids?: string[];
+  stages?: BundleStageDryRunRecord[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface AnalysisBundleDryRunRequest {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  bundle: Record<string, unknown>;
+  selection_spec?: SelectionSpec | null;
+  root?: string | null;
+  preview_limit?: number;
+}
+
+export interface AnalysisBundleDryRunPayload {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  dry_run: AnalysisBundleDryRunResult;
+}
+
+export interface AnalysisBundleDryRunResponse {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  data: AnalysisBundleDryRunPayload;
+}
+
 export interface GenerateAnalysisRequest {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v1";
@@ -2636,6 +2699,97 @@ export const AnalysisPackagesResponseSchema: z.ZodType<AnalysisPackagesResponse>
     .strict()
 ) as unknown as z.ZodType<AnalysisPackagesResponse>;
 
+export const BundleMissingRoleRecordSchema: z.ZodType<BundleMissingRoleRecord> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "stage": z.string(),
+      "role": z.string(),
+      "required": z.boolean().optional(),
+      "bind_as": z.string().nullable().optional(),
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<BundleMissingRoleRecord>;
+
+export const BundleStageDryRunOutputRecordSchema: z.ZodType<BundleStageDryRunOutputRecord> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "role": z.string(),
+      "required": z.boolean().optional(),
+      "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
+      "reason": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<BundleStageDryRunOutputRecord>;
+
+export const BundleStageDryRunRecordSchema: z.ZodType<BundleStageDryRunRecord> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "name": z.string(),
+      "kind": z.union([z.literal("evaluation"), z.literal("analysis"), z.literal("materialization"), z.literal("report")]),
+      "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
+      "depends_on": z.array(z.string()).optional(),
+      "inputs": z.array(ParentRefSchema).optional(),
+      "outputs": z.array(BundleStageDryRunOutputRecordSchema).optional(),
+      "missing_roles": z.array(BundleMissingRoleRecordSchema).optional(),
+      "reason": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<BundleStageDryRunRecord>;
+
+export const AnalysisBundleDryRunResultSchema: z.ZodType<AnalysisBundleDryRunResult> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "bundle_name": z.string(),
+      "match_preview": SelectionPreviewSchema,
+      "matched_run_ids": z.array(z.string()).optional(),
+      "stages": z.array(BundleStageDryRunRecordSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunResult>;
+
+export const AnalysisBundleDryRunRequestSchema: z.ZodType<AnalysisBundleDryRunRequest> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "bundle": z.record(z.string(), z.unknown()),
+      "selection_spec": SelectionSpecSchema.nullable().optional(),
+      "root": z.string().nullable().optional(),
+      "preview_limit": z.number().int().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunRequest>;
+
+export const AnalysisBundleDryRunPayloadSchema: z.ZodType<AnalysisBundleDryRunPayload> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "dry_run": AnalysisBundleDryRunResultSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunPayload>;
+
+export const AnalysisBundleDryRunResponseSchema: z.ZodType<AnalysisBundleDryRunResponse> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "data": AnalysisBundleDryRunPayloadSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunResponse>;
+
 export const GenerateAnalysisRequestSchema: z.ZodType<GenerateAnalysisRequest> = z.lazy(() =>
   z
     .object({
@@ -3178,6 +3332,7 @@ export const contractSchemas = {
   WorkerConnectEnvelope: WorkerConnectEnvelopeSchema,
   WorkerStatusEnvelope: WorkerStatusEnvelopeSchema,
   AnalysisPackagesResponse: AnalysisPackagesResponseSchema,
+  AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponseSchema,
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
   AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
   TrainingRunInfo: TrainingRunInfoSchema,
@@ -3223,6 +3378,7 @@ export interface ContractTypeMap {
   WorkerConnectEnvelope: WorkerConnectEnvelope;
   WorkerStatusEnvelope: WorkerStatusEnvelope;
   AnalysisPackagesResponse: AnalysisPackagesResponse;
+  AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponse;
   GenerateAnalysisResponse: GenerateAnalysisResponse;
   AnalysisJobStatusResponse: AnalysisJobStatusResponse;
   TrainingRunInfo: TrainingRunInfo;

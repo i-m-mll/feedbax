@@ -7,6 +7,10 @@
  */
 
 import type {
+  AnalysisBundleDryRunResult,
+  SelectionSpec,
+} from '@/generated/studioContracts';
+import type {
   AnalysisGraphSpec,
   AnalysisPageSpec,
   AnalysisPackage,
@@ -77,6 +81,27 @@ export async function fetchAnalysisPackages(): Promise<AnalysisPackage[]> {
 export async function fetchAnalysisClasses(): Promise<AnalysisClassDef[]> {
   const packages = await fetchAnalysisPackages();
   return packages.flatMap((pkg) => pkg.analyses);
+}
+
+export async function dryRunAnalysisBundle(payload: {
+  bundle: Record<string, unknown>;
+  selectionSpec?: SelectionSpec | null;
+  previewLimit?: number;
+}): Promise<AnalysisBundleDryRunResult> {
+  const path = '/api/analyses/bundles/dry-run';
+  const result = await requestJson(path, {
+    method: 'POST',
+    body: JSON.stringify({
+      bundle: payload.bundle,
+      selection_spec: payload.selectionSpec ?? null,
+      preview_limit: payload.previewLimit ?? 50,
+    }),
+  });
+  try {
+    return parseContract('AnalysisBundleDryRunResponse', result).data.dry_run;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Analysis bundle dry-run response did not match the Studio contract.');
+  }
 }
 
 /**

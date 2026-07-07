@@ -47,7 +47,10 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.selection import (
     ManifestIndexRow,
     ManifestPredicate,
+    SelectionPreview,
+    SelectionSpec,
     predicate_matches_row,
+    preview_selection_spec,
     select_parent_refs,
 )
 from feedbax.persistence.manifest_index import (
@@ -65,6 +68,7 @@ ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_exe
 AnalysisBundleMode = Literal["per-run", "grouped"]
 BundleStageKind = Literal["evaluation", "analysis", "materialization", "report"]
 BundleOutputStatus = Literal["materialized", "skipped", "missing", "not_applicable"]
+BundleDryRunStageStatus = Literal["would_run", "would_skip", "missing", "not_applicable"]
 
 
 class AnalysisSpecTemplate(StrictModel):
@@ -259,6 +263,48 @@ class StagedAnalysisBundleExecution(StrictModel):
     matched_run_ids: list[str] = Field(default_factory=list)
     stages: list[BundleStageExecutionRecord] = Field(default_factory=list)
     report_outputs: list[BundleStageOutputRecord] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BundleMissingRoleRecord(StrictModel):
+    """Required role dependency that is unavailable in a dry-run stage plan."""
+
+    stage: str
+    role: str
+    required: bool = True
+    bind_as: str | None = None
+    reason: str
+
+
+class BundleStageDryRunOutputRecord(StrictModel):
+    """Predicted output-role status for one dry-run stage."""
+
+    role: str
+    required: bool = True
+    status: BundleDryRunStageStatus
+    reason: str | None = None
+
+
+class BundleStageDryRunRecord(StrictModel):
+    """Side-effect-free stage plan for analysis bundle preflight."""
+
+    name: str
+    kind: BundleStageKind
+    status: BundleDryRunStageStatus
+    depends_on: list[str] = Field(default_factory=list)
+    inputs: list[ParentRef] = Field(default_factory=list)
+    outputs: list[BundleStageDryRunOutputRecord] = Field(default_factory=list)
+    missing_roles: list[BundleMissingRoleRecord] = Field(default_factory=list)
+    reason: str | None = None
+
+
+class AnalysisBundleDryRunResult(StrictModel):
+    """Side-effect-free analysis bundle preflight over a matched selection."""
+
+    bundle_name: str
+    match_preview: SelectionPreview
+    matched_run_ids: list[str] = Field(default_factory=list)
+    stages: list[BundleStageDryRunRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1066,6 +1112,273 @@ def execute_analysis_bundle(
         )
         outputs.append((expansion, manifest, path))
     return outputs
+
+
+def _selection_preview_for_bundle(
+    bundle: AnalysisBundleSpec,
+    matched_manifests: Sequence[AnyManifest],
+) -> SelectionPreview:
+    query = SelectionSpec(
+        mode="query",
+        manifest_kind=bundle.predicate.manifest_kind,
+        query=bundle.predicate,
+    )
+    return SelectionPreview(
+        selection_spec=query,
+        match_count=len(matched_manifests),
+        parent_refs=[_parent_ref_for_manifest(manifest) for manifest in matched_manifests],
+    )
+
+
+def _select_dry_run_manifests(
+    bundle: AnalysisBundleSpec,
+    root: Path,
+    *,
+    selection_spec: SelectionSpec | None,
+    run_ids: Iterable[str] | None,
+    preview_limit: int | None,
+) -> tuple[list[AnyManifest], SelectionPreview]:
+    if selection_spec is None:
+        matched = select_bundle_manifests(bundle, root, run_ids=run_ids)
+        preview = _selection_preview_for_bundle(bundle, matched)
+        if preview_limit is not None and preview_limit >= 0:
+            preview = preview.model_copy(
+                update={
+                    "parent_refs": preview.parent_refs[:preview_limit],
+                    "truncated": len(preview.parent_refs) > preview_limit,
+                }
+            )
+        return matched, preview
+
+    candidates = iter_candidate_manifests(root, manifest_kind=selection_spec.manifest_kind)
+    rows = [_manifest_index_row_for_manifest(manifest) for manifest in candidates]
+    full_preview = preview_selection_spec(selection_spec, rows, limit=None)
+    preview = preview_selection_spec(selection_spec, rows, limit=preview_limit)
+    selected_ids = {ref.id for ref in full_preview.parent_refs}
+    matched = [manifest for manifest in candidates if manifest.id in selected_ids]
+    return matched, preview
+
+
+def _dry_run_stage_outputs(
+    stage: BundleStageSpec,
+    status: BundleDryRunStageStatus,
+    *,
+    reason: str | None = None,
+) -> list[BundleStageDryRunOutputRecord]:
+    return [
+        BundleStageDryRunOutputRecord(
+            role=output.role,
+            required=output.required,
+            status=status,
+            reason=reason,
+        )
+        for output in (stage.outputs or [BundleStageOutputSpec(role="manifest")])
+    ]
+
+
+def _dry_run_stage_status(
+    outputs: Sequence[BundleStageDryRunOutputRecord],
+    fallback: BundleDryRunStageStatus,
+) -> BundleDryRunStageStatus:
+    if any(output.status == "would_run" for output in outputs):
+        return "would_run"
+    return outputs[0].status if outputs else fallback
+
+
+def _missing_role_dependencies(
+    stage: BundleStageSpec,
+    stage_products: dict[str, list[StageMaterialization]],
+) -> list[BundleMissingRoleRecord]:
+    missing: list[BundleMissingRoleRecord] = []
+    for dependency in stage.depends_on_roles:
+        products = stage_products.get(dependency.stage)
+        if products is None:
+            continue
+        artifacts = [
+            artifact
+            for product in products
+            for artifact in product.artifacts
+            if artifact.role == dependency.role
+        ]
+        if artifacts or not dependency.required:
+            continue
+        missing.append(
+            BundleMissingRoleRecord(
+                stage=dependency.stage,
+                role=dependency.role,
+                required=dependency.required,
+                bind_as=dependency.bind_as,
+                reason=(
+                    f"required role {dependency.role!r} from stage "
+                    f"{dependency.stage!r} is not available"
+                ),
+            )
+        )
+    return missing
+
+
+def _dry_run_manifest_role(stage: BundleStageSpec) -> str:
+    return {
+        "evaluation": "evaluation_run",
+        "analysis": "analysis_run",
+        "materialization": "analysis_run",
+        "report": "report",
+    }[stage.kind]
+
+
+def _dry_run_products(stage: BundleStageSpec) -> list[StageMaterialization]:
+    outputs = stage.outputs or [BundleStageOutputSpec(role="manifest")]
+    artifacts = tuple(
+        ArtifactRef(
+            role=output.role,
+            logical_name=f"dry-run/{stage.name}/{output.role}",
+            metadata={"dry_run": True, "stage": stage.name},
+        )
+        for output in outputs
+        if output.role != "manifest"
+    )
+    manifest_ref = ParentRef(
+        kind={
+            "evaluation": "EvaluationRunManifest",
+            "analysis": "AnalysisRunManifest",
+            "materialization": "AnalysisRunManifest",
+            "report": "ReportManifest",
+        }[stage.kind],
+        id=f"dry-run:{stage.name}",
+        role=_dry_run_manifest_role(stage),
+        metadata={"dry_run": True, "stage": stage.name},
+    )
+    return [StageMaterialization(manifest_ref=manifest_ref, artifacts=artifacts)]
+
+
+def dry_run_staged_analysis_bundle(
+    bundle: AnalysisBundleSpec,
+    *,
+    root: Path | str | None = None,
+    selection_spec: SelectionSpec | None = None,
+    run_ids: Iterable[str] | None = None,
+    preview_limit: int | None = 50,
+) -> AnalysisBundleDryRunResult:
+    """Evaluate staged bundle bindings, conditions, and role dependencies only."""
+    if not bundle.stages:
+        raise ValueError(f"Analysis bundle {bundle.name!r} has no staged plan")
+
+    root_path = Path(root) if root is not None else default_manifest_root()
+    matched_manifests, preview = _select_dry_run_manifests(
+        bundle,
+        root_path,
+        selection_spec=selection_spec,
+        run_ids=run_ids,
+        preview_limit=preview_limit,
+    )
+    stage_products: dict[str, list[StageMaterialization]] = {}
+    records: list[BundleStageDryRunRecord] = []
+
+    for stage in bundle.stages:
+        missing_roles = _missing_role_dependencies(stage, stage_products)
+        if missing_roles:
+            outputs = _dry_run_stage_outputs(
+                stage,
+                "missing",
+                reason=missing_roles[0].reason,
+            )
+            stage_products[stage.name] = []
+            records.append(
+                BundleStageDryRunRecord(
+                    name=stage.name,
+                    kind=stage.kind,
+                    status="missing",
+                    depends_on=list(stage.depends_on),
+                    outputs=outputs,
+                    missing_roles=missing_roles,
+                    reason=missing_roles[0].reason,
+                )
+            )
+            continue
+
+        resolved_inputs = _resolve_stage_inputs(stage, matched_manifests, stage_products)
+        inputs = list(resolved_inputs.parent_refs)
+        if stage.skip_reason is not None:
+            outputs = _dry_run_stage_outputs(stage, "would_skip", reason=stage.skip_reason)
+            stage_products[stage.name] = []
+            records.append(
+                BundleStageDryRunRecord(
+                    name=stage.name,
+                    kind=stage.kind,
+                    status="would_skip",
+                    depends_on=list(stage.depends_on),
+                    inputs=inputs,
+                    outputs=outputs,
+                    reason=stage.skip_reason,
+                )
+            )
+            continue
+
+        if stage.not_applicable_reason is not None:
+            outputs = _dry_run_stage_outputs(
+                stage,
+                "not_applicable",
+                reason=stage.not_applicable_reason,
+            )
+            stage_products[stage.name] = []
+            records.append(
+                BundleStageDryRunRecord(
+                    name=stage.name,
+                    kind=stage.kind,
+                    status="not_applicable",
+                    depends_on=list(stage.depends_on),
+                    inputs=inputs,
+                    outputs=outputs,
+                    reason=stage.not_applicable_reason,
+                )
+            )
+            continue
+
+        run_condition_skip_reason = _run_condition_skip_reason(
+            stage,
+            matched_manifests,
+            resolved_inputs,
+        )
+        if run_condition_skip_reason is not None:
+            outputs = _dry_run_stage_outputs(
+                stage,
+                "would_skip",
+                reason=run_condition_skip_reason,
+            )
+            stage_products[stage.name] = []
+            records.append(
+                BundleStageDryRunRecord(
+                    name=stage.name,
+                    kind=stage.kind,
+                    status="would_skip",
+                    depends_on=list(stage.depends_on),
+                    inputs=inputs,
+                    outputs=outputs,
+                    reason=run_condition_skip_reason,
+                )
+            )
+            continue
+
+        outputs = _dry_run_stage_outputs(stage, "would_run")
+        stage_products[stage.name] = _dry_run_products(stage)
+        records.append(
+            BundleStageDryRunRecord(
+                name=stage.name,
+                kind=stage.kind,
+                status=_dry_run_stage_status(outputs, "would_run"),
+                depends_on=list(stage.depends_on),
+                inputs=inputs,
+                outputs=outputs,
+            )
+        )
+
+    return AnalysisBundleDryRunResult(
+        bundle_name=bundle.name,
+        match_preview=preview,
+        matched_run_ids=[manifest.id for manifest in matched_manifests],
+        stages=records,
+        metadata=dict(bundle.metadata),
+    )
 
 
 def execute_staged_analysis_bundle(
