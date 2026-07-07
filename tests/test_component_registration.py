@@ -469,6 +469,111 @@ def test_component_registry_round_trips_representation_contract() -> None:
     assert definition.representation.elements[0].frame_provider.input_port == "input"
 
 
+def test_builtin_mechanics_expose_workspace_representations() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    definitions = {item.name: item for item in registry.list_all()}
+
+    point_mass = definitions["PointMass"]
+    assert point_mass.representation is not None
+    assert [element.archetype for element in point_mass.representation.elements] == [
+        "point_body"
+    ]
+    assert point_mass.representation.anchors[0].id == "center"
+    assert point_mass.representation.anchors[0].binding is not None
+
+    two_link = definitions["TwoLinkArm"]
+    assert two_link.default_params["link_lengths"] == [0.30, 0.33]
+    assert two_link.representation is not None
+    links = next(
+        element
+        for element in two_link.representation.elements
+        if element.archetype == "planar_chain"
+    )
+    assert links.anchors == ["shoulder", "elbow", "effector"]
+    assert links.bindings["link_lengths"].kind == "param_path"
+    assert links.bindings["link_lengths"].path == "link_lengths"
+
+
+def test_two_link_arm_builder_uses_representation_link_lengths_param() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    component = build_component(
+        "arm",
+        "TwoLinkArm",
+        {"dt": 0.01, "link_lengths": [0.5, 0.25]},
+        component_registry=registry,
+    )
+
+    assert bool(jnp.allclose(component.plant.skeleton.l, jnp.array([0.5, 0.25])))
+
+
+def test_builtin_muscle_representations_declare_consolidated_geometry_sources() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    definitions = {item.name: item for item in registry.list_all()}
+
+    arm_template = definitions["Arm6MuscleRigidTendon"]
+    assert arm_template.representation is not None
+    arm_elements = {element.id: element for element in arm_template.representation.elements}
+    assert arm_elements["links"].archetype == "planar_chain"
+    assert arm_elements["muscle-paths"].archetype == "muscle_path"
+    assert (
+        arm_template.representation.metadata["geometry_source"]
+        == "feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle"
+    )
+    assert arm_template.representation.metadata["composition_rule"] == {
+        "kind": "subgraph_children",
+        "allow_outer_geometry_fallback": False,
+    }
+    opacity = next(
+        style for style in arm_elements["muscle-paths"].style if style.channel == "opacity"
+    )
+    assert opacity.binding is not None
+    assert opacity.binding.selector.compact == "output:activations"
+
+    analytical = definitions["AnalyticalMusculoskeletalPlant"]
+    assert analytical.representation is not None
+    assert (
+        analytical.representation.metadata["geometry_source"]
+        == "feedbax.mechanics.muscle_config.default_6muscle_2link_muscled_arm_parameters"
+    )
+
+    point_mass_template = definitions["PointMass8MuscleRelu"]
+    assert point_mass_template.representation is not None
+    assert any(
+        element.archetype == "muscle_path"
+        for element in point_mass_template.representation.elements
+    )
+    assert (
+        point_mass_template.representation.metadata["geometry_source"]
+        == "feedbax.mechanics.geometry.PointMassRadialGeometry"
+    )
+
+
+def test_builtin_reach_tasks_expose_schematic_objective_representations() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    definitions = {item.name: item for item in registry.list_all()}
+
+    simple = definitions["SimpleReaches"]
+    assert simple.representation is not None
+    simple_elements = {element.id: element for element in simple.representation.elements}
+    assert simple.representation.metadata["canonical_goal_anchor"] == "goal"
+    assert simple_elements["workspace"].archetype == "region"
+    assert simple_elements["reach-distribution"].archetype == "distribution_glyph"
+    assert simple_elements["goal-marker"].metadata["canonical_goal"] is True
+    assert simple_elements["objective"].archetype == "objective_link"
+
+    delayed = definitions["DelayedReaches"]
+    assert delayed.representation is not None
+    delayed_elements = {element.id: element for element in delayed.representation.elements}
+    assert delayed.representation.metadata["temporality"]["kind"] == "scheduled"
+    assert (
+        delayed.representation.metadata["temporality"]["target_on_epochs_param"]
+        == "target_on_epochs"
+    )
+    assert delayed_elements["goal-marker"].metadata["canonical_goal"] is True
+    assert delayed_elements["reach-distribution"].metadata["distribution"] == "center_out"
+
+
 def test_component_registry_rejects_representation_unknown_param_path() -> None:
     registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
 
