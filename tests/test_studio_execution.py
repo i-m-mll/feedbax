@@ -361,6 +361,37 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     assert {run.run_set_id for run in runs} == {run_set.id}
 
 
+def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    workspace = _workspace()
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    train_stage.selection_spec["matrix"] = {
+        "name": "Invalid batch sweep",
+        "axes": [
+            {
+                "id": "n_batches",
+                "path": "training_spec.n_batches",
+                "values": [25, -1],
+            }
+        ],
+        "mode": "cross",
+    }
+    request = StudioTrainingExecutionRequest(
+        workspace=workspace,
+        job_id="studio-plan",
+        local_cwd="/tmp/feedbax-studio",
+        issues=["c199a9c"],
+    )
+
+    with pytest.raises(StudioExecutionPreparationError, match="n_batches must be positive"):
+        prepare_studio_training_execution(request)
+
+    assert not (tmp_path / "manifests").exists()
+
+
 def test_prepare_studio_training_execution_restages_cancelled_deterministic_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

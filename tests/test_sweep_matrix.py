@@ -23,8 +23,13 @@ from feedbax.studio.sweep_matrix import SweepMatrixError, expand_sweep_matrix
 def _base_specs() -> tuple[dict, dict, dict]:
     return (
         {"nodes": {"network": {"type": "Gain", "params": {"gain": 1.0}}}},
-        {"loss": {"weight": 1.0}, "n_batches": 25, "batch_size": 8},
-        {"type": "ReachingTask", "params": {"n_targets": 4}},
+        {
+            "optimizer": {"type": "adam", "params": {"learning_rate": 0.001}},
+            "loss": {"weight": 1.0},
+            "n_batches": 25,
+            "batch_size": 8,
+        },
+        {"type": "ReachingTask", "params": {"n_targets": 4, "duration": 80}},
     )
 
 
@@ -106,6 +111,60 @@ def test_sweep_matrix_groups_zip_internally_and_cross_across_groups() -> None:
     assert len(expanded.runs) == 6
     assert expanded.axes.runs[0].values == {"lr": 1e-3, "seed": 10, "weight": 0}
     assert expanded.axes.runs[3].values == {"lr": 1e-4, "seed": 20, "weight": 0}
+
+
+def test_sweep_matrix_rejects_grouped_designs_that_omit_declared_axes() -> None:
+    graph_spec, training_spec, task_spec = _base_specs()
+
+    with pytest.raises(SweepMatrixError, match="must cover every declared axis"):
+        expand_sweep_matrix(
+            {
+                "axes": [
+                    {
+                        "id": "lr",
+                        "path": "training_spec.optimizer.params.learning_rate",
+                        "values": [1e-3, 1e-4],
+                    },
+                    {"id": "seed", "path": "seed", "values": [10, 20]},
+                    {"id": "weight", "path": "training_spec.loss.weight", "values": [0, 1e-5]},
+                ],
+                "combination": {
+                    "mode": "cross",
+                    "groups": [
+                        {"id": "lr_seed", "mode": "zip", "axes": ["lr", "seed"]},
+                    ],
+                },
+            },
+            graph_spec=graph_spec,
+            training_spec=training_spec,
+            task_spec=task_spec,
+            task_binding_spec=None,
+            default_name="Grouped",
+        )
+
+
+def test_sweep_matrix_rejects_typo_axis_path_without_creating_fields() -> None:
+    graph_spec, training_spec, task_spec = _base_specs()
+
+    with pytest.raises(SweepMatrixError, match="cannot set missing field 'weigth'"):
+        expand_sweep_matrix(
+            {
+                "axes": [
+                    {
+                        "id": "loss_weight",
+                        "path": "training_spec.loss.weigth",
+                        "values": [0, 1e-5],
+                    }
+                ],
+                "mode": "cross",
+            },
+            graph_spec=graph_spec,
+            training_spec=training_spec,
+            task_spec=task_spec,
+            task_binding_spec=None,
+            default_name="Typo",
+        )
+    assert "weigth" not in training_spec["loss"]
 
 
 def test_sweep_matrix_expands_ranges_and_seeded_sampler() -> None:

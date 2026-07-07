@@ -230,6 +230,13 @@ def _validate_group_axes(
                 f"sweep axes {sorted(overlap)!r} appear in more than one group"
             )
         used.update(group.axes)
+    if combination.groups:
+        missing = sorted(axis_ids - used)
+        if missing:
+            raise SweepMatrixError(
+                "sweep matrix groups must cover every declared axis; "
+                f"missing axes {missing!r}"
+            )
 
 
 def _expand_coordinates(
@@ -389,18 +396,36 @@ def _set_nested(root: dict[str, Any], parts: list[str], value: Any, *, path: str
     current: Any = root
     for part in parts[:-1]:
         if isinstance(current, dict):
-            current = current.setdefault(part, {})
+            if part not in current:
+                raise SweepMatrixError(
+                    f"sweep axis path {path!r} cannot traverse missing field {part!r}"
+                )
+            current = current[part]
             continue
         if isinstance(current, list) and part.isdigit():
-            current = current[int(part)]
+            index = int(part)
+            if index < 0 or index >= len(current):
+                raise SweepMatrixError(
+                    f"sweep axis path {path!r} list index {index} is out of range"
+                )
+            current = current[index]
             continue
         raise SweepMatrixError(f"sweep axis path {path!r} cannot traverse {part!r}")
     leaf = parts[-1]
     if isinstance(current, dict):
+        if leaf not in current:
+            raise SweepMatrixError(
+                f"sweep axis path {path!r} cannot set missing field {leaf!r}"
+            )
         current[leaf] = value
         return
     if isinstance(current, list) and leaf.isdigit():
-        current[int(leaf)] = value
+        index = int(leaf)
+        if index < 0 or index >= len(current):
+            raise SweepMatrixError(
+                f"sweep axis path {path!r} list index {index} is out of range"
+            )
+        current[index] = value
         return
     raise SweepMatrixError(f"sweep axis path {path!r} cannot set {leaf!r}")
 

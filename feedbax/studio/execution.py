@@ -893,6 +893,9 @@ def _stage_pending_training_manifests(
     except SweepMatrixError as exc:
         raise StudioExecutionPreparationError(str(exc)) from exc
 
+    for expanded_run in expanded.runs:
+        _validate_expanded_training_run(expanded_run)
+
     root_path = default_manifest_root()
     run_set = TrainingRunSetManifest(
         id=expanded.run_set_id,
@@ -1067,6 +1070,26 @@ def _write_pending_training_manifest_for_expanded_run(
         metadata=metadata,
     )
     return manifest, write_manifest(manifest, root=root)
+
+
+def _validate_expanded_training_run(expanded_run: ExpandedSweepRun) -> None:
+    validation = _validate_training_scenario(
+        graph=expanded_run.graph_spec,
+        training_spec=expanded_run.training_spec,
+        task_spec=expanded_run.task_spec,
+        task_binding_spec=expanded_run.task_binding_spec,
+    )
+    if not validation.errors:
+        return
+    details = "; ".join(
+        f"{issue.location.get('path') if issue.location else '<unknown>'}: {issue.message}"
+        for issue in validation.errors
+    )
+    raise StudioExecutionPreparationError(
+        "Expanded sweep training run is invalid: "
+        f"run_id={expanded_run.run_id!r}, coordinate={expanded_run.coordinate.values!r}; "
+        f"{details}"
+    )
 
 
 def _pending_training_manifest_ref(
