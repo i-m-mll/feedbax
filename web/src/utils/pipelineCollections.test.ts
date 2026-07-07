@@ -138,7 +138,7 @@ describe('pipeline collection summaries', () => {
     );
   });
 
-  it('filters superseded training rows unless history is requested', () => {
+  it('filters superseded training rows without hiding self-linked replacements', () => {
     const stage = {
       output_collections: [{
         item_refs: [
@@ -158,13 +158,23 @@ describe('pipeline collection summaries', () => {
             id: 'run:new',
             role: 'training_run',
             provider: 'manifest',
-            metadata: { name: 'New run', status: 'pending', supersedes: 'run:old' },
+            metadata: {
+              name: 'New run',
+              status: 'pending',
+              superseded_by: 'run:new',
+              supersedes: 'run:old',
+            },
           },
         ],
       }],
     } as any;
 
-    expect(trainingRunSummaries(stage).map((row) => row.id)).toEqual(['run:new']);
+    const visibleRows = trainingRunSummaries(stage);
+    expect(visibleRows.map((row) => row.id)).toEqual(['run:new']);
+    expect(visibleRows[0]).toMatchObject({
+      supersededBy: null,
+      supersedes: 'run:old',
+    });
     expect(trainingRunSummaries(stage, { includeSuperseded: true }).map((row) => row.id).sort())
       .toEqual(['run:new', 'run:old']);
   });
@@ -208,6 +218,37 @@ describe('pipeline collection summaries', () => {
       status: 'stale',
       staleReason: 'upstream superseded',
       statusReason: 'upstream superseded',
+    });
+  });
+
+  it('does not mark downstream evaluation stale for self-superseded parents', () => {
+    const rows = evaluationRunSummaries({
+      output_collections: [{
+        item_refs: [{
+          kind: 'EvaluationRunManifest',
+          id: 'eval:current-parent',
+          role: 'evaluation_run',
+          provider: 'manifest',
+          metadata: {
+            name: 'Validation',
+            status: 'pending',
+            parent_refs: [
+              {
+                kind: 'TrainingRunManifest',
+                id: 'train:current',
+                role: 'training_run',
+                metadata: { superseded_by: 'train:current' },
+              },
+            ],
+          },
+        }],
+      }],
+    } as any);
+
+    expect(rows[0]).toMatchObject({
+      status: 'pending',
+      stale: false,
+      staleReason: null,
     });
   });
 

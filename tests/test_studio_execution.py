@@ -431,8 +431,10 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     assert restaged_manifest.status == "pending"
     assert restaged_manifest.completed_at is None
     assert restaged_manifest.metadata["restaged_from_status"] == "cancelled"
-    assert restaged_manifest.metadata["superseded_by"] == training_ref.id
-    assert restaged_manifest.metadata["supersedes"] == training_ref.id
+    assert "superseded_by" not in restaged_manifest.metadata
+    assert "supersedes" not in restaged_manifest.metadata
+    assert "superseded_by" not in restaged_ref.metadata
+    assert "supersedes" not in restaged_ref.metadata
     assert restaged_ref.metadata["spec_hashes"]["training_spec"].startswith("fnv1a:")
 
 
@@ -548,9 +550,16 @@ def test_studio_evaluation_preview_filters_stale_manifests_explicitly(
     stale_preview = preview_studio_evaluation_matrix(
         request.model_copy(update={"reprocess": "stale"})
     )
+    restaged = stage_studio_evaluation_matrix(request.model_copy(update={"reprocess": "stale"}))
+    restaged_manifest = load_manifest(restaged.manifest_refs[0].uri)
 
     assert default_preview.launch_count == 0
     assert stale_preview.launch_count == 1
+    assert restaged_manifest.status == "pending"
+    assert "superseded_by" not in restaged_manifest.metadata
+    assert "supersedes" not in restaged_manifest.metadata
+    assert "superseded_by" not in restaged.manifest_refs[0].metadata
+    assert "supersedes" not in restaged.manifest_refs[0].metadata
 
 
 @pytest.mark.parametrize(

@@ -9,7 +9,7 @@ import sys
 import uuid
 import copy
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -1099,6 +1099,24 @@ def _materialize_local_execution_snapshot(
         _write_json(snapshot_dir / filename, payload)
 
 
+def _restaged_metadata(
+    existing_metadata: Mapping[str, Any],
+    *,
+    manifest_id: str,
+    restaged_from_status: str,
+) -> dict[str, Any]:
+    metadata = {
+        **existing_metadata,
+        "planned": True,
+        "restaged_at": utc_now().isoformat(),
+        "restaged_from_status": restaged_from_status,
+    }
+    for key in ("superseded_by", "supersedes"):
+        if metadata.get(key) == manifest_id:
+            metadata.pop(key)
+    return metadata
+
+
 def _write_pending_training_manifest(
     *,
     workspace: StudioWorkspaceSpec,
@@ -1134,14 +1152,11 @@ def _write_pending_training_manifest(
                     update={
                         "status": "pending",
                         "completed_at": None,
-                        "metadata": {
-                            **existing.metadata,
-                            "planned": True,
-                            "restaged_at": utc_now().isoformat(),
-                            "restaged_from_status": "cancelled",
-                            "superseded_by": manifest_id,
-                            "supersedes": existing.metadata.get("supersedes") or existing.id,
-                        },
+                        "metadata": _restaged_metadata(
+                            existing.metadata,
+                            manifest_id=manifest_id,
+                            restaged_from_status="cancelled",
+                        ),
                     }
                 )
                 return restaged, write_manifest(restaged, root=root_path)
@@ -1367,14 +1382,11 @@ def _write_pending_training_manifest_for_expanded_run(
                     update={
                         "status": "pending",
                         "completed_at": None,
-                        "metadata": {
-                            **existing.metadata,
-                            "planned": True,
-                            "restaged_at": utc_now().isoformat(),
-                            "restaged_from_status": "cancelled",
-                            "superseded_by": expanded_run.run_id,
-                            "supersedes": existing.metadata.get("supersedes") or existing.id,
-                        },
+                        "metadata": _restaged_metadata(
+                            existing.metadata,
+                            manifest_id=expanded_run.run_id,
+                            restaged_from_status="cancelled",
+                        ),
                     }
                 )
                 return restaged, write_manifest(restaged, root=root)
@@ -2075,14 +2087,11 @@ def _write_pending_evaluation_manifest(
                     "status": "pending",
                     "artifacts": [],
                     "summary_metrics": {"input_training_runs": len(existing.input_training_runs)},
-                    "metadata": {
-                        **existing.metadata,
-                        "planned": True,
-                        "restaged_at": utc_now().isoformat(),
-                        "restaged_from_status": existing.status,
-                        "superseded_by": manifest_id,
-                        "supersedes": existing.metadata.get("supersedes") or existing.id,
-                    },
+                    "metadata": _restaged_metadata(
+                        existing.metadata,
+                        manifest_id=manifest_id,
+                        restaged_from_status=existing.status,
+                    ),
                 }
             )
             return restaged, write_manifest(restaged, root=root)

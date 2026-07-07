@@ -365,8 +365,8 @@ function trainingRunSummary(
     axisCoordinates,
     runSetId: stringValue(ref.metadata.run_set_id),
     planned: booleanValue(ref.metadata.planned) ?? false,
-    supersededBy: stringValue(ref.metadata.superseded_by),
-    supersedes: stringValue(ref.metadata.supersedes),
+    supersededBy: supersessionValue(ref.id, ref.metadata, 'superseded_by'),
+    supersedes: supersessionValue(ref.id, ref.metadata, 'supersedes'),
     statusReason: staleReason ?? statusReason(ref.metadata),
     stale: staleReason !== null,
     staleReason,
@@ -631,7 +631,7 @@ function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
   const trainingRunIds = arrayOfStrings(ref.metadata.training_run_ids);
   const baseStatus = stringValue(ref.metadata.status) ?? 'unknown';
   const upstreamSuperseded = parentRefsForManifest(ref).some((parent) =>
-    Boolean(stringValue(parent.metadata?.superseded_by))
+    Boolean(supersessionValue(parent.id, parent.metadata ?? {}, 'superseded_by'))
   );
   const staleReason =
     stringValue(ref.metadata.staleness_reason) ??
@@ -649,8 +649,8 @@ function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: ref.id,
     uri: ref.uri ?? null,
-    supersededBy: stringValue(ref.metadata.superseded_by),
-    supersedes: stringValue(ref.metadata.supersedes),
+    supersededBy: supersessionValue(ref.id, ref.metadata, 'superseded_by'),
+    supersedes: supersessionValue(ref.id, ref.metadata, 'supersedes'),
     statusReason: staleReason ?? statusReason(ref.metadata),
     stale: staleReason !== null,
     staleReason,
@@ -718,7 +718,16 @@ function isPendingLikeStatus(status: string): boolean {
 }
 
 function isSupersededRef(ref: StudioManifestRef): boolean {
-  return stringValue(ref.metadata.superseded_by) !== null;
+  return supersessionValue(ref.id, ref.metadata, 'superseded_by') !== null;
+}
+
+function supersessionValue(
+  id: string,
+  metadata: Record<string, unknown>,
+  key: 'superseded_by' | 'supersedes'
+): string | null {
+  const value = stringValue(metadata[key]);
+  return value === id ? null : value;
 }
 
 export function stableHash(value: unknown): string {
