@@ -12,6 +12,7 @@ import { useAnalysisStore } from '@/stores/analysisStore';
 import { useRunStore } from '@/stores/runStore';
 import { EvalRunSelector } from '@/components/panels/RunSelector';
 import { createEvalRun } from '@/api/runAPI';
+import { apiErrorMessage } from '@/api/request';
 import { Plus, Trash2, Play, Loader2, CheckCircle2 } from 'lucide-react';
 
 const PERTURBATION_TYPES = [
@@ -66,9 +67,9 @@ export function AnalysisPageSettings() {
 
   const selectedTrainingRunId = useRunStore((s) => s.selectedTrainingRunId);
   const evalRuns = useRunStore((s) => s.evalRuns);
+  const evalLoadError = useRunStore((s) => s.evalError);
   const addEvalRun = useRunStore((s) => s.addEvalRun);
   const selectEvalRun = useRunStore((s) => s.selectEvalRun);
-  const updateEvalRunStatus = useRunStore((s) => s.updateEvalRunStatus);
 
   const activePage = pages.find((p) => p.id === activePageId);
 
@@ -170,19 +171,11 @@ export function AnalysisPageSettings() {
       );
       addEvalRun(run);
       setEvalRunId(run.id);
-
-      // Simulate completion after creation (the backend handles the
-      // actual evaluation; in stub mode we mark it completed quickly).
-      // In a real scenario the backend would update status via polling.
-      setTimeout(() => {
-        updateEvalRunStatus(run.id, 'completed');
-        setEvalRunning(false);
-        setEvalSuccess(true);
-        // Clear success indicator after a few seconds
-        setTimeout(() => setEvalSuccess(false), 3000);
-      }, 1500);
+      setEvalRunning(false);
+      setEvalSuccess(true);
+      setTimeout(() => setEvalSuccess(false), 3000);
     } catch (err) {
-      setEvalError(err instanceof Error ? err.message : 'Failed to create evaluation run');
+      setEvalError(apiErrorMessage(err, 'Failed to create evaluation run'));
       setEvalRunning(false);
     }
   }, [
@@ -193,7 +186,6 @@ export function AnalysisPageSettings() {
     evalRuns,
     addEvalRun,
     setEvalRunId,
-    updateEvalRunStatus,
   ]);
 
   const handleSelectEvalRun = useCallback(
@@ -225,6 +217,11 @@ export function AnalysisPageSettings() {
           selectedEvalRunId={evalRunId}
           onSelectEvalRun={handleSelectEvalRun}
         />
+        {evalLoadError && (
+          <div className="rounded-md border border-red-100 bg-red-50 px-2 py-1.5 text-[10px] text-red-700">
+            {evalLoadError}
+          </div>
+        )}
       </div>
 
       {/* Parameters */}
@@ -398,7 +395,7 @@ export function AnalysisPageSettings() {
             {evalRunning
               ? 'Running...'
               : evalSuccess
-                ? 'Evaluation Complete'
+                ? 'Evaluation Started'
                 : 'Run Evaluation'}
           </span>
         </button>

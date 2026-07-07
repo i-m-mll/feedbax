@@ -1,9 +1,15 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fetchEvalRuns, fetchTrainingRuns } from '@/api/runAPI';
 import { useRunStore } from '@/stores/runStore';
 import { buildWorkspaceSnapshot, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { EvalRun, TrainingRun } from '@/types/runs';
 import type { TaskSpec, TrainingSpec } from '@/types/training';
+
+vi.mock('@/api/runAPI', () => ({
+  fetchTrainingRuns: vi.fn(),
+  fetchEvalRuns: vi.fn(),
+}));
 
 const graph: GraphSpec = {
   nodes: {},
@@ -76,7 +82,11 @@ beforeEach(() => {
     selectedTrainingRunId: null,
     selectedEvalRunId: null,
     loading: false,
+    trainingError: null,
+    evalError: null,
   });
+  vi.mocked(fetchTrainingRuns).mockResolvedValue([]);
+  vi.mocked(fetchEvalRuns).mockResolvedValue([]);
 });
 
 describe('useRunStore stage collection ownership', () => {
@@ -146,5 +156,26 @@ describe('useRunStore stage collection ownership', () => {
     });
     expect(useRunStore.getState().selectedTrainingRunId).toBe(trainingRun.id);
     expect(useRunStore.getState().selectedEvalRunId).toBe(evalRun.id);
+  });
+
+  it('keeps training-run load failures visible without fabricating rows', async () => {
+    vi.mocked(fetchTrainingRuns).mockRejectedValue(new Error('backend offline'));
+
+    await useRunStore.getState().loadTrainingRuns();
+
+    expect(useRunStore.getState().trainingRuns).toEqual([]);
+    expect(useRunStore.getState().trainingError).toBe('backend offline');
+    expect(useRunStore.getState().loading).toBe(false);
+  });
+
+  it('keeps eval-run load failures visible without fabricating rows', async () => {
+    useRunStore.setState({ trainingRuns: [trainingRun] });
+    vi.mocked(fetchEvalRuns).mockRejectedValue(new Error('eval backend offline'));
+
+    await useRunStore.getState().selectTrainingRun(trainingRun.id);
+
+    expect(useRunStore.getState().evalRuns).toEqual([]);
+    expect(useRunStore.getState().evalError).toBe('eval backend offline');
+    expect(useRunStore.getState().selectedTrainingRunId).toBe(trainingRun.id);
   });
 });

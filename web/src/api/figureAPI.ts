@@ -6,22 +6,10 @@ import type {
   EvaluationFigureSummary,
   FigureFilters,
 } from '@/types/figures';
+import { requestJson, requestResponse } from '@/api/request';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers ?? {}),
-    },
-    ...options,
-  });
-
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
-  }
-
-  return response.json() as Promise<T>;
+  return requestJson(path, options) as Promise<T>;
 }
 
 async function requestUnknown(path: string, options?: RequestInit): Promise<unknown> {
@@ -97,11 +85,7 @@ export async function fetchFigureFile(
   hash: string,
   format = 'json',
 ): Promise<unknown> {
-  const response = await fetch(`/api/figures/${hash}/file?format=${format}`);
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Failed to load figure file: ${response.status}`);
-  }
+  const response = await requestResponse(`/api/figures/${hash}/file?format=${format}`);
   if (format === 'json') {
     return response.json();
   }

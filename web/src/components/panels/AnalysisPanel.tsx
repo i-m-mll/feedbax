@@ -16,6 +16,7 @@ import { useAnalysisStore } from '@/stores/analysisStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useDemandStore } from '@/stores/demandStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
+import { apiErrorMessage } from '@/api/request';
 import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
 import type {
   AnalysisEdgeData,
@@ -161,11 +162,19 @@ export function AnalysisPanel() {
     evalRunId,
   } = useAnalysisStore();
   const bottomRightSidebarCollapsed = useLayoutStore((s) => s.bottomRightSidebarCollapsed);
+  const [analysisLoadError, setAnalysisLoadError] = useState<string | null>(null);
 
   // Load analysis classes on mount
   useEffect(() => {
     if (analysisClasses.length > 0) return;
-    fetchAnalysisClasses().then(setAnalysisClasses).catch(() => {});
+    fetchAnalysisClasses()
+      .then((classes) => {
+        setAnalysisClasses(classes);
+        setAnalysisLoadError(null);
+      })
+      .catch((error) => {
+        setAnalysisLoadError(apiErrorMessage(error, 'Could not load analysis definitions'));
+      });
   }, [analysisClasses.length, setAnalysisClasses]);
 
   // Auto-create a first page when no pages exist yet.
@@ -226,6 +235,11 @@ export function AnalysisPanel() {
           <ReactFlowProvider>
             <AnalysisCanvas />
           </ReactFlowProvider>
+          {analysisLoadError && (
+            <div className="absolute left-4 right-4 top-4 z-20 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700 shadow-sm">
+              {analysisLoadError}
+            </div>
+          )}
           {/* Dim overlay when no eval run is selected */}
           {!evalRunId && (
             <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center z-10 pointer-events-none">
