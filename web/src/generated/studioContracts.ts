@@ -1190,6 +1190,41 @@ export interface CreateEvalRunRequest {
   eval_params?: Record<string, unknown>;
 }
 
+export interface TrainingRunCompareRequest {
+  run_ids: string[];
+  param_fields?: string[];
+  metric_fields?: string[];
+}
+
+export interface TrainingRunCompareRow {
+  id: string;
+  params?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+}
+
+export interface TrainingRunCompareResponse {
+  rows: TrainingRunCompareRow[];
+}
+
+export interface ManifestImportRequest {
+  path: string;
+  root?: string | null;
+}
+
+export interface ManifestImportResponse {
+  root: string;
+  source_path: string;
+  imported_manifest_ids?: string[];
+  skipped_manifest_ids?: string[];
+  manifest_count?: number;
+  artifact_count?: number;
+  included_artifact_count?: number;
+  external_artifact_count?: number;
+  index_path?: string | null;
+  training_runs?: TrainingRunInfo[];
+  eval_runs?: EvalRunInfo[];
+}
+
 export interface SelectionPreviewRequest {
   selection_spec: SelectionSpec;
   limit?: number;
@@ -3057,6 +3092,61 @@ export const CreateEvalRunRequestSchema: z.ZodType<CreateEvalRunRequest> = z.laz
     .strict()
 ) as unknown as z.ZodType<CreateEvalRunRequest>;
 
+export const TrainingRunCompareRequestSchema: z.ZodType<TrainingRunCompareRequest> = z.lazy(() =>
+  z
+    .object({
+      "run_ids": z.array(z.string()),
+      "param_fields": z.array(z.string()).optional(),
+      "metric_fields": z.array(z.string()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingRunCompareRequest>;
+
+export const TrainingRunCompareRowSchema: z.ZodType<TrainingRunCompareRow> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "params": z.record(z.string(), z.unknown()).optional(),
+      "metrics": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingRunCompareRow>;
+
+export const TrainingRunCompareResponseSchema: z.ZodType<TrainingRunCompareResponse> = z.lazy(() =>
+  z
+    .object({
+      "rows": z.array(TrainingRunCompareRowSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingRunCompareResponse>;
+
+export const ManifestImportRequestSchema: z.ZodType<ManifestImportRequest> = z.lazy(() =>
+  z
+    .object({
+      "path": z.string(),
+      "root": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ManifestImportRequest>;
+
+export const ManifestImportResponseSchema: z.ZodType<ManifestImportResponse> = z.lazy(() =>
+  z
+    .object({
+      "root": z.string(),
+      "source_path": z.string(),
+      "imported_manifest_ids": z.array(z.string()).optional(),
+      "skipped_manifest_ids": z.array(z.string()).optional(),
+      "manifest_count": z.number().int().optional(),
+      "artifact_count": z.number().int().optional(),
+      "included_artifact_count": z.number().int().optional(),
+      "external_artifact_count": z.number().int().optional(),
+      "index_path": z.string().nullable().optional(),
+      "training_runs": z.array(TrainingRunInfoSchema).optional(),
+      "eval_runs": z.array(EvalRunInfoSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ManifestImportResponse>;
+
 export const SelectionPreviewRequestSchema: z.ZodType<SelectionPreviewRequest> = z.lazy(() =>
   z
     .object({
@@ -3338,6 +3428,8 @@ export const contractSchemas = {
   TrainingRunInfo: TrainingRunInfoSchema,
   EvalRunInfo: EvalRunInfoSchema,
   CreateEvalRunRequest: CreateEvalRunRequestSchema,
+  TrainingRunCompareResponse: TrainingRunCompareResponseSchema,
+  ManifestImportResponse: ManifestImportResponseSchema,
   SelectionSpec: SelectionSpecSchema,
   SelectionPreview: SelectionPreviewSchema,
   SelectionRefreshDiff: SelectionRefreshDiffSchema,
@@ -3384,6 +3476,8 @@ export interface ContractTypeMap {
   TrainingRunInfo: TrainingRunInfo;
   EvalRunInfo: EvalRunInfo;
   CreateEvalRunRequest: CreateEvalRunRequest;
+  TrainingRunCompareResponse: TrainingRunCompareResponse;
+  ManifestImportResponse: ManifestImportResponse;
   SelectionSpec: SelectionSpec;
   SelectionPreview: SelectionPreview;
   SelectionRefreshDiff: SelectionRefreshDiff;
