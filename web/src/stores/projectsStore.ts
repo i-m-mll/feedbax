@@ -37,6 +37,22 @@ export interface OpenTab {
   workspaceSnapshot: StudioWorkspaceSpec | null;
 }
 
+type StoredGraphSnapshot = Omit<GraphSnapshot, 'past' | 'future'> & {
+  past?: GraphSnapshot['past'];
+  future?: GraphSnapshot['future'];
+  graphHistory?: unknown;
+};
+
+type StoredGraphLayer = GraphSnapshot['graphStack'][number] & {
+  past?: unknown;
+  future?: unknown;
+  graphHistory?: unknown;
+};
+
+type StoredOpenTab = Omit<OpenTab, 'graphSnapshot'> & {
+  graphSnapshot: StoredGraphSnapshot;
+};
+
 const LOCAL_PROJECTS_STORAGE_KEY = 'feedbax:studio-local-tabs';
 const LOCAL_PROJECTS_STORAGE_VERSION = 1;
 const LOCAL_PERSIST_DELAY_MS = 250;
@@ -255,20 +271,49 @@ export function setLastProjectId(id: string): void {
   localStorageOrNull()?.setItem(LAST_PROJECT_STORAGE_KEY, id);
 }
 
-function compactGraphSnapshot(snapshot: GraphSnapshot): GraphSnapshot {
+function compactGraphLayerForStorage(layer: GraphSnapshot['graphStack'][number]) {
+  const {
+    past: _past,
+    future: _future,
+    graphHistory: _graphHistory,
+    ...storedLayer
+  } = layer as StoredGraphLayer;
+  return storedLayer;
+}
+
+function graphSnapshotForRuntime(snapshot: StoredGraphSnapshot): GraphSnapshot {
   return {
     ...snapshot,
     graph: normalizeGraphForStudioAuthoring(snapshot.graph),
+    graphStack: (snapshot.graphStack ?? []).map(compactGraphLayerForStorage),
     past: [],
     future: [],
     pendingStateMerge: null,
   };
 }
 
-function compactTabForStorage(tab: OpenTab): OpenTab {
+function graphSnapshotForStorage(snapshot: GraphSnapshot): StoredGraphSnapshot {
+  const {
+    past: _past,
+    future: _future,
+    graphHistory: _graphHistory,
+    ...storedSnapshot
+  } = graphSnapshotForRuntime(snapshot) as GraphSnapshot & { graphHistory?: unknown };
+  return storedSnapshot;
+}
+
+function tabForRuntime(tab: StoredOpenTab): OpenTab {
   return {
     ...tab,
-    graphSnapshot: compactGraphSnapshot(tab.graphSnapshot),
+    graphSnapshot: graphSnapshotForRuntime(tab.graphSnapshot),
+    workspaceSnapshot: normalizeWorkspaceGraphsForStudioAuthoring(tab.workspaceSnapshot),
+  };
+}
+
+function tabForStorage(tab: OpenTab): StoredOpenTab {
+  return {
+    ...tab,
+    graphSnapshot: graphSnapshotForStorage(tab.graphSnapshot),
     workspaceSnapshot: normalizeWorkspaceGraphsForStudioAuthoring(tab.workspaceSnapshot),
   };
 }
@@ -302,7 +347,7 @@ function discardRestoredStartupPlaceholders(tabs: OpenTab[]): OpenTab[] {
 }
 
 function restoreTabStores(tab: OpenTab) {
-  const normalizedTab = compactTabForStorage(tab);
+  const normalizedTab = tabForRuntime(tab);
   useGraphStore.getState().restoreSnapshot(normalizedTab.graphSnapshot);
   useTrainingStore.setState({
     trainingSpec: normalizedTab.trainingSnapshot.trainingSpec,
@@ -332,7 +377,7 @@ function loadLocalProjectTabs(): { tabs: OpenTab[]; activeTabId: string } | null
       return null;
     }
     const tabs = discardRestoredStartupPlaceholders(
-      parsed.tabs.filter(isOpenTab).map(compactTabForStorage)
+      parsed.tabs.filter(isOpenTab).map((tab) => tabForRuntime(tab as StoredOpenTab))
     );
     if (tabs.length === 0) return null;
     const activeTabId =
@@ -353,7 +398,7 @@ export function persistLocalProjectTabs(): boolean {
   if (!storage) return false;
   const { tabs, activeTabId } = useProjectsStore.getState();
   const persistedTabs = tabs.map((tab) =>
-    compactTabForStorage(tab.tabId === activeTabId ? captureCurrentTab(tab) : tab)
+    tabForStorage(tab.tabId === activeTabId ? captureCurrentTab(tab) : tab)
   );
   try {
     storage.setItem(
@@ -663,12 +708,74 @@ function scheduleLocalProjectPersistence() {
   }, LOCAL_PERSIST_DELAY_MS);
 }
 
+type StoreWithSubscribe<S> = {
+  getState: () => S;
+  subscribe: (listener: (state: S) => void) => () => void;
+};
+
+function sameFields(previous: readonly unknown[], next: readonly unknown[]) {
+  return (
+    previous.length === next.length &&
+    previous.every((value, index) => Object.is(value, next[index]))
+  );
+}
+
+function subscribeToLocalProjectPersistence<S>(
+  store: StoreWithSubscribe<S>,
+  selectFields: (state: S) => readonly unknown[]
+) {
+  let previous = selectFields(store.getState());
+  store.subscribe((state) => {
+    const next = selectFields(state);
+    if (sameFields(previous, next)) return;
+    previous = next;
+    scheduleLocalProjectPersistence();
+  });
+}
+
+function workspaceUiStatePersistenceSignature(uiState: Record<string, unknown>) {
+  const { top_pane: _topPane, ...rest } = uiState;
+  return JSON.stringify(rest);
+}
+
 if (localStorageOrNull()) {
-  useProjectsStore.subscribe(scheduleLocalProjectPersistence);
-  useGraphStore.subscribe(scheduleLocalProjectPersistence);
-  useTrainingStore.subscribe(scheduleLocalProjectPersistence);
-  useAnalysisStore.subscribe(scheduleLocalProjectPersistence);
-  useWorkspaceStore.subscribe(scheduleLocalProjectPersistence);
+  subscribeToLocalProjectPersistence(useProjectsStore, (state) => [
+    state.tabs,
+    state.activeTabId,
+  ]);
+  subscribeToLocalProjectPersistence(useGraphStore, (state) => [
+    state.graph,
+    state.graphId,
+    state.lastSavedAt,
+    state.graphStack,
+    state.currentGraphLabel,
+    state.currentContext,
+    state.edgeStyle,
+  ]);
+  subscribeToLocalProjectPersistence(useTrainingStore, (state) => [
+    state.trainingSpec,
+    state.taskSpec,
+  ]);
+  subscribeToLocalProjectPersistence(useAnalysisStore, (state) => [
+    state.graphSpec,
+    state.pages,
+    state.activePageId,
+    state.evalParams,
+    state.evalRunId,
+  ]);
+  subscribeToLocalProjectPersistence(useWorkspaceStore, (state) => [
+    state.workspace?.id,
+    state.workspace?.schema_version,
+    state.workspace?.label,
+    state.workspace?.active_stage_id,
+    state.workspace?.stages,
+    state.workspace?.scenarios,
+    state.workspace?.collections,
+    state.workspace?.manifest_refs,
+    state.workspace?.artifact_refs,
+    state.workspace?.validation,
+    state.workspace ? workspaceUiStatePersistenceSignature(state.workspace.ui_state) : null,
+  ]);
 }
 
 // Subscribe to graphStore graph name changes to keep active tab label in sync.

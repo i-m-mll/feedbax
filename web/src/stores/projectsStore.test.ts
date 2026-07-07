@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 
 const LOCAL_PROJECTS_STORAGE_KEY = 'feedbax:studio-local-tabs';
@@ -73,6 +73,11 @@ const savedTabsPayload = JSON.stringify({
       workspaceSnapshot: null,
     },
   ],
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('projectsStore local restore state', () => {
@@ -393,5 +398,76 @@ describe('projectsStore local restore state', () => {
       'RLRMP movement-ramp training runs'
     );
     expect(useProjectsStore.getState().activeTabId).toBe('movement-ramp');
+  });
+
+  it('does not schedule local persistence for selection, viewport, or history-only churn', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    const storage = makeStorage();
+    vi.stubGlobal('window', { localStorage: storage });
+    vi.stubGlobal('crypto', { randomUUID: () => 'generated-tab' });
+
+    await import('@/stores/projectsStore');
+    const { useGraphStore } = await import('@/stores/graphStore');
+    const { useTrainingStore } = await import('@/stores/trainingStore');
+    const { useAnalysisStore } = await import('@/stores/analysisStore');
+    const { useWorkspaceStore } = await import('@/stores/workspaceStore');
+
+    useGraphStore.getState().setSelectedNode('input_mux');
+    useTrainingStore.getState().setSelectedLossPath(['reach_loss', 'position']);
+    useAnalysisStore.getState().setViewport({ x: 24, y: 36, zoom: 0.9 });
+    useWorkspaceStore.getState().selectTopPaneEntity('graph_node:input_mux');
+    useGraphStore.setState((state) => ({
+      uiState: {
+        ...state.uiState,
+        viewport: { x: 120, y: 80, zoom: 0.75 },
+        node_states: {
+          ...state.uiState.node_states,
+          input_mux: {
+            ...state.uiState.node_states.input_mux,
+            position: { x: 320, y: 240 },
+          },
+        },
+      },
+    }));
+    useGraphStore.setState((state) => {
+      const historyEntry = { graph: state.graph, uiState: state.uiState };
+      return {
+        past: [...state.past, historyEntry],
+        future: [historyEntry],
+      };
+    });
+
+    vi.advanceTimersByTime(300);
+
+    expect(storage.setItem).not.toHaveBeenCalled();
+  });
+
+  it('omits undo and redo history from persisted local tab payloads', async () => {
+    vi.resetModules();
+    const storage = makeStorage();
+    vi.stubGlobal('window', { localStorage: storage });
+    vi.stubGlobal('crypto', { randomUUID: () => 'generated-tab' });
+
+    const { persistLocalProjectTabs } = await import('@/stores/projectsStore');
+    const { useGraphStore } = await import('@/stores/graphStore');
+
+    useGraphStore.setState((state) => {
+      const historyEntry = { graph: state.graph, uiState: state.uiState };
+      return {
+        past: [historyEntry],
+        future: [historyEntry],
+      };
+    });
+
+    expect(persistLocalProjectTabs()).toBe(true);
+    const raw = storage.getItem(LOCAL_PROJECTS_STORAGE_KEY);
+    expect(raw).not.toBeNull();
+    const payload = JSON.parse(raw as string);
+    const graphSnapshot = payload.tabs[0].graphSnapshot;
+
+    expect(graphSnapshot).not.toHaveProperty('past');
+    expect(graphSnapshot).not.toHaveProperty('future');
+    expect(graphSnapshot).not.toHaveProperty('graphHistory');
   });
 });
