@@ -6,9 +6,8 @@ import { apiErrorMessage } from '@/api/request';
 import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { AnalysisBundleDryRunResult, ManifestPredicate } from '@/generated/studioContracts';
 import {
+  analysisSpecWithRetargetedBundle,
   analysisBundleCards,
-  bundleWithPredicate,
-  selectionSpecForAnalysisStage,
   selectionSpecWithPredicate,
   stageReason,
   statusLabel,
@@ -221,10 +220,6 @@ export function AnalysisBundlePanel() {
   const updateScenarioDraft = useWorkspaceStore((state) => state.updateScenarioDraft);
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
-  const selectionSpec = useMemo(
-    () => selectionSpecForAnalysisStage(activeStage),
-    [activeStage]
-  );
   const cards = useMemo(
     () => analysisBundleCards(activeScenario, activeStage),
     [activeScenario, activeStage]
@@ -240,7 +235,6 @@ export function AnalysisBundlePanel() {
       setBusyIds((current) => new Set(current).add(card.id));
       dryRunAnalysisBundle({
         bundle: card.bundle,
-        selectionSpec,
       })
         .then((dryRun) => {
           if (cancelled) return;
@@ -270,7 +264,7 @@ export function AnalysisBundlePanel() {
     return () => {
       cancelled = true;
     };
-  }, [activeStage, cards, selectionSpec]);
+  }, [activeStage, cards]);
 
   const retarget = useCallback(
     (card: AnalysisBundleCard, predicate: ManifestPredicate) => {
@@ -293,10 +287,7 @@ export function AnalysisBundlePanel() {
         updateScenarioDraft(
           activeScenario.id,
           {
-            analysis_spec: {
-              ...currentSpec,
-              bundle: bundleWithPredicate(card.bundle, predicate),
-            },
+            analysis_spec: analysisSpecWithRetargetedBundle(currentSpec, card, predicate),
           },
           'analysis_bundle_predicate_retargeted'
         );

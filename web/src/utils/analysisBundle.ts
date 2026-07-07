@@ -34,6 +34,7 @@ export interface AnalysisBundleSpecWire {
 
 export interface AnalysisBundleCard {
   id: string;
+  source: AnalysisBundleCardSource;
   bundle: AnalysisBundleSpecWire;
   title: string;
   description: string | null;
@@ -41,6 +42,11 @@ export interface AnalysisBundleCard {
   pageCount: number;
   dryRun: AnalysisBundleDryRunResult | null;
 }
+
+export type AnalysisBundleCardSource =
+  | { kind: 'singleton' }
+  | { kind: 'array'; index: number }
+  | { kind: 'synthesized' };
 
 export function selectionSpecForAnalysisStage(
   stage: StudioStageSpec | null | undefined,
@@ -88,9 +94,18 @@ export function analysisBundleCards(
 ): AnalysisBundleCard[] {
   const analysisSpec = recordValue(scenario?.analysis_spec);
   const authored = authoredBundles(analysisSpec);
-  const bundles = authored.length > 0 ? authored : [synthesizedBundle(analysisSpec, stage)];
-  return bundles.map((bundle, index) => ({
+  const entries =
+    authored.length > 0
+      ? authored
+      : [
+          {
+            bundle: synthesizedBundle(analysisSpec, stage),
+            source: { kind: 'synthesized' } satisfies AnalysisBundleCardSource,
+          },
+        ];
+  return entries.map(({ bundle, source }, index) => ({
     id: `${bundle.name}:${index}`,
+    source,
     bundle,
     title: bundle.name,
     description: bundle.description ?? null,
@@ -98,6 +113,27 @@ export function analysisBundleCards(
     pageCount: analysisPages(analysisSpec).length,
     dryRun: null,
   }));
+}
+
+export function analysisSpecWithRetargetedBundle(
+  analysisSpec: unknown,
+  card: AnalysisBundleCard,
+  predicate: ManifestPredicate,
+): Record<string, unknown> {
+  const currentSpec = recordValue(analysisSpec) ?? {};
+  const nextBundle = bundleWithPredicate(card.bundle, predicate);
+  if (card.source.kind === 'array') {
+    const bundles = arrayValue(currentSpec.bundles).slice();
+    bundles[card.source.index] = nextBundle;
+    return {
+      ...currentSpec,
+      bundles,
+    };
+  }
+  return {
+    ...currentSpec,
+    bundle: nextBundle,
+  };
 }
 
 export function bundleWithPredicate(
@@ -134,10 +170,20 @@ export function stageReason(stage: BundleStageDryRunRecord): string | null {
   return stage.missing_roles?.[0]?.reason ?? null;
 }
 
-function authoredBundles(spec: Record<string, unknown> | null): AnalysisBundleSpecWire[] {
-  const bundles = arrayValue(spec?.bundles).map(coerceBundle).filter(Boolean);
+function authoredBundles(
+  spec: Record<string, unknown> | null,
+): Array<{ bundle: AnalysisBundleSpecWire; source: AnalysisBundleCardSource }> {
+  const bundles = arrayValue(spec?.bundles)
+    .map((value, index) => {
+      const bundle = coerceBundle(value);
+      return bundle ? { bundle, source: { kind: 'array' as const, index } } : null;
+    })
+    .filter(
+      (entry): entry is { bundle: AnalysisBundleSpecWire; source: AnalysisBundleCardSource } =>
+        Boolean(entry)
+    );
   const single = coerceBundle(spec?.bundle);
-  return single ? [single, ...bundles] : bundles;
+  return single ? [{ bundle: single, source: { kind: 'singleton' } }, ...bundles] : bundles;
 }
 
 function coerceBundle(value: unknown): AnalysisBundleSpecWire | null {
