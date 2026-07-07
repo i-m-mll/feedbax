@@ -618,9 +618,12 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
         assert policy is not None
         if policy.stance == "migrate":
             for old_version in policy.supported_old_versions:
+                payload = {"schema_version": old_version}
+                if family.kind == "StudioValueSpec":
+                    payload.update({"mode": "constant", "value": 1, "metadata": {}})
                 migrated = default_spec_registry.migrate(
                     family.kind,
-                    {"schema_version": old_version},
+                    payload,
                 )
                 assert migrated.source_version == old_version
                 assert migrated.target_version == family.current_version

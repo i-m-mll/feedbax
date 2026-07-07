@@ -11,7 +11,17 @@ import type {
 } from '@/types/workspace';
 
 export const TASK_TIMELINE_SCHEMA_VERSION = 'feedbax.studio.task_timeline.v1';
-export const VALUE_SCHEMA_VERSION = 'feedbax.studio.value.v1';
+export const VALUE_SCHEMA_VERSION = 'feedbax.spec.studio.value.v2';
+
+type ValueVariationScope =
+  | 'fixed'
+  | 'snapshot'
+  | 'run'
+  | 'replicate'
+  | 'trial'
+  | 'epoch'
+  | 'timestep'
+  | 'sweep';
 
 const DELAYED_REACH_EPOCH_LABELS = ['hold', 'target_on', 'movement'];
 const TIMELINE_PARAM_KEYS = new Set([
@@ -171,6 +181,8 @@ function constantValue(
 ): StudioValueSpec {
   return {
     schema_version: VALUE_SCHEMA_VERSION,
+    value_form: 'literal',
+    variation: { scope: 'fixed', enumerable: null, metadata: {} },
     mode: 'constant',
     value,
     dtype: valueSchema?.dtype ?? null,
@@ -188,12 +200,24 @@ function constantValue(
 function distributionValue(
   family: string,
   parameters: Record<string, unknown>,
-  samplingScope: string,
+  samplingScope: ValueVariationScope,
   metadata: Record<string, unknown> = {},
   valueSchema: ValueSchema | null = null
 ): StudioValueSpec {
   return {
     schema_version: VALUE_SCHEMA_VERSION,
+    value_form: 'distribution',
+    variation: {
+      scope: samplingScope,
+      enumerable: null,
+      stochastic_policy:
+        samplingScope === 'replicate'
+          ? 'resample_per_replicate'
+          : samplingScope === 'run'
+            ? 'shared_per_run'
+            : null,
+      metadata: {},
+    },
     mode: 'distribution',
     distribution: { family, parameters },
     sampling_scope: samplingScope,
@@ -217,6 +241,8 @@ function functionValue(
 ): StudioValueSpec {
   return {
     schema_version: VALUE_SCHEMA_VERSION,
+    value_form: 'function',
+    variation: { scope: 'timestep', enumerable: null, metadata: {} },
     mode: 'function',
     function_id: functionId,
     parameters,

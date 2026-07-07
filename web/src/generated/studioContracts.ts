@@ -330,8 +330,28 @@ export interface ValueSchema {
   metadata?: Record<string, unknown>;
 }
 
+export interface StudioValueEnumerableSpec {
+  form: "list" | "range" | "sampler";
+  values?: unknown[] | null;
+  start?: number | null;
+  stop?: number | null;
+  count?: number | null;
+  scale?: "linear" | "log";
+  sampler?: Record<string, unknown> | null;
+  n?: number | null;
+}
+
+export interface StudioValueVariationSpec {
+  scope: "fixed" | "snapshot" | "run" | "replicate" | "trial" | "epoch" | "timestep" | "sweep";
+  enumerable?: StudioValueEnumerableSpec | null;
+  stochastic_policy?: "shared_per_run" | "resample_per_replicate" | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface StudioValueSpec {
   schema_version?: string;
+  value_form: "literal" | "reference" | "expression" | "function" | "schedule" | "distribution";
+  variation?: StudioValueVariationSpec;
   mode: string;
   value?: unknown | null;
   reference?: StudioSelectorRef | null;
@@ -1670,10 +1690,38 @@ export const ValueSchemaSchema: z.ZodType<ValueSchema> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<ValueSchema>;
 
+export const StudioValueEnumerableSpecSchema: z.ZodType<StudioValueEnumerableSpec> = z.lazy(() =>
+  z
+    .object({
+      "form": z.union([z.literal("list"), z.literal("range"), z.literal("sampler")]),
+      "values": z.array(z.unknown()).nullable().optional(),
+      "start": z.number().nullable().optional(),
+      "stop": z.number().nullable().optional(),
+      "count": z.number().int().nullable().optional(),
+      "scale": z.union([z.literal("linear"), z.literal("log")]).optional(),
+      "sampler": z.record(z.string(), z.unknown()).nullable().optional(),
+      "n": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioValueEnumerableSpec>;
+
+export const StudioValueVariationSpecSchema: z.ZodType<StudioValueVariationSpec> = z.lazy(() =>
+  z
+    .object({
+      "scope": z.union([z.literal("fixed"), z.literal("snapshot"), z.literal("run"), z.literal("replicate"), z.literal("trial"), z.literal("epoch"), z.literal("timestep"), z.literal("sweep")]),
+      "enumerable": StudioValueEnumerableSpecSchema.nullable().optional(),
+      "stochastic_policy": z.union([z.literal("shared_per_run"), z.literal("resample_per_replicate")]).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioValueVariationSpec>;
+
 export const StudioValueSpecSchema: z.ZodType<StudioValueSpec> = z.lazy(() =>
   z
     .object({
       "schema_version": z.string().optional(),
+      "value_form": z.union([z.literal("literal"), z.literal("reference"), z.literal("expression"), z.literal("function"), z.literal("schedule"), z.literal("distribution")]),
+      "variation": StudioValueVariationSpecSchema.optional(),
       "mode": z.string(),
       "value": z.unknown().nullable().optional(),
       "reference": StudioSelectorRefSchema.nullable().optional(),

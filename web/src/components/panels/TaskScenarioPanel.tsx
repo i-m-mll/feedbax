@@ -86,16 +86,7 @@ function ParamEditor({
   value: unknown;
   onChange: (value: ParamValue) => void;
 }) {
-  const descriptor: ValueSpecFieldDescriptor = {
-    id: `task_param:${name}`,
-    label: humanizeLabel(name),
-    ownerKind: 'task_param',
-    semanticKind: isStaticShapeParam(name) ? 'static_shape' : 'static_leaf',
-    allowedModes: ['constant', 'expression', 'distribution'],
-    allowedScopes: ['run', 'sweep'],
-    defaultScope: 'run',
-    loweringTarget: isStaticShapeParam(name) ? 'run_manifest' : 'sweep_axis',
-  };
+  const descriptor = descriptorForTaskParam(name);
   return (
     <div className="grid gap-1 text-xs">
       <span className="truncate font-medium text-slate-500">{humanizeLabel(name)}</span>
@@ -110,6 +101,20 @@ function ParamEditor({
 
 function isStaticShapeParam(name: string) {
   return /(^|_)(size|sizes|shape|count|dim|dims|n|num)(_|\b)/i.test(name);
+}
+
+export function descriptorForTaskParam(name: string): ValueSpecFieldDescriptor {
+  const staticShape = isStaticShapeParam(name);
+  return {
+    id: `task_param:${name}`,
+    label: humanizeLabel(name),
+    ownerKind: 'task_param',
+    semanticKind: staticShape ? 'static_shape' : 'static_leaf',
+    allowedModes: ['constant', 'expression', 'distribution'],
+    allowedScopes: staticShape ? ['fixed', 'run'] : ['fixed', 'run', 'sweep'],
+    defaultScope: 'run',
+    loweringTarget: staticShape ? 'run_manifest' : 'sweep_axis',
+  };
 }
 
 function epochLengthDescriptor(

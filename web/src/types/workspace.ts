@@ -208,6 +208,7 @@ export type StudioValueSpecMode =
   | string;
 
 export type StudioValueSpecSamplingScope =
+  | 'fixed'
   | 'snapshot'
   | 'run'
   | 'replicate'
@@ -218,7 +219,23 @@ export type StudioValueSpecSamplingScope =
   | string;
 
 export interface StudioValueSpec {
-  schema_version?: 'feedbax.studio.value.v1' | string;
+  schema_version?: 'feedbax.spec.studio.value.v2' | 'feedbax.spec.studio.value.v1' | 'feedbax.studio.value.v1' | string;
+  value_form: 'literal' | 'reference' | 'expression' | 'function' | 'schedule' | 'distribution';
+  variation?: {
+    scope: 'fixed' | 'snapshot' | 'run' | 'replicate' | 'trial' | 'epoch' | 'timestep' | 'sweep';
+    enumerable?: {
+      form: 'list' | 'range' | 'sampler';
+      values?: unknown[];
+      start?: number;
+      stop?: number;
+      count?: number;
+      scale?: 'linear' | 'log';
+      sampler?: Record<string, unknown>;
+      n?: number;
+    } | null;
+    stochastic_policy?: 'shared_per_run' | 'resample_per_replicate' | null;
+    metadata?: Record<string, unknown>;
+  };
   mode: StudioValueSpecMode;
   value?: unknown;
   reference?: StudioSelectorRef | null;

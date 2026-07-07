@@ -260,6 +260,8 @@ describe('projectStudioSchema', () => {
     spec.exposed_data[0].expected_shape = ['time', 'channels'];
     spec.exposed_data[0].value_spec = {
       schema_version: 'feedbax.studio.value.v1',
+      value_form: 'reference',
+      variation: { scope: 'run', enumerable: null, metadata: {} },
       mode: 'reference',
       dtype: 'float32',
       shape: ['time', 'channels'],
