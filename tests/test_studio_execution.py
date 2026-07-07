@@ -706,6 +706,15 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     assert eval_stage.output_collections[0].item_refs[0].kind == "EvaluationRunManifest"
     assert analysis_stage.output_collections[0].item_refs[0].kind == "AnalysisRunManifest"
     assert report_stage.output_collections[0].item_refs[0].kind == "ReportManifest"
+    assert eval_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0][
+        "id"
+    ].startswith("feedbax-training-run:")
+    assert analysis_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0][
+        "id"
+    ] == eval_stage.output_collections[0].item_refs[0].id
+    assert report_stage.output_collections[0].item_refs[0].metadata["parent_refs"][0][
+        "id"
+    ] == analysis_stage.output_collections[0].item_refs[0].id
 
     eval_scenario = materialized.workspace.scenarios["scenario:eval"]
     assert eval_scenario.parent_scenario_id == "scenario:train"
