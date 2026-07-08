@@ -1221,6 +1221,12 @@ def _validate_contract_binding(
     else:
         diff_suffix = (
             "; stored canonical projection is unavailable for this legacy binding"
+            + _format_binding_hash_field_summary(
+                manifest.run_contract_binding,
+                expected,
+                expected_run_spec,
+                expected_phase_program,
+            )
         )
     raise CheckpointContractBindingError(
         "checkpoint run-contract content binding does not match expected run spec; "
@@ -1261,6 +1267,59 @@ def _binding_hash_fields(binding: RunContractBinding) -> dict[str, str | None]:
         "graph_sha256": binding.graph_sha256,
         "optimizer_bindings_sha256": binding.optimizer_bindings_sha256,
     }
+
+
+def _format_binding_hash_field_summary(
+    recorded: RunContractBinding,
+    expected: RunContractBinding,
+    expected_run_spec: TrainingRunSpec,
+    expected_phase_program: PhaseProgramSpec,
+) -> str:
+    recorded_hashes = _binding_hash_fields(recorded)
+    current_hashes = _binding_hash_fields(expected)
+    legacy_hashes = _legacy_binding_hash_fields(
+        expected_run_spec,
+        expected_phase_program,
+        recorded.training_run_spec_schema_version,
+    )
+
+    comparison_label = "current"
+    comparison_hashes = current_hashes
+    if legacy_hashes != current_hashes:
+        current_mismatches = _binding_hash_field_mismatches(
+            recorded_hashes,
+            current_hashes,
+        )
+        legacy_mismatches = _binding_hash_field_mismatches(
+            recorded_hashes,
+            legacy_hashes,
+        )
+        if len(legacy_mismatches) < len(current_mismatches):
+            comparison_label = "legacy"
+            comparison_hashes = legacy_hashes
+
+    mismatches = _binding_hash_field_mismatches(recorded_hashes, comparison_hashes)
+    matches = [
+        field
+        for field in recorded_hashes
+        if recorded_hashes[field] == comparison_hashes.get(field)
+    ]
+    return (
+        f"; hash_comparison={comparison_label}"
+        f"; hash_field_mismatches={mismatches!r}"
+        f"; hash_field_matches={matches!r}"
+    )
+
+
+def _binding_hash_field_mismatches(
+    recorded_hashes: Mapping[str, str | None],
+    expected_hashes: Mapping[str, str | None],
+) -> list[str]:
+    return [
+        field
+        for field, recorded_hash in recorded_hashes.items()
+        if recorded_hash != expected_hashes.get(field)
+    ]
 
 
 def _legacy_binding_hash_fields(

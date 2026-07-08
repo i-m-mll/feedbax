@@ -412,6 +412,28 @@ def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path)
     assert loaded.transaction_id == result.manifest.transaction_id
 
 
+def test_checkpoint_transaction_manifest_persists_binding_projection(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+
+    assert binding["canonical_projection"]["training_run_spec"]["schema_id"]
+    assert binding["canonical_projection"]["phase_program"]["checkpoint_barriers"]
+    assert binding["canonical_projection_sha256"]
+
+
 def test_checkpoint_fork_hardlinks_three_targets_and_survives_source_quarantine(
     tmp_path: Path,
 ) -> None:
@@ -1166,6 +1188,57 @@ def test_changed_learning_rate_fails_closed_with_field_diff_unless_override(
 
     assert loaded.new_lineage_required
     assert loaded.previous_transaction_id == loaded.manifest.transaction_id
+
+
+def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
+    binding = payload["run_contract_binding"]
+    binding.pop("canonical_projection")
+    binding.pop("canonical_projection_sha256")
+    _rewrite_manifest_and_latest(result, payload)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert loaded.manifest.run_contract_binding.canonical_projection is None
+    assert loaded.manifest.run_contract_binding.metadata["projection_status"] == (
+        "legacy_absent"
+    )
+
+    changed = run_spec.model_copy(deep=True)
+    changed.training_config.learning_rate = 0.5
+
+    with pytest.raises(CheckpointContractBindingError) as exc_info:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=changed,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+    message = str(exc_info.value)
+    assert "stored canonical projection is unavailable for this legacy binding" in message
+    assert "hash_field_mismatches=['training_run_spec_sha256']" in message
+    assert "method_payload_sha256" in message
+    assert "phase_program_sha256" in message
+    assert "graph_sha256" in message
 
 
 def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
