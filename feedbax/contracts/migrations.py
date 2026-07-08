@@ -42,7 +42,8 @@ from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_VERSION,
 )
 from feedbax.contracts.domain import (
-    ACAUSAL_GRAPH_SCHEMA_ID,
+    DOMAIN_COMPILE_REPORT_SCHEMA_ID,
+    DOMAIN_COMPILE_REPORT_SCHEMA_VERSION,
     DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID,
     DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION,
 )
@@ -60,7 +61,11 @@ from feedbax.contracts.graph import (
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
-from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_VERSION, AcausalGraphSpec
+from feedbax.contracts.acausal import (
+    ACAUSAL_GRAPH_SCHEMA_ID,
+    ACAUSAL_GRAPH_SCHEMA_VERSION,
+    AcausalGraphSpec,
+)
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
@@ -1654,6 +1659,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Backend registry payload for graph-domain metadata.",
             rejected_old_versions=("feedbax.spec.domain.v0",),
             required_tests=("tests/test_domain_registry.py",),
+        ),
+        _family(
+            "DomainCompileReport",
+            DOMAIN_COMPILE_REPORT_SCHEMA_ID,
+            DOMAIN_COMPILE_REPORT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.domain",
+            emitted_by=("POST /api/graphs/{graph_id}/nodes/compile", "Studio save/load"),
+            consumed_by=("Studio frontend", "Studio backend"),
+            description=(
+                "Derived authoring compile report cache. Unknown or old versions are "
+                "dropped on project load and the node reverts to never_compiled."
+            ),
+            rejected_old_versions=("feedbax.spec.domain_compile_report.v0",),
+            required_tests=("tests/test_acausal_compile_reports.py",),
         ),
         _family(
             "TrainingRunSpec",

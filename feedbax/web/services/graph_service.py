@@ -6,6 +6,10 @@ from typing import List, Optional
 import json
 import uuid
 
+from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.domain import DomainCompileReport
+from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
 from feedbax.contracts.graphs.normalization import (
     normalize_graph_for_studio_authoring,
@@ -202,6 +206,28 @@ class GraphService:
             warnings=warnings,
             cycles=cycles,
         )
+
+    def compile_node(
+        self,
+        graph_id: str,
+        *,
+        node_path: list[str],
+        interior: AcausalGraphSpec,
+    ) -> DomainCompileReport:
+        record = self.get_graph(graph_id)
+        registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+        report = compile_acausal_authoring_report(
+            interior,
+            node_path=node_path,
+            component_registry=registry,
+        )
+        key = "/".join(node_path)
+        record.project.compile_reports = {
+            **(record.project.compile_reports or {}),
+            key: report,
+        }
+        self._save_project(self._path_for(graph_id), record.project)
+        return report
 
     def export_graph(self, graph_id: str, export_format: str) -> dict:
         record = self.get_graph(graph_id)
