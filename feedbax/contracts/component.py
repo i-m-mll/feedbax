@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import GraphSpec, GraphUIState, ParamSchema, ParamValue
 from feedbax.contracts.representation import RepresentationSpec
 
@@ -124,7 +125,7 @@ class ComponentDefinition(BaseModel):
     domain: str = CAUSAL_DOMAIN_ID
     interior_domain: Optional[str] = None
     is_composite: bool = False
-    template_graph: Optional[GraphSpec] = None
+    template_graph: Optional[GraphSpec | AcausalGraphSpec] = None
     template_ui_state: Optional[GraphUIState] = None
     template_id: Optional[str] = None
     template_kind: Optional[str] = None

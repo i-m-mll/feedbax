@@ -91,6 +91,12 @@ def analyze_system(
     params_dict: dict[str, float] = {}
 
     for elem in elements.values():
+        for signal_input in elem.signal_inputs:
+            fqn = f"{elem.name}.{signal_input}"
+            all_vars[fqn] = AcausalVar(
+                name=fqn,
+                is_differential=False,
+            )
         for port in elem.ports.values():
             for slot in port.across_vars:
                 fqn = f"{elem.name}.{port.name}.{slot}"
@@ -139,6 +145,13 @@ def analyze_system(
     gear_infos: list[dict] = []
 
     for elem in elements.values():
+        for slot_idx, signal_input in enumerate(elem.signal_inputs):
+            fqn = f"{elem.name}.{signal_input}"
+            input_vars[fqn] = input_idx_counter
+            input_specs[fqn] = (elem.name, slot_idx)
+            all_vars[fqn].is_input = True
+            input_idx_counter += 1
+
         if elem.element_type == "ground":
             for port in elem.ports.values():
                 for slot in port.across_vars:

@@ -22,6 +22,7 @@ from feedbax.acausal.rotational import (
     TorqueSource,
     TorsionalSpring,
 )
+from feedbax.acausal.mechanics import RigidTendonHillMuscle
 from feedbax.acausal.system import AcausalSystem
 from feedbax.acausal.translational import (
     ForceSensor,
@@ -49,7 +50,7 @@ from feedbax.contracts.acausal_interface import (
     derive_acausal_interface,
     signal_port_type,
 )
-from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID
 from feedbax.contracts.domain import (
     DomainCompileReport,
     DomainDiagnostic,
@@ -79,8 +80,21 @@ _ELEMENT_BUILDERS: dict[str, Type[AcausalElement]] = {
         AngleSensor,
         AngularVelocitySensor,
         TorqueSensor,
+        RigidTendonHillMuscle,
     )
 }
+_ELEMENT_BUILDERS.update(
+    {
+        "MechanicsMass": Mass,
+        "MechanicsLinearSpring": LinearSpring,
+        "MechanicsLinearDamper": LinearDamper,
+        "MechanicsGround": Ground,
+        "MechanicsForceSource": ForceSource,
+        "MechanicsPositionSensor": PositionSensor,
+        "MechanicsVelocitySensor": VelocitySensor,
+        "MechanicsForceSensor": ForceSensor,
+    }
+)
 
 _SOURCE_KIND_BUILDERS: dict[str, Type[AcausalElement]] = {
     "force": ForceSource,
@@ -148,8 +162,8 @@ def compile_acausal_graph(
         dt=interior_spec.solver.dt,
         solver_type=solver_type,
         root_finder=root_finder,
-        input_bindings=flattened.input_bindings,
-        output_bindings=flattened.output_bindings,
+        input_bindings=flattened.input_bindings or None,
+        output_bindings=flattened.output_bindings or None,
     )
 
     if system.input_ports != interface.input_ports:
@@ -293,7 +307,10 @@ def _diagnose_component_types(
         if node_spec.type == ACAUSAL_SYSTEM_TYPE:
             continue
         meta = get_meta(node_spec.type) if callable(get_meta) else None
-        if meta is not None and getattr(meta, "domain", None) != ACAUSAL_DOMAIN_ID:
+        if meta is not None and getattr(meta, "domain", None) not in {
+            ACAUSAL_DOMAIN_ID,
+            MECHANICS_DOMAIN_ID,
+        }:
             meta_domain = getattr(meta, "domain", None)
             diagnostics.append(
                 DomainDiagnostic(
@@ -301,7 +318,8 @@ def _diagnose_component_types(
                     code="acausal.domain_mismatch",
                     message=(
                         f"Acausal node {path}.{node_id!s} has component domain "
-                        f"{meta_domain!r}, expected {ACAUSAL_DOMAIN_ID!r}."
+                        f"{meta_domain!r}, expected {ACAUSAL_DOMAIN_ID!r} or "
+                        f"{MECHANICS_DOMAIN_ID!r}."
                     ),
                     node_ids=[node_id],
                 )
@@ -699,10 +717,11 @@ def _validate_acausal_component_meta(
             f"Unsupported acausal component type {node_type!r} at {node_path!r}: "
             "not present in the component registry"
         )
-    if getattr(meta, "domain", None) != ACAUSAL_DOMAIN_ID:
+    if getattr(meta, "domain", None) not in {ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID}:
         raise ValueError(
             f"Component type {node_type!r} at {node_path!r} belongs to domain "
-            f"{getattr(meta, 'domain', None)!r}, not {ACAUSAL_DOMAIN_ID!r}"
+            f"{getattr(meta, 'domain', None)!r}, not {ACAUSAL_DOMAIN_ID!r} "
+            f"or {MECHANICS_DOMAIN_ID!r}"
         )
 
 

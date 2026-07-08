@@ -3,10 +3,15 @@ from __future__ import annotations
 from typing import Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 from feedbax.contracts.graphs.templates import (
     BUILTIN_GRAPH_TEMPLATES,
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
+)
+from feedbax.contracts.graphs.mechanics_templates import (
+    mass_spring_damper_template_graph,
+    point_mass_with_muscles_template_graph,
 )
 
 from .meta import ComponentMeta, _template_ui_state
@@ -58,6 +63,61 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
             template_id=network_meta.id,
             template_kind=network_meta.kind,
             trainable_by_default=True,
+        )
+    )
+
+    msd_graph = mass_spring_damper_template_graph()
+    registry.register(
+        ComponentMeta(
+            name="MassSpringDamper",
+            category="Templates",
+            description="Executable mechanics mass-spring-damper template.",
+            param_schema=[],
+            input_ports=["force"],
+            output_ports=["position", "velocity"],
+            icon="Waves",
+            domain=MECHANICS_DOMAIN_ID,
+            interior_domain=MECHANICS_DOMAIN_ID,
+            is_composite=True,
+            port_types=PortTypeSpec(
+                inputs={"force": PortType(dtype="scalar")},
+                outputs={
+                    "position": PortType(dtype="scalar"),
+                    "velocity": PortType(dtype="scalar"),
+                },
+            ),
+            template_graph=msd_graph,
+            template_id="feedbax.templates.mechanics.mass_spring_damper",
+            template_kind="executable",
+        )
+    )
+
+    muscle_graph = point_mass_with_muscles_template_graph()
+    registry.register(
+        ComponentMeta(
+            name="PointMassWithMuscles",
+            category="Templates",
+            description="Executable mechanics point mass with one antagonistic muscle pair.",
+            param_schema=[],
+            input_ports=["flexor", "extensor"],
+            output_ports=["position", "velocity"],
+            icon="Dumbbell",
+            domain=MECHANICS_DOMAIN_ID,
+            interior_domain=MECHANICS_DOMAIN_ID,
+            is_composite=True,
+            port_types=PortTypeSpec(
+                inputs={
+                    "flexor": PortType(dtype="scalar"),
+                    "extensor": PortType(dtype="scalar"),
+                },
+                outputs={
+                    "position": PortType(dtype="scalar"),
+                    "velocity": PortType(dtype="scalar"),
+                },
+            ),
+            template_graph=muscle_graph,
+            template_id="feedbax.templates.mechanics.point_mass_with_muscles",
+            template_kind="executable",
         )
     )
 

@@ -18,6 +18,7 @@ from feedbax.acausal.rotational import (
     TorqueSource,
     TorsionalSpring,
 )
+from feedbax.acausal.mechanics import RigidTendonHillMuscle
 from feedbax.acausal.translational import (
     ForceSensor,
     ForceSource,
@@ -31,7 +32,7 @@ from feedbax.acausal.translational import (
 )
 from feedbax.contracts.acausal_interface import conserving_port_type, signal_port_type
 from feedbax.contracts.component import PortTypeSpec
-from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
 
 from .meta import ComponentMeta
@@ -124,11 +125,13 @@ def _element_meta(
     *,
     category: str,
     icon: str,
+    name: str | None = None,
+    domain: str = ACAUSAL_DOMAIN_ID,
 ) -> ComponentMeta:
     probe = element_type("__probe__")
     port_names = sorted(probe.ports)
     return ComponentMeta(
-        name=element_type.__name__,
+        name=name or element_type.__name__,
         category=category,
         description=(inspect.getdoc(element_type) or f"{element_type.__name__} acausal element."),
         param_schema=_param_schema_from_constructor(element_type),
@@ -136,7 +139,7 @@ def _element_meta(
         output_ports=[],
         icon=icon,
         port_types=_port_type_spec(probe.ports.values()),
-        domain=ACAUSAL_DOMAIN_ID,
+        domain=domain,
         builder=None,
     )
 
@@ -247,3 +250,31 @@ def register_acausal_components(registry: _Registry) -> None:
         )
     for meta in _adapter_metas():
         registry.register(meta)
+
+    for alias, element_type, category, icon in (
+        ("MechanicsMass", Mass, "Bodies", "Circle"),
+        ("MechanicsGround", Ground, "Boundary", "Anchor"),
+        ("MechanicsLinearSpring", LinearSpring, "Forces", "MoveHorizontal"),
+        ("MechanicsLinearDamper", LinearDamper, "Forces", "Gauge"),
+        ("MechanicsForceSource", ForceSource, "Boundary", "LogIn"),
+        ("MechanicsPositionSensor", PositionSensor, "Sensors", "Ruler"),
+        ("MechanicsVelocitySensor", VelocitySensor, "Sensors", "Activity"),
+        ("MechanicsForceSensor", ForceSensor, "Sensors", "Gauge"),
+    ):
+        registry.register(
+            _element_meta(
+                element_type,
+                name=alias,
+                category=category,
+                icon=icon,
+                domain=MECHANICS_DOMAIN_ID,
+            )
+        )
+    registry.register(
+        _element_meta(
+            RigidTendonHillMuscle,
+            category="Muscles",
+            icon="Dumbbell",
+            domain=MECHANICS_DOMAIN_ID,
+        )
+    )
