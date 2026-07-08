@@ -88,6 +88,7 @@ def build_optimizer(
     *,
     schedule_origin_step: int,
     current_step: int,
+    optimizer_count_at_current_step: int = 0,
     gradient_clip: float | None = None,
 ) -> optax.GradientTransformationExtraArgs:
     """Build an Optax optimizer from an ``OptimizerSpec``.
@@ -101,7 +102,14 @@ def build_optimizer(
             local schedules; ``run_start`` callers pass zero.
         current_step: Global step at which the returned optimizer starts. The
             schedule offset is computed as ``current_step - schedule_origin_step``
-            and does not depend on a restored optimizer state's ``count`` field.
+            before correcting for ``optimizer_count_at_current_step``.
+        optimizer_count_at_current_step: Optax injected-hyperparameter schedule
+            count stored in the optimizer state at ``current_step``. Freshly
+            initialized states use the default ``0``. Restored states should pass
+            their restored count at the resume/current step so schedule position
+            is ``(count - optimizer_count_at_current_step) + (current_step -
+            schedule_origin_step)`` instead of implicitly following the restored
+            Optax count.
         gradient_clip: Optional global-norm clipping threshold prepended to the
             optimizer.
 
@@ -134,9 +142,12 @@ def build_optimizer(
             f"got current_step={current_step}, schedule_origin_step={schedule_origin_step}"
         )
     base_schedule = learning_rate_schedule(spec.lr_schedule)
+    count_origin = int(optimizer_count_at_current_step)
 
     def shifted_schedule(count: Any) -> jax.Array:
-        return base_schedule(jnp.asarray(count, dtype=jnp.int32) + schedule_position)
+        return base_schedule(
+            (jnp.asarray(count, dtype=jnp.int32) - count_origin) + schedule_position
+        )
 
     factory = _optimizer_factory(spec.type)
     static_args = ("mask",) if "mask" in inspect.signature(factory).parameters else ()

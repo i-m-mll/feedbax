@@ -5,6 +5,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 import optax
 import pytest
 
@@ -82,7 +83,7 @@ def _expected_cosine(peak: float, *, alpha: float, progress: float) -> float:
 
 
 def _scheduled_learning_rate(opt_state: Any) -> float:
-    leaves = jax.tree.leaves(opt_state, is_leaf=_is_injected_hyperparams_state)
+    leaves = jt.leaves(opt_state, is_leaf=_is_injected_hyperparams_state)
     for leaf in leaves:
         if _is_injected_hyperparams_state(leaf):
             return float(leaf.hyperparams["learning_rate"])
@@ -92,6 +93,40 @@ def _scheduled_learning_rate(opt_state: Any) -> float:
 def _is_injected_hyperparams_state(value: Any) -> bool:
     fields = getattr(value, "_fields", ())
     return {"hyperparams", "inner_state"}.issubset(set(fields))
+
+
+def _with_restored_injected_count(opt_state: Any, count: int) -> Any:
+    """Return ``opt_state`` with injected-hyperparameter counters patched."""
+    if _is_injected_hyperparams_state(opt_state):
+        hyperparams_states = dict(opt_state.hyperparams_states)
+        lr_state = hyperparams_states["learning_rate"]
+        hyperparams_states["learning_rate"] = lr_state._replace(
+            count=jnp.asarray(count, dtype=jnp.int32)
+        )
+        return opt_state._replace(
+            count=jnp.asarray(count, dtype=jnp.int32),
+            hyperparams_states=hyperparams_states,
+        )
+    if isinstance(opt_state, tuple):
+        return type(opt_state)(_with_restored_injected_count(value, count) for value in opt_state)
+    if isinstance(opt_state, list):
+        return [_with_restored_injected_count(value, count) for value in opt_state]
+    if isinstance(opt_state, dict):
+        return {
+            key: _with_restored_injected_count(value, count)
+            for key, value in opt_state.items()
+        }
+    return opt_state
+
+
+def _state_after_zero_update(
+    optimizer: optax.GradientTransformationExtraArgs,
+    opt_state: Any,
+    params: dict[str, jax.Array],
+) -> Any:
+    grads = jt.map(jnp.zeros_like, params)
+    _updates, next_state = optimizer.update(grads, opt_state, params)
+    return next_state
 
 
 @pytest.mark.parametrize("step", [0, 5, 12])
@@ -165,6 +200,30 @@ def test_optimizer_builder_uses_explicit_resume_barrier_origin() -> None:
     validate_optimizer_state_for_spec(spec, opt_state)
 
 
+def test_optimizer_builder_resume_barrier_decouples_restored_count() -> None:
+    schedule = LrScheduleSpec(
+        kind="warmup_cosine",
+        learning_rate_0=0.1,
+        total_steps=10,
+        constant_lr_iterations=4,
+        warmup_init_fraction=0.1,
+        cosine_annealing_alpha=0.2,
+    )
+    spec = OptimizerSpec(type="adamw", params={"weight_decay": 0.0}, lr_schedule=schedule)
+    params = {"w": jnp.asarray(1.0)}
+    optimizer = build_optimizer(
+        spec,
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    restored_state = _with_restored_injected_count(optimizer.init(params), 12_000)
+
+    next_state = _state_after_zero_update(optimizer, restored_state, params)
+
+    assert _scheduled_learning_rate(next_state) == pytest.approx(0.01)
+
+
 def test_optimizer_builder_run_start_origin_reproduces_global_step_schedule() -> None:
     schedule = LrScheduleSpec(
         kind="warmup_cosine",
@@ -180,6 +239,30 @@ def test_optimizer_builder_run_start_origin_reproduces_global_step_schedule() ->
     opt_state = optimizer.init({"w": jnp.asarray(1.0)})
 
     assert _scheduled_learning_rate(opt_state) == pytest.approx(0.02)
+
+
+def test_optimizer_builder_run_start_keeps_restored_count_on_global_schedule() -> None:
+    schedule = LrScheduleSpec(
+        kind="warmup_cosine",
+        learning_rate_0=0.1,
+        total_steps=10,
+        constant_lr_iterations=4,
+        warmup_init_fraction=0.1,
+        cosine_annealing_alpha=0.2,
+    )
+    spec = OptimizerSpec(type="adamw", params={"weight_decay": 0.0}, lr_schedule=schedule)
+    params = {"w": jnp.asarray(1.0)}
+    optimizer = build_optimizer(
+        spec,
+        schedule_origin_step=0,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    restored_state = _with_restored_injected_count(optimizer.init(params), 12_000)
+
+    next_state = _state_after_zero_update(optimizer, restored_state, params)
+
+    assert _scheduled_learning_rate(next_state) == pytest.approx(0.02)
 
 
 def test_declared_schedule_rejects_plain_legacy_optimizer_state() -> None:
@@ -211,4 +294,7 @@ def test_lr_schedule_schema_identity_is_publicly_discoverable() -> None:
 
     schema = manifest.schemas["LrScheduleSpec"]
     assert schema["properties"]["schema_id"]["const"] == LR_SCHEDULE_SPEC_SCHEMA_ID
-    assert LrScheduleSpec.model_fields["schema_version"].default == LR_SCHEDULE_SPEC_SCHEMA_VERSION
+    assert (
+        LrScheduleSpec.model_fields["schema_version"].default
+        == LR_SCHEDULE_SPEC_SCHEMA_VERSION
+    )
