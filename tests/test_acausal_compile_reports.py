@@ -15,6 +15,7 @@ from feedbax.contracts.domain import (
 )
 from feedbax.contracts.graph import ComponentSpec, GraphProject, GraphSpec
 from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
+from feedbax.contracts.graphs.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.web.app import create_app
 from feedbax.web.services.graph_service import GraphService
 
@@ -112,6 +113,58 @@ def test_valid_acausal_compile_report_is_ok_and_has_interface_and_hash() -> None
     assert sorted(report.derived_interface["outputs"]) == ["pos"]
     assert report.summary["n_elements"] == 6
     assert report.summary["n_networks"] == 1
+
+
+def test_planar_multibody_report_is_ok_with_dof_summary() -> None:
+    graph = two_link_arm_6muscle_template_graph()
+    report = _report(graph)
+
+    assert report.status == "ok"
+    diagnostic = _diagnostic(report, "mechanics.dof_summary")
+    assert diagnostic.severity == "info"
+    assert diagnostic.counts == {"n_dof": 2, "n_links": 2, "n_muscles": 6}
+    assert report.derived_interface is not None
+    assert sorted(report.derived_interface["inputs"]) == ["excitation"]
+    assert sorted(report.derived_interface["outputs"]) == ["effector", "state"]
+    assert report.summary["n_dof"] == 2
+
+
+def test_planar_multibody_reports_unanchored_chain() -> None:
+    graph = two_link_arm_6muscle_template_graph()
+    graph = graph.model_copy(
+        update={
+            "nodes": {
+                key: value
+                for key, value in graph.nodes.items()
+                if key not in {"world", "anchor"}
+            }
+        }
+    )
+
+    diagnostic = _diagnostic(_report(graph), "mechanics.unanchored_chain")
+
+    assert "WorldFrame" in diagnostic.message
+    assert diagnostic.counts == {"n_world_frames": 0, "n_anchors": 0}
+
+
+def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
+    graph = two_link_arm_6muscle_template_graph()
+    nodes = dict(graph.nodes)
+    muscle = nodes["muscle_0"]
+    nodes["muscle_0"] = muscle.model_copy(
+        update={
+            "params": {
+                **muscle.params,
+                "path_points": [{"frame": "upper.nope"}, {"frame": "forearm.distal"}],
+            }
+        }
+    )
+    graph = graph.model_copy(update={"nodes": nodes})
+
+    diagnostic = _diagnostic(_report(graph), "mechanics.muscle_path_missing_frame")
+
+    assert "upper.nope" in diagnostic.message
+    assert diagnostic.node_ids == ["muscle_0"]
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,14 @@ from feedbax.acausal.rotational import (
     TorsionalSpring,
 )
 from feedbax.acausal.mechanics import RigidTendonHillMuscle
+from feedbax.acausal.multibody import (
+    Anchor,
+    MusclePath,
+    PlanarLink,
+    PointMarker,
+    RevoluteJoint,
+    WorldFrame,
+)
 from feedbax.acausal.system import AcausalSystem
 from feedbax.acausal.translational import (
     ForceSensor,
@@ -57,6 +65,7 @@ from feedbax.contracts.domain import (
     report_status_for_diagnostics,
 )
 from feedbax.contracts.graph import ComponentSpec
+from feedbax.contracts.graphs.builders import build_component
 
 
 _ELEMENT_BUILDERS: dict[str, Type[AcausalElement]] = {
@@ -81,6 +90,12 @@ _ELEMENT_BUILDERS: dict[str, Type[AcausalElement]] = {
         AngularVelocitySensor,
         TorqueSensor,
         RigidTendonHillMuscle,
+        PlanarLink,
+        RevoluteJoint,
+        WorldFrame,
+        Anchor,
+        MusclePath,
+        PointMarker,
     )
 }
 _ELEMENT_BUILDERS.update(
@@ -148,6 +163,12 @@ def compile_acausal_graph(
             f"Acausal compiler expected schema_id {ACAUSAL_GRAPH_SCHEMA_ID!r} "
             f"for node {node_name!r}, got {interior_spec.schema_id!r}"
         )
+    if interior_spec.physical_domain == "planar_multibody":
+        return _compile_planar_multibody_graph(
+            interior_spec,
+            node_name=node_name,
+            component_registry=component_registry,
+        )
 
     interface = derive_acausal_interface(interior_spec)
     flattened = _flatten_acausal_graph(
@@ -199,7 +220,29 @@ def compile_acausal_authoring_report(
     analysis: StructuralAnalysis | None = None
     flattened = _FlattenedAcausalGraph()
 
-    if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
+    if interior_spec.physical_domain == "planar_multibody":
+        try:
+            interface = derive_acausal_interface(interior_spec)
+            derived_interface = {
+                "inputs": {
+                    name: signal_port_type().model_dump(mode="json")
+                    for name in interface.input_ports
+                },
+                "outputs": {
+                    name: signal_port_type().model_dump(mode="json")
+                    for name in interface.output_ports
+                },
+            }
+        except Exception as exc:  # noqa: BLE001 - authoring endpoint reports, not raises.
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.internal",
+                    message=f"Internal acausal interface failure for {node_path!r}: {exc}",
+                    node_ids=list(node_path),
+                )
+            )
+    elif not any(diagnostic.severity == "error" for diagnostic in diagnostics):
         try:
             interface = derive_acausal_interface(interior_spec)
             derived_interface = {
@@ -228,7 +271,11 @@ def compile_acausal_authoring_report(
                 )
             )
 
-    summary = _compile_summary(interior_spec, flattened, analysis)
+    summary = (
+        _compile_planar_multibody_summary(interior_spec)
+        if interior_spec.physical_domain == "planar_multibody"
+        else _compile_summary(interior_spec, flattened, analysis)
+    )
     return DomainCompileReport(
         status=report_status_for_diagnostics(diagnostics),
         interior_content_hash=content_hash,
@@ -268,6 +315,9 @@ def _diagnose_acausal_spec(
                 path=f"{path}.{node_id}",
             )
         )
+    if graph.physical_domain == "planar_multibody":
+        diagnostics.extend(_diagnose_planar_multibody_graph(graph, path))
+        return diagnostics
     if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
         try:
             flattened = _flatten_acausal_graph(
@@ -415,10 +465,12 @@ def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDi
     allowed_sources = {
         "translational": {"force", "prescribed_motion"},
         "rotational": {"torque", "prescribed_motion"},
+        "planar_multibody": {"muscle_excitation_vector"},
     }
     allowed_sensors = {
         "translational": {"position", "velocity", "force"},
         "rotational": {"angle", "angular_velocity", "torque"},
+        "planar_multibody": {"effector", "state", "dof", "muscle_length", "muscle_velocity"},
     }
     for node_id, node_spec in graph.nodes.items():
         params = dict(node_spec.params)
@@ -450,6 +502,195 @@ def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDi
                         node_ids=[node_id],
                     )
                 )
+    return diagnostics
+
+
+def _compile_planar_multibody_graph(
+    graph: AcausalGraphSpec,
+    *,
+    node_name: str,
+    component_registry: Any,
+) -> Any:
+    diagnostics = [
+        diagnostic
+        for diagnostic in _diagnose_acausal_spec(
+            graph,
+            component_registry=component_registry,
+            path=node_name,
+        )
+        if diagnostic.severity == "error"
+    ]
+    if diagnostics:
+        messages = "; ".join(diagnostic.message for diagnostic in diagnostics)
+        raise ValueError(f"Planar multibody graph {node_name!r} is not compilable: {messages}")
+    return build_component(
+        node_name,
+        "AnalyticalMusculoskeletalPlant",
+        {"dt": graph.solver.dt, "n_steps": 1},
+        component_registry=component_registry,
+    )
+
+
+def _frame_ref(node_id: str, port_name: str) -> str:
+    return f"{node_id}.{port_name}"
+
+
+def _valid_planar_frames(graph: AcausalGraphSpec) -> set[str]:
+    frames: set[str] = set()
+    for node_id, node_spec in graph.nodes.items():
+        if node_spec.type == "PlanarLink":
+            frames.add(_frame_ref(node_id, "proximal"))
+            frames.add(_frame_ref(node_id, "distal"))
+        elif node_spec.type == "WorldFrame":
+            frames.add(_frame_ref(node_id, "frame"))
+    return frames
+
+
+def _node_param_string(node_spec: ComponentSpec, key: str) -> str:
+    value = node_spec.params.get(key, "")
+    return value if isinstance(value, str) else ""
+
+
+def _diagnose_planar_multibody_graph(
+    graph: AcausalGraphSpec,
+    path: str,
+) -> list[DomainDiagnostic]:
+    diagnostics: list[DomainDiagnostic] = []
+    link_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "PlanarLink"]
+    joint_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "RevoluteJoint"]
+    world_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "WorldFrame"]
+    anchor_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "Anchor"]
+    valid_frames = _valid_planar_frames(graph)
+
+    if not world_ids or not anchor_ids:
+        diagnostics.append(
+            DomainDiagnostic(
+                severity="error",
+                code="mechanics.unanchored_chain",
+                message=(
+                    f"Planar multibody interior {path!r} must include a WorldFrame "
+                    "and Anchor for the root link."
+                ),
+                node_ids=[*world_ids, *anchor_ids],
+                counts={"n_world_frames": len(world_ids), "n_anchors": len(anchor_ids)},
+            )
+        )
+
+    for anchor_id in anchor_ids:
+        frame = _node_param_string(graph.nodes[anchor_id], "frame")
+        if frame not in valid_frames:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="mechanics.unanchored_chain",
+                    message=(
+                        f"Anchor {path}.{anchor_id} references missing root frame "
+                        f"{frame!r}."
+                    ),
+                    node_ids=[anchor_id],
+                    variables=[frame],
+                )
+            )
+
+    for joint_id in joint_ids:
+        joint = graph.nodes[joint_id]
+        parent_frame = _node_param_string(joint, "parent_frame")
+        child_frame = _node_param_string(joint, "child_frame")
+        missing = [
+            frame for frame in (parent_frame, child_frame)
+            if frame not in valid_frames
+        ]
+        if missing:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="mechanics.joint_frame_mismatch",
+                    message=(
+                        f"RevoluteJoint {path}.{joint_id} references unknown frame(s) "
+                        f"{missing!r}."
+                    ),
+                    node_ids=[joint_id],
+                    variables=missing,
+                )
+            )
+        if parent_frame.endswith(".proximal") and child_frame.endswith(".distal"):
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="warning",
+                    code="mechanics.joint_frame_mismatch",
+                    message=(
+                        f"RevoluteJoint {path}.{joint_id} connects proximal-to-distal; "
+                        "planar arm trees normally connect parent distal/world to child proximal."
+                    ),
+                    node_ids=[joint_id],
+                    variables=[parent_frame, child_frame],
+                )
+            )
+
+    if len(joint_ids) > len(link_ids):
+        diagnostics.append(
+            DomainDiagnostic(
+                severity="error",
+                code="mechanics.open_kinematic_loop",
+                message=(
+                    f"Planar multibody interior {path!r} has {len(joint_ids)} joints "
+                    f"for {len(link_ids)} links; closed loops are not supported by "
+                    "the minimal-coordinate compiler."
+                ),
+                node_ids=joint_ids,
+                counts={"n_joints": len(joint_ids), "n_links": len(link_ids)},
+            )
+        )
+
+    for node_id, node_spec in graph.nodes.items():
+        if node_spec.type != "MusclePath":
+            continue
+        path_points = node_spec.params.get("path_points", [])
+        if not isinstance(path_points, list) or len(path_points) < 2:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="mechanics.muscle_path_missing_frame",
+                    message=f"MusclePath {path}.{node_id} must contain at least two path points.",
+                    node_ids=[node_id],
+                )
+            )
+            continue
+        missing_frames = [
+            str(point.get("frame", ""))
+            for point in path_points
+            if not isinstance(point, dict) or str(point.get("frame", "")) not in valid_frames
+        ]
+        if missing_frames:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="mechanics.muscle_path_missing_frame",
+                    message=(
+                        f"MusclePath {path}.{node_id} references missing frame(s) "
+                        f"{missing_frames!r}."
+                    ),
+                    node_ids=[node_id],
+                    variables=missing_frames,
+                )
+            )
+
+    diagnostics.append(
+        DomainDiagnostic(
+            severity="info",
+            code="mechanics.dof_summary",
+            message=(
+                f"Planar multibody interior {path!r} has {len(joint_ids)} generalized "
+                f"coordinate(s) from revolute joints {joint_ids!r}."
+            ),
+            node_ids=joint_ids,
+            counts={
+                "n_dof": len(joint_ids),
+                "n_links": len(link_ids),
+                "n_muscles": sum(1 for node in graph.nodes.values() if node.type == "MusclePath"),
+            },
+        )
+    )
     return diagnostics
 
 
@@ -547,6 +788,19 @@ def _compile_summary(
         "n_states": analysis.layout.total_size,
         "n_networks": len(analysis.networks),
         "n_elements": len(flattened.elements),
+    }
+
+
+def _compile_planar_multibody_summary(graph: AcausalGraphSpec) -> dict[str, int]:
+    n_joints = sum(1 for node in graph.nodes.values() if node.type == "RevoluteJoint")
+    return {
+        "n_equations": 0,
+        "n_unknowns": 0,
+        "n_states": 2 * n_joints,
+        "n_networks": 1 if graph.nodes else 0,
+        "n_elements": len(graph.nodes),
+        "n_dof": n_joints,
+        "n_muscles": sum(1 for node in graph.nodes.values() if node.type == "MusclePath"),
     }
 
 

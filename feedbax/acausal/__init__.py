@@ -29,6 +29,14 @@ from feedbax.acausal.translational import (
     VelocitySensor,
 )
 from feedbax.acausal.mechanics import RigidTendonHillMuscle
+from feedbax.acausal.multibody import (
+    Anchor,
+    MusclePath,
+    PlanarLink,
+    PointMarker,
+    RevoluteJoint,
+    WorldFrame,
+)
 from feedbax.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,
@@ -40,3 +48,42 @@ from feedbax.acausal.rotational import (
     TorqueSource,
     TorsionalSpring,
 )
+
+
+__all__ = [
+    "AcausalConnection",
+    "AcausalElement",
+    "AcausalEquation",
+    "AcausalParams",
+    "AcausalPort",
+    "AcausalSystem",
+    "AcausalSystemState",
+    "AcausalVar",
+    "Anchor",
+    "AngleSensor",
+    "AngularVelocitySensor",
+    "Domain",
+    "ForceSensor",
+    "ForceSource",
+    "GearRatio",
+    "Ground",
+    "Inertia",
+    "LinearDamper",
+    "LinearSpring",
+    "Mass",
+    "MusclePath",
+    "PlanarLink",
+    "PointMarker",
+    "PositionSensor",
+    "PrescribedMotion",
+    "RevoluteJoint",
+    "RigidTendonHillMuscle",
+    "RotationalDamper",
+    "RotationalGround",
+    "StateLayout",
+    "TorqueSensor",
+    "TorqueSource",
+    "TorsionalSpring",
+    "VelocitySensor",
+    "WorldFrame",
+]
