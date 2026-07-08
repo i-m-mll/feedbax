@@ -68,6 +68,7 @@ import { useComponents } from '@/hooks/useComponents';
 import { useDomains } from '@/hooks/useDomains';
 import { FIT_VIEW_SHORTCUT_EVENT } from '@/hooks/useShortcuts';
 import { PenzaiInspector } from '@/components/panels/PenzaiInspector';
+import { MechanicsAssemblyView } from '@/components/canvas/MechanicsAssemblyView';
 import clsx from 'clsx';
 import { toast } from 'sonner';
 import { isAcausalGraphSpec, type ComponentSpec, type GraphEdgeData, type GraphNodeData, type GraphSpec, type TapNodeData } from '@/types/graph';
@@ -78,7 +79,7 @@ import type {
   StudioValidationIssue,
   ValueSchema,
 } from '@/types/workspace';
-import { ChevronsDown, ChevronsUp, Info, Map as MapIcon, MoveDiagonal } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, Info, ListTree, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 import {
   compileStatusForReport,
   evaluateAcausalConnection,
@@ -86,6 +87,7 @@ import {
   rollupCompileStatus,
   stableGraphHash,
 } from '@/features/domains/acausal';
+import type { AssemblyViewMode } from '@/features/domains/mechanicsAssembly';
 import { useCompileStatusStore } from '@/stores/compileStatusStore';
 
 interface TaskSourceNodeData extends Record<string, unknown> {
@@ -660,6 +662,7 @@ export function Canvas() {
     componentRegistry,
     exitToBreadcrumb,
     wrapInParentGraph,
+    setAssemblyViewState,
   } = useGraphStore(
     useShallow((state) => ({
       graphId: state.graphId,
@@ -687,6 +690,7 @@ export function Canvas() {
       componentRegistry: state._componentRegistry,
       exitToBreadcrumb: state.exitToBreadcrumb,
       wrapInParentGraph: state.wrapInParentGraph,
+      setAssemblyViewState: state.setAssemblyViewState,
     }))
   );
   const { resizeMode, toggleResizeMode } = useLayoutStore(
@@ -744,6 +748,15 @@ export function Canvas() {
     () => graphStack.map((layer) => layer.childNodeId).filter((id): id is string => Boolean(id)),
     [graphStack]
   );
+  const assemblyViewMode = (uiState.assembly_view?.active_view ?? 'graph') as AssemblyViewMode;
+  const canShowAssemblyView =
+    isAcausalLayer && isAcausalGraphSpec(graph) && graph.physical_domain === 'planar_multibody';
+  const showAssemblyView = canShowAssemblyView && assemblyViewMode !== 'graph';
+  const hideGraphCanvas = canShowAssemblyView && assemblyViewMode === 'assembly';
+  const assemblyDiagnostics = reports[graphPathKey(currentGraphPath)]?.diagnostics ?? [];
+  const assemblyPanelWidth = `${Math.round(
+    Math.max(0.28, Math.min(0.72, uiState.assembly_view?.split_ratio ?? 0.42)) * 100
+  )}%`;
   const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
   const allTaskBindingSpec = useMemo(
     () =>
@@ -1758,7 +1771,7 @@ export function Canvas() {
       )}
       <ReactFlow
         key={graphViewKey}
-        className="relative z-10"
+        className={clsx('relative z-10', hideGraphCanvas && 'pointer-events-none opacity-0')}
         style={{ zIndex: 10 }}
         nodes={displayNodes}
         edges={displayEdges}
@@ -1905,6 +1918,20 @@ export function Canvas() {
               <Info className="h-4 w-4" aria-hidden="true" />
             </ControlButton>
           )}
+          {canShowAssemblyView && (
+            <ControlButton
+              onClick={() =>
+                setAssemblyViewState({
+                  active_view: assemblyViewMode === 'graph' ? 'assembly' : 'graph',
+                })
+              }
+              title={assemblyViewMode === 'graph' ? 'Show assembly view' : 'Show graph view'}
+              aria-label={assemblyViewMode === 'graph' ? 'Show assembly view' : 'Show graph view'}
+              className={assemblyViewMode !== 'graph' ? 'text-brand-600' : 'text-slate-500'}
+            >
+              <ListTree className="h-4 w-4" aria-hidden="true" />
+            </ControlButton>
+          )}
         </Controls>
         {showMinimap && <MiniMap nodeColor="#9ca3af" />}
         <Panel position="top-right" className="pointer-events-none">
@@ -1978,6 +2005,23 @@ export function Canvas() {
             Start by adding a component from the library on the left. Drag a card onto the canvas
             or click one to place it here.
           </div>
+        </div>
+      )}
+      {showAssemblyView && isAcausalGraphSpec(graph) && (
+        <div
+          className={clsx(
+            'absolute bottom-0 right-0 top-0 z-30 p-3',
+            assemblyViewMode === 'assembly' ? 'left-0' : 'max-w-[720px]'
+          )}
+          style={assemblyViewMode === 'split' ? { width: assemblyPanelWidth } : undefined}
+        >
+          <MechanicsAssemblyView
+            graph={graph}
+            uiState={uiState}
+            diagnostics={assemblyDiagnostics}
+            mode={assemblyViewMode}
+            compact={assemblyViewMode === 'split'}
+          />
         </div>
       )}
       {pendingStateMerge && (

@@ -57,6 +57,18 @@ def _ui_state() -> GraphUIState:
     return GraphUIState()
 
 
+def test_graph_ui_state_accepts_payloads_without_assembly_view():
+    state = GraphUIState.model_validate(
+        {
+            "viewport": {"x": 1, "y": 2, "zoom": 0.75},
+            "node_states": {},
+        }
+    )
+
+    assert state.assembly_view is None
+    assert state.viewport.x == 1
+
+
 def test_create_graph_persists_default_workspace(tmp_path):
     service = GraphService(storage_dir=tmp_path)
 

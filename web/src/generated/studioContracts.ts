@@ -49,7 +49,7 @@ export interface SolverConfigSpec {
 export interface AcausalGraphSpec {
   schema_id?: "feedbax.spec.acausal_graph";
   schema_version?: "feedbax.spec.acausal_graph.v1";
-  physical_domain: "translational" | "rotational";
+  physical_domain: "translational" | "rotational" | "planar_multibody";
   nodes?: Record<string, ComponentSpec>;
   connections?: AcausalConnectionSpec[];
   solver: SolverConfigSpec;
@@ -283,12 +283,20 @@ export interface TapUIState {
   selected?: boolean | null;
 }
 
+export interface AssemblyViewUIState {
+  active_view?: "graph" | "assembly" | "split";
+  expanded_rows?: string[];
+  selected_row?: string | null;
+  split_ratio?: number;
+}
+
 export interface GraphUIState {
   viewport?: CanvasViewportSpec;
   node_states?: Record<string, NodeUIState>;
   edge_states?: Record<string, EdgeUIState> | null;
   subgraph_states?: Record<string, GraphUIState> | null;
   tap_states?: Record<string, TapUIState> | null;
+  assembly_view?: AssemblyViewUIState | null;
 }
 
 export interface AnalysisPageSpec {
@@ -1815,7 +1823,7 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
     .object({
       "schema_id": z.literal("feedbax.spec.acausal_graph").optional(),
       "schema_version": z.literal("feedbax.spec.acausal_graph.v1").optional(),
-      "physical_domain": z.union([z.literal("translational"), z.literal("rotational")]),
+      "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody")]),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "connections": z.array(AcausalConnectionSpecSchema).optional(),
       "solver": SolverConfigSpecSchema,
@@ -2155,6 +2163,17 @@ export const TapUIStateSchema: z.ZodType<TapUIState> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<TapUIState>;
 
+export const AssemblyViewUIStateSchema: z.ZodType<AssemblyViewUIState> = z.lazy(() =>
+  z
+    .object({
+      "active_view": z.union([z.literal("graph"), z.literal("assembly"), z.literal("split")]).optional(),
+      "expanded_rows": z.array(z.string()).optional(),
+      "selected_row": z.string().nullable().optional(),
+      "split_ratio": z.number().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AssemblyViewUIState>;
+
 export const GraphUIStateSchema: z.ZodType<GraphUIState> = z.lazy(() =>
   z
     .object({
@@ -2163,6 +2182,7 @@ export const GraphUIStateSchema: z.ZodType<GraphUIState> = z.lazy(() =>
       "edge_states": z.record(z.string(), EdgeUIStateSchema).nullable().optional(),
       "subgraph_states": z.record(z.string(), GraphUIStateSchema).nullable().optional(),
       "tap_states": z.record(z.string(), TapUIStateSchema).nullable().optional(),
+      "assembly_view": AssemblyViewUIStateSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<GraphUIState>;

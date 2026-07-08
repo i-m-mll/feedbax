@@ -26,6 +26,7 @@ import type {
   RetainedObservableSpec,
   AcausalGraphSpec,
   AcausalConnectionSpec,
+  AssemblyViewUIState,
 } from '@/types/graph';
 import { isAcausalGraphSpec, isCausalGraphSpec } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
@@ -822,6 +823,7 @@ function normalizeUiState(
     edge_states,
     subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
     tap_states: tap_states && Object.keys(tap_states).length ? tap_states : undefined,
+    assembly_view: base.assembly_view ?? undefined,
   };
 }
 
@@ -1596,6 +1598,8 @@ interface GraphStoreState {
     updates: Array<{ nodeId: string; param: string; value: ComponentSpec['params'][string] }>,
     taskBindingSpec?: StudioTaskBindingSpec | null
   ) => void;
+  replaceAcausalGraph: (graph: AcausalGraphSpec) => void;
+  setAssemblyViewState: (patch: Partial<AssemblyViewUIState>) => void;
   setSelectedNode: (nodeId: string | null) => void;
   setSelectedTap: (tapId: string | null) => void;
   setSelectedEdge: (edgeId: string | null) => void;
@@ -1625,6 +1629,7 @@ export const graphStoreSlices = {
     graph: state.graph,
     updateNodeParams: state.updateNodeParams,
     updateNodeParamsBatch: state.updateNodeParamsBatch,
+    replaceAcausalGraph: state.replaceAcausalGraph,
     addNodeFromComponent: state.addNodeFromComponent,
     deleteSelected: state.deleteSelected,
     duplicateSelected: state.duplicateSelected,
@@ -1691,6 +1696,7 @@ export const graphStoreSlices = {
     markDirty: state.markDirty,
     setCompositeTypes: state.setCompositeTypes,
     setComponentRegistry: state.setComponentRegistry,
+    setAssemblyViewState: state.setAssemblyViewState,
   }),
 } as const;
 
@@ -3571,6 +3577,40 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
         past,
         future: [],
+        isDirty: true,
+      };
+    });
+  },
+  replaceAcausalGraph: (graph) => {
+    set((state) => {
+      if (!isAcausalGraphSpec(state.graph)) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      return {
+        graph: graph as unknown as GraphSpec,
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
+        edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  setAssemblyViewState: (patch) => {
+    set((state) => {
+      const current = state.uiState.assembly_view ?? {
+        active_view: 'graph' as const,
+        expanded_rows: [],
+        selected_row: null,
+        split_ratio: 0.42,
+      };
+      return {
+        uiState: {
+          ...state.uiState,
+          assembly_view: {
+            ...current,
+            ...patch,
+          },
+        },
         isDirty: true,
       };
     });
