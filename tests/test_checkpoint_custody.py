@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import feedbax.training.checkpoint_custody as custody_module
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
@@ -212,6 +214,70 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
     assert loaded.manifest.transaction_id == result.manifest.transaction_id
     assert loaded.slots["controller"].tolist() == [1.0, 2.0]
     assert loaded.slots["rng"].dtype == jnp.uint32
+
+
+def test_load_reuses_manifest_structural_fingerprints_for_loaded_slots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+        population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+    )
+    calls = 0
+    original_fingerprint = custody_module.structural_abi_fingerprint
+
+    def counting_fingerprint(value):
+        nonlocal calls
+        calls += 1
+        return original_fingerprint(value)
+
+    monkeypatch.setattr(custody_module, "structural_abi_fingerprint", counting_fingerprint)
+
+    load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+        expected_population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+    )
+
+    assert calls == len(result.manifest.slots) * 2
+
+
+def test_slot_integrity_records_preserve_leaf_digest_and_fingerprint_values() -> None:
+    value = {
+        "array": jnp.array([1.0, 2.0], dtype=jnp.float32),
+        "static": ("kept", 3),
+    }
+    legacy_leaf_digests = []
+    for path, leaf in custody_module.jt.leaves_with_path(value):
+        if custody_module.eqx.is_array(leaf):
+            data = bytes(jnp.asarray(leaf).tobytes())
+        else:
+            data = pickle.dumps(leaf, protocol=pickle.HIGHEST_PROTOCOL)
+        legacy_leaf_digests.append(
+            custody_module.SlotLeafContentDigest(
+                path=custody_module._key_path_to_text(path),
+                sha256=custody_module.sha256_bytes(data),
+                size_bytes=len(data),
+            )
+        )
+
+    integrity = custody_module._slot_integrity_records(value)
+
+    assert integrity.leaf_digests == legacy_leaf_digests
+    assert (
+        integrity.structural_abi_fingerprint
+        == custody_module.structural_abi_fingerprint(value)
+    )
 
 
 def test_training_run_manifest_links_checkpoint_custody_ref() -> None:

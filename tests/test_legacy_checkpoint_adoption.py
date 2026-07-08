@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import feedbax.training.legacy_checkpoint_adoption as adoption_module
 from feedbax.contracts.checkpoints import (
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
@@ -543,6 +544,56 @@ def test_keep_current_paths_are_explicit_for_unfilled_current_arrays(tmp_path: P
     assert report.assigned_paths == ("/controller",)
 
 
+def test_adopt_tree_batches_replacements_into_single_tree_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = tmp_path / "model.eqx"
+    _write_stream(
+        stream,
+        [
+            np.array([1.0], dtype=np.float32),
+            np.array([2.0], dtype=np.float32),
+            np.array([3.0], dtype=np.float32),
+        ],
+    )
+    manifest = accept_leaf_manifest(
+        _manifest_payload(
+            model_entries=[
+                {
+                    "tree_path": f"/slot_{index}",
+                    "kind": "array",
+                    "shape": [1],
+                    "dtype": "float32",
+                }
+                for index in range(3)
+            ],
+            optimizer_entries=[],
+        )
+    )
+    current = {
+        f"slot_{index}": jnp.array([0.0], dtype=jnp.float32)
+        for index in range(3)
+    }
+    calls = 0
+    original_tree_at = adoption_module.eqx.tree_at
+
+    def counting_tree_at(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_tree_at(*args, **kwargs)
+
+    monkeypatch.setattr(adoption_module.eqx, "tree_at", counting_tree_at)
+
+    adopted, report = adopt_tree_from_legacy_stream(stream, manifest.model, current)
+
+    assert calls == 1
+    assert report.assigned_paths == ("/slot_0", "/slot_1", "/slot_2")
+    assert adopted["slot_0"].tolist() == [1.0]
+    assert adopted["slot_1"].tolist() == [2.0]
+    assert adopted["slot_2"].tolist() == [3.0]
+
+
 def test_static_stream_entries_verify_in_order_but_do_not_populate_current_statics(
     tmp_path: Path,
 ) -> None:
@@ -597,6 +648,7 @@ def test_static_stream_entries_verify_in_order_but_do_not_populate_current_stati
 
 def test_end_to_end_synthetic_legacy_checkpoint_round_trips_through_custody(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model_stream = tmp_path / "model.eqx"
     optimizer_stream = tmp_path / "optimizer_state.eqx"
@@ -607,6 +659,12 @@ def test_end_to_end_synthetic_legacy_checkpoint_round_trips_through_custody(
     _write_stream(optimizer_stream, [np.array(7, dtype=np.int32)])
     run_spec = _run_spec()
     slots = _slots()
+
+    def fail_copytree(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("adoption round trip should not copy transaction trees")
+
+    monkeypatch.setattr(adoption_module.shutil, "copytree", fail_copytree)
 
     result = adopt_legacy_checkpoint(
         checkpoint_root=tmp_path / "checkpoints",
