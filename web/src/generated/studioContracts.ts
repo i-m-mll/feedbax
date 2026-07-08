@@ -906,6 +906,7 @@ export interface ComponentDefinition {
 export interface OptimizerSpec {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
+  lr_schedule?: LrScheduleSpec | null;
 }
 
 export interface TimeAggregationSpec {
@@ -3036,6 +3037,7 @@ export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
     .object({
       "type": z.string(),
       "params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
+      "lr_schedule": LrScheduleSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<OptimizerSpec>;

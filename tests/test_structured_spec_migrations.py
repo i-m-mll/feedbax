@@ -17,6 +17,8 @@ from feedbax.contracts.migrations import (
     migrate_structured_spec_payload,
 )
 from feedbax.contracts.training import (
+    LR_SCHEDULE_SPEC_SCHEMA_ID,
+    LR_SCHEDULE_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
@@ -242,6 +244,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
     assert families["TrainingRunSpec"].current_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
+    assert families["LrScheduleSpec"].identity == LR_SCHEDULE_SPEC_SCHEMA_ID
+    assert families["LrScheduleSpec"].current_version == LR_SCHEDULE_SPEC_SCHEMA_VERSION
     assert families["LossTermSpec"].identity == "feedbax.spec.training.loss_term"
     assert families["LossTermSpec"].current_version == LOSS_TERM_SPEC_SCHEMA_VERSION
     assert (
@@ -431,6 +435,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.contracts.training",
             ("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
         ),
+        "LrScheduleSpec": (
+            "feedbax.contracts.training",
+            ("OptimizerSpec.lr_schedule", "provider_manifest.schemas"),
+        ),
         "TrainingRunManifest": (
             "feedbax.contracts.manifest",
             ("feedbax.contracts.manifest", "feedbax.integrations.provider"),
@@ -530,6 +538,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "PopulationStructureSpec",
         "TrainingRunSpec",
         "TrainingSpec",
+        "LrScheduleSpec",
         "TaskSpec",
         "StandardSupervisedMethodPayload",
         "AnalysisDataProductRequirement",
@@ -707,9 +716,13 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert objective_policy.rejected_old_versions == ("feedbax.objective.v0",)
     assert population_policy is not None
     training_run_policy = default_spec_registry.resolve("TrainingRunSpec").policy
+    lr_schedule_policy = default_spec_registry.resolve("LrScheduleSpec").policy
     assert training_run_policy is not None
     assert training_run_policy.stance == "migrate"
     assert training_run_policy.supported_old_versions == (TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,)
+    assert lr_schedule_policy is not None
+    assert lr_schedule_policy.stance == "reject"
+    assert lr_schedule_policy.rejected_old_versions == ("feedbax.spec.training.lr_schedule.v0",)
     assert checkpoint_policy is not None
     assert checkpoint_policy.stance == "migrate"
     assert checkpoint_policy.supported_old_versions == (

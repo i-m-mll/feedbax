@@ -581,6 +581,56 @@ NonCharSequence: TypeAlias = MutableSequence[T] | tuple[T, ...]
 LabeledInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, InterventionSpec]
 
 
+def _leading_axis_size(tree: PyTree, *, name: str) -> int:
+    """Return the leading axis size from the first array leaf in ``tree``."""
+    for leaf in jt.leaves(tree):
+        if eqx.is_array(leaf) and leaf.ndim >= 1:
+            return leaf.shape[0]
+    raise ValueError(f"{name} must contain at least one array leaf with a leading axis")
+
+
+def eval_ensemble_on_trials(
+    task: "AbstractTask",
+    models: Component,
+    trial_specs: TaskTrialSpec,
+    *,
+    key: PRNGKeyArray,
+    n_replicates: int,
+    rollout_step_hook: Optional[RolloutStepHook] = None,
+) -> StateT:
+    """Evaluate an ensemble of models on caller-supplied trial specifications.
+
+    Args:
+        task: Task whose :meth:`AbstractTask.eval_trials` implementation runs
+            each ensemble replicate.
+        models: Ensemble PyTree. Array leaves with shape
+            ``(n_replicates, ...)`` and any floating, integer, or boolean dtype
+            are mapped over the ensemble axis. Other leaves are broadcast to all
+            ensemble members.
+        trial_specs: Batched :class:`TaskTrialSpec` with leading trial axis,
+            such as input leaves with shape ``(n_trials, n_steps, ...)`` and
+            floating, integer, or boolean dtype. The same trial specs are used
+            for every ensemble replicate.
+        key: JAX PRNG key with shape ``(2,)`` and dtype ``uint32``. It is split
+            into ``n_replicates`` keys, then each replicate key is split into
+            ``n_trials`` keys for :meth:`AbstractTask.eval_trials`.
+        n_replicates: Size of the leading ensemble axis on mapped model leaves.
+        rollout_step_hook: Optional hook passed through to
+            :meth:`AbstractTask.eval_trials`.
+
+    Returns:
+        State PyTree with leading axes ``(n_replicates, n_trials, n_steps, ...)``
+        on array leaves. Leaf dtypes match the evaluated model state leaves.
+    """
+    return task.eval_ensemble_on_trials(
+        models,
+        trial_specs,
+        key=key,
+        n_replicates=n_replicates,
+        rollout_step_hook=rollout_step_hook,
+    )
+
+
 # TODO: Could this be generalized for *all* fields of `AbstractTask` that might change from training to validation?
 class TaskInterventionSpecs(Module):
     training: LabeledInterventionSpecs = field(default_factory=dict)
@@ -979,6 +1029,34 @@ class AbstractTask(Module):
         ensemble_random_trials: bool = True,
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> T:
+        # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
+        # if they are vmapping `eval`.
+        if ensemble_random_trials:
+            key = jr.split(key, n_replicates)
+            key_in_axis = 0
+        else:
+            key_in_axis = None
+
+        return self._eval_ensemble_map(
+            eval_fn,
+            models,
+            n_replicates,
+            key,
+            key_in_axis=key_in_axis,
+            rollout_step_hook=rollout_step_hook,
+        )
+
+    @eqx.filter_jit
+    def _eval_ensemble_map(
+        self,
+        eval_fn: Callable[..., T],
+        models: Component,
+        n_replicates: int,
+        keys: PRNGKeyArray,
+        *,
+        key_in_axis: int | None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
+    ) -> T:
         # Partition into arrays that have the ensemble (batch) dimension
         # and everything else.  StateIndex.init leaves may be arrays without
         # a batch dimension; those must NOT be vmapped.
@@ -994,16 +1072,61 @@ class AbstractTask(Module):
             model = eqx.combine(model_arrays, model_other)
             return eval_fn(model, key, rollout_step_hook=rollout_step_hook)
 
-        # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
-        # if they are vmapping `eval`.
-        if ensemble_random_trials:
-            key = jr.split(key, n_replicates)
-            key_in_axis = 0
-        else:
-            key_in_axis = None
-
         return eqx.filter_vmap(evaluate_single, in_axes=(0, None, key_in_axis))(
-            models_arrays, models_other, key
+            models_arrays, models_other, keys
+        )
+
+    def eval_ensemble_on_trials(
+        self,
+        models: Component,
+        trial_specs: TaskTrialSpec,
+        *,
+        key: PRNGKeyArray,
+        n_replicates: int,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
+    ) -> StateT:
+        """Evaluate an ensemble of models on caller-supplied trial specifications.
+
+        Args:
+            models: Ensemble PyTree. Array leaves with shape
+                ``(n_replicates, ...)`` and any floating, integer, or boolean
+                dtype are mapped over the ensemble axis. Other leaves are
+                broadcast to all ensemble members.
+            trial_specs: Batched :class:`TaskTrialSpec` with leading trial axis,
+                such as input leaves with shape ``(n_trials, n_steps, ...)`` and
+                floating, integer, or boolean dtype. The same trial specs are
+                used for every ensemble replicate.
+            key: JAX PRNG key with shape ``(2,)`` and dtype ``uint32``. It is
+                split into ``n_replicates`` keys, then each replicate key is
+                split into ``n_trials`` keys for :meth:`eval_trials`.
+            n_replicates: Size of the leading ensemble axis on mapped model
+                leaves.
+            rollout_step_hook: Optional hook passed through to
+                :meth:`eval_trials`.
+
+        Returns:
+            State PyTree with leading axes
+            ``(n_replicates, n_trials, n_steps, ...)`` on array leaves. Leaf
+            dtypes match the evaluated model state leaves.
+        """
+        n_trials = _leading_axis_size(trial_specs, name="trial_specs")
+        keys = jr.split(key, n_replicates)
+
+        def eval_trials(model, replicate_key, rollout_step_hook=None):
+            return self.eval_trials(
+                model,
+                trial_specs,
+                jr.split(replicate_key, n_trials),
+                rollout_step_hook=rollout_step_hook,
+            )
+
+        return self._eval_ensemble_map(
+            eval_trials,
+            models,
+            n_replicates,
+            keys,
+            key_in_axis=0,
+            rollout_step_hook=rollout_step_hook,
         )
 
     def eval_ensemble_with_loss(
