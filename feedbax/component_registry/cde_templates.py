@@ -13,13 +13,6 @@ class _Registry(Protocol):
 
 
 def register_cde_templates(registry: _Registry) -> None:
-
-    # NOTE: CDE template graphs use several display-only node types (Input, Subtract,
-    # Reshape, MatMul, Scale, Sigmoid) that are not registered as Studio primitives.
-    # These templates are visual architecture documentation for the nested subgraph
-    # preview and intentionally fail closed when materialized as Python components.
-    # The real subgraph-to-builder path is future work tracked by issue 2f8dd61.
-
     _cde_port_types = PortTypeSpec(
         inputs={
             'obs': PortType(dtype='vector'),
@@ -33,6 +26,18 @@ def register_cde_templates(registry: _Registry) -> None:
     )
     _cde_input_ports = ['obs', 'obs_prev', 'h_prev']
     _cde_output_ports = ['h_new', 'action']
+    _cde_input_bindings = {
+        'obs': ('obs_in', 'input'),
+        'obs_prev': ('obs_prev_in', 'input'),
+        'h_prev': ('h_prev_in', 'input'),
+    }
+    _cde_output_bindings = {
+        'h_new': ('sum_h', 'output'),
+        'action': ('sigmoid', 'output'),
+    }
+    _obs_dim = 1
+    _hidden_dim = 1
+    _action_dim = 1
 
     # ------------------------------------------------------------------ #
     # Layout constants — mirror the cdeTemplates.ts column/row grid
@@ -45,6 +50,24 @@ def register_cde_templates(registry: _Registry) -> None:
     # Helpers: make ComponentSpec / WireSpec / NodeUIState
     # ------------------------------------------------------------------ #
     def _node(type_: str, input_ports: list[str], output_ports: list[str], **params) -> ComponentSpec:
+        if type_ == 'Input':
+            input_ports = ['input']
+            params.setdefault('output_port', output_ports[0])
+        elif type_ == 'MLP':
+            hidden_size = params.pop('hidden_size', 128)
+            params.setdefault('input_size', _hidden_dim)
+            params.setdefault('output_size', _hidden_dim * _obs_dim)
+            params.setdefault('hidden_sizes', [hidden_size])
+            params['activation'] = 'relu'
+            params.setdefault('final_activation', 'tanh')
+        elif type_ == 'Reshape':
+            params.setdefault('shape', [_hidden_dim, _obs_dim])
+        elif type_ == 'Linear':
+            params.setdefault('input_size', _hidden_dim)
+            params.setdefault('output_size', _action_dim)
+        elif type_ == 'GRU':
+            params['input_size'] = _obs_dim
+            params['hidden_size'] = _hidden_dim
         return ComponentSpec(type=type_, params=params, input_ports=input_ports, output_ports=output_ports)
 
     def _wire(src_node: str, src_port: str, tgt_node: str, tgt_port: str) -> WireSpec:
@@ -107,10 +130,12 @@ def register_cde_templates(registry: _Registry) -> None:
             wires=standard_wires,
             input_ports=_cde_input_ports,
             output_ports=_cde_output_ports,
+            input_bindings=_cde_input_bindings,
+            output_bindings=_cde_output_bindings,
         ),
         template_ui_state=standard_ui,
         template_id='feedbax.templates.cde_standard',
-        template_kind='display',
+        template_kind='executable',
     ))
 
     # ------------------------------------------------------------------ #
@@ -171,10 +196,12 @@ def register_cde_templates(registry: _Registry) -> None:
             wires=decay_wires,
             input_ports=_cde_input_ports,
             output_ports=_cde_output_ports,
+            input_bindings=_cde_input_bindings,
+            output_bindings=_cde_output_bindings,
         ),
         template_ui_state=decay_ui,
         template_id='feedbax.templates.cde_decay',
-        template_kind='display',
+        template_kind='executable',
     ))
 
     # ------------------------------------------------------------------ #
@@ -242,10 +269,12 @@ def register_cde_templates(registry: _Registry) -> None:
             wires=antinf_wires,
             input_ports=_cde_input_ports,
             output_ports=_cde_output_ports,
+            input_bindings=_cde_input_bindings,
+            output_bindings=_cde_output_bindings,
         ),
         template_ui_state=antinf_ui,
         template_id='feedbax.templates.cde_anti_nf',
-        template_kind='display',
+        template_kind='executable',
     ))
 
     # ------------------------------------------------------------------ #
@@ -317,8 +346,10 @@ def register_cde_templates(registry: _Registry) -> None:
             wires=hybrid_wires,
             input_ports=_cde_input_ports,
             output_ports=_cde_output_ports,
+            input_bindings=_cde_input_bindings,
+            output_bindings=_cde_output_bindings,
         ),
         template_ui_state=hybrid_ui,
         template_id='feedbax.templates.cde_hybrid_v9b',
-        template_kind='display',
+        template_kind='executable',
     ))

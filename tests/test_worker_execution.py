@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graphs.templates import network_template_graph
 from feedbax.contracts.graphs.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.contracts.graph import (
@@ -137,6 +138,56 @@ def _network_task_binding_spec() -> dict:
                 "metadata": {},
             },
         ],
+        "metadata": {},
+    }
+
+
+def _cde_task_binding_spec() -> dict:
+    exposed_data = []
+    bindings = []
+    target_nodes = {
+        "obs": "obs_in",
+        "obs_prev": "obs_prev_in",
+        "h_prev": "h_prev_in",
+    }
+    values = {
+        "obs": [0.2],
+        "obs_prev": [0.1],
+        "h_prev": [0.3],
+    }
+    for port, target_node in target_nodes.items():
+        exposed_data.append(
+            {
+                "id": port,
+                "label": port,
+                "kind": "signal",
+                "role": "model_input",
+                "path": f"inputs.{port}",
+                "bindable": True,
+                "expected_shape": ["time", 1],
+                "value_spec": {
+                    "mode": "constant",
+                    "value": values[port],
+                    "dtype": "float32",
+                    "shape": ["time", 1],
+                },
+                "metadata": {},
+            }
+        )
+        bindings.append(
+            {
+                "id": f"task:{port}->{target_node}:input",
+                "source_data_id": port,
+                "target_node_id": target_node,
+                "target_port": "input",
+                "role": "model_input",
+                "metadata": {},
+            }
+        )
+    return {
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "exposed_data": exposed_data,
+        "bindings": bindings,
         "metadata": {},
     }
 
@@ -358,6 +409,33 @@ def test_rollout_graph_threads_network_template_recurrence() -> None:
 
     assert output.shape == (5, 1)
     assert not jnp.allclose(output[0], output[-1])
+
+
+def test_compile_training_run_dry_runs_cde_templates() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    training_spec = _training_spec(
+        loss={
+            "type": "TargetStateLoss",
+            "label": "action_zero",
+            "selector": "graph_output:action",
+            "target_value": [0.0],
+            "weight": 1.0,
+            "norm": "squared_l2",
+        }
+    )
+
+    for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
+        meta = registry.get(template_name)
+        assert meta is not None
+        compiled = compile_training_run(
+            graph_spec=meta.template_graph.model_dump(mode="json", exclude_none=True),
+            training_spec=training_spec,
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=_cde_task_binding_spec(),
+            cfg=_cfg(n_reach_steps=2),
+        )
+
+        assert compiled.metadata["execution"] == "generic_graph"
 
 
 def test_run_training_graph_trains_tiny_full_graph(tmp_path: Path, monkeypatch) -> None:

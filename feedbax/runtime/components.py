@@ -57,15 +57,47 @@ class Gain(Component):
         return {"output": output}, state
 
 
-class Sum(Component):
-    """Sum two inputs."""
+class Input(Component):
+    """Pass a graph input through a source-like node."""
 
-    input_ports = ("a", "b")
+    input_ports: tuple[str, ...] = field(static=True)
+    output_ports: tuple[str, ...] = field(static=True)
+    output_port: str = field(static=True)
+
+    def __init__(self, output_port: str = "output"):
+        self.input_ports = ("input",)
+        self.output_port = str(output_port)
+        self.output_ports = (self.output_port,)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        return {self.output_port: inputs["input"]}, state
+
+
+class Sum(Component):
+    """Sum present inputs."""
+
+    input_ports = ("a", "b", "c", "d")
     output_ports = ("output",)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        output = jt.map(lambda a, b: a + b, inputs["a"], inputs["b"])
+        values = [inputs[port] for port in self.input_ports if port in inputs]
+        if not values:
+            raise ValueError("Sum requires at least one input")
+        output = values[0]
+        for value in values[1:]:
+            output = jt.map(lambda a, b: a + b, output, value)
         return {"output": output}, state
+
+
+class Subtract(Component):
+    """Subtract input ``b`` from input ``a``."""
+
+    input_ports = ("a", "b")
+    output_ports = ("out",)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        output = jt.map(lambda a, b: a - b, inputs["a"], inputs["b"])
+        return {"out": output}, state
 
 
 class Multiply(Component):
@@ -77,6 +109,61 @@ class Multiply(Component):
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         output = jt.map(lambda a, b: a * b, inputs["a"], inputs["b"])
         return {"output": output}, state
+
+
+class Reshape(Component):
+    """Reshape an array input to a configured shape."""
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    shape: tuple[int, ...] = field(static=True)
+
+    def __init__(self, shape: Sequence[int] = (1, 1)):
+        parsed = tuple(int(dim) for dim in shape)
+        if not parsed:
+            raise ValueError("Reshape shape must contain at least one dimension")
+        self.shape = parsed
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        return {"output": jnp.reshape(inputs["input"], self.shape)}, state
+
+
+class MatMul(Component):
+    """Matrix multiply inputs ``a`` and ``b``."""
+
+    input_ports = ("a", "b")
+    output_ports = ("out",)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        return {"out": jnp.matmul(inputs["a"], inputs["b"])}, state
+
+
+class Scale(Component):
+    """Multiply input by a scalar or broadcastable scale."""
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    scale: PyTree
+
+    def __init__(self, scale: PyTree = 1.0):
+        self.scale = jnp.asarray(scale)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        scale = jnp.asarray(self.scale)
+        output = jt.map(lambda x: jnp.asarray(x) * scale, inputs["input"])
+        return {"output": output}, state
+
+
+class Sigmoid(Component):
+    """Apply a logistic sigmoid elementwise."""
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        return {"output": jt.map(jax.nn.sigmoid, inputs["input"])}, state
 
 
 def _affine_param(value: PyTree, shape: tuple[int, ...], name: str) -> PyTree:
