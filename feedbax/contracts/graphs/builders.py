@@ -18,9 +18,11 @@ from feedbax.runtime.components import (
     ElementwiseAffineModulator,
     GRU,
     Gain,
+    Input,
     LSTM,
     Linear,
     MLP,
+    MatMul,
     Multiply,
     Mux,
     Noise,
@@ -28,8 +30,12 @@ from feedbax.runtime.components import (
     Ramp,
     Ravel,
     Saturation,
+    Scale,
+    Sigmoid,
     Sine,
     Spring,
+    Reshape,
+    Subtract,
     Sum,
 )
 from feedbax.runtime.affine_composer import (
@@ -493,12 +499,39 @@ def _build_gain(params: Mapping[str, Any]) -> Gain:
     return Gain(gain=float(params.get("gain", 1.0)))
 
 
+def _build_input(params: Mapping[str, Any]) -> Input:
+    return Input(output_port=str(params.get("output_port", "output")))
+
+
 def _build_sum(params: Mapping[str, Any]) -> Sum:
     return Sum()
 
 
+def _build_subtract(params: Mapping[str, Any]) -> Subtract:
+    return Subtract()
+
+
 def _build_multiply(params: Mapping[str, Any]) -> Multiply:
     return Multiply()
+
+
+def _build_reshape(params: Mapping[str, Any]) -> Reshape:
+    shape = params.get("shape", params.get("output_shape", [1, 1]))
+    if not isinstance(shape, (list, tuple)):
+        raise ValueError("Reshape requires 'shape' as a list of integers")
+    return Reshape(shape=shape)
+
+
+def _build_matmul(params: Mapping[str, Any]) -> MatMul:
+    return MatMul()
+
+
+def _build_scale(params: Mapping[str, Any]) -> Scale:
+    return Scale(scale=params.get("scale", 1.0))
+
+
+def _build_sigmoid(params: Mapping[str, Any]) -> Sigmoid:
+    return Sigmoid()
 
 
 def _build_elementwise_affine_modulator(
@@ -744,8 +777,14 @@ def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueCompos
 
 _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Gain": _build_gain,
+    "Input": _build_input,
     "Sum": _build_sum,
+    "Subtract": _build_subtract,
     "Multiply": _build_multiply,
+    "Reshape": _build_reshape,
+    "MatMul": _build_matmul,
+    "Scale": _build_scale,
+    "Sigmoid": _build_sigmoid,
     "ElementwiseAffineModulator": _build_elementwise_affine_modulator,
     "Constant": _build_constant,
     "Ravel": lambda params: Ravel(),
@@ -844,39 +883,7 @@ def _unsupported_component_builder(component_type: str) -> Callable[[Mapping[str
     return _builder
 
 
-_UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {
-    "Input": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "Graph inputs must be represented by GraphSpec input_bindings, not display-only "
-        "placeholder nodes. CDE templates are currently display-only and fail closed; "
-        "real subgraph-to-builder construction is future work tracked by issue 2f8dd61."
-    ),
-    "Subtract": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "Reshape": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "MatMul": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "Scale": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "Sigmoid": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-}
+_UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {}
 
 
 def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
@@ -895,12 +902,6 @@ def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
         f"Component template {meta.name!r} is not executable because its template graph "
         f"contains node types without registered builders: {details}"
     )
-    template_id = getattr(meta, "template_id", "") or ""
-    if template_id.startswith("feedbax.templates.cde_"):
-        message += (
-            ". CDE templates are currently display-only and fail closed; real "
-            "subgraph-to-builder construction is future work tracked by issue 2f8dd61."
-        )
     return message
 
 

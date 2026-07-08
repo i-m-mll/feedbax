@@ -435,6 +435,54 @@ def output_prototypes_for_node(
                 strict=strict,
             )
         return {"output": jnp.zeros((sum(shape[0] for shape in shapes if shape),))}
+    if node_type == "Input":
+        proto = input_prototypes.get((node_name, "input"))
+        if proto is None:
+            return _defer_or_raise(
+                f"Input node {node_name!r} port 'input' requires an input prototype",
+                strict=strict,
+            )
+        return {str(params.get("output_port", "output")): proto}
+    if node_type == "Subtract":
+        proto = input_prototypes.get((node_name, "a"))
+        if proto is None:
+            proto = input_prototypes.get((node_name, "b"))
+        if proto is None:
+            return _defer_or_raise(
+                f"Subtract node {node_name!r} requires input prototype 'a' or 'b'",
+                strict=strict,
+            )
+        return {"out": proto}
+    if node_type == "Reshape":
+        if (node_name, "input") not in input_prototypes:
+            return _defer_or_raise(
+                f"Reshape node {node_name!r} port 'input' requires an input prototype",
+                strict=strict,
+            )
+        shape = params.get("shape", params.get("output_shape", [1, 1]))
+        if not isinstance(shape, (list, tuple)):
+            return _defer_or_raise(
+                f"Reshape node {node_name!r} requires 'shape' as a list",
+                strict=strict,
+            )
+        return {"output": jnp.zeros(tuple(int(dim) for dim in shape))}
+    if node_type == "MatMul":
+        if (node_name, "a") not in input_prototypes or (node_name, "b") not in input_prototypes:
+            return _defer_or_raise(
+                f"MatMul node {node_name!r} requires input prototypes 'a' and 'b'",
+                strict=strict,
+            )
+        a = input_prototypes[(node_name, "a")]
+        b = input_prototypes[(node_name, "b")]
+        return {"out": jnp.matmul(jnp.zeros_like(a), jnp.zeros_like(b))}
+    if node_type in {"Scale", "Sigmoid"}:
+        proto = input_prototypes.get((node_name, "input"))
+        if proto is None:
+            return _defer_or_raise(
+                f"{node_type} node {node_name!r} port 'input' requires an input prototype",
+                strict=strict,
+            )
+        return {"output": proto}
     if node_type in {"PointMass", "TwoLinkArm", "Arm6MuscleRigidTendon"}:
         effector = CartesianState()
         return {"effector": effector, "state": effector}
