@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.manifest import (
+    ParentRef,
     TrainingRunManifest,
     load_manifest,
     spec_payload,
@@ -92,6 +93,43 @@ def test_training_run_index_lists_sweep_axis_hyperparams(
 
     assert response.status_code == 200
     assert response.json()[0]["hyperparams"]["axis_loss_weight"] == 1e-5
+
+
+def test_training_run_index_surfaces_legacy_checkpoint_adoption_state(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(runs, "_legacy_training_runs_from_model_db", lambda: [])
+    legacy_root = tmp_path / "legacy-checkpoints"
+    checkpoint_dir = legacy_root / "checkpoint_000001"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "model.eqx").write_bytes(b"model")
+    (checkpoint_dir / "optimizer_state.eqx").write_bytes(b"optimizer")
+    (checkpoint_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    manifest = _training_manifest("feedbax-training-run:legacy-checkpoint", "completed")
+    manifest.checkpoint_custody = [
+        ParentRef(
+            kind="TrainingCheckpointRoot",
+            id="legacy-checkpoint-root",
+            role="training_checkpoint_custody",
+            uri=str(legacy_root),
+        )
+    ]
+    write_manifest(manifest, root=tmp_path / "runs")
+    client = TestClient(create_app())
+
+    response = client.get("/api/runs/training")
+
+    assert response.status_code == 200
+    legacy = response.json()[0]["legacy_checkpoint"]
+    assert legacy["layout_id"] == "rlrmp_eqx_stream_v0"
+    assert "checkpoint predates checkpoint custody" in legacy["message"].lower()
+    assert "docs/structure.md#legacy-checkpoint-adoption" in legacy["docs"]
+    assert (
+        legacy["adoption_entrypoint"]
+        == "feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint"
+    )
 
 
 def test_training_run_manifest_endpoint_returns_snapshot_payload(

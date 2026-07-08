@@ -20,6 +20,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+import numpy as np
 from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.checkpoints import (
@@ -58,6 +59,17 @@ LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
 _LOGGER = logging.getLogger(__name__)
+_STRUCTURAL_ABI_DIFF_FIELDS = (
+    "dtype",
+    "shape",
+    "weak_type",
+    "leaf_type",
+    "static_repr_sha256",
+)
+LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT = (
+    "feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint"
+)
+LEGACY_CHECKPOINT_ADOPTION_DOCS = "docs/structure.md#legacy-checkpoint-adoption"
 
 
 class CheckpointCustodyError(ValueError):
@@ -111,6 +123,22 @@ class CheckpointForkResult:
 
 
 @dataclass(frozen=True)
+class DetectedLegacyCheckpointLayout:
+    """Recognized pre-custody checkpoint layout evidence."""
+
+    layout_id: str
+    name: str
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _LegacyCheckpointLayout:
+    layout_id: str
+    name: str
+    detect: Callable[[Path], tuple[str, ...]]
+
+
+@dataclass(frozen=True)
 class _LoadedCheckpointTransaction:
     root: Path
     latest_pointer: CheckpointLatestPointer
@@ -118,6 +146,20 @@ class _LoadedCheckpointTransaction:
     manifest: CheckpointTransactionManifest
     slots: Mapping[str, Any]
     provenance_notices: tuple[CheckpointProvenanceNotice, ...]
+
+
+@dataclass(frozen=True)
+class _StructuralAbiLeafDiff:
+    path: str
+    field: str
+    recorded: Any
+    actual: Any
+
+
+@dataclass(frozen=True)
+class _SlotIntegrityRecords:
+    leaf_digests: list[SlotLeafContentDigest]
+    structural_abi_fingerprint: StructuralAbiFingerprint
 
 
 def checkpoint_barrier(program: PhaseProgramSpec, barrier_name: str) -> CheckpointBarrierSpec:
@@ -193,13 +235,17 @@ def write_checkpoint_transaction(
             blob_sha256 = sha256_bytes(blob_bytes)
             blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
             _write_bytes_atomic(blob_path, blob_bytes)
-            leaf_digests = _leaf_content_digests(value)
+            integrity = _slot_integrity_records(value)
             content_digest = SlotContentDigest(
                 slot=spec.slot,
                 blob_sha256=blob_sha256,
                 blob_size_bytes=len(blob_bytes),
-                leaf_hashes=leaf_digests,
-                slot_root_sha256=_slot_root_sha256(spec.slot, blob_sha256, leaf_digests),
+                leaf_hashes=integrity.leaf_digests,
+                slot_root_sha256=_slot_root_sha256(
+                    spec.slot,
+                    blob_sha256,
+                    integrity.leaf_digests,
+                ),
             )
             population = _population_record(
                 spec.slot,
@@ -215,7 +261,7 @@ def write_checkpoint_transaction(
                 sha256=blob_sha256,
                 size_bytes=len(blob_bytes),
                 coordinate=(slot_coordinates or {}).get(spec.slot, coordinate),
-                structural_abi_fingerprint=structural_abi_fingerprint(value),
+                structural_abi_fingerprint=integrity.structural_abi_fingerprint,
                 content_digest=content_digest,
                 population=population,
                 metadata=dict(spec.metadata),
@@ -306,6 +352,22 @@ def load_latest_checkpoint(
     )
 
 
+def detect_known_legacy_checkpoint_layout(
+    root: str | Path,
+) -> DetectedLegacyCheckpointLayout | None:
+    """Return a recognized pre-custody checkpoint layout for *root*, if any."""
+    root_path = Path(root)
+    for layout in _KNOWN_LEGACY_CHECKPOINT_LAYOUTS:
+        evidence = layout.detect(root_path)
+        if evidence:
+            return DetectedLegacyCheckpointLayout(
+                layout_id=layout.layout_id,
+                name=layout.name,
+                evidence=evidence,
+            )
+    return None
+
+
 def _load_checkpoint_from_pointer(
     root_path: Path,
     latest: CheckpointLatestPointer,
@@ -357,7 +419,11 @@ def _load_checkpoint_from_pointer(
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} could not be deserialized"
             ) from exc
-    provenance_notices = _validate_manifest_structural_abi(manifest, loaded_slots)
+    provenance_notices, loaded_fingerprints = _validate_manifest_structural_abi(
+        manifest,
+        loaded_slots,
+    )
+    loaded_fingerprint_slots = dict(loaded_slots)
     if resume_slot_transform is not None:
         try:
             loaded_slots = dict(resume_slot_transform(loaded_slots))
@@ -370,7 +436,17 @@ def _load_checkpoint_from_pointer(
             loaded_slots,
             error_cls=CheckpointCompatibilityError,
         )
-    _validate_structural_abi(manifest, expected_slots, loaded_slots)
+        loaded_fingerprints = {
+            slot: fingerprint
+            for slot, fingerprint in loaded_fingerprints.items()
+            if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
+        }
+    _validate_structural_abi(
+        manifest,
+        expected_slots,
+        loaded_slots,
+        loaded_fingerprints=loaded_fingerprints,
+    )
 
     return CheckpointResumeResult(
         manifest=manifest,
@@ -674,7 +750,7 @@ def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTr
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} could not be deserialized"
             ) from exc
-    provenance_notices = _validate_manifest_structural_abi(manifest, loaded_slots)
+    provenance_notices, _ = _validate_manifest_structural_abi(manifest, loaded_slots)
     return _LoadedCheckpointTransaction(
         root=root_path,
         latest_pointer=latest,
@@ -727,13 +803,17 @@ def _write_fresh_slot_blob(
     blob_sha256 = sha256_bytes(blob_bytes)
     blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
     _write_bytes_atomic(blob_path, blob_bytes)
-    leaf_digests = _leaf_content_digests(value)
+    integrity = _slot_integrity_records(value)
     content_digest = SlotContentDigest(
         slot=spec.slot,
         blob_sha256=blob_sha256,
         blob_size_bytes=len(blob_bytes),
-        leaf_hashes=leaf_digests,
-        slot_root_sha256=_slot_root_sha256(spec.slot, blob_sha256, leaf_digests),
+        leaf_hashes=integrity.leaf_digests,
+        slot_root_sha256=_slot_root_sha256(
+            spec.slot,
+            blob_sha256,
+            integrity.leaf_digests,
+        ),
     )
     slot_record = CheckpointSlotBlobRef(
         slot=spec.slot,
@@ -743,7 +823,7 @@ def _write_fresh_slot_blob(
         sha256=blob_sha256,
         size_bytes=len(blob_bytes),
         coordinate=coordinate,
-        structural_abi_fingerprint=structural_abi_fingerprint(value),
+        structural_abi_fingerprint=integrity.structural_abi_fingerprint,
         content_digest=content_digest,
         population=_population_record(
             spec.slot,
@@ -862,15 +942,179 @@ def structural_abi_fingerprint(value: Any) -> StructuralAbiFingerprint:
     """Return a structural PyTree ABI fingerprint for a slot value."""
     pairs, treedef = jt.flatten_with_path(value)
     leaves = [_leaf_fingerprint(path, leaf) for path, leaf in pairs]
+    return _structural_abi_fingerprint_from_leaves(str(treedef), leaves)
+
+
+def _structural_abi_fingerprint_from_leaves(
+    treedef: str,
+    leaves: Sequence[SlotLeafFingerprint],
+) -> StructuralAbiFingerprint:
     environment_provenance = _serializer_versions()
-    payload = _structural_abi_content_payload(str(treedef), leaves)
+    payload = _structural_abi_content_payload(treedef, leaves)
     return StructuralAbiFingerprint(
-        treedef=str(treedef),
+        treedef=treedef,
         leaf_count=len(leaves),
-        leaves=leaves,
+        leaves=list(leaves),
         environment_provenance=environment_provenance,
         fingerprint_sha256=_canonical_hash(payload),
     )
+
+
+def _format_structural_abi_diff(
+    recorded: StructuralAbiFingerprint,
+    actual: StructuralAbiFingerprint,
+) -> str:
+    diffs = _structural_abi_leaf_diffs(recorded, actual)
+    displayed_diffs = diffs[:10]
+    leaf_diff_text = "; ".join(
+        _format_structural_abi_leaf_diff(diff) for diff in displayed_diffs
+    )
+    if not leaf_diff_text:
+        leaf_diff_text = "<none in comparable leaves>"
+    elif len(diffs) > len(displayed_diffs):
+        leaf_diff_text += f"; ... ({len(diffs)} total differing leaves)"
+    suffix = (
+        f"; treedef_equal={recorded.treedef == actual.treedef}"
+        f"; leaf_count_delta={actual.leaf_count - recorded.leaf_count}"
+        f" (recorded={recorded.leaf_count}, actual={actual.leaf_count})"
+        f"; differing_leaves={leaf_diff_text}"
+    )
+    x64_hint = _structural_abi_x64_hint(recorded, actual, diffs)
+    if x64_hint is not None:
+        suffix += f"; {x64_hint}"
+    return suffix
+
+
+def _structural_abi_leaf_diffs(
+    recorded: StructuralAbiFingerprint,
+    actual: StructuralAbiFingerprint,
+) -> list[_StructuralAbiLeafDiff]:
+    diffs: list[_StructuralAbiLeafDiff] = []
+    max_leaves = max(len(recorded.leaves), len(actual.leaves))
+    for index in range(max_leaves):
+        if index >= len(recorded.leaves):
+            actual_leaf = actual.leaves[index]
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=actual_leaf.path,
+                    field="leaf",
+                    recorded="<missing>",
+                    actual=_leaf_structural_content_payload(actual_leaf),
+                )
+            )
+            continue
+        if index >= len(actual.leaves):
+            recorded_leaf = recorded.leaves[index]
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=recorded_leaf.path,
+                    field="leaf",
+                    recorded=_leaf_structural_content_payload(recorded_leaf),
+                    actual="<missing>",
+                )
+            )
+            continue
+
+        recorded_leaf = recorded.leaves[index]
+        actual_leaf = actual.leaves[index]
+        if recorded_leaf.path != actual_leaf.path:
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=f"leaf[{index}]",
+                    field="path",
+                    recorded=recorded_leaf.path,
+                    actual=actual_leaf.path,
+                )
+            )
+        for field in _STRUCTURAL_ABI_DIFF_FIELDS:
+            recorded_value = getattr(recorded_leaf, field)
+            actual_value = getattr(actual_leaf, field)
+            if recorded_value == actual_value:
+                continue
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=recorded_leaf.path,
+                    field=field,
+                    recorded=recorded_value,
+                    actual=actual_value,
+                )
+            )
+    return diffs
+
+
+def _format_structural_abi_leaf_diff(diff: _StructuralAbiLeafDiff) -> str:
+    return (
+        f"path={diff.path} field={diff.field} "
+        f"recorded={_short_json(diff.recorded)} actual={_short_json(diff.actual)}"
+    )
+
+
+def _structural_abi_x64_hint(
+    recorded: StructuralAbiFingerprint,
+    actual: StructuralAbiFingerprint,
+    diffs: Sequence[_StructuralAbiLeafDiff],
+) -> str | None:
+    if not diffs:
+        return None
+    x64_sides: set[str] = set()
+    for diff in diffs:
+        if diff.field == "dtype":
+            x64_side = _x64_dtype_diff_side(diff.recorded, diff.actual)
+            if x64_side is None:
+                return None
+            x64_sides.add(x64_side)
+        elif diff.field == "weak_type":
+            if not isinstance(diff.recorded, bool) or not isinstance(diff.actual, bool):
+                return None
+        else:
+            return None
+    recorded_x64 = _fingerprint_x64_enabled(recorded)
+    actual_x64 = _fingerprint_x64_enabled(actual)
+    if not x64_sides:
+        if recorded_x64 is True and actual_x64 is False:
+            x64_sides.add("recorded")
+        elif recorded_x64 is False and actual_x64 is True:
+            x64_sides.add("actual")
+        else:
+            return None
+    if len(x64_sides) != 1:
+        return None
+    x64_side = next(iter(x64_sides))
+    return (
+        f"x64_side={x64_side}"
+        f"; recorded_x64_enabled={recorded_x64}"
+        f"; actual_x64_enabled={actual_x64}"
+        "; hint=jax_enable_x64 differs between checkpoint writer and reader"
+    )
+
+
+def _x64_dtype_diff_side(recorded: Any, actual: Any) -> str | None:
+    recorded_kind_bits = _dtype_kind_bits(recorded)
+    actual_kind_bits = _dtype_kind_bits(actual)
+    if recorded_kind_bits is None or actual_kind_bits is None:
+        return None
+    recorded_kind, recorded_bits = recorded_kind_bits
+    actual_kind, actual_bits = actual_kind_bits
+    if recorded_kind != actual_kind or {recorded_bits, actual_bits} != {32, 64}:
+        return None
+    if recorded_bits == 64:
+        return "recorded"
+    return "actual"
+
+
+def _dtype_kind_bits(dtype: Any) -> tuple[str, int] | None:
+    dtype_text = str(dtype)
+    for kind in ("float", "int"):
+        for bits in (32, 64):
+            if dtype_text == f"{kind}{bits}":
+                return kind, bits
+    return None
+
+
+def _fingerprint_x64_enabled(fingerprint: StructuralAbiFingerprint) -> bool | None:
+    if fingerprint.environment_provenance is None:
+        return None
+    return fingerprint.environment_provenance.x64_enabled
 
 
 def _validate_required_slots(
@@ -901,42 +1145,56 @@ def _validate_structural_abi(
     manifest: CheckpointTransactionManifest,
     expected_slots: Mapping[str, Any],
     loaded_slots: Mapping[str, Any],
+    *,
+    loaded_fingerprints: Mapping[str, StructuralAbiFingerprint] | None = None,
 ) -> None:
+    loaded_fingerprints = loaded_fingerprints or {}
     for slot in manifest.slots:
         if slot.slot not in expected_slots:
             continue
         if slot.slot not in loaded_slots:
             continue
         loaded = loaded_slots[slot.slot]
-        loaded_fingerprint = structural_abi_fingerprint(loaded)
+        loaded_fingerprint = loaded_fingerprints.get(slot.slot)
+        if loaded_fingerprint is None:
+            loaded_fingerprint = structural_abi_fingerprint(loaded)
         expected = structural_abi_fingerprint(expected_slots[slot.slot])
         if loaded_fingerprint.fingerprint_sha256 != expected.fingerprint_sha256:
+            diff_suffix = _format_structural_abi_diff(expected, loaded_fingerprint)
             raise CheckpointCompatibilityError(
                 f"checkpoint slot {slot.slot!r} structural ABI mismatch"
+                f"{diff_suffix}"
             )
 
 
 def _validate_manifest_structural_abi(
     manifest: CheckpointTransactionManifest,
     loaded_slots: Mapping[str, Any],
-) -> list[CheckpointProvenanceNotice]:
+) -> tuple[list[CheckpointProvenanceNotice], dict[str, StructuralAbiFingerprint]]:
     notices: list[CheckpointProvenanceNotice] = []
+    loaded_fingerprints: dict[str, StructuralAbiFingerprint] = {}
     for slot in manifest.slots:
         if slot.slot not in loaded_slots:
             continue
         loaded_fingerprint = structural_abi_fingerprint(loaded_slots[slot.slot])
+        loaded_fingerprints[slot.slot] = loaded_fingerprint
         if (
             loaded_fingerprint.fingerprint_sha256
             != slot.structural_abi_fingerprint.fingerprint_sha256
         ):
+            diff_suffix = _format_structural_abi_diff(
+                slot.structural_abi_fingerprint,
+                loaded_fingerprint,
+            )
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale"
+                f"{diff_suffix}"
             )
         notice = _environment_provenance_notice(slot.slot, slot.structural_abi_fingerprint)
         if notice is not None:
             _LOGGER.warning(notice.message)
             notices.append(notice)
-    return notices
+    return notices, loaded_fingerprints
 
 
 def _validate_contract_binding(
@@ -1228,7 +1486,7 @@ def _read_blob(slot: CheckpointSlotBlobRef, path: Path) -> bytes:
 def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
     path = root / LATEST_POINTER_NAME
     if not path.is_file():
-        _reject_legacy_supervised_checkpoint(root)
+        _reject_legacy_checkpoint(root)
         raise CheckpointIntegrityError("checkpoint latest pointer is missing")
     try:
         payload = json.loads(path.read_text())
@@ -1237,13 +1495,68 @@ def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
         raise CheckpointIntegrityError("checkpoint latest pointer is corrupt") from exc
 
 
-def _reject_legacy_supervised_checkpoint(root: Path) -> None:
-    if (root / "last_batch.txt").is_file() or any(root.glob("ckpt_*.eqx")):
+def _reject_legacy_checkpoint(root: Path) -> None:
+    layout = detect_known_legacy_checkpoint_layout(root)
+    if layout is not None:
         raise CheckpointCompatibilityError(
-            "legacy supervised trainer checkpoints cannot be loaded by executor "
-            "checkpoint custody because they do not contain a schema identity, "
-            "slot manifest, or run-contract binding"
+            _legacy_checkpoint_adoption_message(layout)
         )
+
+
+def _legacy_checkpoint_adoption_message(layout: DetectedLegacyCheckpointLayout) -> str:
+    evidence = ", ".join(layout.evidence[:3])
+    if len(layout.evidence) > 3:
+        evidence += f", ... ({len(layout.evidence)} evidence paths)"
+    return (
+        f"recognized legacy checkpoint layout {layout.name!r} ({layout.layout_id}); "
+        f"evidence: {evidence}. These checkpoints predate checkpoint custody and "
+        "cannot be loaded directly because they do not contain a schema identity, "
+        "slot manifest, or run-contract binding. Adopt them with "
+        f"`{LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT}`; required inputs include the "
+        "producing commit for the LeafManifest dump and path-mapping rules. See "
+        f"{LEGACY_CHECKPOINT_ADOPTION_DOCS}."
+    )
+
+
+def _detect_feedbax_supervised_legacy_layout(root: Path) -> tuple[str, ...]:
+    evidence: list[str] = []
+    if (root / "last_batch.txt").is_file():
+        evidence.append("last_batch.txt")
+    evidence.extend(sorted(path.name for path in root.glob("ckpt_*.eqx"))[:8])
+    return tuple(evidence)
+
+
+def _detect_rlrmp_eqx_stream_legacy_layout(root: Path) -> tuple[str, ...]:
+    try:
+        candidates = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return ()
+
+    evidence: list[str] = []
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        suffix = candidate.name.removeprefix("checkpoint_")
+        if suffix == candidate.name or not suffix.isdigit():
+            continue
+        required = ("model.eqx", "optimizer_state.eqx", "metadata.json")
+        if all((candidate / name).is_file() for name in required):
+            evidence.append(f"{candidate.name}/{{model.eqx,optimizer_state.eqx,metadata.json}}")
+    return tuple(evidence)
+
+
+_KNOWN_LEGACY_CHECKPOINT_LAYOUTS = (
+    _LegacyCheckpointLayout(
+        layout_id="feedbax_supervised_trainer_v0",
+        name="Feedbax supervised trainer legacy checkpoint",
+        detect=_detect_feedbax_supervised_legacy_layout,
+    ),
+    _LegacyCheckpointLayout(
+        layout_id="rlrmp_eqx_stream_v0",
+        name="RLRMP Equinox stream legacy checkpoint",
+        detect=_detect_rlrmp_eqx_stream_legacy_layout,
+    ),
+)
 
 
 def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:
@@ -1350,11 +1663,15 @@ def _leaf_structural_content_payload(leaf: SlotLeafFingerprint) -> dict[str, Any
     }
 
 
-def _leaf_content_digests(value: Any) -> list[SlotLeafContentDigest]:
+def _slot_integrity_records(value: Any) -> _SlotIntegrityRecords:
+    pairs, treedef = jt.flatten_with_path(value)
+    host_leaves = jt.leaves(jax.device_get(value))
     digests: list[SlotLeafContentDigest] = []
-    for path, leaf in jt.leaves_with_path(value):
+    fingerprints: list[SlotLeafFingerprint] = []
+    for (path, leaf), host_leaf in zip(pairs, host_leaves, strict=True):
+        fingerprints.append(_leaf_fingerprint(path, leaf))
         if eqx.is_array(leaf):
-            data = bytes(jnp.asarray(leaf).tobytes())
+            data = np.asarray(host_leaf).tobytes()
         else:
             data = pickle.dumps(leaf, protocol=pickle.HIGHEST_PROTOCOL)
         digests.append(
@@ -1364,7 +1681,17 @@ def _leaf_content_digests(value: Any) -> list[SlotLeafContentDigest]:
                 size_bytes=len(data),
             )
         )
-    return digests
+    return _SlotIntegrityRecords(
+        leaf_digests=digests,
+        structural_abi_fingerprint=_structural_abi_fingerprint_from_leaves(
+            str(treedef),
+            fingerprints,
+        ),
+    )
+
+
+def _leaf_content_digests(value: Any) -> list[SlotLeafContentDigest]:
+    return _slot_integrity_records(value).leaf_digests
 
 
 def _slot_root_sha256(

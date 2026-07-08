@@ -1,7 +1,12 @@
 export type {
   CreateEvalRunRequest,
   EvalRunInfo,
+  LegacyCheckpointInfo,
   TrainingRunInfo,
+} from '@/generated/studioContracts';
+
+import type {
+  LegacyCheckpointInfo as GeneratedLegacyCheckpointInfo,
 } from '@/generated/studioContracts';
 
 /** Metadata for a single training run. */
@@ -21,6 +26,7 @@ export interface TrainingRun {
   sourceIssue?: string;
   provenanceId?: string;
   supersededBy?: string;
+  legacyCheckpoint?: GeneratedLegacyCheckpointInfo;
 }
 
 /** Metadata for a single evaluation run within a training run. */

@@ -196,13 +196,13 @@ cat > "$WORK/spec.json" <<JSON
 {"user_confirmed":true}
 JSON
 
-# Drive launch_training directly via a tiny harness that sources the script's
-# functions. We can't `source` runpod_deploy.sh (it calls main), so we extract
-# the launch-related functions and the few helpers they need.
+# Drive launch_training directly via a tiny harness that sources the run-prep
+# library and supplies the few driver transport helpers it needs.
 HARNESS="$WORK/launch_harness.sh"
 {
   echo 'set -uo pipefail'
   echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   # Minimal helpers used by launch_row / launch_training.
   cat <<'H'
 DRY_RUN=0
@@ -224,10 +224,6 @@ remote_capture() {
   ssh -i /dev/null -p 22 root@localhost "$command"
 }
 H
-  # Extract launch_row, count_running_rows, launch_training, sync_rows_manifest.
-  for fn in sync_rows_manifest launch_row count_running_rows launch_training; do
-    sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
-  done
   echo 'launch_training'
 } > "$HARNESS"
 
@@ -236,6 +232,7 @@ PATH="$STUBS2:$PATH" \
 REMOTE_RLRMP_ROOT="$REMOTE_FS/rlrmp" \
 REMOTE_RUN_DIR="$REMOTE_FS/feedbax_runs/runpod-deploy" \
 REMOTE_SENTINEL_DIR="$SDIR2" \
+JAX_COMPILATION_CACHE_DIR="$REMOTE_FS/jax_cache" \
 ROWS_MANIFEST="$WORK/rows.json" \
 ROW_LAUNCH_STAGGER_SECONDS=0 \
 MAX_PARALLEL_ROWS=2 \
@@ -262,6 +259,84 @@ else
   no "expected 3 row .done files" "got $n_done; $(ls "$SDIR2" 2>/dev/null | tr '\n' ' ')"
 fi
 
+# ---------------------------------------------------------------------------
+section "9895c08 warm-first waits for log readiness, not row pid"
+
+WARM="$WORK/warm_ready"; mkdir -p "$WARM/stubs" "$WARM/remote/rlrmp" "$WARM/guard"
+WARM_SENT="$WARM/remote/run/sentinels"
+cat > "$WARM/stubs/ssh" <<'STUB'
+#!/usr/bin/env bash
+cmd="${!#}"
+bash -c "$cmd"
+STUB
+chmod +x "$WARM/stubs/ssh"
+for tool in rsync curl runpodctl; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$WARM/stubs/$tool"
+  chmod +x "$WARM/stubs/$tool"
+done
+
+jq -n \
+  --arg cmd_a "sleep 0.5; if [ -f '$WARM/guard/row_b_started' ]; then touch '$WARM/guard/fanout_before_ready'; fi; echo WARM_READY; sleep 0.1" \
+  --arg cmd_b "touch '$WARM/guard/row_b_started'; sleep 0.1" \
+  '{schema_version: 1, rows: [{id: "row_a", command: $cmd_a}, {id: "row_b", command: $cmd_b}]}' \
+  > "$WARM/rows.json"
+
+WARM_HARNESS="$WARM/harness.sh"
+{
+  echo 'set -uo pipefail'
+  echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
+  cat <<'H'
+DRY_RUN=0
+RUNPOD_SSH_KEY="/dev/null"
+SSH_CONNECT_TIMEOUT=10
+log() { printf '==> %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+print_cmd() { :; }
+run_cmd() { "$@"; }
+rsync_rsh() { printf 'ssh\n'; }
+sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
+expand_path() { printf '%s\n' "$1"; }
+remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+H
+  echo 'launch_training'
+} > "$WARM_HARNESS"
+
+set +e
+PATH="$WARM/stubs:$PATH" \
+REMOTE_RLRMP_ROOT="$WARM/remote/rlrmp" \
+REMOTE_RUN_DIR="$WARM/remote/run" \
+REMOTE_SENTINEL_DIR="$WARM_SENT" \
+JAX_COMPILATION_CACHE_DIR="$WARM/remote/jax_cache" \
+ROWS_MANIFEST="$WARM/rows.json" \
+ROW_LAUNCH_STAGGER_SECONDS=0 \
+MAX_PARALLEL_ROWS=2 \
+SENTINEL_POLL_SECONDS=1 \
+WARM_COMPILE_READY_REGEX="WARM_READY" \
+SSH_HOST=localhost SSH_PORT=22 \
+bash "$WARM_HARNESS" >"$WARM/out" 2>"$WARM/err"
+wrc=$?
+set -e
+sleep 1
+
+if [ "$wrc" -eq 0 ] && [ -f "$WARM/guard/row_b_started" ]; then
+  ok "9895c08: warm-ready harness launches row_b after readiness"
+else
+  no "9895c08: warm-ready harness should launch both rows" "rc=$wrc; $(cat "$WARM/err" | tr '\n' '|')"
+fi
+if [ ! -f "$WARM/guard/fanout_before_ready" ]; then
+  ok "9895c08: row_b did not fan out before row_a log readiness"
+else
+  no "9895c08: fan-out must not be released by pid alone" "$(cat "$WARM/err" | tr '\n' '|')"
+fi
+if grep -q 'warm compile row row_a reached active training' "$WARM/err" &&
+   grep -q 'WARM_READY' "$WARM/remote/run/logs/row_a.log"; then
+  ok "9895c08: readiness came from row log marker"
+else
+  no "9895c08: expected log readiness evidence" "$(cat "$WARM/err" "$WARM/remote/run/logs/row_a.log" 2>/dev/null | tr '\n' '|')"
+fi
+
 section "nonzero launch commands create failed sentinels only"
 
 F_SENT="$WORK/fail_sentinel"; mkdir -p "$F_SENT/stubs"
@@ -283,6 +358,7 @@ F_HARNESS="$F_SENT/fail_harness.sh"
 {
   echo 'set -uo pipefail'
   echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -293,9 +369,6 @@ sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-  for fn in remote_nohup_sentinel launch_row; do
-    sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
-  done
   cat <<'H'
 remote_nohup_sentinel "failing bootstrap" "$REMOTE_RLRMP_ROOT" "false" \
   "$REMOTE_SENTINEL_DIR/bootstrap.done" "$REMOTE_SENTINEL_DIR/bootstrap.failed" \
@@ -309,6 +382,7 @@ PATH="$F_SENT/stubs:$PATH" \
 REMOTE_RLRMP_ROOT="$F_REMOTE/rlrmp" \
 REMOTE_RUN_DIR="$F_REMOTE/feedbax_runs/runpod-deploy" \
 REMOTE_SENTINEL_DIR="$F_SDIR" \
+JAX_COMPILATION_CACHE_DIR="$F_REMOTE/jax_cache" \
 SSH_HOST=localhost SSH_PORT=22 \
 bash "$F_HARNESS" >"$F_SENT/out" 2>"$F_SENT/err"
 frc=$?
@@ -383,6 +457,7 @@ chmod +x "$STUBS_VENV/uv"
 VENV_HARNESS="$WORK/venv_harness.sh"
 {
   echo 'set -euo pipefail'
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -406,8 +481,7 @@ remote_capture() {
   ssh -i /dev/null -p 22 root@localhost "$command"
 }
 H
-  for fn in remote_nohup_sentinel wait_for_sentinel wait_for_sentinel_result \
-            bootstrap_remote_env mark_bootstrap_branch clear_venv_probe_markers \
+  for fn in bootstrap_remote_env mark_bootstrap_branch clear_venv_probe_markers \
             probe_reused_remote_env bootstrap_remote_env_for_pod; do
     sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
   done
@@ -690,6 +764,7 @@ BUMPSTUB
   {
     echo 'set -uo pipefail'
     echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+    echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
     cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -704,9 +779,6 @@ expand_path() { printf '%s\n' "$1"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-    for fn in sync_rows_manifest launch_row count_running_rows launch_training; do
-      sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
-    done
     echo 'launch_training'
   } > "$HN"
 
@@ -715,6 +787,7 @@ H
   REMOTE_RLRMP_ROOT="$REMOTE_FS/rlrmp" \
   REMOTE_RUN_DIR="$REMOTE_FS/feedbax_runs/runpod-deploy" \
   REMOTE_SENTINEL_DIR="$SDIR" \
+  JAX_COMPILATION_CACHE_DIR="$REMOTE_FS/jax_cache" \
   ROWS_MANIFEST="$rows_json" \
   ROW_LAUNCH_STAGGER_SECONDS=0 \
   MAX_PARALLEL_ROWS="$cap" \
@@ -936,6 +1009,7 @@ SIG_HARNESS="$SIG/harness.sh"
 {
   echo 'set -uo pipefail'
   echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -945,7 +1019,6 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-  sed -n "/^launch_row() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
   echo 'launch_row "row_term" "$REMOTE_RLRMP_ROOT" "sleep 20"'
 } > "$SIG_HARNESS"
 
@@ -953,6 +1026,7 @@ PATH="$SIG/stubs:$PATH" \
 REMOTE_RLRMP_ROOT="$SIG/remote/rlrmp" \
 REMOTE_RUN_DIR="$SIG/remote/run" \
 REMOTE_SENTINEL_DIR="$SIG_SENT" \
+JAX_COMPILATION_CACHE_DIR="$SIG/remote/jax_cache" \
 SSH_HOST=localhost SSH_PORT=22 \
 bash "$SIG_HARNESS" >"$SIG/out" 2>"$SIG/err"
 sleep 1

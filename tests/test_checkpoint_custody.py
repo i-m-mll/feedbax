@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import pytest
 
+import feedbax.training.checkpoint_custody as custody_module
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
@@ -38,11 +41,14 @@ from feedbax.contracts.worker import (
     toy_minimax_method_contract,
 )
 from feedbax.training.checkpoint_custody import (
+    LEGACY_CHECKPOINT_ADOPTION_DOCS,
+    LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT,
     CheckpointCompatibilityError,
     CheckpointConsistencyError,
     CheckpointContractBindingError,
     CheckpointIntegrityError,
     checkpoint_slot_names,
+    detect_known_legacy_checkpoint_layout,
     fork_checkpoint_transaction,
     load_latest_checkpoint,
     write_checkpoint_transaction,
@@ -208,6 +214,70 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
     assert loaded.manifest.transaction_id == result.manifest.transaction_id
     assert loaded.slots["controller"].tolist() == [1.0, 2.0]
     assert loaded.slots["rng"].dtype == jnp.uint32
+
+
+def test_load_reuses_manifest_structural_fingerprints_for_loaded_slots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+        population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+    )
+    calls = 0
+    original_fingerprint = custody_module.structural_abi_fingerprint
+
+    def counting_fingerprint(value):
+        nonlocal calls
+        calls += 1
+        return original_fingerprint(value)
+
+    monkeypatch.setattr(custody_module, "structural_abi_fingerprint", counting_fingerprint)
+
+    load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+        expected_population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
+    )
+
+    assert calls == len(result.manifest.slots) * 2
+
+
+def test_slot_integrity_records_preserve_leaf_digest_and_fingerprint_values() -> None:
+    value = {
+        "array": jnp.array([1.0, 2.0], dtype=jnp.float32),
+        "static": ("kept", 3),
+    }
+    legacy_leaf_digests = []
+    for path, leaf in custody_module.jt.leaves_with_path(value):
+        if custody_module.eqx.is_array(leaf):
+            data = bytes(jnp.asarray(leaf).tobytes())
+        else:
+            data = pickle.dumps(leaf, protocol=pickle.HIGHEST_PROTOCOL)
+        legacy_leaf_digests.append(
+            custody_module.SlotLeafContentDigest(
+                path=custody_module._key_path_to_text(path),
+                sha256=custody_module.sha256_bytes(data),
+                size_bytes=len(data),
+            )
+        )
+
+    integrity = custody_module._slot_integrity_records(value)
+
+    assert integrity.leaf_digests == legacy_leaf_digests
+    assert (
+        integrity.structural_abi_fingerprint
+        == custody_module.structural_abi_fingerprint(value)
+    )
 
 
 def test_training_run_manifest_links_checkpoint_custody_ref() -> None:
@@ -700,15 +770,28 @@ def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
         slots=_minimax_slots(),
     )
     incompatible = _minimax_slots()
-    incompatible["controller"] = jnp.array([1.0, 2.0, 3.0])
+    incompatible["adversary_population"] = [
+        jnp.array([0.1, 0.2, 0.3]),
+        jnp.array([0.3, 0.4]),
+    ]
 
-    with pytest.raises(CheckpointCompatibilityError, match="structural ABI mismatch"):
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="structural ABI mismatch",
+    ) as exc_info:
         load_latest_checkpoint(
             tmp_path,
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=incompatible,
         )
+
+    message = str(exc_info.value)
+    assert "treedef_equal=True" in message
+    assert "leaf_count_delta=0" in message
+    assert "checkpoint slot 'adversary_population'" in message
+    assert "path=/0 field=shape recorded=[3] actual=[2]" in message
+    assert "jax_enable_x64 differs" not in message
 
 
 def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
@@ -735,6 +818,49 @@ def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
+
+
+def test_manifest_structural_abi_x64_mismatch_reports_leaf_diff_and_hint(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    previous_x64 = bool(jax.config.jax_enable_x64)
+    try:
+        jax.config.update("jax_enable_x64", True)
+        write_checkpoint_transaction(
+            tmp_path,
+            run_spec=run_spec,
+            phase_program=program,
+            barrier_name="after_warmup",
+            coordinate=_coordinate(),
+            slots=_minimax_slots(),
+        )
+        jax.config.update("jax_enable_x64", False)
+
+        with pytest.raises(
+            CheckpointIntegrityError,
+            match="structural ABI fingerprint is stale",
+        ) as exc_info:
+            load_latest_checkpoint(
+                tmp_path,
+                expected_run_spec=run_spec,
+                expected_phase_program=program,
+                expected_slots=_minimax_slots(),
+            )
+    finally:
+        jax.config.update("jax_enable_x64", previous_x64)
+
+    message = str(exc_info.value)
+    assert "checkpoint slot 'controller'" in message
+    assert (
+        "path=/ field=dtype recorded=\"float64\" actual=\"float32\""
+        in message
+    )
+    assert "recorded_x64_enabled=True" in message
+    assert "actual_x64_enabled=False" in message
+    assert "x64_side=recorded" in message
+    assert "jax_enable_x64 differs between checkpoint writer and reader" in message
 
 
 def test_resume_slot_transform_runs_before_structural_abi_validation(
@@ -926,6 +1052,7 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
+    assert detect_known_legacy_checkpoint_layout(tmp_path) is None
 
     (tmp_path / "latest.json").write_text("{not-json")
     with pytest.raises(CheckpointIntegrityError, match="latest pointer is corrupt"):
@@ -954,6 +1081,55 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
+
+
+@pytest.mark.parametrize(
+    ("layout_name", "populate"),
+    [
+        (
+            "Feedbax supervised trainer legacy checkpoint",
+            lambda root: (root / "last_batch.txt").write_text("10\n"),
+        ),
+        (
+            "RLRMP Equinox stream legacy checkpoint",
+            lambda root: (
+                (root / "checkpoint_000001").mkdir(),
+                (root / "checkpoint_000001" / "model.eqx").write_bytes(b"model"),
+                (root / "checkpoint_000001" / "optimizer_state.eqx").write_bytes(
+                    b"optimizer"
+                ),
+                (root / "checkpoint_000001" / "metadata.json").write_text("{}"),
+            ),
+        ),
+    ],
+)
+def test_known_legacy_layout_missing_pointer_names_adoption_remedy(
+    tmp_path: Path,
+    layout_name: str,
+    populate,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    populate(tmp_path)
+
+    layout = detect_known_legacy_checkpoint_layout(tmp_path)
+    assert layout is not None
+    assert layout.name == layout_name
+
+    with pytest.raises(CheckpointCompatibilityError) as excinfo:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+    message = str(excinfo.value)
+    assert layout_name in message
+    assert LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT in message
+    assert "producing commit" in message
+    assert "path-mapping rules" in message
+    assert LEGACY_CHECKPOINT_ADOPTION_DOCS in message
 
 
 def test_changed_learning_rate_fails_closed_with_field_diff_unless_override(

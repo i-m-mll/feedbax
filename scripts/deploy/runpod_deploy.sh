@@ -2,10 +2,24 @@
 set -euo pipefail
 
 # Deterministic RunPod deploy for the rlrmp/feedbax/jax-cookbook workflow.
+#
+# Training rows run as separate OS processes, so JAX's persistent compilation
+# cache is enabled by default for launch commands. Rows share cache entries when
+# the traced program identity matches: traced scalar values do not split cache
+# classes, while static Python config, strings, booleans, object structure,
+# shapes, compile options, jax/jaxlib version, and backend do. Concurrent first
+# compiles of the same program all miss the cache, so row launches warm the
+# first row before fanning out by default. The warm gate waits for a row log
+# readiness marker, not the wrapper PID; set WARM_COMPILE_READY_REGEX or
+# WARM_COMPILE_READY_STRING if a training command emits a better signal than
+# the default batch/step/iteration log pattern. Ephemeral pods do not need
+# eviction, but the cache directory can grow across reused persistent volumes.
 # Override these values with environment variables or `--config <file>`.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib_acquire.sh
 source "$SCRIPT_DIR/lib_acquire.sh"
+# shellcheck source=lib_run_prep.sh
+source "$SCRIPT_DIR/lib_run_prep.sh"
 FEEDBAX_ROOT="${FEEDBAX_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd -P)}"
 PROJECTS_ROOT="${PROJECTS_ROOT:-$(cd "$FEEDBAX_ROOT/../.." && pwd -P)}"
 UTILS_ROOT="${UTILS_ROOT:-$(cd "$FEEDBAX_ROOT/../../.." && pwd -P)/05 Utils}"
@@ -19,6 +33,7 @@ RUNPOD_CLOUD_TYPE="${RUNPOD_CLOUD_TYPE:-SECURE}"
 RUNPOD_CONTAINER_DISK_GB="${RUNPOD_CONTAINER_DISK_GB:-30}"
 RUNPOD_VOLUME_GB="${RUNPOD_VOLUME_GB:-30}"
 RUNPOD_VOLUME_MOUNT="${RUNPOD_VOLUME_MOUNT:-/workspace}"
+JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$RUNPOD_VOLUME_MOUNT/jax_cache}"
 RUNPOD_PORTS="${RUNPOD_PORTS:-22/tcp,8080/http}"
 RUNPOD_NAME="${RUNPOD_NAME:-feedbax-rlrmp-$(date +%Y%m%d-%H%M%S)}"
 RUNPOD_DATA_CENTER_IDS="${RUNPOD_DATA_CENTER_IDS:-}"
@@ -59,6 +74,9 @@ REMOTE_DEPLOY_CONFIG_PATH="${REMOTE_DEPLOY_CONFIG_PATH:-}"
 ROWS_MANIFEST="${ROWS_MANIFEST:-}"
 ROW_LAUNCH_STAGGER_SECONDS="${ROW_LAUNCH_STAGGER_SECONDS:-10}"
 MAX_PARALLEL_ROWS="${MAX_PARALLEL_ROWS:-4}"
+WARM_COMPILE_FIRST="${WARM_COMPILE_FIRST:-1}"
+WARM_COMPILE_READY_REGEX="${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}"
+WARM_COMPILE_READY_STRING="${WARM_COMPILE_READY_STRING:-}"
 
 # Acquisition bookkeeping.
 ACQUIRED_DC=""
@@ -300,228 +318,6 @@ finalize_remote_defaults() {
     REMOTE_ARTIFACTS_DIR="${REMOTE_ARTIFACTS_DIR:-$REMOTE_RLRMP_ROOT/_artifacts}"
     RUNPOD_RUN_CONFIG_FILE="${RUNPOD_RUN_CONFIG_FILE:-$FEEDBAX_ROOT/.runpod/run-config.json}"
     REMOTE_DEPLOY_CONFIG_PATH="${REMOTE_DEPLOY_CONFIG_PATH:-$RUNPOD_VOLUME_MOUNT/feedbax_runs/runpod-deploy-config.json}"
-}
-
-print_spec_table() {
-    local spec=${1-}
-    printf 'Training spec confirmation required.\n' >&2
-    printf '%-28s %s\n' "field" "value" >&2
-    printf '%-28s %s\n' "-----" "-----" >&2
-    if [ -z "$spec" ]; then
-        printf '%-28s %s\n' "train_spec" "<missing>" >&2
-        return 0
-    fi
-    if [ ! -f "$spec" ]; then
-        printf '%-28s %s\n' "train_spec" "$spec (not found)" >&2
-        return 0
-    fi
-    if ! jq empty "$spec" >/dev/null 2>&1; then
-        printf '%-28s %s\n' "train_spec" "$spec (invalid JSON)" >&2
-        return 0
-    fi
-    jq -r '
-        to_entries[]
-        | [
-            .key,
-            (.value | if type == "object" or type == "array" then tojson else tostring end)
-          ]
-        | @tsv
-    ' "$spec" |
-        while IFS="$(printf '\t')" read -r key value; do
-            printf '%-28s %s\n' "$key" "$value" >&2
-        done
-}
-
-validate_train_spec_gate() {
-    # The spec-confirmation gate applies to any training launch, single-command
-    # or multi-row.
-    [ -n "$TRAIN_COMMAND" ] || [ -n "$ROWS_MANIFEST" ] || return 0
-    if [ -z "$TRAIN_SPEC" ] || [ ! -f "$TRAIN_SPEC" ]; then
-        print_spec_table "$TRAIN_SPEC"
-        exit 2
-    fi
-    if ! jq -e '.user_confirmed == true' "$TRAIN_SPEC" >/dev/null; then
-        print_spec_table "$TRAIN_SPEC"
-        exit 2
-    fi
-}
-
-baseline_jq_filter() {
-    cat <<'JQ'
-def baseline_entries($label):
-  [
-    (.baseline_checkpoint_path // .baseline_checkpoint // .checkpoint_path // empty) as $path
-    | (.baseline_completed_batches // .baseline_completed_batch // .completed_batches // .completed_batch // empty) as $batch
-    | select(($path | tostring) != "")
-    | {path: ($path | tostring), completed_batch: ($batch | tostring), label: $label}
-  ]
-  +
-  [
-    (.resume // {}) as $resume
-    | ($resume.baseline_checkpoint_path // $resume.baseline_checkpoint // $resume.checkpoint_path // $resume.checkpoint // empty) as $path
-    | ($resume.baseline_completed_batches // $resume.baseline_completed_batch // $resume.completed_batches // $resume.completed_batch // empty) as $batch
-    | select(($path | tostring) != "")
-    | {path: ($path | tostring), completed_batch: ($batch | tostring), label: $label}
-  ];
-
-if type != "object" then []
-elif has("rows") then
-  [ .rows[]
-    | baseline_entries("row:" + ((.id // "unknown") | tostring))[]
-  ]
-else
-  baseline_entries($source_label)
-end
-JQ
-}
-
-declared_baselines_json() {
-    local entries="[]"
-    if [ -n "$TRAIN_SPEC" ] && [ -f "$TRAIN_SPEC" ]; then
-        entries=$(jq --arg source_label train_spec "$(baseline_jq_filter)" "$TRAIN_SPEC")
-    fi
-    if [ -n "$ROWS_MANIFEST" ] && [ -f "$ROWS_MANIFEST" ]; then
-        entries=$(jq -s 'add' \
-            <(printf '%s\n' "$entries") \
-            <(jq --arg source_label rows_manifest "$(baseline_jq_filter)" "$ROWS_MANIFEST"))
-    fi
-    printf '%s\n' "$entries"
-}
-
-baseline_source_path() {
-    local source=$1
-    if [[ $source = /* ]]; then
-        printf '%s\n' "$source"
-    else
-        printf '%s/%s\n' "$RLRMP_ROOT" "$source"
-    fi
-}
-
-baseline_remote_target() {
-    local source=$1 source_path rel base
-    source_path=$(baseline_source_path "$source")
-    case "$source" in
-        "$RLRMP_ROOT/_artifacts"/*)
-            rel=${source#"$RLRMP_ROOT/_artifacts"/}
-            printf '%s/%s\n' "$REMOTE_ARTIFACTS_DIR" "$rel"
-            ;;
-        _artifacts/*)
-            rel=${source#_artifacts/}
-            printf '%s/%s\n' "$REMOTE_ARTIFACTS_DIR" "$rel"
-            ;;
-        *)
-            base=${source_path##*/}
-            printf '%s/baselines/%s\n' "$REMOTE_ARTIFACTS_DIR" "$base"
-            ;;
-    esac
-}
-
-validate_declared_baselines() {
-    [ -n "$TRAIN_COMMAND" ] || [ -n "$ROWS_MANIFEST" ] || return 0
-    local baselines count i source source_path label expected latest actual
-    baselines=$(declared_baselines_json)
-    count=$(printf '%s\n' "$baselines" | jq 'length')
-    [ "$count" -gt 0 ] || return 0
-    i=0
-    while [ "$i" -lt "$count" ]; do
-        source=$(printf '%s\n' "$baselines" | jq -r ".[$i].path")
-        source_path=$(baseline_source_path "$source")
-        label=$(printf '%s\n' "$baselines" | jq -r ".[$i].label")
-        expected=$(printf '%s\n' "$baselines" | jq -r ".[$i].completed_batch")
-        [ -e "$source_path" ] ||
-            die "baseline preflight failed: source checkpoint not found for $label: $source_path"
-        latest="$source_path/latest.json"
-        [ -f "$latest" ] ||
-            die "baseline preflight failed: custody latest.json not found for $label: $latest"
-        [ -n "$expected" ] && [ "$expected" != "null" ] ||
-            die "baseline preflight failed: declared completed_batch missing for $label"
-        actual=$(latest_pointer_completed_batches "$latest")
-        [ -n "$actual" ] ||
-            die "baseline preflight failed: completed_batch missing from $latest for $label"
-        [ "$actual" = "$expected" ] ||
-            die "baseline preflight failed: completed_batch mismatch for $label: declared $expected but latest.json has $actual"
-        i=$((i + 1))
-    done
-}
-
-sync_declared_baselines() {
-    local baselines count i source source_path target rsh
-    baselines=$(declared_baselines_json)
-    count=$(printf '%s\n' "$baselines" | jq 'length')
-    [ "$count" -gt 0 ] || return 0
-    rsh=$(rsync_rsh)
-    i=0
-    while [ "$i" -lt "$count" ]; do
-        source=$(printf '%s\n' "$baselines" | jq -r ".[$i].path")
-        source_path=$(baseline_source_path "$source")
-        target=$(baseline_remote_target "$source")
-        log "staging declared baseline $source_path -> $target"
-        remote_cmd "mkdir -p $(sq "$(dirname "$target")")"
-        if [ -d "$source_path" ]; then
-            run_cmd rsync -az --delete --no-owner --no-group --stats -e "$rsh" \
-                "$source_path/" "root@$SSH_HOST:$target/"
-        else
-            run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
-                "$source_path" "root@$SSH_HOST:$target"
-        fi
-        i=$((i + 1))
-    done
-}
-
-validate_remote_declared_baselines() {
-    local baselines count i source target label expected latest
-    baselines=$(declared_baselines_json)
-    count=$(printf '%s\n' "$baselines" | jq 'length')
-    [ "$count" -gt 0 ] || return 0
-    i=0
-    while [ "$i" -lt "$count" ]; do
-        source=$(printf '%s\n' "$baselines" | jq -r ".[$i].path")
-        target=$(baseline_remote_target "$source")
-        label=$(printf '%s\n' "$baselines" | jq -r ".[$i].label")
-        expected=$(printf '%s\n' "$baselines" | jq -r ".[$i].completed_batch")
-        latest="$target/latest.json"
-        remote_cmd "test -e $(sq "$target") && test -f $(sq "$latest") && actual=\$(jq -r '.completed_coordinate.global_step // .completed_batches // .completed_batch // .completedBatch // .n_batches // .batch // .metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // empty' $(sq "$latest")) && test -n \"\$actual\" && test \"\$actual\" = $(sq "$expected")" ||
-            die "baseline preflight failed: remote staged baseline mismatch for $label at $latest (expected completed batch $expected)"
-        i=$((i + 1))
-    done
-}
-
-write_run_config() {
-    local parent
-    [ -n "$RUNPOD_RUN_CONFIG_FILE" ] || return 0
-    parent=$(dirname "$RUNPOD_RUN_CONFIG_FILE")
-    mkdir -p "$parent"
-    jq -n \
-        --arg pod_id "${POD_ID:-}" \
-        --arg remote_run_dir "$REMOTE_RUN_DIR" \
-        --arg remote_sentinel_dir "$REMOTE_SENTINEL_DIR" \
-        --arg remote_checkpoint_dir "$REMOTE_RUN_DIR" \
-        --arg remote_log_dir "$REMOTE_RUN_DIR/logs" \
-        --arg remote_artifacts_dir "$REMOTE_ARTIFACTS_DIR" \
-        --argjson baselines "$(declared_baselines_json)" \
-        '{
-          schema_version: 1,
-          pod_id: $pod_id,
-          remote_run_dir: $remote_run_dir,
-          remote_sentinel_dir: $remote_sentinel_dir,
-          remote_checkpoint_dir: $remote_checkpoint_dir,
-          remote_log_dir: $remote_log_dir,
-          remote_artifacts_dir: $remote_artifacts_dir,
-          baselines: $baselines
-        }' >"$RUNPOD_RUN_CONFIG_FILE"
-}
-
-sync_run_config() {
-    [ -n "$RUNPOD_RUN_CONFIG_FILE" ] || return 0
-    [ -f "$RUNPOD_RUN_CONFIG_FILE" ] || return 0
-    local rsh
-    rsh=$(rsync_rsh)
-    remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR")"
-    run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
-        "$RUNPOD_RUN_CONFIG_FILE" "root@$SSH_HOST:$REMOTE_RUN_DIR/run-config.json"
-    remote_cmd "mkdir -p $(sq "$(dirname "$REMOTE_DEPLOY_CONFIG_PATH")")"
-    run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
-        "$RUNPOD_RUN_CONFIG_FILE" "root@$SSH_HOST:$REMOTE_DEPLOY_CONFIG_PATH"
 }
 
 parse_docker_hub_image() {
@@ -1181,69 +977,6 @@ apply_path_patches() {
     done <<< "$PATH_PATCHES"
 }
 
-remote_nohup_sentinel() {
-    local label=$1
-    local workdir=$2
-    local command=$3
-    local done_file=$4
-    local failed_file=$5
-    local log_file=$6
-    local remote sentinel_command
-    sentinel_command="cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; { $command; } & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \"\$rc\"; fi"
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "$sentinel_command") >$(sq "$log_file") 2>&1 &"
-    log "starting $label"
-    remote_cmd "$remote"
-}
-
-wait_for_sentinel() {
-    local label=$1
-    local done_file=$2
-    local failed_file=$3
-    if [ "$DRY_RUN" -eq 1 ]; then
-        remote_cmd "test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
-        return 0
-    fi
-
-    local deadline
-    deadline=$((SECONDS + SENTINEL_TIMEOUT_SECONDS))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        if remote_capture "test -f $(sq "$done_file")"; then
-            log "$label complete"
-            return 0
-        fi
-        if remote_capture "test -f $(sq "$failed_file")"; then
-            die "$label failed; inspect $REMOTE_RUN_DIR/logs"
-        fi
-        sleep "$SENTINEL_POLL_SECONDS"
-    done
-    die "timed out waiting for $label sentinel"
-}
-
-wait_for_sentinel_result() {
-    local label=$1
-    local done_file=$2
-    local failed_file=$3
-    if [ "$DRY_RUN" -eq 1 ]; then
-        remote_cmd "test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
-        return 0
-    fi
-
-    local deadline
-    deadline=$((SECONDS + SENTINEL_TIMEOUT_SECONDS))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        if remote_capture "test -f $(sq "$done_file")"; then
-            log "$label complete"
-            return 0
-        fi
-        if remote_capture "test -f $(sq "$failed_file")"; then
-            log "$label failed"
-            return 1
-        fi
-        sleep "$SENTINEL_POLL_SECONDS"
-    done
-    die "timed out waiting for $label sentinel"
-}
-
 # repair_remote_artifacts fixes the _artifacts path on the pod after repo sync.
 # Code rsync excludes top-level _artifacts so remote checkpoint/run state is not
 # deleted or replaced. This repair remains for fresh pods and for older pods
@@ -1335,116 +1068,6 @@ print(devices)
 if not any(device.platform == 'gpu' for device in devices):
     raise SystemExit('no JAX GPU device visible')
 PY"
-}
-
-sync_train_spec() {
-    [ -n "$TRAIN_SPEC" ] || return 0
-    local rsh
-    rsh=$(rsync_rsh)
-    remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR")"
-    run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
-        "$TRAIN_SPEC" "root@$SSH_HOST:$REMOTE_RUN_DIR/train-spec.json"
-}
-
-# sync_rows_manifest copies the rows manifest to the pod so poll_run.sh can read
-# the same row identities for aggregate progress (W4).
-sync_rows_manifest() {
-    [ -n "$ROWS_MANIFEST" ] || return 0
-    local rsh
-    rsh=$(rsync_rsh)
-    remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR")"
-    run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
-        "$ROWS_MANIFEST" "root@$SSH_HOST:$REMOTE_RUN_DIR/rows-manifest.json"
-}
-
-# launch_row starts one training row via the nohup+sentinel pattern with per-row
-# done/failed/log paths derived from the row id, injecting
-# XLA_PYTHON_CLIENT_PREALLOCATE=false so parallel rows don't each grab all VRAM.
-#
-# Slot reservation (FIX 3): the SSH command reserves the row's slot SYNCHRONOUSLY
-# by creating the `.started` marker as a foreground step that completes BEFORE
-# the SSH call returns (i.e. before the `&` that backgrounds the actual job). The
-# cap counts `.started` markers (minus terminal sentinels), so it cannot
-# under-count a just-launched row — the previous `.pid`-inside-nohup marker was
-# written asynchronously after the SSH call returned, which let row k+1 start
-# while row k was still racing to write its marker. The `.pid` is still written
-# inside the job for diagnostics; the cap no longer depends on it.
-launch_row() {
-    local row_id=$1 workdir=$2 command=$3
-    local done_file failed_file log_file pid_file started_file remote
-    # Defence in depth (FIX 4): the id is interpolated into remote paths, so
-    # reject anything outside [A-Za-z0-9_.-] even though validate_rows_manifest
-    # already screened manifest ids.
-    validate_row_id "$row_id" >/dev/null ||
-        die "unsafe row id: $row_id (must match [A-Za-z0-9_.-]+)"
-    done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
-    failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
-    log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
-    pid_file="$REMOTE_SENTINEL_DIR/${row_id}.pid"
-    started_file="$REMOTE_SENTINEL_DIR/${row_id}.started"
-    # Foreground reservation + setup, THEN background the job. The leading
-    # `mkdir/rm/touch .started` run synchronously and finish before the SSH
-    # command returns, so the slot is held the instant launch_row returns.
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && ( $command ) & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") >$(sq "$log_file") 2>&1 &"
-    log "launching row $row_id"
-    remote_cmd "$remote"
-}
-
-# count_running_rows returns how many rows are still in flight — used to honor
-# MAX_PARALLEL_ROWS. Counts `.started` reservation markers (written
-# synchronously by launch_row before it returns) minus any with a terminal
-# done/failed sentinel. This closes the FIX 3 race where the prior `.pid`-based
-# count under-counted a row whose pid marker had not yet been written by the
-# backgrounded job.
-count_running_rows() {
-    [ "$DRY_RUN" -eq 1 ] && { printf '0\n'; return 0; }
-    remote_capture "n=0; for s in $(sq "$REMOTE_SENTINEL_DIR")/*.started; do [ -e \"\$s\" ] || continue; base=\${s%.started}; if [ ! -f \"\$base.done\" ] && [ ! -f \"\$base.failed\" ]; then n=\$((n+1)); fi; done; printf '%s' \"\$n\"" 2>/dev/null || printf '0'
-}
-
-# launch_training launches one or more training rows. With --rows-manifest it
-# launches each row with a stagger and a concurrency cap; the single
-# --launch-command path is the N=1 degenerate case (synthesized as a one-row
-# manifest in memory). No training launch when neither is configured.
-launch_training() {
-    local ids workdir command default_wd
-    default_wd=$REMOTE_RLRMP_ROOT
-
-    if [ -n "$ROWS_MANIFEST" ]; then
-        [ -f "$ROWS_MANIFEST" ] || die "rows manifest not found: $ROWS_MANIFEST"
-        local validation
-        validation=$(validate_rows_manifest <"$ROWS_MANIFEST") ||
-            die "invalid rows manifest: $validation"
-        log "rows manifest $validation (stagger=${ROW_LAUNCH_STAGGER_SECONDS}s cap=${MAX_PARALLEL_ROWS})"
-        sync_rows_manifest
-        read_lines_into ids < <(rows_manifest_ids <"$ROWS_MANIFEST")
-        local first=1 running
-        for row_id in "${ids[@]}"; do
-            workdir=$(rows_manifest_field "$row_id" workdir <"$ROWS_MANIFEST")
-            [ -n "$workdir" ] || workdir=$default_wd
-            command=$(rows_manifest_field "$row_id" command <"$ROWS_MANIFEST")
-            # Concurrency cap: wait until a slot frees before launching the next.
-            if [ "$DRY_RUN" -eq 0 ] && [ "$MAX_PARALLEL_ROWS" -gt 0 ]; then
-                while :; do
-                    running=$(count_running_rows)
-                    [ "${running:-0}" -lt "$MAX_PARALLEL_ROWS" ] && break
-                    log "row cap reached ($running/$MAX_PARALLEL_ROWS in flight); waiting"
-                    sleep "$SENTINEL_POLL_SECONDS"
-                done
-            fi
-            # Stagger between launches (skip before the very first).
-            if [ "$first" -eq 0 ] && [ "$ROW_LAUNCH_STAGGER_SECONDS" -gt 0 ]; then
-                [ "$DRY_RUN" -eq 0 ] && sleep "$ROW_LAUNCH_STAGGER_SECONDS"
-            fi
-            first=0
-            launch_row "$row_id" "$workdir" "$command"
-        done
-        log "launched ${#ids[@]} row(s)"
-        return 0
-    fi
-
-    [ -n "$TRAIN_COMMAND" ] || return 0
-    # N=1 degenerate case: one row named "training".
-    launch_row "training" "$default_wd" "$TRAIN_COMMAND"
 }
 
 main() {

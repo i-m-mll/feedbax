@@ -35,7 +35,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointCompatibilityError,
     CheckpointWriteResult,
     ResumeSlotTransform,
-    load_latest_checkpoint,
+    _load_checkpoint_from_pointer,
     write_checkpoint_transaction,
 )
 
@@ -353,14 +353,16 @@ def adopt_tree_from_legacy_stream(
         raise LegacyPathMappingError("; ".join(errors))
 
     adopted = current_template
-    for new_path, value in replacements.items():
-        path_entries = current_arrays[new_path]
-        old_leaf = _get_by_path(adopted, path_entries)
-        replacement = _coerce_array(value, old_leaf)
+    if replacements:
+        replacement_paths = tuple(current_arrays[new_path] for new_path in replacements)
+        replacement_values = tuple(
+            _coerce_array(value, _get_by_path(current_template, current_arrays[new_path]))
+            for new_path, value in replacements.items()
+        )
         adopted = eqx.tree_at(
-            lambda tree, p=path_entries: _get_by_path(tree, p),
-            adopted,
-            replacement,
+            lambda tree: tuple(_get_by_path(tree, path) for path in replacement_paths),
+            current_template,
+            replacement_values,
         )
 
     static_report = _static_report(manifest_entries, current_statics, path_map)
@@ -767,14 +769,10 @@ def _round_trip_before_publish(
     expected_slots: Mapping[str, Any],
     resume_slot_transform: ResumeSlotTransform | None,
 ) -> dict[str, Any]:
-    temp_root = Path(tempfile.mkdtemp(prefix="feedbax-adoption-roundtrip-"))
     try:
-        temp_transactions = temp_root / "transactions"
-        temp_transactions.mkdir()
-        shutil.copytree(write.transaction_dir, temp_transactions / write.manifest.transaction_id)
-        _write_latest_pointer(temp_root / "latest.json", write.latest_pointer)
-        loaded = load_latest_checkpoint(
-            temp_root,
+        loaded = _load_checkpoint_from_pointer(
+            write.root,
+            write.latest_pointer,
             expected_run_spec=run_spec,
             expected_phase_program=phase_program,
             expected_slots=expected_slots,
@@ -791,8 +789,6 @@ def _round_trip_before_publish(
         if isinstance(exc, (CheckpointCompatibilityError, LegacyCheckpointAdoptionError)):
             raise
         raise LegacyCheckpointAdoptionError("adopted checkpoint failed strict round trip") from exc
-    finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def _expected_round_trip_slots(
