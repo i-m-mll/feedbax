@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TrainingRun, EvalRun } from '@/types/runs';
+import type { TrainingRun, EvalRun, LegacyCheckpointInfo } from '@/types/runs';
 import { fetchTrainingRuns, fetchEvalRuns } from '@/api/runAPI';
 import { apiErrorMessage } from '@/api/request';
 import { withStoreActionFeedback } from '@/stores/storeActions';
@@ -35,6 +35,7 @@ function manifestRefForTrainingRun(run: TrainingRun): StudioManifestRef {
       source_issue: run.sourceIssue ?? null,
       provenance_id: run.provenanceId ?? run.id,
       superseded_by: run.supersededBy ?? null,
+      legacy_checkpoint: run.legacyCheckpoint ?? null,
       legacy_run_record: !run.uri,
       ...run.hyperparams,
       ...(run.metrics ?? {}),
@@ -169,6 +170,27 @@ function optionalBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function legacyCheckpointFromMetadata(value: unknown): LegacyCheckpointInfo | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const payload = value as Record<string, unknown>;
+  if (
+    typeof payload.layout_id !== 'string' ||
+    typeof payload.layout_name !== 'string' ||
+    typeof payload.message !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    layout_id: payload.layout_id,
+    layout_name: payload.layout_name,
+    message: payload.message,
+    docs: optionalString(payload.docs),
+    adoption_entrypoint: optionalString(payload.adoption_entrypoint),
+  };
+}
+
 function trainingRunFromManifestRef(ref: StudioManifestRef): TrainingRun {
   return {
     id: ref.id,
@@ -185,6 +207,7 @@ function trainingRunFromManifestRef(ref: StudioManifestRef): TrainingRun {
     sourceIssue: optionalString(ref.metadata.source_issue),
     provenanceId: optionalString(ref.metadata.provenance_id) ?? ref.id,
     supersededBy: optionalString(ref.metadata.superseded_by),
+    legacyCheckpoint: legacyCheckpointFromMetadata(ref.metadata.legacy_checkpoint),
   };
 }
 

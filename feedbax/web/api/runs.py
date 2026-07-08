@@ -45,6 +45,11 @@ from feedbax.persistence.manifest_index import (
     remove_manifest_from_index,
     rebuild_manifest_index,
 )
+from feedbax.training.checkpoint_custody import (
+    LEGACY_CHECKPOINT_ADOPTION_DOCS,
+    LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT,
+    detect_known_legacy_checkpoint_layout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,16 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Pydantic response models
 # ---------------------------------------------------------------------------
+
+
+class LegacyCheckpointInfo(BaseModel):
+    """Detected pre-custody checkpoint root that needs adoption."""
+
+    layout_id: str
+    layout_name: str
+    message: str
+    docs: str = LEGACY_CHECKPOINT_ADOPTION_DOCS
+    adoption_entrypoint: str = LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT
 
 
 class TrainingRunInfo(BaseModel):
@@ -76,6 +91,7 @@ class TrainingRunInfo(BaseModel):
     source_issue: Optional[str] = None
     provenance_id: Optional[str] = None
     superseded_by: Optional[str] = None
+    legacy_checkpoint: Optional[LegacyCheckpointInfo] = None
 
 
 class EvalRunInfo(BaseModel):
@@ -307,6 +323,49 @@ def _checkpoint_available(payload: dict[str, Any]) -> bool:
     )
 
 
+def _local_path_from_uri(uri: Any) -> Path | None:
+    if not isinstance(uri, str) or not uri:
+        return None
+    if uri.startswith("file://"):
+        return Path(uri[7:])
+    if "://" in uri:
+        return None
+    return Path(uri)
+
+
+def _checkpoint_candidate_paths(payload: dict[str, Any]) -> list[Path]:
+    candidates: list[Path] = []
+    for key in ("checkpoint_custody", "artifacts"):
+        records = payload.get(key)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            if key == "artifacts" and record.get("role") != "training_checkpoint":
+                continue
+            path = _local_path_from_uri(record.get("uri") or record.get("path"))
+            if path is not None:
+                candidates.append(path)
+    return candidates
+
+
+def _legacy_checkpoint_info(payload: dict[str, Any]) -> LegacyCheckpointInfo | None:
+    for path in _checkpoint_candidate_paths(payload):
+        layout = detect_known_legacy_checkpoint_layout(path)
+        if layout is None:
+            continue
+        return LegacyCheckpointInfo(
+            layout_id=layout.layout_id,
+            layout_name=layout.name,
+            message=(
+                "Checkpoint predates checkpoint custody; adoption required before "
+                f"Studio can load it. See {LEGACY_CHECKPOINT_ADOPTION_DOCS}."
+            ),
+        )
+    return None
+
+
 def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
     payload = json.loads(row["payload_json"])
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -332,6 +391,7 @@ def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
         superseded_by=metadata.get("superseded_by")
         if isinstance(metadata, dict) and isinstance(metadata.get("superseded_by"), str)
         else None,
+        legacy_checkpoint=_legacy_checkpoint_info(payload),
     )
 
 

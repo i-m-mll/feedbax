@@ -39,11 +39,14 @@ from feedbax.contracts.worker import (
     toy_minimax_method_contract,
 )
 from feedbax.training.checkpoint_custody import (
+    LEGACY_CHECKPOINT_ADOPTION_DOCS,
+    LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT,
     CheckpointCompatibilityError,
     CheckpointConsistencyError,
     CheckpointContractBindingError,
     CheckpointIntegrityError,
     checkpoint_slot_names,
+    detect_known_legacy_checkpoint_layout,
     fork_checkpoint_transaction,
     load_latest_checkpoint,
     write_checkpoint_transaction,
@@ -983,6 +986,7 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
+    assert detect_known_legacy_checkpoint_layout(tmp_path) is None
 
     (tmp_path / "latest.json").write_text("{not-json")
     with pytest.raises(CheckpointIntegrityError, match="latest pointer is corrupt"):
@@ -1011,6 +1015,55 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
+
+
+@pytest.mark.parametrize(
+    ("layout_name", "populate"),
+    [
+        (
+            "Feedbax supervised trainer legacy checkpoint",
+            lambda root: (root / "last_batch.txt").write_text("10\n"),
+        ),
+        (
+            "RLRMP Equinox stream legacy checkpoint",
+            lambda root: (
+                (root / "checkpoint_000001").mkdir(),
+                (root / "checkpoint_000001" / "model.eqx").write_bytes(b"model"),
+                (root / "checkpoint_000001" / "optimizer_state.eqx").write_bytes(
+                    b"optimizer"
+                ),
+                (root / "checkpoint_000001" / "metadata.json").write_text("{}"),
+            ),
+        ),
+    ],
+)
+def test_known_legacy_layout_missing_pointer_names_adoption_remedy(
+    tmp_path: Path,
+    layout_name: str,
+    populate,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    populate(tmp_path)
+
+    layout = detect_known_legacy_checkpoint_layout(tmp_path)
+    assert layout is not None
+    assert layout.name == layout_name
+
+    with pytest.raises(CheckpointCompatibilityError) as excinfo:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+    message = str(excinfo.value)
+    assert layout_name in message
+    assert LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT in message
+    assert "producing commit" in message
+    assert "path-mapping rules" in message
+    assert LEGACY_CHECKPOINT_ADOPTION_DOCS in message
 
 
 def test_changed_learning_rate_fails_closed_with_field_diff_unless_override(
