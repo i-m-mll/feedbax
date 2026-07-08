@@ -881,7 +881,7 @@ export interface ComponentDefinition {
   domain?: string;
   interior_domain?: string | null;
   is_composite?: boolean;
-  template_graph?: GraphSpec | null;
+  template_graph?: GraphSpec | AcausalGraphSpec | null;
   template_ui_state?: GraphUIState | null;
   template_id?: string | null;
   template_kind?: string | null;
@@ -2995,7 +2995,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "domain": z.string().optional(),
       "interior_domain": z.string().nullable().optional(),
       "is_composite": z.boolean().optional(),
-      "template_graph": GraphSpecSchema.nullable().optional(),
+      "template_graph": z.union([GraphSpecSchema, AcausalGraphSpecSchema, z.null()]).optional(),
       "template_ui_state": GraphUIStateSchema.nullable().optional(),
       "template_id": z.string().nullable().optional(),
       "template_kind": z.string().nullable().optional(),
