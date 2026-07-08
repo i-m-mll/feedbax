@@ -71,6 +71,12 @@ export function isCausalGraphSpec(
   return Boolean(value && (!value.schema_id || value.schema_id === 'feedbax.spec.graph'));
 }
 
+export function isAcausalGraphSpec(
+  value: GraphSubgraphSpec | GraphSpec | AcausalGraphSpec | null | undefined
+): value is AcausalGraphSpec {
+  return Boolean(value && value.schema_id === 'feedbax.spec.acausal_graph');
+}
+
 export type ParamPrimitive = number | string | boolean | null;
 export type ParamValueObject = Record<string, ParamValue>;
 export type ParamValueArray = ParamValue[];
@@ -93,6 +99,9 @@ export interface SubgraphPreview {
 export interface GraphNodeData extends Record<string, unknown> {
   label: string;
   spec: ComponentSpec;
+  current_domain?: string | null;
+  interior_domain?: string | null;
+  status?: 'never_compiled' | 'stale' | 'compiling' | 'ok' | 'ok_with_warnings' | 'error';
   collapsed?: boolean;
   reversed?: boolean;
   size?: { width: number; height: number };

@@ -22,6 +22,7 @@ import {
 } from '@/stores/projectsStore';
 import { useRunStore } from '@/stores/runStore';
 import { useTrainingStore } from '@/stores/trainingStore';
+import { useCompileStatusStore } from '@/stores/compileStatusStore';
 import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 import { PROJECT_TEMPLATES } from '@/data/project-templates';
@@ -145,6 +146,7 @@ export function Header() {
         data.workspace,
         { ...options, saveRevision: data.metadata?.save_revision ?? null },
       );
+      useCompileStatusStore.getState().setReports(data.compile_reports);
       useRunStore.getState().hydrateFromWorkspace(data.workspace);
       if (data.demo_training_data) {
         const demo = data.demo_training_data;

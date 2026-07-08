@@ -69,7 +69,7 @@ import { useDomains } from '@/hooks/useDomains';
 import { FIT_VIEW_SHORTCUT_EVENT } from '@/hooks/useShortcuts';
 import clsx from 'clsx';
 import { toast } from 'sonner';
-import type { ComponentSpec, GraphEdgeData, GraphNodeData, GraphSpec, TapNodeData } from '@/types/graph';
+import { isAcausalGraphSpec, type ComponentSpec, type GraphEdgeData, type GraphNodeData, type GraphSpec, type TapNodeData } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type {
   StudioTaskBinding,
@@ -77,7 +77,15 @@ import type {
   StudioValidationIssue,
   ValueSchema,
 } from '@/types/workspace';
-import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, Info, Map as MapIcon, MoveDiagonal } from 'lucide-react';
+import {
+  compileStatusForReport,
+  evaluateAcausalConnection,
+  graphPathKey,
+  rollupCompileStatus,
+  stableGraphHash,
+} from '@/features/domains/acausal';
+import { useCompileStatusStore } from '@/stores/compileStatusStore';
 
 interface TaskSourceNodeData extends Record<string, unknown> {
   label: string;
@@ -334,6 +342,36 @@ function TaskBindingEdge({
   );
 }
 
+function ConservingEdge({
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  selected,
+}: EdgeProps) {
+  const [path] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
+  return (
+    <path
+      className="react-flow__edge-path"
+      d={path}
+      fill="none"
+      stroke={selected ? '#0f766e' : '#14b8a6'}
+      strokeWidth={selected ? 4 : 3}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  );
+}
+
 const nodeTypes = {
   component: CustomNode,
   subgraph: SubgraphNode,
@@ -344,6 +382,7 @@ const nodeTypes = {
 const edgeTypes = {
   routed: RoutedEdge,
   'state-flow': StateFlowEdge,
+  conserving: ConservingEdge,
   taskBinding: TaskBindingEdge,
 };
 
@@ -617,6 +656,7 @@ export function Canvas() {
     graphStack,
     currentGraphLabel,
     currentContext,
+    componentRegistry,
     exitToBreadcrumb,
     wrapInParentGraph,
   } = useGraphStore(
@@ -643,6 +683,7 @@ export function Canvas() {
       graphStack: state.graphStack,
       currentGraphLabel: state.currentGraphLabel,
       currentContext: state.currentContext,
+      componentRegistry: state._componentRegistry,
       exitToBreadcrumb: state.exitToBreadcrumb,
       wrapInParentGraph: state.wrapInParentGraph,
     }))
@@ -655,6 +696,11 @@ export function Canvas() {
   );
   const showMinimap = useSettingsStore((state) => state.showMinimap);
   const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
+  const showDomainLegend = useSettingsStore((state) => state.showDomainLegend);
+  const setShowDomainLegend = useSettingsStore((state) => state.setShowDomainLegend);
+  const reports = useCompileStatusStore((state) => state.reports);
+  const compilingPaths = useCompileStatusStore((state) => state.compilingPaths);
+  const compileNode = useCompileStatusStore((state) => state.compileNode);
   const {
     selectTopPaneEntity,
     hoverTopPaneEntity,
@@ -675,6 +721,7 @@ export function Canvas() {
   const { components } = useComponents();
   const { domainContextFor } = useDomains();
   const domainContext = domainContextFor(currentContext);
+  const isAcausalLayer = isAcausalGraphSpec(graph);
   const reactFlow = useReactFlow();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
@@ -1046,8 +1093,27 @@ export function Canvas() {
   );
 
   const displayNodes = useMemo(
-    () => [...nodes, ...taskSourceNodes],
-    [nodes, taskSourceNodes]
+    () => [
+      ...nodes.map((node) => {
+        if (node.type === 'tap' || !('spec' in node.data)) return node;
+        const childGraph = graph.subgraphs?.[node.id];
+        if (!isAcausalGraphSpec(childGraph)) return node;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            status: rollupCompileStatus({
+              graph: childGraph,
+              path: [...currentGraphPath, node.id],
+              reports,
+              compilingPaths,
+            }),
+          },
+        };
+      }),
+      ...taskSourceNodes,
+    ],
+    [compilingPaths, currentGraphPath, graph.subgraphs, nodes, reports, taskSourceNodes]
   );
   const baseDisplayEdges = useMemo(
     () => [...edges, ...taskBindingEdges],
@@ -1082,9 +1148,39 @@ export function Canvas() {
     return () => observer.disconnect();
   }, [reactFlow]);
 
+  useEffect(() => {
+    if (!graphId || !isAcausalLayer || !isAcausalGraphSpec(graph)) return undefined;
+    const path = currentGraphPath;
+    const key = graphPathKey(path);
+    const status = compileStatusForReport(
+      reports[key],
+      stableGraphHash(graph),
+      compilingPaths.has(key)
+    );
+    if (status !== 'never_compiled' && status !== 'stale') return undefined;
+    const timeout = window.setTimeout(() => {
+      compileNode(graphId, path, graph).catch((error) => {
+        console.error('Failed to compile acausal interior', error);
+      });
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [compileNode, compilingPaths, currentGraphPath, graph, graphId, isAcausalLayer, reports]);
+
   const schemaRegistry = useMemo(
-    () => applyBoundaryOverrides(projectStudioSchema(graph, components, taskBindingSpec), parentBoundaryOverrides),
-    [components, graph, parentBoundaryOverrides, taskBindingSpec]
+    () =>
+      isAcausalLayer
+        ? {
+            kind: 'studio_schema_registry' as const,
+            schema_version: 'feedbax.schema.v1',
+            generated_at: new Date().toISOString(),
+            ports: [],
+            task_data: [],
+            selector_targets: [],
+            issues: [],
+            metadata: { projected_by: 'feedbax.web.acausalCanvas' },
+          }
+        : applyBoundaryOverrides(projectStudioSchema(graph as GraphSpec, components, taskBindingSpec), parentBoundaryOverrides),
+    [components, graph, isAcausalLayer, parentBoundaryOverrides, taskBindingSpec]
   );
 
   const displayEdges = useMemo(
@@ -1135,6 +1231,10 @@ export function Canvas() {
     () => [...graphStack.map((layer) => layer.label), currentGraphLabel],
     [graphStack, currentGraphLabel]
   );
+  const domainChipLabel =
+    isAcausalLayer && domainContext
+      ? `${domainContext.domain.display_name} — ${isAcausalGraphSpec(graph) ? graph.physical_domain : currentContext}`
+      : null;
   const collapsibleNodes = useMemo(() => nodes.filter((node) => node.type !== 'tap'), [nodes]);
   const allNodesCollapsed =
     collapsibleNodes.length > 0 &&
@@ -1304,6 +1404,17 @@ export function Canvas() {
         connection.target,
         connection.targetHandle,
       ].join(':');
+      if (isAcausalGraphSpec(graph)) {
+        const verdict = evaluateAcausalConnection(graph, componentRegistry, connection);
+        if (verdict.allowed) {
+          return { status: 'valid', message: verdict.message, signature };
+        }
+        return {
+          status: 'blocked',
+          message: 'reason' in verdict ? verdict.reason : 'This acausal connection is not available',
+          signature,
+        };
+      }
       const taskDataId = taskDataIdFromSourceNodeId(connection.source);
       if (taskDataId) {
         if (isStateHandle(connection.targetHandle)) {
@@ -1378,7 +1489,7 @@ export function Canvas() {
         : issues;
       return feedbackFromIssues(filteredIssues, 'Ports are compatible', signature);
     },
-    [graph, schemaRegistry, taskBindingSpec]
+    [componentRegistry, graph, schemaRegistry, taskBindingSpec]
   );
 
   const hasBlockingCanvasConnectionIssue = useCallback(
@@ -1408,6 +1519,7 @@ export function Canvas() {
         return;
       }
       if (
+        !isAcausalLayer &&
         connection.target &&
         connection.targetHandle &&
         targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)
@@ -1423,6 +1535,10 @@ export function Canvas() {
       ) {
         return;
       }
+      if (isAcausalLayer) {
+        onConnect(connection);
+        return;
+      }
       const nextGraph = graphWithConnection(graph, connection);
       const paramUpdates = dimensionParamUpdates(
         nextGraph,
@@ -1435,6 +1551,7 @@ export function Canvas() {
     [
       components,
       graph,
+      isAcausalLayer,
       hasBlockingCanvasConnectionIssue,
       onConnect,
       parentBoundaryOverrides,
@@ -1575,7 +1692,10 @@ export function Canvas() {
     <div
       ref={containerRef}
       data-studio-canvas-root="true"
-      className="relative w-full h-full overflow-hidden bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]"
+      className={clsx(
+        'relative w-full h-full overflow-hidden bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]',
+        isAcausalLayer && domainContext?.theme.canvasTintClass
+      )}
       onPointerMove={(event) => {
         if (!connectionActive.current) return;
         const rect = containerRef.current?.getBoundingClientRect();
@@ -1729,6 +1849,16 @@ export function Canvas() {
           >
             <MapIcon className="h-4 w-4" aria-hidden="true" />
           </ControlButton>
+          {isAcausalLayer && (
+            <ControlButton
+              onClick={() => setShowDomainLegend(!showDomainLegend)}
+              title={showDomainLegend ? 'Hide domain legend' : 'Show domain legend'}
+              aria-label={showDomainLegend ? 'Hide domain legend' : 'Show domain legend'}
+              className={showDomainLegend ? 'text-teal-700' : 'text-slate-500'}
+            >
+              <Info className="h-4 w-4" aria-hidden="true" />
+            </ControlButton>
+          )}
         </Controls>
         {showMinimap && <MiniMap nodeColor="#9ca3af" />}
         <Panel position="top-right" className="pointer-events-none">
@@ -1768,7 +1898,32 @@ export function Canvas() {
                 </div>
               );
             })}
+            {domainChipLabel && (
+              <>
+                <div className="h-4 w-px bg-slate-200" />
+                <span
+                  className={clsx(
+                    'rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                    domainContext?.theme.nodeToneClass
+                  )}
+                >
+                  {domainChipLabel}
+                </span>
+              </>
+            )}
           </div>
+          {showDomainLegend && isAcausalLayer && (
+            <div className="mt-2 w-[220px] rounded-md border border-teal-100 bg-white/90 p-3 text-[11px] text-slate-600 shadow-soft">
+              <div className="mb-2 flex items-center gap-2 font-medium text-teal-700">
+                <span className="h-2.5 w-2.5 rounded-full bg-teal-500 ring-2 ring-teal-200" />
+                conserving port
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-0.5 w-10 rounded-full bg-teal-500" />
+                arrowless conserving connection
+              </div>
+            </div>
+          )}
         </Panel>
       </ReactFlow>
       {isEmptyRootCanvas && (
