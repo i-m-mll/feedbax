@@ -28,6 +28,7 @@ def test_task_exports_are_available_from_package_root() -> None:
     assert feedbax.TrialTimeline is task_api.TrialTimeline
     assert feedbax.WhereDict is WhereDict
     assert feedbax.centreout_endpoints is task_api.centreout_endpoints
+    assert feedbax.eval_ensemble_on_trials is task_api.eval_ensemble_on_trials
     assert feedbax.forceless_task_inputs is task_api._forceless_task_inputs
     assert feedbax.gen_epoch_lengths is task_api.gen_epoch_lengths
     assert feedbax.get_masks is task_api.get_masks
