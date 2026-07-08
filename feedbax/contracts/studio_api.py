@@ -177,6 +177,52 @@ class DomainListResponse(StudioApiModel):
     data: DomainRegistryPayload
 
 
+class PenzaiBuilderInfo(StudioApiModel):
+    """Registry-visible Penzai builder metadata."""
+
+    name: str
+    description: str
+    default_params: dict[str, Any] = Field(default_factory=dict)
+    input_shape: Optional[list[str]] = None
+    output_shape: Optional[list[str]] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PenzaiBuilderListPayload(StudioApiModel):
+    """Payload for ``GET /api/penzai/builders``."""
+
+    builders: list[PenzaiBuilderInfo]
+
+
+class PenzaiBuilderListResponse(StudioApiModel):
+    """Standard API envelope for Penzai builder listings."""
+
+    data: PenzaiBuilderListPayload
+
+
+class PenzaiNodeRequest(StudioApiModel):
+    """Penzai adapter node payload for authoring compile and inspector routes."""
+
+    node_path: list[str] = Field(default_factory=list)
+    builder_name: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    input_port: str = "input"
+    output_port: str = "output"
+
+
+class PenzaiInspectorPayload(StudioApiModel):
+    """Payload for rendered Penzai inspector content."""
+
+    html: str
+    report: DomainCompileReport
+
+
+class PenzaiInspectorResponse(StudioApiModel):
+    """Standard API envelope for Penzai inspector HTML."""
+
+    data: PenzaiInspectorPayload
+
+
 class TrainingStartPayload(StudioApiModel):
     """Payload returned after starting a training job."""
 

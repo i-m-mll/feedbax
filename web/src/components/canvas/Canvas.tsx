@@ -67,6 +67,7 @@ import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import { useDomains } from '@/hooks/useDomains';
 import { FIT_VIEW_SHORTCUT_EVENT } from '@/hooks/useShortcuts';
+import { PenzaiInspector } from '@/components/panels/PenzaiInspector';
 import clsx from 'clsx';
 import { toast } from 'sonner';
 import type { ComponentSpec, GraphEdgeData, GraphNodeData, GraphSpec, TapNodeData } from '@/types/graph';
@@ -1151,6 +1152,12 @@ export function Canvas() {
   const hasRestoredSubgraphViewport =
     graphStack.length > 0 && !isDefaultViewport(uiState.viewport);
   const isEmptyRootCanvas = nodes.length === 0 && graphStack.length === 0;
+  const inspectorLayer = graphStack[graphStack.length - 1];
+  const inspectorNodeId = inspectorLayer?.childNodeId ?? null;
+  const inspectorNodeSpec =
+    domainContext?.domain.editor.kind === 'inspector' && inspectorNodeId
+      ? inspectorLayer.graph.nodes[inspectorNodeId]
+      : undefined;
   const connectionLineStyle = useMemo(() => {
     if (connectionFeedback?.status === 'valid') {
       return { stroke: '#10b981', strokeWidth: 2.5 };
@@ -1570,6 +1577,45 @@ export function Canvas() {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
   }, []);
+
+  if (inspectorNodeSpec && inspectorNodeId) {
+    return (
+      <div className="relative h-full w-full overflow-hidden bg-slate-50">
+        <PenzaiInspector
+          graphId={graphId}
+          nodePath={graphStack
+            .map((layer) => layer.childNodeId)
+            .filter((id): id is string => Boolean(id))}
+          nodeSpec={inspectorNodeSpec}
+        />
+        <div className="absolute left-4 top-4 z-20 flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-xs text-slate-500 shadow-soft">
+          {breadcrumbs.map((crumb, index) => {
+            const isLast = index === breadcrumbs.length - 1;
+            return (
+              <div key={`${crumb}-${index}`} className="flex items-center gap-2">
+                <button
+                  className={clsx(
+                    'text-xs font-medium',
+                    isLast ? 'text-slate-700' : 'text-brand-600 hover:text-brand-700'
+                  )}
+                  onClick={() => {
+                    if (!isLast) exitToBreadcrumb(index);
+                  }}
+                  disabled={isLast}
+                >
+                  {crumb}
+                </button>
+                {!isLast && <span className="text-slate-300">/</span>}
+              </div>
+            );
+          })}
+          <span className="ml-1 rounded-full bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
+            {domainContext?.domain.display_name ?? 'Inspector'} - read-only
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

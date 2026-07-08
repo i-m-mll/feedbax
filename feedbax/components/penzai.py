@@ -259,30 +259,10 @@ class PenzaiStateManager(Module):
         if not PENZAI_AVAILABLE:
             return cls.empty()
 
-        # Extract all StateVariable values as initial state
-        # The model should have unbound state variables that we need to track
-        state_vars: list[tuple[Any, ...]] = []
-
-        def find_state_vars(path: tuple, node: Any) -> None:
-            if StateVariable is not None and isinstance(node, StateVariable):
-                state_vars.append((path, node.value))
-
-        def walk_tree(path: tuple, node: Any) -> None:
-            find_state_vars(path, node)
-            if hasattr(node, "__dict__"):
-                for key, value in node.__dict__.items():
-                    walk_tree(path + (key,), value)
-            elif isinstance(node, (list, tuple)):
-                for i, value in enumerate(node):
-                    walk_tree(path + (i,), value)
-            elif isinstance(node, dict):
-                for key, value in node.items():
-                    walk_tree(path + (key,), value)
-
-        walk_tree((), pz_model)
+        state_vars = penzai_state_variable_paths(pz_model)
 
         if state_vars:
-            paths = ", ".join(".".join(str(part) for part in path) for path, _ in state_vars)
+            paths = ", ".join(state_vars)
             raise NotImplementedError(
                 "PenzaiSubgraph does not yet support stateful Penzai models. "
                 "StateVariable paths were found at "
@@ -621,14 +601,22 @@ class PenzaiSubgraph(Component):
 
 
 # Registry of model builders for web UI serialization
-# Maps builder name to (builder_fn, default_params) tuple
-_PENZAI_MODEL_BUILDERS: dict[str, tuple[Callable[..., PyTree], dict[str, Any]]] = {}
+# Maps builder name to (builder_fn, default_params, metadata) tuple.
+_PENZAI_MODEL_BUILDERS: dict[
+    str,
+    tuple[Callable[..., PyTree], dict[str, Any], dict[str, Any]],
+] = {}
 
 
 def register_penzai_builder(
     name: str,
     builder_fn: Callable[..., PyTree],
     default_params: dict[str, Any] | None = None,
+    *,
+    description: str | None = None,
+    input_shape: Sequence[int | str] | None = None,
+    output_shape: Sequence[int | str] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Register a Penzai model builder for web UI serialization.
 
@@ -639,6 +627,10 @@ def register_penzai_builder(
         name: Unique name for the builder (e.g., "penzai_mlp").
         builder_fn: Function that takes params dict and returns Penzai model.
         default_params: Default parameter values for the builder.
+        description: Short human-readable builder description for Studio.
+        input_shape: Optional expected input shape summary.
+        output_shape: Optional expected output shape summary.
+        metadata: Optional extra discoverability metadata.
 
     Example:
         >>> def build_mlp(params):
@@ -655,7 +647,16 @@ def register_penzai_builder(
         ... )
     """
     _require_penzai()
-    _PENZAI_MODEL_BUILDERS[name] = (builder_fn, default_params or {})
+    builder_metadata = dict(metadata or {})
+    builder_metadata.setdefault(
+        "description",
+        description or getattr(builder_fn, "__doc__", None) or f"Penzai builder {name}.",
+    )
+    if input_shape is not None:
+        builder_metadata["input_shape"] = [str(item) for item in input_shape]
+    if output_shape is not None:
+        builder_metadata["output_shape"] = [str(item) for item in output_shape]
+    _PENZAI_MODEL_BUILDERS[name] = (builder_fn, default_params or {}, builder_metadata)
 
 
 def get_penzai_builder(name: str) -> tuple[Callable[..., PyTree], dict[str, Any]] | None:
@@ -667,7 +668,33 @@ def get_penzai_builder(name: str) -> tuple[Callable[..., PyTree], dict[str, Any]
     Returns:
         Tuple of (builder_fn, default_params) or None if not found.
     """
-    return _PENZAI_MODEL_BUILDERS.get(name)
+    builder_info = _PENZAI_MODEL_BUILDERS.get(name)
+    if builder_info is None:
+        return None
+    builder_fn, default_params, _ = builder_info
+    return builder_fn, default_params
+
+
+def list_penzai_builder_info() -> list[dict[str, Any]]:
+    """Return registry-visible metadata for all Penzai builders."""
+
+    builders: list[dict[str, Any]] = []
+    for name, (_, default_params, metadata) in sorted(_PENZAI_MODEL_BUILDERS.items()):
+        builders.append(
+            {
+                "name": name,
+                "description": str(metadata.get("description") or f"Penzai builder {name}."),
+                "default_params": dict(default_params),
+                "input_shape": metadata.get("input_shape"),
+                "output_shape": metadata.get("output_shape"),
+                "metadata": {
+                    key: value
+                    for key, value in metadata.items()
+                    if key not in {"description", "input_shape", "output_shape"}
+                },
+            }
+        )
+    return builders
 
 
 def list_penzai_builders() -> list[str]:
@@ -677,6 +704,89 @@ def list_penzai_builders() -> list[str]:
         List of registered builder names.
     """
     return list(_PENZAI_MODEL_BUILDERS.keys())
+
+
+def _walk_state_variables(path: tuple[Any, ...], node: Any, paths: list[str]) -> None:
+    if StateVariable is not None and isinstance(node, StateVariable):
+        paths.append(_format_penzai_path(path))
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _walk_state_variables(path + (key,), value, paths)
+        return
+    if isinstance(node, (list, tuple)):
+        for index, value in enumerate(node):
+            _walk_state_variables(path + (index,), value, paths)
+        return
+    if hasattr(node, "__dict__"):
+        for key, value in vars(node).items():
+            _walk_state_variables(path + (key,), value, paths)
+
+
+def _format_penzai_path(path: tuple[Any, ...]) -> str:
+    if not path:
+        return "<root>"
+    parts: list[str] = []
+    for item in path:
+        if isinstance(item, int):
+            parts.append(f"[{item}]")
+        else:
+            text = str(item)
+            if parts:
+                parts.append(f".{text}")
+            else:
+                parts.append(text)
+    return "".join(parts)
+
+
+def penzai_state_variable_paths(pz_model: PyTree) -> list[str]:
+    """Return formatted paths for Penzai ``StateVariable`` leaves."""
+
+    if not PENZAI_AVAILABLE:
+        return []
+    paths: list[str] = []
+    _walk_state_variables((), pz_model, paths)
+    return paths
+
+
+def penzai_structure_summary(pz_model: PyTree) -> dict[str, int]:
+    """Return a compact structural summary for authoring diagnostics."""
+
+    array_leaves: list[Any] = []
+    submodule_count = 0
+    seen: set[int] = set()
+
+    def visit(node: Any) -> None:
+        nonlocal submodule_count
+        node_id = id(node)
+        if node_id in seen:
+            return
+        seen.add(node_id)
+        if hasattr(node, "shape") and hasattr(node, "dtype"):
+            array_leaves.append(node)
+            return
+        if hasattr(node, "__dict__"):
+            submodule_count += 1
+            for value in vars(node).values():
+                visit(value)
+        elif isinstance(node, dict):
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                visit(value)
+
+    visit(pz_model)
+    parameter_count = 0
+    for leaf in array_leaves:
+        size = getattr(leaf, "size", None)
+        if isinstance(size, int):
+            parameter_count += size
+    return {
+        "parameter_count": parameter_count,
+        "array_leaf_count": len(array_leaves),
+        "submodule_count": max(submodule_count, 1),
+    }
 
 
 def build_penzai_subgraph(
@@ -735,8 +845,11 @@ __all__ = [
     # Factory functions
     "register_penzai_builder",
     "get_penzai_builder",
+    "list_penzai_builder_info",
     "list_penzai_builders",
     "build_penzai_subgraph",
+    "penzai_state_variable_paths",
+    "penzai_structure_summary",
     # Availability flags
     "PENZAI_AVAILABLE",
     "TREESCOPE_AVAILABLE",

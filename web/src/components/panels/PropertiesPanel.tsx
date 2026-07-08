@@ -502,7 +502,7 @@ export function PropertiesPanel() {
         <div className="mt-1 text-sm text-slate-500">{nodeSpec.type}</div>
       </div>
 
-      {component?.is_composite ? (
+      {component?.is_composite && component.template_kind !== 'display' ? (
         <div className="space-y-3">
           <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Parameters</div>
           <div className="text-sm text-slate-400">
@@ -1415,6 +1415,8 @@ function ParamInput({
   value: ParamValue;
   onChange: (value: ParamValue) => void;
 }) {
+  const optionDescription =
+    typeof value === 'string' ? schema.option_descriptions?.[value] : undefined;
   return (
     <label className="flex flex-col gap-1 text-xs text-slate-500">
       <span>{humanizeLabel(schema.name)}</span>
@@ -1423,6 +1425,11 @@ function ParamInput({
         value={value}
         onChange={(nextValue) => onChange(nextValue as ParamValue)}
       />
+      {(optionDescription || schema.description) && (
+        <span className="text-[11px] leading-4 text-slate-400">
+          {optionDescription ?? schema.description}
+        </span>
+      )}
     </label>
   );
 }

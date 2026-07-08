@@ -46,6 +46,11 @@ def register_builtin_domain_compilers() -> None:
     if _BUILTINS_REGISTERED:
         return
     from feedbax.contracts.graphs.acausal_compiler import compile_acausal_graph
+    from feedbax.contracts.graphs.penzai_compiler import PENZAI_COMPILER_ID
 
     register_domain_compiler("feedbax.compiler.acausal", compile_acausal_graph)
+    register_domain_compiler(
+        PENZAI_COMPILER_ID,
+        lambda interior_spec, node_name, component_registry: interior_spec,
+    )
     _BUILTINS_REGISTERED = True

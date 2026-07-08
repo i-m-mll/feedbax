@@ -20,6 +20,7 @@ from feedbax.contracts.studio_api import (
     GraphValidationResponse,
     SuccessPayload,
     SuccessResponse,
+    PenzaiNodeRequest,
 )
 from feedbax.web.services.graph_service import GraphSaveConflictError, GraphService
 
@@ -175,6 +176,24 @@ async def compile_graph_node(
             graph_id,
             node_path=payload.node_path,
             interior=payload.interior,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail='Graph not found') from exc
+
+
+@router.post('/{graph_id}/nodes/penzai/compile', response_model=DomainCompileReport)
+async def compile_penzai_graph_node(
+    graph_id: str,
+    payload: PenzaiNodeRequest,
+) -> DomainCompileReport:
+    try:
+        return service.compile_penzai_node(
+            graph_id,
+            node_path=payload.node_path,
+            builder_name=payload.builder_name,
+            params=payload.params,
+            input_port=payload.input_port,
+            output_port=payload.output_port,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc

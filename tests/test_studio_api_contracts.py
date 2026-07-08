@@ -38,6 +38,7 @@ GENERATED_STUDIO_PREFIXES = (
     "/api/domains",
     "/api/graphs",
     "/api/inspection",
+    "/api/penzai",
     "/api/runs",
     "/api/training",
     "/api/trajectories",

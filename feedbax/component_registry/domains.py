@@ -15,6 +15,7 @@ from feedbax.contracts.domain import (
     DomainTheme,
 )
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID
+from feedbax.contracts.graphs.penzai_compiler import PENZAI_COMPILER_ID
 
 
 class DomainRegistry:
@@ -101,7 +102,7 @@ def builtin_domain_registry() -> DomainRegistry:
             nestable_domains=[],
             editor=EditorCapability(kind="inspector", editable=False),
             theme=DomainTheme(color="penzai", icon="Hexagon", edge_style="directed"),
-            compiler_id=None,
+            compiler_id=PENZAI_COMPILER_ID,
         )
     )
     return registry
