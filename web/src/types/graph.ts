@@ -68,7 +68,7 @@ export type GraphSubgraphSpec = NonNullable<GraphSpec['subgraphs']>[string];
 export function isCausalGraphSpec(
   value: GraphSubgraphSpec | GraphSpec | null | undefined
 ): value is GraphSpec {
-  return Boolean(value && value.schema_id === 'feedbax.spec.graph');
+  return Boolean(value && (!value.schema_id || value.schema_id === 'feedbax.spec.graph'));
 }
 
 export type ParamPrimitive = number | string | boolean | null;
