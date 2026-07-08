@@ -103,6 +103,9 @@ Use this file for current orientation, then route to narrower authorities:
 - Model graph semantics: `docs/design/SPEC_EAGER_MODELS.md`,
   `docs/COMPONENTS_AND_WIRES_SPEC.md`, `docs/STATE_MERGE_SEMANTICS_SPEC.md`,
   and `docs/STATE_WIRE_TAPS_SPEC.md`.
+- Typed subgraph domains, including acausal/mechanics/penzai interiors and
+  compile-status routing: `docs/design/typed_subgraph_domains.md`; umbrella
+  `6116155`.
 - Loss and training UI details: `docs/LOSS_UI_SPEC.md` and
   `docs/CLOUD_TRAINING_DISPATCH_SPEC.md`.
 - Historical UI design conversation and old issue lists:
