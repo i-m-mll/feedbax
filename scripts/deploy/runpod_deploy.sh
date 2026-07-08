@@ -9,8 +9,11 @@ set -euo pipefail
 # classes, while static Python config, strings, booleans, object structure,
 # shapes, compile options, jax/jaxlib version, and backend do. Concurrent first
 # compiles of the same program all miss the cache, so row launches warm the
-# first row before fanning out by default. Ephemeral pods do not need eviction,
-# but the cache directory can grow across reused persistent volumes.
+# first row before fanning out by default. The warm gate waits for a row log
+# readiness marker, not the wrapper PID; set WARM_COMPILE_READY_REGEX or
+# WARM_COMPILE_READY_STRING if a training command emits a better signal than
+# the default batch/step/iteration log pattern. Ephemeral pods do not need
+# eviction, but the cache directory can grow across reused persistent volumes.
 # Override these values with environment variables or `--config <file>`.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib_acquire.sh
@@ -70,6 +73,8 @@ ROWS_MANIFEST="${ROWS_MANIFEST:-}"
 ROW_LAUNCH_STAGGER_SECONDS="${ROW_LAUNCH_STAGGER_SECONDS:-10}"
 MAX_PARALLEL_ROWS="${MAX_PARALLEL_ROWS:-4}"
 WARM_COMPILE_FIRST="${WARM_COMPILE_FIRST:-1}"
+WARM_COMPILE_READY_REGEX="${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}"
+WARM_COMPILE_READY_STRING="${WARM_COMPILE_READY_STRING:-}"
 
 # Acquisition bookkeeping.
 ACQUIRED_DC=""
@@ -1406,15 +1411,27 @@ launch_row() {
 
 wait_for_row_active_training() {
     local row_id=$1
-    local done_file failed_file pid_file timeout poll_seconds
+    local done_file failed_file log_file timeout poll_seconds ready_probe ready_description
+    local ready_regex ready_string
     timeout="${SENTINEL_TIMEOUT_SECONDS:-7200}"
     poll_seconds="${SENTINEL_POLL_SECONDS:-30}"
+    ready_regex="${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}"
+    ready_string="${WARM_COMPILE_READY_STRING:-}"
     done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
     failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
-    pid_file="$REMOTE_SENTINEL_DIR/${row_id}.pid"
+    log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
+    if [ -n "$ready_string" ]; then
+        ready_probe="test -f $(sq "$log_file") && grep -F -- $(sq "$ready_string") $(sq "$log_file") >/dev/null 2>&1"
+        ready_description="string $(sq "$ready_string")"
+    elif [ -n "$ready_regex" ]; then
+        ready_probe="test -f $(sq "$log_file") && grep -E -- $(sq "$ready_regex") $(sq "$log_file") >/dev/null 2>&1"
+        ready_description="regex $(sq "$ready_regex")"
+    else
+        die "warm compile readiness requires WARM_COMPILE_READY_REGEX or WARM_COMPILE_READY_STRING"
+    fi
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "dry-run: warm compile first would wait for row $row_id active training"
-        remote_cmd "test -f $(sq "$pid_file") || test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
+        log "dry-run: warm compile first would poll row $row_id log for active training ($ready_description)"
+        remote_cmd "$ready_probe || test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
         return 0
     fi
 
@@ -1424,17 +1441,17 @@ wait_for_row_active_training() {
         if remote_capture "test -f $(sq "$failed_file")"; then
             die "warm compile row $row_id failed; inspect $REMOTE_RUN_DIR/logs/${row_id}.log"
         fi
-        if remote_capture "test -f $(sq "$done_file")"; then
-            log "warm compile row $row_id completed before fan-out"
+        if remote_capture "$ready_probe"; then
+            log "warm compile row $row_id reached active training; launching remaining rows"
             return 0
         fi
-        if remote_capture "pid=\$(cat $(sq "$pid_file") 2>/dev/null || true); [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null"; then
-            log "warm compile row $row_id active; launching remaining rows"
+        if remote_capture "test -f $(sq "$done_file")"; then
+            log "warm compile row $row_id completed before readiness marker matched; treating successful completion as warmed"
             return 0
         fi
         sleep "$poll_seconds"
     done
-    die "timed out waiting for warm compile row $row_id to become active"
+    die "timed out waiting for warm compile row $row_id log readiness marker ($ready_description)"
 }
 
 # count_running_rows returns how many rows are still in flight — used to honor

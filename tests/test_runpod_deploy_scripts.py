@@ -146,6 +146,7 @@ def test_rows_dry_run_uses_cache_env_and_warm_first_order(tmp_path: Path) -> Non
         "JAX_COMPILATION_CACHE_DIR": "/workspace/custom_jax_cache",
         "ROW_LAUNCH_STAGGER_SECONDS": "0",
         "MAX_PARALLEL_ROWS": "2",
+        "WARM_COMPILE_READY_REGEX": "TRAINING_READY",
     }
     result = run_script(
         "--dry-run",
@@ -168,9 +169,12 @@ def test_rows_dry_run_uses_cache_env_and_warm_first_order(tmp_path: Path) -> Non
     assert "JAX_COMPILATION_CACHE_DIR" in output
     assert "/workspace/custom_jax_cache" in output
     first_launch = output.index("launching row row_a")
-    warm_wait = output.index("dry-run: warm compile first would wait for row row_a")
+    warm_wait = output.index("dry-run: warm compile first would poll row row_a log")
     second_launch = output.index("launching row row_b")
     assert first_launch < warm_wait < second_launch
+    warm_gate_output = output[warm_wait:second_launch]
+    assert "regex 'TRAINING_READY'" in warm_gate_output
+    assert "row_a.pid" not in warm_gate_output
 
 
 def test_resume_baseline_missing_source_fails_preflight(tmp_path: Path) -> None:
