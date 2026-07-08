@@ -1,6 +1,9 @@
 import pytest
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
+import jax_cookbook.tree as jtree
+import numpy as np
 
 import equinox as eqx
 from equinox.nn import StateIndex
@@ -26,6 +29,7 @@ try:
         TaskInterventionSpecs,
         TaskTrialSpec,
         TrialSpecDependency,
+        eval_ensemble_on_trials,
     )
 except ImportError:
     pytest.skip(
@@ -202,6 +206,64 @@ def test_eval_trials_rollout_step_hook_runs_inside_rollout():
     assert jnp.allclose(
         states_hook.nodes["acc"],
         jnp.array([[1.0, 3.0, 6.0], [1.0, 3.0, 6.0]], dtype=jnp.float32),
+    )
+
+
+def test_public_eval_ensemble_on_trials_matches_private_partition_path():
+    task = DynamicInputTask()
+    n_replicates = 2
+    model = jtree.get_ensemble(
+        lambda *, key: _make_dynamic_eval_graph(),
+        n=n_replicates,
+        key=jax.random.PRNGKey(0),
+    )
+    trial_specs = TaskTrialSpec(
+        inits=WhereDict(),
+        targets=WhereDict(),
+        inputs={
+            "delta": jnp.array(
+                [[1.0, 0.0, 2.0], [0.5, 0.5, 0.5]],
+                dtype=jnp.float32,
+            )
+        },
+    )
+    key = jax.random.PRNGKey(123)
+    n_trials = trial_specs.inputs["delta"].shape[0]
+
+    def eval_explicit_trials(model, key, rollout_step_hook=None):
+        return task.eval_trials(
+            model,
+            trial_specs,
+            jax.random.split(key, n_trials),
+            rollout_step_hook=rollout_step_hook,
+        )
+
+    expected = task._eval_ensemble(
+        eval_explicit_trials,
+        model,
+        n_replicates,
+        key,
+    )
+    actual = eval_ensemble_on_trials(
+        task,
+        model,
+        trial_specs,
+        key=key,
+        n_replicates=n_replicates,
+    )
+
+    assert jt.structure(actual) == jt.structure(expected)
+    jt.map(
+        lambda actual_leaf, expected_leaf: (
+            np.testing.assert_array_equal(
+                np.asarray(actual_leaf),
+                np.asarray(expected_leaf),
+            )
+            if eqx.is_array(actual_leaf)
+            else actual_leaf == expected_leaf
+        ),
+        actual,
+        expected,
     )
 
 
