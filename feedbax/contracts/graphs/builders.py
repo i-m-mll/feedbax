@@ -81,6 +81,7 @@ from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
     build_penzai_subgraph,
 )
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graphs.prototypes import array_proto_from_shape
 from feedbax.runtime.state_feedback import build_state_feedback_selector
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
@@ -942,6 +943,11 @@ def build_component(
         raise ValueError(
             f"Unsupported component type {node_type!r} for node {node_name!r}. "
             f"Known component types: {known}"
+        )
+    if meta.domain != CAUSAL_DOMAIN_ID:
+        raise ValueError(
+            f"Component type {node_type!r} for node {node_name!r} belongs to "
+            f"domain {meta.domain!r} and cannot be built by the causal component builder."
         )
     unsupported_message = (
         None

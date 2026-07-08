@@ -19,6 +19,7 @@ from feedbax.runtime.affine_composer import (
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
+from .acausal_adapters import register_acausal_components
 from .cde_templates import register_cde_templates
 from .meta import ComponentMeta, MissingPrototypeInput
 from .templates import register_builtin_graph_templates
@@ -1758,6 +1759,7 @@ def register_builtin_components(registry: _Registry) -> None:
             is_composite=True,
         )
     )
+    register_acausal_components(registry)
     registry.register(
         ComponentMeta(
             name='Channel',

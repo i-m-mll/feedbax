@@ -576,9 +576,13 @@ export interface ValidationResult {
 }
 
 export interface PortType {
-  dtype: string;
+  dtype?: string;
   shape?: number[] | null;
   rank?: number | null;
+  kind?: "signal" | "conserving";
+  physical_domain?: string | null;
+  across_vars?: string[] | null;
+  through_var?: string | null;
 }
 
 export interface PortTypeSpec {
@@ -837,6 +841,8 @@ export interface ResolvedWorkspaceReplayScene {
 }
 
 export interface ComponentDefinition {
+  schema_id?: "feedbax.spec.component_definition";
+  schema_version?: "feedbax.spec.component_definition.v2";
   name: string;
   category: string;
   description: string;
@@ -2482,9 +2488,13 @@ export const ValidationResultSchema: z.ZodType<ValidationResult> = z.lazy(() =>
 export const PortTypeSchema: z.ZodType<PortType> = z.lazy(() =>
   z
     .object({
-      "dtype": z.string(),
+      "dtype": z.string().optional(),
       "shape": z.array(z.number().int()).nullable().optional(),
       "rank": z.number().int().nullable().optional(),
+      "kind": z.union([z.literal("signal"), z.literal("conserving")]).optional(),
+      "physical_domain": z.string().nullable().optional(),
+      "across_vars": z.array(z.string()).nullable().optional(),
+      "through_var": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<PortType>;
@@ -2863,6 +2873,8 @@ export const ResolvedWorkspaceReplaySceneSchema: z.ZodType<ResolvedWorkspaceRepl
 export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(() =>
   z
     .object({
+      "schema_id": z.literal("feedbax.spec.component_definition").optional(),
+      "schema_version": z.literal("feedbax.spec.component_definition.v2").optional(),
       "name": z.string(),
       "category": z.string(),
       "description": z.string(),

@@ -29,10 +29,13 @@ from feedbax.acausal.translational import (
     VelocitySensor,
 )
 from feedbax.acausal.rotational import (
+    AngleSensor,
+    AngularVelocitySensor,
     GearRatio,
     Inertia,
     RotationalDamper,
     RotationalGround,
+    TorqueSensor,
     TorqueSource,
     TorsionalSpring,
 )
