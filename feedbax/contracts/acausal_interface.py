@@ -100,11 +100,17 @@ def _adapter_ports(
 def derive_acausal_interface(graph: AcausalGraphSpec) -> DerivedAcausalInterface:
     """Derive parent-facing ports from explicit acausal boundary components."""
 
-    inputs = _adapter_ports(
+    adapter_inputs = _adapter_ports(
         graph,
         component_type=ACTUATION_INPUT_TYPE,
         default_port_name="u",
     )
+    signal_inputs = tuple(
+        node_id
+        for node_id, node in graph.nodes.items()
+        if node.type == "RigidTendonHillMuscle"
+    )
+    inputs = (*adapter_inputs, *signal_inputs)
     outputs = _adapter_ports(
         graph,
         component_type=SENSOR_OUTPUT_TYPE,

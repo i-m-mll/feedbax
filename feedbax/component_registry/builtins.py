@@ -9,6 +9,7 @@ import jax.tree as jt
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
+from feedbax.contracts.graphs.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
@@ -1593,6 +1594,9 @@ def register_builtin_components(registry: _Registry) -> None:
             ),
             output_prototype_fn=mechanics_state_output_prototype,
             representation=_point_mass_representation(),
+            template_graph=point_mass_template_graph(),
+            template_id="feedbax.templates.mechanics.point_mass",
+            template_kind="executable",
         )
     )
     registry.register(

@@ -28,6 +28,7 @@ from feedbax.acausal.translational import (
     PrescribedMotion,
     VelocitySensor,
 )
+from feedbax.acausal.mechanics import RigidTendonHillMuscle
 from feedbax.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,

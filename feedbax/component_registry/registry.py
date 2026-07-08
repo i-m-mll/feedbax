@@ -16,6 +16,7 @@ from feedbax.contracts.component import (
     PortType,
     PortTypeSpec,
 )
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.migrations import (
@@ -365,6 +366,27 @@ class ComponentRegistry:
         *,
         node_path: str,
     ) -> list[TemplateBuilderIssue]:
+        if isinstance(graph, AcausalGraphSpec):
+            from feedbax.contracts.graphs.acausal_compiler import (
+                compile_acausal_authoring_report,
+            )
+
+            report = compile_acausal_authoring_report(
+                graph,
+                node_path=[template_meta.name],
+                component_registry=self,
+            )
+            return [
+                TemplateBuilderIssue(
+                    template_type=template_meta.name,
+                    template_id=template_meta.template_id,
+                    node_path=node_path,
+                    node_type="AcausalGraphSpec",
+                    reason=diagnostic.message,
+                )
+                for diagnostic in report.diagnostics
+                if diagnostic.severity == "error"
+            ]
         issues: list[TemplateBuilderIssue] = []
         subgraphs = dict(getattr(graph, "subgraphs", None) or {})
         nodes = getattr(graph, "nodes", {})

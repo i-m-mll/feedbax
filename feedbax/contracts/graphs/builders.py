@@ -4,6 +4,7 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
+import diffrax as dfx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -63,9 +64,15 @@ from feedbax.intervene.intervene import (
 )
 from feedbax.objectives.loss import CompositeLoss
 from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
+from feedbax.mechanics.backend import DiffraxBackend
+from feedbax.mechanics.body import BodyPreset, default_2link_bounds
 from feedbax.mechanics.mechanics import Mechanics
+from feedbax.mechanics.model_builder import ChainConfig
+from feedbax.mechanics.muscle_config import default_6muscle_2link_topology
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
+from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -207,6 +214,66 @@ def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
     else:
         raise ValueError(f"Unsupported plant_type '{plant_type}'")
     return Mechanics(plant=plant, dt=float(params.get("dt", 0.01)))
+
+
+class _ExcitationMechanics(Mechanics):
+    input_ports = ("excitation",)
+
+    def __call__(self, inputs, state, *, key):
+        excitation = inputs.get("excitation", inputs.get("force"))
+        return super().__call__({"force": excitation}, state, key=key)
+
+
+def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
+    bounds = default_2link_bounds()
+    tau_act = float(params.get("tau_act", 0.01))
+    tau_deact = float(params.get("tau_deact", 0.04))
+    return BodyPreset(
+        segment_lengths=(bounds.segment_lengths_min + bounds.segment_lengths_max) / 2.0,
+        segment_masses=(bounds.segment_masses_min + bounds.segment_masses_max) / 2.0,
+        joint_damping=(bounds.joint_damping_min + bounds.joint_damping_max) / 2.0,
+        joint_stiffness=(bounds.joint_stiffness_min + bounds.joint_stiffness_max) / 2.0,
+        muscle_pcsa=(bounds.muscle_pcsa_min + bounds.muscle_pcsa_max) / 2.0,
+        muscle_optimal_fiber_length=(
+            bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max
+        )
+        / 2.0,
+        muscle_tendon_slack_length=(
+            bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max
+        )
+        / 2.0,
+        muscle_moment_arm_magnitudes=(
+            bounds.muscle_moment_arm_magnitudes_min
+            + bounds.muscle_moment_arm_magnitudes_max
+        )
+        / 2.0,
+        tau_act=tau_act,
+        tau_deact=tau_deact,
+    )
+
+
+def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechanics:
+    dt = float(params.get("dt", 0.01))
+    n_steps = int(params.get("n_steps", 1))
+    if n_steps < 1:
+        raise ValueError("AnalyticalMusculoskeletalPlant n_steps must be >= 1")
+    chain_config = ChainConfig(
+        n_joints=2,
+        muscle_topology=default_6muscle_2link_topology(),
+    )
+    plant = AnalyticalMusculoskeletalPlant.from_body_preset(
+        _default_analytical_body_preset(params),
+        chain_config,
+        clip_states=bool(params.get("clip_states", True)),
+        key=jr.PRNGKey(0),
+    )
+    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=dfx.Euler())
+    return _ExcitationMechanics(
+        plant=plant,
+        dt=dt,
+        backend=backend,
+        key=jr.PRNGKey(0),
+    )
 
 
 def _build_linear_state_space(params: Mapping[str, Any]) -> LinearStateSpace:
@@ -806,6 +873,18 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Damper": _build_damper,
     "ReluMuscle": _build_relu_muscle,
     "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
+    "Arm6MuscleRigidTendon": lambda params: Arm6MuscleRigidTendon(
+        dt=float(params.get("dt", 0.01)),
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        optimal_muscle_length=float(params.get("optimal_muscle_length", 0.1)),
+        tendon_slack_length=float(params.get("tendon_slack_length", 0.1)),
+    ),
+    "PointMass8MuscleRelu": lambda params: PointMass8MuscleRelu(
+        n_pairs=int(params.get("n_pairs", 4)),
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        dt=float(params.get("dt", 0.01)),
+    ),
+    "AnalyticalMusculoskeletalPlant": _build_analytical_musculoskeletal_plant,
     "LinearStateSpace": _build_linear_state_space,
     "StateFeedbackSelector": build_state_feedback_selector,
     "AffineFeedbackController": build_affine_feedback_controller,
@@ -859,12 +938,8 @@ _DISPLAY_ONLY_MESSAGES: dict[str, str] = {
         "RadialForceProjection node {node_name!r} has no Python builder yet. "
         "It is a display-only abstraction used in composite subgraph templates."
     ),
-    "Arm6MuscleRigidTendon": (
-        "Arm6MuscleRigidTendon node {node_name!r} requires musculoskeletal plant data "
-        "(body presets, muscle topology) not stored in GraphSpec. This node type is "
-        "supported in the training worker but not in local graph instantiation. "
-        "For testing, use TwoLinkArm instead."
-    ),
+    # C1 issue 196bed0: projection helpers remain display-only until C2 turns
+    # muscle paths and multibody geometry into real acausal mechanics interiors.
 }
 
 

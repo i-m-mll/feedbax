@@ -135,7 +135,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
 
         # ---- Ports -------------------------------------------------------
         element_input_names: list[str] = []
-        for vname in sorted(layout._inputs.keys()):
+        for vname, _idx in sorted(layout._inputs.items(), key=lambda item: item[1]):
             label = vname.split(".")[0]
             if label not in element_input_names:
                 element_input_names.append(label)

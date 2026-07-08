@@ -559,8 +559,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 else:
                     plant_type = type(skeleton).__name__
             elif isinstance(component.plant, AnalyticalMusculoskeletalPlant):
-                # Bug: 1005721 — AnalyticalMusculoskeletalPlant serialization type mapping
-                plant_type = "Arm6MuscleRigidTendon"
+                plant_type = "AnalyticalMusculoskeletalPlant"
             params = {
                 "dt": component.dt,
             }

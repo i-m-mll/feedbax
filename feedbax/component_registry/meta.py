@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo, PortTypeSpec
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import GraphSpec, GraphUIState, NodeUIState, ParamSchema
 from feedbax.contracts.representation import RepresentationSpec
 
@@ -35,7 +36,7 @@ class ComponentMeta:
     domain: str = CAUSAL_DOMAIN_ID
     interior_domain: Optional[str] = None
     is_composite: bool = False
-    template_graph: Optional[GraphSpec] = None
+    template_graph: Optional[GraphSpec | AcausalGraphSpec] = None
     template_ui_state: Optional[GraphUIState] = None
     template_id: Optional[str] = None
     template_kind: Optional[str] = None
