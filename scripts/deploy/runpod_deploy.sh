@@ -2,6 +2,18 @@
 set -euo pipefail
 
 # Deterministic RunPod deploy for the rlrmp/feedbax/jax-cookbook workflow.
+#
+# Training rows run as separate OS processes, so JAX's persistent compilation
+# cache is enabled by default for launch commands. Rows share cache entries when
+# the traced program identity matches: traced scalar values do not split cache
+# classes, while static Python config, strings, booleans, object structure,
+# shapes, compile options, jax/jaxlib version, and backend do. Concurrent first
+# compiles of the same program all miss the cache, so row launches warm the
+# first row before fanning out by default. The warm gate waits for a row log
+# readiness marker, not the wrapper PID; set WARM_COMPILE_READY_REGEX or
+# WARM_COMPILE_READY_STRING if a training command emits a better signal than
+# the default batch/step/iteration log pattern. Ephemeral pods do not need
+# eviction, but the cache directory can grow across reused persistent volumes.
 # Override these values with environment variables or `--config <file>`.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib_acquire.sh
@@ -19,6 +31,7 @@ RUNPOD_CLOUD_TYPE="${RUNPOD_CLOUD_TYPE:-SECURE}"
 RUNPOD_CONTAINER_DISK_GB="${RUNPOD_CONTAINER_DISK_GB:-30}"
 RUNPOD_VOLUME_GB="${RUNPOD_VOLUME_GB:-30}"
 RUNPOD_VOLUME_MOUNT="${RUNPOD_VOLUME_MOUNT:-/workspace}"
+JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$RUNPOD_VOLUME_MOUNT/jax_cache}"
 RUNPOD_PORTS="${RUNPOD_PORTS:-22/tcp,8080/http}"
 RUNPOD_NAME="${RUNPOD_NAME:-feedbax-rlrmp-$(date +%Y%m%d-%H%M%S)}"
 RUNPOD_DATA_CENTER_IDS="${RUNPOD_DATA_CENTER_IDS:-}"
@@ -59,6 +72,9 @@ REMOTE_DEPLOY_CONFIG_PATH="${REMOTE_DEPLOY_CONFIG_PATH:-}"
 ROWS_MANIFEST="${ROWS_MANIFEST:-}"
 ROW_LAUNCH_STAGGER_SECONDS="${ROW_LAUNCH_STAGGER_SECONDS:-10}"
 MAX_PARALLEL_ROWS="${MAX_PARALLEL_ROWS:-4}"
+WARM_COMPILE_FIRST="${WARM_COMPILE_FIRST:-1}"
+WARM_COMPILE_READY_REGEX="${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}"
+WARM_COMPILE_READY_STRING="${WARM_COMPILE_READY_STRING:-}"
 
 # Acquisition bookkeeping.
 ACQUIRED_DC=""
@@ -1359,7 +1375,9 @@ sync_rows_manifest() {
 
 # launch_row starts one training row via the nohup+sentinel pattern with per-row
 # done/failed/log paths derived from the row id, injecting
-# XLA_PYTHON_CLIENT_PREALLOCATE=false so parallel rows don't each grab all VRAM.
+# XLA_PYTHON_CLIENT_PREALLOCATE=false so parallel rows don't each grab all VRAM
+# and JAX_COMPILATION_CACHE_DIR so structurally identical row processes can
+# reuse compiled executables through the persistent volume.
 #
 # Slot reservation (FIX 3): the SSH command reserves the row's slot SYNCHRONOUSLY
 # by creating the `.started` marker as a foreground step that completes BEFORE
@@ -1371,7 +1389,8 @@ sync_rows_manifest() {
 # inside the job for diagnostics; the cap no longer depends on it.
 launch_row() {
     local row_id=$1 workdir=$2 command=$3
-    local done_file failed_file log_file pid_file started_file remote
+    local done_file failed_file log_file pid_file started_file remote cache_dir
+    cache_dir="${JAX_COMPILATION_CACHE_DIR:-${RUNPOD_VOLUME_MOUNT:-/workspace}/jax_cache}"
     # Defence in depth (FIX 4): the id is interpolated into remote paths, so
     # reject anything outside [A-Za-z0-9_.-] even though validate_rows_manifest
     # already screened manifest ids.
@@ -1385,9 +1404,54 @@ launch_row() {
     # Foreground reservation + setup, THEN background the job. The leading
     # `mkdir/rm/touch .started` run synchronously and finish before the SSH
     # command returns, so the slot is held the instant launch_row returns.
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && ( $command ) & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") >$(sq "$log_file") 2>&1 &"
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") $(sq "$cache_dir") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false JAX_COMPILATION_CACHE_DIR=$(sq "$cache_dir") && ( $command ) & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") >$(sq "$log_file") 2>&1 &"
     log "launching row $row_id"
     remote_cmd "$remote"
+}
+
+wait_for_row_active_training() {
+    local row_id=$1
+    local done_file failed_file log_file timeout poll_seconds ready_probe ready_description
+    local ready_regex ready_string
+    timeout="${SENTINEL_TIMEOUT_SECONDS:-7200}"
+    poll_seconds="${SENTINEL_POLL_SECONDS:-30}"
+    ready_regex="${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}"
+    ready_string="${WARM_COMPILE_READY_STRING:-}"
+    done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
+    failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
+    log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
+    if [ -n "$ready_string" ]; then
+        ready_probe="test -f $(sq "$log_file") && grep -F -- $(sq "$ready_string") $(sq "$log_file") >/dev/null 2>&1"
+        ready_description="string $(sq "$ready_string")"
+    elif [ -n "$ready_regex" ]; then
+        ready_probe="test -f $(sq "$log_file") && grep -E -- $(sq "$ready_regex") $(sq "$log_file") >/dev/null 2>&1"
+        ready_description="regex $(sq "$ready_regex")"
+    else
+        die "warm compile readiness requires WARM_COMPILE_READY_REGEX or WARM_COMPILE_READY_STRING"
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "dry-run: warm compile first would poll row $row_id log for active training ($ready_description)"
+        remote_cmd "$ready_probe || test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
+        return 0
+    fi
+
+    local deadline
+    deadline=$((SECONDS + timeout))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if remote_capture "test -f $(sq "$failed_file")"; then
+            die "warm compile row $row_id failed; inspect $REMOTE_RUN_DIR/logs/${row_id}.log"
+        fi
+        if remote_capture "$ready_probe"; then
+            log "warm compile row $row_id reached active training; launching remaining rows"
+            return 0
+        fi
+        if remote_capture "test -f $(sq "$done_file")"; then
+            log "warm compile row $row_id completed before readiness marker matched; treating successful completion as warmed"
+            return 0
+        fi
+        sleep "$poll_seconds"
+    done
+    die "timed out waiting for warm compile row $row_id log readiness marker ($ready_description)"
 }
 
 # count_running_rows returns how many rows are still in flight — used to honor
@@ -1406,15 +1470,16 @@ count_running_rows() {
 # --launch-command path is the N=1 degenerate case (synthesized as a one-row
 # manifest in memory). No training launch when neither is configured.
 launch_training() {
-    local ids workdir command default_wd
+    local ids workdir command default_wd warm_compile_first
     default_wd=$REMOTE_RLRMP_ROOT
+    warm_compile_first="${WARM_COMPILE_FIRST:-1}"
 
     if [ -n "$ROWS_MANIFEST" ]; then
         [ -f "$ROWS_MANIFEST" ] || die "rows manifest not found: $ROWS_MANIFEST"
         local validation
         validation=$(validate_rows_manifest <"$ROWS_MANIFEST") ||
             die "invalid rows manifest: $validation"
-        log "rows manifest $validation (stagger=${ROW_LAUNCH_STAGGER_SECONDS}s cap=${MAX_PARALLEL_ROWS})"
+        log "rows manifest $validation (stagger=${ROW_LAUNCH_STAGGER_SECONDS}s cap=${MAX_PARALLEL_ROWS} warm_compile_first=${warm_compile_first})"
         sync_rows_manifest
         read_lines_into ids < <(rows_manifest_ids <"$ROWS_MANIFEST")
         local first=1 running
@@ -1437,6 +1502,10 @@ launch_training() {
             fi
             first=0
             launch_row "$row_id" "$workdir" "$command"
+            if [ "$warm_compile_first" -eq 1 ]; then
+                wait_for_row_active_training "$row_id"
+                warm_compile_first=0
+            fi
         done
         log "launched ${#ids[@]} row(s)"
         return 0
