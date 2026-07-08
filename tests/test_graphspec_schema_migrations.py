@@ -18,7 +18,6 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V3,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     ComponentSpec,
-    GraphInteriorDomainMismatch,
     GraphMetadata,
     GraphProject,
     GraphSpec,
@@ -263,20 +262,16 @@ def test_nested_acausal_subgraphs_validate_recursively() -> None:
     assert isinstance(nested.subgraphs["inner"], AcausalGraphSpec)
 
 
-def test_spec_to_graph_rejects_acausal_interior_in_causal_consumer() -> None:
+def test_spec_to_graph_requires_acausal_system_interior() -> None:
     graph = GraphSpec(
         nodes={
             "plant": ComponentSpec(
                 type="AcausalSystem",
-                params={"dt": 0.001},
-                input_ports=["input"],
-                output_ports=["state"],
             )
-        },
-        subgraphs={"plant": AcausalGraphSpec.model_validate(_acausal_graph_payload())},
+        }
     )
 
-    with pytest.raises(GraphInteriorDomainMismatch, match="acausal domain compiler"):
+    with pytest.raises(ValueError, match="feedbax.domain.acausal"):
         serialization.spec_to_graph(
             graph,
             ComponentRegistry(load_user_components=False, discover_plugins=False),
