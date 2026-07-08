@@ -556,6 +556,19 @@ class TapUIState(BaseModel):
     selected: Optional[bool] = None
 
 
+class AssemblyViewUIState(BaseModel):
+    """Optional mechanics assembly-view UI state.
+
+    This is view-only state. Older graph payloads omit it and load with the
+    defaults below; the acausal graph remains the only persisted model.
+    """
+
+    active_view: Literal["graph", "assembly", "split"] = "graph"
+    expanded_rows: List[str] = Field(default_factory=list)
+    selected_row: Optional[str] = None
+    split_ratio: float = 0.42
+
+
 class GraphUIState(BaseModel):
     """UI state for the entire graph."""
 
@@ -566,6 +579,7 @@ class GraphUIState(BaseModel):
     edge_states: Optional[Dict[str, EdgeUIState]] = None
     subgraph_states: Optional[Dict[str, "GraphUIState"]] = None
     tap_states: Optional[Dict[str, TapUIState]] = None
+    assembly_view: Optional[AssemblyViewUIState] = None
 
 
 class AnalysisPageSpec(BaseModel):

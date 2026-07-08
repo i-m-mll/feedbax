@@ -727,6 +727,44 @@ describe('graphStore boundary aliases', () => {
   });
 });
 
+describe('graphStore assembly view UI state', () => {
+  beforeEach(() => {
+    useGraphStore.getState().resetGraph();
+  });
+
+  it('loads older UI payloads without assembly_view', () => {
+    const { graph, uiState } = graphWithTwoNodes();
+    const oldUiState: GraphUIState = {
+      viewport: uiState.viewport,
+      node_states: uiState.node_states,
+    };
+
+    useGraphStore.getState().hydrateGraph(graph, oldUiState, 'graph-1');
+
+    expect(useGraphStore.getState().uiState.assembly_view).toBeUndefined();
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(['a', 'b']);
+  });
+
+  it('persists assembly view state for the active layer', () => {
+    const { graph, uiState } = graphWithTwoNodes();
+    useGraphStore.getState().hydrateGraph(graph, uiState, 'graph-1');
+
+    useGraphStore.getState().setAssemblyViewState({
+      active_view: 'split',
+      expanded_rows: ['upper', 'elbow'],
+      selected_row: 'upper',
+      split_ratio: 0.5,
+    });
+
+    expect(useGraphStore.getState().capturePersistedGraph().uiState.assembly_view).toEqual({
+      active_view: 'split',
+      expanded_rows: ['upper', 'elbow'],
+      selected_row: 'upper',
+      split_ratio: 0.5,
+    });
+  });
+});
+
 describe('graphStore React Flow identity preservation', () => {
   beforeEach(() => {
     const { graph, uiState } = graphWithTwoNodes();
