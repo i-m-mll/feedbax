@@ -16,6 +16,13 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
 )
+from feedbax.contracts.component import (
+    COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
+    COMPONENT_DEFINITION_SCHEMA_ID,
+    COMPONENT_DEFINITION_SCHEMA_VERSION,
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+    migrate_component_definition_payload,
+)
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -1575,6 +1582,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_graphspec_schema_migrations.py",),
         ),
         _family(
+            "ComponentDefinition",
+            COMPONENT_DEFINITION_SCHEMA_ID,
+            COMPONENT_DEFINITION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.component",
+            emitted_by=("GET /api/components", "Studio component registry"),
+            consumed_by=("Studio frontend", "component registry clients"),
+            description="Discoverable component metadata and port typing contract.",
+            stance="migrate",
+            supported_old_versions=(COMPONENT_DEFINITION_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(),
+            required_tests=("tests/test_component_registration.py",),
+        ),
+        _family(
             "AdditiveGraphChannelAdapterSpec",
             "feedbax.spec.graph.additive_channel_adapter",
             GRAPH_SPEC_SCHEMA_VERSION,
@@ -2784,6 +2804,16 @@ default_spec_registry.register_migration(
         migration_id="graph-spec-v3-to-v4-discriminated-subgraphs",
         migrate=_migrate_graph_spec_v3_to_v4_payload,
         description="Allow discriminated causal/acausal subgraph payloads.",
+    ),
+)
+default_spec_registry.register_migration(
+    "ComponentDefinition",
+    SchemaMigration(
+        source_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
+        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        migration_id=COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
+        migrate=migrate_component_definition_payload,
+        description="Default legacy component port metadata to explicit signal ports.",
     ),
 )
 default_spec_registry.register_migration(

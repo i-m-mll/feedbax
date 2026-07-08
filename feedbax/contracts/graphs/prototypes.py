@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 
+from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
 from feedbax.contracts.graph import (
     ComponentSpec,
     DerivedDimensionRuleSpec,
@@ -711,6 +712,7 @@ def normalize_stateful_prototypes(
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
     component_registry: Any = None,
 ) -> GraphSpec:
+    spec = normalize_acausal_interfaces_for_graph(spec)
     subgraphs = dict(spec.subgraphs or {})
     node_inputs = infer_node_input_prototypes(
         spec,

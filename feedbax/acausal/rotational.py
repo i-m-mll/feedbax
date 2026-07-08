@@ -12,6 +12,7 @@ Elements
 - **TorqueSource** -- external torque from the causal world.
 - **RotationalGround** -- fixed rotational reference.
 - **GearRatio** -- kinematic gear constraint.
+- **AngleSensor / AngularVelocitySensor / TorqueSensor** -- read-only sensors.
 
 :copyright: Copyright 2024-2025 by MLL <mll@mll.bio>.
 :license: Apache 2.0.  See LICENSE for details.
@@ -238,3 +239,55 @@ class GearRatio(AcausalElement):
             )
         self.params[f"{name}.ratio"] = ratio
         self.element_type = "gear_ratio"
+
+
+# ---------------------------------------------------------------------------
+# Sensors (read-only, zero through-variable)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AngleSensor(AcausalElement):
+    """Reads angle at a connection node."""
+
+    def __init__(self, name: str):
+        super().__init__(name=name)
+        self.ports["flange"] = AcausalPort(
+            name="flange",
+            domain=Domain.ROTATIONAL,
+            across_vars=("angle", "angular_vel"),
+            through_var="torque",
+        )
+        self.element_type = "sensor"
+        self.sensor_output = ("flange", "angle")
+
+
+@dataclass
+class AngularVelocitySensor(AcausalElement):
+    """Reads angular velocity at a connection node."""
+
+    def __init__(self, name: str):
+        super().__init__(name=name)
+        self.ports["flange"] = AcausalPort(
+            name="flange",
+            domain=Domain.ROTATIONAL,
+            across_vars=("angle", "angular_vel"),
+            through_var="torque",
+        )
+        self.element_type = "sensor"
+        self.sensor_output = ("flange", "angular_vel")
+
+
+@dataclass
+class TorqueSensor(AcausalElement):
+    """Reads net torque at a connection node."""
+
+    def __init__(self, name: str):
+        super().__init__(name=name)
+        self.ports["flange"] = AcausalPort(
+            name="flange",
+            domain=Domain.ROTATIONAL,
+            across_vars=("angle", "angular_vel"),
+            through_var="torque",
+        )
+        self.element_type = "sensor"
+        self.sensor_output = ("flange", "torque")
