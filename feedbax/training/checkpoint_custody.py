@@ -65,6 +65,10 @@ _STRUCTURAL_ABI_DIFF_FIELDS = (
     "leaf_type",
     "static_repr_sha256",
 )
+LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT = (
+    "feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint"
+)
+LEGACY_CHECKPOINT_ADOPTION_DOCS = "docs/structure.md#legacy-checkpoint-adoption"
 
 
 class CheckpointCustodyError(ValueError):
@@ -115,6 +119,22 @@ class CheckpointForkResult:
     latest_pointer: CheckpointLatestPointer
     slot_transfer_modes: Mapping[str, str]
     source_provenance_notices: tuple[CheckpointProvenanceNotice, ...] = ()
+
+
+@dataclass(frozen=True)
+class DetectedLegacyCheckpointLayout:
+    """Recognized pre-custody checkpoint layout evidence."""
+
+    layout_id: str
+    name: str
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _LegacyCheckpointLayout:
+    layout_id: str
+    name: str
+    detect: Callable[[Path], tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -319,6 +339,22 @@ def load_latest_checkpoint(
         resume_slot_transform=resume_slot_transform,
         allow_new_lineage_override=allow_new_lineage_override,
     )
+
+
+def detect_known_legacy_checkpoint_layout(
+    root: str | Path,
+) -> DetectedLegacyCheckpointLayout | None:
+    """Return a recognized pre-custody checkpoint layout for *root*, if any."""
+    root_path = Path(root)
+    for layout in _KNOWN_LEGACY_CHECKPOINT_LAYOUTS:
+        evidence = layout.detect(root_path)
+        if evidence:
+            return DetectedLegacyCheckpointLayout(
+                layout_id=layout.layout_id,
+                name=layout.name,
+                evidence=evidence,
+            )
+    return None
 
 
 def _load_checkpoint_from_pointer(
@@ -1407,7 +1443,7 @@ def _read_blob(slot: CheckpointSlotBlobRef, path: Path) -> bytes:
 def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
     path = root / LATEST_POINTER_NAME
     if not path.is_file():
-        _reject_legacy_supervised_checkpoint(root)
+        _reject_legacy_checkpoint(root)
         raise CheckpointIntegrityError("checkpoint latest pointer is missing")
     try:
         payload = json.loads(path.read_text())
@@ -1416,13 +1452,68 @@ def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
         raise CheckpointIntegrityError("checkpoint latest pointer is corrupt") from exc
 
 
-def _reject_legacy_supervised_checkpoint(root: Path) -> None:
-    if (root / "last_batch.txt").is_file() or any(root.glob("ckpt_*.eqx")):
+def _reject_legacy_checkpoint(root: Path) -> None:
+    layout = detect_known_legacy_checkpoint_layout(root)
+    if layout is not None:
         raise CheckpointCompatibilityError(
-            "legacy supervised trainer checkpoints cannot be loaded by executor "
-            "checkpoint custody because they do not contain a schema identity, "
-            "slot manifest, or run-contract binding"
+            _legacy_checkpoint_adoption_message(layout)
         )
+
+
+def _legacy_checkpoint_adoption_message(layout: DetectedLegacyCheckpointLayout) -> str:
+    evidence = ", ".join(layout.evidence[:3])
+    if len(layout.evidence) > 3:
+        evidence += f", ... ({len(layout.evidence)} evidence paths)"
+    return (
+        f"recognized legacy checkpoint layout {layout.name!r} ({layout.layout_id}); "
+        f"evidence: {evidence}. These checkpoints predate checkpoint custody and "
+        "cannot be loaded directly because they do not contain a schema identity, "
+        "slot manifest, or run-contract binding. Adopt them with "
+        f"`{LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT}`; required inputs include the "
+        "producing commit for the LeafManifest dump and path-mapping rules. See "
+        f"{LEGACY_CHECKPOINT_ADOPTION_DOCS}."
+    )
+
+
+def _detect_feedbax_supervised_legacy_layout(root: Path) -> tuple[str, ...]:
+    evidence: list[str] = []
+    if (root / "last_batch.txt").is_file():
+        evidence.append("last_batch.txt")
+    evidence.extend(sorted(path.name for path in root.glob("ckpt_*.eqx"))[:8])
+    return tuple(evidence)
+
+
+def _detect_rlrmp_eqx_stream_legacy_layout(root: Path) -> tuple[str, ...]:
+    try:
+        candidates = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return ()
+
+    evidence: list[str] = []
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        suffix = candidate.name.removeprefix("checkpoint_")
+        if suffix == candidate.name or not suffix.isdigit():
+            continue
+        required = ("model.eqx", "optimizer_state.eqx", "metadata.json")
+        if all((candidate / name).is_file() for name in required):
+            evidence.append(f"{candidate.name}/{{model.eqx,optimizer_state.eqx,metadata.json}}")
+    return tuple(evidence)
+
+
+_KNOWN_LEGACY_CHECKPOINT_LAYOUTS = (
+    _LegacyCheckpointLayout(
+        layout_id="feedbax_supervised_trainer_v0",
+        name="Feedbax supervised trainer legacy checkpoint",
+        detect=_detect_feedbax_supervised_legacy_layout,
+    ),
+    _LegacyCheckpointLayout(
+        layout_id="rlrmp_eqx_stream_v0",
+        name="RLRMP Equinox stream legacy checkpoint",
+        detect=_detect_rlrmp_eqx_stream_legacy_layout,
+    ),
+)
 
 
 def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:

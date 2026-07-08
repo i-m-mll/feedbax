@@ -49,6 +49,7 @@ function trainingRunFromWire(wire: TrainingRunInfo): TrainingRun {
     sourceIssue: wire.source_issue ?? undefined,
     provenanceId: wire.provenance_id ?? wire.id,
     supersededBy: wire.superseded_by ?? undefined,
+    legacyCheckpoint: wire.legacy_checkpoint ?? undefined,
   };
 }
 

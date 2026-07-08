@@ -55,6 +55,22 @@ hardlinks are created on the target filesystem. Sync the source checkpoint as
 the durable transfer unit; ordinary `rsync` without `-H` re-duplicates
 hardlinked fork trees.
 
+### Legacy checkpoint adoption
+
+Pre-custody checkpoints cannot be loaded directly by checkpoint custody. Known
+legacy layouts include supervised trainer roots with `last_batch.txt` or
+`ckpt_*.eqx`, and Equinox stream roots with
+`checkpoint_N/model.eqx`, `optimizer_state.eqx`, and `metadata.json`.
+
+Adopt those roots with
+`feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint`. The
+adoption inputs are the producing commit used to dump the old LeafManifest, the
+legacy stream root, and path-mapping rules that map old leaf paths onto the
+current model and optimizer slots. The adoption tool verifies the stream,
+writes checkpoint-custody manifests, runs a strict round trip, and publishes the
+new custody root. Studio reports recognized legacy roots as adoption-required
+rather than treating them as ordinary load failures.
+
 ## Interventions
 
 A core feature of Feedbax is the ability to modify models and tasks with [interventions](/feedbax/examples/3_intervening). Interventions are regular components inserted into graphs via graph surgery, and their parameters live in the unified `State`.

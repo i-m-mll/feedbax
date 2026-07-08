@@ -184,6 +184,7 @@ from feedbax.web.api.training import (
 from feedbax.web.api.runs import (
     CreateEvalRunRequest,
     EvalRunInfo,
+    LegacyCheckpointInfo,
     ManifestImportRequest,
     ManifestImportResponse,
     SelectionPreviewRequest,
@@ -374,6 +375,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ProbeResponse,
     ValidationErrorResponse,
     ValidateLossResponse,
+    LegacyCheckpointInfo,
     TrainingRunInfo,
     EvalRunInfo,
     CreateEvalRunRequest,
