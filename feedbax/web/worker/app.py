@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import logging
 import os
 import queue
 import shutil
@@ -18,6 +19,7 @@ from typing import Any, Deque, Dict, Optional, Tuple
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import ValidationError as PydanticValidationError
 
 from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.studio.protocol import infer_task_n_steps
@@ -26,7 +28,18 @@ from feedbax.contracts.graphs.normalization import (
     normalize_task_binding_spec_for_studio_authoring,
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
+from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
+from feedbax.web.worker.diagnostics import (
+    GraphCompilationError,
+    exception_diagnostic,
+    model_validation_diagnostics,
+    object_required_diagnostic,
+    graph_compilation_error,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerStatus(str, Enum):
@@ -225,7 +238,10 @@ class _TrainingCfg:
 def _as_mapping(name: str, value: Any) -> Dict[str, Any]:
     """Return *value* as a dict or raise a clear worker-spec error."""
     if not isinstance(value, dict):
-        raise ValueError(f"Training worker requires {name} to be an object")
+        raise GraphCompilationError(
+            "Invalid training worker request",
+            [object_required_diagnostic(name)],
+        )
     return value
 
 
@@ -233,27 +249,64 @@ def _require_worker_specs(job: _Job) -> None:
     """Validate the Studio payload shape required by the real worker path."""
     _as_mapping("training_spec", job.training_spec)
     _as_mapping("task_spec", job.task_spec)
-    graph_spec = normalize_graph_for_studio_authoring(
-        GraphSpec.model_validate(_as_mapping("graph_spec", job.graph_spec))
-    )
+    try:
+        graph_spec = normalize_graph_for_studio_authoring(
+            GraphSpec.model_validate(_as_mapping("graph_spec", job.graph_spec))
+        )
+    except PydanticValidationError as exc:
+        raise GraphCompilationError(
+            "Invalid graph_spec",
+            model_validation_diagnostics("graph_spec", exc),
+        ) from exc
     job.graph_spec = graph_spec.model_dump(mode="json", exclude_none=True)
     if job.task_binding_spec is None:
-        raise ValueError(
-            "Training worker requires scenario-owned task_binding_spec; "
-            "task data bindings must not be inferred from graph task nodes"
+        raise GraphCompilationError(
+            "Training worker requires task_binding_spec",
+            [
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.missing_task_binding_spec",
+                    message=(
+                        "Training worker requires scenario-owned task_binding_spec; "
+                        "task data bindings must not be inferred from graph task nodes"
+                    ),
+                    location={"path": "/task_binding_spec"},
+                )
+            ],
         )
     task_binding_spec = _as_mapping("task_binding_spec", job.task_binding_spec)
     try:
         migrated_spec = migrate_studio_task_binding_spec(task_binding_spec).payload
         binding_spec = StudioTaskBindingSpec.model_validate(migrated_spec)
+    except PydanticValidationError as exc:
+        raise GraphCompilationError(
+            "Invalid task_binding_spec",
+            model_validation_diagnostics("task_binding_spec", exc),
+        ) from exc
     except ValueError as exc:
-        raise ValueError(f"Invalid task_binding_spec: {exc}") from exc
+        raise GraphCompilationError(
+            "Invalid task_binding_spec",
+            [
+                exception_diagnostic(
+                    exc,
+                    code="binding.invalid_spec",
+                    message=f"Invalid task_binding_spec: {exc}",
+                    details={"path": "/task_binding_spec"},
+                )
+            ],
+        ) from exc
     binding_spec = normalize_task_binding_spec_for_studio_authoring(binding_spec, graph_spec)
     job.task_binding_spec = binding_spec.model_dump(mode="json", exclude_none=True)
-    issues = validate_task_binding_schema(binding_spec, graph_spec, "/task_binding_spec")
+    issues = [
+        issue
+        for issue in validate_task_binding_schema(binding_spec, graph_spec, "/task_binding_spec")
+        if issue.severity == "error"
+    ]
     if issues:
-        summary = "; ".join(f"{issue.type}: {issue.message}" for issue in issues)
-        raise ValueError(f"Invalid task_binding_spec for graph_spec: {summary}")
+        raise graph_compilation_error(
+            "Invalid task_binding_spec for graph_spec",
+            issues,
+        )
 
 
 def _extract_training_cfg(
@@ -405,7 +458,7 @@ def _run_training(job: _Job) -> None:
         _require_worker_specs(job)
         cfg = _extract_training_cfg(job.training_config, job.task_spec)
         _run_training_real(job, cfg)
-    except Exception as exc:
+    except GraphCompilationError as exc:
         with job._state_lock:
             should_emit = job.status == WorkerStatus.RUNNING
             if should_emit:
@@ -420,6 +473,34 @@ def _run_training(job: _Job) -> None:
                     "job_id": job.job_id,
                     "batch": batch,
                     "error": str(exc),
+                    "diagnostics": [
+                        diagnostic.model_dump(mode="json", exclude_none=True)
+                        for diagnostic in exc.diagnostics
+                    ],
+                },
+            )
+    except Exception as exc:
+        logger.exception("Unhandled worker exception while running training job %s", job.job_id)
+        with job._state_lock:
+            should_emit = job.status == WorkerStatus.RUNNING
+            if should_emit:
+                job.status = WorkerStatus.ERROR
+                job.terminal_at = time.monotonic()
+                batch = job.batch
+        if should_emit:
+            diagnostic = exception_diagnostic(
+                exc,
+                code="internal",
+                message=f"{type(exc).__name__}: {exc}",
+            )
+            _emit(
+                job,
+                {
+                    "type": "training_error",
+                    "job_id": job.job_id,
+                    "batch": batch,
+                    "error": "Training failed unexpectedly",
+                    "diagnostics": [diagnostic.model_dump(mode="json", exclude_none=True)],
                 },
             )
     finally:

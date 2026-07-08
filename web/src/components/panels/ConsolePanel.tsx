@@ -1,8 +1,10 @@
 // Console tab: displays streamed training log lines
 // Shows scrolling log output with level-based coloring
 import { useEffect, useRef } from 'react';
+import { formatTrainingDiagnostic } from '@/hooks/useTraining';
 import { useTrainingStore } from '@/stores/trainingStore';
 import type { TrainingLogLine } from '@/types/training';
+import type { DomainDiagnostic } from '@/generated/studioContracts';
 
 function levelClass(level: TrainingLogLine['level']): string {
   switch (level) {
@@ -15,8 +17,15 @@ function levelClass(level: TrainingLogLine['level']): string {
   }
 }
 
+function diagnosticLevelClass(severity: DomainDiagnostic['severity']): string {
+  if (severity === 'warning') return levelClass('warning');
+  if (severity === 'info') return levelClass('info');
+  return levelClass('error');
+}
+
 export function ConsolePanel() {
   const consoleLogs = useTrainingStore((state) => state.consoleLogs);
+  const diagnostics = useTrainingStore((state) => state.trainingDiagnostics);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -24,7 +33,7 @@ export function ConsolePanel() {
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [consoleLogs]);
+  }, [consoleLogs, diagnostics]);
 
   return (
     <div className="h-full flex flex-col bg-slate-900 text-xs font-mono">
@@ -42,6 +51,15 @@ export function ConsolePanel() {
             </div>
           ))
         )}
+        {diagnostics.map((diagnostic, idx) => (
+          <div
+            key={`${diagnostic.code}-${idx}`}
+            className={`leading-5 ${diagnosticLevelClass(diagnostic.severity)}`}
+          >
+            <span className="text-slate-500 mr-2">[diagnostic]</span>
+            {formatTrainingDiagnostic(diagnostic)}
+          </div>
+        ))}
       </div>
     </div>
   );

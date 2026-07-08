@@ -38,6 +38,7 @@ from feedbax.contracts.studio_api import (
     TRAINING_TRAJECTORY_SCHEMA_ID,
     TRAINING_TRAJECTORY_SCHEMA_VERSION,
 )
+from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.training import (
     TaskSpec,
     TrainingConfig,
@@ -55,6 +56,11 @@ from feedbax.training.executor import execute_training_run_spec
 from feedbax.training.studio_executor import (
     executor_method_contract,
     studio_training_registry,
+)
+from feedbax.web.worker.diagnostics import (
+    GraphCompilationError,
+    exception_diagnostic,
+    graph_compilation_error,
 )
 
 
@@ -121,9 +127,20 @@ def compile_training_run(
         else TrainingSpec.model_validate(training_spec)
     )
     if training_model.batch_size != 1:
-        raise ValueError(
-            "Generic graph worker currently supports batch_size=1; "
-            f"got batch_size={training_model.batch_size}"
+        raise GraphCompilationError(
+            "Unsupported training batch size",
+            [
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.unsupported_batch_size",
+                    message=(
+                        "Generic graph worker currently supports batch_size=1; "
+                        f"got batch_size={training_model.batch_size}"
+                    ),
+                    location={"path": "/training_spec/batch_size"},
+                    details={"batch_size": training_model.batch_size},
+                )
+            ],
         )
     if isinstance(task_binding_spec, StudioTaskBindingSpec):
         binding_model = task_binding_spec
@@ -141,8 +158,10 @@ def compile_training_run(
         if issue.severity == "error"
     ]
     if binding_errors:
-        summary = "; ".join(f"{issue.type}: {issue.message}" for issue in binding_errors)
-        raise ValueError(f"Invalid task_binding_spec for graph execution: {summary}")
+        raise graph_compilation_error(
+            "Invalid task_binding_spec for graph execution",
+            binding_errors,
+        )
     graph_errors = [
         issue
         for issue in validate_graph_connection_schema(
@@ -153,8 +172,10 @@ def compile_training_run(
         if issue.severity == "error"
     ]
     if graph_errors:
-        summary = "; ".join(f"{issue.type}: {issue.message}" for issue in graph_errors)
-        raise ValueError(f"Invalid graph_spec for graph execution: {summary}")
+        raise graph_compilation_error(
+            "Invalid graph_spec for graph execution",
+            graph_errors,
+        )
 
     try:
         graph = spec_to_graph(
@@ -163,10 +184,26 @@ def compile_training_run(
             input_prototypes=prototypes_from_task_bindings(binding_model),
         )
     except NotImplementedError as exc:
-        raise ValueError(f"GraphSpec contains unsupported executable component: {exc}") from exc
+        raise GraphCompilationError(
+            "GraphSpec contains an unsupported executable component",
+            [
+                exception_diagnostic(
+                    exc,
+                    code="graph.unsupported_component",
+                    message=f"GraphSpec contains unsupported executable component: {exc}",
+                )
+            ],
+        ) from exc
     except Exception as exc:
-        raise ValueError(
-            f"GraphSpec could not be instantiated for worker execution: {exc}"
+        raise GraphCompilationError(
+            "GraphSpec could not be instantiated for worker execution",
+            [
+                exception_diagnostic(
+                    exc,
+                    code="graph.instantiation_failed",
+                    message=f"GraphSpec could not be instantiated for worker execution: {exc}",
+                )
+            ],
         ) from exc
 
     graph, task_inputs = expose_task_inputs(graph, binding_model)
@@ -175,8 +212,16 @@ def compile_training_run(
     try:
         retention_plan = lower_retention_plan(graph_model, training_model, task_spec=task_spec)
     except RetentionPlanError as exc:
-        raise ValueError(
-            f"Invalid retention plan for graph execution at {exc.path}: {exc}"
+        raise GraphCompilationError(
+            "Invalid retention plan for graph execution",
+            [
+                exception_diagnostic(
+                    exc,
+                    code="graph.retention_plan_invalid",
+                    message=f"Invalid retention plan for graph execution at {exc.path}: {exc}",
+                    details={"path": exc.path, "selector": exc.selector},
+                )
+            ],
         ) from exc
     loss_terms = retention_plan.loss_terms
     trace_requests = _compile_trace_requests(graph_model, retention_plan)

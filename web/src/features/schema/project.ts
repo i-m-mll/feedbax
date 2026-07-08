@@ -43,6 +43,12 @@ const PROTOCOL_TASK_DATA_PATH_PREFIXES = [
   'task.validation_trials',
 ];
 
+type ComponentPortType = {
+  dtype?: string | null;
+  shape?: number[] | null;
+  rank?: number | null;
+};
+
 interface PortSchemaIndex {
   byNodePort: Map<string, PortSchema>;
   byDirectedNodePort: Map<string, PortSchema>;
@@ -314,7 +320,7 @@ function componentInputPortType(
   componentType: string,
   port: string,
   component?: ComponentDefinition
-): { dtype: string; shape?: number[] | null; rank?: number } | undefined {
+): ComponentPortType | undefined {
   const explicit = component?.port_types?.inputs?.[port];
   if (explicit) return explicit;
   if (componentType === MUX_COMPONENT_TYPE && muxInputIndex(port) !== null) {
@@ -329,7 +335,7 @@ function componentPortSchema(
   nodeParams: Record<string, unknown>,
   port: string,
   direction: 'input' | 'output',
-  portType?: { dtype: string; shape?: number[] | null; rank?: number },
+  portType?: ComponentPortType,
   subgraph?: GraphSubgraphSpec | null,
   componentMap?: Map<string, ComponentDefinition>
 ): PortSchema {

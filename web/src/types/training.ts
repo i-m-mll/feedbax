@@ -9,6 +9,7 @@ export const LOSS_TERM_SPEC_SCHEMA_VERSION = 'feedbax.spec.training.loss_term.v2
 
 export type {
   EarlyStoppingSpec,
+  DomainDiagnostic,
   LossTermSpec,
   OptimizerSpec,
   ProbeResponse,

@@ -11,14 +11,13 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.component import ComponentDefinition
-from feedbax.contracts.domain import DomainRegistryPayload
+from feedbax.contracts.domain import DomainDiagnostic, DomainRegistryPayload
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphMetadata,
     GraphSpec,
     GraphUIState,
     StudioWorkspaceSpec,
-    ValidationResult,
 )
 from feedbax.contracts.manifest import ParentRef
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
@@ -26,7 +25,7 @@ from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, Worksp
 
 
 STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
-STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v1"
+STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v2"
 TRAINING_TRAJECTORY_SCHEMA_ID = "feedbax.event.studio.training_trajectory"
 TRAINING_TRAJECTORY_SCHEMA_VERSION = "feedbax.event.studio.training_trajectory.v1"
 
@@ -120,7 +119,7 @@ class GraphDetailResponse(StudioApiModel):
 class GraphValidationResponse(StudioApiModel):
     """Standard API envelope for graph validation."""
 
-    data: ValidationResult
+    data: list[DomainDiagnostic]
 
 
 class GraphExportPayload(StudioApiModel):
@@ -450,6 +449,7 @@ class TrainingErrorEvent(StudioApiModel):
     worker_seq: Optional[int] = None
     batch: Optional[int] = None
     error: str
+    diagnostics: list[DomainDiagnostic] = Field(default_factory=list)
 
 
 class TrainingResyncEvent(StudioApiModel):

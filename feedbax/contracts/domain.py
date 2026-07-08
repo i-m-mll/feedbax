@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID
+from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID  # noqa: F401
 
 
 DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID = "feedbax.spec.domain"
 DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION = "feedbax.spec.domain.v1"
+DOMAIN_DIAGNOSTIC_SCHEMA_ID = "feedbax.diagnostic.domain"
+DOMAIN_DIAGNOSTIC_SCHEMA_VERSION = "feedbax.diagnostic.domain.v1"
 
 CAUSAL_DOMAIN_ID = "feedbax.domain.causal"
 ACAUSAL_DOMAIN_ID = "feedbax.domain.acausal"
@@ -85,3 +87,18 @@ class DomainRegistryPayload(BaseModel):
         DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION
     )
     domains: list[DomainMeta]
+
+
+class DomainDiagnostic(BaseModel):
+    """Structured diagnostic emitted by Studio domain validation and compilation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[DOMAIN_DIAGNOSTIC_SCHEMA_ID] = DOMAIN_DIAGNOSTIC_SCHEMA_ID
+    schema_version: Literal[DOMAIN_DIAGNOSTIC_SCHEMA_VERSION] = DOMAIN_DIAGNOSTIC_SCHEMA_VERSION
+    severity: Literal["error", "warning", "info"] = "error"
+    code: str
+    message: str
+    node_ids: list[str] = Field(default_factory=list)
+    location: dict[str, Any] | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
