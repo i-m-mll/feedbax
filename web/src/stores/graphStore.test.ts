@@ -1,7 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useGraphStore } from './graphStore';
-import type { GraphSpec, GraphUIState } from '@/types/graph';
+import {
+  isAcausalGraphSpec,
+  isCausalGraphSpec,
+  type AcausalGraphSpec,
+  type GraphSpec,
+  type GraphUIState,
+} from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
+
+const CAUSAL_DOMAIN_ID = 'feedbax.domain.causal';
+const ACAUSAL_DOMAIN_ID = 'feedbax.domain.acausal';
+const INSPECTOR_DOMAIN_ID = 'feedbax.domain.inspector';
 
 const uiState: GraphUIState = {
   viewport: { x: 0, y: 0, zoom: 1 },
@@ -9,6 +19,52 @@ const uiState: GraphUIState = {
     network: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
   },
 };
+
+function compositeComponent(
+  name: string,
+  interiorDomain = CAUSAL_DOMAIN_ID
+): ComponentDefinition {
+  return {
+    name,
+    category: 'Structure',
+    description: `${name} composite`,
+    param_schema: [],
+    input_ports: ['input'],
+    output_ports: ['output'],
+    icon: 'Layers',
+    default_params: {},
+    domain: CAUSAL_DOMAIN_ID,
+    interior_domain: interiorDomain,
+    is_composite: true,
+  };
+}
+
+function acausalComponent(name: string): ComponentDefinition {
+  return {
+    name,
+    category: 'Mechanics',
+    description: `${name} acausal component`,
+    param_schema: [],
+    input_ports: ['flange'],
+    output_ports: [],
+    icon: 'Circle',
+    default_params: {},
+    domain: ACAUSAL_DOMAIN_ID,
+    port_types: {
+      inputs: {
+        flange: { kind: 'conserving', physical_domain: 'translational' },
+        flange_2: { kind: 'conserving', physical_domain: 'translational' },
+      },
+    },
+  };
+}
+
+function installCompositeRegistry() {
+  useGraphStore.getState().setComponentRegistry([
+    compositeComponent('Network'),
+    compositeComponent('Subgraph'),
+  ]);
+}
 
 function graphWithNetworkSubgraph(): GraphSpec {
   return {
@@ -234,6 +290,7 @@ function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIStat
 describe('graphStore boundary aliases', () => {
   beforeEach(() => {
     useGraphStore.getState().hydrateGraph(graphWithNetworkSubgraph(), uiState);
+    installCompositeRegistry();
   });
 
   it('renames a subgraph boundary input without renaming the internal bound port', () => {
@@ -246,6 +303,8 @@ describe('graphStore boundary aliases', () => {
     const subgraph = graph.subgraphs?.network;
 
     expect(network.input_ports).toEqual(['input', 'proprioception']);
+    expect(isCausalGraphSpec(subgraph)).toBe(true);
+    if (!isCausalGraphSpec(subgraph)) throw new Error('expected causal network subgraph');
     expect(subgraph?.input_ports).toEqual(['input', 'proprioception']);
     expect(subgraph?.input_bindings.proprioception).toEqual(['input_mux', 'in_1']);
     expect(subgraph?.input_bindings.feedback).toBeUndefined();
@@ -314,6 +373,59 @@ describe('graphStore boundary aliases', () => {
     });
   });
 
+  it('opens display-only inspector layers without persisting fake subgraphs', () => {
+    const graph: GraphSpec = {
+      nodes: {
+        viewer: {
+          type: 'ReadOnlyAdapter',
+          params: { builder_name: 'demo' },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+    };
+    useGraphStore.getState().hydrateGraph(graph, {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        viewer: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+      },
+    });
+    useGraphStore.getState().setComponentRegistry([
+      {
+        name: 'ReadOnlyAdapter',
+        category: 'Structure',
+        description: 'Read-only adapter',
+        param_schema: [],
+        input_ports: ['input'],
+        output_ports: ['output'],
+        icon: 'Hexagon',
+        default_params: {},
+        domain: CAUSAL_DOMAIN_ID,
+        interior_domain: INSPECTOR_DOMAIN_ID,
+        is_composite: true,
+        template_kind: 'display',
+      },
+    ]);
+
+    useGraphStore.getState().enterSubgraph('viewer');
+
+    let state = useGraphStore.getState();
+    expect(state.currentContext).toBe(INSPECTOR_DOMAIN_ID);
+    expect(state.graphStack[state.graphStack.length - 1].persistInterior).toBe(false);
+    expect(state.capturePersistedGraph().graph.subgraphs?.viewer).toBeUndefined();
+    expect(state.capturePersistedGraph().graphStackPath).toEqual([]);
+
+    state.exitToBreadcrumb(0);
+    state = useGraphStore.getState();
+    expect(state.graph.nodes.viewer).toBeDefined();
+    expect(state.graph.subgraphs?.viewer).toBeUndefined();
+  });
+
   it('folds three active subgraph layers into the root graph snapshot', () => {
     const { graph, uiState } = graphWithThreeLevelSubgraph();
     const gain: ComponentDefinition = {
@@ -379,11 +491,149 @@ describe('graphStore boundary aliases', () => {
       'inner',
     ]);
     expect(state.currentGraphLabel).toBe('inner');
+    expect(state.currentContext).toBe(CAUSAL_DOMAIN_ID);
     expect(state.graph.nodes.gain).toMatchObject({
       type: 'Gain',
       params: { gain: 5 },
     });
     expect(state.uiState.node_states.gain.position).toEqual({ x: 640, y: 180 });
+  });
+
+  it('restores an acausal graph stack context after registry metadata loads', () => {
+    const graph: GraphSpec = {
+      nodes: {
+        system: {
+          type: 'AcausalSystem',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['state'],
+        },
+      },
+      wires: [],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+      subgraphs: {
+        system: {
+          nodes: {},
+          wires: [],
+          input_ports: [],
+          output_ports: [],
+          input_bindings: {},
+          output_bindings: {},
+        },
+      },
+    };
+    const acausalUiState: GraphUIState = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        system: { position: { x: 120, y: 80 }, collapsed: false, selected: false },
+      },
+      subgraph_states: {
+        system: { viewport: { x: 10, y: 20, zoom: 0.8 }, node_states: {} },
+      },
+    };
+
+    useGraphStore.getState().hydrateGraph(graph, acausalUiState, 'graph-1', ['system']);
+    expect(useGraphStore.getState().currentContext).toBe('top-level');
+
+    useGraphStore.getState().setComponentRegistry([
+      compositeComponent('AcausalSystem', ACAUSAL_DOMAIN_ID),
+    ]);
+
+    const state = useGraphStore.getState();
+    expect(state.currentGraphLabel).toBe('system');
+    expect(state.currentContext).toBe(ACAUSAL_DOMAIN_ID);
+    expect(state.graphStack[0].contextType).toBe(ACAUSAL_DOMAIN_ID);
+  });
+
+  it('edits and persists acausal conserving connections with multi-edge ports', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      solver: { solver_type: 'implicit_euler', dt: 0.01 },
+      nodes: {
+        mass: { type: 'Mass', params: {}, input_ports: ['flange'], output_ports: [] },
+        spring: {
+          type: 'Spring',
+          params: {},
+          input_ports: ['flange', 'flange_2'],
+          output_ports: [],
+        },
+        ground: { type: 'Ground', params: {}, input_ports: ['flange'], output_ports: [] },
+      },
+      connections: [],
+    };
+    const graph: GraphSpec = {
+      nodes: {
+        system: {
+          type: 'AcausalSystem',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['state'],
+        },
+      },
+      wires: [],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+      subgraphs: { system: interior },
+    };
+    const ui: GraphUIState = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        system: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+      },
+      subgraph_states: {
+        system: {
+          viewport: { x: 0, y: 0, zoom: 1 },
+          node_states: {
+            mass: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+            spring: { position: { x: 200, y: 0 }, collapsed: false, selected: false },
+            ground: { position: { x: 0, y: 140 }, collapsed: false, selected: false },
+          },
+        },
+      },
+    };
+
+    useGraphStore.getState().setComponentRegistry([
+      compositeComponent('AcausalSystem', ACAUSAL_DOMAIN_ID),
+      acausalComponent('Mass'),
+      acausalComponent('Spring'),
+      acausalComponent('Ground'),
+    ]);
+    useGraphStore.getState().hydrateGraph(graph, ui, 'graph-1');
+    useGraphStore.getState().enterSubgraph('system');
+    useGraphStore.getState().onConnect({
+      source: 'mass',
+      sourceHandle: 'flange',
+      target: 'spring',
+      targetHandle: 'flange',
+    });
+    useGraphStore.getState().onConnect({
+      source: 'ground',
+      sourceHandle: 'flange',
+      target: 'spring',
+      targetHandle: 'flange',
+    });
+
+    const state = useGraphStore.getState();
+    expect(isAcausalGraphSpec(state.graph)).toBe(true);
+    expect(state.edges).toHaveLength(2);
+    expect(state.edges.every((edge) => edge.type === 'conserving')).toBe(true);
+
+    const persisted = state.capturePersistedGraph();
+    const savedInterior = persisted.graph.subgraphs?.system;
+    expect(isAcausalGraphSpec(savedInterior)).toBe(true);
+    if (!isAcausalGraphSpec(savedInterior)) throw new Error('expected acausal interior');
+    expect(savedInterior.connections).toHaveLength(2);
+    expect(persisted.uiState.subgraph_states?.system?.node_states.spring.position).toEqual({
+      x: 200,
+      y: 0,
+    });
   });
 
   it('fails loudly when a parent subgraph entry vanishes before persistence', () => {
@@ -468,12 +718,50 @@ describe('graphStore boundary aliases', () => {
     const graph = graphWithNetworkSubgraph();
     delete graph.subgraphs;
     useGraphStore.getState().hydrateGraph(graph, uiState);
-    useGraphStore.getState().setCompositeTypes(new Set(['Network']));
+    installCompositeRegistry();
     useGraphStore.getState().setSelectedNode('network');
 
     expect(() => useGraphStore.getState().duplicateSelected()).toThrow(
       'Cannot duplicate composite node "network": source subgraph is missing.'
     );
+  });
+});
+
+describe('graphStore assembly view UI state', () => {
+  beforeEach(() => {
+    useGraphStore.getState().resetGraph();
+  });
+
+  it('loads older UI payloads without assembly_view', () => {
+    const { graph, uiState } = graphWithTwoNodes();
+    const oldUiState: GraphUIState = {
+      viewport: uiState.viewport,
+      node_states: uiState.node_states,
+    };
+
+    useGraphStore.getState().hydrateGraph(graph, oldUiState, 'graph-1');
+
+    expect(useGraphStore.getState().uiState.assembly_view).toBeUndefined();
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(['a', 'b']);
+  });
+
+  it('persists assembly view state for the active layer', () => {
+    const { graph, uiState } = graphWithTwoNodes();
+    useGraphStore.getState().hydrateGraph(graph, uiState, 'graph-1');
+
+    useGraphStore.getState().setAssemblyViewState({
+      active_view: 'split',
+      expanded_rows: ['upper', 'elbow'],
+      selected_row: 'upper',
+      split_ratio: 0.5,
+    });
+
+    expect(useGraphStore.getState().capturePersistedGraph().uiState.assembly_view).toEqual({
+      active_view: 'split',
+      expanded_rows: ['upper', 'elbow'],
+      selected_row: 'upper',
+      split_ratio: 0.5,
+    });
   });
 });
 
@@ -575,8 +863,24 @@ describe('graphStore subgraph entry templates', () => {
   beforeEach(() => {
     useGraphStore.getState().hydrateGraph(unpopulatedMuscleGraph, unpopulatedUi);
     useGraphStore.setState({
-      _compositeTypes: new Set(['Arm6MuscleRigidTendon']),
-      _componentRegistry: new Map(),
+      _componentRegistry: new Map([
+        [
+          'Arm6MuscleRigidTendon',
+          {
+            name: 'Arm6MuscleRigidTendon',
+            category: 'Mechanics',
+            description: 'Composite metadata while templates load',
+            param_schema: [],
+            input_ports: ['input'],
+            output_ports: ['output'],
+            icon: 'activity',
+            default_params: {},
+            domain: CAUSAL_DOMAIN_ID,
+            interior_domain: CAUSAL_DOMAIN_ID,
+            is_composite: true,
+          },
+        ],
+      ]),
       _isRegistryLoaded: false,
       lastSubgraphError: null,
     });
@@ -606,6 +910,9 @@ describe('graphStore subgraph entry templates', () => {
         output_ports: ['torques'],
         icon: 'activity',
         default_params: {},
+        domain: CAUSAL_DOMAIN_ID,
+        interior_domain: CAUSAL_DOMAIN_ID,
+        is_composite: true,
       },
     ]);
 
@@ -646,6 +953,9 @@ describe('graphStore subgraph entry templates', () => {
         output_ports: ['output'],
         icon: 'activity',
         default_params: {},
+        domain: CAUSAL_DOMAIN_ID,
+        interior_domain: CAUSAL_DOMAIN_ID,
+        is_composite: true,
         template_graph: templateGraph,
         template_ui_state: {
           viewport: { x: 0, y: 0, zoom: 1 },

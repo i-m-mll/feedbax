@@ -34,8 +34,10 @@ from feedbax.contracts.schema_namespace import SchemaNamespaceError, SchemaNames
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
+    GRAPH_SPEC_SCHEMA_VERSION_V3,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.component import COMPONENT_DEFINITION_SCHEMA_VERSION_V1
 from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
     PATH_EXPRESSION_SCHEMA_VERSION,
@@ -678,12 +680,19 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     studio_api_policy = default_spec_registry.resolve("StudioApiTransport").policy
     report_policy = default_spec_registry.resolve("ReportSpec").policy
     extraction_policy = default_spec_registry.resolve("ExtractionProductSpec").policy
+    component_definition_policy = default_spec_registry.resolve("ComponentDefinition").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
     assert graph_policy.supported_old_versions == (
         LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
         GRAPH_SPEC_SCHEMA_VERSION_V2,
+        GRAPH_SPEC_SCHEMA_VERSION_V3,
+    )
+    assert component_definition_policy is not None
+    assert component_definition_policy.stance == "migrate"
+    assert component_definition_policy.supported_old_versions == (
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
     )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"

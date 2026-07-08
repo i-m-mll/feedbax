@@ -4,6 +4,8 @@ import textwrap
 from pathlib import Path
 from typing import Any, Callable
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -18,6 +20,7 @@ from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.graphs.builders import build_component
+from feedbax.models.cde import CDENetwork
 from feedbax.runtime.graph import Component
 from feedbax.contracts.graphs.serialization import spec_to_graph
 from feedbax.contracts.representation import RepresentationSpec
@@ -267,30 +270,89 @@ def test_unknown_component_error_names_type_and_known_registry_contents() -> Non
     assert "Gain" in message
 
 
-def test_cde_templates_report_non_executable_template_nodes() -> None:
+def test_cde_primitives_build_and_execute_with_expected_semantics() -> None:
     registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
-    cde_meta = registry.get("CDE Standard")
-    assert cde_meta is not None
-    assert cde_meta.template_kind == "display"
+    state_key = jax.random.PRNGKey(0)
 
-    issues = registry.template_builder_issues(cde_meta)
-    issue_types = {issue.node_type for issue in issues}
+    input_node = build_component(
+        "obs_in",
+        "Input",
+        {"output_port": "obs"},
+        component_registry=registry,
+    )
+    outputs, _ = input_node(
+        {"input": jnp.array([1.0, 2.0])},
+        input_node.init_state(key=state_key),
+        key=state_key,
+    )
+    assert jnp.array_equal(outputs["obs"], jnp.array([1.0, 2.0]))
 
-    assert {"Input", "Subtract", "Reshape", "MatMul", "Sigmoid"} <= issue_types
-    assert all(issue.template_id == "feedbax.templates.cde_standard" for issue in issues)
+    subtract = build_component("subtract", "Subtract", {}, component_registry=registry)
+    outputs, _ = subtract(
+        {"a": jnp.array([3.0, 5.0]), "b": jnp.array([1.0, 2.0])},
+        subtract.init_state(key=state_key),
+        key=state_key,
+    )
+    assert jnp.array_equal(outputs["out"], jnp.array([2.0, 3.0]))
+
+    reshape = build_component("reshape", "Reshape", {"shape": [2, 2]}, component_registry=registry)
+    outputs, _ = reshape(
+        {"input": jnp.arange(4.0)},
+        reshape.init_state(key=state_key),
+        key=state_key,
+    )
+    assert outputs["output"].shape == (2, 2)
+    assert jnp.array_equal(outputs["output"], jnp.array([[0.0, 1.0], [2.0, 3.0]]))
+
+    matmul = build_component("matmul", "MatMul", {}, component_registry=registry)
+    outputs, _ = matmul(
+        {"a": jnp.array([[1.0, 2.0], [3.0, 4.0]]), "b": jnp.array([0.5, 1.0])},
+        matmul.init_state(key=state_key),
+        key=state_key,
+    )
+    assert jnp.array_equal(outputs["out"], jnp.array([2.5, 5.5]))
+
+    scale = build_component("scale", "Scale", {"scale": -0.5}, component_registry=registry)
+    outputs, _ = scale(
+        {"input": jnp.array([2.0, -4.0])},
+        scale.init_state(key=state_key),
+        key=state_key,
+    )
+    assert jnp.array_equal(outputs["output"], jnp.array([-1.0, 2.0]))
+
+    sigmoid = build_component("sigmoid", "Sigmoid", {}, component_registry=registry)
+    outputs, _ = sigmoid(
+        {"input": jnp.array([-jnp.inf, 0.0, jnp.inf])},
+        sigmoid.init_state(key=state_key),
+        key=state_key,
+    )
+    assert jnp.array_equal(outputs["output"], jnp.array([0.0, 0.5, 1.0]))
 
 
-def test_all_cde_templates_are_display_only_and_fail_closed() -> None:
+def test_all_cde_templates_are_executable_and_run_one_step() -> None:
     registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
 
     for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
         meta = registry.get(template_name)
         assert meta is not None
-        assert meta.template_kind == "display"
+        assert meta.template_kind == "executable"
         assert meta.template_id is not None
         assert meta.template_id.startswith("feedbax.templates.cde_")
-        assert registry.template_builder_issues(meta), template_name
-        assert template_name not in registry.executable_names()
+        assert registry.template_builder_issues(meta) == []
+
+        graph = spec_to_graph(meta.template_graph, registry)
+        state = graph.init_state(key=jax.random.PRNGKey(0))
+        outputs, _ = graph(
+            {
+                "obs": jnp.array([0.2]),
+                "obs_prev": jnp.array([0.1]),
+                "h_prev": jnp.array([0.3]),
+            },
+            state,
+            key=jax.random.PRNGKey(1),
+        )
+        assert outputs["h_new"].shape == (1,)
+        assert outputs["action"].shape == (1,)
 
 
 def test_executable_builtin_templates_have_complete_builders() -> None:
@@ -301,29 +363,38 @@ def test_executable_builtin_templates_have_complete_builders() -> None:
         assert registry.template_builder_issues(meta) == []
 
 
-def test_building_cde_template_component_fails_with_template_builder_report() -> None:
+def test_cde_standard_template_matches_standard_cde_network_step() -> None:
     registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    meta = registry.get("CDE Standard")
+    assert meta is not None
+    graph = spec_to_graph(meta.template_graph, registry)
+    net = CDENetwork(
+        obs_dim=1,
+        hidden_dim=1,
+        out_size=1,
+        vf_width=128,
+        vf_depth=1,
+        decay=0.0,
+        use_anti_nf=False,
+        key=jax.random.PRNGKey(42),
+    )
+    graph = eqx.tree_at(lambda g: g.nodes["vf"].linears, graph, net.vector_field.layers)
+    graph = eqx.tree_at(lambda g: g.nodes["linear"].layer, graph, net.readout)
 
-    with pytest.raises(NotImplementedError) as exc_info:
-        build_component("controller", "CDE Standard", {}, component_registry=registry)
+    net_state = net.init_state(key=jax.random.PRNGKey(0))
+    cde_state = net_state.get(net.state_index)
+    graph_state = graph.init_state(key=jax.random.PRNGKey(0))
+    obs = jnp.array([0.25])
 
-    message = str(exc_info.value)
-    assert "Component template 'CDE Standard' is not executable" in message
-    assert "display-only and fail closed" in message
-    assert "issue 2f8dd61" in message
-    assert "Input" in message
+    net_outputs, _ = net({"input": obs}, net_state, key=jax.random.PRNGKey(1))
+    graph_outputs, _ = graph(
+        {"obs": obs, "obs_prev": cde_state.obs_prev, "h_prev": cde_state.hidden},
+        graph_state,
+        key=jax.random.PRNGKey(1),
+    )
 
-
-def test_unregistered_cde_template_primitive_fails_with_specific_message() -> None:
-    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
-
-    with pytest.raises(NotImplementedError) as exc_info:
-        build_component("obs_in", "Input", {}, component_registry=registry)
-
-    message = str(exc_info.value)
-    assert "Graph inputs must be represented" in message
-    assert "display-only and fail closed" in message
-    assert "issue 2f8dd61" in message
+    assert jnp.allclose(graph_outputs["h_new"], net_outputs["hidden"])
+    assert jnp.allclose(graph_outputs["action"], net_outputs["output"])
 
 
 def test_builtin_component_rename_migration_materializes_registered_target() -> None:

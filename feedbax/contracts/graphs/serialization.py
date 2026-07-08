@@ -63,17 +63,23 @@ from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
     WireSpec,
+    require_causal_subgraph,
+    validate_subgraph_domain,
 )
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.contracts.migrations import migrate_graph_spec
+from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
+from feedbax.contracts.graphs.domain_compilers import get_domain_compiler
 from feedbax.contracts.graphs.prototypes import (
     normalize_derived_dimensions,
     normalize_stateful_prototypes,
     prototypes_from_task_bindings,
     shape_from_proto,
 )
+from feedbax.component_registry import builtin_domain_registry
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.runtime.state_feedback import StateFeedbackSelector
 
 
@@ -553,8 +559,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 else:
                     plant_type = type(skeleton).__name__
             elif isinstance(component.plant, AnalyticalMusculoskeletalPlant):
-                # Bug: 1005721 — AnalyticalMusculoskeletalPlant serialization type mapping
-                plant_type = "Arm6MuscleRigidTendon"
+                plant_type = "AnalyticalMusculoskeletalPlant"
             params = {
                 "dt": component.dt,
             }
@@ -1017,12 +1022,19 @@ def spec_to_graph(
             node_type = resolution.type_id
             node_params = resolution.params
 
+        required_domain = required_interior_domain(node_type, metadata_registry)
+        if required_domain is None and metadata_registry is not execution_registry:
+            required_domain = required_interior_domain(node_type, execution_registry)
         defaults = _lookup_defaults(metadata_registry, node_type)
         required_params = _lookup_required_params(metadata_registry, node_type)
         params = _merge_params(
             node_params,
             defaults,
-            required_params=required_params,
+            required_params=(
+                required_params
+                if required_domain is None or required_domain == CAUSAL_DOMAIN_ID
+                else None
+            ),
             node_name=node_name,
             node_type=node_type,
         )
@@ -1034,22 +1046,70 @@ def spec_to_graph(
             node_spec.output_ports,
         )
 
-        if node_type == "Subgraph":
-            if not spec.subgraphs or node_name not in spec.subgraphs:
-                raise ValueError(f"Missing subgraph spec for '{node_name}'")
-            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
-            continue
-        if node_type == "Network":
+        if required_domain is not None:
             subgraph = (spec.subgraphs or {}).get(node_name)
             if subgraph is None:
+                if node_type == "Subgraph":
+                    raise ValueError(f"Missing subgraph spec for '{node_name}'")
+                if node_type == "Network":
+                    raise ValueError(
+                        f"Network node {node_name!r} has no subgraph. "
+                        "Open it in Studio to generate the internal architecture, then save again."
+                    )
                 raise ValueError(
-                    f"Network node {node_name!r} has no subgraph. "
-                    "Open it in Studio to generate the internal architecture, then save again."
+                    format_missing_interior_message(
+                        node_name=node_name,
+                        node_type=node_type,
+                        domain_id=required_domain,
+                    )
                 )
-            nodes[node_name] = spec_to_graph(subgraph, metadata_registry)
+            validate_subgraph_domain(
+                subgraph,
+                expected_domain=required_domain,
+                node_name=node_name,
+                node_type=node_type,
+                consumer="spec_to_graph",
+            )
+            if required_domain != CAUSAL_DOMAIN_ID:
+                domain = builtin_domain_registry().get(required_domain)
+                if domain is None:
+                    raise ValueError(
+                        f"Node {node_name!r} ({node_type}) requires unknown "
+                        f"interior domain {required_domain!r}"
+                    )
+                if domain.compiler_id is None:
+                    raise ValueError(
+                        f"Interior domain {required_domain!r} for node {node_name!r} "
+                        "has no compiler"
+                    )
+                if (
+                    domain.interior_schema_id is not None
+                    and getattr(subgraph, "schema_id", None) != domain.interior_schema_id
+                ):
+                    raise ValueError(
+                        f"Node {node_name!r} ({node_type}) interior schema "
+                        f"{getattr(subgraph, 'schema_id', None)!r} does not match "
+                        f"domain {required_domain!r} schema {domain.interior_schema_id!r}"
+                    )
+                compiler = get_domain_compiler(domain.compiler_id)
+                nodes[node_name] = compiler(subgraph, node_name, execution_registry)
+                continue
+            causal_subgraph = require_causal_subgraph(
+                subgraph,
+                node_name=node_name,
+                node_type=node_type,
+                consumer="spec_to_graph",
+            )
+            nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
-            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
+            causal_subgraph = require_causal_subgraph(
+                spec.subgraphs[node_name],
+                node_name=node_name,
+                node_type=node_type,
+                consumer="spec_to_graph",
+            )
+            nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
             continue
         nodes[node_name] = build_component(
             node_name,

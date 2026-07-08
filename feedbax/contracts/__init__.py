@@ -6,6 +6,14 @@ under their transport package.
 """
 
 from feedbax.contracts.component import ComponentDefinition, PortType, PortTypeSpec
+from feedbax.contracts.acausal import (
+    ACAUSAL_GRAPH_SCHEMA_ID,
+    ACAUSAL_GRAPH_SCHEMA_VERSION,
+    AcausalConnectionSpec,
+    AcausalGraphSpec,
+    RootFinderSpec,
+    SolverConfigSpec,
+)
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,

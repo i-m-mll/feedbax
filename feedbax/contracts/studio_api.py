@@ -11,13 +11,17 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.component import ComponentDefinition
+from feedbax.contracts.domain import (
+    DomainCompileReport,
+    DomainDiagnostic,
+    DomainRegistryPayload,
+)
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphMetadata,
     GraphSpec,
     GraphUIState,
     StudioWorkspaceSpec,
-    ValidationResult,
 )
 from feedbax.contracts.manifest import ParentRef
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
@@ -25,7 +29,7 @@ from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, Worksp
 
 
 STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
-STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v1"
+STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v2"
 TRAINING_TRAJECTORY_SCHEMA_ID = "feedbax.event.studio.training_trajectory"
 TRAINING_TRAJECTORY_SCHEMA_VERSION = "feedbax.event.studio.training_trajectory.v1"
 
@@ -108,6 +112,7 @@ class GraphDetailPayload(StudioApiModel):
     analysis_pages: Optional[list[AnalysisPageSpec]] = None
     active_analysis_page_id: Optional[str] = None
     workspace: Optional[StudioWorkspaceSpec] = None
+    compile_reports: Optional[dict[str, DomainCompileReport]] = None
 
 
 class GraphDetailResponse(StudioApiModel):
@@ -119,7 +124,7 @@ class GraphDetailResponse(StudioApiModel):
 class GraphValidationResponse(StudioApiModel):
     """Standard API envelope for graph validation."""
 
-    data: ValidationResult
+    data: list[DomainDiagnostic]
 
 
 class GraphExportPayload(StudioApiModel):
@@ -164,6 +169,58 @@ class ComponentRefreshResponse(StudioApiModel):
     """Standard API envelope for component library refresh results."""
 
     data: ComponentRefreshPayload
+
+
+class DomainListResponse(StudioApiModel):
+    """Standard API envelope for domain registry listings."""
+
+    data: DomainRegistryPayload
+
+
+class PenzaiBuilderInfo(StudioApiModel):
+    """Registry-visible Penzai builder metadata."""
+
+    name: str
+    description: str
+    default_params: dict[str, Any] = Field(default_factory=dict)
+    input_shape: Optional[list[str]] = None
+    output_shape: Optional[list[str]] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PenzaiBuilderListPayload(StudioApiModel):
+    """Payload for ``GET /api/penzai/builders``."""
+
+    builders: list[PenzaiBuilderInfo]
+
+
+class PenzaiBuilderListResponse(StudioApiModel):
+    """Standard API envelope for Penzai builder listings."""
+
+    data: PenzaiBuilderListPayload
+
+
+class PenzaiNodeRequest(StudioApiModel):
+    """Penzai adapter node payload for authoring compile and inspector routes."""
+
+    node_path: list[str] = Field(default_factory=list)
+    builder_name: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    input_port: str = "input"
+    output_port: str = "output"
+
+
+class PenzaiInspectorPayload(StudioApiModel):
+    """Payload for rendered Penzai inspector content."""
+
+    html: str
+    report: DomainCompileReport
+
+
+class PenzaiInspectorResponse(StudioApiModel):
+    """Standard API envelope for Penzai inspector HTML."""
+
+    data: PenzaiInspectorPayload
 
 
 class TrainingStartPayload(StudioApiModel):
@@ -443,6 +500,7 @@ class TrainingErrorEvent(StudioApiModel):
     worker_seq: Optional[int] = None
     batch: Optional[int] = None
     error: str
+    diagnostics: list[DomainDiagnostic] = Field(default_factory=list)
 
 
 class TrainingResyncEvent(StudioApiModel):

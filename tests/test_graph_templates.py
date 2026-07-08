@@ -866,7 +866,7 @@ def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
 
 
 def test_spec_to_graph_rejects_unsupported_graph_spec_version() -> None:
-    spec = GraphSpec(schema_version="feedbax.spec.graph.v99")
+    spec = GraphSpec.model_construct(schema_version="feedbax.spec.graph.v99")
 
     with pytest.raises(ValueError, match="source_version='feedbax.spec.graph.v99'"):
         spec_to_graph(spec, {})

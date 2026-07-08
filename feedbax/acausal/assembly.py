@@ -28,54 +28,21 @@ from typing import Callable, Iterable
 
 import jax.numpy as jnp
 
+from feedbax.acausal.analysis import (
+    StructuralAnalysis,
+    analyze_system,
+    _resolve,
+    _topo_sort_through_eqs,
+)
 from feedbax.acausal.base import (
     AcausalConnection,
     AcausalElement,
     AcausalEquation,
-    AcausalVar,
     StateLayout,
 )
 
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Union-Find
-# ---------------------------------------------------------------------------
-
-class UnionFind:
-    """Disjoint-set (Union-Find) with path compression and union by rank."""
-
-    def __init__(self) -> None:
-        self._parent: dict[str, str] = {}
-        self._rank: dict[str, int] = {}
-
-    def find(self, x: str) -> str:
-        if x not in self._parent:
-            self._parent[x] = x
-            self._rank[x] = 0
-        if self._parent[x] != x:
-            self._parent[x] = self.find(self._parent[x])
-        return self._parent[x]
-
-    def union(self, x: str, y: str) -> None:
-        rx, ry = self.find(x), self.find(y)
-        if rx == ry:
-            return
-        if self._rank[rx] < self._rank[ry]:
-            rx, ry = ry, rx
-        self._parent[ry] = rx
-        if self._rank[rx] == self._rank[ry]:
-            self._rank[rx] += 1
-
-    def groups(self) -> dict[str, list[str]]:
-        """Return ``{root: [members]}``."""
-        g: dict[str, list[str]] = {}
-        for x in self._parent:
-            root = self.find(x)
-            g.setdefault(root, []).append(x)
-        return g
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +52,7 @@ class UnionFind:
 def assemble_system(
     elements: dict[str, AcausalElement],
     connections: list[AcausalConnection],
+    analysis: StructuralAnalysis | None = None,
 ) -> tuple[StateLayout, Callable, dict[str, float], Callable]:
     """Assemble acausal elements and connections into a compiled vector field.
 
@@ -99,187 +67,19 @@ def assemble_system(
         sensor_fn: ``(y, input_vals, params_dict) -> outputs`` for sensors.
     """
 
-    # ---- Step 1: Collect all variables and parameters --------------------
-    all_vars: dict[str, AcausalVar] = {}
-    params_dict: dict[str, float] = {}
-
-    for elem in elements.values():
-        for port in elem.ports.values():
-            for slot in port.across_vars:
-                fqn = f"{elem.name}.{port.name}.{slot}"
-                all_vars[fqn] = AcausalVar(name=fqn)
-            through_fqn = f"{elem.name}.{port.name}.{port.through_var}"
-            all_vars[through_fqn] = AcausalVar(
-                name=through_fqn, is_differential=False,
-            )
-        params_dict.update(elem.params)
-
-    # ---- Step 2: Union-Find over across variables -----------------------
-    uf = UnionFind()
-    # Track which through-vars share a node so we can build force balances
-    # node_key -> list of (element_name, port_name, through_var_fqn)
-    node_through_vars: dict[str, list[str]] = {}
-
-    for conn in connections:
-        port_a_obj = elements[conn.element_a].ports[conn.port_a]
-        port_b_obj = elements[conn.element_b].ports[conn.port_b]
-
-        # Union across vars pair-wise
-        for slot in port_a_obj.across_vars:
-            fqn_a = f"{conn.element_a}.{conn.port_a}.{slot}"
-            fqn_b = f"{conn.element_b}.{conn.port_b}.{slot}"
-            uf.union(fqn_a, fqn_b)
-
-        # Register through vars at the shared node.  The node key is the
-        # across-variable group root of the first across var (they are all
-        # in the same group now).
-        first_slot = port_a_obj.across_vars[0]
-        fqn_a_first = f"{conn.element_a}.{conn.port_a}.{first_slot}"
-        node_key = uf.find(fqn_a_first)
-
-        through_a = f"{conn.element_a}.{conn.port_a}.{port_a_obj.through_var}"
-        through_b = f"{conn.element_b}.{conn.port_b}.{port_b_obj.through_var}"
-        node_through_vars.setdefault(node_key, [])
-        if through_a not in node_through_vars[node_key]:
-            node_through_vars[node_key].append(through_a)
-        if through_b not in node_through_vars[node_key]:
-            node_through_vars[node_key].append(through_b)
-
-    # ---- Step 3: Identify canonical across variables --------------------
-    eliminated: dict[str, str] = {}
-    across_groups = uf.groups()
-    for root, members in across_groups.items():
-        for m in members:
-            if m != root:
-                all_vars[m].is_eliminated = True
-                all_vars[m].alias_of = root
-                eliminated[m] = root
-
-    # ---- Step 4: Handle special elements --------------------------------
-    grounded: set[str] = set()
-    input_vars: dict[str, int] = {}  # var_fqn -> input_index
-    input_specs: dict[str, tuple[str, int]] = {}  # var_fqn -> (element, slot_index)
-    input_idx_counter = 0
-    output_map: dict[str, str] = {}  # sensor_label -> var_fqn
-    gear_infos: list[dict] = []
-
-    for elem in elements.values():
-        if elem.element_type == "ground":
-            # Ground all across vars connected to this element's port
-            for port in elem.ports.values():
-                for slot in port.across_vars:
-                    fqn = f"{elem.name}.{port.name}.{slot}"
-                    canonical = _resolve(fqn, eliminated)
-                    grounded.add(canonical)
-                    all_vars[canonical].is_grounded = True
-                    all_vars[canonical].is_differential = False
-
-        elif elem.element_type == "force_source":
-            # The through var of the source's port becomes a causal input
-            for port in elem.ports.values():
-                through_fqn = f"{elem.name}.{port.name}.{port.through_var}"
-                input_vars[through_fqn] = input_idx_counter
-                input_specs[through_fqn] = (elem.name, 0)
-                all_vars[through_fqn].is_input = True
-                input_idx_counter += 1
-
-        elif elem.element_type == "prescribed_motion":
-            for port in elem.ports.values():
-                for slot_idx, slot in enumerate(port.across_vars):
-                    fqn = f"{elem.name}.{port.name}.{slot}"
-                    canonical = _resolve(fqn, eliminated)
-                    input_vars[canonical] = input_idx_counter
-                    input_specs[canonical] = (elem.name, slot_idx)
-                    all_vars[canonical].is_input = True
-                    all_vars[canonical].is_differential = False
-                    input_idx_counter += 1
-
-        elif elem.element_type == "sensor":
-            if elem.sensor_output is not None:
-                port_name, slot_name = elem.sensor_output
-                fqn = f"{elem.name}.{port_name}.{slot_name}"
-                canonical = _resolve(fqn, eliminated)
-                output_map[elem.name] = canonical
-
-        elif elem.element_type == "gear_ratio":
-            gear_infos.append({
-                "element": elem,
-                "ratio_key": f"{elem.name}.ratio",
-            })
-
-    # Snapshot eliminated before gear processing -- the pre-gear version
-    # is needed to resolve physical nodes correctly (gear elimination must
-    # NOT merge force-balance nodes).
-    eliminated_pre_gear = dict(eliminated)
-
-    # Handle gear ratios: eliminate port_b across vars in favour of
-    # port_a across vars * ratio.
-    for gi in gear_infos:
-        elem = gi["element"]
-        for slot in elem.ports["flange_a"].across_vars:
-            fqn_a = f"{elem.name}.flange_a.{slot}"
-            fqn_b = f"{elem.name}.flange_b.{slot}"
-            canon_a = _resolve(fqn_a, eliminated)
-            canon_b = _resolve(fqn_b, eliminated)
-            # Mark b as eliminated, pointing to a (scaled -- handled at VF
-            # build time via special gear lookup).
-            if canon_b != canon_a:
-                eliminated[canon_b] = canon_a
-                all_vars[canon_b].is_eliminated = True
-                all_vars[canon_b].alias_of = canon_a
-                all_vars[canon_b].is_differential = False
-
-    # ---- Step 5: Build differential variable list -----------------------
-    differential: list[str] = []
-    for name, var in sorted(all_vars.items()):
-        if (
-            var.is_differential
-            and not var.is_eliminated
-            and not var.is_grounded
-            and not var.is_input
-        ):
-            differential.append(name)
-
-    algebraic: list[str] = []  # Not yet needed for index-1 DAE support
-
-    layout = StateLayout(
-        _vars=all_vars,
-        _differential=differential,
-        _algebraic=algebraic,
-        _eliminated=eliminated,
-        _grounded=grounded,
-        _inputs=input_vars,
-        _input_specs=input_specs,
-        _outputs=output_map,
-        total_size=len(differential),
-    )
+    analysis = analysis or analyze_system(elements, connections)
 
     # ---- Step 6: Build the compiled vector field ------------------------
     vf_fn, sensor_fn = _make_vector_field(
-        layout=layout,
+        layout=analysis.layout,
         elements=elements,
         connections=connections,
-        node_through_vars=node_through_vars,
-        gear_infos=gear_infos,
-        eliminated_pre_gear=eliminated_pre_gear,
+        node_through_vars=analysis.node_through_vars,
+        gear_infos=analysis.gear_infos,
+        eliminated_pre_gear=analysis.eliminated_pre_gear,
     )
 
-    return layout, vf_fn, params_dict, sensor_fn
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _resolve(name: str, eliminated: dict[str, str]) -> str:
-    """Follow alias chain."""
-    visited: set[str] = set()
-    while name in eliminated:
-        if name in visited:
-            raise RuntimeError(f"Cyclic alias for '{name}'")
-        visited.add(name)
-        name = eliminated[name]
-    return name
+    return analysis.layout, vf_fn, analysis.params_dict, sensor_fn
 
 
 # ---------------------------------------------------------------------------
@@ -696,52 +496,3 @@ def _make_vector_field(
         return outputs
 
     return vector_field, sensor_fn
-
-
-# ---------------------------------------------------------------------------
-# Through-equation topological sort
-# ---------------------------------------------------------------------------
-
-def _topo_sort_through_eqs(
-    equations: list[AcausalEquation],
-) -> list[AcausalEquation]:
-    """Sort through-variable equations so dependencies are evaluated first.
-
-    Through-variable equations may depend on other through variables (e.g.
-    ``force_b = -force_a``).  We topologically sort them so each equation's
-    dependencies are available by the time it runs.
-    """
-    by_lhs: dict[str, AcausalEquation] = {}
-    for eq in equations:
-        if eq.lhs_var in by_lhs:
-            raise ValueError(
-                f"Duplicate through-variable definition for {eq.lhs_var!r}"
-            )
-        by_lhs[eq.lhs_var] = eq
-
-    through_vars = set(by_lhs.keys())
-    visited: set[str] = set()
-    in_progress: set[str] = set()
-    order: list[AcausalEquation] = []
-
-    def visit(var: str) -> None:
-        if var in visited:
-            return
-        if var in in_progress:
-            raise ValueError(f"Cyclic through-variable dependency involving {var!r}")
-        in_progress.add(var)
-        eq = by_lhs.get(var)
-        if eq is None:
-            in_progress.remove(var)
-            return
-        for dep in eq.depends_on:
-            if dep in through_vars:
-                visit(dep)
-        in_progress.remove(var)
-        visited.add(var)
-        order.append(eq)
-
-    for var in sorted(through_vars):
-        visit(var)
-
-    return order

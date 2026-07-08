@@ -120,14 +120,16 @@ outputs:
 
 ## Phase 3: Editable DAE Subgraphs (Future)
 
-Once preformed DAE nodes work, we can expose their internals as editable subgraphs:
+Phase 3 is superseded by `docs/design/typed_subgraph_domains.md`, under
+umbrella `6116155`. That design is now the routing point for editable
+acausal/DAE, mechanics, and typed subgraph-domain work.
 
-1. **Enter DAE node** → See internal acausal structure
-2. **Component palette changes** → Shows acausal components (Spring, Damper, Mass, Muscle)
-3. **Bidirectional wires** → Physical connections, not data flow
-4. **Exit subgraph** → Compiles back to causal interface
+Historical sketch:
 
-This is the full vision from issue #49, but preformed nodes come first.
+> 1. **Enter DAE node** → See internal acausal structure
+> 2. **Component palette changes** → Shows acausal components (Spring, Damper, Mass, Muscle)
+> 3. **Bidirectional wires** → Physical connections, not data flow
+> 4. **Exit subgraph** → Compiles back to causal interface
 
 ---
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphProject,
@@ -25,6 +26,7 @@ def _authoring_component_type(component_type: str) -> str:
 def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
     """Normalize runtime/persisted component names to Studio authoring names."""
 
+    graph = normalize_acausal_interfaces_for_graph(graph)
     nodes: dict[str, ComponentSpec] = {}
     for node_id, node_spec in graph.nodes.items():
         next_type = _authoring_component_type(node_spec.type)
@@ -66,10 +68,12 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
     }
     subgraphs = None
     if graph.subgraphs:
-        subgraphs = {
-            node_id: normalize_graph_for_studio_authoring(subgraph)
-            for node_id, subgraph in graph.subgraphs.items()
-        }
+        subgraphs = {}
+        for node_id, subgraph in graph.subgraphs.items():
+            if isinstance(subgraph, GraphSpec):
+                subgraphs[node_id] = normalize_graph_for_studio_authoring(subgraph)
+            else:
+                subgraphs[node_id] = subgraph
     return graph.model_copy(
         update={
             "nodes": nodes,

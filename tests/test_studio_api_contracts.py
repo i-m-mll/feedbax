@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import get_args, get_origin
 
 import pytest
-from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunPayload,
     AnalysisBundleDryRunResponse,
@@ -35,8 +35,10 @@ from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES,
 GENERATED_STUDIO_PREFIXES = (
     "/api/analyses",
     "/api/components",
+    "/api/domains",
     "/api/graphs",
     "/api/inspection",
+    "/api/penzai",
     "/api/runs",
     "/api/training",
     "/api/trajectories",
@@ -174,6 +176,14 @@ def test_training_error_and_resync_events_have_stable_coordinates() -> None:
             "worker_seq": 10,
             "batch": 2,
             "error": "worker failed",
+            "diagnostics": [
+                {
+                    "severity": "error",
+                    "code": "graph.missing_subgraph",
+                    "message": "Network node has no subgraph",
+                    "node_ids": ["network"],
+                }
+            ],
         }
     )
     resync = TrainingResyncEvent.model_validate(
@@ -191,6 +201,8 @@ def test_training_error_and_resync_events_have_stable_coordinates() -> None:
     )
 
     assert error.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
+    assert error.diagnostics[0].code == "graph.missing_subgraph"
+    assert error.diagnostics[0].node_ids == ["network"]
     assert error.job_id == resync.job_id
     assert resync.reason == "gap"
     assert resync.missed_events == 3
@@ -263,6 +275,32 @@ def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() 
         )
 
     assert issubclass(TrainingProgressEvent, StudioApiModel)
+
+
+def test_graph_validate_endpoint_returns_domain_diagnostics() -> None:
+    client = TestClient(create_app())
+    graph = GraphSpec(
+        nodes={
+            "network": ComponentSpec(
+                type="Network",
+                input_ports=["input"],
+                output_ports=[],
+            )
+        }
+    )
+
+    response = client.post(
+        "/api/graphs/graph-1/validate",
+        json=graph.model_dump(mode="json", exclude_none=True),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert isinstance(data, list)
+    assert data[0]["severity"] == "error"
+    assert data[0]["code"] == "graph.missing_input"
+    assert data[0]["node_ids"] == ["network"]
+    assert "valid" not in data[0]
 
 
 def test_generated_studio_contracts_cover_route_response_models() -> None:

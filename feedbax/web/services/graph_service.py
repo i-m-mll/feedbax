@@ -6,6 +6,11 @@ from typing import List, Optional
 import json
 import uuid
 
+from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.domain import DomainCompileReport
+from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
+from feedbax.contracts.graphs.penzai_compiler import compile_penzai_authoring_report
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
 from feedbax.contracts.graphs.normalization import (
     normalize_graph_for_studio_authoring,
@@ -13,6 +18,7 @@ from feedbax.contracts.graphs.normalization import (
     normalize_workspace_for_studio_authoring,
 )
 from feedbax.contracts.migrations import migrate_graph_project_payload
+from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphProject,
@@ -20,9 +26,6 @@ from feedbax.contracts.graph import (
     GraphUIState,
     GraphMetadata,
     StudioWorkspaceSpec,
-    ValidationError,
-    ValidationResult,
-    ValidationWarning,
     build_default_studio_workspace,
 )
 
@@ -156,9 +159,8 @@ class GraphService:
         if path.exists():
             path.unlink()
 
-    def validate_graph(self, graph: GraphSpec) -> ValidationResult:
-        errors: List[ValidationError] = []
-        warnings: List[ValidationWarning] = []
+    def validate_graph(self, graph: GraphSpec) -> list[DomainDiagnostic]:
+        diagnostics: list[DomainDiagnostic] = []
 
         for node_name, node in graph.nodes.items():
             for input_port in node.input_ports:
@@ -169,11 +171,14 @@ class GraphService:
                     binding == (node_name, input_port) for binding in graph.input_bindings.values()
                 )
                 if not has_wire and not has_binding:
-                    errors.append(
-                        ValidationError(
-                            type="missing_input",
+                    diagnostics.append(
+                        DomainDiagnostic(
+                            severity="error",
+                            code="graph.missing_input",
                             message=f"Input port '{node_name}.{input_port}' is not connected",
+                            node_ids=[node_name],
                             location={"node": node_name, "port": input_port},
+                            details={"source_type": "missing_input"},
                         )
                     )
 
@@ -186,22 +191,79 @@ class GraphService:
                     for binding in graph.output_bindings.values()
                 )
                 if not has_wire and not has_binding:
-                    warnings.append(
-                        ValidationWarning(
-                            type="unconnected_output",
+                    diagnostics.append(
+                        DomainDiagnostic(
+                            severity="warning",
+                            code="graph.unconnected_output",
                             message=f"Output port '{node_name}.{output_port}' is not connected",
+                            node_ids=[node_name],
                             location={"node": node_name, "port": output_port},
+                            details={"source_type": "unconnected_output"},
                         )
                     )
 
         cycles = self._detect_cycles(graph)
+        for cycle in cycles:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="graph.same_step_cycle",
+                    message=(
+                        "Instant wires contain a same-step cycle; mark one cycle edge recurrent"
+                    ),
+                    node_ids=cycle,
+                    details={"cycle": cycle},
+                )
+            )
+        return diagnostics
 
-        return ValidationResult(
-            valid=len(errors) == 0,
-            errors=errors,
-            warnings=warnings,
-            cycles=cycles,
+    def compile_node(
+        self,
+        graph_id: str,
+        *,
+        node_path: list[str],
+        interior: AcausalGraphSpec,
+    ) -> DomainCompileReport:
+        record = self.get_graph(graph_id)
+        registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+        report = compile_acausal_authoring_report(
+            interior,
+            node_path=node_path,
+            component_registry=registry,
         )
+        key = "/".join(node_path)
+        record.project.compile_reports = {
+            **(record.project.compile_reports or {}),
+            key: report,
+        }
+        self._save_project(self._path_for(graph_id), record.project)
+        return report
+
+    def compile_penzai_node(
+        self,
+        graph_id: str,
+        *,
+        node_path: list[str],
+        builder_name: str,
+        params: dict[str, object],
+        input_port: str,
+        output_port: str,
+    ) -> DomainCompileReport:
+        record = self.get_graph(graph_id)
+        report = compile_penzai_authoring_report(
+            builder_name=builder_name,
+            params=params,
+            input_port=input_port,
+            output_port=output_port,
+            node_path=node_path,
+        )
+        key = "/".join(node_path)
+        record.project.compile_reports = {
+            **(record.project.compile_reports or {}),
+            key: report,
+        }
+        self._save_project(self._path_for(graph_id), record.project)
+        return report
 
     def export_graph(self, graph_id: str, export_format: str) -> dict:
         record = self.get_graph(graph_id)

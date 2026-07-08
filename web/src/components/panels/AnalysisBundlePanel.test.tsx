@@ -61,10 +61,10 @@ afterEach(() => {
 function dryRunResponse(bundleName: string, runIds: string[]) {
   return {
     schema_id: 'feedbax.spec.studio.api_transport',
-    schema_version: 'feedbax.spec.studio.api_transport.v1',
+    schema_version: 'feedbax.spec.studio.api_transport.v2',
     data: {
       schema_id: 'feedbax.spec.studio.api_transport',
-      schema_version: 'feedbax.spec.studio.api_transport.v1',
+      schema_version: 'feedbax.spec.studio.api_transport.v2',
       dry_run: {
         bundle_name: bundleName,
         match_preview: {

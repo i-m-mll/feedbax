@@ -14,6 +14,26 @@ import { projectStudioSchema } from '@/features/schema/project';
 import { useComponents } from '@/hooks/useComponents';
 import { PanelSectionHeader } from '@/components/ui/PanelPrimitives';
 import { semanticTokens } from '@/components/ui/semanticTokens';
+import type { DomainDiagnostic } from '@/generated/studioContracts';
+import { isAcausalGraphSpec } from '@/types/graph';
+import { useCompileStatusStore } from '@/stores/compileStatusStore';
+
+type PanelDiagnostic = Pick<
+  DomainDiagnostic,
+  'severity' | 'code' | 'message' | 'node_ids'
+>;
+
+function diagnosticNodeIds(location: Record<string, unknown> | undefined): string[] {
+  if (!location) return [];
+  const direct = location.node ?? location.entity;
+  return typeof direct === 'string' ? [direct] : [];
+}
+
+function severityTextClass(severity: DomainDiagnostic['severity']): string {
+  if (severity === 'error') return semanticTokens.error.text;
+  if (severity === 'warning') return 'text-amber-600';
+  return 'text-slate-500';
+}
 
 export function ValidationPanel() {
   const [isExpanded, setIsExpanded] = useState(true);
@@ -23,6 +43,10 @@ export function ValidationPanel() {
   const graph = useGraphStore((state) => state.graph);
   const graphStack = useGraphStore((state) => state.graphStack);
   const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
+  const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
+  const exitToBreadcrumb = useGraphStore((state) => state.exitToBreadcrumb);
+  const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
+  const reports = useCompileStatusStore((state) => state.reports);
   const isInSubgraph = graphStack.length > 0;
   const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
@@ -38,11 +62,15 @@ export function ValidationPanel() {
       currentGraphPath
     );
   }, [graph, graphStack, workspace]);
+  const isAcausalLayer = isAcausalGraphSpec(graph);
   const schemaRegistry = useMemo(
-    () => projectStudioSchema(graph, components, taskBindingSpec),
-    [components, graph, taskBindingSpec]
+    () => (isAcausalLayer ? null : projectStudioSchema(graph, components, taskBindingSpec)),
+    [components, graph, isAcausalLayer, taskBindingSpec]
   );
-  const validation = useMemo(() => validateGraph(graph, schemaRegistry), [graph, schemaRegistry]);
+  const validation = useMemo(
+    () => (schemaRegistry ? validateGraph(graph, schemaRegistry) : { valid: true, errors: [], warnings: [], cycles: [] }),
+    [graph, schemaRegistry]
+  );
   const sceneWarnings = useMemo(() => {
     const scenario = getActiveScenario(workspace);
     const registry = buildScenarioEntityRegistry({ scenario, graph });
@@ -58,14 +86,63 @@ export function ValidationPanel() {
     );
   }, [components, graph, workspace]);
   const warnings = [...validation.warnings, ...sceneWarnings];
+  const diagnostics = useMemo<PanelDiagnostic[]>(() => {
+    const rows: PanelDiagnostic[] = [
+      ...validation.errors.map((issue) => ({
+        severity: 'error' as const,
+        code: `graph.${issue.type}`,
+        message: issue.message,
+        node_ids: diagnosticNodeIds(issue.location),
+      })),
+      ...warnings.map((issue) => ({
+        severity: 'warning' as const,
+        code: `graph.${issue.type}`,
+        message: issue.message,
+        node_ids: diagnosticNodeIds(issue.location),
+      })),
+      ...validation.cycles.map((cycle) => ({
+        severity: 'error' as const,
+        code: 'graph.same_step_cycle',
+        message: 'Instant wires contain a same-step cycle; mark one cycle edge recurrent',
+        node_ids: cycle,
+      })),
+    ];
+    return rows;
+  }, [validation.errors, validation.cycles, warnings]);
+  const domainDiagnostics = useMemo(
+    () =>
+      Object.entries(reports).flatMap(([pathKey, report]) =>
+        (report.diagnostics ?? []).map((diagnostic) => ({
+          ...diagnostic,
+          severity: diagnostic.severity ?? 'info',
+          path: pathKey ? pathKey.split('/') : [],
+        }))
+      ),
+    [reports]
+  );
+
+  const navigateToDomainDiagnostic = useCallback(
+    (path: string[], nodeId: string) => {
+      if (graphStack.length > 0) exitToBreadcrumb(0);
+      for (const segment of path) {
+        enterSubgraph(segment);
+      }
+      window.setTimeout(() => setSelectedNode(nodeId), 0);
+    },
+    [enterSubgraph, exitToBreadcrumb, graphStack.length, setSelectedNode]
+  );
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded((prev) => !prev);
   }, []);
 
-  const hasIssues = !validation.valid || warnings.length > 0 || validation.cycles.length > 0;
-  const errorCount = validation.errors.length;
-  const warningCount = warnings.length + validation.cycles.length;
+  const hasIssues = diagnostics.length > 0 || domainDiagnostics.length > 0;
+  const errorCount =
+    diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length +
+    domainDiagnostics.filter((diagnostic) => diagnostic.severity === 'error').length;
+  const warningCount =
+    diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length +
+    domainDiagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length;
 
   if (selectedEntityId) return null;
 
@@ -107,25 +184,62 @@ export function ValidationPanel() {
             </div>
           )}
 
-          {validation.valid && warnings.length === 0 && validation.cycles.length === 0 ? (
-            <div className="text-xs text-mint-500">Graph is valid.</div>
+          {diagnostics.length === 0 ? (
+            domainDiagnostics.length === 0 ? (
+              <div className="text-xs text-mint-500">Graph is valid.</div>
+            ) : null
           ) : (
             <div className="space-y-1.5">
-              {validation.errors.map((error, index) => (
-                <div key={`error-${index}`} className={`text-xs ${semanticTokens.error.text}`}>
-                  {error.message}
+              {diagnostics.map((diagnostic, index) => (
+                <div
+                  key={`${diagnostic.code}-${index}`}
+                  className={`text-xs ${severityTextClass(diagnostic.severity)}`}
+                >
+                  <span className="font-medium">{diagnostic.code}</span>
+                  {diagnostic.node_ids.map((nodeId) => {
+                    const canSelect = Boolean(graph.nodes[nodeId]);
+                    return canSelect ? (
+                      <button
+                        key={nodeId}
+                        type="button"
+                        className="ml-1 rounded border border-current px-1 text-[10px]"
+                        onClick={() => setSelectedNode(nodeId)}
+                      >
+                        {nodeId}
+                      </button>
+                    ) : (
+                      <span key={nodeId} className="ml-1 text-[10px]">
+                        {nodeId}
+                      </span>
+                    );
+                  })}
+                  <span className="ml-1">{diagnostic.message}</span>
                 </div>
               ))}
-              {warnings.map((warning, index) => (
-                <div key={`warning-${index}`} className="text-xs text-slate-500">
-                  {warning.message}
+            </div>
+          )}
+          {domainDiagnostics.length > 0 && (
+            <div className="space-y-1.5">
+              {domainDiagnostics.map((diagnostic, index) => (
+                <div
+                  key={`${diagnostic.path.join('/')}-${diagnostic.code}-${index}`}
+                  className={`text-xs ${severityTextClass(diagnostic.severity)}`}
+                >
+                  <span className="font-medium">{diagnostic.path.join('/') || currentGraphLabel}</span>
+                  <span className="ml-1">{diagnostic.code}</span>
+                  {(diagnostic.node_ids ?? []).map((nodeId) => (
+                    <button
+                      key={nodeId}
+                      type="button"
+                      className="ml-1 rounded border border-current px-1 text-[10px]"
+                      onClick={() => navigateToDomainDiagnostic(diagnostic.path, nodeId)}
+                    >
+                      {nodeId}
+                    </button>
+                  ))}
+                  <span className="ml-1">{diagnostic.message}</span>
                 </div>
               ))}
-              {validation.cycles.length > 0 && (
-                <div className="text-xs text-purple-500">
-                  Cycles: {validation.cycles.map((cycle) => cycle.join(' → ')).join(', ')}
-                </div>
-              )}
             </div>
           )}
         </div>

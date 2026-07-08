@@ -1,6 +1,16 @@
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import { parseContract, type SelectionSpec } from '@/generated/studioContracts';
+import {
+  DomainCompileReportSchema,
+  parseContract,
+  type AcausalGraphSpec,
+  type DomainCompileReport,
+  type DomainMeta,
+  type PenzaiBuilderInfo,
+  type PenzaiInspectorPayload,
+  type PenzaiNodeRequest,
+  type SelectionSpec,
+} from '@/generated/studioContracts';
 import type {
   StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
@@ -70,6 +80,48 @@ export async function fetchComponents(): Promise<ComponentDefinition[]> {
   return response.data.components as unknown as ComponentDefinition[];
 }
 
+export async function fetchDomains(): Promise<DomainMeta[]> {
+  const response = parseContract('DomainListResponse', await requestJson('/api/domains'));
+  return response.data.domains;
+}
+
+export async function fetchPenzaiBuilders(): Promise<PenzaiBuilderInfo[]> {
+  const response = parseContract(
+    'PenzaiBuilderListResponse',
+    await requestJson('/api/penzai/builders'),
+  );
+  return response.data.builders;
+}
+
+export async function compilePenzaiNode(
+  graphId: string | null | undefined,
+  payload: PenzaiNodeRequest,
+): Promise<DomainCompileReport> {
+  const path = graphId
+    ? `/api/graphs/${encodeURIComponent(graphId)}/nodes/penzai/compile`
+    : '/api/penzai/compile';
+  return parseContract(
+    'DomainCompileReport',
+    await requestJson(path, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+export async function inspectPenzaiNode(
+  payload: PenzaiNodeRequest,
+): Promise<PenzaiInspectorPayload> {
+  const response = parseContract(
+    'PenzaiInspectorResponse',
+    await requestJson('/api/penzai/inspect', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  );
+  return response.data;
+}
+
 export async function fetchGraphs() {
   const response = parseContract('GraphListResponse', await requestJson('/api/graphs'));
   return response.data;
@@ -104,7 +156,23 @@ export async function fetchGraph(graphId: string) {
     }> | null;
     active_analysis_page_id: string | null;
     workspace: StudioWorkspaceSpec | null;
+    compile_reports: Record<string, DomainCompileReport> | null;
   };
+}
+
+export async function compileGraphNode(
+  graphId: string,
+  nodePath: string[],
+  interior: AcausalGraphSpec,
+): Promise<DomainCompileReport> {
+  try {
+    return DomainCompileReportSchema.parse(await requestJson(`/api/graphs/${graphId}/nodes/compile`, {
+      method: 'POST',
+      body: JSON.stringify({ node_path: nodePath, interior }),
+    }));
+  } catch (error) {
+    throw asApiRequestError(error, `/api/graphs/${graphId}/nodes/compile`, 'DomainCompileReport response did not match the Studio contract.');
+  }
 }
 
 export async function createGraph(

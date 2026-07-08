@@ -4,6 +4,8 @@ Acausal components are construction-time equation descriptors (plain Python
 dataclasses) that get compiled into a single ``vector_field(t, y, args)``
 at ``__init__`` time.  The resulting ``AcausalSystem`` is a standard
 ``DAEComponent`` that the feedbax Graph treats like any other component.
+Durable acausal identity belongs to ``feedbax.spec.acausal_graph.v1`` contract
+payloads, not to these runtime construction objects.
 
 Domains
 -------
@@ -32,6 +34,7 @@ class Domain(Enum):
     """Physical domain for acausal ports."""
     TRANSLATIONAL = "translational"
     ROTATIONAL = "rotational"
+    PLANAR_MULTIBODY = "planar_multibody"
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +120,7 @@ class AcausalElement:
     Attributes:
         name: Unique element identifier.
         ports: Mapping ``port_name -> AcausalPort``.
+        signal_inputs: Ordered causal signal inputs consumed by this element.
         equations: List of equations this element contributes.
         params: Named scalar parameters (e.g. mass, stiffness).
         element_type: Discriminator string used by the assembly algorithm
@@ -128,6 +132,7 @@ class AcausalElement:
     """
     name: str
     ports: dict[str, AcausalPort] = dc_field(default_factory=dict)
+    signal_inputs: tuple[str, ...] = ()
     equations: list[AcausalEquation] = dc_field(default_factory=list)
     params: dict[str, float] = dc_field(default_factory=dict)
     element_type: str = "standard"

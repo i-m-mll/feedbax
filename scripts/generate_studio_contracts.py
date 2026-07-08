@@ -23,6 +23,20 @@ from feedbax.contracts.component import (
     PortType,
     PortTypeSpec,
 )
+from feedbax.contracts.domain import (
+    DomainCompileReport,
+    DomainDiagnostic,
+    DomainMeta,
+    DomainRegistryPayload,
+    DomainTheme,
+    EditorCapability,
+)
+from feedbax.contracts.acausal import (
+    AcausalConnectionSpec,
+    AcausalGraphSpec,
+    RootFinderSpec,
+    SolverConfigSpec,
+)
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
     RepresentationElementSpec,
@@ -42,6 +56,7 @@ from feedbax.contracts.graph import (
     AnalysisDataProductRequirement,
     AnalysisInputRequirement,
     AnalysisPageSpec,
+    AssemblyViewUIState,
     BarnacleSpec,
     CanvasPositionSpec,
     CanvasSizeSpec,
@@ -103,10 +118,17 @@ from feedbax.contracts.studio_api import (
     AnalysisPackagesPayload,
     AnalysisPackagesResponse,
     ComponentDetailResponse,
+    DomainListResponse,
     ComponentListPayload,
     ComponentListResponse,
     ComponentRefreshPayload,
     ComponentRefreshResponse,
+    PenzaiBuilderInfo,
+    PenzaiBuilderListPayload,
+    PenzaiBuilderListResponse,
+    PenzaiInspectorPayload,
+    PenzaiInspectorResponse,
+    PenzaiNodeRequest,
     GenerateAnalysisPayload,
     GenerateAnalysisRequest,
     GenerateAnalysisResponse,
@@ -228,6 +250,10 @@ NONE_TYPE = type(None)
 MODEL_TYPES: list[type[BaseModel]] = [
     ParamSchema,
     ComponentSpec,
+    AcausalConnectionSpec,
+    RootFinderSpec,
+    SolverConfigSpec,
+    AcausalGraphSpec,
     ParameterConstraintSpec,
     WireSpec,
     AdditiveGraphChannelTargetSpec,
@@ -254,6 +280,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     EdgeUIState,
     NodeUIState,
     TapUIState,
+    AssemblyViewUIState,
     GraphUIState,
     AnalysisPageSpec,
     StudioValidationIssue,
@@ -296,6 +323,12 @@ MODEL_TYPES: list[type[BaseModel]] = [
     RepresentationElementSpec,
     RepresentationSpec,
     RepresentationValidationIssue,
+    EditorCapability,
+    DomainTheme,
+    DomainMeta,
+    DomainDiagnostic,
+    DomainRegistryPayload,
+    DomainCompileReport,
     WorkspaceReplayWarning,
     WorkspaceReplayTrialIdentity,
     WorkspaceReplaySampleAxis,
@@ -341,6 +374,13 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ComponentDetailResponse,
     ComponentRefreshPayload,
     ComponentRefreshResponse,
+    DomainListResponse,
+    PenzaiBuilderInfo,
+    PenzaiBuilderListPayload,
+    PenzaiBuilderListResponse,
+    PenzaiNodeRequest,
+    PenzaiInspectorPayload,
+    PenzaiInspectorResponse,
     TrainingStartPayload,
     TrainingStartResponse,
     TrainingStatusPayload,
@@ -428,6 +468,11 @@ CONTRACT_MODEL_NAMES = [
     "ComponentListResponse",
     "ComponentDetailResponse",
     "ComponentRefreshResponse",
+    "DomainListResponse",
+    "DomainCompileReport",
+    "PenzaiBuilderListResponse",
+    "PenzaiInspectorResponse",
+    "PenzaiNodeRequest",
     "TrainingStartResponse",
     "TrainingStatusResponse",
     "SuccessResponse",
@@ -570,7 +615,7 @@ def zod_schema(annotation: Any) -> str:
 
 
 def emit_interface(model: type[BaseModel]) -> str:
-    hints = get_type_hints(model, include_extras=True)
+    hints = model_type_hints(model)
     lines = [f"export interface {model.__name__} {{"]
     for name, field in model.model_fields.items():
         annotation = hints[name]
@@ -581,7 +626,7 @@ def emit_interface(model: type[BaseModel]) -> str:
 
 
 def emit_schema(model: type[BaseModel]) -> str:
-    hints = get_type_hints(model, include_extras=True)
+    hints = model_type_hints(model)
     lines = [
         f"export const {model.__name__}Schema: z.ZodType<{model.__name__}> = z.lazy(() =>",
         "  z",
@@ -601,6 +646,19 @@ def emit_schema(model: type[BaseModel]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def model_type_hints(model: type[BaseModel]) -> dict[str, Any]:
+    """Resolve model type hints, including acausal forward references."""
+    module_globals = dict(vars(sys.modules[model.__module__]))
+    module_globals.update(
+        {
+            "ComponentSpec": ComponentSpec,
+            "GraphMetadata": GraphMetadata,
+            "AcausalGraphSpec": AcausalGraphSpec,
+        }
+    )
+    return get_type_hints(model, globalns=module_globals, include_extras=True)
 
 
 def generate() -> str:

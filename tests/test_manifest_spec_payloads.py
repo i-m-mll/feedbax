@@ -85,6 +85,7 @@ def test_load_manifest_migrates_embedded_graph_spec_and_preserves_source_hash(
     assert [record.migration_id for record in payload.migration_records] == [
         "graph-spec-legacy-v1-to-v2",
         "graph-spec-v2-to-v3-derived-dimensions",
+        "graph-spec-v3-to-v4-discriminated-subgraphs",
     ]
     assert payload.migration_records[0].metadata["graph_path"] == "graph_spec"
     assert payload.migration_records[0].metadata["spec_payload_path"] == "graph_spec"

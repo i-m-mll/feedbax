@@ -132,6 +132,7 @@ export type PortTone =
   | 'dynamic'
   | 'task'
   | 'objective'
+  | 'conserving'
   | 'selected'
   | 'highlighted';
 
@@ -152,6 +153,7 @@ const portToneClasses: Record<PortTone, string> = {
   dynamic: 'bg-white ring-1 ring-slate-300 border-slate-300',
   task: clsx(semanticTokens.task.fill, 'ring-2', semanticTokens.task.ring),
   objective: clsx(semanticTokens.objective.fill, 'ring-2', semanticTokens.objective.ring),
+  conserving: 'bg-teal-500 ring-2 ring-teal-200',
   selected: clsx(semanticTokens.selected.fill, 'ring-4', semanticTokens.selected.softRing),
   highlighted: clsx(semanticTokens.highlighted.fill, 'ring-2', semanticTokens.highlighted.ring),
 };

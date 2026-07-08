@@ -7,8 +7,18 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 
-from feedbax.contracts.graph import ComponentSpec, DerivedDimensionRuleSpec, GraphSpec
+from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    DerivedDimensionRuleSpec,
+    GraphSpec,
+    GraphSubgraphSpec,
+    require_causal_subgraph,
+    validate_subgraph_domain,
+)
+from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.component_registry.meta import MissingPrototypeInput
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
@@ -306,7 +316,7 @@ def output_prototypes_for_node(
     node_name: str,
     node_spec: ComponentSpec,
     input_prototypes: Mapping[tuple[str, str], Any],
-    subgraphs: Mapping[str, GraphSpec],
+    subgraphs: Mapping[str, GraphSubgraphSpec],
     component_registry: Any = None,
     *,
     strict: bool = True,
@@ -314,12 +324,32 @@ def output_prototypes_for_node(
     params = node_spec.params
     node_type = node_spec.type
 
-    if node_type == "Subgraph" or node_name in subgraphs or node_type == "Network":
+    required_domain = required_interior_domain(node_type, component_registry)
+    if required_domain is not None or node_name in subgraphs:
         subgraph = subgraphs.get(node_name)
         if subgraph is None:
             raise ValueError(
-                f"{node_type} node {node_name!r} requires a subgraph, but none was provided"
+                format_missing_interior_message(
+                    node_name=node_name,
+                    node_type=node_type,
+                    domain_id=required_domain or "",
+                )
             )
+        validate_subgraph_domain(
+            subgraph,
+            expected_domain=required_domain,
+            node_name=node_name,
+            node_type=node_type,
+            consumer="output_prototypes_for_node",
+        )
+        if required_domain is not None and required_domain != CAUSAL_DOMAIN_ID:
+            return {port: jnp.zeros(()) for port in node_spec.output_ports}
+        subgraph = require_causal_subgraph(
+            subgraph,
+            node_name=node_name,
+            node_type=node_type,
+            consumer="output_prototypes_for_node",
+        )
         nested_inputs = {
             (node, port): input_prototypes[(node_name, graph_port)]
             for graph_port, (node, port) in subgraph.input_bindings.items()
@@ -429,6 +459,54 @@ def output_prototypes_for_node(
                 strict=strict,
             )
         return {"output": jnp.zeros((sum(shape[0] for shape in shapes if shape),))}
+    if node_type == "Input":
+        proto = input_prototypes.get((node_name, "input"))
+        if proto is None:
+            return _defer_or_raise(
+                f"Input node {node_name!r} port 'input' requires an input prototype",
+                strict=strict,
+            )
+        return {str(params.get("output_port", "output")): proto}
+    if node_type == "Subtract":
+        proto = input_prototypes.get((node_name, "a"))
+        if proto is None:
+            proto = input_prototypes.get((node_name, "b"))
+        if proto is None:
+            return _defer_or_raise(
+                f"Subtract node {node_name!r} requires input prototype 'a' or 'b'",
+                strict=strict,
+            )
+        return {"out": proto}
+    if node_type == "Reshape":
+        if (node_name, "input") not in input_prototypes:
+            return _defer_or_raise(
+                f"Reshape node {node_name!r} port 'input' requires an input prototype",
+                strict=strict,
+            )
+        shape = params.get("shape", params.get("output_shape", [1, 1]))
+        if not isinstance(shape, (list, tuple)):
+            return _defer_or_raise(
+                f"Reshape node {node_name!r} requires 'shape' as a list",
+                strict=strict,
+            )
+        return {"output": jnp.zeros(tuple(int(dim) for dim in shape))}
+    if node_type == "MatMul":
+        if (node_name, "a") not in input_prototypes or (node_name, "b") not in input_prototypes:
+            return _defer_or_raise(
+                f"MatMul node {node_name!r} requires input prototypes 'a' and 'b'",
+                strict=strict,
+            )
+        a = input_prototypes[(node_name, "a")]
+        b = input_prototypes[(node_name, "b")]
+        return {"out": jnp.matmul(jnp.zeros_like(a), jnp.zeros_like(b))}
+    if node_type in {"Scale", "Sigmoid"}:
+        proto = input_prototypes.get((node_name, "input"))
+        if proto is None:
+            return _defer_or_raise(
+                f"{node_type} node {node_name!r} port 'input' requires an input prototype",
+                strict=strict,
+            )
+        return {"output": proto}
     if node_type in {"PointMass", "TwoLinkArm", "Arm6MuscleRigidTendon"}:
         effector = CartesianState()
         return {"effector": effector, "state": effector}
@@ -480,7 +558,7 @@ def output_prototypes_for_node(
 def bound_output_prototypes(
     spec: GraphSpec,
     *,
-    subgraphs: Mapping[str, GraphSpec],
+    subgraphs: Mapping[str, GraphSubgraphSpec],
     input_prototypes: Mapping[tuple[str, str], Any],
     component_registry: Any = None,
 ) -> dict[str, Any]:
@@ -516,7 +594,7 @@ def bound_output_prototypes(
 def infer_node_input_prototypes(
     spec: GraphSpec,
     external_input_prototypes: Mapping[tuple[str, str], Any],
-    subgraphs: Mapping[str, GraphSpec],
+    subgraphs: Mapping[str, GraphSubgraphSpec],
     component_registry: Any = None,
 ) -> dict[tuple[str, str], Any]:
     input_prototypes: dict[tuple[str, str], Any] = dict(external_input_prototypes)
@@ -637,6 +715,7 @@ def normalize_stateful_prototypes(
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
     component_registry: Any = None,
 ) -> GraphSpec:
+    spec = normalize_acausal_interfaces_for_graph(spec)
     subgraphs = dict(spec.subgraphs or {})
     node_inputs = infer_node_input_prototypes(
         spec,
@@ -645,7 +724,7 @@ def normalize_stateful_prototypes(
         component_registry=component_registry,
     )
     nodes: dict[str, ComponentSpec] = {}
-    normalized_subgraphs: dict[str, GraphSpec] = {}
+    normalized_subgraphs: dict[str, GraphSubgraphSpec] = {}
 
     for node_name, node_spec in spec.nodes.items():
         params = dict(node_spec.params)
@@ -659,13 +738,23 @@ def normalize_stateful_prototypes(
         nodes[node_name] = node_spec.model_copy(update={"params": params})
 
         if node_name in subgraphs:
+            raw_subgraph = subgraphs[node_name]
+            if not isinstance(raw_subgraph, GraphSpec):
+                normalized_subgraphs[node_name] = raw_subgraph
+                continue
+            subgraph = require_causal_subgraph(
+                raw_subgraph,
+                node_name=node_name,
+                node_type=node_spec.type,
+                consumer="normalize_stateful_prototypes",
+            )
             nested_inputs = {
                 (node, port): node_inputs[(node_name, graph_port)]
-                for graph_port, (node, port) in subgraphs[node_name].input_bindings.items()
+                for graph_port, (node, port) in subgraph.input_bindings.items()
                 if (node_name, graph_port) in node_inputs
             }
             normalized_subgraphs[node_name] = normalize_stateful_prototypes(
-                subgraphs[node_name],
+                subgraph,
                 nested_inputs,
                 component_registry=component_registry,
             )
@@ -766,15 +855,24 @@ def normalize_derived_dimensions(
         params[rule.param] = derived
         nodes[rule.node] = node.model_copy(update={"params": params})
 
-    normalized_subgraphs: dict[str, GraphSpec] = {}
+    normalized_subgraphs: dict[str, GraphSubgraphSpec] = {}
     for node_name, subgraph in subgraphs.items():
+        if not isinstance(subgraph, GraphSpec):
+            normalized_subgraphs[node_name] = subgraph
+            continue
+        causal_subgraph = require_causal_subgraph(
+            subgraph,
+            node_name=node_name,
+            node_type=nodes[node_name].type if node_name in nodes else "<unknown>",
+            consumer="normalize_derived_dimensions",
+        )
         nested_inputs = {
             (node, port): node_inputs[(node_name, graph_port)]
-            for graph_port, (node, port) in subgraph.input_bindings.items()
+            for graph_port, (node, port) in causal_subgraph.input_bindings.items()
             if (node_name, graph_port) in node_inputs
         }
         normalized_subgraphs[node_name] = normalize_derived_dimensions(
-            subgraph,
+            causal_subgraph,
             nested_inputs,
             component_registry=component_registry,
         )

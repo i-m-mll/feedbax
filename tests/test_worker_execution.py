@@ -10,6 +10,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graphs.templates import network_template_graph
 from feedbax.contracts.graphs.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.contracts.graph import (
@@ -45,6 +47,58 @@ def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> 
         output_ports=["output"],
         output_bindings={"output": ("readout", "output")},
     ).model_dump(mode="json", exclude_none=True)
+
+
+def _acausal_training_graph_spec() -> dict:
+    interior = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes={
+            "wall": ComponentSpec(type="Ground"),
+            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
+            "damper": ComponentSpec(type="LinearDamper", params={"damping": 0.5}),
+            "act": ComponentSpec(
+                type="ActuationInput",
+                params={"port_name": "u", "source_kind": "force"},
+            ),
+            "sense": ComponentSpec(
+                type="SensorOutput",
+                params={"port_name": "output", "quantity": "position"},
+            ),
+        },
+        connections=[
+            {"a": ("wall", "flange"), "b": ("spring", "flange_a")},
+            {"a": ("wall", "flange"), "b": ("damper", "flange_a")},
+            {"a": ("spring", "flange_b"), "b": ("mass", "flange")},
+            {"a": ("damper", "flange_b"), "b": ("mass", "flange")},
+            {"a": ("act", "flange"), "b": ("mass", "flange")},
+            {"a": ("sense", "flange"), "b": ("mass", "flange")},
+        ],
+        solver={"solver_type": "euler", "dt": 0.001},
+    )
+    return GraphSpec(
+        nodes={
+            "plant": ComponentSpec(
+                type="AcausalSystem",
+                input_ports=["u"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("plant", "output")},
+        subgraphs={"plant": interior},
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _acausal_task_binding_spec() -> dict:
+    spec = _task_binding_spec()
+    spec["bindings"][0] = {
+        **spec["bindings"][0],
+        "id": "task:model_input->plant:u",
+        "target_node_id": "plant",
+        "target_port": "u",
+    }
+    return spec
 
 
 def _task_binding_spec() -> dict:
@@ -137,6 +191,56 @@ def _network_task_binding_spec() -> dict:
                 "metadata": {},
             },
         ],
+        "metadata": {},
+    }
+
+
+def _cde_task_binding_spec() -> dict:
+    exposed_data = []
+    bindings = []
+    target_nodes = {
+        "obs": "obs_in",
+        "obs_prev": "obs_prev_in",
+        "h_prev": "h_prev_in",
+    }
+    values = {
+        "obs": [0.2],
+        "obs_prev": [0.1],
+        "h_prev": [0.3],
+    }
+    for port, target_node in target_nodes.items():
+        exposed_data.append(
+            {
+                "id": port,
+                "label": port,
+                "kind": "signal",
+                "role": "model_input",
+                "path": f"inputs.{port}",
+                "bindable": True,
+                "expected_shape": ["time", 1],
+                "value_spec": {
+                    "mode": "constant",
+                    "value": values[port],
+                    "dtype": "float32",
+                    "shape": ["time", 1],
+                },
+                "metadata": {},
+            }
+        )
+        bindings.append(
+            {
+                "id": f"task:{port}->{target_node}:input",
+                "source_data_id": port,
+                "target_node_id": target_node,
+                "target_port": "input",
+                "role": "model_input",
+                "metadata": {},
+            }
+        )
+    return {
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "exposed_data": exposed_data,
+        "bindings": bindings,
         "metadata": {},
     }
 
@@ -269,6 +373,21 @@ def test_compile_training_run_accepts_full_graph_without_bridge_nodes() -> None:
     assert compiled.trainable_nodes == ("readout",)
 
 
+def test_compile_training_run_dry_runs_acausal_graph_node() -> None:
+    compiled = compile_training_run(
+        graph_spec=_acausal_training_graph_spec(),
+        training_spec=_training_spec(n_batches=1),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_acausal_task_binding_spec(),
+        cfg=_cfg(n_reach_steps=3),
+    )
+
+    assert compiled.metadata["execution"] == "generic_graph"
+    assert compiled.task_inputs[0].target_node == "plant"
+    assert compiled.graph.nodes["plant"].input_ports == ("u",)
+    assert compiled.graph.nodes["plant"].output_ports == ("output",)
+
+
 def test_compile_training_run_uses_array_leaf_trainability_for_network_template() -> None:
     graph_spec = network_template_graph(
         {"input_size": 2, "hidden_size": 3, "out_size": 1}
@@ -358,6 +477,33 @@ def test_rollout_graph_threads_network_template_recurrence() -> None:
 
     assert output.shape == (5, 1)
     assert not jnp.allclose(output[0], output[-1])
+
+
+def test_compile_training_run_dry_runs_cde_templates() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    training_spec = _training_spec(
+        loss={
+            "type": "TargetStateLoss",
+            "label": "action_zero",
+            "selector": "graph_output:action",
+            "target_value": [0.0],
+            "weight": 1.0,
+            "norm": "squared_l2",
+        }
+    )
+
+    for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
+        meta = registry.get(template_name)
+        assert meta is not None
+        compiled = compile_training_run(
+            graph_spec=meta.template_graph.model_dump(mode="json", exclude_none=True),
+            training_spec=training_spec,
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=_cde_task_binding_spec(),
+            cfg=_cfg(n_reach_steps=2),
+        )
+
+        assert compiled.metadata["execution"] == "generic_graph"
 
 
 def test_run_training_graph_trains_tiny_full_graph(tmp_path: Path, monkeypatch) -> None:

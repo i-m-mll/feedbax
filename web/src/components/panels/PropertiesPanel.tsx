@@ -37,7 +37,14 @@ import {
   deriveSubgraphBoundaryOverrides,
 } from '@/features/schema/dimensions';
 import { projectStudioSchema } from '@/features/schema/project';
-import type { GraphNodeData, GraphSpec, ParamSchema, ParamValue, TapSpec } from '@/types/graph';
+import {
+  isCausalGraphSpec,
+  type GraphNodeData,
+  type GraphSpec,
+  type ParamSchema,
+  type ParamValue,
+  type TapSpec,
+} from '@/types/graph';
 import type { AnalysisNodeMeta } from '@/types/analysis';
 import type {
   StudioInterventionOperation,
@@ -354,7 +361,8 @@ export function PropertiesPanel() {
 
   if (selectedPort) {
     const nodeSpec = graph.nodes[selectedPort.nodeId];
-    const subgraph = graph.subgraphs?.[selectedPort.nodeId];
+    const rawSubgraph = graph.subgraphs?.[selectedPort.nodeId];
+    const subgraph = isCausalGraphSpec(rawSubgraph) ? rawSubgraph : undefined;
     const boundaryPorts =
       selectedPort.direction === 'input' ? subgraph?.input_ports : subgraph?.output_ports;
     const isBoundaryAlias = Boolean(boundaryPorts?.includes(selectedPort.port));
@@ -433,7 +441,10 @@ export function PropertiesPanel() {
   }
 
   const nodeSpec = graph.nodes[selectedNode.id];
-  const selectedSubgraph = graph.subgraphs?.[selectedNode.id];
+  const rawSelectedSubgraph = graph.subgraphs?.[selectedNode.id];
+  const selectedSubgraph = isCausalGraphSpec(rawSelectedSubgraph)
+    ? rawSelectedSubgraph
+    : undefined;
   const component = nodeSpec
     ? components.find((item) => item.name === nodeSpec.type)
     : undefined;
@@ -491,7 +502,7 @@ export function PropertiesPanel() {
         <div className="mt-1 text-sm text-slate-500">{nodeSpec.type}</div>
       </div>
 
-      {component?.is_composite ? (
+      {component?.is_composite && component.template_kind !== 'display' ? (
         <div className="space-y-3">
           <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Parameters</div>
           <div className="text-sm text-slate-400">
@@ -1404,6 +1415,8 @@ function ParamInput({
   value: ParamValue;
   onChange: (value: ParamValue) => void;
 }) {
+  const optionDescription =
+    typeof value === 'string' ? schema.option_descriptions?.[value] : undefined;
   return (
     <label className="flex flex-col gap-1 text-xs text-slate-500">
       <span>{humanizeLabel(schema.name)}</span>
@@ -1412,6 +1425,11 @@ function ParamInput({
         value={value}
         onChange={(nextValue) => onChange(nextValue as ParamValue)}
       />
+      {(optionDescription || schema.description) && (
+        <span className="text-[11px] leading-4 text-slate-400">
+          {optionDescription ?? schema.description}
+        </span>
+      )}
     </label>
   );
 }

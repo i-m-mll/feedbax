@@ -8,7 +8,10 @@ import jax.numpy as jnp
 import jax.tree as jt
 
 from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
+from feedbax.contracts.graphs.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.graph import ParamSchema
+from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
 from feedbax.runtime.affine_composer import (
@@ -18,6 +21,7 @@ from feedbax.runtime.affine_composer import (
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
+from .acausal_adapters import register_acausal_components
 from .cde_templates import register_cde_templates
 from .meta import ComponentMeta, MissingPrototypeInput
 from .templates import register_builtin_graph_templates
@@ -643,6 +647,77 @@ def binary_elementwise_output_prototype(
     return {"output": proto}
 
 
+def input_node_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return an input-node prototype under its configured output port."""
+
+    output_port = str(params.get("output_port", "output"))
+    return {output_port: _required_input(inputs, "input", component="Input")}
+
+
+def subtract_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the first available subtract input prototype as ``out``."""
+
+    del params
+    proto = inputs.get("a")
+    if proto is None:
+        proto = inputs.get("b")
+    if proto is None:
+        raise MissingPrototypeInput(
+            "Subtract output prototype requires input prototype 'a' or 'b'"
+        )
+    return {"out": proto}
+
+
+def sum_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the first available sum input prototype as ``output``."""
+
+    del params
+    for port in ("a", "b", "c", "d"):
+        proto = inputs.get(port)
+        if proto is not None:
+            return {"output": proto}
+    raise MissingPrototypeInput(
+        "Sum output prototype requires at least one input prototype"
+    )
+
+
+def reshape_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a reshaped array prototype."""
+
+    proto = _required_input(inputs, "input", component="Reshape")
+    leaves = jt.leaves(proto)
+    if len(leaves) != 1:
+        raise ValueError("Reshape output prototype requires a single array input")
+    shape = params.get("shape", params.get("output_shape", [1, 1]))
+    if not isinstance(shape, (list, tuple)):
+        raise ValueError("Reshape output prototype requires 'shape' as a list")
+    return {"output": jnp.zeros(tuple(int(dim) for dim in shape), dtype=leaves[0].dtype)}
+
+
+def matmul_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a prototype for ``a @ b``."""
+
+    del params
+    a = _required_input(inputs, "a", component="MatMul")
+    b = _required_input(inputs, "b", component="MatMul")
+    return {"out": jnp.matmul(jnp.zeros_like(a), jnp.zeros_like(b))}
+
+
 def ravel_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
@@ -908,6 +983,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     register_builtin_graph_templates(registry)
+    penzai_builders = penzai_builder_options()
     registry.register(
         ComponentMeta(
             name='PenzaiAdapter',
@@ -917,8 +993,13 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(
                     name='builder_name',
                     type='enum',
-                    options=[],  # Populated dynamically from registry
-                    default='',
+                    options=[builder["name"] for builder in penzai_builders],
+                    option_descriptions={
+                        builder["name"]: str(builder["description"])
+                        for builder in penzai_builders
+                    },
+                    default=penzai_builders[0]["name"] if penzai_builders else '',
+                    description="Registered Penzai model builder.",
                     required=True,
                 ),
                 ParamSchema(name='input_port', type='str', default='input', required=False),
@@ -927,7 +1008,9 @@ def register_builtin_components(registry: _Registry) -> None:
             input_ports=['input'],
             output_ports=['output'],
             icon='Hexagon',
-            is_composite=False,
+            interior_domain=PENZAI_DOMAIN_ID,
+            is_composite=True,
+            template_kind='display',
             port_types=PortTypeSpec(
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
@@ -956,16 +1039,55 @@ def register_builtin_components(registry: _Registry) -> None:
         ComponentMeta(
             name='Sum',
             category='Math',
-            description='Add two inputs.',
+            description='Add present inputs.',
             param_schema=[],
-            input_ports=['a', 'b'],
+            input_ports=['a', 'b', 'c', 'd'],
             output_ports=['output'],
             icon='Sigma',
             port_types=PortTypeSpec(
-                inputs={'a': PortType(dtype='any'), 'b': PortType(dtype='any')},
+                inputs={
+                    'a': PortType(dtype='any'),
+                    'b': PortType(dtype='any'),
+                    'c': PortType(dtype='any'),
+                    'd': PortType(dtype='any'),
+                },
                 outputs={'output': PortType(dtype='any')},
             ),
-            output_prototype_fn=binary_elementwise_output_prototype,
+            output_prototype_fn=sum_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='Input',
+            category='Sources',
+            description='Pass an external graph input through a source-like node.',
+            param_schema=[
+                ParamSchema(name='output_port', type='str', default='output', required=True),
+            ],
+            input_ports=['input'],
+            output_ports=['output'],
+            icon='LogIn',
+            port_types=PortTypeSpec(
+                inputs={'input': PortType(dtype='any')},
+                outputs={'output': PortType(dtype='any')},
+            ),
+            output_prototype_fn=input_node_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='Subtract',
+            category='Math',
+            description='Subtract input b from input a.',
+            param_schema=[],
+            input_ports=['a', 'b'],
+            output_ports=['out'],
+            icon='Minus',
+            port_types=PortTypeSpec(
+                inputs={'a': PortType(dtype='any'), 'b': PortType(dtype='any')},
+                outputs={'out': PortType(dtype='any')},
+            ),
+            output_prototype_fn=subtract_output_prototype,
         )
     )
     registry.register(
@@ -982,6 +1104,74 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'output': PortType(dtype='any')},
             ),
             output_prototype_fn=binary_elementwise_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='Reshape',
+            category='Math',
+            description='Reshape an array to a fixed output shape.',
+            param_schema=[
+                ParamSchema(name='shape', type='array', default=[1, 1], required=True),
+            ],
+            input_ports=['input'],
+            output_ports=['output'],
+            icon='Rows3',
+            port_types=PortTypeSpec(
+                inputs={'input': PortType(dtype='vector')},
+                outputs={'output': PortType(dtype='array')},
+            ),
+            output_prototype_fn=reshape_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='MatMul',
+            category='Math',
+            description='Matrix multiply a and b.',
+            param_schema=[],
+            input_ports=['a', 'b'],
+            output_ports=['out'],
+            icon='Table2',
+            port_types=PortTypeSpec(
+                inputs={'a': PortType(dtype='array'), 'b': PortType(dtype='array')},
+                outputs={'out': PortType(dtype='array')},
+            ),
+            output_prototype_fn=matmul_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='Scale',
+            category='Math',
+            description='Multiply input by a scalar or broadcastable scale.',
+            param_schema=[
+                ParamSchema(name='scale', type='float', default=1.0, required=True),
+            ],
+            input_ports=['input'],
+            output_ports=['output'],
+            icon='Scaling',
+            port_types=PortTypeSpec(
+                inputs={'input': PortType(dtype='any')},
+                outputs={'output': PortType(dtype='any')},
+            ),
+            output_prototype_fn=input_passthrough_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='Sigmoid',
+            category='Math',
+            description='Apply a logistic sigmoid elementwise.',
+            param_schema=[],
+            input_ports=['input'],
+            output_ports=['output'],
+            icon='Activity',
+            port_types=PortTypeSpec(
+                inputs={'input': PortType(dtype='any')},
+                outputs={'output': PortType(dtype='any')},
+            ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -1412,6 +1602,9 @@ def register_builtin_components(registry: _Registry) -> None:
             ),
             output_prototype_fn=mechanics_state_output_prototype,
             representation=_point_mass_representation(),
+            template_graph=point_mass_template_graph(),
+            template_id="feedbax.templates.mechanics.point_mass",
+            template_kind="executable",
         )
     )
     registry.register(
@@ -1570,6 +1763,7 @@ def register_builtin_components(registry: _Registry) -> None:
             input_ports=['input'],
             output_ports=['state'],
             icon='Cog',
+            interior_domain=ACAUSAL_DOMAIN_ID,
             port_types=PortTypeSpec(
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'state': PortType(dtype='state')},
@@ -1577,6 +1771,7 @@ def register_builtin_components(registry: _Registry) -> None:
             is_composite=True,
         )
     )
+    register_acausal_components(registry)
     registry.register(
         ComponentMeta(
             name='Channel',

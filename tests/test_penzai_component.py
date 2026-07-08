@@ -26,9 +26,12 @@ from feedbax.components.penzai import (
     PenzaiStateManager,
     register_penzai_builder,
     get_penzai_builder,
+    list_penzai_builder_info,
     list_penzai_builders,
     build_penzai_subgraph,
 )
+from feedbax.contracts.graphs.builders import _build_penzai_adapter
+from feedbax.contracts.graphs.penzai_compiler import compile_penzai_authoring_report
 
 
 # =============================================================================
@@ -458,6 +461,9 @@ class TestFactoryRegistry:
                 "test_mock_layer",
                 mock_builder,
                 {"size": 4},
+                description="Mock dense layer.",
+                input_shape=(4,),
+                output_shape=(4,),
             )
 
             result = get_penzai_builder("test_mock_layer")
@@ -465,6 +471,11 @@ class TestFactoryRegistry:
             assert result is not None
             builder_fn, defaults = result
             assert defaults["size"] == 4
+            [info] = [
+                item for item in list_penzai_builder_info() if item["name"] == "test_mock_layer"
+            ]
+            assert info["description"] == "Mock dense layer."
+            assert info["input_shape"] == ["4"]
 
             # Test builder works
             model = builder_fn({"size": 3})
@@ -536,6 +547,92 @@ class TestFactoryRegistry:
         """Test that building from unknown builder raises ValueError."""
         with pytest.raises(ValueError, match="Unknown Penzai builder"):
             build_penzai_subgraph("nonexistent_builder")
+
+    def test_authoring_report_for_stateless_builder_is_ok(self, monkeypatch):
+        import feedbax.components.penzai as pc
+        import feedbax.contracts.graphs.penzai_compiler as compiler
+
+        monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
+        monkeypatch.setattr(compiler, "PENZAI_AVAILABLE", True)
+        monkeypatch.setattr(pc, "_require_penzai", lambda: None)
+
+        def mock_builder(params):
+            return MockPenzaiLayer(
+                weight=jnp.eye(params["size"]),
+                bias=jnp.zeros(params["size"]),
+            )
+
+        try:
+            register_penzai_builder("test_compile_stateless", mock_builder, {"size": 2})
+
+            report = compile_penzai_authoring_report(
+                builder_name="test_compile_stateless",
+                params={"size": 3},
+                node_path=["network"],
+            )
+
+            assert report.status == "ok"
+            assert report.diagnostics == []
+            assert report.summary["array_leaf_count"] >= 2
+        finally:
+            pc._PENZAI_MODEL_BUILDERS.pop("test_compile_stateless", None)
+
+    def test_authoring_report_for_stateful_builder_names_state_variables(self, monkeypatch):
+        import feedbax.components.penzai as pc
+        import feedbax.contracts.graphs.penzai_compiler as compiler
+
+        class FakeStateVariable:
+            def __init__(self, value):
+                self.value = value
+
+        class FakeModel:
+            def __init__(self):
+                self.running = FakeStateVariable(jnp.array([1.0]))
+
+        monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
+        monkeypatch.setattr(compiler, "PENZAI_AVAILABLE", True)
+        monkeypatch.setattr(pc, "StateVariable", FakeStateVariable)
+        monkeypatch.setattr(pc, "_require_penzai", lambda: None)
+
+        try:
+            register_penzai_builder("test_compile_stateful", lambda params: FakeModel(), {})
+
+            report = compile_penzai_authoring_report(
+                builder_name="test_compile_stateful",
+                node_path=["network"],
+            )
+
+            [diagnostic] = report.diagnostics
+            assert report.status == "error"
+            assert diagnostic.code == "penzai.stateful_unsupported"
+            assert diagnostic.variables == ["running"]
+        finally:
+            pc._PENZAI_MODEL_BUILDERS.pop("test_compile_stateful", None)
+
+    def test_runtime_stateful_adapter_error_is_not_notimplemented(self, monkeypatch):
+        import feedbax.components.penzai as pc
+        import feedbax.contracts.graphs.builders as builders
+
+        class FakeStateVariable:
+            def __init__(self, value):
+                self.value = value
+
+        class FakeModel:
+            def __init__(self):
+                self.running = FakeStateVariable(jnp.array([1.0]))
+
+        monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
+        monkeypatch.setattr(builders, "PENZAI_AVAILABLE", True)
+        monkeypatch.setattr(pc, "StateVariable", FakeStateVariable)
+        monkeypatch.setattr(pc, "_require_penzai", lambda: None)
+
+        try:
+            register_penzai_builder("test_runtime_stateful", lambda params: FakeModel(), {})
+            with pytest.raises(ValueError, match="penzai.stateful_unsupported") as exc_info:
+                _build_penzai_adapter({"builder_name": "test_runtime_stateful"})
+            assert not isinstance(exc_info.value, NotImplementedError)
+        finally:
+            pc._PENZAI_MODEL_BUILDERS.pop("test_runtime_stateful", None)
 
 
 # =============================================================================

@@ -4,6 +4,7 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
+import diffrax as dfx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -18,9 +19,11 @@ from feedbax.runtime.components import (
     ElementwiseAffineModulator,
     GRU,
     Gain,
+    Input,
     LSTM,
     Linear,
     MLP,
+    MatMul,
     Multiply,
     Mux,
     Noise,
@@ -28,8 +31,12 @@ from feedbax.runtime.components import (
     Ramp,
     Ravel,
     Saturation,
+    Scale,
+    Sigmoid,
     Sine,
     Spring,
+    Reshape,
+    Subtract,
     Sum,
 )
 from feedbax.runtime.affine_composer import (
@@ -57,9 +64,15 @@ from feedbax.intervene.intervene import (
 )
 from feedbax.objectives.loss import CompositeLoss
 from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
+from feedbax.mechanics.backend import DiffraxBackend
+from feedbax.mechanics.body import BodyPreset, default_2link_bounds
 from feedbax.mechanics.mechanics import Mechanics
+from feedbax.mechanics.model_builder import ChainConfig
+from feedbax.mechanics.muscle_config import default_6muscle_2link_topology
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
+from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -74,7 +87,10 @@ from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
     build_penzai_subgraph,
+    get_penzai_builder,
+    penzai_state_variable_paths,
 )
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graphs.prototypes import array_proto_from_shape
 from feedbax.runtime.state_feedback import build_state_feedback_selector
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
@@ -200,6 +216,66 @@ def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
     else:
         raise ValueError(f"Unsupported plant_type '{plant_type}'")
     return Mechanics(plant=plant, dt=float(params.get("dt", 0.01)))
+
+
+class _ExcitationMechanics(Mechanics):
+    input_ports = ("excitation",)
+
+    def __call__(self, inputs, state, *, key):
+        excitation = inputs.get("excitation", inputs.get("force"))
+        return super().__call__({"force": excitation}, state, key=key)
+
+
+def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
+    bounds = default_2link_bounds()
+    tau_act = float(params.get("tau_act", 0.01))
+    tau_deact = float(params.get("tau_deact", 0.04))
+    return BodyPreset(
+        segment_lengths=(bounds.segment_lengths_min + bounds.segment_lengths_max) / 2.0,
+        segment_masses=(bounds.segment_masses_min + bounds.segment_masses_max) / 2.0,
+        joint_damping=(bounds.joint_damping_min + bounds.joint_damping_max) / 2.0,
+        joint_stiffness=(bounds.joint_stiffness_min + bounds.joint_stiffness_max) / 2.0,
+        muscle_pcsa=(bounds.muscle_pcsa_min + bounds.muscle_pcsa_max) / 2.0,
+        muscle_optimal_fiber_length=(
+            bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max
+        )
+        / 2.0,
+        muscle_tendon_slack_length=(
+            bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max
+        )
+        / 2.0,
+        muscle_moment_arm_magnitudes=(
+            bounds.muscle_moment_arm_magnitudes_min
+            + bounds.muscle_moment_arm_magnitudes_max
+        )
+        / 2.0,
+        tau_act=tau_act,
+        tau_deact=tau_deact,
+    )
+
+
+def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechanics:
+    dt = float(params.get("dt", 0.01))
+    n_steps = int(params.get("n_steps", 1))
+    if n_steps < 1:
+        raise ValueError("AnalyticalMusculoskeletalPlant n_steps must be >= 1")
+    chain_config = ChainConfig(
+        n_joints=2,
+        muscle_topology=default_6muscle_2link_topology(),
+    )
+    plant = AnalyticalMusculoskeletalPlant.from_body_preset(
+        _default_analytical_body_preset(params),
+        chain_config,
+        clip_states=bool(params.get("clip_states", True)),
+        key=jr.PRNGKey(0),
+    )
+    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=dfx.Euler())
+    return _ExcitationMechanics(
+        plant=plant,
+        dt=dt,
+        backend=backend,
+        key=jr.PRNGKey(0),
+    )
 
 
 def _build_linear_state_space(params: Mapping[str, Any]) -> LinearStateSpace:
@@ -481,6 +557,17 @@ def _build_penzai_adapter(params: Mapping[str, Any]) -> Component:
         for key, value in params.items()
         if key not in ("builder_name", "input_port", "output_port")
     }
+    builder_info = get_penzai_builder(builder_name)
+    if builder_info is None:
+        raise ValueError(f"Unknown Penzai builder {builder_name!r}")
+    builder_fn, default_params = builder_info
+    pz_model = builder_fn({**default_params, **builder_params})
+    state_paths = penzai_state_variable_paths(pz_model)
+    if state_paths:
+        raise ValueError(
+            "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
+            f"StateVariable leaves at {', '.join(state_paths)}"
+        )
     return build_penzai_subgraph(
         builder_name=builder_name,
         params=builder_params,
@@ -493,12 +580,39 @@ def _build_gain(params: Mapping[str, Any]) -> Gain:
     return Gain(gain=float(params.get("gain", 1.0)))
 
 
+def _build_input(params: Mapping[str, Any]) -> Input:
+    return Input(output_port=str(params.get("output_port", "output")))
+
+
 def _build_sum(params: Mapping[str, Any]) -> Sum:
     return Sum()
 
 
+def _build_subtract(params: Mapping[str, Any]) -> Subtract:
+    return Subtract()
+
+
 def _build_multiply(params: Mapping[str, Any]) -> Multiply:
     return Multiply()
+
+
+def _build_reshape(params: Mapping[str, Any]) -> Reshape:
+    shape = params.get("shape", params.get("output_shape", [1, 1]))
+    if not isinstance(shape, (list, tuple)):
+        raise ValueError("Reshape requires 'shape' as a list of integers")
+    return Reshape(shape=shape)
+
+
+def _build_matmul(params: Mapping[str, Any]) -> MatMul:
+    return MatMul()
+
+
+def _build_scale(params: Mapping[str, Any]) -> Scale:
+    return Scale(scale=params.get("scale", 1.0))
+
+
+def _build_sigmoid(params: Mapping[str, Any]) -> Sigmoid:
+    return Sigmoid()
 
 
 def _build_elementwise_affine_modulator(
@@ -744,8 +858,14 @@ def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueCompos
 
 _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Gain": _build_gain,
+    "Input": _build_input,
     "Sum": _build_sum,
+    "Subtract": _build_subtract,
     "Multiply": _build_multiply,
+    "Reshape": _build_reshape,
+    "MatMul": _build_matmul,
+    "Scale": _build_scale,
+    "Sigmoid": _build_sigmoid,
     "ElementwiseAffineModulator": _build_elementwise_affine_modulator,
     "Constant": _build_constant,
     "Ravel": lambda params: Ravel(),
@@ -766,6 +886,18 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Damper": _build_damper,
     "ReluMuscle": _build_relu_muscle,
     "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
+    "Arm6MuscleRigidTendon": lambda params: Arm6MuscleRigidTendon(
+        dt=float(params.get("dt", 0.01)),
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        optimal_muscle_length=float(params.get("optimal_muscle_length", 0.1)),
+        tendon_slack_length=float(params.get("tendon_slack_length", 0.1)),
+    ),
+    "PointMass8MuscleRelu": lambda params: PointMass8MuscleRelu(
+        n_pairs=int(params.get("n_pairs", 4)),
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        dt=float(params.get("dt", 0.01)),
+    ),
+    "AnalyticalMusculoskeletalPlant": _build_analytical_musculoskeletal_plant,
     "LinearStateSpace": _build_linear_state_space,
     "StateFeedbackSelector": build_state_feedback_selector,
     "AffineFeedbackController": build_affine_feedback_controller,
@@ -819,12 +951,8 @@ _DISPLAY_ONLY_MESSAGES: dict[str, str] = {
         "RadialForceProjection node {node_name!r} has no Python builder yet. "
         "It is a display-only abstraction used in composite subgraph templates."
     ),
-    "Arm6MuscleRigidTendon": (
-        "Arm6MuscleRigidTendon node {node_name!r} requires musculoskeletal plant data "
-        "(body presets, muscle topology) not stored in GraphSpec. This node type is "
-        "supported in the training worker but not in local graph instantiation. "
-        "For testing, use TwoLinkArm instead."
-    ),
+    # C1 issue 196bed0: projection helpers remain display-only until C2 turns
+    # muscle paths and multibody geometry into real acausal mechanics interiors.
 }
 
 
@@ -844,39 +972,7 @@ def _unsupported_component_builder(component_type: str) -> Callable[[Mapping[str
     return _builder
 
 
-_UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {
-    "Input": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "Graph inputs must be represented by GraphSpec input_bindings, not display-only "
-        "placeholder nodes. CDE templates are currently display-only and fail closed; "
-        "real subgraph-to-builder construction is future work tracked by issue 2f8dd61."
-    ),
-    "Subtract": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "Reshape": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "MatMul": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "Scale": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-    "Sigmoid": (
-        "CDE template primitive {node_type!r} at node {node_name!r} is not executable. "
-        "CDE templates are currently display-only and fail closed; real subgraph-to-builder "
-        "construction is future work tracked by issue 2f8dd61."
-    ),
-}
+_UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {}
 
 
 def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
@@ -895,12 +991,6 @@ def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
         f"Component template {meta.name!r} is not executable because its template graph "
         f"contains node types without registered builders: {details}"
     )
-    template_id = getattr(meta, "template_id", "") or ""
-    if template_id.startswith("feedbax.templates.cde_"):
-        message += (
-            ". CDE templates are currently display-only and fail closed; real "
-            "subgraph-to-builder construction is future work tracked by issue 2f8dd61."
-        )
     return message
 
 
@@ -941,6 +1031,11 @@ def build_component(
         raise ValueError(
             f"Unsupported component type {node_type!r} for node {node_name!r}. "
             f"Known component types: {known}"
+        )
+    if meta.domain != CAUSAL_DOMAIN_ID:
+        raise ValueError(
+            f"Component type {node_type!r} for node {node_name!r} belongs to "
+            f"domain {meta.domain!r} and cannot be built by the causal component builder."
         )
     unsupported_message = (
         None

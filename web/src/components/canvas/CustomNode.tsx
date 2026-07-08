@@ -17,10 +17,11 @@ import { objectiveGraphPortTarget } from '@/features/scenario/objectives';
 import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { visibleMuxInputPorts } from '@/features/graph/dynamicPorts';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
 import { FigureOutputPin } from '@/components/analysis/FigureOutputPin';
 import { NodeHeader, NodeShell, PortHandle } from '@/components/ui/NodePrimitives';
+import { portIsConserving } from '@/features/domains/acausal';
 
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
@@ -110,6 +111,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
   } | null>(null);
 
   const compositeTypes = useGraphStore((state) => state._compositeTypes);
+  const componentRegistry = useGraphStore((state) => state._componentRegistry);
   const isComposite =
     compositeTypes.has(spec.type) || hasSubgraph;
   const muxInputs = useMemo(
@@ -141,6 +143,28 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
   const connectedInputs = new Set(nodeData.connected_inputs ?? []);
   const connectedOutputs = new Set(nodeData.connected_outputs ?? []);
   const hasRecurrentSlots = (nodeData.state_slots ?? []).length > 0;
+  const isAcausalLayer = nodeData.current_domain === 'feedbax.domain.acausal';
+  const isConservingPort = useCallback(
+    (port: string) =>
+      isAcausalLayer && portIsConserving(graph as never, componentRegistry, label, port),
+    [componentRegistry, graph, isAcausalLayer, label]
+  );
+  const statusPipClass =
+    nodeData.status === 'error'
+      ? 'bg-red-500'
+      : nodeData.status === 'stale'
+        ? 'bg-amber-500'
+        : nodeData.status === 'compiling'
+          ? 'bg-sky-500'
+          : nodeData.status === 'ok_with_warnings'
+            ? 'bg-amber-400'
+            : nodeData.status === 'ok'
+              ? 'bg-emerald-500'
+              : 'bg-slate-300';
+  const statusLabel =
+    nodeData.status === 'never_compiled' || !nodeData.status
+      ? 'Never compiled'
+      : nodeData.status.replace(/_/g, ' ');
   const rowCount = Math.max(1, inputCount, outputCount);
   const defaultHeight = HEADER_HEIGHT + BODY_PADDING * 2 + rowCount * ROW_HEIGHT;
   const width = nodeData.size?.width ?? DEFAULT_WIDTH;
@@ -339,6 +363,10 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
         {/* Left slot: name (normal) or type string (reversed) */}
         {reversed ? (
           <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
+            <span
+              className={clsx('h-2 w-2 shrink-0 rounded-full', statusPipClass)}
+              title={statusLabel}
+            />
             {hasRecurrentSlots && (
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
@@ -351,6 +379,10 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         ) : (
           <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
+            <span
+              className={clsx('h-2 w-2 shrink-0 rounded-full', statusPipClass)}
+              title={statusLabel}
+            />
             {hasRecurrentSlots && (
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
@@ -406,36 +438,56 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
         <div className="relative text-xs text-slate-600" style={{ height: bodyHeight, padding: BODY_PADDING }}>
           {inputPorts.map((port, index) => {
             const isDynamicMuxPort = port === nextMuxPort;
+            const conserving = isConservingPort(port);
             return (
-              <PortHandle
-                key={`handle-in-${port}`}
-                type="target"
-                position={reversed ? Position.Right : Position.Left}
-                id={port}
-                style={{
-                  top: rowCenterInBody(index),
-                  [reversed ? 'right' : 'left']: HANDLE_OFFSET,
-                  transform: 'translateY(-50%)',
-                  zIndex: 40,
-                }}
-                arrow={reversed ? 'right' : 'left'}
-                tone={
-                  topPane.selected_entity_id === graphPortEntityId(label, 'input', port)
-                    ? 'selected'
-                    : objectivePorts.has(`input:${port}`)
-                      ? 'objective'
-                      : taskBoundInputs.has(port)
-                        ? 'task'
-                        : isDynamicMuxPort
-                          ? 'dynamic'
-                          : 'model'
-                }
-                className={clsx(
-                  topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
-                    'scale-150'
+              <Fragment key={`handle-in-group-${port}`}>
+                <PortHandle
+                  type="target"
+                  position={reversed ? Position.Right : Position.Left}
+                  id={port}
+                  style={{
+                    top: rowCenterInBody(index),
+                    [reversed ? 'right' : 'left']: HANDLE_OFFSET,
+                    transform: 'translateY(-50%)',
+                    zIndex: 40,
+                  }}
+                  arrow={conserving ? undefined : reversed ? 'right' : 'left'}
+                  tone={
+                    conserving
+                      ? 'conserving'
+                      : topPane.selected_entity_id === graphPortEntityId(label, 'input', port)
+                        ? 'selected'
+                        : objectivePorts.has(`input:${port}`)
+                          ? 'objective'
+                          : taskBoundInputs.has(port)
+                            ? 'task'
+                            : isDynamicMuxPort
+                              ? 'dynamic'
+                              : 'model'
+                  }
+                  className={clsx(
+                    conserving && 'rounded-full border-2',
+                    topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
+                      'scale-150'
+                  )}
+                  onContextMenu={(e) => handlePortContextMenu(e, port, 'input')}
+                />
+                {conserving && (
+                  <PortHandle
+                    type="source"
+                    position={reversed ? Position.Right : Position.Left}
+                    id={port}
+                    style={{
+                      top: rowCenterInBody(index),
+                      [reversed ? 'right' : 'left']: HANDLE_OFFSET,
+                      transform: 'translateY(-50%)',
+                      zIndex: 39,
+                    }}
+                    tone="conserving"
+                    className="rounded-full border-2 opacity-0"
+                  />
                 )}
-                onContextMenu={(e) => handlePortContextMenu(e, port, 'input')}
-              />
+              </Fragment>
             );
           })}
           {showTaskSourceHints &&
@@ -473,36 +525,58 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                 </div>
               );
             })}
-          {spec.output_ports.map((port, index) => (
-            <PortHandle
-              key={`handle-out-${port}`}
-              type="source"
-              position={reversed ? Position.Left : Position.Right}
-              id={port}
-              style={{
-                top: rowCenterInBody(index),
-                [reversed ? 'left' : 'right']: HANDLE_OFFSET,
-                transform: 'translateY(-50%)',
-                zIndex: 40,
-              }}
-              arrow={reversed ? 'right' : 'left'}
-              tone={
-                topPane.selected_entity_id === graphPortEntityId(label, 'output', port)
-                  ? 'selected'
-                  : objectivePorts.has(`output:${port}`)
-                    ? 'objective'
-                    : highlightedPorts.has(port)
-                      ? 'highlighted'
-                      : 'model'
-              }
-              className={clsx(
-                highlightedPorts.has(port) && 'scale-125',
-                topPane.selected_entity_id === graphPortEntityId(label, 'output', port) &&
-                  'scale-150'
-              )}
-              onContextMenu={(e) => handlePortContextMenu(e, port, 'output')}
-            />
-          ))}
+          {spec.output_ports.map((port, index) => {
+            const conserving = isConservingPort(port);
+            return (
+              <Fragment key={`handle-out-group-${port}`}>
+                <PortHandle
+                  type="source"
+                  position={reversed ? Position.Left : Position.Right}
+                  id={port}
+                  style={{
+                    top: rowCenterInBody(index),
+                    [reversed ? 'left' : 'right']: HANDLE_OFFSET,
+                    transform: 'translateY(-50%)',
+                    zIndex: 40,
+                  }}
+                  arrow={conserving ? undefined : reversed ? 'right' : 'left'}
+                  tone={
+                    conserving
+                      ? 'conserving'
+                      : topPane.selected_entity_id === graphPortEntityId(label, 'output', port)
+                        ? 'selected'
+                        : objectivePorts.has(`output:${port}`)
+                          ? 'objective'
+                          : highlightedPorts.has(port)
+                            ? 'highlighted'
+                            : 'model'
+                  }
+                  className={clsx(
+                    conserving && 'rounded-full border-2',
+                    highlightedPorts.has(port) && 'scale-125',
+                    topPane.selected_entity_id === graphPortEntityId(label, 'output', port) &&
+                      'scale-150'
+                  )}
+                  onContextMenu={(e) => handlePortContextMenu(e, port, 'output')}
+                />
+                {conserving && (
+                  <PortHandle
+                    type="target"
+                    position={reversed ? Position.Left : Position.Right}
+                    id={port}
+                    style={{
+                      top: rowCenterInBody(index),
+                      [reversed ? 'left' : 'right']: HANDLE_OFFSET,
+                      transform: 'translateY(-50%)',
+                      zIndex: 39,
+                    }}
+                    tone="conserving"
+                    className="rounded-full border-2 opacity-0"
+                  />
+                )}
+              </Fragment>
+            );
+          })}
           {inputPorts.map((port, index) => {
             const isDynamicMuxPort = port === nextMuxPort;
             return (
