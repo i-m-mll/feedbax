@@ -15,6 +15,8 @@ import { useComponents } from '@/hooks/useComponents';
 import { PanelSectionHeader } from '@/components/ui/PanelPrimitives';
 import { semanticTokens } from '@/components/ui/semanticTokens';
 import type { DomainDiagnostic } from '@/generated/studioContracts';
+import { isAcausalGraphSpec } from '@/types/graph';
+import { useCompileStatusStore } from '@/stores/compileStatusStore';
 
 type PanelDiagnostic = Pick<
   DomainDiagnostic,
@@ -41,7 +43,10 @@ export function ValidationPanel() {
   const graph = useGraphStore((state) => state.graph);
   const graphStack = useGraphStore((state) => state.graphStack);
   const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
+  const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
+  const exitToBreadcrumb = useGraphStore((state) => state.exitToBreadcrumb);
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
+  const reports = useCompileStatusStore((state) => state.reports);
   const isInSubgraph = graphStack.length > 0;
   const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
@@ -57,11 +62,15 @@ export function ValidationPanel() {
       currentGraphPath
     );
   }, [graph, graphStack, workspace]);
+  const isAcausalLayer = isAcausalGraphSpec(graph);
   const schemaRegistry = useMemo(
-    () => projectStudioSchema(graph, components, taskBindingSpec),
-    [components, graph, taskBindingSpec]
+    () => (isAcausalLayer ? null : projectStudioSchema(graph, components, taskBindingSpec)),
+    [components, graph, isAcausalLayer, taskBindingSpec]
   );
-  const validation = useMemo(() => validateGraph(graph, schemaRegistry), [graph, schemaRegistry]);
+  const validation = useMemo(
+    () => (schemaRegistry ? validateGraph(graph, schemaRegistry) : { valid: true, errors: [], warnings: [], cycles: [] }),
+    [graph, schemaRegistry]
+  );
   const sceneWarnings = useMemo(() => {
     const scenario = getActiveScenario(workspace);
     const registry = buildScenarioEntityRegistry({ scenario, graph });
@@ -100,14 +109,40 @@ export function ValidationPanel() {
     ];
     return rows;
   }, [validation.errors, validation.cycles, warnings]);
+  const domainDiagnostics = useMemo(
+    () =>
+      Object.entries(reports).flatMap(([pathKey, report]) =>
+        (report.diagnostics ?? []).map((diagnostic) => ({
+          ...diagnostic,
+          severity: diagnostic.severity ?? 'info',
+          path: pathKey ? pathKey.split('/') : [],
+        }))
+      ),
+    [reports]
+  );
+
+  const navigateToDomainDiagnostic = useCallback(
+    (path: string[], nodeId: string) => {
+      if (graphStack.length > 0) exitToBreadcrumb(0);
+      for (const segment of path) {
+        enterSubgraph(segment);
+      }
+      window.setTimeout(() => setSelectedNode(nodeId), 0);
+    },
+    [enterSubgraph, exitToBreadcrumb, graphStack.length, setSelectedNode]
+  );
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded((prev) => !prev);
   }, []);
 
-  const hasIssues = diagnostics.length > 0;
-  const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length;
-  const warningCount = diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length;
+  const hasIssues = diagnostics.length > 0 || domainDiagnostics.length > 0;
+  const errorCount =
+    diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length +
+    domainDiagnostics.filter((diagnostic) => diagnostic.severity === 'error').length;
+  const warningCount =
+    diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length +
+    domainDiagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length;
 
   if (selectedEntityId) return null;
 
@@ -150,7 +185,9 @@ export function ValidationPanel() {
           )}
 
           {diagnostics.length === 0 ? (
-            <div className="text-xs text-mint-500">Graph is valid.</div>
+            domainDiagnostics.length === 0 ? (
+              <div className="text-xs text-mint-500">Graph is valid.</div>
+            ) : null
           ) : (
             <div className="space-y-1.5">
               {diagnostics.map((diagnostic, index) => (
@@ -176,6 +213,30 @@ export function ValidationPanel() {
                       </span>
                     );
                   })}
+                  <span className="ml-1">{diagnostic.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {domainDiagnostics.length > 0 && (
+            <div className="space-y-1.5">
+              {domainDiagnostics.map((diagnostic, index) => (
+                <div
+                  key={`${diagnostic.path.join('/')}-${diagnostic.code}-${index}`}
+                  className={`text-xs ${severityTextClass(diagnostic.severity)}`}
+                >
+                  <span className="font-medium">{diagnostic.path.join('/') || currentGraphLabel}</span>
+                  <span className="ml-1">{diagnostic.code}</span>
+                  {(diagnostic.node_ids ?? []).map((nodeId) => (
+                    <button
+                      key={nodeId}
+                      type="button"
+                      className="ml-1 rounded border border-current px-1 text-[10px]"
+                      onClick={() => navigateToDomainDiagnostic(diagnostic.path, nodeId)}
+                    >
+                      {nodeId}
+                    </button>
+                  ))}
                   <span className="ml-1">{diagnostic.message}</span>
                 </div>
               ))}

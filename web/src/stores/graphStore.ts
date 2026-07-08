@@ -24,8 +24,10 @@ import type {
   TapNodeData,
   SubgraphPreview,
   RetainedObservableSpec,
+  AcausalGraphSpec,
+  AcausalConnectionSpec,
 } from '@/types/graph';
-import { isCausalGraphSpec } from '@/types/graph';
+import { isAcausalGraphSpec, isCausalGraphSpec } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import {
@@ -34,6 +36,12 @@ import {
   normalizeMuxSpec,
 } from '@/features/graph/dynamicPorts';
 import { normalizeGraphForStudioAuthoring } from '@/features/graph/normalization';
+import {
+  acausalConnectionsFromEdges,
+  acausalEdgesFromGraph,
+  connectionFromReactFlow,
+  portIsConserving,
+} from '@/features/domains/acausal';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
@@ -45,7 +53,8 @@ const HEADER_HEIGHT = 40;
 const TAP_WIDTH = 28;
 const TAP_HEIGHT = 18;
 
-type GraphHistoryEntry = { graph: GraphSpec; uiState: GraphUIState };
+type EditableGraphSpec = GraphSpec | AcausalGraphSpec;
+type GraphHistoryEntry = { graph: EditableGraphSpec; uiState: GraphUIState };
 type LayerHistory = { past: GraphHistoryEntry[]; future: GraphHistoryEntry[] };
 
 export interface GraphLayer {
@@ -212,10 +221,13 @@ function createTapId() {
 }
 
 function buildEdgeStates(
-  graph: GraphSpec,
+  graph: GraphSpec | AcausalGraphSpec,
   uiState: GraphUIState,
   defaultStyle: EdgeRouting['style']
 ): Record<string, EdgeUIState> {
+  if (isAcausalGraphSpec(graph)) {
+    return {};
+  }
   const existing = uiState.edge_states ?? {};
   const next: Record<string, EdgeUIState> = {};
   for (const wire of graph.wires) {
@@ -233,7 +245,7 @@ function applyEdgeStates(
   defaultStyle: EdgeRouting['style']
 ) {
   return edges.map((edge) => {
-    if (edge.type === 'state-flow') {
+    if (edge.type === 'state-flow' || edge.type === 'conserving') {
       return edge;
     }
     const routing =
@@ -431,7 +443,7 @@ function reconcileById<T extends { id: string }>(
 
 function reconcileNodes(
   previous: Node<GraphNodeData | TapNodeData>[],
-  graph: GraphSpec,
+  graph: GraphSpec | AcausalGraphSpec,
   uiState: GraphUIState
 ) {
   return reconcileById(previous, buildNodes(graph, uiState), sameGraphNode);
@@ -439,7 +451,7 @@ function reconcileNodes(
 
 function reconcileEdges(
   previous: Edge<GraphEdgeData>[],
-  graph: GraphSpec,
+  graph: GraphSpec | AcausalGraphSpec,
   uiState: GraphUIState,
   edgeStyle: EdgeRouting['style']
 ) {
@@ -757,7 +769,7 @@ function isWrapperGraph(
 }
 
 function normalizeUiState(
-  graph: GraphSpec,
+  graph: EditableGraphSpec,
   uiState: GraphUIState | null | undefined,
   defaultEdgeStyle: EdgeRouting['style']
 ): GraphUIState {
@@ -768,7 +780,7 @@ function normalizeUiState(
   // default entry first, then spread any loaded state on top so that saved
   // values (e.g. reversed: true) are never overwritten by defaults.
   let offset = 0;
-  for (const nodeId of Object.keys(graph.nodes)) {
+  for (const nodeId of Object.keys(graph.nodes ?? {})) {
     const defaults = {
       position: { x: DEFAULT_POSITION.x + offset, y: DEFAULT_POSITION.y + offset },
       collapsed: false,
@@ -791,7 +803,7 @@ function normalizeUiState(
   const subgraph_states: Record<string, GraphUIState> = {};
   if (graph.subgraphs) {
     for (const [nodeId, subgraph] of Object.entries(graph.subgraphs)) {
-      if (!isCausalGraphSpec(subgraph)) continue;
+      if (!isCausalGraphSpec(subgraph) && !isAcausalGraphSpec(subgraph)) continue;
       const childState = base.subgraph_states?.[nodeId];
       subgraph_states[nodeId] = normalizeUiState(subgraph, childState, defaultEdgeStyle);
     }
@@ -799,7 +811,7 @@ function normalizeUiState(
   const tap_states = base.tap_states
     ? Object.fromEntries(
         Object.entries(base.tap_states).filter(([id]) =>
-          (graph.taps ?? []).some((tap) => tap.id === id)
+          !isAcausalGraphSpec(graph) && (graph.taps ?? []).some((tap) => tap.id === id)
         )
       )
     : undefined;
@@ -814,24 +826,24 @@ function normalizeUiState(
 }
 
 function subgraphPreviewFromGraph(
-  graph: GraphSpec,
+  graph: EditableGraphSpec,
   uiState?: GraphUIState,
 ): SubgraphPreview {
   const normalizedUiState = normalizeUiState(graph, uiState, DEFAULT_EDGE_STYLE);
   return {
     nodes: buildComponentNodes(graph, normalizedUiState),
     edges: buildEdges(graph, normalizedUiState, DEFAULT_EDGE_STYLE),
-    inputPorts: graph.input_ports,
-    outputPorts: graph.output_ports,
+    inputPorts: isAcausalGraphSpec(graph) ? [] : graph.input_ports,
+    outputPorts: isAcausalGraphSpec(graph) ? [] : graph.output_ports,
   };
 }
 
-function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
+function buildComponentNodes(graph: EditableGraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
   const connectedInputs = new Map<string, Set<string>>();
   const connectedOutputs = new Map<string, Set<string>>();
   const stateIn = new Set<string>();
   const stateOut = new Set<string>();
-  for (const wire of graph.wires) {
+  for (const wire of isAcausalGraphSpec(graph) ? [] : graph.wires) {
     if (!isTapNodeId(wire.target_node)) {
       const inputs = connectedInputs.get(wire.target_node) ?? new Set<string>();
       inputs.add(wire.target_port);
@@ -845,7 +857,19 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
       stateOut.add(wire.source_node);
     }
   }
-  return Object.entries(graph.nodes).map(([id, spec]) => {
+  if (isAcausalGraphSpec(graph)) {
+    for (const connection of graph.connections ?? []) {
+      for (const [nodeId, port] of [connection.a, connection.b]) {
+        const inputs = connectedInputs.get(nodeId) ?? new Set<string>();
+        inputs.add(port);
+        connectedInputs.set(nodeId, inputs);
+        const outputs = connectedOutputs.get(nodeId) ?? new Set<string>();
+        outputs.add(port);
+        connectedOutputs.set(nodeId, outputs);
+      }
+    }
+  }
+  return Object.entries(graph.nodes ?? {}).map(([id, spec]) => {
     const ui = uiState.node_states[id] ?? {
       position: DEFAULT_POSITION,
       collapsed: false,
@@ -854,7 +878,7 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
     const size = ui.size;
     const subgraphGraph = graph.subgraphs?.[id];
     const subgraphUiState = uiState.subgraph_states?.[id];
-    const isSubgraphNode = isCausalGraphSpec(subgraphGraph);
+    const isSubgraphNode = isCausalGraphSpec(subgraphGraph) || isAcausalGraphSpec(subgraphGraph);
     const subgraph = isSubgraphNode
       ? subgraphPreviewFromGraph(subgraphGraph, subgraphUiState)
       : undefined;
@@ -866,6 +890,7 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
       data: {
         label: id,
         spec,
+        current_domain: isAcausalGraphSpec(graph) ? 'feedbax.domain.acausal' : undefined,
         collapsed: ui.collapsed,
         reversed: ui.reversed ?? false,
         size,
@@ -929,7 +954,8 @@ function computeTapPosition(
   };
 }
 
-function buildTapNodes(graph: GraphSpec, uiState: GraphUIState): Node<TapNodeData>[] {
+function buildTapNodes(graph: EditableGraphSpec, uiState: GraphUIState): Node<TapNodeData>[] {
+  if (isAcausalGraphSpec(graph)) return [];
   const taps = graph.taps ?? [];
   return taps.map((tap) => {
     const tapState = uiState.tap_states?.[tap.id];
@@ -947,7 +973,7 @@ function buildTapNodes(graph: GraphSpec, uiState: GraphUIState): Node<TapNodeDat
   });
 }
 
-function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData | TapNodeData>[] {
+function buildNodes(graph: EditableGraphSpec, uiState: GraphUIState): Node<GraphNodeData | TapNodeData>[] {
   return [...buildComponentNodes(graph, uiState), ...buildTapNodes(graph, uiState)];
 }
 
@@ -1029,10 +1055,13 @@ function buildStateEdges(graph: GraphSpec, uiState: GraphUIState): Edge<GraphEdg
 }
 
 function buildEdges(
-  graph: GraphSpec,
+  graph: EditableGraphSpec,
   uiState: GraphUIState,
   defaultStyle: EdgeRouting['style']
 ): Edge<GraphEdgeData>[] {
+  if (isAcausalGraphSpec(graph)) {
+    return acausalEdgesFromGraph(graph);
+  }
   const edgeStates = buildEdgeStates(graph, uiState, defaultStyle);
   const collapsed = new Set(
     Object.entries(uiState.node_states)
@@ -1092,6 +1121,17 @@ function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
       temporality: edge.data?.temporality,
       recurrent_initializer: edge.data?.recurrent_initializer ?? null,
     }));
+}
+
+function mergeAcausalConnection(
+  connections: AcausalConnectionSpec[],
+  connection: AcausalConnectionSpec
+): AcausalConnectionSpec[] {
+  const nextId = `${connection.a[0]}:${connection.a[1]}|${connection.b[0]}:${connection.b[1]}`;
+  const existing = new Set(
+    connections.map((item) => `${item.a[0]}:${item.a[1]}|${item.b[0]}:${item.b[1]}`)
+  );
+  return existing.has(nextId) ? connections : [...connections, connection];
 }
 
 function createNodeName(graph: GraphSpec, base: string) {
@@ -1240,20 +1280,23 @@ function remapRetainedObservable(
 function importTemplateGraphIntoGraph(
   graph: GraphSpec,
   uiState: GraphUIState,
-  templateGraph: GraphSpec,
+  templateGraph: EditableGraphSpec,
   templateUiState: GraphUIState | undefined,
   dropPosition: { x: number; y: number },
   templateName: string
 ): { graph: GraphSpec; uiState: GraphUIState; importedNodeIds: string[] } {
   const imported = cloneGraphSpec(templateGraph);
-  const usedNodeIds = new Set(Object.keys(graph.nodes));
+  if (isAcausalGraphSpec(imported)) {
+    return { graph, uiState, importedNodeIds: [] };
+  }
+  const usedNodeIds = new Set(Object.keys(graph.nodes ?? {}));
   const fallbackPrefix = sanitizeNodeId(templateName, 'template');
   const nodeMap: Record<string, string> = {};
-  for (const nodeId of Object.keys(imported.nodes)) {
+  for (const nodeId of Object.keys(imported.nodes ?? {})) {
     nodeMap[nodeId] = uniqueImportedNodeId(usedNodeIds, nodeId, fallbackPrefix);
   }
 
-  const templatePositions = Object.entries(imported.nodes).map(([nodeId], index) => {
+  const templatePositions = Object.entries(imported.nodes ?? {}).map(([nodeId], index) => {
     const position = templateUiState?.node_states?.[nodeId]?.position;
     return {
       nodeId,
@@ -1267,21 +1310,11 @@ function importTemplateGraphIntoGraph(
   const minY = Math.min(...templatePositions.map((item) => item.position.y));
 
   const importedNodes = Object.fromEntries(
-    Object.entries(imported.nodes).map(([nodeId, spec]) => [nodeMap[nodeId], cloneGraphSpec(spec)])
+    Object.entries(imported.nodes ?? {}).map(([nodeId, spec]) => [
+      nodeMap[nodeId],
+      cloneGraphSpec(spec),
+    ])
   );
-  const importedWires = imported.wires.map((wire) => ({
-    ...wire,
-    source_node: nodeMap[wire.source_node] ?? wire.source_node,
-    target_node: nodeMap[wire.target_node] ?? wire.target_node,
-  }));
-
-  const importedSubgraphs: NonNullable<GraphSpec['subgraphs']> = {};
-  for (const [nodeId, subgraph] of Object.entries(imported.subgraphs ?? {})) {
-    const remappedNodeId = nodeMap[nodeId];
-    if (remappedNodeId) {
-      importedSubgraphs[remappedNodeId] = cloneGraphSpec(subgraph);
-    }
-  }
 
   const nodeStates: GraphUIState['node_states'] = Object.fromEntries(
     Object.entries(uiState.node_states).map(([nodeId, state]) => [
@@ -1314,6 +1347,27 @@ function importTemplateGraphIntoGraph(
     }
   }
 
+  const nextUiState: GraphUIState = {
+    ...uiState,
+    node_states: nodeStates,
+    subgraph_states:
+      Object.keys(subgraphStates).length > 0 ? subgraphStates : uiState.subgraph_states,
+  };
+
+  const importedWires = imported.wires.map((wire) => ({
+    ...wire,
+    source_node: nodeMap[wire.source_node] ?? wire.source_node,
+    target_node: nodeMap[wire.target_node] ?? wire.target_node,
+  }));
+
+  const importedSubgraphs: NonNullable<GraphSpec['subgraphs']> = {};
+  for (const [nodeId, subgraph] of Object.entries(imported.subgraphs ?? {})) {
+    const remappedNodeId = nodeMap[nodeId];
+    if (remappedNodeId) {
+      importedSubgraphs[remappedNodeId] = cloneGraphSpec(subgraph);
+    }
+  }
+
   const usedObservableIds = new Set((graph.retained_observables ?? []).map((item) => item.id));
   const retained_observables = [
     ...(graph.retained_observables ?? []),
@@ -1340,13 +1394,6 @@ function importTemplateGraphIntoGraph(
       retained_observables.length > 0 ? retained_observables : graph.retained_observables,
   };
 
-  const nextUiState: GraphUIState = {
-    ...uiState,
-    node_states: nodeStates,
-    subgraph_states:
-      Object.keys(subgraphStates).length > 0 ? subgraphStates : uiState.subgraph_states,
-  };
-
   return {
     graph: nextGraph,
     uiState: nextUiState,
@@ -1354,7 +1401,7 @@ function importTemplateGraphIntoGraph(
   };
 }
 
-function cloneSnapshot(graph: GraphSpec, uiState: GraphUIState) {
+function cloneSnapshot(graph: EditableGraphSpec, uiState: GraphUIState) {
   if (typeof structuredClone === 'function') {
     return structuredClone({ graph, uiState });
   }
@@ -1652,13 +1699,15 @@ const initial = createInitialGraph();
 function capturePersistedGraphFromState(state: GraphStoreState): PersistableGraphSnapshot {
   if (state.graphStack.length === 0) {
     return {
-      graph: state.graph,
+      graph: state.graph as GraphSpec,
       uiState: state.uiState,
       graphStackPath: [],
     };
   }
 
-  let childGraph = deriveSubgraphPorts(state.graph);
+  let childGraph: EditableGraphSpec = isAcausalGraphSpec(state.graph)
+    ? state.graph
+    : deriveSubgraphPorts(state.graph);
   let childUi = normalizeUiState(childGraph, state.uiState, state.edgeStyle);
   for (let i = state.graphStack.length - 1; i >= 0; i -= 1) {
     const layer = state.graphStack[i];
@@ -1678,21 +1727,33 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
         `Cannot persist nested graph: parent graph no longer contains subgraph node "${childId}".`
       );
     }
-    const nextGraph: GraphSpec = {
-      ...layer.graph,
-      nodes: {
-        ...layer.graph.nodes,
-        [childId]: {
-          ...layer.graph.nodes[childId],
-          input_ports: childGraph.input_ports,
-          output_ports: childGraph.output_ports,
-        },
-      },
-      subgraphs: {
-        ...(layer.graph.subgraphs ?? {}),
-        [childId]: childGraph,
-      },
-    };
+    const nextGraph: EditableGraphSpec = isAcausalGraphSpec(layer.graph)
+      ? {
+          ...layer.graph,
+          subgraphs: {
+            ...(layer.graph.subgraphs ?? {}),
+            [childId]: childGraph as AcausalGraphSpec,
+          },
+        }
+      : {
+          ...layer.graph,
+          nodes: {
+            ...layer.graph.nodes,
+            [childId]: {
+              ...layer.graph.nodes[childId],
+              ...(!isAcausalGraphSpec(childGraph)
+                ? {
+                    input_ports: childGraph.input_ports,
+                    output_ports: childGraph.output_ports,
+                  }
+                : {}),
+            },
+          },
+          subgraphs: {
+            ...(layer.graph.subgraphs ?? {}),
+            [childId]: childGraph,
+          },
+        };
     const nextUi: GraphUIState = {
       ...layer.uiState,
       subgraph_states: {
@@ -1705,7 +1766,7 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
   }
 
   return {
-    graph: childGraph,
+    graph: childGraph as GraphSpec,
     uiState: childUi,
     graphStackPath: captureGraphStackPathFromState(state),
   };
@@ -1785,7 +1846,7 @@ function restoreGraphStackPathFromRoot({
   }
 
   const graphStack: GraphLayer[] = [];
-  let parentGraph = graph;
+  let parentGraph: EditableGraphSpec = graph;
   let parentUi = uiState;
   let parentLabel = rootLabel;
   let currentContext = 'top-level';
@@ -1803,11 +1864,6 @@ function restoreGraphStackPathFromRoot({
         `Cannot restore nested graph path: node "${nodeId}" has no saved subgraph.`
       );
     }
-    if (!isCausalGraphSpec(childGraph)) {
-      throw new Error(
-        `Cannot restore nested graph path: node "${nodeId}" has a non-causal interior.`
-      );
-    }
     const childUi = normalizeUiState(
       childGraph,
       parentUi.subgraph_states?.[nodeId] ?? { viewport: DEFAULT_VIEWPORT, node_states: {} },
@@ -1815,7 +1871,7 @@ function restoreGraphStackPathFromRoot({
     );
     const context = interiorDomainForNode(nodeSpec, componentRegistry) ?? undefined;
     graphStack.push({
-      graph: parentGraph,
+      graph: parentGraph as GraphSpec,
       uiState: parentUi,
       graphId,
       label: parentLabel,
@@ -1829,7 +1885,7 @@ function restoreGraphStackPathFromRoot({
   }
 
   return {
-    graph: parentGraph,
+    graph: parentGraph as GraphSpec,
     uiState: parentUi,
     nodes: buildNodes(parentGraph, parentUi),
     edges: buildEdges(parentGraph, parentUi, edgeStyle),
@@ -1869,7 +1925,7 @@ export function createGraphSnapshotFromPersistedGraph({
     componentRegistry: new Map<string, ComponentDefinition>(),
   });
   return {
-    graph: restored.graph,
+    graph: restored.graph as GraphSpec,
     uiState: restored.uiState,
     graphId,
     saveRevision: saveRevision ?? null,
@@ -2009,13 +2065,15 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       if (state.past.length === 0) return state;
       const previous = state.past[state.past.length - 1];
-      const graph = normalizeDynamicPorts(previous.graph);
+      const graph = isAcausalGraphSpec(previous.graph)
+        ? previous.graph
+        : normalizeDynamicPorts(previous.graph);
       const past = state.past.slice(0, -1);
       const future = [cloneSnapshot(state.graph, state.uiState), ...state.future];
       const normalized = normalizeUiState(graph, previous.uiState, state.edgeStyle);
       return {
         ...state,
-        graph,
+        graph: graph as GraphSpec,
         uiState: normalized,
         nodes: reconcileNodes(state.nodes, graph, normalized),
         edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
@@ -2031,13 +2089,15 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       if (state.future.length === 0) return state;
       const next = state.future[0];
-      const graph = normalizeDynamicPorts(next.graph);
+      const graph = isAcausalGraphSpec(next.graph)
+        ? next.graph
+        : normalizeDynamicPorts(next.graph);
       const future = state.future.slice(1);
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const normalized = normalizeUiState(graph, next.uiState, state.edgeStyle);
       return {
         ...state,
-        graph,
+        graph: graph as GraphSpec,
         uiState: normalized,
         nodes: reconcileNodes(state.nodes, graph, normalized),
         edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
@@ -2242,15 +2302,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
 
       // Bug d5e8b8f: Only derive ports for freshly-created subgraphs.
       // Cached subgraphs already have user-customized bindings/ports.
-      let derivedNext: GraphSpec;
+      let derivedNext: EditableGraphSpec;
       let nextUiState: GraphUIState;
       if (cachedGraph) {
-        if (!isCausalGraphSpec(cachedGraph)) {
-          return {
-            lastSubgraphError:
-              `Cannot open "${nodeId}" because its acausal editor is not available yet.`,
-          };
-        }
         derivedNext = cachedGraph;
         nextUiState = cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
       } else {
@@ -2267,7 +2321,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
               + 'Studio cannot synthesize a subgraph.',
           };
         }
-        derivedNext = deriveSubgraphPorts(cloneGraphSpec(componentDef.template_graph));
+        const templateGraph = cloneGraphSpec(componentDef.template_graph) as EditableGraphSpec;
+        derivedNext = isAcausalGraphSpec(templateGraph)
+          ? templateGraph
+          : deriveSubgraphPorts(templateGraph);
         nextUiState = cloneGraphSpec(
           componentDef.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} }
         );
@@ -2304,7 +2361,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             contextType: context,
           },
         ],
-        graph: derivedNext,
+        graph: derivedNext as GraphSpec,
         uiState: normalized,
         nodes: reconcileNodes(state.nodes, derivedNext, normalized),
         edges: reconcileEdges(state.edges, derivedNext, normalized, state.edgeStyle),
@@ -2431,8 +2488,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       if (state.graphStack.length === 0) return state;
       if (index >= state.graphStack.length) return state;
-      const derivedCurrent = deriveSubgraphPorts(state.graph);
-      let childGraph = derivedCurrent;
+      const derivedCurrent: EditableGraphSpec = isAcausalGraphSpec(state.graph)
+        ? state.graph
+        : deriveSubgraphPorts(state.graph);
+      let childGraph: EditableGraphSpec = derivedCurrent;
       let childUi = normalizeUiState(derivedCurrent, state.uiState, state.edgeStyle);
 
       const stack = [...state.graphStack];
@@ -2454,21 +2513,33 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             `Cannot exit nested graph: parent graph no longer contains subgraph node "${childId}".`
           );
         }
-        const nextGraph: GraphSpec = {
-          ...layer.graph,
-          nodes: {
-            ...layer.graph.nodes,
-            [childId]: {
-              ...layer.graph.nodes[childId],
-              input_ports: childGraph.input_ports,
-              output_ports: childGraph.output_ports,
-            },
-          },
-          subgraphs: {
-            ...(layer.graph.subgraphs ?? {}),
-            [childId]: childGraph,
-          },
-        };
+        const nextGraph: EditableGraphSpec = isAcausalGraphSpec(layer.graph)
+          ? {
+              ...layer.graph,
+              subgraphs: {
+                ...(layer.graph.subgraphs ?? {}),
+                [childId]: childGraph as AcausalGraphSpec,
+              },
+            }
+          : {
+              ...layer.graph,
+              nodes: {
+                ...layer.graph.nodes,
+                [childId]: {
+                  ...layer.graph.nodes[childId],
+                  ...(!isAcausalGraphSpec(childGraph)
+                    ? {
+                        input_ports: childGraph.input_ports,
+                        output_ports: childGraph.output_ports,
+                      }
+                    : {}),
+                },
+              },
+              subgraphs: {
+                ...(layer.graph.subgraphs ?? {}),
+                [childId]: childGraph,
+              },
+            };
         const nextUi: GraphUIState = {
           ...layer.uiState,
           subgraph_states: {
@@ -2478,7 +2549,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         };
         stack[i] = {
           ...layer,
-          graph: nextGraph,
+          graph: nextGraph as GraphSpec,
           uiState: nextUi,
         };
         childGraph = nextGraph;
@@ -2522,6 +2593,54 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         .map((id) => id.replace(/^tap:/, ''));
       const selectedComponentIds = selectedNodeIds.filter((id) => !isTapNodeId(id));
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      if (isAcausalGraphSpec(state.graph)) {
+        const selectedNodeSet = new Set(selectedComponentIds);
+        const remainingConnections = (state.graph.connections ?? []).filter((connection) => {
+          const connectionId = `acausal:${[`${connection.a[0]}:${connection.a[1]}`, `${connection.b[0]}:${connection.b[1]}`].sort().join('|')}`;
+          return (
+            !selectedEdgeIds.includes(connectionId) &&
+            !selectedNodeSet.has(connection.a[0]) &&
+            !selectedNodeSet.has(connection.b[0])
+          );
+        });
+        const graphNodes = { ...(state.graph.nodes ?? {}) };
+        const subgraphs = { ...(state.graph.subgraphs ?? {}) };
+        for (const nodeId of selectedComponentIds) {
+          delete graphNodes[nodeId];
+          delete subgraphs[nodeId];
+        }
+        const node_states = Object.fromEntries(
+          Object.entries(state.uiState.node_states).filter(
+            ([nodeId]) => !selectedComponentIds.includes(nodeId)
+          )
+        ) as GraphUIState['node_states'];
+        const subgraph_states = { ...(state.uiState.subgraph_states ?? {}) };
+        for (const nodeId of selectedComponentIds) {
+          delete subgraph_states[nodeId];
+        }
+        const graph: AcausalGraphSpec = {
+          ...state.graph,
+          nodes: graphNodes,
+          connections: remainingConnections,
+          subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
+        };
+        const uiState: GraphUIState = {
+          ...state.uiState,
+          node_states,
+          subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
+        };
+        return {
+          graph: graph as unknown as GraphSpec,
+          uiState,
+          nodes: buildNodes(graph, uiState),
+          edges: buildEdges(graph, uiState, state.edgeStyle),
+          past,
+          future: [],
+          isDirty: true,
+          selectedEdgeId: null,
+          selectedTapId: null,
+        };
+      }
       const nodes = state.nodes.filter((node) => !selectedNodeIds.includes(node.id));
       const tapsToRemove = new Set(selectedTapIds);
       for (const tap of state.graph.taps ?? []) {
@@ -2565,7 +2684,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         delete subgraph_states[nodeId];
       }
       const tap_states = { ...(state.uiState.tap_states ?? {}) };
-      for (const tapId of tapsToRemove) {
+      for (const tapId of Array.from(tapsToRemove) as string[]) {
         delete tap_states[tapId];
       }
       const uiState = {
@@ -3007,7 +3126,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           output_bindings,
           subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
         };
-        if (state.graphStack.length > 0) {
+        if (state.graphStack.length > 0 && isCausalGraphSpec(graph)) {
           graph = deriveSubgraphPorts(graph);
         }
       }
@@ -3134,6 +3253,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         changes as EdgeChange<Edge<GraphEdgeData>>[],
         state.edges
       );
+      if (isAcausalGraphSpec(state.graph)) {
+        const graph: AcausalGraphSpec = {
+          ...state.graph,
+          connections: acausalConnectionsFromEdges(nextEdges),
+        };
+        const selectedEdgeId = nextEdges.find((edge) => edge.selected)?.id ?? null;
+        return {
+          graph: graph as unknown as GraphSpec,
+          edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
+          past,
+          future: shouldRecord ? [] : state.future,
+          isDirty: state.isDirty || changes.length > 0,
+          selectedEdgeId,
+        };
+      }
       let graph: GraphSpec = {
         ...state.graph,
         wires: edgesToWires(nextEdges),
@@ -3167,6 +3301,26 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   onConnect: (connection, styleOverride, paramUpdates = [], wireOptions) => {
     if (!connection.source || !connection.target) return;
     if (!connection.sourceHandle || !connection.targetHandle) return;
+    if (isAcausalGraphSpec(get().graph)) {
+      const acausalConnection = connectionFromReactFlow(connection);
+      if (!acausalConnection) return;
+      set((state) => {
+        if (!isAcausalGraphSpec(state.graph)) return state;
+        const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+        const graph: AcausalGraphSpec = {
+          ...state.graph,
+          connections: mergeAcausalConnection(state.graph.connections ?? [], acausalConnection),
+        };
+        return {
+          graph: graph as unknown as GraphSpec,
+          edges: reconcileEdges(state.edges, graph, state.uiState, state.edgeStyle),
+          past,
+          future: [],
+          isDirty: true,
+        };
+      });
+      return;
+    }
     const isState =
       connection.sourceHandle.startsWith('__state') ||
       connection.targetHandle.startsWith('__state');
@@ -3296,7 +3450,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           component.template_id ?? component.name
         );
         let graph = imported.graph;
-        if (state.graphStack.length > 0) {
+        if (state.graphStack.length > 0 && isCausalGraphSpec(graph)) {
           graph = deriveSubgraphPorts(graph);
         }
         const edge_states = buildEdgeStates(graph, imported.uiState, state.edgeStyle);
@@ -3331,14 +3485,14 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         spec,
         Number(spec.params.n_inputs) || spec.input_ports.length || 2
       );
-      let graph: GraphSpec = {
+      let graph: EditableGraphSpec = {
         ...state.graph,
         nodes: {
-          ...state.graph.nodes,
+          ...(state.graph.nodes ?? {}),
           [name]: spec,
         },
       };
-      if (state.graphStack.length > 0) {
+      if (state.graphStack.length > 0 && !isAcausalGraphSpec(graph)) {
         graph = deriveSubgraphPorts(graph);
       }
       const uiState: GraphUIState = {
@@ -3950,7 +4104,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   setComponentRegistry: (components) => {
     set((state) => {
-      const componentRegistry = new Map(components.map((c) => [c.name, c]));
+      const componentRegistry = new Map<string, ComponentDefinition>(
+        components.map((c) => [c.name, c])
+      );
       const refreshed = refreshLayerContexts(state.graphStack, componentRegistry);
       return {
         _compositeTypes: new Set(components.filter((c) => c.is_composite).map((c) => c.name)),

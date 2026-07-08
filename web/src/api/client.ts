@@ -1,7 +1,9 @@
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import {
+  DomainCompileReportSchema,
   parseContract,
+  type AcausalGraphSpec,
   type DomainCompileReport,
   type DomainMeta,
   type PenzaiBuilderInfo,
@@ -154,7 +156,23 @@ export async function fetchGraph(graphId: string) {
     }> | null;
     active_analysis_page_id: string | null;
     workspace: StudioWorkspaceSpec | null;
+    compile_reports: Record<string, DomainCompileReport> | null;
   };
+}
+
+export async function compileGraphNode(
+  graphId: string,
+  nodePath: string[],
+  interior: AcausalGraphSpec,
+): Promise<DomainCompileReport> {
+  try {
+    return DomainCompileReportSchema.parse(await requestJson(`/api/graphs/${graphId}/nodes/compile`, {
+      method: 'POST',
+      body: JSON.stringify({ node_path: nodePath, interior }),
+    }));
+  } catch (error) {
+    throw asApiRequestError(error, `/api/graphs/${graphId}/nodes/compile`, 'DomainCompileReport response did not match the Studio contract.');
+  }
 }
 
 export async function createGraph(

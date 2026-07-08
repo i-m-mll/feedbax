@@ -48,6 +48,7 @@ import type { DomainContext } from '@/features/domains/context';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import type { ComponentDefinition } from '@/types/components';
+import { isAcausalGraphSpec } from '@/types/graph';
 import { groupComponentsByCategory } from '@/utils/components';
 import clsx from 'clsx';
 
@@ -299,7 +300,9 @@ function ComponentCard({
   const isDisplayTemplate = component.template_kind === 'display';
   const templateBadgeLabel = isDisplayTemplate ? 'Preview only' : null;
   const templateSummary = component.template_graph
-    ? `${Object.keys(component.template_graph.nodes).length} nodes, ${component.template_graph.wires.length} wires`
+    ? isAcausalGraphSpec(component.template_graph)
+      ? `${Object.keys(component.template_graph.nodes).length} nodes, ${component.template_graph.connections.length} connections`
+      : `${Object.keys(component.template_graph.nodes).length} nodes, ${component.template_graph.wires.length} wires`
     : null;
 
   const onDragStart = (event: DragEvent<HTMLButtonElement>) => {

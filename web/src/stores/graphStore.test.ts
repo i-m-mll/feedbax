@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useGraphStore } from './graphStore';
-import { isCausalGraphSpec, type GraphSpec, type GraphUIState } from '@/types/graph';
+import {
+  isAcausalGraphSpec,
+  isCausalGraphSpec,
+  type AcausalGraphSpec,
+  type GraphSpec,
+  type GraphUIState,
+} from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 
 const CAUSAL_DOMAIN_ID = 'feedbax.domain.causal';
@@ -30,6 +36,26 @@ function compositeComponent(
     domain: CAUSAL_DOMAIN_ID,
     interior_domain: interiorDomain,
     is_composite: true,
+  };
+}
+
+function acausalComponent(name: string): ComponentDefinition {
+  return {
+    name,
+    category: 'Mechanics',
+    description: `${name} acausal component`,
+    param_schema: [],
+    input_ports: ['flange'],
+    output_ports: [],
+    icon: 'Circle',
+    default_params: {},
+    domain: ACAUSAL_DOMAIN_ID,
+    port_types: {
+      inputs: {
+        flange: { kind: 'conserving', physical_domain: 'translational' },
+        flange_2: { kind: 'conserving', physical_domain: 'translational' },
+      },
+    },
   };
 }
 
@@ -520,6 +546,94 @@ describe('graphStore boundary aliases', () => {
     expect(state.currentGraphLabel).toBe('system');
     expect(state.currentContext).toBe(ACAUSAL_DOMAIN_ID);
     expect(state.graphStack[0].contextType).toBe(ACAUSAL_DOMAIN_ID);
+  });
+
+  it('edits and persists acausal conserving connections with multi-edge ports', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      solver: { solver_type: 'implicit_euler', dt: 0.01 },
+      nodes: {
+        mass: { type: 'Mass', params: {}, input_ports: ['flange'], output_ports: [] },
+        spring: {
+          type: 'Spring',
+          params: {},
+          input_ports: ['flange', 'flange_2'],
+          output_ports: [],
+        },
+        ground: { type: 'Ground', params: {}, input_ports: ['flange'], output_ports: [] },
+      },
+      connections: [],
+    };
+    const graph: GraphSpec = {
+      nodes: {
+        system: {
+          type: 'AcausalSystem',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['state'],
+        },
+      },
+      wires: [],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+      subgraphs: { system: interior },
+    };
+    const ui: GraphUIState = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        system: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+      },
+      subgraph_states: {
+        system: {
+          viewport: { x: 0, y: 0, zoom: 1 },
+          node_states: {
+            mass: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+            spring: { position: { x: 200, y: 0 }, collapsed: false, selected: false },
+            ground: { position: { x: 0, y: 140 }, collapsed: false, selected: false },
+          },
+        },
+      },
+    };
+
+    useGraphStore.getState().setComponentRegistry([
+      compositeComponent('AcausalSystem', ACAUSAL_DOMAIN_ID),
+      acausalComponent('Mass'),
+      acausalComponent('Spring'),
+      acausalComponent('Ground'),
+    ]);
+    useGraphStore.getState().hydrateGraph(graph, ui, 'graph-1');
+    useGraphStore.getState().enterSubgraph('system');
+    useGraphStore.getState().onConnect({
+      source: 'mass',
+      sourceHandle: 'flange',
+      target: 'spring',
+      targetHandle: 'flange',
+    });
+    useGraphStore.getState().onConnect({
+      source: 'ground',
+      sourceHandle: 'flange',
+      target: 'spring',
+      targetHandle: 'flange',
+    });
+
+    const state = useGraphStore.getState();
+    expect(isAcausalGraphSpec(state.graph)).toBe(true);
+    expect(state.edges).toHaveLength(2);
+    expect(state.edges.every((edge) => edge.type === 'conserving')).toBe(true);
+
+    const persisted = state.capturePersistedGraph();
+    const savedInterior = persisted.graph.subgraphs?.system;
+    expect(isAcausalGraphSpec(savedInterior)).toBe(true);
+    if (!isAcausalGraphSpec(savedInterior)) throw new Error('expected acausal interior');
+    expect(savedInterior.connections).toHaveLength(2);
+    expect(persisted.uiState.subgraph_states?.system?.node_states.spring.position).toEqual({
+      x: 200,
+      y: 0,
+    });
   });
 
   it('fails loudly when a parent subgraph entry vanishes before persistence', () => {
