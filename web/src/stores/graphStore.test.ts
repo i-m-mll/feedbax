@@ -5,6 +5,7 @@ import type { ComponentDefinition } from '@/types/components';
 
 const CAUSAL_DOMAIN_ID = 'feedbax.domain.causal';
 const ACAUSAL_DOMAIN_ID = 'feedbax.domain.acausal';
+const INSPECTOR_DOMAIN_ID = 'feedbax.domain.inspector';
 
 const uiState: GraphUIState = {
   viewport: { x: 0, y: 0, zoom: 1 },
@@ -344,6 +345,59 @@ describe('graphStore boundary aliases', () => {
       x: 480,
       y: 120,
     });
+  });
+
+  it('opens display-only inspector layers without persisting fake subgraphs', () => {
+    const graph: GraphSpec = {
+      nodes: {
+        viewer: {
+          type: 'ReadOnlyAdapter',
+          params: { builder_name: 'demo' },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+    };
+    useGraphStore.getState().hydrateGraph(graph, {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        viewer: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+      },
+    });
+    useGraphStore.getState().setComponentRegistry([
+      {
+        name: 'ReadOnlyAdapter',
+        category: 'Structure',
+        description: 'Read-only adapter',
+        param_schema: [],
+        input_ports: ['input'],
+        output_ports: ['output'],
+        icon: 'Hexagon',
+        default_params: {},
+        domain: CAUSAL_DOMAIN_ID,
+        interior_domain: INSPECTOR_DOMAIN_ID,
+        is_composite: true,
+        template_kind: 'display',
+      },
+    ]);
+
+    useGraphStore.getState().enterSubgraph('viewer');
+
+    let state = useGraphStore.getState();
+    expect(state.currentContext).toBe(INSPECTOR_DOMAIN_ID);
+    expect(state.graphStack[state.graphStack.length - 1].persistInterior).toBe(false);
+    expect(state.capturePersistedGraph().graph.subgraphs?.viewer).toBeUndefined();
+    expect(state.capturePersistedGraph().graphStackPath).toEqual([]);
+
+    state.exitToBreadcrumb(0);
+    state = useGraphStore.getState();
+    expect(state.graph.nodes.viewer).toBeDefined();
+    expect(state.graph.subgraphs?.viewer).toBeUndefined();
   });
 
   it('folds three active subgraph layers into the root graph snapshot', () => {

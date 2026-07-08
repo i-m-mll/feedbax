@@ -80,6 +80,8 @@ from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
     build_penzai_subgraph,
+    get_penzai_builder,
+    penzai_state_variable_paths,
 )
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graphs.prototypes import array_proto_from_shape
@@ -488,6 +490,17 @@ def _build_penzai_adapter(params: Mapping[str, Any]) -> Component:
         for key, value in params.items()
         if key not in ("builder_name", "input_port", "output_port")
     }
+    builder_info = get_penzai_builder(builder_name)
+    if builder_info is None:
+        raise ValueError(f"Unknown Penzai builder {builder_name!r}")
+    builder_fn, default_params = builder_info
+    pz_model = builder_fn({**default_params, **builder_params})
+    state_paths = penzai_state_variable_paths(pz_model)
+    if state_paths:
+        raise ValueError(
+            "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
+            f"StateVariable leaves at {', '.join(state_paths)}"
+        )
     return build_penzai_subgraph(
         builder_name=builder_name,
         params=builder_params,

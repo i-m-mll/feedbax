@@ -55,6 +55,7 @@ export interface GraphLayer {
   label: string;
   childNodeId?: string;
   contextType?: string;
+  persistInterior?: boolean;
 }
 
 export interface StateMergeRequest {
@@ -1661,6 +1662,11 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
   let childUi = normalizeUiState(childGraph, state.uiState, state.edgeStyle);
   for (let i = state.graphStack.length - 1; i >= 0; i -= 1) {
     const layer = state.graphStack[i];
+    if (layer.persistInterior === false) {
+      childGraph = layer.graph;
+      childUi = normalizeUiState(layer.graph, layer.uiState, state.edgeStyle);
+      continue;
+    }
     const childId = layer.childNodeId;
     if (!childId) {
       throw new Error(
@@ -1707,6 +1713,7 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
 
 function captureGraphStackPathFromState(state: Pick<GraphStoreState, 'graphStack'>): string[] {
   return state.graphStack
+    .filter((layer) => layer.persistInterior !== false)
     .map((layer) => layer.childNodeId)
     .filter((nodeId): nodeId is string => Boolean(nodeId));
 }
@@ -1733,6 +1740,9 @@ function historyForPath(
 function graphHistoryWithActiveLayer(
   state: Pick<GraphStoreState, 'graphStack' | 'graphHistory' | 'past' | 'future'>
 ): Record<string, LayerHistory> {
+  if (state.graphStack[state.graphStack.length - 1]?.persistInterior === false) {
+    return state.graphHistory;
+  }
   return {
     ...state.graphHistory,
     [graphLayerKey(activeGraphLayerPath(state))]: {
@@ -2172,7 +2182,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
       const componentDef = nodeSpec ? get()._componentRegistry.get(nodeSpec.type) : undefined;
       const isComposite = Boolean(componentDef?.is_composite);
-      if (!nodeSpec || (!isComposite && !hasSubgraph)) {
+      const isReadOnlyInspector =
+        Boolean(componentDef?.interior_domain) &&
+        componentDef?.template_kind === 'display' &&
+        !componentDef?.template_graph &&
+        !hasSubgraph;
+      if (!nodeSpec || (!isComposite && !hasSubgraph && !isReadOnlyInspector)) {
         return state;
       }
       const context = interiorDomainForNode(nodeSpec, get()._componentRegistry);
@@ -2183,6 +2198,45 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         };
       }
       const parentLabel = state.currentGraphLabel || state.graph.metadata?.name || 'Model';
+      if (isReadOnlyInspector) {
+        const baseInspectorGraph = createBlankGraph();
+        const inspectorGraph = {
+          ...baseInspectorGraph,
+          metadata: {
+            ...baseInspectorGraph.metadata,
+            name: nodeId,
+          },
+        };
+        const inspectorUi = normalizeUiState(
+          inspectorGraph,
+          { viewport: DEFAULT_VIEWPORT, node_states: {} },
+          state.edgeStyle
+        );
+        const graphHistory = graphHistoryWithActiveLayer(state);
+        return {
+          graphStack: [
+            ...state.graphStack,
+            {
+              graph: state.graph,
+              uiState: state.uiState,
+              graphId: state.graphId,
+              label: parentLabel,
+              childNodeId: nodeId,
+              contextType: context,
+              persistInterior: false,
+            },
+          ],
+          graph: inspectorGraph,
+          uiState: inspectorUi,
+          nodes: [],
+          edges: [],
+          currentGraphLabel: nodeId,
+          currentContext: context,
+          past: [],
+          future: [],
+          graphHistory,
+        };
+      }
       const cachedGraph = state.graph.subgraphs?.[nodeId];
       const cachedUi = state.uiState.subgraph_states?.[nodeId];
 
@@ -2384,6 +2438,11 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const stack = [...state.graphStack];
       for (let i = stack.length - 1; i >= index; i -= 1) {
         const layer = stack[i];
+        if (layer.persistInterior === false) {
+          childGraph = layer.graph;
+          childUi = layer.uiState;
+          continue;
+        }
         const childId = layer.childNodeId;
         if (!childId) {
           throw new Error(

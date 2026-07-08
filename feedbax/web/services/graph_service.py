@@ -10,6 +10,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
+from feedbax.contracts.graphs.penzai_compiler import compile_penzai_authoring_report
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
 from feedbax.contracts.graphs.normalization import (
     normalize_graph_for_studio_authoring,
@@ -229,6 +230,32 @@ class GraphService:
             interior,
             node_path=node_path,
             component_registry=registry,
+        )
+        key = "/".join(node_path)
+        record.project.compile_reports = {
+            **(record.project.compile_reports or {}),
+            key: report,
+        }
+        self._save_project(self._path_for(graph_id), record.project)
+        return report
+
+    def compile_penzai_node(
+        self,
+        graph_id: str,
+        *,
+        node_path: list[str],
+        builder_name: str,
+        params: dict[str, object],
+        input_port: str,
+        output_port: str,
+    ) -> DomainCompileReport:
+        record = self.get_graph(graph_id)
+        report = compile_penzai_authoring_report(
+            builder_name=builder_name,
+            params=params,
+            input_port=input_port,
+            output_port=output_port,
+            node_path=node_path,
         )
         key = "/".join(node_path)
         record.project.compile_reports = {

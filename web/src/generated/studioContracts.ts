@@ -14,6 +14,7 @@ export interface ParamSchema {
   max?: number | null;
   step?: number | null;
   options?: string[] | null;
+  option_descriptions?: Record<string, string> | null;
   description?: string | null;
   required?: boolean;
   nested_schema?: ParamSchema[] | null;
@@ -1149,6 +1150,52 @@ export interface DomainListResponse {
   data: DomainRegistryPayload;
 }
 
+export interface PenzaiBuilderInfo {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
+  name: string;
+  description: string;
+  default_params?: Record<string, unknown>;
+  input_shape?: string[] | null;
+  output_shape?: string[] | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PenzaiBuilderListPayload {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
+  builders: PenzaiBuilderInfo[];
+}
+
+export interface PenzaiBuilderListResponse {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
+  data: PenzaiBuilderListPayload;
+}
+
+export interface PenzaiNodeRequest {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
+  node_path?: string[];
+  builder_name: string;
+  params?: Record<string, unknown>;
+  input_port?: string;
+  output_port?: string;
+}
+
+export interface PenzaiInspectorPayload {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
+  html: string;
+  report: DomainCompileReport;
+}
+
+export interface PenzaiInspectorResponse {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
+  data: PenzaiInspectorPayload;
+}
+
 export interface TrainingStartPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v2";
@@ -1713,6 +1760,7 @@ export const ParamSchemaSchema: z.ZodType<ParamSchema> = z.lazy(() =>
       "max": z.number().nullable().optional(),
       "step": z.number().nullable().optional(),
       "options": z.array(z.string()).nullable().optional(),
+      "option_descriptions": z.record(z.string(), z.string()).nullable().optional(),
       "description": z.string().nullable().optional(),
       "required": z.boolean().optional(),
       "nested_schema": z.array(ParamSchemaSchema).nullable().optional(),
@@ -3350,6 +3398,76 @@ export const DomainListResponseSchema: z.ZodType<DomainListResponse> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<DomainListResponse>;
 
+export const PenzaiBuilderInfoSchema: z.ZodType<PenzaiBuilderInfo> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
+      "name": z.string(),
+      "description": z.string(),
+      "default_params": z.record(z.string(), z.unknown()).optional(),
+      "input_shape": z.array(z.string()).nullable().optional(),
+      "output_shape": z.array(z.string()).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<PenzaiBuilderInfo>;
+
+export const PenzaiBuilderListPayloadSchema: z.ZodType<PenzaiBuilderListPayload> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
+      "builders": z.array(PenzaiBuilderInfoSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<PenzaiBuilderListPayload>;
+
+export const PenzaiBuilderListResponseSchema: z.ZodType<PenzaiBuilderListResponse> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
+      "data": PenzaiBuilderListPayloadSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PenzaiBuilderListResponse>;
+
+export const PenzaiNodeRequestSchema: z.ZodType<PenzaiNodeRequest> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
+      "node_path": z.array(z.string()).optional(),
+      "builder_name": z.string(),
+      "params": z.record(z.string(), z.unknown()).optional(),
+      "input_port": z.string().optional(),
+      "output_port": z.string().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<PenzaiNodeRequest>;
+
+export const PenzaiInspectorPayloadSchema: z.ZodType<PenzaiInspectorPayload> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
+      "html": z.string(),
+      "report": DomainCompileReportSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PenzaiInspectorPayload>;
+
+export const PenzaiInspectorResponseSchema: z.ZodType<PenzaiInspectorResponse> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
+      "data": PenzaiInspectorPayloadSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PenzaiInspectorResponse>;
+
 export const TrainingStartPayloadSchema: z.ZodType<TrainingStartPayload> = z.lazy(() =>
   z
     .object({
@@ -4183,6 +4301,10 @@ export const contractSchemas = {
   ComponentDetailResponse: ComponentDetailResponseSchema,
   ComponentRefreshResponse: ComponentRefreshResponseSchema,
   DomainListResponse: DomainListResponseSchema,
+  DomainCompileReport: DomainCompileReportSchema,
+  PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
+  PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
+  PenzaiNodeRequest: PenzaiNodeRequestSchema,
   TrainingStartResponse: TrainingStartResponseSchema,
   TrainingStatusResponse: TrainingStatusResponseSchema,
   SuccessResponse: SuccessResponseSchema,
@@ -4232,6 +4354,10 @@ export interface ContractTypeMap {
   ComponentDetailResponse: ComponentDetailResponse;
   ComponentRefreshResponse: ComponentRefreshResponse;
   DomainListResponse: DomainListResponse;
+  DomainCompileReport: DomainCompileReport;
+  PenzaiBuilderListResponse: PenzaiBuilderListResponse;
+  PenzaiInspectorResponse: PenzaiInspectorResponse;
+  PenzaiNodeRequest: PenzaiNodeRequest;
   TrainingStartResponse: TrainingStartResponse;
   TrainingStatusResponse: TrainingStatusResponse;
   SuccessResponse: SuccessResponse;

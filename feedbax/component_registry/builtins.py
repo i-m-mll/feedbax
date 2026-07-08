@@ -10,6 +10,7 @@ import jax.tree as jt
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
+from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
 from feedbax.runtime.affine_composer import (
@@ -981,6 +982,7 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     register_builtin_graph_templates(registry)
+    penzai_builders = penzai_builder_options()
     registry.register(
         ComponentMeta(
             name='PenzaiAdapter',
@@ -990,8 +992,13 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(
                     name='builder_name',
                     type='enum',
-                    options=[],  # Populated dynamically from registry
-                    default='',
+                    options=[builder["name"] for builder in penzai_builders],
+                    option_descriptions={
+                        builder["name"]: str(builder["description"])
+                        for builder in penzai_builders
+                    },
+                    default=penzai_builders[0]["name"] if penzai_builders else '',
+                    description="Registered Penzai model builder.",
                     required=True,
                 ),
                 ParamSchema(name='input_port', type='str', default='input', required=False),
@@ -1001,7 +1008,8 @@ def register_builtin_components(registry: _Registry) -> None:
             output_ports=['output'],
             icon='Hexagon',
             interior_domain=PENZAI_DOMAIN_ID,
-            is_composite=False,
+            is_composite=True,
+            template_kind='display',
             port_types=PortTypeSpec(
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},

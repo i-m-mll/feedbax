@@ -75,6 +75,7 @@ class ParamSchema(BaseModel):
     max: Optional[float] = None
     step: Optional[float] = None
     options: Optional[List[str]] = None
+    option_descriptions: Optional[Dict[str, str]] = None
     description: Optional[str] = None
     required: bool = False
     nested_schema: Optional[List["ParamSchema"]] = None
