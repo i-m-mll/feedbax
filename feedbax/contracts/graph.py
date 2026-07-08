@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
+from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.value_schema import ValueSchema
 
 
@@ -450,9 +452,6 @@ class GraphSpec(BaseModel):
                     f"expected one of {GRAPH_SPEC_SCHEMA_ID!r}, {ACAUSAL_GRAPH_SCHEMA_ID!r}"
                 )
         return subgraphs
-
-
-from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 
 GraphSubgraphSpec = Union[GraphSpec, AcausalGraphSpec]
 
@@ -1073,6 +1072,23 @@ class GraphProject(BaseModel):
     analysis_pages: Optional[List[AnalysisPageSpec]] = None
     active_analysis_page_id: Optional[str] = None
     workspace: Optional[StudioWorkspaceSpec] = None
+    compile_reports: Optional[Dict[str, DomainCompileReport]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_unparseable_compile_reports(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        raw_reports = data.get("compile_reports")
+        if not isinstance(raw_reports, dict):
+            return data
+        reports: dict[str, DomainCompileReport] = {}
+        for node_path, raw_report in raw_reports.items():
+            try:
+                reports[str(node_path)] = DomainCompileReport.model_validate(raw_report)
+            except ValueError:
+                continue
+        return {**data, "compile_reports": reports or None}
 
 
 def build_default_studio_workspace(

@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.component import ComponentDefinition
-from feedbax.contracts.domain import DomainRegistryPayload
+from feedbax.contracts.domain import DomainCompileReport, DomainRegistryPayload
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphMetadata,
@@ -109,6 +109,7 @@ class GraphDetailPayload(StudioApiModel):
     analysis_pages: Optional[list[AnalysisPageSpec]] = None
     active_analysis_page_id: Optional[str] = None
     workspace: Optional[StudioWorkspaceSpec] = None
+    compile_reports: Optional[dict[str, DomainCompileReport]] = None
 
 
 class GraphDetailResponse(StudioApiModel):

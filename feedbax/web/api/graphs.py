@@ -3,6 +3,8 @@ from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel
 from typing import Optional
 
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphSpec,
@@ -38,6 +40,11 @@ class GraphUpdateRequest(BaseModel):
     active_analysis_page_id: Optional[str] = None
     workspace: Optional[StudioWorkspaceSpec] = None
     expected_save_revision: Optional[int] = None
+
+
+class GraphNodeCompileRequest(BaseModel):
+    node_path: list[str]
+    interior: AcausalGraphSpec
 
 
 def _parse_if_match_revision(if_match: Optional[str]) -> Optional[int]:
@@ -102,6 +109,7 @@ async def get_graph(graph_id: str, response: Response) -> GraphDetailResponse:
             'analysis_pages': record.project.analysis_pages,
             'active_analysis_page_id': record.project.active_analysis_page_id,
             'workspace': record.project.workspace,
+            'compile_reports': record.project.compile_reports,
         }
     )
 
@@ -155,6 +163,21 @@ async def delete_graph(graph_id: str) -> SuccessResponse:
 @router.post('/{graph_id}/validate', response_model=GraphValidationResponse)
 async def validate_graph(graph_id: str, graph: GraphSpec) -> GraphValidationResponse:
     return GraphValidationResponse(data=service.validate_graph(graph))
+
+
+@router.post('/{graph_id}/nodes/compile', response_model=DomainCompileReport)
+async def compile_graph_node(
+    graph_id: str,
+    payload: GraphNodeCompileRequest,
+) -> DomainCompileReport:
+    try:
+        return service.compile_node(
+            graph_id,
+            node_path=payload.node_path,
+            interior=payload.interior,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail='Graph not found') from exc
 
 
 class ExportRequest(BaseModel):

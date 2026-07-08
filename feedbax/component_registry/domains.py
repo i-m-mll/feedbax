@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID
 from feedbax.contracts.domain import (
-    ACAUSAL_GRAPH_SCHEMA_ID,
-    ACAUSAL_DOMAIN_ID,
     CAUSAL_DOMAIN_ID,
+    ACAUSAL_DOMAIN_ID,
     MECHANICS_DOMAIN_ID,
     PENZAI_DOMAIN_ID,
     DomainMeta,

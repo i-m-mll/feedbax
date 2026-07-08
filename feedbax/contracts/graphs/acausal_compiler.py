@@ -10,6 +10,7 @@ import diffrax as dfx
 import optimistix as optx
 
 from feedbax.acausal.base import AcausalConnection, AcausalElement
+from feedbax.acausal.analysis import StructuralAnalysis, analyze_system
 from feedbax.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,
@@ -38,6 +39,7 @@ from feedbax.contracts.acausal import (
     AcausalGraphSpec,
     RootFinderSpec,
     SolverConfigSpec,
+    acausal_interior_content_hash,
 )
 from feedbax.contracts.acausal_interface import (
     ACTUATION_INPUT_TYPE,
@@ -45,8 +47,14 @@ from feedbax.contracts.acausal_interface import (
     SENSOR_OUTPUT_TYPE,
     ACAUSAL_SYSTEM_TYPE,
     derive_acausal_interface,
+    signal_port_type,
 )
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
+from feedbax.contracts.domain import (
+    DomainCompileReport,
+    DomainDiagnostic,
+    report_status_for_diagnostics,
+)
 from feedbax.contracts.graph import ComponentSpec
 
 
@@ -157,6 +165,371 @@ def compile_acausal_graph(
             f"{interface.output_ports!r}"
         )
     return system
+
+
+def compile_acausal_authoring_report(
+    interior_spec: AcausalGraphSpec,
+    *,
+    node_path: list[str],
+    component_registry: Any,
+) -> DomainCompileReport:
+    """Return a structural authoring compile report without constructing JAX closures."""
+
+    content_hash = acausal_interior_content_hash(interior_spec)
+    diagnostics = _diagnose_acausal_spec(
+        interior_spec,
+        component_registry=component_registry,
+        path=".".join(node_path) if node_path else "<root>",
+    )
+    derived_interface = None
+    analysis: StructuralAnalysis | None = None
+    flattened = _FlattenedAcausalGraph()
+
+    if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
+        try:
+            interface = derive_acausal_interface(interior_spec)
+            derived_interface = {
+                "inputs": {
+                    name: signal_port_type().model_dump(mode="json")
+                    for name in interface.input_ports
+                },
+                "outputs": {
+                    name: signal_port_type().model_dump(mode="json")
+                    for name in interface.output_ports
+                },
+            }
+            flattened = _flatten_acausal_graph(
+                interior_spec,
+                component_registry=component_registry,
+                path=".".join(node_path) if node_path else "<root>",
+            )
+            analysis = analyze_system(flattened.elements, flattened.connections)
+        except Exception as exc:  # noqa: BLE001 - authoring endpoint reports, not raises.
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.internal",
+                    message=f"Internal acausal compile failure for {node_path!r}: {exc}",
+                    node_ids=list(node_path),
+                )
+            )
+
+    summary = _compile_summary(interior_spec, flattened, analysis)
+    return DomainCompileReport(
+        status=report_status_for_diagnostics(diagnostics),
+        interior_content_hash=content_hash,
+        diagnostics=diagnostics,
+        derived_interface=derived_interface,
+        summary=summary,
+    )
+
+
+def _diagnose_acausal_spec(
+    graph: AcausalGraphSpec,
+    *,
+    component_registry: Any,
+    path: str,
+) -> list[DomainDiagnostic]:
+    diagnostics: list[DomainDiagnostic] = []
+    if not graph.nodes:
+        diagnostics.append(
+            DomainDiagnostic(
+                severity="error",
+                code="acausal.empty_interior",
+                message=f"Acausal interior {path!r} has no elements.",
+                counts={"n_elements": 0},
+            )
+        )
+        return diagnostics
+
+    diagnostics.extend(_diagnose_component_types(graph, component_registry, path))
+    diagnostics.extend(_diagnose_boundary_ports(graph, path))
+    diagnostics.extend(_diagnose_adapter_units(graph, path))
+
+    for node_id, subgraph in sorted((graph.subgraphs or {}).items()):
+        diagnostics.extend(
+            _diagnose_acausal_spec(
+                subgraph,
+                component_registry=component_registry,
+                path=f"{path}.{node_id}",
+            )
+        )
+    if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
+        try:
+            flattened = _flatten_acausal_graph(
+                graph,
+                component_registry=component_registry,
+                path=path,
+            )
+            diagnostics.extend(_diagnose_flattened_domains(graph, flattened, path))
+            if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
+                diagnostics.extend(
+                    _diagnose_structural_analysis(analyze_system(
+                        flattened.elements,
+                        flattened.connections,
+                    ))
+                )
+        except Exception as exc:  # noqa: BLE001 - converted to structured report.
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.internal",
+                    message=f"Internal acausal structural analysis failure for {path!r}: {exc}",
+                )
+            )
+    return diagnostics
+
+
+def _diagnose_component_types(
+    graph: AcausalGraphSpec,
+    component_registry: Any,
+    path: str,
+) -> list[DomainDiagnostic]:
+    diagnostics: list[DomainDiagnostic] = []
+    get_meta = getattr(component_registry, "get", None)
+    for node_id, node_spec in graph.nodes.items():
+        if node_spec.type in {ACTUATION_INPUT_TYPE, SENSOR_OUTPUT_TYPE, BOUNDARY_PORT_TYPE}:
+            continue
+        if node_spec.type == ACAUSAL_SYSTEM_TYPE:
+            continue
+        meta = get_meta(node_spec.type) if callable(get_meta) else None
+        if meta is not None and getattr(meta, "domain", None) != ACAUSAL_DOMAIN_ID:
+            meta_domain = getattr(meta, "domain", None)
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.domain_mismatch",
+                    message=(
+                        f"Acausal node {path}.{node_id!s} has component domain "
+                        f"{meta_domain!r}, expected {ACAUSAL_DOMAIN_ID!r}."
+                    ),
+                    node_ids=[node_id],
+                )
+            )
+            continue
+        builder_known = node_spec.type in _ELEMENT_BUILDERS
+        if not builder_known or meta is None:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.unknown_element_type",
+                    message=(
+                        f"Acausal node {path}.{node_id!s} uses unknown element type "
+                        f"{node_spec.type!r}."
+                    ),
+                    node_ids=[node_id],
+                    counts={"n_elements": len(graph.nodes)},
+                )
+            )
+            continue
+    return diagnostics
+
+
+def _diagnose_flattened_domains(
+    graph: AcausalGraphSpec,
+    flattened: _FlattenedAcausalGraph,
+    path: str,
+) -> list[DomainDiagnostic]:
+    diagnostics: list[DomainDiagnostic] = []
+    for element_name, element in flattened.elements.items():
+        for port_name, port in element.ports.items():
+            if port.domain.value != graph.physical_domain:
+                diagnostics.append(
+                    DomainDiagnostic(
+                        severity="error",
+                        code="acausal.domain_mismatch",
+                        message=(
+                            f"Acausal element {path}.{element_name} port {port_name!r} "
+                            f"has physical domain {port.domain.value!r}, expected "
+                            f"{graph.physical_domain!r}."
+                        ),
+                        node_ids=[element_name],
+                        ports=[(element_name, port_name)],
+                    )
+                )
+    return diagnostics
+
+
+def _diagnose_boundary_ports(graph: AcausalGraphSpec, path: str) -> list[DomainDiagnostic]:
+    diagnostics: list[DomainDiagnostic] = []
+    seen: dict[str, str] = {}
+    connected_boundary_nodes = {
+        node
+        for connection in graph.connections
+        for node in (connection.a[0], connection.b[0])
+    }
+    for node_id, node_spec in graph.nodes.items():
+        if node_spec.type != BOUNDARY_PORT_TYPE:
+            continue
+        port_name = _string_param(node_spec, "port_name", default="port", node_path=node_id)
+        if port_name in seen:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.duplicate_boundary_port_name",
+                    message=(
+                        f"Boundary port name {port_name!r} is used by both "
+                        f"{seen[port_name]!r} and {node_id!r} in {path!r}."
+                    ),
+                    node_ids=[seen[port_name], node_id],
+                    ports=[(seen[port_name], port_name), (node_id, port_name)],
+                )
+            )
+        seen[port_name] = node_id
+        if node_id not in connected_boundary_nodes:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="warning",
+                    code="acausal.dangling_conserving_port",
+                    message=(
+                        f"Boundary port {port_name!r} on node {node_id!r} in {path!r} "
+                        "is not connected to any conserving endpoint."
+                    ),
+                    node_ids=[node_id],
+                    ports=[(node_id, port_name)],
+                )
+            )
+    return diagnostics
+
+
+def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDiagnostic]:
+    diagnostics: list[DomainDiagnostic] = []
+    allowed_sources = {
+        "translational": {"force", "prescribed_motion"},
+        "rotational": {"torque", "prescribed_motion"},
+    }
+    allowed_sensors = {
+        "translational": {"position", "velocity", "force"},
+        "rotational": {"angle", "angular_velocity", "torque"},
+    }
+    for node_id, node_spec in graph.nodes.items():
+        params = dict(node_spec.params)
+        if node_spec.type == ACTUATION_INPUT_TYPE:
+            source_kind = str(params.get("source_kind", "force"))
+            if source_kind not in allowed_sources[graph.physical_domain]:
+                diagnostics.append(
+                    DomainDiagnostic(
+                        severity="warning",
+                        code="acausal.adapter_unit_mismatch",
+                        message=(
+                            f"ActuationInput {path}.{node_id} source_kind {source_kind!r} "
+                            f"does not match physical domain {graph.physical_domain!r}."
+                        ),
+                        node_ids=[node_id],
+                    )
+                )
+        elif node_spec.type == SENSOR_OUTPUT_TYPE:
+            quantity = str(params.get("quantity", "position"))
+            if quantity not in allowed_sensors[graph.physical_domain]:
+                diagnostics.append(
+                    DomainDiagnostic(
+                        severity="warning",
+                        code="acausal.adapter_unit_mismatch",
+                        message=(
+                            f"SensorOutput {path}.{node_id} quantity {quantity!r} "
+                            f"does not match physical domain {graph.physical_domain!r}."
+                        ),
+                        node_ids=[node_id],
+                    )
+                )
+    return diagnostics
+
+
+def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDiagnostic]:
+    diagnostics: list[DomainDiagnostic] = []
+    for network in analysis.networks:
+        counts = network.counts
+        if counts["equations"] != counts["unknowns"]:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.unbalanced",
+                    message=(
+                        "Acausal network is structurally unbalanced: "
+                        f"elements={list(network.elements)!r}, "
+                        f"equations={counts['equations']}, unknowns={counts['unknowns']}, "
+                        f"variables={list(network.differential_variables)!r}."
+                    ),
+                    node_ids=list(network.elements),
+                    variables=list(network.differential_variables),
+                    counts=counts,
+                )
+            )
+        if not network.has_ground:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.ungrounded_network",
+                    message=(
+                        "Acausal network has no Ground or RotationalGround: "
+                        f"elements={list(network.elements)!r}."
+                    ),
+                    node_ids=list(network.elements),
+                    counts={"n_elements": len(network.elements)},
+                )
+            )
+        if len(network.across_source_elements) > 1:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.parallel_across_sources",
+                    message=(
+                        "Acausal network has multiple prescribed across-variable sources: "
+                        f"elements={list(network.across_source_elements)!r}."
+                    ),
+                    node_ids=list(network.across_source_elements),
+                    counts={"n_sources": len(network.across_source_elements)},
+                )
+            )
+        if len(network.source_elements) > 1:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.series_through_sources",
+                    message=(
+                        "Acausal network has multiple through-variable sources in one "
+                        f"connected path: elements={list(network.source_elements)!r}."
+                    ),
+                    node_ids=list(network.source_elements),
+                    counts={"n_sources": len(network.source_elements)},
+                )
+            )
+    if analysis.through_equation_cycle is not None:
+        diagnostics.append(
+            DomainDiagnostic(
+                severity="error",
+                code="acausal.series_through_sources",
+                message=(
+                    "Acausal through-variable equations contain a cycle: "
+                    f"variables={list(analysis.through_equation_cycle)!r}."
+                ),
+                variables=list(analysis.through_equation_cycle),
+                counts={"n_variables": len(analysis.through_equation_cycle)},
+            )
+        )
+    return diagnostics
+
+
+def _compile_summary(
+    graph: AcausalGraphSpec,
+    flattened: _FlattenedAcausalGraph,
+    analysis: StructuralAnalysis | None,
+) -> dict[str, int]:
+    if analysis is None:
+        return {
+            "n_equations": 0,
+            "n_unknowns": 0,
+            "n_states": 0,
+            "n_networks": 0,
+            "n_elements": len(graph.nodes),
+        }
+    return {
+        "n_equations": sum(len(network.equations) for network in analysis.networks),
+        "n_unknowns": len(analysis.layout._differential),
+        "n_states": analysis.layout.total_size,
+        "n_networks": len(analysis.networks),
+        "n_elements": len(flattened.elements),
+    }
 
 
 def _flatten_acausal_graph(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -96,3 +98,37 @@ class AcausalGraphSpec(BaseModel):
                 )
             subgraphs[str(node_id)] = AcausalGraphSpec.model_validate(raw_subgraph)
         return {**data, "subgraphs": subgraphs}
+
+
+def canonical_acausal_graph_payload(graph: AcausalGraphSpec) -> dict[str, Any]:
+    """Return a stable JSON payload for acausal interior hashing."""
+
+    payload = graph.model_dump(mode="json", exclude_none=True)
+    payload["connections"] = sorted(
+        payload.get("connections", []),
+        key=lambda item: (tuple(item["a"]), tuple(item["b"])),
+    )
+    subgraphs = payload.get("subgraphs")
+    if isinstance(subgraphs, dict):
+        payload["subgraphs"] = {
+            key: canonical_acausal_graph_payload(graph.subgraphs[key])  # type: ignore[index]
+            for key in sorted(subgraphs)
+            if graph.subgraphs is not None
+        }
+    return payload
+
+
+def canonical_acausal_graph_json(graph: AcausalGraphSpec) -> str:
+    """Return canonical JSON for an acausal graph interior."""
+
+    return json.dumps(
+        canonical_acausal_graph_payload(graph),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def acausal_interior_content_hash(graph: AcausalGraphSpec) -> str:
+    """Return the sha256 hash used for acausal authoring compile caches."""
+
+    return hashlib.sha256(canonical_acausal_graph_json(graph).encode("utf-8")).hexdigest()

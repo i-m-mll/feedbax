@@ -24,6 +24,8 @@ from feedbax.contracts.component import (
     PortTypeSpec,
 )
 from feedbax.contracts.domain import (
+    DomainCompileReport,
+    DomainDiagnostic,
     DomainMeta,
     DomainRegistryPayload,
     DomainTheme,
@@ -317,6 +319,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DomainTheme,
     DomainMeta,
     DomainRegistryPayload,
+    DomainDiagnostic,
+    DomainCompileReport,
     WorkspaceReplayWarning,
     WorkspaceReplayTrialIdentity,
     WorkspaceReplaySampleAxis,

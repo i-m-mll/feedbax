@@ -554,6 +554,7 @@ export interface GraphProject {
   analysis_pages?: AnalysisPageSpec[] | null;
   active_analysis_page_id?: string | null;
   workspace?: StudioWorkspaceSpec | null;
+  compile_reports?: Record<string, DomainCompileReport> | null;
 }
 
 export interface ValidationError {
@@ -726,6 +727,26 @@ export interface DomainRegistryPayload {
   schema_id?: "feedbax.spec.domain";
   schema_version?: "feedbax.spec.domain.v1";
   domains: DomainMeta[];
+}
+
+export interface DomainDiagnostic {
+  severity: "error" | "warning" | "info";
+  code: string;
+  message: string;
+  node_ids?: string[];
+  ports?: [string, string][];
+  variables?: string[];
+  counts?: Record<string, number> | null;
+}
+
+export interface DomainCompileReport {
+  schema_id?: "feedbax.spec.domain_compile_report";
+  schema_version?: "feedbax.spec.domain_compile_report.v1";
+  status: "ok" | "ok_with_warnings" | "error";
+  interior_content_hash: string;
+  diagnostics?: DomainDiagnostic[];
+  derived_interface?: Record<string, unknown> | null;
+  summary?: Record<string, number>;
 }
 
 export interface WorkspaceReplayWarning {
@@ -1059,6 +1080,7 @@ export interface GraphDetailPayload {
   analysis_pages?: AnalysisPageSpec[] | null;
   active_analysis_page_id?: string | null;
   workspace?: StudioWorkspaceSpec | null;
+  compile_reports?: Record<string, DomainCompileReport> | null;
 }
 
 export interface GraphDetailResponse {
@@ -2450,6 +2472,7 @@ export const GraphProjectSchema: z.ZodType<GraphProject> = z.lazy(() =>
       "analysis_pages": z.array(AnalysisPageSpecSchema).nullable().optional(),
       "active_analysis_page_id": z.string().nullable().optional(),
       "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
+      "compile_reports": z.record(z.string(), DomainCompileReportSchema).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<GraphProject>;
@@ -2709,6 +2732,34 @@ export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.l
     })
     .strict()
 ) as unknown as z.ZodType<DomainRegistryPayload>;
+
+export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
+  z
+    .object({
+      "severity": z.union([z.literal("error"), z.literal("warning"), z.literal("info")]),
+      "code": z.string(),
+      "message": z.string(),
+      "node_ids": z.array(z.string()).optional(),
+      "ports": z.array(z.tuple([z.string(), z.string()])).optional(),
+      "variables": z.array(z.string()).optional(),
+      "counts": z.record(z.string(), z.number().int()).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DomainDiagnostic>;
+
+export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.domain_compile_report").optional(),
+      "schema_version": z.literal("feedbax.spec.domain_compile_report.v1").optional(),
+      "status": z.union([z.literal("ok"), z.literal("ok_with_warnings"), z.literal("error")]),
+      "interior_content_hash": z.string(),
+      "diagnostics": z.array(DomainDiagnosticSchema).optional(),
+      "derived_interface": z.record(z.string(), z.unknown()).nullable().optional(),
+      "summary": z.record(z.string(), z.number().int()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DomainCompileReport>;
 
 export const WorkspaceReplayWarningSchema: z.ZodType<WorkspaceReplayWarning> = z.lazy(() =>
   z
@@ -3183,6 +3234,7 @@ export const GraphDetailPayloadSchema: z.ZodType<GraphDetailPayload> = z.lazy(()
       "analysis_pages": z.array(AnalysisPageSpecSchema).nullable().optional(),
       "active_analysis_page_id": z.string().nullable().optional(),
       "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
+      "compile_reports": z.record(z.string(), DomainCompileReportSchema).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<GraphDetailPayload>;
