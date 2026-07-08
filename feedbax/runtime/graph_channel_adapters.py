@@ -17,7 +17,11 @@ def materialize_additive_channel_adapters(spec: GraphSpec) -> GraphSpec:
 
     subgraphs = (
         {
-            node_id: materialize_additive_channel_adapters(subgraph)
+            node_id: (
+                materialize_additive_channel_adapters(subgraph)
+                if isinstance(subgraph, GraphSpec)
+                else subgraph
+            )
             for node_id, subgraph in spec.subgraphs.items()
         }
         if spec.subgraphs

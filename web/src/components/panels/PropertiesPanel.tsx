@@ -37,7 +37,14 @@ import {
   deriveSubgraphBoundaryOverrides,
 } from '@/features/schema/dimensions';
 import { projectStudioSchema } from '@/features/schema/project';
-import type { GraphNodeData, GraphSpec, ParamSchema, ParamValue, TapSpec } from '@/types/graph';
+import {
+  isCausalGraphSpec,
+  type GraphNodeData,
+  type GraphSpec,
+  type ParamSchema,
+  type ParamValue,
+  type TapSpec,
+} from '@/types/graph';
 import type { AnalysisNodeMeta } from '@/types/analysis';
 import type {
   StudioInterventionOperation,
@@ -354,7 +361,8 @@ export function PropertiesPanel() {
 
   if (selectedPort) {
     const nodeSpec = graph.nodes[selectedPort.nodeId];
-    const subgraph = graph.subgraphs?.[selectedPort.nodeId];
+    const rawSubgraph = graph.subgraphs?.[selectedPort.nodeId];
+    const subgraph = isCausalGraphSpec(rawSubgraph) ? rawSubgraph : undefined;
     const boundaryPorts =
       selectedPort.direction === 'input' ? subgraph?.input_ports : subgraph?.output_ports;
     const isBoundaryAlias = Boolean(boundaryPorts?.includes(selectedPort.port));
@@ -433,7 +441,10 @@ export function PropertiesPanel() {
   }
 
   const nodeSpec = graph.nodes[selectedNode.id];
-  const selectedSubgraph = graph.subgraphs?.[selectedNode.id];
+  const rawSelectedSubgraph = graph.subgraphs?.[selectedNode.id];
+  const selectedSubgraph = isCausalGraphSpec(rawSelectedSubgraph)
+    ? rawSelectedSubgraph
+    : undefined;
   const component = nodeSpec
     ? components.find((item) => item.name === nodeSpec.type)
     : undefined;

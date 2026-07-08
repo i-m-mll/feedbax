@@ -29,6 +29,12 @@ from feedbax.contracts.domain import (
     DomainTheme,
     EditorCapability,
 )
+from feedbax.contracts.acausal import (
+    AcausalConnectionSpec,
+    AcausalGraphSpec,
+    RootFinderSpec,
+    SolverConfigSpec,
+)
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
     RepresentationElementSpec,
@@ -235,6 +241,10 @@ NONE_TYPE = type(None)
 MODEL_TYPES: list[type[BaseModel]] = [
     ParamSchema,
     ComponentSpec,
+    AcausalConnectionSpec,
+    RootFinderSpec,
+    SolverConfigSpec,
+    AcausalGraphSpec,
     ParameterConstraintSpec,
     WireSpec,
     AdditiveGraphChannelTargetSpec,
@@ -583,7 +593,7 @@ def zod_schema(annotation: Any) -> str:
 
 
 def emit_interface(model: type[BaseModel]) -> str:
-    hints = get_type_hints(model, include_extras=True)
+    hints = model_type_hints(model)
     lines = [f"export interface {model.__name__} {{"]
     for name, field in model.model_fields.items():
         annotation = hints[name]
@@ -594,7 +604,7 @@ def emit_interface(model: type[BaseModel]) -> str:
 
 
 def emit_schema(model: type[BaseModel]) -> str:
-    hints = get_type_hints(model, include_extras=True)
+    hints = model_type_hints(model)
     lines = [
         f"export const {model.__name__}Schema: z.ZodType<{model.__name__}> = z.lazy(() =>",
         "  z",
@@ -614,6 +624,19 @@ def emit_schema(model: type[BaseModel]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def model_type_hints(model: type[BaseModel]) -> dict[str, Any]:
+    """Resolve model type hints, including acausal forward references."""
+    module_globals = dict(vars(sys.modules[model.__module__]))
+    module_globals.update(
+        {
+            "ComponentSpec": ComponentSpec,
+            "GraphMetadata": GraphMetadata,
+            "AcausalGraphSpec": AcausalGraphSpec,
+        }
+    )
+    return get_type_hints(model, globalns=module_globals, include_extras=True)
 
 
 def generate() -> str:

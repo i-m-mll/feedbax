@@ -1130,7 +1130,7 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                             location={"path": f"{node_path}/params/{schema.name}"},
                         )
                     )
-            required_domain = required_interior_domain(node_spec.type, component_registry)
+            required_domain = required_interior_domain(node_spec.type, registry)
             if required_domain is not None:
                 if not graph.subgraphs or node_name not in graph.subgraphs:
                     errors.append(
@@ -1161,7 +1161,8 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                             location={"path": f"{prefix}/subgraphs/{subgraph_node}"},
                         )
                     )
-                _validate_graph(subgraph, f"{prefix}/subgraphs/{subgraph_node}")
+                if isinstance(subgraph, GraphSpec):
+                    _validate_graph(subgraph, f"{prefix}/subgraphs/{subgraph_node}")
 
     _validate_graph(spec)
     if spec.retained_observables:

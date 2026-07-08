@@ -27,6 +27,35 @@ export interface ComponentSpec {
   output_ports?: string[];
 }
 
+export interface AcausalConnectionSpec {
+  a: [string, string];
+  b: [string, string];
+}
+
+export interface RootFinderSpec {
+  method?: "newton";
+  rtol?: number;
+  atol?: number;
+  max_steps?: number;
+}
+
+export interface SolverConfigSpec {
+  solver_type: "euler" | "implicit_euler" | "kvaerno5" | "tsit5";
+  dt: number;
+  root_finder?: RootFinderSpec | null;
+}
+
+export interface AcausalGraphSpec {
+  schema_id?: "feedbax.spec.acausal_graph";
+  schema_version?: "feedbax.spec.acausal_graph.v1";
+  physical_domain: "translational" | "rotational";
+  nodes?: Record<string, ComponentSpec>;
+  connections?: AcausalConnectionSpec[];
+  solver: SolverConfigSpec;
+  subgraphs?: Record<string, AcausalGraphSpec> | null;
+  metadata?: GraphMetadata | null;
+}
+
 export interface ParameterConstraintSpec {
   node: string;
   role: string;
@@ -207,8 +236,8 @@ export interface GraphMetadata {
 }
 
 export interface GraphSpec {
-  schema_id?: string;
-  schema_version?: string;
+  schema_id?: "feedbax.spec.graph";
+  schema_version?: "feedbax.spec.graph.v4";
   nodes?: Record<string, ComponentSpec>;
   wires?: WireSpec[];
   additive_channel_adapters?: AdditiveGraphChannelAdapterSpec[];
@@ -216,7 +245,7 @@ export interface GraphSpec {
   output_ports?: string[];
   input_bindings?: Record<string, [string, string]>;
   output_bindings?: Record<string, [string, string]>;
-  subgraphs?: Record<string, GraphSpec> | null;
+  subgraphs?: Record<string, GraphSpec | AcausalGraphSpec> | null;
   derived_dimensions?: DerivedDimensionRuleSpec[];
   barnacles?: Record<string, BarnacleSpec[]> | null;
   user_ports?: Record<string, UserPortSpec> | null;
@@ -1670,6 +1699,51 @@ export const ComponentSpecSchema: z.ZodType<ComponentSpec> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<ComponentSpec>;
 
+export const AcausalConnectionSpecSchema: z.ZodType<AcausalConnectionSpec> = z.lazy(() =>
+  z
+    .object({
+      "a": z.tuple([z.string(), z.string()]),
+      "b": z.tuple([z.string(), z.string()]),
+    })
+    .strict()
+) as unknown as z.ZodType<AcausalConnectionSpec>;
+
+export const RootFinderSpecSchema: z.ZodType<RootFinderSpec> = z.lazy(() =>
+  z
+    .object({
+      "method": z.literal("newton").optional(),
+      "rtol": z.number().optional(),
+      "atol": z.number().optional(),
+      "max_steps": z.number().int().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RootFinderSpec>;
+
+export const SolverConfigSpecSchema: z.ZodType<SolverConfigSpec> = z.lazy(() =>
+  z
+    .object({
+      "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5")]),
+      "dt": z.number(),
+      "root_finder": RootFinderSpecSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SolverConfigSpec>;
+
+export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.acausal_graph").optional(),
+      "schema_version": z.literal("feedbax.spec.acausal_graph.v1").optional(),
+      "physical_domain": z.union([z.literal("translational"), z.literal("rotational")]),
+      "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
+      "connections": z.array(AcausalConnectionSpecSchema).optional(),
+      "solver": SolverConfigSpecSchema,
+      "subgraphs": z.record(z.string(), AcausalGraphSpecSchema).nullable().optional(),
+      "metadata": GraphMetadataSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AcausalGraphSpec>;
+
 export const ParameterConstraintSpecSchema: z.ZodType<ParameterConstraintSpec> = z.lazy(() =>
   z
     .object({
@@ -1932,8 +2006,8 @@ export const GraphMetadataSchema: z.ZodType<GraphMetadata> = z.lazy(() =>
 export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
   z
     .object({
-      "schema_id": z.string().optional(),
-      "schema_version": z.string().optional(),
+      "schema_id": z.literal("feedbax.spec.graph").optional(),
+      "schema_version": z.literal("feedbax.spec.graph.v4").optional(),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "wires": z.array(WireSpecSchema).optional(),
       "additive_channel_adapters": z.array(AdditiveGraphChannelAdapterSpecSchema).optional(),
@@ -1941,7 +2015,7 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
       "output_ports": z.array(z.string()).optional(),
       "input_bindings": z.record(z.string(), z.tuple([z.string(), z.string()])).optional(),
       "output_bindings": z.record(z.string(), z.tuple([z.string(), z.string()])).optional(),
-      "subgraphs": z.record(z.string(), GraphSpecSchema).nullable().optional(),
+      "subgraphs": z.record(z.string(), z.union([GraphSpecSchema, AcausalGraphSpecSchema])).nullable().optional(),
       "derived_dimensions": z.array(DerivedDimensionRuleSpecSchema).optional(),
       "barnacles": z.record(z.string(), z.array(BarnacleSpecSchema)).nullable().optional(),
       "user_ports": z.record(z.string(), UserPortSpecSchema).nullable().optional(),

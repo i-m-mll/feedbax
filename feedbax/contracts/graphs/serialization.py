@@ -63,6 +63,8 @@ from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
     WireSpec,
+    require_causal_subgraph,
+    validate_subgraph_domain,
 )
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.contracts.migrations import migrate_graph_spec
@@ -1053,10 +1055,29 @@ def spec_to_graph(
                         domain_id=required_domain,
                     )
                 )
-            nodes[node_name] = spec_to_graph(subgraph, metadata_registry)
+            validate_subgraph_domain(
+                subgraph,
+                expected_domain=required_domain,
+                node_name=node_name,
+                node_type=node_type,
+                consumer="spec_to_graph",
+            )
+            causal_subgraph = require_causal_subgraph(
+                subgraph,
+                node_name=node_name,
+                node_type=node_type,
+                consumer="spec_to_graph",
+            )
+            nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
-            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
+            causal_subgraph = require_causal_subgraph(
+                spec.subgraphs[node_name],
+                node_name=node_name,
+                node_type=node_type,
+                consumer="spec_to_graph",
+            )
+            nodes[node_name] = spec_to_graph(causal_subgraph, metadata_registry)
             continue
         nodes[node_name] = build_component(
             node_name,

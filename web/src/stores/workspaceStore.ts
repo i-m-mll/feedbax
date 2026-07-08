@@ -15,7 +15,7 @@ import {
 } from '@/features/graph/normalization';
 import { WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
 import type { AnalysisSnapshot } from '@/types/analysis';
-import type { GraphSpec, GraphUIState } from '@/types/graph';
+import { isCausalGraphSpec, type GraphSpec, type GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
 import type {
   AnalysisPageWire,
@@ -638,6 +638,7 @@ function assertGraphUiStateConsistency(
         `Cannot build workspace snapshot: ${path} UI state references missing subgraph "${nodeId}".`
       );
     }
+    if (!isCausalGraphSpec(subgraph)) continue;
     assertGraphUiStateConsistency(subgraph, subgraphUiState, `${path}.subgraphs.${nodeId}`);
   }
 }
