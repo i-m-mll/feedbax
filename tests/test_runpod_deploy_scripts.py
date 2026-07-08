@@ -118,6 +118,59 @@ def test_dry_run_prints_deterministic_deploy_commands(tmp_path: Path) -> None:
     assert "uv pip install -U" in normalized
     assert "jax\\[cuda12\\]" in output
     assert "uv run --no-sync python" in normalized
+    assert "JAX_COMPILATION_CACHE_DIR" in output
+    assert "/workspace/jax_cache" in output
+
+
+def test_rows_dry_run_uses_cache_env_and_warm_first_order(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {"id": "row_a", "command": "uv run --no-sync python train.py --row a"},
+                    {"id": "row_b", "command": "uv run --no-sync python train.py --row b"},
+                    {"id": "row_c", "command": "uv run --no-sync python train.py --row c"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    env = {
+        **os.environ,
+        "JAX_COMPILATION_CACHE_DIR": "/workspace/custom_jax_cache",
+        "ROW_LAUNCH_STAGGER_SECONDS": "0",
+        "MAX_PARALLEL_ROWS": "2",
+    }
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--ssh-host",
+        "198.51.100.10",
+        "--ssh-port",
+        "2222",
+        "--train-spec",
+        str(spec),
+        "--rows-manifest",
+        str(rows),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "warm_compile_first=1" in output
+    assert "JAX_COMPILATION_CACHE_DIR" in output
+    assert "/workspace/custom_jax_cache" in output
+    first_launch = output.index("launching row row_a")
+    warm_wait = output.index("dry-run: warm compile first would wait for row row_a")
+    second_launch = output.index("launching row row_b")
+    assert first_launch < warm_wait < second_launch
 
 
 def test_resume_baseline_missing_source_fails_preflight(tmp_path: Path) -> None:

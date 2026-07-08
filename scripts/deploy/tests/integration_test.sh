@@ -224,8 +224,8 @@ remote_capture() {
   ssh -i /dev/null -p 22 root@localhost "$command"
 }
 H
-  # Extract launch_row, count_running_rows, launch_training, sync_rows_manifest.
-  for fn in sync_rows_manifest launch_row count_running_rows launch_training; do
+  # Extract launch_row, warm wait, count_running_rows, launch_training, sync_rows_manifest.
+  for fn in sync_rows_manifest launch_row wait_for_row_active_training count_running_rows launch_training; do
     sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
   done
   echo 'launch_training'
@@ -236,6 +236,7 @@ PATH="$STUBS2:$PATH" \
 REMOTE_RLRMP_ROOT="$REMOTE_FS/rlrmp" \
 REMOTE_RUN_DIR="$REMOTE_FS/feedbax_runs/runpod-deploy" \
 REMOTE_SENTINEL_DIR="$SDIR2" \
+JAX_COMPILATION_CACHE_DIR="$REMOTE_FS/jax_cache" \
 ROWS_MANIFEST="$WORK/rows.json" \
 ROW_LAUNCH_STAGGER_SECONDS=0 \
 MAX_PARALLEL_ROWS=2 \
@@ -309,6 +310,7 @@ PATH="$F_SENT/stubs:$PATH" \
 REMOTE_RLRMP_ROOT="$F_REMOTE/rlrmp" \
 REMOTE_RUN_DIR="$F_REMOTE/feedbax_runs/runpod-deploy" \
 REMOTE_SENTINEL_DIR="$F_SDIR" \
+JAX_COMPILATION_CACHE_DIR="$F_REMOTE/jax_cache" \
 SSH_HOST=localhost SSH_PORT=22 \
 bash "$F_HARNESS" >"$F_SENT/out" 2>"$F_SENT/err"
 frc=$?
@@ -704,7 +706,7 @@ expand_path() { printf '%s\n' "$1"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-    for fn in sync_rows_manifest launch_row count_running_rows launch_training; do
+    for fn in sync_rows_manifest launch_row wait_for_row_active_training count_running_rows launch_training; do
       sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
     done
     echo 'launch_training'
@@ -715,6 +717,7 @@ H
   REMOTE_RLRMP_ROOT="$REMOTE_FS/rlrmp" \
   REMOTE_RUN_DIR="$REMOTE_FS/feedbax_runs/runpod-deploy" \
   REMOTE_SENTINEL_DIR="$SDIR" \
+  JAX_COMPILATION_CACHE_DIR="$REMOTE_FS/jax_cache" \
   ROWS_MANIFEST="$rows_json" \
   ROW_LAUNCH_STAGGER_SECONDS=0 \
   MAX_PARALLEL_ROWS="$cap" \
@@ -953,6 +956,7 @@ PATH="$SIG/stubs:$PATH" \
 REMOTE_RLRMP_ROOT="$SIG/remote/rlrmp" \
 REMOTE_RUN_DIR="$SIG/remote/run" \
 REMOTE_SENTINEL_DIR="$SIG_SENT" \
+JAX_COMPILATION_CACHE_DIR="$SIG/remote/jax_cache" \
 SSH_HOST=localhost SSH_PORT=22 \
 bash "$SIG_HARNESS" >"$SIG/out" 2>"$SIG/err"
 sleep 1
