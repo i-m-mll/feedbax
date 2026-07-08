@@ -196,13 +196,13 @@ cat > "$WORK/spec.json" <<JSON
 {"user_confirmed":true}
 JSON
 
-# Drive launch_training directly via a tiny harness that sources the script's
-# functions. We can't `source` runpod_deploy.sh (it calls main), so we extract
-# the launch-related functions and the few helpers they need.
+# Drive launch_training directly via a tiny harness that sources the run-prep
+# library and supplies the few driver transport helpers it needs.
 HARNESS="$WORK/launch_harness.sh"
 {
   echo 'set -uo pipefail'
   echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   # Minimal helpers used by launch_row / launch_training.
   cat <<'H'
 DRY_RUN=0
@@ -224,10 +224,6 @@ remote_capture() {
   ssh -i /dev/null -p 22 root@localhost "$command"
 }
 H
-  # Extract launch_row, warm wait, count_running_rows, launch_training, sync_rows_manifest.
-  for fn in sync_rows_manifest launch_row wait_for_row_active_training count_running_rows launch_training; do
-    sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
-  done
   echo 'launch_training'
 } > "$HARNESS"
 
@@ -289,6 +285,7 @@ WARM_HARNESS="$WARM/harness.sh"
 {
   echo 'set -uo pipefail'
   echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -303,9 +300,6 @@ expand_path() { printf '%s\n' "$1"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-  for fn in sync_rows_manifest launch_row wait_for_row_active_training count_running_rows launch_training; do
-    sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
-  done
   echo 'launch_training'
 } > "$WARM_HARNESS"
 
@@ -364,6 +358,7 @@ F_HARNESS="$F_SENT/fail_harness.sh"
 {
   echo 'set -uo pipefail'
   echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -374,9 +369,6 @@ sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-  for fn in remote_nohup_sentinel launch_row; do
-    sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
-  done
   cat <<'H'
 remote_nohup_sentinel "failing bootstrap" "$REMOTE_RLRMP_ROOT" "false" \
   "$REMOTE_SENTINEL_DIR/bootstrap.done" "$REMOTE_SENTINEL_DIR/bootstrap.failed" \
@@ -465,6 +457,7 @@ chmod +x "$STUBS_VENV/uv"
 VENV_HARNESS="$WORK/venv_harness.sh"
 {
   echo 'set -euo pipefail'
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -488,8 +481,7 @@ remote_capture() {
   ssh -i /dev/null -p 22 root@localhost "$command"
 }
 H
-  for fn in remote_nohup_sentinel wait_for_sentinel wait_for_sentinel_result \
-            bootstrap_remote_env mark_bootstrap_branch clear_venv_probe_markers \
+  for fn in bootstrap_remote_env mark_bootstrap_branch clear_venv_probe_markers \
             probe_reused_remote_env bootstrap_remote_env_for_pod; do
     sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
   done
@@ -772,6 +764,7 @@ BUMPSTUB
   {
     echo 'set -uo pipefail'
     echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+    echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
     cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -786,9 +779,6 @@ expand_path() { printf '%s\n' "$1"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-    for fn in sync_rows_manifest launch_row wait_for_row_active_training count_running_rows launch_training; do
-      sed -n "/^$fn() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
-    done
     echo 'launch_training'
   } > "$HN"
 
@@ -1019,6 +1009,7 @@ SIG_HARNESS="$SIG/harness.sh"
 {
   echo 'set -uo pipefail'
   echo "source '$DEPLOY_DIR/lib_acquire.sh'"
+  echo "source '$DEPLOY_DIR/lib_run_prep.sh'"
   cat <<'H'
 DRY_RUN=0
 RUNPOD_SSH_KEY="/dev/null"
@@ -1028,7 +1019,6 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
 H
-  sed -n "/^launch_row() {/,/^}/p" "$DEPLOY_DIR/runpod_deploy.sh"
   echo 'launch_row "row_term" "$REMOTE_RLRMP_ROOT" "sleep 20"'
 } > "$SIG_HARNESS"
 
