@@ -65,8 +65,10 @@ import { RoutedEdge } from './RoutedEdge';
 import { StateFlowEdge } from './StateFlowEdge';
 import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
+import { useDomains } from '@/hooks/useDomains';
 import { FIT_VIEW_SHORTCUT_EVENT } from '@/hooks/useShortcuts';
 import clsx from 'clsx';
+import { toast } from 'sonner';
 import type { ComponentSpec, GraphEdgeData, GraphNodeData, GraphSpec, TapNodeData } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type {
@@ -614,6 +616,7 @@ export function Canvas() {
     uiState,
     graphStack,
     currentGraphLabel,
+    currentContext,
     exitToBreadcrumb,
     wrapInParentGraph,
   } = useGraphStore(
@@ -639,6 +642,7 @@ export function Canvas() {
       uiState: state.uiState,
       graphStack: state.graphStack,
       currentGraphLabel: state.currentGraphLabel,
+      currentContext: state.currentContext,
       exitToBreadcrumb: state.exitToBreadcrumb,
       wrapInParentGraph: state.wrapInParentGraph,
     }))
@@ -669,6 +673,8 @@ export function Canvas() {
     ? topPane.selected_entity_id.slice(TASK_BINDING_ENTITY_PREFIX.length)
     : null;
   const { components } = useComponents();
+  const { domainContextFor } = useDomains();
+  const domainContext = domainContextFor(currentContext);
   const reactFlow = useReactFlow();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
@@ -1540,6 +1546,16 @@ export function Canvas() {
       const component = components.find((item) => item.name === componentName);
       if (!component) return;
       if (component.category === 'Tasks') return;
+      const verdict = domainContext?.canPlace(component) ?? {
+        allowed: false,
+        reason: 'Component domain registry is unavailable; cannot place this component.',
+      };
+      if (!verdict.allowed) {
+        toast.error('reason' in verdict ? verdict.reason : 'Component is not available here.', {
+          id: 'domain-placement-error',
+        });
+        return;
+      }
 
       const position = reactFlow.screenToFlowPosition({
         x: event.clientX,
@@ -1547,7 +1563,7 @@ export function Canvas() {
       });
       addNodeFromComponent(component, position);
     },
-    [addNodeFromComponent, reactFlow, components]
+    [addNodeFromComponent, reactFlow, components, domainContext]
   );
 
   const onDragOver = useCallback((event: DragEvent) => {

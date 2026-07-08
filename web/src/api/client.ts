@@ -1,6 +1,6 @@
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import { parseContract, type SelectionSpec } from '@/generated/studioContracts';
+import { parseContract, type DomainMeta, type SelectionSpec } from '@/generated/studioContracts';
 import type {
   StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
@@ -68,6 +68,11 @@ function parseContractArray<K extends import('@/generated/studioContracts').Cont
 export async function fetchComponents(): Promise<ComponentDefinition[]> {
   const response = parseContract('ComponentListResponse', await requestJson('/api/components'));
   return response.data.components as unknown as ComponentDefinition[];
+}
+
+export async function fetchDomains(): Promise<DomainMeta[]> {
+  const response = parseContract('DomainListResponse', await requestJson('/api/domains'));
+  return response.data.domains;
 }
 
 export async function fetchGraphs() {

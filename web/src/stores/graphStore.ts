@@ -38,10 +38,6 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
-const DEFAULT_COMPOSITE_TYPES = new Set([
-  'Subgraph',
-  'Arm6MuscleRigidTendon', 'PointMass8MuscleRelu', 'AcausalSystem',
-]);
 const DEFAULT_NODE_WIDTH = 220;
 const DEFAULT_NODE_HEIGHT = 120;
 const HEADER_HEIGHT = 40;
@@ -615,13 +611,28 @@ export function createBlankGraph(): GraphSpec {
   };
 }
 
-function getSubgraphContext(type: string): string {
-  switch (type) {
-    case 'Arm6MuscleRigidTendon':
-    case 'PointMass8MuscleRelu': return 'muscle';
-    case 'AcausalSystem': return 'acausal';
-    default: return 'generic';
-  }
+function interiorDomainForNode(
+  nodeSpec: ComponentSpec | undefined,
+  componentRegistry: Map<string, ComponentDefinition>
+): string | null {
+  if (!nodeSpec) return null;
+  return componentRegistry.get(nodeSpec.type)?.interior_domain ?? null;
+}
+
+function refreshLayerContexts(
+  graphStack: GraphLayer[],
+  componentRegistry: Map<string, ComponentDefinition>
+) {
+  let currentContext = 'top-level';
+  const nextStack = graphStack.map((layer) => {
+    const contextType = interiorDomainForNode(
+      layer.childNodeId ? layer.graph.nodes[layer.childNodeId] : undefined,
+      componentRegistry
+    ) ?? layer.contextType;
+    if (contextType) currentContext = contextType;
+    return { ...layer, contextType };
+  });
+  return { graphStack: nextStack, currentContext };
 }
 
 function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
@@ -1736,6 +1747,7 @@ function restoreGraphStackPathFromRoot({
   graphStackPath,
   rootLabel,
   edgeStyle,
+  componentRegistry,
 }: {
   graph: GraphSpec;
   uiState: GraphUIState;
@@ -1743,6 +1755,7 @@ function restoreGraphStackPathFromRoot({
   graphStackPath: string[];
   rootLabel: string;
   edgeStyle: 'bezier' | 'elbow';
+  componentRegistry: Map<string, ComponentDefinition>;
 }): Pick<
   GraphStoreState,
   'graph' | 'uiState' | 'nodes' | 'edges' | 'graphStack' | 'currentGraphLabel' | 'currentContext'
@@ -1783,7 +1796,7 @@ function restoreGraphStackPathFromRoot({
       parentUi.subgraph_states?.[nodeId] ?? { viewport: DEFAULT_VIEWPORT, node_states: {} },
       edgeStyle
     );
-    const context = getSubgraphContext(nodeSpec.type);
+    const context = interiorDomainForNode(nodeSpec, componentRegistry) ?? undefined;
     graphStack.push({
       graph: parentGraph,
       uiState: parentUi,
@@ -1795,7 +1808,7 @@ function restoreGraphStackPathFromRoot({
     parentGraph = childGraph;
     parentUi = childUi;
     parentLabel = nodeId;
-    currentContext = context;
+    currentContext = context ?? currentContext;
   }
 
   return {
@@ -1836,6 +1849,7 @@ export function createGraphSnapshotFromPersistedGraph({
     graphStackPath: graphStackPath ?? [],
     rootLabel,
     edgeStyle,
+    componentRegistry: new Map<string, ComponentDefinition>(),
   });
   return {
     graph: restored.graph,
@@ -1866,7 +1880,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   edgeStyle: DEFAULT_EDGE_STYLE,
   graphStack: [],
   currentGraphLabel: initial.graph.metadata?.name ?? 'Model',
-  _compositeTypes: new Set(DEFAULT_COMPOSITE_TYPES),
+  _compositeTypes: new Set<string>(),
   _componentRegistry: new Map<string, ComponentDefinition>(),
   _isRegistryLoaded: false,
   currentContext: 'top-level',
@@ -1890,6 +1904,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       graphStackPath: graphStackPath ?? [],
       rootLabel: migrated.metadata?.name ?? 'Model',
       edgeStyle,
+      componentRegistry: get()._componentRegistry,
     });
     set({
       graphId: graphId ?? null,
@@ -2148,14 +2163,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeSpec = state.graph.nodes[nodeId];
       const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
-      const isComposite = nodeSpec ? get()._compositeTypes.has(nodeSpec.type) : false;
+      const componentDef = nodeSpec ? get()._componentRegistry.get(nodeSpec.type) : undefined;
+      const isComposite = Boolean(componentDef?.is_composite);
       if (!nodeSpec || (!isComposite && !hasSubgraph)) {
         return state;
+      }
+      const context = interiorDomainForNode(nodeSpec, get()._componentRegistry);
+      if (!context) {
+        return {
+          lastSubgraphError:
+            `Cannot open "${nodeId}" because component domain metadata is still loading.`,
+        };
       }
       const parentLabel = state.currentGraphLabel || state.graph.metadata?.name || 'Model';
       const cachedGraph = state.graph.subgraphs?.[nodeId];
       const cachedUi = state.uiState.subgraph_states?.[nodeId];
-      const componentDef = get()._componentRegistry.get(nodeSpec.type);
 
       // Bug d5e8b8f: Only derive ports for freshly-created subgraphs.
       // Cached subgraphs already have user-customized bindings/ports.
@@ -2198,7 +2220,6 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           [nodeId]: normalized,
         },
       };
-      const context = getSubgraphContext(nodeSpec.type);
       const graphHistory = graphHistoryWithActiveLayer(state);
       const nextHistory = historyForPath(graphHistory, [
         ...activeGraphLayerPath(state),
@@ -3856,9 +3877,16 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set({ _compositeTypes: types });
   },
   setComponentRegistry: (components) => {
-    set({
-      _componentRegistry: new Map(components.map((c) => [c.name, c])),
-      _isRegistryLoaded: true,
+    set((state) => {
+      const componentRegistry = new Map(components.map((c) => [c.name, c]));
+      const refreshed = refreshLayerContexts(state.graphStack, componentRegistry);
+      return {
+        _compositeTypes: new Set(components.filter((c) => c.is_composite).map((c) => c.name)),
+        _componentRegistry: componentRegistry,
+        _isRegistryLoaded: true,
+        graphStack: refreshed.graphStack,
+        currentContext: refreshed.currentContext,
+      };
     });
   },
 }));
