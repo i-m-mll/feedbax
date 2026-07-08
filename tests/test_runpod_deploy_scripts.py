@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNPOD_DEPLOY = REPO_ROOT / "scripts" / "deploy" / "runpod_deploy.sh"
+LIB_RUN_PREP = REPO_ROOT / "scripts" / "deploy" / "lib_run_prep.sh"
 POLL_RUN = REPO_ROOT / "scripts" / "deploy" / "poll_run.sh"
 
 
@@ -563,7 +564,7 @@ def test_deploy_launch_wrapper_marks_failure_on_signals(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     output = result.stdout + result.stderr
-    script = RUNPOD_DEPLOY.read_text(encoding="utf-8")
+    script = LIB_RUN_PREP.read_text(encoding="utf-8")
     assert "mark_failed()" in script
     assert "trap mark_failed EXIT" in script
     assert "trap 'signal_failed 143' TERM" in script

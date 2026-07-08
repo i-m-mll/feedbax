@@ -14,6 +14,8 @@ FIX="$TESTS_DIR/fixtures"
 
 # shellcheck source=../lib_acquire.sh
 source "$DEPLOY_DIR/lib_acquire.sh"
+# shellcheck source=../lib_run_prep.sh
+source "$DEPLOY_DIR/lib_run_prep.sh"
 
 PASS=0
 FAIL=0
@@ -332,6 +334,59 @@ cat > "$TMP/old-latest.json" <<JSON
 {"completed_batches":900}
 JSON
 eq "latest pointer completed_batches fallback" "900" "$(latest_pointer_completed_batches "$TMP/old-latest.json")"
+
+# ---------------------------------------------------------------------------
+section "run-prep local provider adapter"
+LOCAL_PREP="$TMP/local_prep"
+mkdir -p "$LOCAL_PREP/work"
+jq -n \
+  --arg cmd_a "printf '%s\n' \"\$JAX_COMPILATION_CACHE_DIR\" > '$LOCAL_PREP/cache_a'" \
+  --arg cmd_b "printf '%s\n' \"\$JAX_COMPILATION_CACHE_DIR\" > '$LOCAL_PREP/cache_b'" \
+  '{schema_version: 1, rows: [{id: "row_a", command: $cmd_a}, {id: "row_b", command: $cmd_b}]}' \
+  > "$LOCAL_PREP/rows.json"
+
+log() { printf '==> %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+print_cmd() { :; }
+run_cmd() { "$@"; }
+capture_cmd() { "$@"; }
+sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
+
+set +e
+RUN_PREP_PROVIDER=local \
+DRY_RUN=0 \
+REMOTE_RLRMP_ROOT="$LOCAL_PREP/work" \
+LOCAL_RUN_PREP_WORKDIR="$LOCAL_PREP/work" \
+REMOTE_RUN_DIR="$LOCAL_PREP/run" \
+REMOTE_SENTINEL_DIR="$LOCAL_PREP/run/sentinels" \
+ROWS_MANIFEST="$LOCAL_PREP/rows.json" \
+ROW_LAUNCH_STAGGER_SECONDS=0 \
+MAX_PARALLEL_ROWS=2 \
+WARM_COMPILE_FIRST=0 \
+SENTINEL_POLL_SECONDS=1 \
+JAX_COMPILATION_CACHE_DIR="$LOCAL_PREP/jax_cache" \
+launch_training > "$LOCAL_PREP/out" 2> "$LOCAL_PREP/err"
+lrc=$?
+sleep 1
+
+eq "local adapter launch -> rc 0" "0" "$lrc"
+if [ -f "$LOCAL_PREP/run/sentinels/row_a.done" ] &&
+   [ -f "$LOCAL_PREP/run/sentinels/row_b.done" ]; then
+    ok "local adapter writes row sentinels"
+else
+    no "local adapter writes row sentinels" \
+       "row_a.done and row_b.done" \
+       "$(find "$LOCAL_PREP/run" -maxdepth 3 -type f 2>/dev/null | tr '\n' ' ')"
+fi
+if cmp -s "$LOCAL_PREP/rows.json" "$LOCAL_PREP/run/rows-manifest.json"; then
+    ok "local adapter provider_copy staged rows manifest"
+else
+    no "local adapter provider_copy staged rows manifest" \
+       "rows manifest copied" \
+       "$(find "$LOCAL_PREP/run" -maxdepth 2 -type f 2>/dev/null | tr '\n' ' ')"
+fi
+eq "local adapter row env cache_a" "$LOCAL_PREP/jax_cache" "$(cat "$LOCAL_PREP/cache_a" 2>/dev/null || true)"
+eq "local adapter row env cache_b" "$LOCAL_PREP/jax_cache" "$(cat "$LOCAL_PREP/cache_b" 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 printf '\n== summary ==\n'
