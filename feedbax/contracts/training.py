@@ -32,6 +32,8 @@ from feedbax.contracts.worker import (
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run.v1"
 TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v2"
+LR_SCHEDULE_SPEC_SCHEMA_ID = "feedbax.spec.training.lr_schedule"
+LR_SCHEDULE_SPEC_SCHEMA_VERSION = "feedbax.spec.training.lr_schedule.v1"
 LOSS_TERM_SPEC_SCHEMA_ID = "feedbax.spec.training.loss_term"
 LOSS_TERM_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training.loss_term.v1"
 LOSS_TERM_SPEC_SCHEMA_VERSION = "feedbax.spec.training.loss_term.v2"
@@ -44,11 +46,89 @@ STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION = (
 )
 
 
+class LrScheduleSpec(BaseModel):
+    """Schema-versioned learning-rate schedule specification.
+
+    Attributes:
+        schema_id: Stable schema identity for Feedbax learning-rate schedules.
+        schema_version: Version of this schedule payload schema.
+        kind: Schedule family. ``"constant"`` holds ``learning_rate_0``;
+            ``"warmup_cosine"`` linearly warms from
+            ``warmup_init_fraction * learning_rate_0`` over
+            ``constant_lr_iterations`` steps, then cosine-anneals to
+            ``cosine_annealing_alpha * learning_rate_0`` at ``total_steps``;
+            ``"delayed_cosine"`` holds ``learning_rate_0`` for
+            ``constant_lr_iterations`` steps, then cosine-anneals to the same
+            terminal fraction at ``total_steps``.
+        learning_rate_0: Peak learning rate. This maps from rlrmp
+            ``controller_lr``.
+        total_steps: Origin-relative step at which cosine schedules reach
+            their terminal value. This maps from rlrmp ``n_batches_condition``.
+        constant_lr_iterations: Warmup length for ``"warmup_cosine"`` and
+            constant-prefix length for ``"delayed_cosine"``. This maps from
+            rlrmp ``lr_warmup_batches``.
+        warmup_init_fraction: Initial learning-rate fraction for
+            ``"warmup_cosine"``. This maps from rlrmp
+            ``lr_warmup_init_fraction``.
+        cosine_annealing_alpha: Terminal learning-rate fraction for cosine
+            schedules. This maps from rlrmp ``lr_cosine_alpha``.
+    """
+
+    schema_id: Literal["feedbax.spec.training.lr_schedule"] = LR_SCHEDULE_SPEC_SCHEMA_ID
+    schema_version: str = LR_SCHEDULE_SPEC_SCHEMA_VERSION
+    kind: Literal["constant", "warmup_cosine", "delayed_cosine"] = "constant"
+    learning_rate_0: float = Field(gt=0.0)
+    total_steps: int | None = Field(default=None, gt=0)
+    constant_lr_iterations: int = Field(default=0, ge=0)
+    warmup_init_fraction: float = Field(default=0.0, ge=0.0)
+    cosine_annealing_alpha: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_schedule_shape(self) -> "LrScheduleSpec":
+        if self.schema_id != LR_SCHEDULE_SPEC_SCHEMA_ID:
+            raise ValueError(
+                f"/schema_id unsupported LrScheduleSpec schema_id {self.schema_id!r}; "
+                f"expected {LR_SCHEDULE_SPEC_SCHEMA_ID!r}"
+            )
+        if self.schema_version != LR_SCHEDULE_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                "/schema_version unsupported LrScheduleSpec schema_version "
+                f"{self.schema_version!r}; expected {LR_SCHEDULE_SPEC_SCHEMA_VERSION!r}"
+            )
+        if self.kind == "constant":
+            return self
+        if self.total_steps is None:
+            raise ValueError(f"/total_steps is required when lr_schedule.kind={self.kind!r}")
+        if self.kind == "warmup_cosine":
+            if self.constant_lr_iterations < 1:
+                raise ValueError(
+                    "/constant_lr_iterations must be >= 1 for warmup_cosine schedules"
+                )
+            if self.constant_lr_iterations >= self.total_steps:
+                raise ValueError(
+                    "/constant_lr_iterations must be < /total_steps for warmup_cosine"
+                )
+        if self.kind == "delayed_cosine" and self.constant_lr_iterations >= self.total_steps:
+            raise ValueError(
+                "/constant_lr_iterations must be < /total_steps for delayed_cosine"
+            )
+        return self
+
+
 class OptimizerSpec(BaseModel):
-    """Specification for an optimizer."""
+    """Specification for an optimizer.
+
+    Attributes:
+        type: Optimizer factory name. The public builder supports ``"adamw"``,
+            ``"adam"``, ``"sgd"``, and ``"rmsprop"``.
+        params: Static optimizer parameters other than scheduled learning rate.
+        lr_schedule: Optional declarative learning-rate schedule. ``None``
+            preserves legacy method-owned optimizer construction.
+    """
 
     type: str
     params: Dict[str, ParamValue] = Field(default_factory=dict)
+    lr_schedule: LrScheduleSpec | None = None
 
 
 class TimeAggregationSpec(BaseModel):

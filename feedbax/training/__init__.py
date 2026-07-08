@@ -29,6 +29,13 @@ try:
         execute_training_run_spec,
         load_training_run_spec,
     )
+    from .optimizers import (
+        OptimizerStateCompatibilityError,
+        build_optimizer,
+        learning_rate_at_step,
+        learning_rate_schedule,
+        validate_optimizer_state_for_spec,
+    )
 except ImportError:
     pass
 
@@ -44,8 +51,10 @@ __all__ = [
     "SimpleTrainer",
     "StreamingCheckpointStore",
     "ManifestEmissionConflictError",
+    "OptimizerStateCompatibilityError",
     "TrainingRunExecutionResult",
     "TrainingRunExecutorError",
+    "build_optimizer",
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
     "execute_training_run_spec",
@@ -53,8 +62,11 @@ __all__ = [
     "load_hps",
     "load_latest_checkpoint",
     "load_training_run_spec",
+    "learning_rate_at_step",
+    "learning_rate_schedule",
     "run_contract_binding",
     "structural_abi_fingerprint",
     "training_step_for_abstract_loss",
+    "validate_optimizer_state_for_spec",
     "write_checkpoint_transaction",
 ]

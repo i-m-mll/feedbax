@@ -116,6 +116,8 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
 from feedbax.contracts.training import (
+    LR_SCHEDULE_SPEC_SCHEMA_ID,
+    LR_SCHEDULE_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_ID,
     LOSS_TERM_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
@@ -1742,6 +1744,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
             consumed_by=("training service", "worker"),
             description="Training optimizer, loss, and run-shape specification.",
+        ),
+        _family(
+            "LrScheduleSpec",
+            LR_SCHEDULE_SPEC_SCHEMA_ID,
+            LR_SCHEDULE_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=("OptimizerSpec.lr_schedule", "provider_manifest.schemas"),
+            consumed_by=("feedbax.training.optimizers", "downstream optimizer builders"),
+            description=(
+                "Declarative learning-rate schedule contract for OptimizerSpec."
+            ),
+            rejected_old_versions=("feedbax.spec.training.lr_schedule.v0",),
+            required_tests=(
+                "tests/test_optimizer_contract.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "TaskSpec",

@@ -95,7 +95,13 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
 )
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
-from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingRunSpec, TrainingSpec
+from feedbax.contracts.training import (
+    LossTermSpec,
+    LrScheduleSpec,
+    TaskSpec,
+    TrainingRunSpec,
+    TrainingSpec,
+)
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.tasks.presets import apply_delayed_reaches_preset
 
@@ -244,6 +250,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "AnalysisDataProductRequirement": AnalysisDataProductRequirement,
         "TrainingSpec": TrainingSpec,
         "TrainingRunSpec": TrainingRunSpec,
+        "LrScheduleSpec": LrScheduleSpec,
         "TaskSpec": TaskSpec,
         "LossTermSpec": LossTermSpec,
         "EvaluationRunSpec": EvaluationRunSpec,
