@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import type { LiveTrainingFrame } from '@/features/scenario/liveTraining';
 import type {
   LossTermSpec,
   LossValidationError,
@@ -13,14 +14,7 @@ import type {
 } from '@/types/training';
 import { LOSS_TERM_SPEC_SCHEMA_ID, LOSS_TERM_SPEC_SCHEMA_VERSION } from '@/types/training';
 
-export interface TrajectorySnapshot {
-  batch: number;
-  effector: [number, number][];
-  target?: [number, number][] | [number, number] | null;
-  t: number[];
-  observables?: Record<string, unknown>;
-  outputs?: Record<string, unknown>;
-}
+export type TrajectorySnapshot = LiveTrainingFrame;
 
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
 export type WorkerMode = 'local' | 'remote';

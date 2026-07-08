@@ -112,30 +112,16 @@ def default_2link_bounds() -> BodyPresetBounds:
     """Sensible parameter ranges for a 2-link arm with 6 muscles.
 
     Layout: 4 monoarticular + 2 biarticular (from
-    ``default_6muscle_2link_topology``).  Moment arm magnitudes are derived
-    from ``TwoLinkArmMuscleGeometry.default_six_muscle()`` with ~30% variation.
+    ``default_6muscle_2link_topology``).  Moment arm magnitudes use the
+    canonical 6-muscle, 2-link defaults with ~30% variation.
     """
-    # Reference values from geometry.py defaults:
-    #   shoulder_moment_arm = 0.04
-    #   elbow_moment_arm    = 0.025
-    #   biarticular_shoulder_arm = 0.035
-    #   biarticular_elbow_arm    = 0.022
-    mag_min = jnp.array([
-        [0.04 * 0.7, 0.0],         # shoulder flexor
-        [0.04 * 0.7, 0.0],         # shoulder extensor
-        [0.0, 0.025 * 0.7],        # elbow flexor
-        [0.0, 0.025 * 0.7],        # elbow extensor
-        [0.035 * 0.7, 0.022 * 0.7],  # biarticular flexor
-        [0.035 * 0.7, 0.022 * 0.7],  # biarticular extensor
-    ])
-    mag_max = jnp.array([
-        [0.04 * 1.3, 0.0],         # shoulder flexor
-        [0.04 * 1.3, 0.0],         # shoulder extensor
-        [0.0, 0.025 * 1.3],        # elbow flexor
-        [0.0, 0.025 * 1.3],        # elbow extensor
-        [0.035 * 1.3, 0.022 * 1.3],  # biarticular flexor
-        [0.035 * 1.3, 0.022 * 1.3],  # biarticular extensor
-    ])
+    from feedbax.mechanics.muscle_config import (
+        default_6muscle_2link_moment_arm_magnitudes,
+    )
+
+    magnitudes = default_6muscle_2link_moment_arm_magnitudes()
+    mag_min = magnitudes * 0.7
+    mag_max = magnitudes * 1.3
     return BodyPresetBounds(
         segment_lengths_min=jnp.array([0.15, 0.12]),
         segment_lengths_max=jnp.array([0.40, 0.35]),

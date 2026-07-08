@@ -9,6 +9,7 @@ import jax.tree as jt
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
+from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
@@ -72,6 +73,506 @@ def _positive_sizes(params: Mapping[str, Any], *, component: str) -> tuple[int, 
 
 def _n_dims_proto(params: Mapping[str, Any], *, key: str = "n_dims") -> Any:
     return jnp.zeros((int(params.get(key, 1)),))
+
+
+def _representation(data: Mapping[str, Any]) -> RepresentationSpec:
+    return RepresentationSpec.model_validate(data)
+
+
+def _selector_binding(
+    namespace: str,
+    compact: str,
+    *,
+    target_id: str | None = None,
+    path: str | None = None,
+    anchor_subpath: str | None = None,
+    dim: int | None = None,
+    role: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    selector: dict[str, Any] = {
+        "namespace": namespace,
+        "compact": compact,
+    }
+    if target_id is not None:
+        selector["target_id"] = target_id
+    if path is not None:
+        selector["path"] = path
+    if role is not None:
+        selector["role"] = role
+    if metadata:
+        selector["metadata"] = dict(metadata)
+    binding: dict[str, Any] = {
+        "kind": "selector",
+        "selector": selector,
+    }
+    if anchor_subpath is not None:
+        binding["anchor_subpath"] = anchor_subpath
+    if dim is not None:
+        binding["dim"] = dim
+    return binding
+
+
+def _literal_binding(value: Any, *, dim: int | None = None) -> dict[str, Any]:
+    binding: dict[str, Any] = {"kind": "literal", "value": value}
+    if dim is not None:
+        binding["dim"] = dim
+    return binding
+
+
+def _param_binding(
+    path: str,
+    *,
+    expected_type: str | None = None,
+    dim: int | None = None,
+) -> dict[str, Any]:
+    binding: dict[str, Any] = {"kind": "param_path", "path": path}
+    if expected_type is not None:
+        binding["expected_type"] = expected_type
+    if dim is not None:
+        binding["dim"] = dim
+    return binding
+
+
+def _trial_binding(path: str, *, dim: int | None = None) -> dict[str, Any]:
+    binding: dict[str, Any] = {"kind": "trial_spec_path", "path": path}
+    if dim is not None:
+        binding["dim"] = dim
+    return binding
+
+
+def _compose_children_metadata() -> dict[str, Any]:
+    return {
+        "composition_rule": {
+            "kind": "subgraph_children",
+            "allow_outer_geometry_fallback": False,
+        }
+    }
+
+
+def _point_mass_representation() -> RepresentationSpec:
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "anchors": [
+                {
+                    "id": "center",
+                    "semantic_role": "center",
+                    "interaction_roles": ["selectable", "hoverable"],
+                    "label": "Effector",
+                    "binding": _selector_binding(
+                        "mechanics_object",
+                        "output:effector",
+                        target_id="effector",
+                        path="pos",
+                        anchor_subpath="position",
+                        dim=2,
+                    ),
+                    "units": "m",
+                    "dim": 2,
+                }
+            ],
+            "elements": [
+                {
+                    "id": "point-body",
+                    "archetype": "point_body",
+                    "anchors": ["center"],
+                    "bindings": {
+                        "position": _selector_binding(
+                            "mechanics_object",
+                            "output:effector",
+                            target_id="effector",
+                            path="pos",
+                            anchor_subpath="position",
+                            dim=2,
+                        )
+                    },
+                    "style": [
+                        {"channel": "radius", "value": 5},
+                        {"channel": "fill", "value": "var(--workspace-body-fill)"},
+                    ],
+                    "metadata": {
+                        "body_kind": "point_mass",
+                        "source_output_port": "effector",
+                    },
+                }
+            ],
+        }
+    )
+
+
+def _two_link_arm_representation() -> RepresentationSpec:
+    link_lengths = _param_binding("link_lengths", expected_type="array", dim=2)
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "anchors": [
+                {
+                    "id": "shoulder",
+                    "semantic_role": "joint",
+                    "interaction_roles": ["selectable", "hoverable"],
+                    "label": "Shoulder",
+                    "binding": _literal_binding([0.0, 0.0], dim=2),
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"joint_index": 0},
+                },
+                {
+                    "id": "elbow",
+                    "semantic_role": "joint",
+                    "interaction_roles": ["selectable", "hoverable"],
+                    "label": "Elbow",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {
+                        "computed_from": "joint_angles_and_link_lengths",
+                        "joint_index": 1,
+                    },
+                },
+                {
+                    "id": "effector",
+                    "semantic_role": "endpoint",
+                    "interaction_roles": ["selectable", "hoverable"],
+                    "label": "Effector",
+                    "binding": _selector_binding(
+                        "mechanics_object",
+                        "output:effector",
+                        target_id="effector",
+                        path="pos",
+                        anchor_subpath="position",
+                        dim=2,
+                    ),
+                    "units": "m",
+                    "dim": 2,
+                },
+            ],
+            "elements": [
+                {
+                    "id": "links",
+                    "archetype": "planar_chain",
+                    "anchors": ["shoulder", "elbow", "effector"],
+                    "bindings": {
+                        "joint_angles": _selector_binding(
+                            "mechanics_object",
+                            "output:state",
+                            target_id="state",
+                            path="skeleton.angle",
+                            anchor_subpath="orientation",
+                            dim=2,
+                        ),
+                        "link_lengths": link_lengths,
+                    },
+                    "style": [
+                        {"channel": "stroke", "value": "var(--workspace-body-stroke)"},
+                        {"channel": "line_width", "value": 3},
+                    ],
+                    "metadata": {
+                        "chain_kind": "two_link_arm",
+                        "kinematics": "feedbax.mechanics.skeleton.arm.TwoLinkArm.forward_kinematics",
+                        "link_length_param": "link_lengths",
+                    },
+                }
+            ],
+        }
+    )
+
+
+def _two_link_muscle_representation(*, source: str, composite: bool) -> RepresentationSpec:
+    metadata = {
+        "geometry_source": source,
+        "chain_source": "feedbax.mechanics.skeleton.arm.TwoLinkArm",
+        "muscle_count": 6,
+        **(_compose_children_metadata() if composite else {}),
+    }
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "metadata": metadata,
+            "anchors": [
+                {
+                    "id": "shoulder",
+                    "semantic_role": "joint",
+                    "label": "Shoulder",
+                    "binding": _literal_binding([0.0, 0.0], dim=2),
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"joint_index": 0},
+                },
+                {
+                    "id": "elbow",
+                    "semantic_role": "joint",
+                    "label": "Elbow",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"computed_from": "joint_angles_and_link_lengths"},
+                },
+                {
+                    "id": "effector",
+                    "semantic_role": "endpoint",
+                    "label": "Effector",
+                    "binding": _selector_binding(
+                        "mechanics_object",
+                        "output:effector",
+                        target_id="effector",
+                        path="pos",
+                        anchor_subpath="position",
+                        dim=2,
+                    ),
+                    "units": "m",
+                    "dim": 2,
+                },
+                {
+                    "id": "muscle-origins",
+                    "semantic_role": "origin",
+                    "label": "Muscle origins",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"collection": "muscle_origins"},
+                },
+                {
+                    "id": "muscle-insertions",
+                    "semantic_role": "insertion",
+                    "label": "Muscle insertions",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"collection": "muscle_insertions"},
+                },
+            ],
+            "elements": [
+                {
+                    "id": "links",
+                    "archetype": "planar_chain",
+                    "anchors": ["shoulder", "elbow", "effector"],
+                    "bindings": {
+                        "joint_angles": _selector_binding(
+                            "mechanics_object",
+                            "output:state",
+                            target_id="state",
+                            path="skeleton.angle",
+                            anchor_subpath="orientation",
+                            dim=2,
+                        )
+                    },
+                    "metadata": {"chain_kind": "two_link_arm"},
+                },
+                {
+                    "id": "muscle-paths",
+                    "archetype": "muscle_path",
+                    "anchors": ["muscle-origins", "muscle-insertions"],
+                    "style": [
+                        {
+                            "channel": "opacity",
+                            "binding": _selector_binding(
+                                "biomechanics_object",
+                                "output:activations",
+                                target_id="activations",
+                                role="activation",
+                                metadata={"style_binding": "per_muscle"},
+                            ),
+                            "metadata": {
+                                "maps": "muscle_activation",
+                                "range": [0.15, 1.0],
+                            },
+                        },
+                        {"channel": "stroke", "value": "var(--workspace-muscle-stroke)"},
+                    ],
+                    "metadata": {
+                        "geometry_source": source,
+                        "runtime_frame_paths": "resolver_required",
+                        "activation_channel": "opacity",
+                    },
+                },
+            ],
+        }
+    )
+
+
+def _point_mass_muscle_representation() -> RepresentationSpec:
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "metadata": {
+                "geometry_source": "feedbax.mechanics.geometry.PointMassRadialGeometry",
+                "muscle_count_param": "n_pairs",
+                **_compose_children_metadata(),
+            },
+            "anchors": [
+                {
+                    "id": "center",
+                    "semantic_role": "center",
+                    "label": "Point mass",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"source_output_port": "force_2d"},
+                },
+                {
+                    "id": "radial-muscle-paths",
+                    "semantic_role": "path",
+                    "label": "Radial muscle paths",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"collection": "radial_muscle_paths"},
+                },
+            ],
+            "elements": [
+                {
+                    "id": "point-body",
+                    "archetype": "point_body",
+                    "anchors": ["center"],
+                    "metadata": {"body_kind": "point_mass"},
+                },
+                {
+                    "id": "radial-muscles",
+                    "archetype": "muscle_path",
+                    "anchors": ["radial-muscle-paths"],
+                    "bindings": {
+                        "n_pairs": _param_binding("n_pairs", expected_type="int"),
+                    },
+                    "style": [
+                        {
+                            "channel": "opacity",
+                            "binding": _selector_binding(
+                                "biomechanics_object",
+                                "output:activations",
+                                target_id="activations",
+                                role="activation",
+                                metadata={"style_binding": "per_muscle"},
+                            ),
+                            "metadata": {
+                                "maps": "muscle_activation",
+                                "range": [0.15, 1.0],
+                            },
+                        }
+                    ],
+                    "metadata": {
+                        "geometry_source": "feedbax.mechanics.geometry.PointMassRadialGeometry",
+                        "runtime_frame_paths": "resolver_required",
+                    },
+                },
+            ],
+        }
+    )
+
+
+def _reach_task_representation(*, delayed: bool) -> RepresentationSpec:
+    temporality = (
+        {
+            "kind": "scheduled",
+            "target_on_epochs_param": "target_on_epochs",
+            "move_epochs_param": "move_epochs",
+            "target_visible_from_start_param": "target_visible_from_start",
+        }
+        if delayed
+        else {"kind": "static"}
+    )
+    endpoint_mode = (
+        {"kind": "param", "param": "train_endpoint_mode", "center_out_value": "center_out"}
+        if delayed
+        else {"kind": "validation_center_out", "training": "workspace_uniform"}
+    )
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "metadata": {
+                "schematic": True,
+                "temporality": temporality,
+                "canonical_goal_anchor": "goal",
+                "endpoint_mode": endpoint_mode,
+            },
+            "anchors": [
+                {
+                    "id": "start",
+                    "semantic_role": "origin",
+                    "interaction_roles": ["selectable", "hoverable"],
+                    "label": "Start",
+                    "binding": _trial_binding("inits.effector.pos", dim=2),
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"task_role": "initial_effector_position"},
+                },
+                {
+                    "id": "goal",
+                    "semantic_role": "target",
+                    "interaction_roles": ["selectable", "hoverable", "editable"],
+                    "label": "Goal",
+                    "binding": _trial_binding("targets.effector.pos", dim=2),
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {
+                        "canonical_goal": True,
+                        "task_role": "effector_target",
+                    },
+                },
+            ],
+            "elements": [
+                {
+                    "id": "workspace",
+                    "archetype": "region",
+                    "bindings": {
+                        "bounds": _param_binding("workspace", expected_type="bounds2d", dim=2)
+                    },
+                    "style": [
+                        {"channel": "fill", "value": "var(--workspace-region-fill)"},
+                        {"channel": "opacity", "value": 0.08},
+                    ],
+                    "metadata": {"region_kind": "workspace_bounds"},
+                },
+                {
+                    "id": "start-marker",
+                    "archetype": "marker",
+                    "anchors": ["start"],
+                    "style": [{"channel": "glyph", "value": "start"}],
+                },
+                {
+                    "id": "goal-marker",
+                    "archetype": "marker",
+                    "anchors": ["goal"],
+                    "style": [{"channel": "glyph", "value": "target"}],
+                    "metadata": {"canonical_goal": True},
+                },
+                {
+                    "id": "reach-distribution",
+                    "archetype": "distribution_glyph",
+                    "anchors": ["start", "goal"],
+                    "bindings": {
+                        "workspace": _param_binding("workspace", expected_type="bounds2d", dim=2),
+                        "eval_reach_length": _param_binding(
+                            "eval_reach_length",
+                            expected_type="float",
+                        ),
+                        "eval_n_directions": _param_binding(
+                            "eval_n_directions",
+                            expected_type="int",
+                        ),
+                        "eval_grid_n": _param_binding("eval_grid_n", expected_type="int"),
+                    },
+                    "metadata": {
+                        "distribution": "center_out" if delayed else "workspace_uniform",
+                        "canonical_objective": "goal",
+                    },
+                },
+                {
+                    "id": "objective",
+                    "archetype": "objective_link",
+                    "anchors": ["start", "goal"],
+                    "metadata": {
+                        "canonical_goal": "goal",
+                        "objective": "effector_position",
+                    },
+                },
+            ],
+        }
+    )
 
 
 def _ravel_width(proto: Any, *, component: str, port: str) -> int:
@@ -868,6 +1369,12 @@ def register_builtin_components(registry: _Registry) -> None:
             description='Two-link arm plant with direct force input.',
             param_schema=[
                 ParamSchema(name='dt', type='float', default=0.01, min=0.001, required=True),
+                ParamSchema(
+                    name='link_lengths',
+                    type='array',
+                    default=[0.30, 0.33],
+                    required=False,
+                ),
             ],
             input_ports=['force'],
             output_ports=['effector', 'state'],
@@ -880,6 +1387,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
             ),
             output_prototype_fn=mechanics_state_output_prototype,
+            representation=_two_link_arm_representation(),
         )
     )
     registry.register(
@@ -903,6 +1411,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
             ),
             output_prototype_fn=mechanics_state_output_prototype,
+            representation=_point_mass_representation(),
         )
     )
     registry.register(
@@ -1485,6 +1994,10 @@ def register_builtin_components(registry: _Registry) -> None:
                     'activations': PortType(dtype='vector'),
                 },
             ),
+            representation=_two_link_muscle_representation(
+                source="feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle",
+                composite=True,
+            ),
         )
     )
     registry.register(
@@ -1518,6 +2031,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'activations': PortType(dtype='vector'),
                 },
             ),
+            representation=_point_mass_muscle_representation(),
         )
     )
     registry.register(
@@ -1564,6 +2078,13 @@ def register_builtin_components(registry: _Registry) -> None:
                     'effector': PortType(dtype='vector'),
                     'state': PortType(dtype='state'),
                 },
+            ),
+            representation=_two_link_muscle_representation(
+                source=(
+                    "feedbax.mechanics.muscle_config."
+                    "default_6muscle_2link_muscled_arm_parameters"
+                ),
+                composite=False,
             ),
         )
     )
@@ -1634,6 +2155,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'intervene': PortType(dtype='any'),
                 },
             ),
+            representation=_reach_task_representation(delayed=False),
         )
     )
     registry.register(
@@ -1723,6 +2245,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'intervene': PortType(dtype='any'),
                 },
             ),
+            representation=_reach_task_representation(delayed=True),
         )
     )
     # --- Control components ---

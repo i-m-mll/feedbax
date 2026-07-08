@@ -9,9 +9,18 @@ export interface TrainingRun {
   id: string;
   name: string;
   createdAt: string; // ISO 8601
-  status: 'running' | 'completed' | 'failed' | 'stopped';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale' | 'stopped';
   /** Key hyperparameters for at-a-glance differentiation. */
   hyperparams: Record<string, string | number>;
+  metrics?: Record<string, unknown>;
+  uri?: string;
+  stageId?: string;
+  scenarioId?: string;
+  planned?: boolean;
+  checkpointAvailable?: boolean;
+  sourceIssue?: string;
+  provenanceId?: string;
+  supersededBy?: string;
 }
 
 /** Metadata for a single evaluation run within a training run. */
@@ -20,9 +29,11 @@ export interface EvalRun {
   trainingRunId: string;
   name: string;
   createdAt: string; // ISO 8601
-  status: 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale';
   /** Brief description of what this evaluation tested. */
   description?: string;
+  trainingRunIds?: string[];
+  uri?: string;
 }
 
 /** Parameters for creating a new evaluation run. */
@@ -30,4 +41,28 @@ export interface CreateEvalRunParams {
   trainingRunId: string;
   name: string;
   evalParams: Record<string, unknown>;
+}
+
+export interface TrainingRunCompareRow {
+  id: string;
+  params: Record<string, unknown>;
+  metrics: Record<string, unknown>;
+}
+
+export interface TrainingRunCompareResponse {
+  rows: TrainingRunCompareRow[];
+}
+
+export interface ManifestImportResponse {
+  root: string;
+  sourcePath: string;
+  importedManifestIds: string[];
+  skippedManifestIds: string[];
+  manifestCount: number;
+  artifactCount: number;
+  includedArtifactCount: number;
+  externalArtifactCount: number;
+  indexPath?: string | null;
+  trainingRuns: TrainingRun[];
+  evalRuns: EvalRun[];
 }

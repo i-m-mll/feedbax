@@ -330,8 +330,28 @@ export interface ValueSchema {
   metadata?: Record<string, unknown>;
 }
 
+export interface StudioValueEnumerableSpec {
+  form: "list" | "range" | "sampler";
+  values?: unknown[] | null;
+  start?: number | null;
+  stop?: number | null;
+  count?: number | null;
+  scale?: "linear" | "log";
+  sampler?: Record<string, unknown> | null;
+  n?: number | null;
+}
+
+export interface StudioValueVariationSpec {
+  scope: "fixed" | "snapshot" | "run" | "replicate" | "trial" | "epoch" | "timestep" | "sweep";
+  enumerable?: StudioValueEnumerableSpec | null;
+  stochastic_policy?: "shared_per_run" | "resample_per_replicate" | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface StudioValueSpec {
   schema_version?: string;
+  value_form: "literal" | "reference" | "expression" | "function" | "schedule" | "distribution";
+  variation?: StudioValueVariationSpec;
   mode: string;
   value?: unknown | null;
   reference?: StudioSelectorRef | null;
@@ -557,6 +577,207 @@ export interface ComponentMigrationInfo {
   description?: string;
 }
 
+export interface RepresentationParamPathBinding {
+  kind?: "param_path";
+  path: string;
+  expected_type?: string | null;
+  dim?: number | null;
+}
+
+export interface RepresentationStateAnchorSelectorBinding {
+  kind?: "selector";
+  selector: StudioSelectorRef;
+  anchor_subpath?: "position" | "velocity" | "orientation" | "origin" | "insertion" | "center" | "endpoint" | "target" | "path" | null;
+  dim?: number | null;
+}
+
+export interface RepresentationTrialSpecPathBinding {
+  kind?: "trial_spec_path";
+  path: string;
+  expected_type?: string | null;
+  dim?: number | null;
+}
+
+export interface RepresentationLiteralBinding {
+  kind?: "literal";
+  value: number | string | boolean | null | unknown[] | Record<string, unknown>;
+  dim?: number | null;
+}
+
+export interface RepresentationFrameProvider {
+  kind: "fixed" | "from_input_port" | "registered_renderer";
+  frame?: string | null;
+  input_port?: string | null;
+  renderer_id?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationAnchorSpec {
+  id: string;
+  semantic_role: "origin" | "insertion" | "center" | "endpoint" | "joint" | "body" | "target" | "path" | "region" | "glyph" | "vector_start" | "vector_end" | "label" | "custom";
+  interaction_roles?: "selectable" | "hoverable" | "draggable" | "editable" | "connectable" | "snap_target" | "read_only"[];
+  label?: string | null;
+  binding?: RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding | null;
+  frame?: string | null;
+  units?: string | null;
+  dim?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationStyleSpec {
+  channel: "stroke" | "fill" | "radius" | "opacity" | "line_width" | "dash" | "label" | "glyph" | "colormap" | "z_index" | "visibility";
+  value?: number | string | boolean | null | unknown[] | Record<string, unknown>;
+  binding?: RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationElementSpec {
+  id: string;
+  archetype: "point_body" | "planar_chain" | "muscle_path" | "marker" | "region" | "distribution_glyph" | "vector" | "trace" | "objective_link" | "annotation" | "registered_renderer";
+  anchors?: string[];
+  bindings?: Record<string, RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding>;
+  style?: RepresentationStyleSpec[];
+  frame?: string | null;
+  frame_provider?: RepresentationFrameProvider | null;
+  units?: string | null;
+  dim?: number | null;
+  scale_invariant?: boolean;
+  renderer_id?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationSpec {
+  schema_id?: "feedbax.spec.studio.representation";
+  schema_version?: "feedbax.spec.studio.representation.v1";
+  anchors?: RepresentationAnchorSpec[];
+  elements?: RepresentationElementSpec[];
+  style?: RepresentationStyleSpec[];
+  frame?: string | null;
+  frame_provider?: RepresentationFrameProvider | null;
+  units?: string | null;
+  dim?: number | null;
+  scale_invariant?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationValidationIssue {
+  type: string;
+  message: string;
+  path: string;
+}
+
+export interface WorkspaceReplayWarning {
+  code: "missing_trial_metadata" | "missing_manifest_refs" | "missing_anchor_resolution" | "missing_overlay_metadata" | "npz_browser_downgrade";
+  message: string;
+  path?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrialIdentity {
+  index: number;
+  stable_id?: string | null;
+  source?: "stable_id" | "index_fallback";
+  label?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplaySampleAxis {
+  length: number;
+  units?: string | null;
+  dt?: number | null;
+  values?: number[] | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrack {
+  anchor_id: string;
+  selector: StudioSelectorRef;
+  samples: number[][];
+  dim: number;
+  dtype?: string;
+  units?: string | null;
+  frame?: string | null;
+  label?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayOverlayChannel {
+  id: string;
+  selector: StudioSelectorRef;
+  samples: unknown[];
+  dtype?: string;
+  shape?: unknown[] | null;
+  units?: string | null;
+  label?: string | null;
+  binding?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrialSpecSnapshot {
+  summary?: Record<string, unknown>;
+  targets?: Record<string, unknown>;
+  timeline?: Record<string, unknown> | null;
+  snapshot?: Record<string, unknown> | null;
+  schema_id?: string | null;
+  schema_version?: string | null;
+  sha256?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayManifestRefs {
+  spec_snapshot?: StudioArtifactRef | null;
+  checkpoint?: StudioArtifactRef | StudioManifestRef | null;
+  task_variant?: StudioArtifactRef | StudioManifestRef | null;
+  seed?: number | string | null;
+  environment?: StudioArtifactRef | StudioManifestRef | Record<string, unknown> | null;
+  producer_manifest?: StudioManifestRef | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayTrial {
+  identity: WorkspaceReplayTrialIdentity;
+  time: WorkspaceReplaySampleAxis;
+  tracks?: WorkspaceReplayTrack[];
+  overlays?: WorkspaceReplayOverlayChannel[];
+  trial_spec?: WorkspaceReplayTrialSpecSnapshot;
+  manifest_refs?: WorkspaceReplayManifestRefs;
+  warnings?: WorkspaceReplayWarning[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayImportedArtifact {
+  artifact: StudioArtifactRef;
+  source_format?: "npz" | "unknown";
+  missing_metadata?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayProduct {
+  schema_id?: "feedbax.manifest.studio.workspace_replay";
+  schema_version?: "feedbax.manifest.studio.workspace_replay.v1";
+  product_kind?: "workspace_replay";
+  source_mode?: "resolved_scene" | "imported_artifact";
+  trials?: WorkspaceReplayTrial[];
+  imported_artifact?: WorkspaceReplayImportedArtifact | null;
+  manifest_refs?: WorkspaceReplayManifestRefs;
+  warnings?: WorkspaceReplayWarning[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkspaceReplayRequiredSelector {
+  anchor_id: string;
+  selector: StudioSelectorRef;
+  label?: string | null;
+  retention_id?: string | null;
+  value_schema?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResolvedWorkspaceReplayScene {
+  required_selectors?: WorkspaceReplayRequiredSelector[];
+  metadata?: Record<string, unknown>;
+}
+
 export interface ComponentDefinition {
   name: string;
   category: string;
@@ -579,6 +800,7 @@ export interface ComponentDefinition {
   supported_param_schema_versions?: string[];
   migrations?: ComponentMigrationInfo[];
   trainable_by_default?: boolean;
+  representation?: RepresentationSpec | null;
 }
 
 export interface OptimizerSpec {
@@ -645,6 +867,63 @@ export interface TrainingConfig {
   n_reach_steps?: number;
   effort_weight?: number;
   snapshot_interval?: number;
+}
+
+export interface ParentRef {
+  kind: string;
+  id: string;
+  role?: string | null;
+  uri?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TopKByMetricPerGroup {
+  metric_path: string;
+  group_by_path: string;
+  k?: number;
+  order?: "asc" | "desc";
+}
+
+export interface ManifestPredicate {
+  manifest_kind?: string;
+  run_ids?: string[];
+  source_set_ids?: string[];
+  statuses?: string[];
+  has_checkpoint?: boolean | null;
+  tags?: string[];
+  metadata_equals?: Record<string, unknown>;
+  params_equals?: Record<string, unknown>;
+  path_equals?: Record<string, unknown>;
+  expression?: Record<string, unknown> | null;
+  top_k_by_metric_per_group?: TopKByMetricPerGroup | null;
+}
+
+export interface SelectionSpec {
+  schema_id?: "feedbax.spec.selection";
+  schema_version?: "feedbax.spec.selection.v2";
+  mode?: "explicit" | "query" | "frozen";
+  manifest_kind?: string;
+  ids?: string[];
+  query?: ManifestPredicate | null;
+  frozen_refs?: ParentRef[];
+  frozen_at?: unknown | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SelectionPreview {
+  selection_spec: SelectionSpec;
+  match_count: number;
+  parent_refs: ParentRef[];
+  truncated?: boolean;
+}
+
+export interface SelectionRefreshDiff {
+  frozen_refs: ParentRef[];
+  current_refs: ParentRef[];
+  new_refs: ParentRef[];
+  gone_refs: ParentRef[];
+  unchanged_refs: ParentRef[];
+  reprocess_counts: Record<string, number>;
 }
 
 export interface SuccessPayload {
@@ -855,6 +1134,69 @@ export interface AnalysisPackagesResponse {
   data: AnalysisPackagesPayload;
 }
 
+export interface BundleMissingRoleRecord {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  stage: string;
+  role: string;
+  required?: boolean;
+  bind_as?: string | null;
+  reason: string;
+}
+
+export interface BundleStageDryRunOutputRecord {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  role: string;
+  required?: boolean;
+  status: "would_run" | "would_skip" | "missing" | "not_applicable";
+  reason?: string | null;
+}
+
+export interface BundleStageDryRunRecord {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  name: string;
+  kind: "evaluation" | "analysis" | "materialization" | "report";
+  status: "would_run" | "would_skip" | "missing" | "not_applicable";
+  depends_on?: string[];
+  inputs?: ParentRef[];
+  outputs?: BundleStageDryRunOutputRecord[];
+  missing_roles?: BundleMissingRoleRecord[];
+  reason?: string | null;
+}
+
+export interface AnalysisBundleDryRunResult {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  bundle_name: string;
+  match_preview: SelectionPreview;
+  matched_run_ids?: string[];
+  stages?: BundleStageDryRunRecord[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface AnalysisBundleDryRunRequest {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  bundle: Record<string, unknown>;
+  selection_spec?: SelectionSpec | null;
+  root?: string | null;
+  preview_limit?: number;
+}
+
+export interface AnalysisBundleDryRunPayload {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  dry_run: AnalysisBundleDryRunResult;
+}
+
+export interface AnalysisBundleDryRunResponse {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  data: AnalysisBundleDryRunPayload;
+}
+
 export interface GenerateAnalysisRequest {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v1";
@@ -932,13 +1274,18 @@ export interface TrainingLogEvent {
 }
 
 export interface TrainingTrajectoryPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
-  effector?: unknown[];
-  target?: unknown | null;
-  t?: unknown[];
+  schema_id?: "feedbax.event.studio.training_trajectory";
+  schema_version?: "feedbax.event.studio.training_trajectory.v1";
+  source_kind?: "live_snapshot";
+  fidelity?: "lower_fidelity_live_snapshot";
+  n_steps?: number | null;
+  time?: WorkspaceReplaySampleAxis | null;
+  tracks?: Record<string, WorkspaceReplayTrack>;
   observables?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
+  effector?: unknown[] | null;
+  target?: unknown | null;
+  t?: unknown[] | null;
 }
 
 export interface TrainingTrajectoryEvent {
@@ -1022,6 +1369,15 @@ export interface TrainingRunInfo {
   created_at: string;
   status: string;
   hyperparams: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  uri?: string | null;
+  stage_id?: string | null;
+  scenario_id?: string | null;
+  planned?: boolean;
+  checkpoint_available?: boolean;
+  source_issue?: string | null;
+  provenance_id?: string | null;
+  superseded_by?: string | null;
 }
 
 export interface EvalRunInfo {
@@ -1031,12 +1387,60 @@ export interface EvalRunInfo {
   created_at: string;
   status: string;
   description?: string | null;
+  training_run_ids?: string[];
+  uri?: string | null;
 }
 
 export interface CreateEvalRunRequest {
   training_run_id: string;
   name: string;
   eval_params?: Record<string, unknown>;
+}
+
+export interface TrainingRunCompareRequest {
+  run_ids: string[];
+  param_fields?: string[];
+  metric_fields?: string[];
+}
+
+export interface TrainingRunCompareRow {
+  id: string;
+  params?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+}
+
+export interface TrainingRunCompareResponse {
+  rows: TrainingRunCompareRow[];
+}
+
+export interface ManifestImportRequest {
+  path: string;
+  root?: string | null;
+}
+
+export interface ManifestImportResponse {
+  root: string;
+  source_path: string;
+  imported_manifest_ids?: string[];
+  skipped_manifest_ids?: string[];
+  manifest_count?: number;
+  artifact_count?: number;
+  included_artifact_count?: number;
+  external_artifact_count?: number;
+  index_path?: string | null;
+  training_runs?: TrainingRunInfo[];
+  eval_runs?: EvalRunInfo[];
+}
+
+export interface SelectionPreviewRequest {
+  selection_spec: SelectionSpec;
+  limit?: number;
+}
+
+export interface SelectionRefreshRequest {
+  selection_spec: SelectionSpec;
+  failed_parent_ids?: string[];
+  stale_parent_ids?: string[];
 }
 
 export interface DatasetInfo {
@@ -1659,10 +2063,38 @@ export const ValueSchemaSchema: z.ZodType<ValueSchema> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<ValueSchema>;
 
+export const StudioValueEnumerableSpecSchema: z.ZodType<StudioValueEnumerableSpec> = z.lazy(() =>
+  z
+    .object({
+      "form": z.union([z.literal("list"), z.literal("range"), z.literal("sampler")]),
+      "values": z.array(z.unknown()).nullable().optional(),
+      "start": z.number().nullable().optional(),
+      "stop": z.number().nullable().optional(),
+      "count": z.number().int().nullable().optional(),
+      "scale": z.union([z.literal("linear"), z.literal("log")]).optional(),
+      "sampler": z.record(z.string(), z.unknown()).nullable().optional(),
+      "n": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioValueEnumerableSpec>;
+
+export const StudioValueVariationSpecSchema: z.ZodType<StudioValueVariationSpec> = z.lazy(() =>
+  z
+    .object({
+      "scope": z.union([z.literal("fixed"), z.literal("snapshot"), z.literal("run"), z.literal("replicate"), z.literal("trial"), z.literal("epoch"), z.literal("timestep"), z.literal("sweep")]),
+      "enumerable": StudioValueEnumerableSpecSchema.nullable().optional(),
+      "stochastic_policy": z.union([z.literal("shared_per_run"), z.literal("resample_per_replicate")]).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioValueVariationSpec>;
+
 export const StudioValueSpecSchema: z.ZodType<StudioValueSpec> = z.lazy(() =>
   z
     .object({
       "schema_version": z.string().optional(),
+      "value_form": z.union([z.literal("literal"), z.literal("reference"), z.literal("expression"), z.literal("function"), z.literal("schedule"), z.literal("distribution")]),
+      "variation": StudioValueVariationSpecSchema.optional(),
       "mode": z.string(),
       "value": z.unknown().nullable().optional(),
       "reference": StudioSelectorRefSchema.nullable().optional(),
@@ -1974,6 +2406,295 @@ export const ComponentMigrationInfoSchema: z.ZodType<ComponentMigrationInfo> = z
     .strict()
 ) as unknown as z.ZodType<ComponentMigrationInfo>;
 
+export const RepresentationParamPathBindingSchema: z.ZodType<RepresentationParamPathBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("param_path").optional(),
+      "path": z.string(),
+      "expected_type": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationParamPathBinding>;
+
+export const RepresentationStateAnchorSelectorBindingSchema: z.ZodType<RepresentationStateAnchorSelectorBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("selector").optional(),
+      "selector": StudioSelectorRefSchema,
+      "anchor_subpath": z.union([z.literal("position"), z.literal("velocity"), z.literal("orientation"), z.literal("origin"), z.literal("insertion"), z.literal("center"), z.literal("endpoint"), z.literal("target"), z.literal("path")]).nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationStateAnchorSelectorBinding>;
+
+export const RepresentationTrialSpecPathBindingSchema: z.ZodType<RepresentationTrialSpecPathBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("trial_spec_path").optional(),
+      "path": z.string(),
+      "expected_type": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationTrialSpecPathBinding>;
+
+export const RepresentationLiteralBindingSchema: z.ZodType<RepresentationLiteralBinding> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("literal").optional(),
+      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]),
+      "dim": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationLiteralBinding>;
+
+export const RepresentationFrameProviderSchema: z.ZodType<RepresentationFrameProvider> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("fixed"), z.literal("from_input_port"), z.literal("registered_renderer")]),
+      "frame": z.string().nullable().optional(),
+      "input_port": z.string().nullable().optional(),
+      "renderer_id": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationFrameProvider>;
+
+export const RepresentationAnchorSpecSchema: z.ZodType<RepresentationAnchorSpec> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "semantic_role": z.union([z.literal("origin"), z.literal("insertion"), z.literal("center"), z.literal("endpoint"), z.literal("joint"), z.literal("body"), z.literal("target"), z.literal("path"), z.literal("region"), z.literal("glyph"), z.literal("vector_start"), z.literal("vector_end"), z.literal("label"), z.literal("custom")]),
+      "interaction_roles": z.array(z.union([z.literal("selectable"), z.literal("hoverable"), z.literal("draggable"), z.literal("editable"), z.literal("connectable"), z.literal("snap_target"), z.literal("read_only")])).optional(),
+      "label": z.string().nullable().optional(),
+      "binding": z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema, z.null()]).optional(),
+      "frame": z.string().nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationAnchorSpec>;
+
+export const RepresentationStyleSpecSchema: z.ZodType<RepresentationStyleSpec> = z.lazy(() =>
+  z
+    .object({
+      "channel": z.union([z.literal("stroke"), z.literal("fill"), z.literal("radius"), z.literal("opacity"), z.literal("line_width"), z.literal("dash"), z.literal("label"), z.literal("glyph"), z.literal("colormap"), z.literal("z_index"), z.literal("visibility")]),
+      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
+      "binding": z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema, z.null()]).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationStyleSpec>;
+
+export const RepresentationElementSpecSchema: z.ZodType<RepresentationElementSpec> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "archetype": z.union([z.literal("point_body"), z.literal("planar_chain"), z.literal("muscle_path"), z.literal("marker"), z.literal("region"), z.literal("distribution_glyph"), z.literal("vector"), z.literal("trace"), z.literal("objective_link"), z.literal("annotation"), z.literal("registered_renderer")]),
+      "anchors": z.array(z.string()).optional(),
+      "bindings": z.record(z.string(), z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema])).optional(),
+      "style": z.array(RepresentationStyleSpecSchema).optional(),
+      "frame": z.string().nullable().optional(),
+      "frame_provider": RepresentationFrameProviderSchema.nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+      "scale_invariant": z.boolean().optional(),
+      "renderer_id": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationElementSpec>;
+
+export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.representation").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.representation.v1").optional(),
+      "anchors": z.array(RepresentationAnchorSpecSchema).optional(),
+      "elements": z.array(RepresentationElementSpecSchema).optional(),
+      "style": z.array(RepresentationStyleSpecSchema).optional(),
+      "frame": z.string().nullable().optional(),
+      "frame_provider": RepresentationFrameProviderSchema.nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "dim": z.number().int().nullable().optional(),
+      "scale_invariant": z.boolean().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationSpec>;
+
+export const RepresentationValidationIssueSchema: z.ZodType<RepresentationValidationIssue> = z.lazy(() =>
+  z
+    .object({
+      "type": z.string(),
+      "message": z.string(),
+      "path": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationValidationIssue>;
+
+export const WorkspaceReplayWarningSchema: z.ZodType<WorkspaceReplayWarning> = z.lazy(() =>
+  z
+    .object({
+      "code": z.union([z.literal("missing_trial_metadata"), z.literal("missing_manifest_refs"), z.literal("missing_anchor_resolution"), z.literal("missing_overlay_metadata"), z.literal("npz_browser_downgrade")]),
+      "message": z.string(),
+      "path": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayWarning>;
+
+export const WorkspaceReplayTrialIdentitySchema: z.ZodType<WorkspaceReplayTrialIdentity> = z.lazy(() =>
+  z
+    .object({
+      "index": z.number().int(),
+      "stable_id": z.string().nullable().optional(),
+      "source": z.union([z.literal("stable_id"), z.literal("index_fallback")]).optional(),
+      "label": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrialIdentity>;
+
+export const WorkspaceReplaySampleAxisSchema: z.ZodType<WorkspaceReplaySampleAxis> = z.lazy(() =>
+  z
+    .object({
+      "length": z.number().int(),
+      "units": z.string().nullable().optional(),
+      "dt": z.number().nullable().optional(),
+      "values": z.array(z.number()).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplaySampleAxis>;
+
+export const WorkspaceReplayTrackSchema: z.ZodType<WorkspaceReplayTrack> = z.lazy(() =>
+  z
+    .object({
+      "anchor_id": z.string(),
+      "selector": StudioSelectorRefSchema,
+      "samples": z.array(z.array(z.number())),
+      "dim": z.number().int(),
+      "dtype": z.string().optional(),
+      "units": z.string().nullable().optional(),
+      "frame": z.string().nullable().optional(),
+      "label": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrack>;
+
+export const WorkspaceReplayOverlayChannelSchema: z.ZodType<WorkspaceReplayOverlayChannel> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "selector": StudioSelectorRefSchema,
+      "samples": z.array(z.unknown()),
+      "dtype": z.string().optional(),
+      "shape": z.array(z.unknown()).nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "label": z.string().nullable().optional(),
+      "binding": z.record(z.string(), z.unknown()).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayOverlayChannel>;
+
+export const WorkspaceReplayTrialSpecSnapshotSchema: z.ZodType<WorkspaceReplayTrialSpecSnapshot> = z.lazy(() =>
+  z
+    .object({
+      "summary": z.record(z.string(), z.unknown()).optional(),
+      "targets": z.record(z.string(), z.unknown()).optional(),
+      "timeline": z.record(z.string(), z.unknown()).nullable().optional(),
+      "snapshot": z.record(z.string(), z.unknown()).nullable().optional(),
+      "schema_id": z.string().nullable().optional(),
+      "schema_version": z.string().nullable().optional(),
+      "sha256": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrialSpecSnapshot>;
+
+export const WorkspaceReplayManifestRefsSchema: z.ZodType<WorkspaceReplayManifestRefs> = z.lazy(() =>
+  z
+    .object({
+      "spec_snapshot": StudioArtifactRefSchema.nullable().optional(),
+      "checkpoint": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
+      "task_variant": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
+      "seed": z.union([z.number().int(), z.string(), z.null()]).optional(),
+      "environment": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.record(z.string(), z.unknown()), z.null()]).optional(),
+      "producer_manifest": StudioManifestRefSchema.nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayManifestRefs>;
+
+export const WorkspaceReplayTrialSchema: z.ZodType<WorkspaceReplayTrial> = z.lazy(() =>
+  z
+    .object({
+      "identity": WorkspaceReplayTrialIdentitySchema,
+      "time": WorkspaceReplaySampleAxisSchema,
+      "tracks": z.array(WorkspaceReplayTrackSchema).optional(),
+      "overlays": z.array(WorkspaceReplayOverlayChannelSchema).optional(),
+      "trial_spec": WorkspaceReplayTrialSpecSnapshotSchema.optional(),
+      "manifest_refs": WorkspaceReplayManifestRefsSchema.optional(),
+      "warnings": z.array(WorkspaceReplayWarningSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayTrial>;
+
+export const WorkspaceReplayImportedArtifactSchema: z.ZodType<WorkspaceReplayImportedArtifact> = z.lazy(() =>
+  z
+    .object({
+      "artifact": StudioArtifactRefSchema,
+      "source_format": z.union([z.literal("npz"), z.literal("unknown")]).optional(),
+      "missing_metadata": z.array(z.string()).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayImportedArtifact>;
+
+export const WorkspaceReplayProductSchema: z.ZodType<WorkspaceReplayProduct> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.manifest.studio.workspace_replay").optional(),
+      "schema_version": z.literal("feedbax.manifest.studio.workspace_replay.v1").optional(),
+      "product_kind": z.literal("workspace_replay").optional(),
+      "source_mode": z.union([z.literal("resolved_scene"), z.literal("imported_artifact")]).optional(),
+      "trials": z.array(WorkspaceReplayTrialSchema).optional(),
+      "imported_artifact": WorkspaceReplayImportedArtifactSchema.nullable().optional(),
+      "manifest_refs": WorkspaceReplayManifestRefsSchema.optional(),
+      "warnings": z.array(WorkspaceReplayWarningSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayProduct>;
+
+export const WorkspaceReplayRequiredSelectorSchema: z.ZodType<WorkspaceReplayRequiredSelector> = z.lazy(() =>
+  z
+    .object({
+      "anchor_id": z.string(),
+      "selector": StudioSelectorRefSchema,
+      "label": z.string().nullable().optional(),
+      "retention_id": z.string().nullable().optional(),
+      "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<WorkspaceReplayRequiredSelector>;
+
+export const ResolvedWorkspaceReplaySceneSchema: z.ZodType<ResolvedWorkspaceReplayScene> = z.lazy(() =>
+  z
+    .object({
+      "required_selectors": z.array(WorkspaceReplayRequiredSelectorSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ResolvedWorkspaceReplayScene>;
+
 export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(() =>
   z
     .object({
@@ -1998,6 +2719,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "supported_param_schema_versions": z.array(z.string()).optional(),
       "migrations": z.array(ComponentMigrationInfoSchema).optional(),
       "trainable_by_default": z.boolean().optional(),
+      "representation": RepresentationSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;
@@ -2095,6 +2817,87 @@ export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<TrainingConfig>;
+
+export const ParentRefSchema: z.ZodType<ParentRef> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.string(),
+      "id": z.string(),
+      "role": z.string().nullable().optional(),
+      "uri": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ParentRef>;
+
+export const TopKByMetricPerGroupSchema: z.ZodType<TopKByMetricPerGroup> = z.lazy(() =>
+  z
+    .object({
+      "metric_path": z.string(),
+      "group_by_path": z.string(),
+      "k": z.number().int().optional(),
+      "order": z.union([z.literal("asc"), z.literal("desc")]).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TopKByMetricPerGroup>;
+
+export const ManifestPredicateSchema: z.ZodType<ManifestPredicate> = z.lazy(() =>
+  z
+    .object({
+      "manifest_kind": z.string().optional(),
+      "run_ids": z.array(z.string()).optional(),
+      "source_set_ids": z.array(z.string()).optional(),
+      "statuses": z.array(z.string()).optional(),
+      "has_checkpoint": z.boolean().nullable().optional(),
+      "tags": z.array(z.string()).optional(),
+      "metadata_equals": z.record(z.string(), z.unknown()).optional(),
+      "params_equals": z.record(z.string(), z.unknown()).optional(),
+      "path_equals": z.record(z.string(), z.unknown()).optional(),
+      "expression": z.record(z.string(), z.unknown()).nullable().optional(),
+      "top_k_by_metric_per_group": TopKByMetricPerGroupSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ManifestPredicate>;
+
+export const SelectionSpecSchema: z.ZodType<SelectionSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.selection").optional(),
+      "schema_version": z.literal("feedbax.spec.selection.v2").optional(),
+      "mode": z.union([z.literal("explicit"), z.literal("query"), z.literal("frozen")]).optional(),
+      "manifest_kind": z.string().optional(),
+      "ids": z.array(z.string()).optional(),
+      "query": ManifestPredicateSchema.nullable().optional(),
+      "frozen_refs": z.array(ParentRefSchema).optional(),
+      "frozen_at": z.unknown().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionSpec>;
+
+export const SelectionPreviewSchema: z.ZodType<SelectionPreview> = z.lazy(() =>
+  z
+    .object({
+      "selection_spec": SelectionSpecSchema,
+      "match_count": z.number().int(),
+      "parent_refs": z.array(ParentRefSchema),
+      "truncated": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionPreview>;
+
+export const SelectionRefreshDiffSchema: z.ZodType<SelectionRefreshDiff> = z.lazy(() =>
+  z
+    .object({
+      "frozen_refs": z.array(ParentRefSchema),
+      "current_refs": z.array(ParentRefSchema),
+      "new_refs": z.array(ParentRefSchema),
+      "gone_refs": z.array(ParentRefSchema),
+      "unchanged_refs": z.array(ParentRefSchema),
+      "reprocess_counts": z.record(z.string(), z.number().int()),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionRefreshDiff>;
 
 export const SuccessPayloadSchema: z.ZodType<SuccessPayload> = z.lazy(() =>
   z
@@ -2428,6 +3231,97 @@ export const AnalysisPackagesResponseSchema: z.ZodType<AnalysisPackagesResponse>
     .strict()
 ) as unknown as z.ZodType<AnalysisPackagesResponse>;
 
+export const BundleMissingRoleRecordSchema: z.ZodType<BundleMissingRoleRecord> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "stage": z.string(),
+      "role": z.string(),
+      "required": z.boolean().optional(),
+      "bind_as": z.string().nullable().optional(),
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<BundleMissingRoleRecord>;
+
+export const BundleStageDryRunOutputRecordSchema: z.ZodType<BundleStageDryRunOutputRecord> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "role": z.string(),
+      "required": z.boolean().optional(),
+      "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
+      "reason": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<BundleStageDryRunOutputRecord>;
+
+export const BundleStageDryRunRecordSchema: z.ZodType<BundleStageDryRunRecord> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "name": z.string(),
+      "kind": z.union([z.literal("evaluation"), z.literal("analysis"), z.literal("materialization"), z.literal("report")]),
+      "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
+      "depends_on": z.array(z.string()).optional(),
+      "inputs": z.array(ParentRefSchema).optional(),
+      "outputs": z.array(BundleStageDryRunOutputRecordSchema).optional(),
+      "missing_roles": z.array(BundleMissingRoleRecordSchema).optional(),
+      "reason": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<BundleStageDryRunRecord>;
+
+export const AnalysisBundleDryRunResultSchema: z.ZodType<AnalysisBundleDryRunResult> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "bundle_name": z.string(),
+      "match_preview": SelectionPreviewSchema,
+      "matched_run_ids": z.array(z.string()).optional(),
+      "stages": z.array(BundleStageDryRunRecordSchema).optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunResult>;
+
+export const AnalysisBundleDryRunRequestSchema: z.ZodType<AnalysisBundleDryRunRequest> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "bundle": z.record(z.string(), z.unknown()),
+      "selection_spec": SelectionSpecSchema.nullable().optional(),
+      "root": z.string().nullable().optional(),
+      "preview_limit": z.number().int().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunRequest>;
+
+export const AnalysisBundleDryRunPayloadSchema: z.ZodType<AnalysisBundleDryRunPayload> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "dry_run": AnalysisBundleDryRunResultSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunPayload>;
+
+export const AnalysisBundleDryRunResponseSchema: z.ZodType<AnalysisBundleDryRunResponse> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "data": AnalysisBundleDryRunPayloadSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisBundleDryRunResponse>;
+
 export const GenerateAnalysisRequestSchema: z.ZodType<GenerateAnalysisRequest> = z.lazy(() =>
   z
     .object({
@@ -2535,13 +3429,18 @@ export const TrainingLogEventSchema: z.ZodType<TrainingLogEvent> = z.lazy(() =>
 export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayload> = z.lazy(() =>
   z
     .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
-      "effector": z.array(z.unknown()).optional(),
-      "target": z.unknown().nullable().optional(),
-      "t": z.array(z.unknown()).optional(),
+      "schema_id": z.literal("feedbax.event.studio.training_trajectory").optional(),
+      "schema_version": z.literal("feedbax.event.studio.training_trajectory.v1").optional(),
+      "source_kind": z.literal("live_snapshot").optional(),
+      "fidelity": z.literal("lower_fidelity_live_snapshot").optional(),
+      "n_steps": z.number().int().nullable().optional(),
+      "time": WorkspaceReplaySampleAxisSchema.nullable().optional(),
+      "tracks": z.record(z.string(), WorkspaceReplayTrackSchema).optional(),
       "observables": z.record(z.string(), z.unknown()).optional(),
       "outputs": z.record(z.string(), z.unknown()).optional(),
+      "effector": z.array(z.unknown()).nullable().optional(),
+      "target": z.unknown().nullable().optional(),
+      "t": z.array(z.unknown()).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingTrajectoryPayload>;
@@ -2657,6 +3556,15 @@ export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
       "created_at": z.string(),
       "status": z.string(),
       "hyperparams": z.record(z.string(), z.unknown()),
+      "metrics": z.record(z.string(), z.unknown()).optional(),
+      "uri": z.string().nullable().optional(),
+      "stage_id": z.string().nullable().optional(),
+      "scenario_id": z.string().nullable().optional(),
+      "planned": z.boolean().optional(),
+      "checkpoint_available": z.boolean().optional(),
+      "source_issue": z.string().nullable().optional(),
+      "provenance_id": z.string().nullable().optional(),
+      "superseded_by": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingRunInfo>;
@@ -2670,6 +3578,8 @@ export const EvalRunInfoSchema: z.ZodType<EvalRunInfo> = z.lazy(() =>
       "created_at": z.string(),
       "status": z.string(),
       "description": z.string().nullable().optional(),
+      "training_run_ids": z.array(z.string()).optional(),
+      "uri": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvalRunInfo>;
@@ -2683,6 +3593,80 @@ export const CreateEvalRunRequestSchema: z.ZodType<CreateEvalRunRequest> = z.laz
     })
     .strict()
 ) as unknown as z.ZodType<CreateEvalRunRequest>;
+
+export const TrainingRunCompareRequestSchema: z.ZodType<TrainingRunCompareRequest> = z.lazy(() =>
+  z
+    .object({
+      "run_ids": z.array(z.string()),
+      "param_fields": z.array(z.string()).optional(),
+      "metric_fields": z.array(z.string()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingRunCompareRequest>;
+
+export const TrainingRunCompareRowSchema: z.ZodType<TrainingRunCompareRow> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "params": z.record(z.string(), z.unknown()).optional(),
+      "metrics": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingRunCompareRow>;
+
+export const TrainingRunCompareResponseSchema: z.ZodType<TrainingRunCompareResponse> = z.lazy(() =>
+  z
+    .object({
+      "rows": z.array(TrainingRunCompareRowSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingRunCompareResponse>;
+
+export const ManifestImportRequestSchema: z.ZodType<ManifestImportRequest> = z.lazy(() =>
+  z
+    .object({
+      "path": z.string(),
+      "root": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ManifestImportRequest>;
+
+export const ManifestImportResponseSchema: z.ZodType<ManifestImportResponse> = z.lazy(() =>
+  z
+    .object({
+      "root": z.string(),
+      "source_path": z.string(),
+      "imported_manifest_ids": z.array(z.string()).optional(),
+      "skipped_manifest_ids": z.array(z.string()).optional(),
+      "manifest_count": z.number().int().optional(),
+      "artifact_count": z.number().int().optional(),
+      "included_artifact_count": z.number().int().optional(),
+      "external_artifact_count": z.number().int().optional(),
+      "index_path": z.string().nullable().optional(),
+      "training_runs": z.array(TrainingRunInfoSchema).optional(),
+      "eval_runs": z.array(EvalRunInfoSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ManifestImportResponse>;
+
+export const SelectionPreviewRequestSchema: z.ZodType<SelectionPreviewRequest> = z.lazy(() =>
+  z
+    .object({
+      "selection_spec": SelectionSpecSchema,
+      "limit": z.number().int().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionPreviewRequest>;
+
+export const SelectionRefreshRequestSchema: z.ZodType<SelectionRefreshRequest> = z.lazy(() =>
+  z
+    .object({
+      "selection_spec": SelectionSpecSchema,
+      "failed_parent_ids": z.array(z.string()).optional(),
+      "stale_parent_ids": z.array(z.string()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SelectionRefreshRequest>;
 
 export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
   z
@@ -2940,11 +3924,19 @@ export const contractSchemas = {
   WorkerConnectEnvelope: WorkerConnectEnvelopeSchema,
   WorkerStatusEnvelope: WorkerStatusEnvelopeSchema,
   AnalysisPackagesResponse: AnalysisPackagesResponseSchema,
+  AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponseSchema,
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
   AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
   TrainingRunInfo: TrainingRunInfoSchema,
   EvalRunInfo: EvalRunInfoSchema,
   CreateEvalRunRequest: CreateEvalRunRequestSchema,
+  TrainingRunCompareResponse: TrainingRunCompareResponseSchema,
+  ManifestImportResponse: ManifestImportResponseSchema,
+  SelectionSpec: SelectionSpecSchema,
+  SelectionPreview: SelectionPreviewSchema,
+  SelectionRefreshDiff: SelectionRefreshDiffSchema,
+  SelectionPreviewRequest: SelectionPreviewRequestSchema,
+  SelectionRefreshRequest: SelectionRefreshRequestSchema,
   DatasetInfo: DatasetInfoSchema,
   TrajectoryMetadata: TrajectoryMetadataSchema,
   FilterResult: FilterResultSchema,
@@ -2980,11 +3972,19 @@ export interface ContractTypeMap {
   WorkerConnectEnvelope: WorkerConnectEnvelope;
   WorkerStatusEnvelope: WorkerStatusEnvelope;
   AnalysisPackagesResponse: AnalysisPackagesResponse;
+  AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponse;
   GenerateAnalysisResponse: GenerateAnalysisResponse;
   AnalysisJobStatusResponse: AnalysisJobStatusResponse;
   TrainingRunInfo: TrainingRunInfo;
   EvalRunInfo: EvalRunInfo;
   CreateEvalRunRequest: CreateEvalRunRequest;
+  TrainingRunCompareResponse: TrainingRunCompareResponse;
+  ManifestImportResponse: ManifestImportResponse;
+  SelectionSpec: SelectionSpec;
+  SelectionPreview: SelectionPreview;
+  SelectionRefreshDiff: SelectionRefreshDiff;
+  SelectionPreviewRequest: SelectionPreviewRequest;
+  SelectionRefreshRequest: SelectionRefreshRequest;
   DatasetInfo: DatasetInfo;
   TrajectoryMetadata: TrajectoryMetadata;
   FilterResult: FilterResult;

@@ -1,11 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import {
+  getActiveScenario,
   getTopPaneState,
   getTrainingScenario,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { validateGraph } from '@/features/graph/validation';
+import { buildScenarioEntityRegistry } from '@/features/scenario/entities';
+import { buildResolvedScene } from '@/features/scenario/projections';
 import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { projectStudioSchema } from '@/features/schema/project';
 import { useComponents } from '@/hooks/useComponents';
@@ -40,14 +43,29 @@ export function ValidationPanel() {
     [components, graph, taskBindingSpec]
   );
   const validation = useMemo(() => validateGraph(graph, schemaRegistry), [graph, schemaRegistry]);
+  const sceneWarnings = useMemo(() => {
+    const scenario = getActiveScenario(workspace);
+    const registry = buildScenarioEntityRegistry({ scenario, graph });
+    return buildResolvedScene({ scenario, graph, registry, components }).validation.map(
+      (message) => ({
+        type: message.type,
+        message: message.message,
+        location: {
+          entity: message.entity_id ?? undefined,
+          path: message.path ?? undefined,
+        },
+      })
+    );
+  }, [components, graph, workspace]);
+  const warnings = [...validation.warnings, ...sceneWarnings];
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded((prev) => !prev);
   }, []);
 
-  const hasIssues = !validation.valid || validation.warnings.length > 0 || validation.cycles.length > 0;
+  const hasIssues = !validation.valid || warnings.length > 0 || validation.cycles.length > 0;
   const errorCount = validation.errors.length;
-  const warningCount = validation.warnings.length + validation.cycles.length;
+  const warningCount = warnings.length + validation.cycles.length;
 
   if (selectedEntityId) return null;
 
@@ -89,7 +107,7 @@ export function ValidationPanel() {
             </div>
           )}
 
-          {validation.valid && validation.warnings.length === 0 && validation.cycles.length === 0 ? (
+          {validation.valid && warnings.length === 0 && validation.cycles.length === 0 ? (
             <div className="text-xs text-mint-500">Graph is valid.</div>
           ) : (
             <div className="space-y-1.5">
@@ -98,7 +116,7 @@ export function ValidationPanel() {
                   {error.message}
                 </div>
               ))}
-              {validation.warnings.map((warning, index) => (
+              {warnings.map((warning, index) => (
                 <div key={`warning-${index}`} className="text-xs text-slate-500">
                   {warning.message}
                 </div>

@@ -248,16 +248,39 @@ def import_manifest_packet(
         artifact_entries_by_manifest.setdefault(artifact.manifest_id, []).append(artifact)
         try:
             source_bytes = _validate_packet_artifact(packet_path, artifact)
+            target_path = _imported_artifact_path(root_path, artifact)
         except ManifestPacketValidationError as exc:
             errors.append(str(exc))
             continue
         if artifact.mode == "included":
-            artifact_copies.append(
-                (artifact, _imported_artifact_path(root_path, artifact), source_bytes)
-            )
+            artifact_copies.append((artifact, target_path, source_bytes))
 
     for entry in index.manifests:
-        source_path = packet_path / entry.path
+        try:
+            packet_relative_path = _safe_packet_entry_path(
+                entry.path,
+                entry_type="manifest",
+                entry_id=entry.id,
+            )
+            source_path = _contained_path(
+                packet_path,
+                packet_relative_path,
+                container_name="packet directory",
+                entry_type="manifest",
+                entry_id=entry.id,
+                raw_path=entry.path,
+            )
+            target_path = _contained_path(
+                root_path,
+                packet_relative_path,
+                container_name="target root",
+                entry_type="manifest",
+                entry_id=entry.id,
+                raw_path=entry.path,
+            )
+        except ManifestPacketValidationError as exc:
+            errors.append(str(exc))
+            continue
         if not source_path.is_file():
             errors.append(f"Missing packet manifest entry: id={entry.id!r}, path={entry.path!r}")
             continue
@@ -302,7 +325,7 @@ def import_manifest_packet(
                 )
             continue
 
-        manifest_writes.append((entry, root_path / entry.path, expected_bytes))
+        manifest_writes.append((entry, target_path, expected_bytes))
 
     if errors:
         raise ManifestPacketValidationError(
@@ -621,7 +644,19 @@ def _validate_packet_artifact(
 ) -> bytes:
     if artifact.mode == "external":
         return b""
-    source = packet_path / str(artifact.path)
+    relative_path = _safe_packet_entry_path(
+        artifact.path,
+        entry_type="artifact",
+        entry_id=artifact.artifact_id,
+    )
+    source = _contained_path(
+        packet_path,
+        relative_path,
+        container_name="packet directory",
+        entry_type="artifact",
+        entry_id=artifact.artifact_id,
+        raw_path=artifact.path,
+    )
     if not source.is_file():
         raise ManifestPacketValidationError(
             "Missing packet artifact entry: "
@@ -766,13 +801,66 @@ def _manifest_import_bytes(data: dict[str, Any]) -> bytes:
 
 def _imported_artifact_path(root: Path, artifact: ManifestPacketArtifactEntry) -> Path:
     logical_name = safe_manifest_key(artifact.logical_name)
-    return (
-        root
-        / "artifacts"
+    relative_path = (
+        Path("artifacts")
         / "manifest_packet"
         / safe_manifest_key(artifact.artifact_id)
         / logical_name
     )
+    return _contained_path(
+        root,
+        relative_path,
+        container_name="target root",
+        entry_type="artifact",
+        entry_id=artifact.artifact_id,
+        raw_path=str(relative_path),
+    )
+
+
+def _safe_packet_entry_path(
+    path: str | None,
+    *,
+    entry_type: str,
+    entry_id: str,
+) -> Path:
+    if not isinstance(path, str) or not path:
+        raise ManifestPacketValidationError(
+            f"Unsafe packet {entry_type} path: id={entry_id!r}, path={path!r}; "
+            "packet entries must use a non-empty relative path"
+        )
+    candidate = Path(path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ManifestPacketValidationError(
+            f"Unsafe packet {entry_type} path: id={entry_id!r}, path={path!r}; "
+            "packet entries must stay within the packet directory and target root"
+        )
+    if candidate == Path(".") or any(part == "" for part in candidate.parts):
+        raise ManifestPacketValidationError(
+            f"Unsafe packet {entry_type} path: id={entry_id!r}, path={path!r}; "
+            "packet entries must name a file"
+        )
+    return candidate
+
+
+def _contained_path(
+    root: Path,
+    relative_path: Path,
+    *,
+    container_name: str,
+    entry_type: str,
+    entry_id: str,
+    raw_path: str | None,
+) -> Path:
+    root_path = root.resolve(strict=False)
+    candidate = (root_path / relative_path).resolve(strict=False)
+    try:
+        candidate.relative_to(root_path)
+    except ValueError as exc:
+        raise ManifestPacketValidationError(
+            f"Unsafe packet {entry_type} path: id={entry_id!r}, path={raw_path!r}; "
+            f"resolved path escapes the {container_name}"
+        ) from exc
+    return candidate
 
 
 def _optional_int(value: Any) -> int | None:

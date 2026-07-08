@@ -32,6 +32,7 @@ from feedbax.mechanics.hill_muscles import (
     ForceVelocityCurve,
     PassiveForceLengthCurve,
 )
+from feedbax.mechanics.muscle_config import default_muscle_config
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
 from feedbax.mechanics.units import (
@@ -196,6 +197,19 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         """
         return self.mt_reference_length - self.moment_arms @ angles
 
+    def musculotendon_lengths(
+        self, angles: Float[Array, " n_joints"],
+    ) -> Float[Array, " n_muscles"]:
+        """Compute public per-muscle musculotendon lengths.
+
+        Args:
+            angles: Joint angles, shape ``(n_joints,)`` [rad].
+
+        Returns:
+            Current musculotendon lengths, shape ``(n_muscles,)`` [m].
+        """
+        return self._musculotendon_lengths(angles)
+
     def _musculotendon_velocities(
         self,
         d_angles: Float[Array, " n_joints"],
@@ -212,6 +226,49 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             MT velocities, shape ``(n_muscles,)``.  Negative = shortening.
         """
         return -self.moment_arms @ d_angles
+
+    def musculotendon_velocities(
+        self,
+        d_angles: Float[Array, " n_joints"],
+    ) -> Float[Array, " n_muscles"]:
+        """Compute public per-muscle musculotendon velocities.
+
+        Args:
+            d_angles: Joint angular velocities, shape ``(n_joints,)`` [rad/s].
+
+        Returns:
+            Musculotendon velocities, shape ``(n_muscles,)`` [m/s].
+            Negative values indicate shortening.
+        """
+        return self._musculotendon_velocities(d_angles)
+
+    def current_musculotendon_lengths(
+        self,
+        state: PlantState,
+    ) -> Float[Array, " n_muscles"]:
+        """Return musculotendon lengths for the plant's current state.
+
+        Args:
+            state: Plant state containing a two-link skeleton state.
+
+        Returns:
+            Current musculotendon lengths, shape ``(n_muscles,)`` [m].
+        """
+        return self.musculotendon_lengths(state.skeleton.angle)
+
+    def current_muscle_activations(
+        self,
+        state: PlantState,
+    ) -> Float[Array, " n_muscles"]:
+        """Return muscle activations for the plant's current state.
+
+        Args:
+            state: Plant state containing ``AnalyticalMuscleState``.
+
+        Returns:
+            Current muscle activations, shape ``(n_muscles,)`` in ``[0, 1]``.
+        """
+        return state.muscles.activations
 
     def _fiber_lengths(
         self, mt_lengths: Float[Array, " n_muscles"],
@@ -566,12 +623,7 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             B=B,
         )
 
-        # Signed moment arms from preset magnitudes and topology.
-        topology = chain_config.muscle_topology
-        sign_arr = topology.sign_array
-        routing_arr = topology.routing_array
-        moment_arms = preset.muscle_moment_arm_magnitudes * sign_arr
-        moment_arms = jnp.where(routing_arr, moment_arms, 0.0)
+        muscle_config = default_muscle_config(preset, chain_config)
 
         # Muscle gear: max isometric force = PCSA * specific tension.
         muscle_gear = preset.muscle_pcsa * SPECIFIC_TENSION
@@ -590,7 +642,7 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         return cls(
             skeleton=skeleton,
             segment_lengths=seg_l,
-            moment_arms=moment_arms,
+            moment_arms=muscle_config.moment_arms,
             muscle_gear=muscle_gear,
             optimal_fiber_length=ofl,
             tendon_slack_length=tsl,

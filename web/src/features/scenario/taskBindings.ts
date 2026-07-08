@@ -52,6 +52,8 @@ function taskDataValueSpec(
 ): StudioValueSpec {
   return {
     schema_version: VALUE_SCHEMA_VERSION,
+    value_form: 'reference',
+    variation: { scope: 'run', enumerable: null, metadata: {} },
     mode: 'reference',
     dtype: schema.dtype ?? null,
     shape: schema.shape ?? null,

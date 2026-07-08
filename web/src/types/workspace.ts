@@ -41,6 +41,36 @@ export interface StudioTopPaneState {
   metadata: Record<string, unknown>;
 }
 
+export const WORKSPACE_VIEW_STATE_SCHEMA_VERSION =
+  'feedbax.studio.workspace_view_state.v1' as const;
+
+export interface WorkspaceCameraState {
+  pan: { x: number; y: number };
+  zoom: number;
+}
+
+export interface WorkspacePlaybackState {
+  position: number;
+  speed: number;
+}
+
+export interface WorkspaceComparisonSelection {
+  baseline_ref: string | null;
+  candidate_ref: string | null;
+}
+
+export interface WorkspaceViewState {
+  schema_version: typeof WORKSPACE_VIEW_STATE_SCHEMA_VERSION;
+  camera: WorkspaceCameraState;
+  selected_artifact_ref: string | null;
+  selected_trial_ref: string | null;
+  overlay_visibility: Record<string, boolean>;
+  playback: WorkspacePlaybackState;
+  comparison_selection: WorkspaceComparisonSelection;
+}
+
+export type WorkspaceViewMode = 'authoring' | 'artifact' | 'playback' | 'comparison';
+
 export interface StudioValidationIssue {
   type: string;
   message: string;
@@ -208,6 +238,7 @@ export type StudioValueSpecMode =
   | string;
 
 export type StudioValueSpecSamplingScope =
+  | 'fixed'
   | 'snapshot'
   | 'run'
   | 'replicate'
@@ -218,7 +249,23 @@ export type StudioValueSpecSamplingScope =
   | string;
 
 export interface StudioValueSpec {
-  schema_version?: 'feedbax.studio.value.v1' | string;
+  schema_version?: 'feedbax.spec.studio.value.v2' | 'feedbax.spec.studio.value.v1' | 'feedbax.studio.value.v1' | string;
+  value_form: 'literal' | 'reference' | 'expression' | 'function' | 'schedule' | 'distribution';
+  variation?: {
+    scope: 'fixed' | 'snapshot' | 'run' | 'replicate' | 'trial' | 'epoch' | 'timestep' | 'sweep';
+    enumerable?: {
+      form: 'list' | 'range' | 'sampler';
+      values?: unknown[];
+      start?: number;
+      stop?: number;
+      count?: number;
+      scale?: 'linear' | 'log';
+      sampler?: Record<string, unknown>;
+      n?: number;
+    } | null;
+    stochastic_policy?: 'shared_per_run' | 'resample_per_replicate' | null;
+    metadata?: Record<string, unknown>;
+  };
   mode: StudioValueSpecMode;
   value?: unknown;
   reference?: StudioSelectorRef | null;
@@ -535,7 +582,7 @@ export interface StudioTrainingExecutionPreparation {
 
 export interface LocalExecutionResult {
   job_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale';
   return_code: number;
   stdout_path: string;
   stderr_path: string;
@@ -551,6 +598,54 @@ export interface StudioTrainingLocalRunResult {
   execution_spec: Record<string, unknown>;
   result: LocalExecutionResult;
   snapshot_dir: string;
+}
+
+export type EvalCheckpointPolicyMode = 'last' | 'best-by-metric' | 'every-k';
+export type EvalReprocessMode = 'missing' | 'missing_failed' | 'all' | 'stale';
+
+export interface StudioEvaluationCheckpointPolicy {
+  mode: EvalCheckpointPolicyMode;
+  metric?: string | null;
+  objective?: 'minimize' | 'maximize';
+  every_k?: number | null;
+  params?: Record<string, unknown>;
+}
+
+export interface StudioEvaluationMatrixPreview {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  selected_training_run_count: number;
+  condition_count: number;
+  checkpoint_policy_count: number;
+  total_eval_count: number;
+  materialized_count: number;
+  pending_count: number;
+  failed_count: number;
+  new_manifest_count: number;
+  launch_count: number;
+  evaluation_run_ids: string[];
+  checkpoint_selection_ids: string[];
+  summary: string;
+}
+
+export interface StudioEvaluationStagingResult {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  preview: StudioEvaluationMatrixPreview;
+  manifest_refs: StudioManifestRef[];
+  checkpoint_selection_refs: StudioManifestRef[];
+}
+
+export interface StudioEvaluationLocalRunResult {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  preview: StudioEvaluationMatrixPreview;
+  manifest_refs: StudioManifestRef[];
+  completed_count: number;
+  failed_count: number;
+  skipped_count: number;
+  skipped_failed_count: number;
+  errors: string[];
 }
 
 export interface StudioPipelineMaterializationResult {

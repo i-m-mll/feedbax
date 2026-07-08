@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo, PortTypeSpec
 from feedbax.contracts.graph import GraphSpec, GraphUIState, NodeUIState, ParamSchema
+from feedbax.contracts.representation import RepresentationSpec
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ParamValue
@@ -44,6 +45,7 @@ class ComponentMeta:
     supported_param_schema_versions: List[str] = field(default_factory=list)
     migrations: List[ComponentMigrationInfo] = field(default_factory=list)
     trainable_by_default: bool = False
+    representation: Optional[RepresentationSpec] = None
 
     def __setattr__(self, name: str, value: Any) -> None:
         if (

@@ -35,6 +35,8 @@ except ImportError:  # pragma: no cover - Python 3.12 always has importlib.metad
 
 
 SCHEMA_VERSION = "feedbax.manifest.v1"
+TRAINING_RUN_SET_SCHEMA_VERSION_V1 = SCHEMA_VERSION
+TRAINING_RUN_SET_SCHEMA_VERSION = "feedbax.manifest.training_run_set.v2"
 PROVIDER_VERSION = "feedbax-provider.v1"
 DEFAULT_MANIFEST_ROOT_ENV = "FEEDBAX_RUNS_DIR"
 REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
@@ -49,7 +51,7 @@ EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
     "feedbax.manifest.evaluation_states_container.v2"
 )
 
-ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
 
 def feedbax_version() -> str:
@@ -340,6 +342,93 @@ class OverridePatch(StrictModel):
     op: Literal["add", "replace", "remove"] = "replace"
 
 
+class TrainingSweepAxisVariation(StrictModel):
+    """Authored enumerable variation for one training run-set axis."""
+
+    kind: Literal["explicit", "linspace", "logspace", "sampler"] = "explicit"
+    values: list[Any] = Field(default_factory=list)
+    min: Optional[float] = None
+    max: Optional[float] = None
+    n: Optional[int] = None
+    sampler: Optional[str] = None
+    seed: Optional[int] = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_variation(self) -> "TrainingSweepAxisVariation":
+        if self.kind == "explicit":
+            if not self.values:
+                raise ValueError("explicit sweep variation requires at least one value")
+            return self
+        if self.kind in {"linspace", "logspace"}:
+            if self.min is None or self.max is None or self.n is None:
+                raise ValueError(f"{self.kind} sweep variation requires min, max, and n")
+            if self.n <= 0:
+                raise ValueError(f"{self.kind} sweep variation n must be positive")
+            if self.kind == "logspace" and (self.min <= 0 or self.max <= 0):
+                raise ValueError("logspace sweep variation min and max must be positive")
+            return self
+        if self.sampler is None or self.n is None:
+            raise ValueError("sampler sweep variation requires sampler and n")
+        if self.n <= 0:
+            raise ValueError("sampler sweep variation n must be positive")
+        return self
+
+
+class TrainingSweepAxis(StrictModel):
+    """One authored run-set axis and its durable expanded values."""
+
+    id: str
+    path: str
+    variation: TrainingSweepAxisVariation
+    role: Literal["authored_sweep"] = "authored_sweep"
+    label: Optional[str] = None
+    values: list[Any] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingSweepAxisGroup(StrictModel):
+    """Axes that combine internally before the run-set groups are crossed."""
+
+    id: str
+    axes: list[str]
+    mode: Literal["cross", "zip"] = "zip"
+
+    @model_validator(mode="after")
+    def _validate_group(self) -> "TrainingSweepAxisGroup":
+        if not self.axes:
+            raise ValueError("sweep axis group requires at least one axis")
+        return self
+
+
+class TrainingSweepCombinationSpec(StrictModel):
+    """How run-set axes are combined into concrete training runs."""
+
+    mode: Literal["cross", "zip", "manual"] = "cross"
+    groups: list[TrainingSweepAxisGroup] = Field(default_factory=list)
+    manual_coordinates: list[dict[str, int]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingRunAxisCoordinate(StrictModel):
+    """Concrete coordinate for one pending run inside a run set."""
+
+    run_id: str
+    index: int
+    value_indices: dict[str, int] = Field(default_factory=dict)
+    values: dict[str, Any] = Field(default_factory=dict)
+    label: Optional[str] = None
+
+
+class TrainingRunSetAxes(StrictModel):
+    """Durable axis block stored on a training run-set manifest."""
+
+    axes: list[TrainingSweepAxis] = Field(default_factory=list)
+    combination: TrainingSweepCombinationSpec = Field(default_factory=TrainingSweepCombinationSpec)
+    runs: list[TrainingRunAxisCoordinate] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class BaseManifest(StrictModel):
     """Common manifest fields."""
 
@@ -375,10 +464,13 @@ class ModelArtifactManifest(BaseManifest):
 
 class TrainingRunSetManifest(BaseManifest):
     kind: Literal["TrainingRunSetManifest"] = "TrainingRunSetManifest"
+    schema_version: str = TRAINING_RUN_SET_SCHEMA_VERSION
     name: str
     run_ids: list[str] = Field(default_factory=list)
     graph_spec: Optional[ParentRef | SpecPayload] = None
+    axes: TrainingRunSetAxes = Field(default_factory=TrainingRunSetAxes)
     tags: list[str] = Field(default_factory=list)
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
 class TrainingRunManifest(BaseManifest):
@@ -1228,6 +1320,37 @@ def _normalize_manifest_data_spec_payloads(data: dict[str, Any]) -> dict[str, An
     return normalized
 
 
+def _normalize_training_run_set_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
+    if data.get("kind") != "TrainingRunSetManifest":
+        return data
+    schema_version = data.get("schema_version", TRAINING_RUN_SET_SCHEMA_VERSION_V1)
+    if schema_version == TRAINING_RUN_SET_SCHEMA_VERSION:
+        return data
+    if schema_version != TRAINING_RUN_SET_SCHEMA_VERSION_V1:
+        raise ValueError(
+            "Unsupported TrainingRunSetManifest schema_version: "
+            f"{schema_version!r}; expected {TRAINING_RUN_SET_SCHEMA_VERSION!r}"
+        )
+    migrated = dict(data)
+    migrated["schema_version"] = TRAINING_RUN_SET_SCHEMA_VERSION
+    migrated.setdefault("axes", {})
+    records = list(migrated.get("migration_records") or [])
+    records.append(
+        ArtifactMigrationRecord(
+            migration_id="training-run-set-manifest-v1-to-v2-axes",
+            source_schema_version=TRAINING_RUN_SET_SCHEMA_VERSION_V1,
+            target_schema_version=TRAINING_RUN_SET_SCHEMA_VERSION,
+            metadata={
+                "description": (
+                    "Add an empty run-set axes block for pre-sweep collection manifests."
+                )
+            },
+        ).model_dump(mode="json", exclude_none=True)
+    )
+    migrated["migration_records"] = records
+    return migrated
+
+
 def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
     """Return a copy with embedded spec payloads registry-stamped and migrated."""
     fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(manifest.kind)
@@ -1313,6 +1436,54 @@ def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
     return f"feedbax-evaluation-run:{digest[:32]}"
 
 
+def planned_training_run_manifest_id(
+    *,
+    graph_spec: dict[str, Any],
+    training_spec: dict[str, Any],
+    task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None = None,
+    seed: Any | None = None,
+    axis_coordinates: dict[str, Any] | None = None,
+) -> str:
+    """Return deterministic identity for a planned Studio training run."""
+    digest = sha256_bytes(
+        canonical_json_bytes(
+            {
+                "graph_spec": graph_spec,
+                "training_spec": training_spec,
+                "task_spec": task_spec,
+                "task_binding_spec": task_binding_spec,
+                "seed": seed,
+                "axis_coordinates": axis_coordinates or {},
+            }
+        )
+    )
+    return f"feedbax-training-run:{digest[:32]}"
+
+
+def planned_training_run_set_manifest_id(
+    *,
+    graph_spec: dict[str, Any],
+    base_training_spec: dict[str, Any],
+    task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None = None,
+    axes: dict[str, Any] | None = None,
+) -> str:
+    """Return deterministic identity for a planned Studio training run set."""
+    digest = sha256_bytes(
+        canonical_json_bytes(
+            {
+                "graph_spec": graph_spec,
+                "base_training_spec": base_training_spec,
+                "task_spec": task_spec,
+                "task_binding_spec": task_binding_spec,
+                "axes": axes or {},
+            }
+        )
+    )
+    return f"feedbax-training-run-set:{digest[:32]}"
+
+
 def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
     """Return deterministic run identity for an analysis spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))
@@ -1377,6 +1548,7 @@ def write_manifest(
 def load_manifest(path: Path | str) -> AnyManifest:
     """Load a known Feedbax manifest from disk."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_manifest_data_spec_payloads(data)
     data = _validate_retention_artifact_ref_metadata(data)
     raw_kind = data.get("kind")

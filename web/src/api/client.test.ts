@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { updateGraph } from '@/api/client';
+import {
+  previewStudioEvaluationMatrix,
+  runStudioEvaluationLocalExecution,
+  sampleTaskTrials,
+  stageStudioEvaluationMatrix,
+  updateGraph,
+} from '@/api/client';
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 
 afterEach(() => {
@@ -49,6 +55,171 @@ describe('graph API save concurrency', () => {
       expected_save_revision: 4,
       graph,
       ui_state: uiState,
+    });
+  });
+});
+
+describe('Studio evaluation provider API', () => {
+  it('posts eval matrix preview, stage, and local run payloads to backend state endpoints', async () => {
+    const workspace = {
+      id: 'workspace:eval',
+      schema_version: 'feedbax.spec.studio.workspace.v1',
+      label: 'Eval workspace',
+      stages: [],
+      scenarios: {},
+      collections: [],
+      artifact_refs: [],
+      manifest_refs: [],
+      metadata: {},
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/preview')) {
+        return Response.json({
+          workspace,
+          stage_id: 'stage:eval',
+          selected_training_run_count: 1,
+          condition_count: 1,
+          checkpoint_policy_count: 1,
+          total_eval_count: 1,
+          materialized_count: 0,
+          pending_count: 0,
+          failed_count: 0,
+          new_manifest_count: 1,
+          launch_count: 1,
+          evaluation_run_ids: ['feedbax-evaluation-run:abc'],
+          checkpoint_selection_ids: ['feedbax-checkpoint-selection:def'],
+          summary: '1 runs x 1 conditions x 1 checkpoint policy = 1 evals - 0 already materialized',
+        });
+      }
+      if (url.endsWith('/stage')) {
+        return Response.json({
+          workspace,
+          stage_id: 'stage:eval',
+          preview: {
+            workspace,
+            stage_id: 'stage:eval',
+            selected_training_run_count: 1,
+            condition_count: 1,
+            checkpoint_policy_count: 1,
+            total_eval_count: 1,
+            materialized_count: 0,
+            pending_count: 1,
+            failed_count: 0,
+            new_manifest_count: 0,
+            launch_count: 1,
+            evaluation_run_ids: ['feedbax-evaluation-run:abc'],
+            checkpoint_selection_ids: ['feedbax-checkpoint-selection:def'],
+            summary: '1 runs x 1 conditions x 1 checkpoint policy = 1 evals - 0 already materialized',
+          },
+          manifest_refs: [],
+          checkpoint_selection_refs: [],
+        });
+      }
+      return Response.json({
+        workspace,
+        stage_id: 'stage:eval',
+        preview: {
+          workspace,
+          stage_id: 'stage:eval',
+          selected_training_run_count: 1,
+          condition_count: 1,
+          checkpoint_policy_count: 1,
+          total_eval_count: 1,
+          materialized_count: 1,
+          pending_count: 0,
+          failed_count: 0,
+          new_manifest_count: 0,
+          launch_count: 0,
+          evaluation_run_ids: ['feedbax-evaluation-run:abc'],
+          checkpoint_selection_ids: ['feedbax-checkpoint-selection:def'],
+          summary: '1 runs x 1 conditions x 1 checkpoint policy = 1 evals - 1 already materialized',
+        },
+        manifest_refs: [],
+        completed_count: 1,
+        failed_count: 0,
+        skipped_count: 0,
+        skipped_failed_count: 0,
+        errors: [],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const selectionSpec = {
+      mode: 'query' as const,
+      manifest_kind: 'TrainingRunManifest',
+      query: {
+        statuses: ['completed'],
+        has_checkpoint: true,
+      },
+    };
+    const payload = {
+      workspace: workspace as never,
+      selection_spec: selectionSpec,
+      checkpoint_policy: {
+        mode: 'best-by-metric' as const,
+        metric: 'final_validation_loss',
+        objective: 'minimize' as const,
+        params: {},
+      },
+      reprocess: 'missing_failed' as const,
+    };
+
+    await previewStudioEvaluationMatrix(payload);
+    await stageStudioEvaluationMatrix(payload);
+    await runStudioEvaluationLocalExecution(payload);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/provider/studio/evaluation/preview',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/provider/studio/evaluation/stage',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/provider/studio/evaluation/run-local',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    const [, options] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];
+    expect(JSON.parse(options.body as string)).toMatchObject({
+      selection_spec: selectionSpec,
+      checkpoint_policy: { mode: 'best-by-metric', metric: 'final_validation_loss' },
+      reprocess: 'missing_failed',
+    });
+    expect(JSON.parse(options.body as string)).not.toHaveProperty('training_run_ids');
+  });
+});
+
+describe('task sampling API', () => {
+  it('posts task spec, seed, and count to the sampling endpoint', async () => {
+    const responsePayload = {
+      schema_version: 'feedbax.execution.sampled_task_trials.v1',
+      task_type: 'SimpleReaches',
+      seed: 9,
+      count: 2,
+      trials: [],
+    };
+    const fetchMock = vi.fn(async () => Response.json(responsePayload));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await sampleTaskTrials({
+      task_spec: { type: 'SimpleReaches', params: { n_steps: 8 } },
+      seed: 9,
+      count: 2,
+    });
+
+    expect(response).toEqual(responsePayload);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe('/api/execution/task-trials/sample');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body as string)).toEqual({
+      task_spec: { type: 'SimpleReaches', params: { n_steps: 8 } },
+      seed: 9,
+      count: 2,
     });
   });
 });

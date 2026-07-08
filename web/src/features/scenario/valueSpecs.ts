@@ -5,6 +5,46 @@ import type {
   StudioValueSpecSamplingScope,
 } from '@/types/workspace';
 
+export const VALUE_SPEC_SCHEMA_VERSION = 'feedbax.spec.studio.value.v2';
+export const LEGACY_VALUE_SPEC_SCHEMA_V1 = 'feedbax.spec.studio.value.v1';
+export const LEGACY_FRONTEND_VALUE_SPEC_SCHEMA_V1 = 'feedbax.studio.value.v1';
+
+export type StudioValueSpecValueForm =
+  | 'literal'
+  | 'reference'
+  | 'expression'
+  | 'function'
+  | 'schedule'
+  | 'distribution';
+
+export type StudioValueSpecVariationScope =
+  | 'fixed'
+  | 'snapshot'
+  | 'run'
+  | 'replicate'
+  | 'trial'
+  | 'epoch'
+  | 'timestep'
+  | 'sweep';
+
+export interface StudioValueSpecEnumerable {
+  form: 'list' | 'range' | 'sampler';
+  values?: unknown[];
+  start?: number;
+  stop?: number;
+  count?: number;
+  scale?: 'linear' | 'log';
+  sampler?: Record<string, unknown>;
+  n?: number;
+}
+
+export interface StudioValueSpecVariation {
+  scope: StudioValueSpecVariationScope;
+  enumerable?: StudioValueSpecEnumerable | null;
+  stochastic_policy?: 'shared_per_run' | 'resample_per_replicate' | null;
+  metadata?: Record<string, unknown>;
+}
+
 export const VALUE_SPEC_MODE_OPTIONS: Array<{
   value: StudioValueSpecMode;
   label: string;
@@ -18,9 +58,10 @@ export const VALUE_SPEC_MODE_OPTIONS: Array<{
 ];
 
 export const VALUE_SPEC_SCOPE_OPTIONS: Array<{
-  value: StudioValueSpecSamplingScope;
+  value: StudioValueSpecVariationScope;
   label: string;
 }> = [
+  { value: 'fixed', label: 'Fixed' },
   { value: 'snapshot', label: 'Snapshot' },
   { value: 'run', label: 'Run' },
   { value: 'replicate', label: 'Replicate' },
@@ -96,10 +137,86 @@ export const INDEXED_VALUE_SPEC_SCOPES: StudioValueSpecSamplingScope[] = [
   'sweep',
 ];
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function modeToValueForm(mode: StudioValueSpecMode): StudioValueSpecValueForm {
+  return mode === 'constant' ? 'literal' : (mode as StudioValueSpecValueForm);
+}
+
+function valueFormToMode(valueForm: string): StudioValueSpecMode {
+  return valueForm === 'literal' ? 'constant' : (valueForm as StudioValueSpecMode);
+}
+
+function normalizeVariation(
+  valueSpec: StudioValueSpec,
+  fallbackScope?: StudioValueSpecVariationScope
+): StudioValueSpecVariation {
+  const legacySchema =
+    valueSpec.schema_version === LEGACY_VALUE_SPEC_SCHEMA_V1 ||
+    valueSpec.schema_version === LEGACY_FRONTEND_VALUE_SPEC_SCHEMA_V1;
+  const current = valueSpec.variation;
+  if (!legacySchema && isRecord(current) && typeof current.scope === 'string') {
+    return {
+      scope: current.scope as StudioValueSpecVariationScope,
+      enumerable: isRecord(current.enumerable)
+        ? (current.enumerable as unknown as StudioValueSpecEnumerable)
+        : null,
+      stochastic_policy:
+        current.stochastic_policy === 'shared_per_run' ||
+        current.stochastic_policy === 'resample_per_replicate'
+          ? current.stochastic_policy
+          : null,
+      metadata: isRecord(current.metadata) ? current.metadata : {},
+    };
+  }
+  const scope = (valueSpec.sampling_scope ?? fallbackScope ?? (
+    valueSpec.mode === 'constant' ? 'fixed' : 'run'
+  )) as StudioValueSpecVariationScope;
+  const variation: StudioValueSpecVariation = {
+    scope,
+    enumerable: null,
+    stochastic_policy:
+      scope === 'replicate' ? 'resample_per_replicate' : scope === 'run' ? 'shared_per_run' : null,
+    metadata: { migrated_from_sampling_scope: valueSpec.sampling_scope ?? null },
+  };
+  if (valueSpec.metadata?.indexed_constant === true) {
+    variation.scope = 'sweep';
+    variation.enumerable = {
+      form: 'list',
+      values: Array.isArray(valueSpec.value) ? valueSpec.value : [valueSpec.value],
+    };
+  }
+  return variation;
+}
+
+export function normalizeStudioValueSpec(valueSpec: StudioValueSpec): StudioValueSpec {
+  const legacySchema =
+    valueSpec.schema_version === LEGACY_VALUE_SPEC_SCHEMA_V1 ||
+    valueSpec.schema_version === LEGACY_FRONTEND_VALUE_SPEC_SCHEMA_V1;
+  const valueForm =
+    !legacySchema && typeof valueSpec.value_form === 'string'
+      ? (valueSpec.value_form as StudioValueSpecValueForm)
+      : modeToValueForm(valueSpec.mode);
+  const mode = valueFormToMode(valueForm);
+  const variation = normalizeVariation(valueSpec);
+  return {
+    ...valueSpec,
+    schema_version: VALUE_SPEC_SCHEMA_VERSION,
+    value_form: valueForm,
+    variation,
+    mode,
+    sampling_scope: variation.scope === 'fixed' ? null : variation.scope,
+    metadata: valueSpec.metadata ?? {},
+  };
+}
+
 export function valueSpecUsesIndexedValues(
   valueSpec: StudioValueSpec | null | undefined
 ): boolean {
-  return valueSpec?.metadata.indexed_constant === true;
+  if (!valueSpec) return false;
+  return normalizeStudioValueSpec(valueSpec).variation?.enumerable?.form === 'list';
 }
 
 export function valueSpecAllowedModes(
@@ -124,6 +241,13 @@ export function valueSpecAllowedScopes(
 
 export function valueSpecChipLabel(valueSpec: StudioValueSpec | null | undefined): string {
   if (!valueSpec) return 'Value';
+  valueSpec = normalizeStudioValueSpec(valueSpec);
+  const variation = valueSpec.variation as StudioValueSpecVariation;
+  const suffix = variation.scope !== 'fixed' ? `/${variation.scope}` : '';
+  if (variation.scope === 'sweep') {
+    const count = valueSpecEnumerableCount(valueSpec);
+    return `Sweep${count === null ? '' : ` ${count}`}`;
+  }
   if (valueSpec.mode === 'function') {
     const template = VALUE_SPEC_FUNCTION_TEMPLATES.find(
       (candidate) => candidate.id === valueSpec.function_id
@@ -132,7 +256,7 @@ export function valueSpecChipLabel(valueSpec: StudioValueSpec | null | undefined
   }
   if (valueSpec.mode === 'distribution') {
     const family = String(valueSpec.distribution?.family ?? 'distribution');
-    return `${family}${valueSpec.sampling_scope ? `/${valueSpec.sampling_scope}` : ''}`;
+    return `${family}${suffix}`;
   }
   if (valueSpec.mode === 'schedule') {
     const domain = String(valueSpec.schedule?.domain ?? valueSpec.sampling_scope ?? 'time');
@@ -191,8 +315,11 @@ export function setValueSpecMode(
   valueSpec: StudioValueSpec,
   mode: StudioValueSpecMode
 ): StudioValueSpec {
+  valueSpec = normalizeStudioValueSpec(valueSpec);
+  const valueForm = modeToValueForm(mode);
   const base = {
-    schema_version: valueSpec.schema_version,
+    schema_version: VALUE_SPEC_SCHEMA_VERSION,
+    value_form: valueForm,
     mode,
     dtype: valueSpec.dtype ?? null,
     shape: valueSpec.shape ?? null,
@@ -207,6 +334,7 @@ export function setValueSpecMode(
     return normalizeConstantForScope({
       ...base,
       value: valueSpec.value ?? defaultConstantValue(valueSpec),
+      variation: { scope: 'fixed', enumerable: null, metadata: {} },
       sampling_scope: null,
     });
   }
@@ -218,6 +346,7 @@ export function setValueSpecMode(
       ...base,
       function_id: template.id,
       parameters: valueSpec.parameters ?? template.defaultParameters,
+      variation: { scope: nonFixedScope(valueSpec, 'timestep'), enumerable: null, metadata: {} },
       sampling_scope: valueSpec.sampling_scope ?? 'timestep',
     };
   }
@@ -227,6 +356,13 @@ export function setValueSpecMode(
       distribution: valueSpec.distribution ?? {
         family: 'uniform',
         parameters: { min: 0, max: 1 },
+      },
+      variation: {
+        scope: nonFixedScope(valueSpec, 'trial'),
+        enumerable: valueSpec.variation?.scope === 'sweep' ? valueSpec.variation.enumerable : null,
+        stochastic_policy:
+          valueSpec.variation?.scope === 'replicate' ? 'resample_per_replicate' : null,
+        metadata: {},
       },
       sampling_scope: valueSpec.sampling_scope ?? 'trial',
     };
@@ -239,6 +375,7 @@ export function setValueSpecMode(
         points: [[0, valueSpec.value ?? defaultConstantValue(valueSpec)]],
         interpolation: 'hold',
       },
+      variation: { scope: nonFixedScope(valueSpec, 'epoch'), enumerable: null, metadata: {} },
       sampling_scope: valueSpec.sampling_scope ?? 'epoch',
     };
   }
@@ -246,29 +383,70 @@ export function setValueSpecMode(
     return {
       ...base,
       expression: valueSpec.expression ?? '',
+      variation: { scope: nonFixedScope(valueSpec, 'run'), enumerable: null, metadata: {} },
       sampling_scope: valueSpec.sampling_scope ?? 'run',
     };
   }
   return {
     ...base,
     reference: valueSpec.reference ?? null,
+    variation: { scope: nonFixedScope(valueSpec, 'run'), enumerable: null, metadata: {} },
     sampling_scope: valueSpec.sampling_scope ?? 'run',
   };
 }
 
+function defaultEnumerableForValueSpec(valueSpec: StudioValueSpec): StudioValueSpecEnumerable {
+  if (valueSpec.variation?.enumerable) return valueSpec.variation.enumerable;
+  if (valueSpec.mode === 'distribution') {
+    const distribution = valueSpec.distribution ?? {
+      family: 'uniform',
+      parameters: { min: 0, max: 1 },
+    };
+    const parameters = distribution.parameters as Record<string, unknown> | undefined;
+    if (distribution.family === 'categorical' && Array.isArray(parameters?.values)) {
+      return { form: 'list', values: parameters.values };
+    }
+    return { form: 'sampler', sampler: distribution, n: 2 };
+  }
+  return { form: 'list', values: [valueSpec.value ?? defaultConstantValue(valueSpec)] };
+}
+
+function nonFixedScope(
+  valueSpec: StudioValueSpec,
+  fallback: StudioValueSpecVariationScope
+): StudioValueSpecVariationScope {
+  const scope = valueSpec.variation?.scope;
+  return scope && scope !== 'fixed' ? scope : fallback;
+}
+
 export function setValueSpecScope(
   valueSpec: StudioValueSpec,
-  samplingScope: StudioValueSpecSamplingScope
+  samplingScope: StudioValueSpecSamplingScope | StudioValueSpecVariationScope
 ): StudioValueSpec {
+  valueSpec = normalizeStudioValueSpec(valueSpec);
+  const scope = samplingScope as StudioValueSpecVariationScope;
+  const variation: StudioValueSpecVariation = {
+    scope,
+    enumerable: scope === 'sweep' ? defaultEnumerableForValueSpec(valueSpec) : null,
+    stochastic_policy:
+      scope === 'replicate' ? 'resample_per_replicate' : scope === 'run' ? 'shared_per_run' : null,
+    metadata: {
+      ...(valueSpec.variation?.metadata ?? {}),
+      sweep_contract: scope === 'sweep' ? 'train_matrix_axis_v1' : undefined,
+    },
+  };
   const next = {
     ...valueSpec,
-    sampling_scope: samplingScope,
+    variation,
+    sampling_scope: scope === 'fixed' ? null : scope,
     metadata: {
       ...valueSpec.metadata,
       authored_as: 'value_spec_editor',
     },
   };
-  return next.mode === 'constant' ? { ...normalizeConstantForScope(next), sampling_scope: null } : next;
+  return next.mode === 'constant' && scope !== 'sweep'
+    ? { ...normalizeConstantForScope(next), sampling_scope: null }
+    : next;
 }
 
 export function setValueSpecConstantValue(
@@ -281,6 +459,57 @@ export function setValueSpecConstantValue(
   const values = Array.isArray(base.value) ? [...base.value] : [base.value];
   values[index] = value;
   return { ...base, value: values };
+}
+
+export function setValueSpecEnumerable(
+  valueSpec: StudioValueSpec,
+  enumerable: StudioValueSpecEnumerable
+): StudioValueSpec {
+  const base = normalizeStudioValueSpec(valueSpec);
+  return {
+    ...base,
+    variation: {
+      ...(base.variation as StudioValueSpecVariation),
+      scope: 'sweep',
+      enumerable,
+      metadata: {
+        ...((base.variation as StudioValueSpecVariation).metadata ?? {}),
+        sweep_contract: 'train_matrix_axis_v1',
+      },
+    },
+    sampling_scope: 'sweep',
+  };
+}
+
+export function valueSpecEnumerableCount(valueSpec: StudioValueSpec): number | null {
+  const enumerable = normalizeStudioValueSpec(valueSpec).variation?.enumerable;
+  if (!enumerable) return null;
+  if (enumerable.form === 'list') return enumerable.values?.length ?? null;
+  if (enumerable.form === 'range') return enumerable.count ?? null;
+  if (enumerable.form === 'sampler') return enumerable.n ?? null;
+  return null;
+}
+
+export function valueSpecValidationErrors(
+  valueSpec: StudioValueSpec,
+  allowedScopes?: Array<StudioValueSpecSamplingScope | StudioValueSpecVariationScope>
+): string[] {
+  const spec = normalizeStudioValueSpec(valueSpec);
+  const errors: string[] = [];
+  const scope = spec.variation.scope;
+  if (allowedScopes && !allowedScopes.includes(scope)) {
+    errors.push(`${scope} variation is not eligible for this field`);
+  }
+  if (scope === 'sweep' && !spec.variation.enumerable) {
+    errors.push('Sweep variation requires a list, range, or sampler count');
+  }
+  if (scope === 'sweep' && spec.variation.enumerable?.form === 'sampler') {
+    const n = spec.variation.enumerable.n;
+    if (!Number.isInteger(n) || Number(n) < 1) {
+      errors.push('Sweep sampler requires a positive sample count');
+    }
+  }
+  return errors;
 }
 
 export function appendValueSpecConstantValue(valueSpec: StudioValueSpec): StudioValueSpec {

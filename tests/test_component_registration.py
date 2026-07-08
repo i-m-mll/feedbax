@@ -20,6 +20,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.graphs.builders import build_component
 from feedbax.runtime.graph import Component
 from feedbax.contracts.graphs.serialization import spec_to_graph
+from feedbax.contracts.representation import RepresentationSpec
 
 
 class _PrototypeSource(Component):
@@ -408,6 +409,271 @@ def test_downstream_migration_pack_can_migrate_owned_component_id() -> None:
     assert definition.identity is not None
     assert definition.identity.provenance_kind == "package"
     assert definition.migrations[0].source_type == "rlrmp.LegacyGain"
+
+
+def test_component_registry_round_trips_representation_contract() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    representation = RepresentationSpec.model_validate(
+        {
+            "anchors": [
+                {
+                    "id": "origin",
+                    "semantic_role": "origin",
+                    "interaction_roles": ["selectable"],
+                    "binding": {"kind": "literal", "value": [0.0, 0.0], "dim": 2},
+                },
+                {
+                    "id": "endpoint",
+                    "semantic_role": "endpoint",
+                    "interaction_roles": ["draggable", "editable"],
+                    "binding": {
+                        "kind": "param_path",
+                        "path": "gain",
+                        "expected_type": "float",
+                    },
+                },
+            ],
+            "elements": [
+                {
+                    "id": "gain-vector",
+                    "archetype": "vector",
+                    "anchors": ["endpoint", "origin"],
+                    "frame_provider": {"kind": "from_input_port", "input_port": "input"},
+                    "style": [{"channel": "stroke", "value": "currentColor"}],
+                    "dim": 2,
+                    "scale_invariant": True,
+                }
+            ],
+            "style": [{"channel": "visibility", "value": True}],
+        }
+    )
+
+    registry.register_component_type(
+        "RepresentedGain",
+        lambda params: Gain(gain=float(params["gain"])),
+        category="Test",
+        description="Test-only represented gain.",
+        param_schema=[{"name": "gain", "type": "float", "default": 1.0}],
+        input_ports=["input"],
+        output_ports=["output"],
+        representation=representation,
+    )
+
+    definition = next(item for item in registry.list_all() if item.name == "RepresentedGain")
+    assert definition.representation is not None
+    assert definition.representation.schema_id == "feedbax.spec.studio.representation"
+    assert definition.representation.schema_version == "feedbax.spec.studio.representation.v1"
+    assert [anchor.id for anchor in definition.representation.anchors] == ["endpoint", "origin"]
+    assert definition.representation.elements[0].archetype == "vector"
+    assert definition.representation.elements[0].frame_provider is not None
+    assert definition.representation.elements[0].frame_provider.input_port == "input"
+
+
+def test_builtin_mechanics_expose_workspace_representations() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    definitions = {item.name: item for item in registry.list_all()}
+
+    point_mass = definitions["PointMass"]
+    assert point_mass.representation is not None
+    assert [element.archetype for element in point_mass.representation.elements] == [
+        "point_body"
+    ]
+    assert point_mass.representation.anchors[0].id == "center"
+    assert point_mass.representation.anchors[0].binding is not None
+
+    two_link = definitions["TwoLinkArm"]
+    assert two_link.default_params["link_lengths"] == [0.30, 0.33]
+    assert two_link.representation is not None
+    links = next(
+        element
+        for element in two_link.representation.elements
+        if element.archetype == "planar_chain"
+    )
+    assert links.anchors == ["shoulder", "elbow", "effector"]
+    assert links.bindings["link_lengths"].kind == "param_path"
+    assert links.bindings["link_lengths"].path == "link_lengths"
+
+
+def test_two_link_arm_builder_uses_representation_link_lengths_param() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    component = build_component(
+        "arm",
+        "TwoLinkArm",
+        {"dt": 0.01, "link_lengths": [0.5, 0.25]},
+        component_registry=registry,
+    )
+
+    assert bool(jnp.allclose(component.plant.skeleton.l, jnp.array([0.5, 0.25])))
+
+
+def test_builtin_muscle_representations_declare_consolidated_geometry_sources() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    definitions = {item.name: item for item in registry.list_all()}
+
+    arm_template = definitions["Arm6MuscleRigidTendon"]
+    assert arm_template.representation is not None
+    arm_elements = {element.id: element for element in arm_template.representation.elements}
+    assert arm_elements["links"].archetype == "planar_chain"
+    assert arm_elements["muscle-paths"].archetype == "muscle_path"
+    assert (
+        arm_template.representation.metadata["geometry_source"]
+        == "feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle"
+    )
+    assert arm_template.representation.metadata["composition_rule"] == {
+        "kind": "subgraph_children",
+        "allow_outer_geometry_fallback": False,
+    }
+    opacity = next(
+        style for style in arm_elements["muscle-paths"].style if style.channel == "opacity"
+    )
+    assert opacity.binding is not None
+    assert opacity.binding.selector.compact == "output:activations"
+
+    analytical = definitions["AnalyticalMusculoskeletalPlant"]
+    assert analytical.representation is not None
+    assert (
+        analytical.representation.metadata["geometry_source"]
+        == "feedbax.mechanics.muscle_config.default_6muscle_2link_muscled_arm_parameters"
+    )
+
+    point_mass_template = definitions["PointMass8MuscleRelu"]
+    assert point_mass_template.representation is not None
+    assert any(
+        element.archetype == "muscle_path"
+        for element in point_mass_template.representation.elements
+    )
+    assert (
+        point_mass_template.representation.metadata["geometry_source"]
+        == "feedbax.mechanics.geometry.PointMassRadialGeometry"
+    )
+
+
+def test_builtin_reach_tasks_expose_schematic_objective_representations() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    definitions = {item.name: item for item in registry.list_all()}
+
+    simple = definitions["SimpleReaches"]
+    assert simple.representation is not None
+    simple_elements = {element.id: element for element in simple.representation.elements}
+    assert simple.representation.metadata["canonical_goal_anchor"] == "goal"
+    assert simple_elements["workspace"].archetype == "region"
+    assert simple_elements["reach-distribution"].archetype == "distribution_glyph"
+    assert simple_elements["goal-marker"].metadata["canonical_goal"] is True
+    assert simple_elements["objective"].archetype == "objective_link"
+
+    delayed = definitions["DelayedReaches"]
+    assert delayed.representation is not None
+    delayed_elements = {element.id: element for element in delayed.representation.elements}
+    assert delayed.representation.metadata["temporality"]["kind"] == "scheduled"
+    assert (
+        delayed.representation.metadata["temporality"]["target_on_epochs_param"]
+        == "target_on_epochs"
+    )
+    assert delayed_elements["goal-marker"].metadata["canonical_goal"] is True
+    assert delayed_elements["reach-distribution"].metadata["distribution"] == "center_out"
+
+
+def test_component_registry_rejects_representation_unknown_param_path() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    with pytest.raises(ValueError, match="declared parameter"):
+        registry.register_component_type(
+            "BadRepresentation",
+            lambda params: Gain(gain=1.0),
+            category="Test",
+            param_schema=[{"name": "gain", "type": "float", "default": 1.0}],
+            input_ports=["input"],
+            output_ports=["output"],
+            representation={
+                "elements": [
+                    {
+                        "id": "bad",
+                        "archetype": "vector",
+                        "bindings": {
+                            "length": {
+                                "kind": "param_path",
+                                "path": "missing",
+                            }
+                        },
+                    }
+                ]
+            },
+        )
+
+
+def test_representation_contract_rejects_old_schema_version() -> None:
+    with pytest.raises(ValueError, match="literal_error"):
+        RepresentationSpec.model_validate(
+            {
+                "schema_id": "feedbax.spec.studio.representation",
+                "schema_version": "feedbax.spec.studio.representation.v0",
+            }
+        )
+
+
+def test_representation_selector_anchor_subpaths_are_enumerated() -> None:
+    valid = RepresentationSpec.model_validate(
+        {
+            "anchors": [
+                {
+                    "id": "effector",
+                    "semantic_role": "endpoint",
+                    "binding": {
+                        "kind": "selector",
+                        "selector": {
+                            "namespace": "mechanics_object",
+                            "compact": "mechanics:scenario:train.mechanics",
+                            "target_id": "scenario:train:mechanics",
+                        },
+                        "anchor_subpath": "position",
+                    },
+                }
+            ]
+        }
+    )
+    assert valid.anchors[0].binding is not None
+
+    with pytest.raises(ValueError, match="anchor_subpath"):
+        RepresentationSpec.model_validate(
+            {
+                "anchors": [
+                    {
+                        "id": "port-anchor",
+                        "semantic_role": "endpoint",
+                        "binding": {
+                            "kind": "selector",
+                            "selector": {
+                                "namespace": "graph_port",
+                                "compact": "port:node.output",
+                            },
+                            "anchor_subpath": "position",
+                        },
+                    }
+                ]
+            }
+        )
+
+    with pytest.raises(ValueError, match="literal_error"):
+        RepresentationSpec.model_validate(
+            {
+                "anchors": [
+                    {
+                        "id": "bad-subpath",
+                        "semantic_role": "endpoint",
+                        "binding": {
+                            "kind": "selector",
+                            "selector": {
+                                "namespace": "task_object",
+                                "compact": "task:scenario:train",
+                                "target_id": "scenario:train",
+                            },
+                            "anchor_subpath": "freeform",
+                        },
+                    }
+                ]
+            }
+        )
 
 
 def test_absent_downstream_owner_fails_with_actionable_message() -> None:

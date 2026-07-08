@@ -1,9 +1,13 @@
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import { parseContract } from '@/generated/studioContracts';
+import { parseContract, type SelectionSpec } from '@/generated/studioContracts';
 import type {
   StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
+  StudioEvaluationCheckpointPolicy,
+  StudioEvaluationLocalRunResult,
+  StudioEvaluationMatrixPreview,
+  StudioEvaluationStagingResult,
   StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioWorkspaceSpec,
@@ -159,6 +163,8 @@ export async function prepareStudioTrainingExecution(payload: {
   backend?: 'local' | 'ssh' | 'runpod' | 'modal';
   job_id?: string | null;
   local_cwd?: string | null;
+  queue_target?: 'local' | 'gcp' | 'runpod' | 'manual' | null;
+  queue_manifest_ids?: string[];
   issues?: string[];
   metadata?: Record<string, unknown>;
 }) {
@@ -184,6 +190,67 @@ export async function runStudioTrainingLocalExecution(payload: {
   });
 }
 
+export async function previewStudioEvaluationMatrix(payload: {
+  workspace: StudioWorkspaceSpec;
+  stage_id?: string | null;
+  selection_spec?: SelectionSpec | null;
+  training_run_ids?: string[];
+  eval_params?: Record<string, unknown>;
+  condition_matrix?: Record<string, unknown>;
+  checkpoint_policy?: StudioEvaluationCheckpointPolicy;
+  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
+  job_id?: string | null;
+  root?: string | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioEvaluationMatrixPreview>('/api/provider/studio/evaluation/preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function stageStudioEvaluationMatrix(payload: {
+  workspace: StudioWorkspaceSpec;
+  stage_id?: string | null;
+  selection_spec?: SelectionSpec | null;
+  training_run_ids?: string[];
+  eval_params?: Record<string, unknown>;
+  condition_matrix?: Record<string, unknown>;
+  checkpoint_policy?: StudioEvaluationCheckpointPolicy;
+  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
+  job_id?: string | null;
+  root?: string | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioEvaluationStagingResult>('/api/provider/studio/evaluation/stage', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runStudioEvaluationLocalExecution(payload: {
+  workspace: StudioWorkspaceSpec;
+  stage_id?: string | null;
+  selection_spec?: SelectionSpec | null;
+  training_run_ids?: string[];
+  eval_params?: Record<string, unknown>;
+  condition_matrix?: Record<string, unknown>;
+  checkpoint_policy?: StudioEvaluationCheckpointPolicy;
+  reprocess?: 'missing' | 'missing_failed' | 'all' | 'stale';
+  job_id?: string | null;
+  root?: string | null;
+  timeout?: number | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioEvaluationLocalRunResult>('/api/provider/studio/evaluation/run-local', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function materializeStudioPipeline(payload: {
   workspace: StudioWorkspaceSpec;
   stages?: Array<'eval' | 'analysis' | 'report'>;
@@ -193,6 +260,41 @@ export async function materializeStudioPipeline(payload: {
   metadata?: Record<string, unknown>;
 }) {
   return request<StudioPipelineMaterializationResult>('/api/provider/studio/pipeline/materialize', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface SampledTaskTrialCue {
+  label: string;
+  step: number;
+  kind: 'epoch' | 'event' | string;
+}
+
+export interface SampledTaskTrial {
+  id: string;
+  index: number;
+  start: [number, number];
+  goal: [number, number];
+  n_steps: number;
+  timeline: SampledTaskTrialCue[];
+  metadata: Record<string, unknown>;
+}
+
+export interface SampledTaskTrialsResponse {
+  schema_version: 'feedbax.execution.sampled_task_trials.v1';
+  task_type: string;
+  seed: number;
+  count: number;
+  trials: SampledTaskTrial[];
+}
+
+export async function sampleTaskTrials(payload: {
+  task_spec: TaskSpec;
+  seed: number;
+  count: number;
+}) {
+  return request<SampledTaskTrialsResponse>('/api/execution/task-trials/sample', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

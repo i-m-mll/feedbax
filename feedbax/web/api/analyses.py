@@ -5,9 +5,13 @@ from __future__ import annotations
 import dataclasses
 import logging
 from typing import Any
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
+from feedbax.analysis.bundles import AnalysisBundleSpec, dry_run_staged_analysis_bundle
 from feedbax.contracts.studio_api import (
+    AnalysisBundleDryRunPayload,
+    AnalysisBundleDryRunRequest,
+    AnalysisBundleDryRunResponse,
     AnalysisClassInfo,
     AnalysisPackageInfo,
     AnalysisPackagesResponse,
@@ -192,3 +196,23 @@ async def list_analysis_packages() -> AnalysisPackagesResponse:
     """
     packages = _discover_packages()
     return AnalysisPackagesResponse(data={"packages": packages})
+
+
+@router.post("/bundles/dry-run", response_model=AnalysisBundleDryRunResponse)
+async def dry_run_analysis_bundle(
+    payload: AnalysisBundleDryRunRequest,
+) -> AnalysisBundleDryRunResponse:
+    """Evaluate analysis bundle bindings and stage conditions without launching."""
+    try:
+        bundle = AnalysisBundleSpec.model_validate(payload.bundle)
+        dry_run = dry_run_staged_analysis_bundle(
+            bundle,
+            root=payload.root,
+            selection_spec=payload.selection_spec,
+            preview_limit=payload.preview_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AnalysisBundleDryRunResponse(
+        data=AnalysisBundleDryRunPayload(dry_run=dry_run.model_dump(mode="json"))
+    )

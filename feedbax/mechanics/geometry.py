@@ -22,6 +22,11 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, Float
 
+from feedbax.mechanics.muscle_config import (
+    default_6muscle_2link_moment_arms,
+    default_6muscle_2link_reference_lengths,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -277,11 +282,11 @@ class TwoLinkArmMuscleGeometry(Module):
     @classmethod
     def default_six_muscle(
         cls,
-        shoulder_moment_arm: float = 0.04,
-        elbow_moment_arm: float = 0.025,
-        biarticular_shoulder_arm: float = 0.035,
-        biarticular_elbow_arm: float = 0.022,
-        reference_length: float = 0.2,
+        shoulder_moment_arm: float | None = None,
+        elbow_moment_arm: float | None = None,
+        biarticular_shoulder_arm: float | None = None,
+        biarticular_elbow_arm: float | None = None,
+        reference_length: float | None = None,
     ) -> "TwoLinkArmMuscleGeometry":
         """Create standard 6-muscle geometry for two-link arm.
 
@@ -294,46 +299,73 @@ class TwoLinkArmMuscleGeometry(Module):
             5: Biarticular extensor (negative at both joints)
 
         Args:
-            shoulder_moment_arm: Moment arm for uniarticular shoulder muscles.
-            elbow_moment_arm: Moment arm for uniarticular elbow muscles.
-            biarticular_shoulder_arm: Shoulder moment arm for biarticular muscles.
-            biarticular_elbow_arm: Elbow moment arm for biarticular muscles.
-            reference_length: Reference MT length at neutral position.
+            shoulder_moment_arm: Unsupported legacy customization hook. Leave
+                as ``None`` to use the canonical 6-muscle, 2-link defaults.
+            elbow_moment_arm: Unsupported legacy customization hook.
+            biarticular_shoulder_arm: Unsupported legacy customization hook.
+            biarticular_elbow_arm: Unsupported legacy customization hook.
+            reference_length: Unsupported legacy customization hook.
+
+        Returns:
+            TwoLinkArmMuscleGeometry instance.
+
+        Raises:
+            ValueError: If legacy per-parameter overrides are supplied. Build
+                custom geometry explicitly with ``from_moment_arm_matrix``.
+        """
+        overrides = (
+            shoulder_moment_arm,
+            elbow_moment_arm,
+            biarticular_shoulder_arm,
+            biarticular_elbow_arm,
+            reference_length,
+        )
+        if any(value is not None for value in overrides):
+            raise ValueError(
+                "TwoLinkArmMuscleGeometry.default_six_muscle uses the canonical "
+                "6-muscle 2-link defaults. Use from_moment_arm_matrix for custom "
+                "moment arms or reference lengths."
+            )
+        return cls.from_moment_arm_matrix(
+            default_6muscle_2link_moment_arms(),
+            default_6muscle_2link_reference_lengths(),
+        )
+
+    @classmethod
+    def from_moment_arm_matrix(
+        cls,
+        moment_arms: Array,
+        reference_lengths: Array,
+    ) -> "TwoLinkArmMuscleGeometry":
+        """Create constant geometry from explicit moment arms and lengths.
+
+        Args:
+            moment_arms: Signed moment-arm matrix, shape
+                ``(n_muscles, n_joints)`` [m].
+            reference_lengths: Musculotendon reference lengths at zero angles,
+                shape ``(n_muscles,)`` [m].
 
         Returns:
             TwoLinkArmMuscleGeometry instance.
         """
-        geometries = (
-            # Shoulder flexor
+        moment_arms = jnp.asarray(moment_arms)
+        reference_lengths = jnp.asarray(reference_lengths)
+        if moment_arms.ndim != 2:
+            raise ValueError(
+                "moment_arms must have shape (n_muscles, n_joints), "
+                f"got {moment_arms.shape}"
+            )
+        if reference_lengths.shape != (moment_arms.shape[0],):
+            raise ValueError(
+                "reference_lengths must have shape (n_muscles,), "
+                f"got {reference_lengths.shape}"
+            )
+        geometries = tuple(
             ConstantMomentArmGeometry(
-                moment_arms=jnp.array([shoulder_moment_arm, 0.0]),
-                reference_length=reference_length,
-            ),
-            # Shoulder extensor
-            ConstantMomentArmGeometry(
-                moment_arms=jnp.array([-shoulder_moment_arm, 0.0]),
-                reference_length=reference_length,
-            ),
-            # Elbow flexor
-            ConstantMomentArmGeometry(
-                moment_arms=jnp.array([0.0, elbow_moment_arm]),
-                reference_length=reference_length,
-            ),
-            # Elbow extensor
-            ConstantMomentArmGeometry(
-                moment_arms=jnp.array([0.0, -elbow_moment_arm]),
-                reference_length=reference_length,
-            ),
-            # Biarticular flexor
-            ConstantMomentArmGeometry(
-                moment_arms=jnp.array([biarticular_shoulder_arm, biarticular_elbow_arm]),
-                reference_length=reference_length * 1.5,  # Longer biarticular
-            ),
-            # Biarticular extensor
-            ConstantMomentArmGeometry(
-                moment_arms=jnp.array([-biarticular_shoulder_arm, -biarticular_elbow_arm]),
-                reference_length=reference_length * 1.5,
-            ),
+                moment_arms=moment_arms[i],
+                reference_length=float(reference_lengths[i]),
+            )
+            for i in range(moment_arms.shape[0])
         )
         return cls(geometries=geometries)
 

@@ -13,6 +13,7 @@ import {
   normalizeGraphForStudioAuthoring,
   normalizeTaskBindingSpecForStudioAuthoring,
 } from '@/features/graph/normalization';
+import { WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -32,6 +33,8 @@ import type {
   StudioTrainingExecutionPreparation,
   StudioValidationState,
   StudioWorkspaceSpec,
+  WorkspaceViewMode,
+  WorkspaceViewState,
 } from '@/types/workspace';
 
 const WORKSPACE_SCHEMA_VERSION = 'feedbax.studio.workspace.v1';
@@ -58,6 +61,36 @@ const DEFAULT_TOP_PANE_STATE: StudioTopPaneState = {
   hovered_entity_id: null,
   pinned_inspector_entity_id: null,
   metadata: {},
+};
+
+const WORKSPACE_VIEW_STATE_KEY = 'workspace_view_state';
+
+const DEFAULT_WORKSPACE_VIEW_STATE: WorkspaceViewState = {
+  schema_version: WORKSPACE_VIEW_STATE_SCHEMA_VERSION,
+  camera: { zoom: 1, pan: { x: 0, y: 0 } },
+  selected_artifact_ref: null,
+  selected_trial_ref: null,
+  overlay_visibility: {
+    mechanics: true,
+    task: true,
+    objectives: true,
+    observables: true,
+    artifacts: true,
+    trials: true,
+    comparisons: true,
+  },
+  playback: { position: 0, speed: 1 },
+  comparison_selection: { baseline_ref: null, candidate_ref: null },
+};
+
+type WorkspaceViewStatePatch = Partial<
+  Omit<WorkspaceViewState, 'camera' | 'playback' | 'comparison_selection'>
+> & {
+  camera?: Partial<Omit<WorkspaceViewState['camera'], 'pan'>> & {
+    pan?: Partial<WorkspaceViewState['camera']['pan']>;
+  };
+  playback?: Partial<WorkspaceViewState['playback']>;
+  comparison_selection?: Partial<WorkspaceViewState['comparison_selection']>;
 };
 
 const LEGACY_PROBE_SELECTOR_MAP: Record<
@@ -130,6 +163,131 @@ function normalizeTopPaneState(value: unknown): StudioTopPaneState {
         : null,
     metadata: isRecord(record.metadata) ? record.metadata : {},
   };
+}
+
+function numberOrDefault(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function stringRefOrNull(value: unknown, availableRefs: Set<string> | null): string | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  if (availableRefs && !availableRefs.has(value)) return null;
+  return value;
+}
+
+function normalizeWorkspaceViewState(
+  value: unknown,
+  availableRefs: Set<string> | null = null
+): WorkspaceViewState {
+  const record = isRecord(value) ? value : {};
+  if (
+    record.schema_version !== WORKSPACE_VIEW_STATE_SCHEMA_VERSION &&
+    record.schema_version !== undefined
+  ) {
+    return DEFAULT_WORKSPACE_VIEW_STATE;
+  }
+  const camera = isRecord(record.camera) ? record.camera : {};
+  const pan = isRecord(camera.pan) ? camera.pan : {};
+  const playback = isRecord(record.playback) ? record.playback : {};
+  const comparison = isRecord(record.comparison_selection) ? record.comparison_selection : {};
+  const overlayVisibility = isRecord(record.overlay_visibility)
+    ? record.overlay_visibility
+    : {};
+  const normalizedOverlayVisibility = Object.entries(overlayVisibility).reduce<
+    Record<string, boolean>
+  >((result, [key, visible]) => {
+    if (typeof visible === 'boolean') result[key] = visible;
+    return result;
+  }, {});
+  return {
+    schema_version: WORKSPACE_VIEW_STATE_SCHEMA_VERSION,
+    camera: {
+      zoom: Math.max(0.35, Math.min(8, numberOrDefault(camera.zoom, 1))),
+      pan: {
+        x: numberOrDefault(pan.x, 0),
+        y: numberOrDefault(pan.y, 0),
+      },
+    },
+    selected_artifact_ref: stringRefOrNull(record.selected_artifact_ref, availableRefs),
+    selected_trial_ref: stringRefOrNull(record.selected_trial_ref, null),
+    overlay_visibility: {
+      ...DEFAULT_WORKSPACE_VIEW_STATE.overlay_visibility,
+      ...normalizedOverlayVisibility,
+    },
+    playback: {
+      position: Math.max(0, numberOrDefault(playback.position, 0)),
+      speed: Math.max(0.1, Math.min(16, numberOrDefault(playback.speed, 1))),
+    },
+    comparison_selection: {
+      baseline_ref: stringRefOrNull(comparison.baseline_ref, availableRefs),
+      candidate_ref: stringRefOrNull(comparison.candidate_ref, availableRefs),
+    },
+  };
+}
+
+function collectRefIdsFromRef(value: unknown, refs: Set<string>) {
+  if (!isRecord(value)) return;
+  for (const key of ['id', 'uri']) {
+    const ref = value[key];
+    if (typeof ref === 'string' && ref.length > 0) refs.add(ref);
+  }
+}
+
+function availableWorkspaceViewRefs(
+  workspace: StudioWorkspaceSpec | null | undefined,
+  stage: StudioStageSpec | null | undefined
+): Set<string> {
+  const refs = new Set<string>();
+  for (const ref of workspace?.manifest_refs ?? []) collectRefIdsFromRef(ref, refs);
+  for (const ref of workspace?.artifact_refs ?? []) collectRefIdsFromRef(ref, refs);
+  for (const collection of workspace?.collections ?? []) {
+    refs.add(collection.id);
+    for (const ref of collection.item_refs) collectRefIdsFromRef(ref, refs);
+  }
+  if (stage) {
+    for (const ref of stage.manifest_refs) collectRefIdsFromRef(ref, refs);
+    for (const ref of stage.artifact_refs ?? []) collectRefIdsFromRef(ref, refs);
+    for (const collection of [...stage.input_collections, ...stage.output_collections]) {
+      refs.add(collection.id);
+      for (const ref of collection.item_refs) collectRefIdsFromRef(ref, refs);
+    }
+  }
+  return refs;
+}
+
+function mergeWorkspaceViewStatePatch(
+  current: WorkspaceViewState,
+  patch: WorkspaceViewStatePatch,
+  availableRefs: Set<string> | null
+): WorkspaceViewState {
+  return normalizeWorkspaceViewState(
+    {
+      ...current,
+      ...patch,
+      camera: {
+        ...current.camera,
+        ...(patch.camera ?? {}),
+        pan: {
+          ...current.camera.pan,
+          ...(patch.camera?.pan ?? {}),
+        },
+      },
+      overlay_visibility: {
+        ...current.overlay_visibility,
+        ...(patch.overlay_visibility ?? {}),
+      },
+      playback: {
+        ...current.playback,
+        ...(patch.playback ?? {}),
+      },
+      comparison_selection: {
+        ...current.comparison_selection,
+        ...(patch.comparison_selection ?? {}),
+      },
+    },
+    availableRefs
+  );
 }
 
 function updateTopPaneState(
@@ -369,6 +527,68 @@ function normalizeWorkspaceTaskBindingSpecs(
   return changed ? { ...workspace, scenarios } : workspace;
 }
 
+function stageForScenario(
+  workspace: StudioWorkspaceSpec,
+  scenario: StudioScenarioSpec
+): StudioStageSpec | null {
+  return (
+    workspace.stages.find((stage) => stage.scenario_id === scenario.id) ??
+    workspace.stages.find((stage) => stage.id === scenario.stage_id) ??
+    null
+  );
+}
+
+function normalizeWorkspaceViewStates(
+  workspace: StudioWorkspaceSpec | null
+): StudioWorkspaceSpec | null {
+  if (!workspace) return workspace;
+  let changed = false;
+  const activeStage = getActiveStage(workspace);
+  const workspaceRefs = availableWorkspaceViewRefs(workspace, activeStage);
+  const workspaceViewState = normalizeWorkspaceViewState(
+    workspace.ui_state[WORKSPACE_VIEW_STATE_KEY],
+    workspaceRefs
+  );
+  const uiState = {
+    ...workspace.ui_state,
+    [WORKSPACE_VIEW_STATE_KEY]: workspaceViewState,
+  };
+  if (workspace.ui_state[WORKSPACE_VIEW_STATE_KEY] !== workspaceViewState) changed = true;
+
+  const scenarios = Object.fromEntries(
+    Object.entries(workspace.scenarios).map(([scenarioId, scenario]) => {
+      const stage = stageForScenario(workspace, scenario);
+      const refs = availableWorkspaceViewRefs(workspace, stage);
+      const viewState = normalizeWorkspaceViewState(
+        scenario.ui_state[WORKSPACE_VIEW_STATE_KEY],
+        refs
+      );
+      if (scenario.ui_state[WORKSPACE_VIEW_STATE_KEY] === viewState) {
+        return [scenarioId, scenario];
+      }
+      changed = true;
+      return [
+        scenarioId,
+        {
+          ...scenario,
+          ui_state: {
+            ...scenario.ui_state,
+            [WORKSPACE_VIEW_STATE_KEY]: viewState,
+          },
+        },
+      ];
+    })
+  );
+
+  return changed ? { ...workspace, ui_state: uiState, scenarios } : workspace;
+}
+
+function normalizeWorkspaceForStudioState(
+  workspace: StudioWorkspaceSpec | null
+): StudioWorkspaceSpec | null {
+  return normalizeWorkspaceViewStates(normalizeWorkspaceTaskBindingSpecs(workspace));
+}
+
 function analysisPagesFromSnapshot(snapshot: AnalysisSnapshot | null): AnalysisPageWire[] {
   if (!snapshot || snapshot.pages.length === 0) return [];
   return snapshot.pages.map((page) => ({
@@ -577,7 +797,7 @@ export function buildWorkspaceSnapshot({
     );
   }
 
-  return normalizeWorkspaceTaskBindingSpecs({
+  return normalizeWorkspaceForStudioState({
     ...withStages,
     label: withStages.label || projectName || graph.metadata?.name || 'Studio workspace',
     active_stage_id: withStages.active_stage_id ?? trainStage?.id ?? null,
@@ -628,6 +848,10 @@ interface WorkspaceStoreState {
     graphPath?: string[] | null
   ) => void;
   updateActiveScenarioObjectiveSpec: (objectiveSpec: StudioObjectiveSpec) => void;
+  updateActiveWorkspaceViewState: (
+    patch: WorkspaceViewStatePatch,
+    reason?: string
+  ) => void;
   setTopPaneProjection: (projection: StudioTopPaneProjection) => void;
   selectTopPaneEntity: (entityId: string | null, reason?: string) => void;
   hoverTopPaneEntity: (entityId: string | null) => void;
@@ -665,8 +889,50 @@ export function getScenario(
   return workspace.scenarios[scenarioId] ?? null;
 }
 
+export function getProjectedScenario(
+  workspace: StudioWorkspaceSpec | null,
+  stage: StudioStageSpec | null | undefined
+): StudioScenarioSpec | null {
+  const scenario = getScenario(workspace, stage?.scenario_id);
+  if (!workspace || !scenario) return scenario;
+  const parent = getScenario(workspace, scenario.parent_scenario_id);
+  if (!parent) return scenario;
+  const inheritTrainingObjectives = stage?.kind === 'train';
+  return {
+    ...parent,
+    ...scenario,
+    id: scenario.id,
+    label: scenario.label,
+    stage_id: scenario.stage_id ?? stage?.id ?? null,
+    parent_scenario_id: scenario.parent_scenario_id,
+    graph: scenario.graph ?? parent.graph,
+    graph_ui_state: scenario.graph_ui_state ?? parent.graph_ui_state,
+    task_spec: scenario.task_spec ?? parent.task_spec,
+    task_binding_spec: scenario.task_binding_spec ?? parent.task_binding_spec,
+    probe_specs:
+      (scenario.probe_specs ?? []).length > 0 ? scenario.probe_specs : parent.probe_specs,
+    biomechanics_spec: scenario.biomechanics_spec ?? parent.biomechanics_spec,
+    training_spec: inheritTrainingObjectives
+      ? scenario.training_spec ?? parent.training_spec
+      : scenario.training_spec ?? null,
+    objective_spec: inheritTrainingObjectives
+      ? scenario.objective_spec ?? parent.objective_spec
+      : scenario.objective_spec ?? null,
+    ui_state: {
+      ...parent.ui_state,
+      ...scenario.ui_state,
+    },
+    metadata: {
+      ...parent.metadata,
+      ...scenario.metadata,
+      projected_from_parent_scenario_id: parent.id,
+      projected_for_stage_kind: stage?.kind ?? null,
+    },
+  };
+}
+
 export function getActiveScenario(workspace: StudioWorkspaceSpec | null): StudioScenarioSpec | null {
-  return getScenario(workspace, getActiveStage(workspace)?.scenario_id);
+  return getProjectedScenario(workspace, getActiveStage(workspace));
 }
 
 export function getTrainingScenario(
@@ -694,13 +960,47 @@ export function getTopPaneState(
   return normalizeTopPaneState(workspace?.ui_state.top_pane);
 }
 
+export function getWorkspaceViewState(
+  workspace: StudioWorkspaceSpec | null | undefined,
+  stage: StudioStageSpec | null | undefined = getActiveStage(workspace ?? null)
+): WorkspaceViewState {
+  if (!workspace) return DEFAULT_WORKSPACE_VIEW_STATE;
+  const scenario = getScenario(workspace, stage?.scenario_id);
+  const availableRefs = availableWorkspaceViewRefs(workspace, stage);
+  return normalizeWorkspaceViewState(
+    scenario?.ui_state[WORKSPACE_VIEW_STATE_KEY] ??
+      workspace.ui_state[WORKSPACE_VIEW_STATE_KEY],
+    availableRefs
+  );
+}
+
+export function getWorkspaceViewMode(
+  workspace: StudioWorkspaceSpec | null | undefined,
+  stage: StudioStageSpec | null | undefined = getActiveStage(workspace ?? null)
+): WorkspaceViewMode {
+  if (!workspace || !stage) return 'authoring';
+  const viewState = getWorkspaceViewState(workspace, stage);
+  if (stage.kind === 'compare' || viewState.comparison_selection.baseline_ref) {
+    return 'comparison';
+  }
+  if (viewState.selected_trial_ref || viewState.playback.position > 0) return 'playback';
+  if (
+    viewState.selected_artifact_ref ||
+    stage.manifest_refs.length > 0 ||
+    (stage.artifact_refs?.length ?? 0) > 0
+  ) {
+    return 'artifact';
+  }
+  return 'authoring';
+}
+
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   workspace: null,
   lastTrainingExecutionPreparation: null,
   lastTrainingLocalRunResult: null,
   lastPipelineMaterializationResult: null,
 
-  setWorkspace: (workspace) => set({ workspace: normalizeWorkspaceTaskBindingSpecs(workspace) }),
+  setWorkspace: (workspace) => set({ workspace: normalizeWorkspaceForStudioState(workspace) }),
 
   setActiveStage: (stageId) =>
     set((state) => {
@@ -1000,6 +1300,45 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             },
           },
           metadata: markDraftMetadata(state.workspace.metadata, 'objective_spec_updated'),
+        },
+      };
+    }),
+
+  updateActiveWorkspaceViewState: (patch, reason = 'workspace_view_state_updated') =>
+    set((state) => {
+      if (!state.workspace) return {};
+      const activeStage = getActiveStage(state.workspace);
+      const scenario = getScenario(state.workspace, activeStage?.scenario_id);
+      const refs = availableWorkspaceViewRefs(state.workspace, activeStage);
+      const current = getWorkspaceViewState(state.workspace, activeStage);
+      const nextViewState = mergeWorkspaceViewStatePatch(current, patch, refs);
+      if (scenario) {
+        return {
+          workspace: {
+            ...state.workspace,
+            scenarios: {
+              ...state.workspace.scenarios,
+              [scenario.id]: {
+                ...scenario,
+                ui_state: {
+                  ...scenario.ui_state,
+                  [WORKSPACE_VIEW_STATE_KEY]: nextViewState,
+                },
+                metadata: markDraftMetadata(scenario.metadata, reason),
+              },
+            },
+            metadata: markDraftMetadata(state.workspace.metadata, reason),
+          },
+        };
+      }
+      return {
+        workspace: {
+          ...state.workspace,
+          ui_state: {
+            ...state.workspace.ui_state,
+            [WORKSPACE_VIEW_STATE_KEY]: nextViewState,
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, reason),
         },
       };
     }),

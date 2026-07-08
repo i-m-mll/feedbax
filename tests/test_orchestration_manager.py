@@ -117,6 +117,19 @@ def test_launch_requires_billable_confirmation(monkeypatch, tmp_path):
     assert detail["cost_estimate"]["hourly_estimate"] > 0
 
 
+def test_orchestration_targets_include_script_managed_runpod():
+    client = TestClient(create_app())
+    response = client.get("/api/orchestration/targets")
+
+    assert response.status_code == 200
+    targets = {target["id"]: target for target in response.json()["targets"]}
+    assert targets["local"]["billable"] is False
+    assert targets["gcp"]["confirmation_token"] == "launch-billable-gcp-worker"
+    assert targets["runpod"]["billable"] is True
+    assert targets["runpod"]["launch_mode"] == "execution-plan"
+    assert targets["runpod"]["confirmation_token"] == "confirm-runpod-queue-launch"
+
+
 def test_confirmed_launch_reserves_before_background(monkeypatch):
     class _FakeManager:
         def __init__(self):

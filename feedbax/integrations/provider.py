@@ -49,12 +49,14 @@ from feedbax.contracts.manifest import (
     load_graph_spec_from_manifest,
     utc_now,
 )
+from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     migrate_graph_spec,
     migrate_studio_task_binding_spec,
     migrate_studio_workspace_spec,
 )
+from feedbax.contracts.workspace_replay import WorkspaceReplayProduct
 from feedbax.objectives.spec import (
     objective_schema_models,
     validate_objective_spec as _validate_objective_spec,
@@ -255,6 +257,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "ComponentSelectorSyntax": ComponentSelectorSyntax,
         "SelectorFallbackPolicyIdentity": SelectorFallbackPolicyIdentity,
         "CheckpointSelectionSpec": CheckpointSelectionSpec,
+        "SelectionSpec": SelectionSpec,
         "ArtifactRef": ArtifactRef,
         "ArrayRecord": ArrayRecord,
         "ArrayStorePayload": ArrayStorePayload,
@@ -275,6 +278,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "StudioTrainingLocalRunResult": StudioTrainingLocalRunResult,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
         "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
+        "WorkspaceReplayProduct": WorkspaceReplayProduct,
         "ValueSchema": ValueSchema,
         "PortSchema": PortSchema,
         "TaskDataSchema": TaskDataSchema,
@@ -384,7 +388,7 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
             title_fields=["name", "id"],
             spec_fields=["graph_spec"],
             parent_ref_fields=["graph_spec", "run_ids", "provenance.parents"],
-            opaque_domain_fields=["tags", "metadata"],
+            opaque_domain_fields=["axes", "tags", "metadata"],
             actions=run_actions,
             related_issue_refs=["51832b9", "e33f487"],
         ),
@@ -813,6 +817,7 @@ def provider_manifest() -> ProviderManifest:
             "array_store",
             "retention_plan",
             "retained_observables",
+            "workspace_replay",
             "trajectory_dataset",
             "evaluation_result",
             "checkpoint_selection",

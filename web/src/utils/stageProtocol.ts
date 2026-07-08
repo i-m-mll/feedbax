@@ -1,7 +1,7 @@
 import type { TrainingSpec } from '@/types/training';
 import type { StudioScenarioSpec, StudioStageSpec } from '@/types/workspace';
 
-export type ExecutionTargetChoice = 'local' | 'managed' | 'manual';
+export type ExecutionTargetChoice = 'local' | 'gcp' | 'runpod' | 'manual';
 
 export interface TrainingProtocolSnapshot {
   learningRate: number;
@@ -23,7 +23,30 @@ function protocolRecord(stage: StudioStageSpec | null | undefined): Record<strin
 }
 
 function computeTarget(value: unknown): ExecutionTargetChoice {
-  return value === 'managed' || value === 'manual' ? value : 'local';
+  if (value === 'managed' || value === 'gcp') return 'gcp';
+  if (value === 'runpod' || value === 'manual') return value;
+  return 'local';
+}
+
+export function executionTargetLabel(target: ExecutionTargetChoice): string {
+  return {
+    local: 'Local worker',
+    gcp: 'GCP',
+    runpod: 'RunPod',
+    manual: 'Manual export',
+  }[target];
+}
+
+export function executionTargetIsBillable(target: ExecutionTargetChoice): boolean {
+  return target === 'gcp' || target === 'runpod';
+}
+
+export function executionBackendForTarget(
+  target: ExecutionTargetChoice
+): 'local' | 'runpod' | null {
+  if (target === 'local') return 'local';
+  if (target === 'runpod') return 'runpod';
+  return null;
 }
 
 function learningRate(trainingSpec: TrainingSpec | null | undefined): number {

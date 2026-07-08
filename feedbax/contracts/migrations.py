@@ -47,6 +47,11 @@ from feedbax.contracts.graph import (
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
+from feedbax.contracts.representation import (
+    REPRESENTATION_SCHEMA_ID,
+    REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V0,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
@@ -55,6 +60,8 @@ from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_SET_SCHEMA_VERSION,
+    TRAINING_RUN_SET_SCHEMA_VERSION_V1,
     ArtifactMigrationRecord,
     canonical_json_bytes,
     sha256_bytes,
@@ -79,6 +86,12 @@ from feedbax.contracts.schema_namespace import (
     validate_schema_identity,
     validate_schema_version,
 )
+from feedbax.contracts.selection import (
+    SELECTION_SPEC_SCHEMA_ID,
+    SELECTION_SPEC_SCHEMA_VERSION,
+    SELECTION_SPEC_SCHEMA_VERSION_V1,
+    migrate_selection_spec_payload,
+)
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
@@ -98,6 +111,11 @@ from feedbax.contracts.training import (
 from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
     WORKER_CONTRACT_SCHEMA_VERSION,
+)
+from feedbax.contracts.workspace_replay import (
+    WORKSPACE_REPLAY_SCHEMA_ID,
+    WORKSPACE_REPLAY_SCHEMA_VERSION,
+    WORKSPACE_REPLAY_SCHEMA_VERSION_V0,
 )
 from feedbax.execution.models import (
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
@@ -903,6 +921,12 @@ def _migrate_training_run_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict
     return migrated
 
 
+def _migrate_training_run_set_manifest_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("axes", {})
+    return migrated
+
+
 def _migrate_graph_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
@@ -930,6 +954,13 @@ def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str
         bindings.append(binding)
     migrated["bindings"] = bindings
     return migrated
+
+
+def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate legacy Studio ValueSpec v1 payloads to the v2 envelope."""
+    from feedbax.contracts.graph import StudioValueSpec
+
+    return StudioValueSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
 
 
 def migrate_graph_spec(
@@ -1816,6 +1847,25 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Declarative generic checkpoint-selection request.",
         ),
         _family(
+            "SelectionSpec",
+            SELECTION_SPEC_SCHEMA_ID,
+            SELECTION_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.selection",
+            emitted_by=("Studio stage selection_spec", "provider_manifest.schemas"),
+            consumed_by=(
+                "Studio pipeline staging",
+                "evaluation/analysis/queue/lineage consumers",
+            ),
+            description="Explicit, query, and frozen manifest input selection.",
+            stance="migrate",
+            supported_old_versions=(SELECTION_SPEC_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(),
+            required_tests=(
+                "tests/test_selection_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "WorkerMethodContractSpec",
             WORKER_CONTRACT_SCHEMA_ID,
             WORKER_CONTRACT_SCHEMA_VERSION,
@@ -1957,7 +2007,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 (
                     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
                     if kind == "AnalysisDataProduct"
+                    else TRAINING_RUN_SET_SCHEMA_VERSION
+                    if kind == "TrainingRunSetManifest"
                     else MANIFEST_SCHEMA_VERSION
+                ),
+                stance="migrate" if kind == "TrainingRunSetManifest" else "reject",
+                supported_old_versions=(
+                    (TRAINING_RUN_SET_SCHEMA_VERSION_V1,)
+                    if kind == "TrainingRunSetManifest"
+                    else ()
                 ),
                 owner_module="feedbax.contracts.manifest",
                 emitted_by=(
@@ -2126,6 +2184,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         )
     )
+    families.append(
+        _family(
+            "RepresentationSpec",
+            REPRESENTATION_SCHEMA_ID,
+            REPRESENTATION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.representation",
+            emitted_by=(
+                "feedbax.component_registry.registry.ComponentRegistry",
+                "scripts.generate_studio_contracts",
+            ),
+            consumed_by=("Studio frontend", "workspace renderer"),
+            description="Component-owned workspace representation declaration.",
+            rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
+            required_tests=(
+                "tests/test_component_registration.py",
+                "tests/test_structured_spec_migrations.py",
+                "web/src/generated/studioContracts.ts",
+            ),
+        )
+    )
 
     for kind, schema_id, description in (
         (
@@ -2155,18 +2233,31 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         ("StudioValueSpec", "feedbax.spec.studio.value", "Structured Studio-authored value."),
     ):
-        supported = (STUDIO_TASK_BINDING_LEGACY_V1,) if kind == "StudioTaskBindingSpec" else None
-        rejected = ("feedbax.studio.task_bindings.v0",) if kind == "StudioTaskBindingSpec" else None
+        if kind == "StudioTaskBindingSpec":
+            current_version = f"{schema_id}.v2"
+            stance = "migrate"
+            supported = (STUDIO_TASK_BINDING_LEGACY_V1,)
+            rejected = ("feedbax.studio.task_bindings.v0",)
+        elif kind == "StudioValueSpec":
+            current_version = f"{schema_id}.v2"
+            stance = "migrate"
+            supported = ("feedbax.spec.studio.value.v1", "feedbax.studio.value.v1")
+            rejected = ("feedbax.spec.studio.value.v0",)
+        else:
+            current_version = f"{schema_id}.v1"
+            stance = "reject"
+            supported = None
+            rejected = None
         families.append(
             _family(
                 kind,
                 schema_id,
-                f"{schema_id}.v2" if kind == "StudioTaskBindingSpec" else f"{schema_id}.v1",
+                current_version,
                 owner_module="feedbax.contracts.graph",
                 emitted_by=("Studio save/load", "provider_manifest.schemas"),
                 consumed_by=("Studio backend", "worker"),
                 description=description,
-                stance="migrate" if kind == "StudioTaskBindingSpec" else "reject",
+                stance=stance,
                 supported_old_versions=supported,
                 rejected_old_versions=rejected,
             )
@@ -2203,20 +2294,57 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.manifest.studio.pipeline_materialization_result",
             "Result from Studio pipeline materialization.",
         ),
+        (
+            "WorkspaceReplayProduct",
+            WORKSPACE_REPLAY_SCHEMA_ID,
+            "Manifest-linked replay product for authored Studio workspace geometry.",
+        ),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
                 (
+                    WORKSPACE_REPLAY_SCHEMA_VERSION
+                    if kind == "WorkspaceReplayProduct"
+                    else
                     "feedbax.manifest.studio.execution.v1"
                     if kind.endswith("Result")
                     else "feedbax.spec.studio.execution.v1"
                 ),
-                owner_module="feedbax.studio.execution",
-                emitted_by=studio_execution_emitters,
-                consumed_by=("provider HTTP API", "Studio backend"),
+                owner_module=(
+                    "feedbax.contracts.workspace_replay"
+                    if kind == "WorkspaceReplayProduct"
+                    else "feedbax.studio.execution"
+                ),
+                emitted_by=(
+                    ("eval/validation replay materialization", "provider_manifest.schemas")
+                    if kind == "WorkspaceReplayProduct"
+                    else studio_execution_emitters
+                ),
+                consumed_by=(
+                    (
+                        "Studio workspace playback",
+                        "Mandible provider integration",
+                        "analysis materialization",
+                    )
+                    if kind == "WorkspaceReplayProduct"
+                    else ("provider HTTP API", "Studio backend")
+                ),
                 description=description,
+                rejected_old_versions=(
+                    (WORKSPACE_REPLAY_SCHEMA_VERSION_V0,)
+                    if kind == "WorkspaceReplayProduct"
+                    else None
+                ),
+                required_tests=(
+                    (
+                        "tests/test_workspace_replay_contract.py",
+                        "tests/test_structured_spec_migrations.py",
+                    )
+                    if kind == "WorkspaceReplayProduct"
+                    else ("tests/test_structured_spec_migrations.py",)
+                ),
             )
         )
 
@@ -2453,6 +2581,16 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
+    "TrainingRunSetManifest",
+    SchemaMigration(
+        source_version=TRAINING_RUN_SET_SCHEMA_VERSION_V1,
+        target_version=TRAINING_RUN_SET_SCHEMA_VERSION,
+        migration_id="training-run-set-manifest-v1-to-v2-axes",
+        migrate=_migrate_training_run_set_manifest_v1_to_v2_payload,
+        description="Add explicit axes metadata to training run-set manifests.",
+    ),
+)
+default_spec_registry.register_migration(
     "LossTermSpec",
     SchemaMigration(
         source_version=LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
@@ -2475,6 +2613,18 @@ default_spec_registry.register_migration(
         description=(
             "Promote array-only evaluation-state container metadata to the v2 "
             "mixed array/JSON metadata leaf envelope."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "SelectionSpec",
+    SchemaMigration(
+        source_version=SELECTION_SPEC_SCHEMA_VERSION_V1,
+        target_version=SELECTION_SPEC_SCHEMA_VERSION,
+        migration_id="selection-spec-v1-to-v2-query-forms",
+        migrate=migrate_selection_spec_payload,
+        description=(
+            "Promote legacy id-list selection payloads to explicit SelectionSpec v2."
         ),
     ),
 )
@@ -2512,5 +2662,25 @@ default_spec_registry.register_migration(
             "Rename exposed_outputs to exposed_data and source_output_id to "
             "source_data_id for scenario-owned task data bindings."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioValueSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.studio.value.v1",
+        target_version="feedbax.spec.studio.value.v2",
+        migration_id="studio-value-spec-v1-to-v2",
+        migrate=_migrate_studio_value_spec_v1_payload,
+        description="Split legacy mode/sampling_scope into value_form and variation.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioValueSpec",
+    SchemaMigration(
+        source_version="feedbax.studio.value.v1",
+        target_version="feedbax.spec.studio.value.v2",
+        migration_id="studio-value-spec-frontend-v1-to-v2",
+        migrate=_migrate_studio_value_spec_v1_payload,
+        description="Normalize frontend-emitted legacy ValueSpec v1 spelling.",
     ),
 )

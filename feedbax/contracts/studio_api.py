@@ -19,10 +19,15 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
     ValidationResult,
 )
+from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.selection import SelectionPreview, SelectionSpec
+from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
 
 
 STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
 STUDIO_API_TRANSPORT_SCHEMA_VERSION = "feedbax.spec.studio.api_transport.v1"
+TRAINING_TRAJECTORY_SCHEMA_ID = "feedbax.event.studio.training_trajectory"
+TRAINING_TRAJECTORY_SCHEMA_VERSION = "feedbax.event.studio.training_trajectory.v1"
 
 
 class StudioApiModel(BaseModel):
@@ -244,6 +249,69 @@ class AnalysisPackagesResponse(StudioApiModel):
     data: AnalysisPackagesPayload
 
 
+class BundleMissingRoleRecord(StudioApiModel):
+    """Required role dependency unavailable in an analysis bundle dry-run."""
+
+    stage: str
+    role: str
+    required: bool = True
+    bind_as: Optional[str] = None
+    reason: str
+
+
+class BundleStageDryRunOutputRecord(StudioApiModel):
+    """Predicted output-role status for one analysis bundle dry-run stage."""
+
+    role: str
+    required: bool = True
+    status: Literal["would_run", "would_skip", "missing", "not_applicable"]
+    reason: Optional[str] = None
+
+
+class BundleStageDryRunRecord(StudioApiModel):
+    """Side-effect-free stage plan for analysis bundle preflight."""
+
+    name: str
+    kind: Literal["evaluation", "analysis", "materialization", "report"]
+    status: Literal["would_run", "would_skip", "missing", "not_applicable"]
+    depends_on: list[str] = Field(default_factory=list)
+    inputs: list[ParentRef] = Field(default_factory=list)
+    outputs: list[BundleStageDryRunOutputRecord] = Field(default_factory=list)
+    missing_roles: list[BundleMissingRoleRecord] = Field(default_factory=list)
+    reason: Optional[str] = None
+
+
+class AnalysisBundleDryRunResult(StudioApiModel):
+    """Side-effect-free analysis bundle preflight over a matched selection."""
+
+    bundle_name: str
+    match_preview: SelectionPreview
+    matched_run_ids: list[str] = Field(default_factory=list)
+    stages: list[BundleStageDryRunRecord] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalysisBundleDryRunRequest(StudioApiModel):
+    """Body for side-effect-free analysis bundle preflight."""
+
+    bundle: dict[str, Any]
+    selection_spec: Optional[SelectionSpec] = None
+    root: Optional[str] = None
+    preview_limit: int = Field(default=50, ge=0, le=500)
+
+
+class AnalysisBundleDryRunPayload(StudioApiModel):
+    """Payload for analysis bundle preflight results."""
+
+    dry_run: AnalysisBundleDryRunResult
+
+
+class AnalysisBundleDryRunResponse(StudioApiModel):
+    """Standard API envelope for analysis bundle dry-run results."""
+
+    data: AnalysisBundleDryRunPayload
+
+
 class GenerateAnalysisRequest(StudioApiModel):
     """Body for ``POST /api/analyses/jobs``."""
 
@@ -323,11 +391,18 @@ class TrainingLogEvent(StudioApiModel):
 class TrainingTrajectoryPayload(StudioApiModel):
     """Trajectory snapshot carried by a training WebSocket event."""
 
-    effector: list[Any] = Field(default_factory=list)
-    target: Optional[Any] = None
-    t: list[Any] = Field(default_factory=list)
+    schema_id: Literal[TRAINING_TRAJECTORY_SCHEMA_ID] = TRAINING_TRAJECTORY_SCHEMA_ID
+    schema_version: Literal[TRAINING_TRAJECTORY_SCHEMA_VERSION] = TRAINING_TRAJECTORY_SCHEMA_VERSION
+    source_kind: Literal["live_snapshot"] = "live_snapshot"
+    fidelity: Literal["lower_fidelity_live_snapshot"] = "lower_fidelity_live_snapshot"
+    n_steps: Optional[int] = None
+    time: Optional[WorkspaceReplaySampleAxis] = None
+    tracks: dict[str, WorkspaceReplayTrack] = Field(default_factory=dict)
     observables: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
+    effector: Optional[list[Any]] = None
+    target: Optional[Any] = None
+    t: Optional[list[Any]] = None
 
 
 class TrainingTrajectoryEvent(StudioApiModel):
