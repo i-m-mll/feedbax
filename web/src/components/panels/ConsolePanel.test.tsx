@@ -41,4 +41,29 @@ describe('ConsolePanel', () => {
     expect(screen.getByText('[4]')).toBeInTheDocument();
     expect(screen.getByText('loss plateaued')).toBeInTheDocument();
   });
+
+  it('renders structured training diagnostics line by line', () => {
+    act(() => {
+      useTrainingStore.setState({
+        trainingDiagnostics: [
+          {
+            schema_id: 'feedbax.diagnostic.domain',
+            schema_version: 'feedbax.diagnostic.domain.v1',
+            severity: 'error',
+            code: 'graph.missing_subgraph',
+            message: "Network node 'network' has no subgraph",
+            node_ids: ['network'],
+            details: {},
+          },
+        ],
+      });
+    });
+
+    render(<ConsolePanel />);
+
+    expect(screen.getByText('[diagnostic]')).toBeInTheDocument();
+    expect(
+      screen.getByText("ERROR graph.missing_subgraph [network]: Network node 'network' has no subgraph")
+    ).toBeInTheDocument();
+  });
 });

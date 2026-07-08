@@ -8,7 +8,7 @@ import { actionErrorMessage, withStoreActionFeedback } from '@/stores/storeActio
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import { parseContract } from '@/generated/studioContracts';
-import type { TrainingWebSocketEvent } from '@/generated/studioContracts';
+import type { DomainDiagnostic, TrainingWebSocketEvent } from '@/generated/studioContracts';
 import type { TaskSpec, TrainingConfig, TrainingProgress } from '@/types/training';
 import type { TrainingStatus } from '@/stores/trainingStore';
 
@@ -75,6 +75,15 @@ export function shouldReconnectTrainingWebSocket({
   return !intentionalClose && status === 'running' && attempt < TRAINING_WS_MAX_RECONNECT_ATTEMPTS;
 }
 
+export function formatTrainingDiagnostic(diagnostic: DomainDiagnostic): string {
+  const nodeSuffix =
+    diagnostic.node_ids.length > 0 ? ` [${diagnostic.node_ids.join(', ')}]` : '';
+  return (
+    `${diagnostic.severity.toUpperCase()} ${diagnostic.code}${nodeSuffix}: ` +
+    diagnostic.message
+  );
+}
+
 /**
  * Build runtime worker controls from task/training specs. Graph topology and
  * model leaves are carried by GraphSpec, not inferred here.
@@ -112,6 +121,7 @@ export function useTraining() {
     setProgress,
     appendLog,
     clearHistory,
+    setTrainingDiagnostics,
     setTrainingStreamError,
     setLatestTrajectory,
   } = trainingStore;
@@ -163,6 +173,7 @@ export function useTraining() {
           const message =
             error instanceof Error ? error.message : 'Invalid training WebSocket payload';
           setTrainingStreamError(message);
+          setTrainingDiagnostics([]);
           appendLog({
             batch: 0,
             level: 'error',
@@ -222,6 +233,8 @@ export function useTraining() {
         }
         if (payload.type === 'training_error') {
           progressBatcherRef.current?.flush();
+          const diagnostics = payload.diagnostics ?? [];
+          setTrainingDiagnostics(diagnostics);
           setTrainingStreamError(payload.error);
           appendLog({
             batch: payload.batch ?? 0,
@@ -285,6 +298,7 @@ export function useTraining() {
       setStatus,
       appendLog,
       setTrainingStreamError,
+      setTrainingDiagnostics,
       setLatestTrajectory,
       clearReconnectTimer,
     ]
@@ -314,6 +328,7 @@ export function useTraining() {
       progressBatcherRef.current?.cancel();
       clearReconnectTimer();
       setTrainingStreamError(null);
+      setTrainingDiagnostics([]);
       clearHistory();
       const learningRate =
         typeof trainingSpec.optimizer.params.learning_rate === 'number'
@@ -339,6 +354,7 @@ export function useTraining() {
           toastId: 'training-start-error',
           onError: (error) => {
             setTrainingStreamError(actionErrorMessage(error, 'Failed to start training.'));
+            setTrainingDiagnostics([]);
             setStatus('error');
           },
         },
@@ -351,6 +367,7 @@ export function useTraining() {
     } catch (error) {
       const message = actionErrorMessage(error, 'Failed to start training.');
       setTrainingStreamError(message);
+      setTrainingDiagnostics([]);
       setStatus('error');
       toast.error(message, { id: 'training-start-error' });
     }
@@ -366,6 +383,7 @@ export function useTraining() {
     clearHistory,
     clearReconnectTimer,
     setTrainingStreamError,
+    setTrainingDiagnostics,
   ]);
 
   const stop = useCallback(async () => {
@@ -386,10 +404,18 @@ export function useTraining() {
     setStatus('idle');
     setJobId(null);
     setTrainingStreamError(null);
+    setTrainingDiagnostics([]);
     if (stopped) {
       toast.success('Training stopped.', { id: 'training-stop-success' });
     }
-  }, [jobId, setJobId, setStatus, clearReconnectTimer, setTrainingStreamError]);
+  }, [
+    jobId,
+    setJobId,
+    setStatus,
+    clearReconnectTimer,
+    setTrainingStreamError,
+    setTrainingDiagnostics,
+  ]);
 
   return {
     status,

@@ -3,6 +3,7 @@ import {
   TRAINING_PROGRESS_BATCH_INTERVAL_MS,
   TRAINING_WS_MAX_RECONNECT_ATTEMPTS,
   createTrainingProgressBatcher,
+  formatTrainingDiagnostic,
   shouldReconnectTrainingWebSocket,
   trainingWebSocketReconnectDelayMs,
 } from '@/hooks/useTraining';
@@ -64,6 +65,22 @@ describe('training stream error state', () => {
     useTrainingStore.getState().clearHistory();
 
     expect(useTrainingStore.getState().trainingStreamError).toBeNull();
+  });
+});
+
+describe('training diagnostics formatting', () => {
+  it('includes severity, code, and node ids', () => {
+    expect(
+      formatTrainingDiagnostic({
+        schema_id: 'feedbax.diagnostic.domain',
+        schema_version: 'feedbax.diagnostic.domain.v1',
+        severity: 'error',
+        code: 'graph.missing_subgraph',
+        message: 'Missing subgraph',
+        node_ids: ['network'],
+        details: {},
+      })
+    ).toBe('ERROR graph.missing_subgraph [network]: Missing subgraph');
   });
 });
 

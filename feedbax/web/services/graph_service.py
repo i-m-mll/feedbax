@@ -17,6 +17,7 @@ from feedbax.contracts.graphs.normalization import (
     normalize_workspace_for_studio_authoring,
 )
 from feedbax.contracts.migrations import migrate_graph_project_payload
+from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphProject,
@@ -24,9 +25,6 @@ from feedbax.contracts.graph import (
     GraphUIState,
     GraphMetadata,
     StudioWorkspaceSpec,
-    ValidationError,
-    ValidationResult,
-    ValidationWarning,
     build_default_studio_workspace,
 )
 
@@ -160,9 +158,8 @@ class GraphService:
         if path.exists():
             path.unlink()
 
-    def validate_graph(self, graph: GraphSpec) -> ValidationResult:
-        errors: List[ValidationError] = []
-        warnings: List[ValidationWarning] = []
+    def validate_graph(self, graph: GraphSpec) -> list[DomainDiagnostic]:
+        diagnostics: list[DomainDiagnostic] = []
 
         for node_name, node in graph.nodes.items():
             for input_port in node.input_ports:
@@ -173,11 +170,14 @@ class GraphService:
                     binding == (node_name, input_port) for binding in graph.input_bindings.values()
                 )
                 if not has_wire and not has_binding:
-                    errors.append(
-                        ValidationError(
-                            type="missing_input",
+                    diagnostics.append(
+                        DomainDiagnostic(
+                            severity="error",
+                            code="graph.missing_input",
                             message=f"Input port '{node_name}.{input_port}' is not connected",
+                            node_ids=[node_name],
                             location={"node": node_name, "port": input_port},
+                            details={"source_type": "missing_input"},
                         )
                     )
 
@@ -190,22 +190,31 @@ class GraphService:
                     for binding in graph.output_bindings.values()
                 )
                 if not has_wire and not has_binding:
-                    warnings.append(
-                        ValidationWarning(
-                            type="unconnected_output",
+                    diagnostics.append(
+                        DomainDiagnostic(
+                            severity="warning",
+                            code="graph.unconnected_output",
                             message=f"Output port '{node_name}.{output_port}' is not connected",
+                            node_ids=[node_name],
                             location={"node": node_name, "port": output_port},
+                            details={"source_type": "unconnected_output"},
                         )
                     )
 
         cycles = self._detect_cycles(graph)
-
-        return ValidationResult(
-            valid=len(errors) == 0,
-            errors=errors,
-            warnings=warnings,
-            cycles=cycles,
-        )
+        for cycle in cycles:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="graph.same_step_cycle",
+                    message=(
+                        "Instant wires contain a same-step cycle; mark one cycle edge recurrent"
+                    ),
+                    node_ids=cycle,
+                    details={"cycle": cycle},
+                )
+            )
+        return diagnostics
 
     def compile_node(
         self,

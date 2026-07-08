@@ -12,6 +12,7 @@ import type {
   TrainingProgress,
   TrainingLogLine,
 } from '@/types/training';
+import type { DomainDiagnostic } from '@/generated/studioContracts';
 import { LOSS_TERM_SPEC_SCHEMA_ID, LOSS_TERM_SPEC_SCHEMA_VERSION } from '@/types/training';
 
 export type TrajectorySnapshot = LiveTrainingFrame;
@@ -127,6 +128,7 @@ interface TrainingStoreState {
   progress: TrainingProgress | null;
   lossHistory: TrainingProgress[];
   consoleLogs: TrainingLogLine[];
+  trainingDiagnostics: DomainDiagnostic[];
   trainingStreamError: string | null;
   // Trajectory snapshot streamed during training
   latestTrajectory: TrajectorySnapshot | null;
@@ -152,6 +154,7 @@ interface TrainingStoreState {
   appendProgress: (p: TrainingProgress) => void;
   appendLog: (l: TrainingLogLine) => void;
   clearHistory: () => void;
+  setTrainingDiagnostics: (diagnostics: DomainDiagnostic[]) => void;
   setTrainingStreamError: (message: string | null) => void;
   setLatestTrajectory: (snapshot: TrajectorySnapshot | null) => void;
   // Loss actions
@@ -182,6 +185,7 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
   progress: null,
   lossHistory: [],
   consoleLogs: [],
+  trainingDiagnostics: [],
   trainingStreamError: null,
   latestTrajectory: null,
   // Loss UI state
@@ -250,9 +254,11 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
     set({
       lossHistory: [],
       consoleLogs: [],
+      trainingDiagnostics: [],
       latestTrajectory: null,
       trainingStreamError: null,
     }),
+  setTrainingDiagnostics: (diagnostics) => set({ trainingDiagnostics: diagnostics }),
   setTrainingStreamError: (message) => set({ trainingStreamError: message }),
   setLatestTrajectory: (snapshot) => set({ latestTrajectory: snapshot }),
   // Loss actions

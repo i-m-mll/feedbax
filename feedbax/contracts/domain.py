@@ -8,7 +8,7 @@ dropped from project caches so the corresponding node returns to
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -16,6 +16,8 @@ DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID = "feedbax.spec.domain"
 DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION = "feedbax.spec.domain.v1"
 DOMAIN_COMPILE_REPORT_SCHEMA_ID = "feedbax.spec.domain_compile_report"
 DOMAIN_COMPILE_REPORT_SCHEMA_VERSION = "feedbax.spec.domain_compile_report.v1"
+DOMAIN_DIAGNOSTIC_SCHEMA_ID = "feedbax.diagnostic.domain"
+DOMAIN_DIAGNOSTIC_SCHEMA_VERSION = "feedbax.diagnostic.domain.v1"
 
 CAUSAL_DOMAIN_ID = "feedbax.domain.causal"
 ACAUSAL_DOMAIN_ID = "feedbax.domain.acausal"
@@ -96,17 +98,21 @@ class DomainRegistryPayload(BaseModel):
 
 
 class DomainDiagnostic(BaseModel):
-    """Structured diagnostic emitted by a domain authoring compiler."""
+    """Structured diagnostic emitted by Studio domain validation and compilation."""
 
     model_config = ConfigDict(extra="forbid")
 
-    severity: Literal["error", "warning", "info"]
+    schema_id: Literal[DOMAIN_DIAGNOSTIC_SCHEMA_ID] = DOMAIN_DIAGNOSTIC_SCHEMA_ID
+    schema_version: Literal[DOMAIN_DIAGNOSTIC_SCHEMA_VERSION] = DOMAIN_DIAGNOSTIC_SCHEMA_VERSION
+    severity: Literal["error", "warning", "info"] = "error"
     code: str
     message: str
-    node_ids: List[str] = Field(default_factory=list)
-    ports: List[Tuple[str, str]] = Field(default_factory=list)
-    variables: List[str] = Field(default_factory=list)
-    counts: Optional[Dict[str, int]] = None
+    node_ids: list[str] = Field(default_factory=list)
+    ports: list[tuple[str, str]] = Field(default_factory=list)
+    variables: list[str] = Field(default_factory=list)
+    counts: dict[str, int] | None = None
+    location: dict[str, Any] | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class DomainCompileReport(BaseModel):
@@ -120,9 +126,9 @@ class DomainCompileReport(BaseModel):
     )
     status: DomainReportStatus
     interior_content_hash: str
-    diagnostics: List[DomainDiagnostic] = Field(default_factory=list)
-    derived_interface: Optional[Dict[str, Any]] = None
-    summary: Dict[str, int] = Field(default_factory=dict)
+    diagnostics: list[DomainDiagnostic] = Field(default_factory=list)
+    derived_interface: dict[str, Any] | None = None
+    summary: dict[str, int] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_status_matches_diagnostics(self) -> "DomainCompileReport":

@@ -50,9 +50,11 @@ def test_training_ws_sends_upstream_errors_and_closes(monkeypatch) -> None:
     assert error["job_id"] == "job-1"
     assert error["error"] == "worker failed"
     assert error["batch"] == 0
+    assert error["diagnostics"][0]["code"] == "internal"
+    assert error["diagnostics"][0]["message"] == "worker failed"
     assert error["seq"] >= 0
     assert isinstance(error["emitted_at_ms"], int)
-    assert error["schema_version"] == "feedbax.spec.studio.api_transport.v1"
+    assert error["schema_version"] == "feedbax.spec.studio.api_transport.v2"
     assert websocket.closed is True
 
 

@@ -2544,4 +2544,6 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> Non
         events.append(event_queue.get())
     assert events[0]["type"] == "training_error"
     assert "task_binding_spec" in events[0]["error"]
+    assert events[0]["diagnostics"][0]["code"] == "worker.missing_task_binding_spec"
+    assert events[0]["diagnostics"][0]["location"] == {"path": "/task_binding_spec"}
     assert all(event is None or event.get("type") != "training_progress" for event in events)

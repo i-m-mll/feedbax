@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+import re
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.contracts.migrations import migrate_studio_workspace_spec
@@ -102,6 +104,52 @@ class SchemaValidationIssue(StudioSchemaModel):
     message: str
     severity: Literal["error", "warning", "info"] = "error"
     location: Optional[dict[str, str]] = None
+
+
+def schema_issue_to_domain_diagnostic(issue: SchemaValidationIssue) -> DomainDiagnostic:
+    """Map a provider schema issue to the Studio diagnostic transport shape."""
+    return DomainDiagnostic(
+        severity=issue.severity,
+        code=_schema_issue_code(issue.type),
+        message=issue.message,
+        node_ids=_node_ids_from_location(issue.location),
+        location=issue.location,
+        details={"source_type": issue.type},
+    )
+
+
+def schema_issues_to_domain_diagnostics(
+    issues: list[SchemaValidationIssue],
+) -> list[DomainDiagnostic]:
+    """Map provider schema issues to structured diagnostics."""
+    return [schema_issue_to_domain_diagnostic(issue) for issue in issues]
+
+
+def _schema_issue_code(issue_type: str) -> str:
+    if issue_type.startswith(("task_", "unknown_task", "missing_task", "binding_")):
+        return f"binding.{issue_type}"
+    if issue_type.startswith(("workspace_", "stage_", "scenario_", "runtime_")):
+        return f"workspace.{issue_type}"
+    if issue_type == "instant_cycle":
+        return "graph.same_step_cycle"
+    return f"graph.{issue_type}"
+
+
+def _node_ids_from_location(location: Optional[dict[str, str]]) -> list[str]:
+    if not location:
+        return []
+    node_ids: list[str] = []
+    for key in ("node", "source_node", "target_node"):
+        value = location.get(key)
+        if value and value not in node_ids:
+            node_ids.append(value)
+    path = location.get("path")
+    if path:
+        for match in re.finditer(r"/(?:nodes|subgraphs)/([^/]+)", path):
+            node_id = match.group(1)
+            if node_id and node_id not in node_ids:
+                node_ids.append(node_id)
+    return node_ids
 
 
 class StudioSchemaRegistry(StudioSchemaModel):

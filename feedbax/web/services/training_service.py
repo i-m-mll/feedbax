@@ -337,6 +337,17 @@ class TrainingService:
                     "type": "training_error",
                     "job_id": job_id,
                     "error": error,
+                    "diagnostics": [
+                        {
+                            "schema_id": "feedbax.diagnostic.domain",
+                            "schema_version": "feedbax.diagnostic.domain.v1",
+                            "severity": "error",
+                            "code": "internal",
+                            "message": error,
+                            "node_ids": [],
+                            "details": {"source": "training_ws"},
+                        }
+                    ],
                 },
             )
         )
@@ -361,6 +372,7 @@ class TrainingService:
         if normalized.get("type") == "training_error":
             fallback_batch = self._last_status_by_job.get(job_id, {}).get("batch", 0)
             normalized.setdefault("batch", fallback_batch)
+            normalized.setdefault("diagnostics", [])
         return normalized
 
     def _cache_status(

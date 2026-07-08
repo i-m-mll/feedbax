@@ -282,6 +282,44 @@ def test_training_service_rejects_stale_rest_status_after_newer_ws_event(monkeyp
     asyncio.run(run())
 
 
+def test_training_service_preserves_error_diagnostics(monkeypatch) -> None:
+    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
+        assert base_url == "http://worker"
+        yield {
+            "type": "training_error",
+            "job_id": job_id,
+            "seq": 4,
+            "batch": 0,
+            "error": "Invalid graph_spec for graph execution",
+            "diagnostics": [
+                {
+                    "severity": "error",
+                    "code": "graph.missing_subgraph",
+                    "message": "Network node 'network' has no subgraph",
+                    "node_ids": ["network"],
+                }
+            ],
+        }
+
+    async def run() -> None:
+        monkeypatch.setattr(
+            training_service_module.worker_client,
+            "stream_events",
+            fake_stream_events,
+        )
+
+        service = TrainingService()
+        service.connect_remote("http://worker")
+        [event] = [event async for event in service.stream_progress("job-diagnostics")]
+
+        assert event.raw["type"] == "training_error"
+        assert event.raw["worker_seq"] == 4
+        assert event.raw["diagnostics"][0]["code"] == "graph.missing_subgraph"
+        assert event.raw["diagnostics"][0]["node_ids"] == ["network"]
+
+    asyncio.run(run())
+
+
 def test_training_service_surfaces_reconnect_resync_marker(monkeypatch) -> None:
     async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
         yield {

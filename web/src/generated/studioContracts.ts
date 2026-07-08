@@ -723,20 +723,24 @@ export interface DomainMeta {
   compiler_id: string | null;
 }
 
-export interface DomainRegistryPayload {
-  schema_id?: "feedbax.spec.domain";
-  schema_version?: "feedbax.spec.domain.v1";
-  domains: DomainMeta[];
-}
-
 export interface DomainDiagnostic {
-  severity: "error" | "warning" | "info";
+  schema_id?: "feedbax.diagnostic.domain";
+  schema_version?: "feedbax.diagnostic.domain.v1";
+  severity?: "error" | "warning" | "info";
   code: string;
   message: string;
   node_ids?: string[];
   ports?: [string, string][];
   variables?: string[];
   counts?: Record<string, number> | null;
+  location?: Record<string, unknown> | null;
+  details?: Record<string, unknown>;
+}
+
+export interface DomainRegistryPayload {
+  schema_id?: "feedbax.spec.domain";
+  schema_version?: "feedbax.spec.domain.v1";
+  domains: DomainMeta[];
 }
 
 export interface DomainCompileReport {
@@ -1015,64 +1019,64 @@ export interface SelectionRefreshDiff {
 
 export interface SuccessPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   success: boolean;
 }
 
 export interface SuccessResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: SuccessPayload;
 }
 
 export interface GraphListItem {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   id: string;
   metadata: GraphMetadata;
 }
 
 export interface GraphListPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   graphs: GraphListItem[];
 }
 
 export interface GraphListResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: GraphListPayload;
 }
 
 export interface GraphCreatePayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   id: string;
   metadata: GraphMetadata;
 }
 
 export interface GraphCreateResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: GraphCreatePayload;
 }
 
 export interface GraphUpdatePayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   success: boolean;
   metadata: GraphMetadata;
 }
 
 export interface GraphUpdateResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: GraphUpdatePayload;
 }
 
 export interface GraphDetailPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   graph: GraphSpec;
   ui_state?: GraphUIState | null;
   demo_training_data?: unknown | null;
@@ -1085,106 +1089,106 @@ export interface GraphDetailPayload {
 
 export interface GraphDetailResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: GraphDetailPayload;
 }
 
 export interface GraphValidationResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
-  data: ValidationResult;
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
+  data: DomainDiagnostic[];
 }
 
 export interface GraphExportPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   content: string;
   filename: string;
 }
 
 export interface GraphExportResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: GraphExportPayload;
 }
 
 export interface ComponentListPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   components: ComponentDefinition[];
 }
 
 export interface ComponentListResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: ComponentListPayload;
 }
 
 export interface ComponentDetailResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: ComponentDefinition;
 }
 
 export interface ComponentRefreshPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   added: string[];
   removed: string[];
 }
 
 export interface ComponentRefreshResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: ComponentRefreshPayload;
 }
 
 export interface DomainListResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: DomainRegistryPayload;
 }
 
 export interface TrainingStartPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   job_id: string;
 }
 
 export interface TrainingStartResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: TrainingStartPayload;
 }
 
 export interface TrainingStatusPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   status: Record<string, unknown>;
 }
 
 export interface TrainingStatusResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: TrainingStatusPayload;
 }
 
 export interface WorkerConnectResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   ok: boolean;
   url: string;
 }
 
 export interface WorkerConnectEnvelope {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: WorkerConnectResponse;
 }
 
 export interface WorkerStatusResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   mode: "local" | "remote";
   url?: string | null;
   connected: boolean;
@@ -1192,13 +1196,13 @@ export interface WorkerStatusResponse {
 
 export interface WorkerStatusEnvelope {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: WorkerStatusResponse;
 }
 
 export interface AnalysisClassInfo {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   name: string;
   description: string;
   category: string;
@@ -1210,7 +1214,7 @@ export interface AnalysisClassInfo {
 
 export interface AnalysisPackageInfo {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   name: string;
   description: string;
   analyses: AnalysisClassInfo[];
@@ -1218,19 +1222,19 @@ export interface AnalysisPackageInfo {
 
 export interface AnalysisPackagesPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   packages: AnalysisPackageInfo[];
 }
 
 export interface AnalysisPackagesResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: AnalysisPackagesPayload;
 }
 
 export interface BundleMissingRoleRecord {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   stage: string;
   role: string;
   required?: boolean;
@@ -1240,7 +1244,7 @@ export interface BundleMissingRoleRecord {
 
 export interface BundleStageDryRunOutputRecord {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   role: string;
   required?: boolean;
   status: "would_run" | "would_skip" | "missing" | "not_applicable";
@@ -1249,7 +1253,7 @@ export interface BundleStageDryRunOutputRecord {
 
 export interface BundleStageDryRunRecord {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   name: string;
   kind: "evaluation" | "analysis" | "materialization" | "report";
   status: "would_run" | "would_skip" | "missing" | "not_applicable";
@@ -1262,7 +1266,7 @@ export interface BundleStageDryRunRecord {
 
 export interface AnalysisBundleDryRunResult {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   bundle_name: string;
   match_preview: SelectionPreview;
   matched_run_ids?: string[];
@@ -1272,7 +1276,7 @@ export interface AnalysisBundleDryRunResult {
 
 export interface AnalysisBundleDryRunRequest {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   bundle: Record<string, unknown>;
   selection_spec?: SelectionSpec | null;
   root?: string | null;
@@ -1281,19 +1285,19 @@ export interface AnalysisBundleDryRunRequest {
 
 export interface AnalysisBundleDryRunPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   dry_run: AnalysisBundleDryRunResult;
 }
 
 export interface AnalysisBundleDryRunResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: AnalysisBundleDryRunPayload;
 }
 
 export interface GenerateAnalysisRequest {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   node_id: string;
   force_rerun?: boolean;
   eval_run_id?: string | null;
@@ -1301,7 +1305,7 @@ export interface GenerateAnalysisRequest {
 
 export interface GenerateAnalysisPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   request_id: string;
   status: string;
   manifest_id?: string | null;
@@ -1309,13 +1313,13 @@ export interface GenerateAnalysisPayload {
 
 export interface GenerateAnalysisResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: GenerateAnalysisPayload;
 }
 
 export interface AnalysisJobStatusPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   request_id: string;
   status: string;
   figure_hashes?: string[] | null;
@@ -1328,13 +1332,13 @@ export interface AnalysisJobStatusPayload {
 
 export interface AnalysisJobStatusResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   data: AnalysisJobStatusPayload;
 }
 
 export interface TrainingProgressEvent {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   type: "training_progress";
   job_id: string;
   seq: number;
@@ -1353,7 +1357,7 @@ export interface TrainingProgressEvent {
 
 export interface TrainingLogEvent {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   type: "training_log";
   job_id: string;
   seq: number;
@@ -1384,7 +1388,7 @@ export interface TrainingTrajectoryPayload {
 
 export interface TrainingTrajectoryEvent {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   type: "training_trajectory";
   job_id: string;
   seq: number;
@@ -1397,7 +1401,7 @@ export interface TrainingTrajectoryEvent {
 
 export interface TrainingCompleteEvent {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   type: "training_complete";
   job_id: string;
   seq: number;
@@ -1412,7 +1416,7 @@ export interface TrainingCompleteEvent {
 
 export interface TrainingErrorEvent {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   type: "training_error";
   job_id: string;
   seq: number;
@@ -1420,11 +1424,12 @@ export interface TrainingErrorEvent {
   worker_seq?: number | null;
   batch?: number | null;
   error: string;
+  diagnostics?: DomainDiagnostic[];
 }
 
 export interface TrainingResyncEvent {
   schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  schema_version?: "feedbax.spec.studio.api_transport.v2";
   type: "training_resync";
   job_id: string;
   seq: number;
@@ -2723,6 +2728,24 @@ export const DomainMetaSchema: z.ZodType<DomainMeta> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DomainMeta>;
 
+export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.diagnostic.domain").optional(),
+      "schema_version": z.literal("feedbax.diagnostic.domain.v1").optional(),
+      "severity": z.union([z.literal("error"), z.literal("warning"), z.literal("info")]).optional(),
+      "code": z.string(),
+      "message": z.string(),
+      "node_ids": z.array(z.string()).optional(),
+      "ports": z.array(z.tuple([z.string(), z.string()])).optional(),
+      "variables": z.array(z.string()).optional(),
+      "counts": z.record(z.string(), z.number().int()).nullable().optional(),
+      "location": z.record(z.string(), z.unknown()).nullable().optional(),
+      "details": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DomainDiagnostic>;
+
 export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.lazy(() =>
   z
     .object({
@@ -2732,20 +2755,6 @@ export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.l
     })
     .strict()
 ) as unknown as z.ZodType<DomainRegistryPayload>;
-
-export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
-  z
-    .object({
-      "severity": z.union([z.literal("error"), z.literal("warning"), z.literal("info")]),
-      "code": z.string(),
-      "message": z.string(),
-      "node_ids": z.array(z.string()).optional(),
-      "ports": z.array(z.tuple([z.string(), z.string()])).optional(),
-      "variables": z.array(z.string()).optional(),
-      "counts": z.record(z.string(), z.number().int()).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<DomainDiagnostic>;
 
 export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(() =>
   z
@@ -3133,7 +3142,7 @@ export const SuccessPayloadSchema: z.ZodType<SuccessPayload> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "success": z.boolean(),
     })
     .strict()
@@ -3143,7 +3152,7 @@ export const SuccessResponseSchema: z.ZodType<SuccessResponse> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": SuccessPayloadSchema,
     })
     .strict()
@@ -3153,7 +3162,7 @@ export const GraphListItemSchema: z.ZodType<GraphListItem> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "id": z.string(),
       "metadata": GraphMetadataSchema,
     })
@@ -3164,7 +3173,7 @@ export const GraphListPayloadSchema: z.ZodType<GraphListPayload> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "graphs": z.array(GraphListItemSchema),
     })
     .strict()
@@ -3174,7 +3183,7 @@ export const GraphListResponseSchema: z.ZodType<GraphListResponse> = z.lazy(() =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": GraphListPayloadSchema,
     })
     .strict()
@@ -3184,7 +3193,7 @@ export const GraphCreatePayloadSchema: z.ZodType<GraphCreatePayload> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "id": z.string(),
       "metadata": GraphMetadataSchema,
     })
@@ -3195,7 +3204,7 @@ export const GraphCreateResponseSchema: z.ZodType<GraphCreateResponse> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": GraphCreatePayloadSchema,
     })
     .strict()
@@ -3205,7 +3214,7 @@ export const GraphUpdatePayloadSchema: z.ZodType<GraphUpdatePayload> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "success": z.boolean(),
       "metadata": GraphMetadataSchema,
     })
@@ -3216,7 +3225,7 @@ export const GraphUpdateResponseSchema: z.ZodType<GraphUpdateResponse> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": GraphUpdatePayloadSchema,
     })
     .strict()
@@ -3226,7 +3235,7 @@ export const GraphDetailPayloadSchema: z.ZodType<GraphDetailPayload> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "graph": GraphSpecSchema,
       "ui_state": GraphUIStateSchema.nullable().optional(),
       "demo_training_data": z.unknown().nullable().optional(),
@@ -3243,7 +3252,7 @@ export const GraphDetailResponseSchema: z.ZodType<GraphDetailResponse> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": GraphDetailPayloadSchema,
     })
     .strict()
@@ -3253,8 +3262,8 @@ export const GraphValidationResponseSchema: z.ZodType<GraphValidationResponse> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
-      "data": ValidationResultSchema,
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
+      "data": z.array(DomainDiagnosticSchema),
     })
     .strict()
 ) as unknown as z.ZodType<GraphValidationResponse>;
@@ -3263,7 +3272,7 @@ export const GraphExportPayloadSchema: z.ZodType<GraphExportPayload> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "content": z.string(),
       "filename": z.string(),
     })
@@ -3274,7 +3283,7 @@ export const GraphExportResponseSchema: z.ZodType<GraphExportResponse> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": GraphExportPayloadSchema,
     })
     .strict()
@@ -3284,7 +3293,7 @@ export const ComponentListPayloadSchema: z.ZodType<ComponentListPayload> = z.laz
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "components": z.array(ComponentDefinitionSchema),
     })
     .strict()
@@ -3294,7 +3303,7 @@ export const ComponentListResponseSchema: z.ZodType<ComponentListResponse> = z.l
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": ComponentListPayloadSchema,
     })
     .strict()
@@ -3304,7 +3313,7 @@ export const ComponentDetailResponseSchema: z.ZodType<ComponentDetailResponse> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": ComponentDefinitionSchema,
     })
     .strict()
@@ -3314,7 +3323,7 @@ export const ComponentRefreshPayloadSchema: z.ZodType<ComponentRefreshPayload> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "added": z.array(z.string()),
       "removed": z.array(z.string()),
     })
@@ -3325,7 +3334,7 @@ export const ComponentRefreshResponseSchema: z.ZodType<ComponentRefreshResponse>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": ComponentRefreshPayloadSchema,
     })
     .strict()
@@ -3335,7 +3344,7 @@ export const DomainListResponseSchema: z.ZodType<DomainListResponse> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": DomainRegistryPayloadSchema,
     })
     .strict()
@@ -3345,7 +3354,7 @@ export const TrainingStartPayloadSchema: z.ZodType<TrainingStartPayload> = z.laz
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "job_id": z.string(),
     })
     .strict()
@@ -3355,7 +3364,7 @@ export const TrainingStartResponseSchema: z.ZodType<TrainingStartResponse> = z.l
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": TrainingStartPayloadSchema,
     })
     .strict()
@@ -3365,7 +3374,7 @@ export const TrainingStatusPayloadSchema: z.ZodType<TrainingStatusPayload> = z.l
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "status": z.record(z.string(), z.unknown()),
     })
     .strict()
@@ -3375,7 +3384,7 @@ export const TrainingStatusResponseSchema: z.ZodType<TrainingStatusResponse> = z
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": TrainingStatusPayloadSchema,
     })
     .strict()
@@ -3385,7 +3394,7 @@ export const WorkerConnectResponseSchema: z.ZodType<WorkerConnectResponse> = z.l
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "ok": z.boolean(),
       "url": z.string(),
     })
@@ -3396,7 +3405,7 @@ export const WorkerConnectEnvelopeSchema: z.ZodType<WorkerConnectEnvelope> = z.l
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": WorkerConnectResponseSchema,
     })
     .strict()
@@ -3406,7 +3415,7 @@ export const WorkerStatusResponseSchema: z.ZodType<WorkerStatusResponse> = z.laz
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "mode": z.union([z.literal("local"), z.literal("remote")]),
       "url": z.string().nullable().optional(),
       "connected": z.boolean(),
@@ -3418,7 +3427,7 @@ export const WorkerStatusEnvelopeSchema: z.ZodType<WorkerStatusEnvelope> = z.laz
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": WorkerStatusResponseSchema,
     })
     .strict()
@@ -3428,7 +3437,7 @@ export const AnalysisClassInfoSchema: z.ZodType<AnalysisClassInfo> = z.lazy(() =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "name": z.string(),
       "description": z.string(),
       "category": z.string(),
@@ -3444,7 +3453,7 @@ export const AnalysisPackageInfoSchema: z.ZodType<AnalysisPackageInfo> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "name": z.string(),
       "description": z.string(),
       "analyses": z.array(AnalysisClassInfoSchema),
@@ -3456,7 +3465,7 @@ export const AnalysisPackagesPayloadSchema: z.ZodType<AnalysisPackagesPayload> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "packages": z.array(AnalysisPackageInfoSchema),
     })
     .strict()
@@ -3466,7 +3475,7 @@ export const AnalysisPackagesResponseSchema: z.ZodType<AnalysisPackagesResponse>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": AnalysisPackagesPayloadSchema,
     })
     .strict()
@@ -3476,7 +3485,7 @@ export const BundleMissingRoleRecordSchema: z.ZodType<BundleMissingRoleRecord> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "stage": z.string(),
       "role": z.string(),
       "required": z.boolean().optional(),
@@ -3490,7 +3499,7 @@ export const BundleStageDryRunOutputRecordSchema: z.ZodType<BundleStageDryRunOut
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "role": z.string(),
       "required": z.boolean().optional(),
       "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
@@ -3503,7 +3512,7 @@ export const BundleStageDryRunRecordSchema: z.ZodType<BundleStageDryRunRecord> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "name": z.string(),
       "kind": z.union([z.literal("evaluation"), z.literal("analysis"), z.literal("materialization"), z.literal("report")]),
       "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
@@ -3520,7 +3529,7 @@ export const AnalysisBundleDryRunResultSchema: z.ZodType<AnalysisBundleDryRunRes
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "bundle_name": z.string(),
       "match_preview": SelectionPreviewSchema,
       "matched_run_ids": z.array(z.string()).optional(),
@@ -3534,7 +3543,7 @@ export const AnalysisBundleDryRunRequestSchema: z.ZodType<AnalysisBundleDryRunRe
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "bundle": z.record(z.string(), z.unknown()),
       "selection_spec": SelectionSpecSchema.nullable().optional(),
       "root": z.string().nullable().optional(),
@@ -3547,7 +3556,7 @@ export const AnalysisBundleDryRunPayloadSchema: z.ZodType<AnalysisBundleDryRunPa
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "dry_run": AnalysisBundleDryRunResultSchema,
     })
     .strict()
@@ -3557,7 +3566,7 @@ export const AnalysisBundleDryRunResponseSchema: z.ZodType<AnalysisBundleDryRunR
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": AnalysisBundleDryRunPayloadSchema,
     })
     .strict()
@@ -3567,7 +3576,7 @@ export const GenerateAnalysisRequestSchema: z.ZodType<GenerateAnalysisRequest> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "node_id": z.string(),
       "force_rerun": z.boolean().optional(),
       "eval_run_id": z.string().nullable().optional(),
@@ -3579,7 +3588,7 @@ export const GenerateAnalysisPayloadSchema: z.ZodType<GenerateAnalysisPayload> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "request_id": z.string(),
       "status": z.string(),
       "manifest_id": z.string().nullable().optional(),
@@ -3591,7 +3600,7 @@ export const GenerateAnalysisResponseSchema: z.ZodType<GenerateAnalysisResponse>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": GenerateAnalysisPayloadSchema,
     })
     .strict()
@@ -3601,7 +3610,7 @@ export const AnalysisJobStatusPayloadSchema: z.ZodType<AnalysisJobStatusPayload>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "request_id": z.string(),
       "status": z.string(),
       "figure_hashes": z.array(z.string()).nullable().optional(),
@@ -3618,7 +3627,7 @@ export const AnalysisJobStatusResponseSchema: z.ZodType<AnalysisJobStatusRespons
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "data": AnalysisJobStatusPayloadSchema,
     })
     .strict()
@@ -3628,7 +3637,7 @@ export const TrainingProgressEventSchema: z.ZodType<TrainingProgressEvent> = z.l
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "type": z.literal("training_progress"),
       "job_id": z.string(),
       "seq": z.number().int(),
@@ -3651,7 +3660,7 @@ export const TrainingLogEventSchema: z.ZodType<TrainingLogEvent> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "type": z.literal("training_log"),
       "job_id": z.string(),
       "seq": z.number().int(),
@@ -3690,7 +3699,7 @@ export const TrainingTrajectoryEventSchema: z.ZodType<TrainingTrajectoryEvent> =
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "type": z.literal("training_trajectory"),
       "job_id": z.string(),
       "seq": z.number().int(),
@@ -3707,7 +3716,7 @@ export const TrainingCompleteEventSchema: z.ZodType<TrainingCompleteEvent> = z.l
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "type": z.literal("training_complete"),
       "job_id": z.string(),
       "seq": z.number().int(),
@@ -3726,7 +3735,7 @@ export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "type": z.literal("training_error"),
       "job_id": z.string(),
       "seq": z.number().int(),
@@ -3734,6 +3743,7 @@ export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(()
       "worker_seq": z.number().int().nullable().optional(),
       "batch": z.number().int().nullable().optional(),
       "error": z.string(),
+      "diagnostics": z.array(DomainDiagnosticSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingErrorEvent>;
@@ -3742,7 +3752,7 @@ export const TrainingResyncEventSchema: z.ZodType<TrainingResyncEvent> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "type": z.literal("training_resync"),
       "job_id": z.string(),
       "seq": z.number().int(),
