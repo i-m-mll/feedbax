@@ -41,27 +41,15 @@ import {
   Cog,
   Info,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useComponents } from '@/hooks/useComponents';
+import { useDomains } from '@/hooks/useDomains';
+import type { DomainContext } from '@/features/domains/context';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import type { ComponentDefinition } from '@/types/components';
 import { groupComponentsByCategory } from '@/utils/components';
 import clsx from 'clsx';
-
-const CONTEXT_SUGGESTED_CATEGORIES: Record<string, string[]> = {
-  'top-level': [],  // no filtering at top level
-  'network': ['Neural Networks', 'Math', 'Signal Processing'],
-  'penzai': [],  // penzai models cannot be edited — show nothing
-  'muscle': ['Muscles', 'Math', 'Signal Processing'],
-  'acausal': ['Mechanics', 'Control', 'Math', 'Signal Processing'],
-  'generic': [],
-};
-
-/** Contexts where only the suggested categories should appear (exclusive filtering). */
-const CONTEXT_EXCLUSIVE_FILTER = new Set(['penzai', 'acausal', 'muscle', 'network']);
-
-/** Blank subgraph type containers — shown at top under Structure with a purple "Type" badge. */
-const SUBGRAPH_TYPES = new Set(['Subgraph', 'AcausalSystem']);
 
 const iconMap = {
   CircuitBoard,
@@ -129,12 +117,21 @@ export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibr
     () => new Set(expandedCategoryList),
     [expandedCategoryList]
   );
-  const { components, isLoading } = useComponents();
+  const { components, isLoading, error: componentsError } = useComponents();
+  const domainsQuery = useDomains();
   const currentContext = useGraphStore((state) => state.currentContext);
-  const isExclusiveContext = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
-  const coreComponents = useMemo(
-    () => components.filter((component) => SUBGRAPH_TYPES.has(component.name)),
-    [components]
+  const domainContext = domainsQuery.domainContextFor(currentContext);
+  const isInspectorDomain = domainContext?.domain.editor.kind === 'inspector';
+  const registryError = componentsError ?? domainsQuery.error;
+  const isRegistryLoading = (isLoading || domainsQuery.isLoading) && components.length === 0;
+
+  const structureComponents = useMemo(
+    () => domainContext
+      ? components.filter(
+          (component) => Boolean(component.interior_domain) && domainContext.canPlace(component).allowed
+        )
+      : [],
+    [components, domainContext]
   );
 
   const templateComponents = useMemo(
@@ -142,10 +139,8 @@ export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibr
     [components]
   );
 
-  const { suggestedCategories, otherCategories } = useMemo<{
-    suggestedCategories: Record<string, ComponentDefinition[]>;
-    otherCategories: Record<string, ComponentDefinition[]>;
-  }>(() => {
+  const componentCategories = useMemo<Record<string, ComponentDefinition[]>>(() => {
+    if (!domainContext) return {};
     const modelComponents = components.filter(
       (component) => component.category !== 'Tasks' && !component.template_graph
     );
@@ -156,55 +151,22 @@ export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibr
         )
       : modelComponents;
 
-    const withoutPinned = filtered.filter((component) => !SUBGRAPH_TYPES.has(component.name));
-    const all = groupComponentsByCategory(withoutPinned);
-
-    const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
-
-    // For exclusive contexts with no suggested categories (e.g. penzai), show nothing.
-    if (suggested.length === 0 && isExclusiveContext) {
-      return {
-        suggestedCategories: {},
-        otherCategories: {},
-      };
-    }
-
-    // For non-exclusive contexts with no suggestions (top-level, generic), show everything.
-    if (suggested.length === 0) {
-      return { suggestedCategories: {}, otherCategories: all };
-    }
-
-    const suggestedCategories: Record<string, ComponentDefinition[]> = {};
-    const otherCategories: Record<string, ComponentDefinition[]> = {};
-
-    for (const [category, comps] of Object.entries(all)) {
-      if (suggested.includes(category)) {
-        suggestedCategories[category] = comps;
-      } else if (!isExclusiveContext) {
-        // Only include non-suggested categories when filtering is not exclusive.
-        otherCategories[category] = comps;
-      }
-    }
-
-    return { suggestedCategories, otherCategories };
-  }, [components, search, currentContext, isExclusiveContext]);
+    const unpinned = filtered.filter((component) => !component.interior_domain);
+    return groupComponentsByCategory(unpinned.filter(domainContext.paletteFilter));
+  }, [components, search, domainContext]);
 
   const templateCategories = useMemo(() => {
-    if (currentContext === 'penzai') {
-      return {};
-    }
+    if (!domainContext || isInspectorDomain) return {};
     const filtered = search
       ? templateComponents.filter((component) =>
           component.name.toLowerCase().includes(search.toLowerCase()) ||
           component.description.toLowerCase().includes(search.toLowerCase())
         )
       : templateComponents;
-    return groupComponentsByCategory(filtered);
-  }, [currentContext, search, templateComponents]);
+    return groupComponentsByCategory(filtered.filter((component) => domainContext.canPlace(component).allowed));
+  }, [domainContext, isInspectorDomain, search, templateComponents]);
 
-  const hasSuggestedCategories = Object.keys(suggestedCategories).length > 0;
-  const hasOtherCategories = Object.keys(otherCategories).length > 0;
-  const suggestedHeaderLabel = isExclusiveContext ? 'Available' : 'Suggested';
+  const hasComponentCategories = Object.keys(componentCategories).length > 0;
 
   const toggleCategory = (category: string) => {
     const next = new Set(expandedCategories);
@@ -228,66 +190,57 @@ export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibr
         />
       </div>
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
-        {isLoading && components.length === 0 && (
-          <div className="text-xs text-slate-400">Loading components...</div>
+        {isRegistryLoading && (
+          <div className="text-xs text-slate-400">Loading component registry...</div>
         )}
-        {currentContext === 'penzai' && (
+        {registryError && (
+          <div className="rounded-lg border border-red-100 bg-red-50/80 p-3 text-xs text-red-600">
+            Component domain registry is unavailable. Start the Studio backend to load the palette.
+          </div>
+        )}
+        {isInspectorDomain && !hasComponentCategories && (
           <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50/60 p-3">
             <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
             <p className="text-xs text-blue-600">
-              Penzai models cannot be edited in the graph editor. Navigate back to add or modify components.
+              {domainContext.domain.display_name} models cannot be edited in the graph editor.
+              Navigate back to add or modify components.
             </p>
           </div>
         )}
-        {mode === 'components' && coreComponents.length > 0 && currentContext !== 'penzai' && (
+        {domainContext && mode === 'components' && structureComponents.length > 0 && !isInspectorDomain && (
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">
               Structure
             </div>
             <div className="space-y-2">
-              {coreComponents.map((component) => (
-                <ComponentCard key={component.name} component={component} />
+              {structureComponents.map((component) => (
+                <ComponentCard key={component.name} component={component} domainContext={domainContext} />
               ))}
             </div>
           </div>
         )}
-        {mode === 'templates' && Object.keys(templateCategories).length === 0 && !isLoading && (
+        {mode === 'templates' && Object.keys(templateCategories).length === 0 && !isRegistryLoading && (
           <div className="rounded-lg border border-slate-100 bg-slate-50/80 p-3 text-xs text-slate-500">
             No graph templates are available from the component registry.
           </div>
         )}
-        {mode === 'templates' && Object.entries(templateCategories).map(([category, comps]) => (
+        {domainContext && mode === 'templates' && Object.entries(templateCategories).map(([category, comps]) => (
           <CategorySection
             key={category}
             category={category}
             components={comps}
+            domainContext={domainContext}
             expanded={expandedCategories.has(category)}
             onToggle={() => toggleCategory(category)}
           />
         ))}
-        {mode === 'components' && hasSuggestedCategories && (
-          <>
-            <div className="text-[10px] text-brand-500 uppercase tracking-widest">
-              {suggestedHeaderLabel}
-            </div>
-            {Object.entries(suggestedCategories).map(([category, comps]) => (
-              <CategorySection
-                key={category}
-                category={category}
-                components={comps}
-                expanded={expandedCategories.has(category)}
-                onToggle={() => toggleCategory(category)}
-              />
-            ))}
-            {hasOtherCategories && <div className="border-t border-slate-100 my-1" />}
-          </>
-        )}
-        {mode === 'components' &&
-          Object.entries(otherCategories).map(([category, comps]) => (
+        {domainContext && mode === 'components' &&
+          Object.entries(componentCategories).map(([category, comps]) => (
             <CategorySection
               key={category}
               category={category}
               components={comps}
+              domainContext={domainContext}
               expanded={expandedCategories.has(category)}
               onToggle={() => toggleCategory(category)}
             />
@@ -300,11 +253,13 @@ export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibr
 function CategorySection({
   category,
   components,
+  domainContext,
   expanded,
   onToggle,
 }: {
   category: string;
   components: ComponentDefinition[];
+  domainContext: DomainContext;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -320,7 +275,7 @@ function CategorySection({
       {expanded && (
         <div className="space-y-2">
           {components.map((component) => (
-            <ComponentCard key={component.name} component={component} />
+            <ComponentCard key={component.name} component={component} domainContext={domainContext} />
           ))}
         </div>
       )}
@@ -328,13 +283,18 @@ function CategorySection({
   );
 }
 
-function ComponentCard({ component }: { component: ComponentDefinition }) {
+function ComponentCard({
+  component,
+  domainContext,
+}: {
+  component: ComponentDefinition;
+  domainContext: DomainContext;
+}) {
   const Icon = iconMap[component.icon as keyof typeof iconMap] ?? CircuitBoard;
   const addNodeFromComponent = useGraphStore((state) => state.addNodeFromComponent);
   const nodes = useGraphStore((state) => state.nodes);
   const viewport = useGraphStore((state) => state.uiState.viewport);
-  // Blank subgraph type containers (Subgraph, AcausalSystem) get purple "Type" badge.
-  const isSubgraphType = SUBGRAPH_TYPES.has(component.name);
+  const isStructure = Boolean(component.interior_domain);
   const isTemplate = Boolean(component.template_graph);
   const isDisplayTemplate = component.template_kind === 'display';
   const templateBadgeLabel = isDisplayTemplate ? 'Preview only' : null;
@@ -352,12 +312,21 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
       type="button"
       draggable
       onDragStart={onDragStart}
-      onClick={() => addNodeFromComponent(component, nextInsertPosition(nodes, viewport))}
+      onClick={() => {
+        const verdict = domainContext.canPlace(component);
+        if (!verdict.allowed) {
+          toast.error('reason' in verdict ? verdict.reason : 'Component is not available here.', {
+            id: 'domain-placement-error',
+          });
+          return;
+        }
+        addNodeFromComponent(component, nextInsertPosition(nodes, viewport));
+      }}
       title={`Add ${component.name}`}
       className={clsx(
-        'w-full rounded-xl bg-white/90 p-3 text-left shadow-soft cursor-grab transition',
+        'w-full min-h-[92px] rounded-xl bg-white/90 p-3 text-left shadow-soft cursor-grab transition',
         'focus:outline-none focus:ring-2 focus:ring-brand-500/40',
-        isSubgraphType
+        isStructure
           ? 'border border-violet-200 hover:border-violet-400 hover:-translate-y-0.5 hover:shadow'
           : isDisplayTemplate
             ? 'border border-amber-100 hover:border-amber-300 hover:-translate-y-0.5 hover:shadow'
@@ -370,7 +339,7 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
         <div
           className={clsx(
             'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
-            isSubgraphType
+            isStructure
               ? 'bg-violet-100'
               : isDisplayTemplate
                 ? 'bg-amber-50'
@@ -382,7 +351,7 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
           <Icon
             className={clsx(
               'w-5 h-5',
-              isSubgraphType
+              isStructure
                 ? 'text-violet-600'
                 : isDisplayTemplate
                   ? 'text-amber-500'
@@ -395,12 +364,12 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <div className="text-sm font-semibold text-slate-800 truncate">{component.name}</div>
-            {isSubgraphType && (
+            {isStructure && (
               <span className="shrink-0 rounded-full bg-violet-100 border border-violet-200 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-600">
                 Type
               </span>
             )}
-            {!isSubgraphType && templateBadgeLabel && (
+            {!isStructure && templateBadgeLabel && (
               <span
                 className={clsx(
                   'shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide',
@@ -410,7 +379,7 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
                 {templateBadgeLabel}
               </span>
             )}
-            {!isSubgraphType && !isTemplate && component.is_composite && (
+            {!isStructure && !isTemplate && component.is_composite && (
               <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
                 Composite
               </span>

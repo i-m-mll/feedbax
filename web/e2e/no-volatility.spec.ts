@@ -4,6 +4,8 @@ const TRANSPORT_SCHEMA = 'feedbax.spec.studio.api_transport';
 const TRANSPORT_VERSION = 'feedbax.spec.studio.api_transport.v1';
 const LOCAL_TABS_KEY = 'feedbax:studio-local-tabs';
 const LAST_PROJECT_KEY = 'feedbax:lastProjectId';
+const CAUSAL_DOMAIN_ID = 'feedbax.domain.causal';
+const ACAUSAL_DOMAIN_ID = 'feedbax.domain.acausal';
 
 function metadata(name: string) {
   return {
@@ -38,19 +40,35 @@ function graphFixture(hiddenSize: number) {
         input_ports: ['input', 'hidden'],
         output_ports: ['hidden'],
       },
+      system: {
+        type: 'AcausalSystem',
+        params: {},
+        input_ports: ['input'],
+        output_ports: ['state'],
+      },
     },
     wires: [],
     input_ports: [],
     output_ports: [],
     input_bindings: {},
     output_bindings: {},
+    subgraphs: {
+      system: {
+        nodes: {},
+        wires: [],
+        input_ports: [],
+        output_ports: [],
+        input_bindings: {},
+        output_bindings: {},
+      },
+    },
     metadata: metadata('No volatility smoke'),
   };
 }
 
 async function installMockApi(page: Page) {
   let savedGraph = graphFixture(100);
-  const uiState = {
+  const uiState: any = {
     viewport: { x: 0, y: 0, zoom: 1 },
     node_states: {
       cell: {
@@ -58,13 +76,88 @@ async function installMockApi(page: Page) {
         collapsed: false,
         selected: false,
       },
+      system: {
+        position: { x: 480, y: 120 },
+        collapsed: false,
+        selected: false,
+      },
+    },
+    subgraph_states: {
+      system: {
+        viewport: { x: 0, y: 0, zoom: 1 },
+        node_states: {},
+      },
     },
   };
+  let savedWorkspace: any = null;
 
   await page.route('**/api/components', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify(transport({ components: [] })),
+      body: JSON.stringify(transport({
+        components: [
+          {
+            name: 'Subgraph',
+            category: 'Structure',
+            description: 'Nested causal graph',
+            param_schema: [],
+            input_ports: ['input'],
+            output_ports: ['output'],
+            icon: 'Layers',
+            default_params: {},
+            domain: CAUSAL_DOMAIN_ID,
+            interior_domain: CAUSAL_DOMAIN_ID,
+            is_composite: true,
+          },
+          {
+            name: 'AcausalSystem',
+            category: 'Mechanics',
+            description: 'Assembled acausal system',
+            param_schema: [],
+            input_ports: ['input'],
+            output_ports: ['state'],
+            icon: 'Cog',
+            default_params: {},
+            domain: CAUSAL_DOMAIN_ID,
+            interior_domain: ACAUSAL_DOMAIN_ID,
+            is_composite: true,
+          },
+        ],
+      })),
+    });
+  });
+
+  await page.route('**/api/domains', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(transport({
+        schema_id: 'feedbax.spec.domain',
+        schema_version: 'feedbax.spec.domain.v1',
+        domains: [
+          {
+            id: CAUSAL_DOMAIN_ID,
+            display_name: 'Causal',
+            interior_schema_id: 'feedbax.spec.graph',
+            edge_semantics: 'directed',
+            allows_multi_edge_per_port: false,
+            nestable_domains: [CAUSAL_DOMAIN_ID, ACAUSAL_DOMAIN_ID],
+            editor: { kind: 'canvas', editable: true },
+            theme: { color: 'causal', icon: 'Layers', edge_style: 'directed' },
+            compiler_id: null,
+          },
+          {
+            id: ACAUSAL_DOMAIN_ID,
+            display_name: 'Acausal',
+            interior_schema_id: 'feedbax.spec.acausal_graph',
+            edge_semantics: 'undirected',
+            allows_multi_edge_per_port: true,
+            nestable_domains: [ACAUSAL_DOMAIN_ID],
+            editor: { kind: 'canvas', editable: true },
+            theme: { color: 'acausal', icon: 'Cog', edge_style: 'undirected' },
+            compiler_id: 'feedbax.compiler.acausal',
+          },
+        ],
+      })),
     });
   });
 
@@ -118,7 +211,7 @@ async function installMockApi(page: Page) {
             metadata: metadata('No volatility smoke'),
             analysis_pages: null,
             active_analysis_page_id: null,
-            workspace: null,
+            workspace: savedWorkspace,
             demo_training_data: null,
           }),
         ),
@@ -131,6 +224,7 @@ async function installMockApi(page: Page) {
       if (payload.graph) {
         savedGraph = payload.graph;
       }
+      savedWorkspace = (payload as { workspace?: any }).workspace ?? savedWorkspace;
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify(transport({ success: true })),
@@ -177,4 +271,56 @@ test('save/reload persists an edited graph parameter', async ({ page }) => {
   await expect
     .poll(() => page.evaluate(() => window.feedbaxE2E?.nodeParam('cell', 'hidden_size')))
     .toBe(128);
+});
+
+test('reload restores acausal domain context and rejects causal subgraph drops', async ({ page }) => {
+  await installMockApi(page);
+  await page.addInitScript(
+    ({ localTabsKey, lastProjectKey }) => {
+      localStorage.removeItem(localTabsKey);
+      localStorage.setItem(lastProjectKey, 'graph-1');
+    },
+    { localTabsKey: LOCAL_TABS_KEY, lastProjectKey: LAST_PROJECT_KEY },
+  );
+
+  await page.goto('/');
+  await expect
+    .poll(() => page.evaluate(() => window.feedbaxE2E?.graphId()))
+    .toBe('graph-1');
+
+  await page.evaluate(() => window.feedbaxE2E?.enterSubgraph('system'));
+  await expect
+    .poll(() => page.evaluate(() => window.feedbaxE2E?.currentContext()))
+    .toBe(ACAUSAL_DOMAIN_ID);
+
+  const autosave = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/graphs/graph-1') &&
+      response.request().method() === 'PUT'
+  );
+  await page.evaluate(() => window.feedbaxE2E?.markDirty());
+  await autosave;
+  await page.evaluate((localTabsKey) => localStorage.removeItem(localTabsKey), LOCAL_TABS_KEY);
+  await page.reload();
+  await expect
+    .poll(() => page.evaluate(() => window.feedbaxE2E?.currentContext()))
+    .toBe(ACAUSAL_DOMAIN_ID);
+
+  await page.evaluate(() => {
+    const target = document.querySelector('.react-flow');
+    if (!target) throw new Error('React Flow canvas not found');
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('application/feedbax-component', 'Subgraph');
+    target.dispatchEvent(new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 320,
+      clientY: 260,
+      dataTransfer,
+    }));
+  });
+
+  await expect(page.getByText(
+    "Acausal interiors accept acausal-domain components only; 'Subgraph' is causal."
+  )).toBeVisible();
 });

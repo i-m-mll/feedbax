@@ -19,9 +19,7 @@ export function useComponents() {
       const composites = new Set(
         query.data.filter((c) => c.is_composite).map((c) => c.name)
       );
-      if (composites.size > 0) {
-        setCompositeTypes(composites);
-      }
+      setCompositeTypes(composites);
       setComponentRegistry(query.data);
     }
   }, [query.data, setCompositeTypes, setComponentRegistry]);

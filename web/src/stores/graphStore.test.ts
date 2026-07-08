@@ -3,12 +3,41 @@ import { useGraphStore } from './graphStore';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 
+const CAUSAL_DOMAIN_ID = 'feedbax.domain.causal';
+const ACAUSAL_DOMAIN_ID = 'feedbax.domain.acausal';
+
 const uiState: GraphUIState = {
   viewport: { x: 0, y: 0, zoom: 1 },
   node_states: {
     network: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
   },
 };
+
+function compositeComponent(
+  name: string,
+  interiorDomain = CAUSAL_DOMAIN_ID
+): ComponentDefinition {
+  return {
+    name,
+    category: 'Structure',
+    description: `${name} composite`,
+    param_schema: [],
+    input_ports: ['input'],
+    output_ports: ['output'],
+    icon: 'Layers',
+    default_params: {},
+    domain: CAUSAL_DOMAIN_ID,
+    interior_domain: interiorDomain,
+    is_composite: true,
+  };
+}
+
+function installCompositeRegistry() {
+  useGraphStore.getState().setComponentRegistry([
+    compositeComponent('Network'),
+    compositeComponent('Subgraph'),
+  ]);
+}
 
 function graphWithNetworkSubgraph(): GraphSpec {
   return {
@@ -234,6 +263,7 @@ function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIStat
 describe('graphStore boundary aliases', () => {
   beforeEach(() => {
     useGraphStore.getState().hydrateGraph(graphWithNetworkSubgraph(), uiState);
+    installCompositeRegistry();
   });
 
   it('renames a subgraph boundary input without renaming the internal bound port', () => {
@@ -379,11 +409,61 @@ describe('graphStore boundary aliases', () => {
       'inner',
     ]);
     expect(state.currentGraphLabel).toBe('inner');
+    expect(state.currentContext).toBe(CAUSAL_DOMAIN_ID);
     expect(state.graph.nodes.gain).toMatchObject({
       type: 'Gain',
       params: { gain: 5 },
     });
     expect(state.uiState.node_states.gain.position).toEqual({ x: 640, y: 180 });
+  });
+
+  it('restores an acausal graph stack context after registry metadata loads', () => {
+    const graph: GraphSpec = {
+      nodes: {
+        system: {
+          type: 'AcausalSystem',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['state'],
+        },
+      },
+      wires: [],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+      subgraphs: {
+        system: {
+          nodes: {},
+          wires: [],
+          input_ports: [],
+          output_ports: [],
+          input_bindings: {},
+          output_bindings: {},
+        },
+      },
+    };
+    const acausalUiState: GraphUIState = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        system: { position: { x: 120, y: 80 }, collapsed: false, selected: false },
+      },
+      subgraph_states: {
+        system: { viewport: { x: 10, y: 20, zoom: 0.8 }, node_states: {} },
+      },
+    };
+
+    useGraphStore.getState().hydrateGraph(graph, acausalUiState, 'graph-1', ['system']);
+    expect(useGraphStore.getState().currentContext).toBe('top-level');
+
+    useGraphStore.getState().setComponentRegistry([
+      compositeComponent('AcausalSystem', ACAUSAL_DOMAIN_ID),
+    ]);
+
+    const state = useGraphStore.getState();
+    expect(state.currentGraphLabel).toBe('system');
+    expect(state.currentContext).toBe(ACAUSAL_DOMAIN_ID);
+    expect(state.graphStack[0].contextType).toBe(ACAUSAL_DOMAIN_ID);
   });
 
   it('fails loudly when a parent subgraph entry vanishes before persistence', () => {
@@ -468,7 +548,7 @@ describe('graphStore boundary aliases', () => {
     const graph = graphWithNetworkSubgraph();
     delete graph.subgraphs;
     useGraphStore.getState().hydrateGraph(graph, uiState);
-    useGraphStore.getState().setCompositeTypes(new Set(['Network']));
+    installCompositeRegistry();
     useGraphStore.getState().setSelectedNode('network');
 
     expect(() => useGraphStore.getState().duplicateSelected()).toThrow(
@@ -575,8 +655,24 @@ describe('graphStore subgraph entry templates', () => {
   beforeEach(() => {
     useGraphStore.getState().hydrateGraph(unpopulatedMuscleGraph, unpopulatedUi);
     useGraphStore.setState({
-      _compositeTypes: new Set(['Arm6MuscleRigidTendon']),
-      _componentRegistry: new Map(),
+      _componentRegistry: new Map([
+        [
+          'Arm6MuscleRigidTendon',
+          {
+            name: 'Arm6MuscleRigidTendon',
+            category: 'Mechanics',
+            description: 'Composite metadata while templates load',
+            param_schema: [],
+            input_ports: ['input'],
+            output_ports: ['output'],
+            icon: 'activity',
+            default_params: {},
+            domain: CAUSAL_DOMAIN_ID,
+            interior_domain: CAUSAL_DOMAIN_ID,
+            is_composite: true,
+          },
+        ],
+      ]),
       _isRegistryLoaded: false,
       lastSubgraphError: null,
     });
@@ -606,6 +702,9 @@ describe('graphStore subgraph entry templates', () => {
         output_ports: ['torques'],
         icon: 'activity',
         default_params: {},
+        domain: CAUSAL_DOMAIN_ID,
+        interior_domain: CAUSAL_DOMAIN_ID,
+        is_composite: true,
       },
     ]);
 
@@ -646,6 +745,9 @@ describe('graphStore subgraph entry templates', () => {
         output_ports: ['output'],
         icon: 'activity',
         default_params: {},
+        domain: CAUSAL_DOMAIN_ID,
+        interior_domain: CAUSAL_DOMAIN_ID,
+        is_composite: true,
         template_graph: templateGraph,
         template_ui_state: {
           viewport: { x: 0, y: 0, zoom: 1 },
