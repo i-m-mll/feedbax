@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 
 from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
@@ -927,6 +928,7 @@ def register_builtin_components(registry: _Registry) -> None:
             input_ports=['input'],
             output_ports=['output'],
             icon='Hexagon',
+            interior_domain=PENZAI_DOMAIN_ID,
             is_composite=False,
             port_types=PortTypeSpec(
                 inputs={'input': PortType(dtype='any')},
@@ -1570,6 +1572,7 @@ def register_builtin_components(registry: _Registry) -> None:
             input_ports=['input'],
             output_ports=['state'],
             icon='Cog',
+            interior_domain=ACAUSAL_DOMAIN_ID,
             port_types=PortTypeSpec(
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'state': PortType(dtype='state')},

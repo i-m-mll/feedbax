@@ -16,6 +16,7 @@ from feedbax.contracts.component import (
     PortType,
     PortTypeSpec,
 )
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.migrations import (
     ComponentMigration,
@@ -35,6 +36,9 @@ from .meta import ComponentBuilder, ComponentMeta, OutputPrototypeFn
 logger = logging.getLogger(__name__)
 _DEFAULT_REGISTRY: ComponentRegistry | None = None
 _REGISTRATION_PROVENANCE: list[str] = []
+_LEGACY_INTERIOR_DOMAINS = {
+    "Network": CAUSAL_DOMAIN_ID,
+}
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,8 @@ class ComponentRegistry:
         output_ports: Iterable[str] = (),
         icon: str = "box",
         port_types: PortTypeSpec | dict[str, Any] | None = None,
+        domain: str = CAUSAL_DOMAIN_ID,
+        interior_domain: str | None = None,
         is_composite: bool = False,
         template_graph: Any = None,
         template_ui_state: Any = None,
@@ -153,6 +159,8 @@ class ComponentRegistry:
             output_ports=list(output_ports),
             icon=icon,
             port_types=port_types,
+            domain=domain,
+            interior_domain=interior_domain,
             is_composite=is_composite,
             template_graph=template_graph,
             template_ui_state=template_ui_state,
@@ -363,7 +371,7 @@ class ComponentRegistry:
         for node_id, node in nodes.items():
             current_path = f"{node_path}/nodes/{node_id}"
             node_type = str(getattr(node, "type", ""))
-            if node_type in {"Subgraph", "Network"} or node_id in subgraphs:
+            if required_interior_domain(node_type, self) is not None or node_id in subgraphs:
                 subgraph = subgraphs.get(node_id)
                 if subgraph is None:
                     issues.append(
@@ -447,6 +455,8 @@ class ComponentRegistry:
                     input_ports=meta.get("input_ports", []),
                     output_ports=meta.get("output_ports", []),
                     icon=meta.get("icon", "box"),
+                    domain=meta.get("domain", CAUSAL_DOMAIN_ID),
+                    interior_domain=meta.get("interior_domain"),
                     is_composite=bool(meta.get("is_composite", False)),
                     port_types=(
                         PortTypeSpec(
@@ -548,6 +558,8 @@ class ComponentRegistry:
             icon=meta.icon,
             default_params=meta.default_params,
             port_types=meta.port_types,
+            domain=meta.domain,
+            interior_domain=meta.interior_domain,
             is_composite=meta.is_composite,
             template_graph=meta.template_graph,
             template_ui_state=meta.template_ui_state,
@@ -693,6 +705,8 @@ def register_component_type(
     output_ports: Iterable[str] = (),
     icon: str = "box",
     port_types: PortTypeSpec | dict[str, Any] | None = None,
+    domain: str = CAUSAL_DOMAIN_ID,
+    interior_domain: str | None = None,
     is_composite: bool = False,
     output_prototype_fn: OutputPrototypeFn | None = None,
     provenance: str | None = None,
@@ -714,6 +728,8 @@ def register_component_type(
         output_ports=output_ports,
         icon=icon,
         port_types=port_types,
+        domain=domain,
+        interior_domain=interior_domain,
         is_composite=is_composite,
         output_prototype_fn=output_prototype_fn,
         provenance=provenance,
@@ -722,4 +738,52 @@ def register_component_type(
         supported_param_schema_versions=supported_param_schema_versions,
         trainable_by_default=trainable_by_default,
         representation=representation,
+    )
+
+
+def required_interior_domain(node_type: str, registry: Any) -> str | None:
+    """Return the required interior domain for a composite component type."""
+    meta = None
+    if isinstance(registry, Mapping):
+        meta = registry.get(node_type)
+    else:
+        get_meta = getattr(registry, "get", None)
+        if callable(get_meta):
+            meta = get_meta(node_type)
+        elif isinstance(registry, (list, tuple)):
+            for item in registry:
+                if getattr(item, "name", None) == node_type:
+                    meta = item
+                    break
+    if meta is None:
+        return _LEGACY_INTERIOR_DOMAINS.get(node_type)
+    is_composite = (
+        bool(meta.get("is_composite", False))
+        if isinstance(meta, Mapping)
+        else bool(getattr(meta, "is_composite", False))
+    )
+    if not is_composite:
+        return None
+    interior_domain = (
+        meta.get("interior_domain")
+        if isinstance(meta, Mapping)
+        else getattr(meta, "interior_domain", None)
+    )
+    return interior_domain if isinstance(interior_domain, str) and interior_domain else None
+
+
+def format_missing_interior_message(
+    *,
+    node_name: str,
+    node_type: str,
+    domain_id: str,
+) -> str:
+    """Return a human-facing missing-interior error message."""
+    if not domain_id or domain_id == CAUSAL_DOMAIN_ID:
+        return f"{node_type} node {node_name!r} requires a subgraph, but none was provided"
+    label = domain_id.removeprefix("feedbax.domain.").replace("_", " ")
+    article = "an" if label[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
+    return (
+        f"Node {node_name!r} ({node_type}) requires {article} {label} interior "
+        f"({domain_id}) but none is present. Open it in Studio and save."
     )

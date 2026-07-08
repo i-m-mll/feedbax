@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo, PortTypeSpec
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import GraphSpec, GraphUIState, NodeUIState, ParamSchema
 from feedbax.contracts.representation import RepresentationSpec
 
@@ -31,6 +32,8 @@ class ComponentMeta:
     output_ports: List[str]
     icon: str = "box"
     port_types: Optional[PortTypeSpec] = None
+    domain: str = CAUSAL_DOMAIN_ID
+    interior_domain: Optional[str] = None
     is_composite: bool = False
     template_graph: Optional[GraphSpec] = None
     template_ui_state: Optional[GraphUIState] = None
@@ -61,6 +64,8 @@ class ComponentMeta:
         super().__setattr__(name, value)
 
     def __post_init__(self) -> None:
+        if self.is_composite and self.interior_domain is None:
+            self.interior_domain = CAUSAL_DOMAIN_ID
         if not self.supported_param_schema_versions:
             self.supported_param_schema_versions = [self.param_schema_version]
         elif self.param_schema_version not in self.supported_param_schema_versions:

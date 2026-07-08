@@ -23,6 +23,12 @@ from feedbax.contracts.component import (
     PortType,
     PortTypeSpec,
 )
+from feedbax.contracts.domain import (
+    DomainMeta,
+    DomainRegistryPayload,
+    DomainTheme,
+    EditorCapability,
+)
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
     RepresentationElementSpec,
@@ -103,6 +109,7 @@ from feedbax.contracts.studio_api import (
     AnalysisPackagesPayload,
     AnalysisPackagesResponse,
     ComponentDetailResponse,
+    DomainListResponse,
     ComponentListPayload,
     ComponentListResponse,
     ComponentRefreshPayload,
@@ -296,6 +303,10 @@ MODEL_TYPES: list[type[BaseModel]] = [
     RepresentationElementSpec,
     RepresentationSpec,
     RepresentationValidationIssue,
+    EditorCapability,
+    DomainTheme,
+    DomainMeta,
+    DomainRegistryPayload,
     WorkspaceReplayWarning,
     WorkspaceReplayTrialIdentity,
     WorkspaceReplaySampleAxis,
@@ -341,6 +352,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ComponentDetailResponse,
     ComponentRefreshPayload,
     ComponentRefreshResponse,
+    DomainListResponse,
     TrainingStartPayload,
     TrainingStartResponse,
     TrainingStatusPayload,
@@ -428,6 +440,7 @@ CONTRACT_MODEL_NAMES = [
     "ComponentListResponse",
     "ComponentDetailResponse",
     "ComponentRefreshResponse",
+    "DomainListResponse",
     "TrainingStartResponse",
     "TrainingStatusResponse",
     "SuccessResponse",

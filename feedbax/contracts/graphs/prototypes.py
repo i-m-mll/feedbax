@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 
 from feedbax.contracts.graph import ComponentSpec, DerivedDimensionRuleSpec, GraphSpec
+from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.component_registry.meta import MissingPrototypeInput
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
@@ -314,11 +315,16 @@ def output_prototypes_for_node(
     params = node_spec.params
     node_type = node_spec.type
 
-    if node_type == "Subgraph" or node_name in subgraphs or node_type == "Network":
+    required_domain = required_interior_domain(node_type, component_registry)
+    if required_domain is not None or node_name in subgraphs:
         subgraph = subgraphs.get(node_name)
         if subgraph is None:
             raise ValueError(
-                f"{node_type} node {node_name!r} requires a subgraph, but none was provided"
+                format_missing_interior_message(
+                    node_name=node_name,
+                    node_type=node_type,
+                    domain_id=required_domain or "",
+                )
             )
         nested_inputs = {
             (node, port): input_prototypes[(node_name, graph_port)]

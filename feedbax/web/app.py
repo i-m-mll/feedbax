@@ -10,6 +10,7 @@ from feedbax.web.api import (
     analysis,
     analyses,
     components,
+    domains,
     execution,
     figures,
     graphs,
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
 
     app.include_router(graphs.router, prefix="/api/graphs", tags=["graphs"])
     app.include_router(components.router, prefix="/api/components", tags=["components"])
+    app.include_router(domains.router, prefix="/api/domains", tags=["domains"])
     app.include_router(provider.router, prefix="/api/provider", tags=["provider"])
     app.include_router(training.router, prefix="/api/training", tags=["training"])
     app.include_router(execution.router, prefix="/api/execution", tags=["execution"])

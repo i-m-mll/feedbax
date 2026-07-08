@@ -35,6 +35,7 @@ from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES,
 GENERATED_STUDIO_PREFIXES = (
     "/api/analyses",
     "/api/components",
+    "/api/domains",
     "/api/graphs",
     "/api/inspection",
     "/api/runs",
