@@ -34,6 +34,10 @@ from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
     PATH_EXPRESSION_SCHEMA_VERSION,
 )
+from feedbax.contracts.domain import (
+    DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID,
+    DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION,
+)
 from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
@@ -1509,6 +1513,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("GraphSpec.retained_observables",),
             consumed_by=("rollout retention planning", "analysis materialization"),
             description="Graph-embedded retained-observable request.",
+        ),
+        _family(
+            "DomainRegistryPayload",
+            DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID,
+            DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.domain",
+            emitted_by=("GET /api/domains",),
+            consumed_by=("Studio domain registry clients",),
+            description="Backend registry payload for graph-domain metadata.",
+            rejected_old_versions=("feedbax.spec.domain.v0",),
+            required_tests=("tests/test_domain_registry.py",),
         ),
         _family(
             "TrainingRunSpec",

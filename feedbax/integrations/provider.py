@@ -57,6 +57,7 @@ from feedbax.contracts.migrations import (
     migrate_studio_workspace_spec,
 )
 from feedbax.contracts.workspace_replay import WorkspaceReplayProduct
+from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.objectives.spec import (
     objective_schema_models,
     validate_objective_spec as _validate_objective_spec,
@@ -1129,12 +1130,17 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                             location={"path": f"{node_path}/params/{schema.name}"},
                         )
                     )
-            if node_spec.type in {"Subgraph", "Network"}:
+            required_domain = required_interior_domain(node_spec.type, component_registry)
+            if required_domain is not None:
                 if not graph.subgraphs or node_name not in graph.subgraphs:
                     errors.append(
                         ValidationIssue(
                             type="missing_subgraph",
-                            message=f"{node_spec.type} node {node_name!r} requires a subgraph",
+                            message=format_missing_interior_message(
+                                node_name=node_name,
+                                node_type=node_spec.type,
+                                domain_id=required_domain,
+                            ),
                             location={"path": node_path},
                         )
                     )

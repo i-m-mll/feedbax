@@ -666,6 +666,35 @@ export interface RepresentationValidationIssue {
   path: string;
 }
 
+export interface EditorCapability {
+  kind: "canvas" | "tree" | "inspector" | "none";
+  editable: boolean;
+}
+
+export interface DomainTheme {
+  color: string;
+  icon: string;
+  edge_style: "directed" | "undirected";
+}
+
+export interface DomainMeta {
+  id: string;
+  display_name: string;
+  interior_schema_id: string | null;
+  edge_semantics: "directed" | "undirected";
+  allows_multi_edge_per_port: boolean;
+  nestable_domains: string[];
+  editor: EditorCapability;
+  theme: DomainTheme;
+  compiler_id: string | null;
+}
+
+export interface DomainRegistryPayload {
+  schema_id?: "feedbax.spec.domain";
+  schema_version?: "feedbax.spec.domain.v1";
+  domains: DomainMeta[];
+}
+
 export interface WorkspaceReplayWarning {
   code: "missing_trial_metadata" | "missing_manifest_refs" | "missing_anchor_resolution" | "missing_overlay_metadata" | "npz_browser_downgrade";
   message: string;
@@ -788,6 +817,8 @@ export interface ComponentDefinition {
   icon?: string;
   default_params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
   port_types?: PortTypeSpec | null;
+  domain?: string;
+  interior_domain?: string | null;
   is_composite?: boolean;
   template_graph?: GraphSpec | null;
   template_ui_state?: GraphUIState | null;
@@ -1049,6 +1080,12 @@ export interface ComponentRefreshResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v1";
   data: ComponentRefreshPayload;
+}
+
+export interface DomainListResponse {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v1";
+  data: DomainRegistryPayload;
 }
 
 export interface TrainingStartPayload {
@@ -2544,6 +2581,51 @@ export const RepresentationValidationIssueSchema: z.ZodType<RepresentationValida
     .strict()
 ) as unknown as z.ZodType<RepresentationValidationIssue>;
 
+export const EditorCapabilitySchema: z.ZodType<EditorCapability> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("canvas"), z.literal("tree"), z.literal("inspector"), z.literal("none")]),
+      "editable": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<EditorCapability>;
+
+export const DomainThemeSchema: z.ZodType<DomainTheme> = z.lazy(() =>
+  z
+    .object({
+      "color": z.string(),
+      "icon": z.string(),
+      "edge_style": z.union([z.literal("directed"), z.literal("undirected")]),
+    })
+    .strict()
+) as unknown as z.ZodType<DomainTheme>;
+
+export const DomainMetaSchema: z.ZodType<DomainMeta> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "display_name": z.string(),
+      "interior_schema_id": z.string().nullable(),
+      "edge_semantics": z.union([z.literal("directed"), z.literal("undirected")]),
+      "allows_multi_edge_per_port": z.boolean(),
+      "nestable_domains": z.array(z.string()),
+      "editor": EditorCapabilitySchema,
+      "theme": DomainThemeSchema,
+      "compiler_id": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<DomainMeta>;
+
+export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.domain").optional(),
+      "schema_version": z.literal("feedbax.spec.domain.v1").optional(),
+      "domains": z.array(DomainMetaSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<DomainRegistryPayload>;
+
 export const WorkspaceReplayWarningSchema: z.ZodType<WorkspaceReplayWarning> = z.lazy(() =>
   z
     .object({
@@ -2716,6 +2798,8 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "icon": z.string().optional(),
       "default_params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
       "port_types": PortTypeSpecSchema.nullable().optional(),
+      "domain": z.string().optional(),
+      "interior_domain": z.string().nullable().optional(),
       "is_composite": z.boolean().optional(),
       "template_graph": GraphSpecSchema.nullable().optional(),
       "template_ui_state": GraphUIStateSchema.nullable().optional(),
@@ -3108,6 +3192,16 @@ export const ComponentRefreshResponseSchema: z.ZodType<ComponentRefreshResponse>
     })
     .strict()
 ) as unknown as z.ZodType<ComponentRefreshResponse>;
+
+export const DomainListResponseSchema: z.ZodType<DomainListResponse> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v1").optional(),
+      "data": DomainRegistryPayloadSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<DomainListResponse>;
 
 export const TrainingStartPayloadSchema: z.ZodType<TrainingStartPayload> = z.lazy(() =>
   z
@@ -3940,6 +4034,7 @@ export const contractSchemas = {
   ComponentListResponse: ComponentListResponseSchema,
   ComponentDetailResponse: ComponentDetailResponseSchema,
   ComponentRefreshResponse: ComponentRefreshResponseSchema,
+  DomainListResponse: DomainListResponseSchema,
   TrainingStartResponse: TrainingStartResponseSchema,
   TrainingStatusResponse: TrainingStatusResponseSchema,
   SuccessResponse: SuccessResponseSchema,
@@ -3988,6 +4083,7 @@ export interface ContractTypeMap {
   ComponentListResponse: ComponentListResponse;
   ComponentDetailResponse: ComponentDetailResponse;
   ComponentRefreshResponse: ComponentRefreshResponse;
+  DomainListResponse: DomainListResponse;
   TrainingStartResponse: TrainingStartResponse;
   TrainingStatusResponse: TrainingStatusResponse;
   SuccessResponse: SuccessResponse;

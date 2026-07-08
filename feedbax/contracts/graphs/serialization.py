@@ -66,6 +66,7 @@ from feedbax.contracts.graph import (
 )
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.contracts.migrations import migrate_graph_spec
+from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
 from feedbax.contracts.graphs.prototypes import (
@@ -1034,17 +1035,23 @@ def spec_to_graph(
             node_spec.output_ports,
         )
 
-        if node_type == "Subgraph":
-            if not spec.subgraphs or node_name not in spec.subgraphs:
-                raise ValueError(f"Missing subgraph spec for '{node_name}'")
-            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
-            continue
-        if node_type == "Network":
+        required_domain = required_interior_domain(node_type, metadata_registry)
+        if required_domain is not None:
             subgraph = (spec.subgraphs or {}).get(node_name)
             if subgraph is None:
+                if node_type == "Subgraph":
+                    raise ValueError(f"Missing subgraph spec for '{node_name}'")
+                if node_type == "Network":
+                    raise ValueError(
+                        f"Network node {node_name!r} has no subgraph. "
+                        "Open it in Studio to generate the internal architecture, then save again."
+                    )
                 raise ValueError(
-                    f"Network node {node_name!r} has no subgraph. "
-                    "Open it in Studio to generate the internal architecture, then save again."
+                    format_missing_interior_message(
+                        node_name=node_name,
+                        node_type=node_type,
+                        domain_id=required_domain,
+                    )
                 )
             nodes[node_name] = spec_to_graph(subgraph, metadata_registry)
             continue

@@ -5,9 +5,12 @@ from .registry import (
     ComponentRegistry,
     ComponentResolution,
     TemplateBuilderIssue,
+    format_missing_interior_message,
     get_component_registry,
     register_component_type,
+    required_interior_domain,
 )
+from .domains import DomainRegistry, builtin_domain_registry
 from feedbax.contracts.migrations import ComponentMigration, ComponentMigrationPack
 
 __all__ = [
@@ -18,7 +21,11 @@ __all__ = [
     "ComponentResolution",
     "OutputPrototypeFn",
     "ComponentRegistry",
+    "DomainRegistry",
+    "builtin_domain_registry",
+    "format_missing_interior_message",
     "get_component_registry",
     "register_component_type",
+    "required_interior_domain",
     "TemplateBuilderIssue",
 ]

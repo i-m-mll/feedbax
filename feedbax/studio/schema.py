@@ -9,6 +9,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
+from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.contracts.migrations import migrate_studio_workspace_spec
 from feedbax.contracts.manifest import SCHEMA_VERSION, utc_now
 from feedbax.studio.protocol import (
@@ -469,12 +470,8 @@ def _missing_subgraph_issues(graph: GraphSpec, base_path: str) -> list[SchemaVal
     subgraphs = graph.subgraphs or {}
     issues: list[SchemaValidationIssue] = []
     for node_id, node in graph.nodes.items():
-        meta = registry.get(node.type)
-        requires_subgraph = (
-            node.type in {"Network", "Subgraph"}
-            or bool(meta is not None and meta.is_composite and meta.builder is None)
-        )
-        if not requires_subgraph or node_id in subgraphs:
+        required_domain = required_interior_domain(node.type, registry)
+        if required_domain is None or node_id in subgraphs:
             continue
         if node.type == "Network":
             message = (
@@ -482,7 +479,11 @@ def _missing_subgraph_issues(graph: GraphSpec, base_path: str) -> list[SchemaVal
                 "generate the internal architecture, then save again."
             )
         else:
-            message = f"{node.type} node {node_id!r} requires a subgraph, but none was provided"
+            message = format_missing_interior_message(
+                node_name=node_id,
+                node_type=node.type,
+                domain_id=required_domain,
+            )
         issues.append(
             SchemaValidationIssue(
                 type="missing_subgraph",

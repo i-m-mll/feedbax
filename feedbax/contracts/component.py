@@ -6,6 +6,7 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import GraphSpec, GraphUIState, ParamSchema, ParamValue
 from feedbax.contracts.representation import RepresentationSpec
 
@@ -61,6 +62,8 @@ class ComponentDefinition(BaseModel):
     icon: str = "box"
     default_params: Dict[str, ParamValue] = Field(default_factory=dict)
     port_types: Optional[PortTypeSpec] = None
+    domain: str = CAUSAL_DOMAIN_ID
+    interior_domain: Optional[str] = None
     is_composite: bool = False
     template_graph: Optional[GraphSpec] = None
     template_ui_state: Optional[GraphUIState] = None

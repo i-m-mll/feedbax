@@ -11,6 +11,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.component import ComponentDefinition
+from feedbax.contracts.domain import DomainRegistryPayload
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphMetadata,
@@ -164,6 +165,12 @@ class ComponentRefreshResponse(StudioApiModel):
     """Standard API envelope for component library refresh results."""
 
     data: ComponentRefreshPayload
+
+
+class DomainListResponse(StudioApiModel):
+    """Standard API envelope for domain registry listings."""
+
+    data: DomainRegistryPayload
 
 
 class TrainingStartPayload(StudioApiModel):
