@@ -1164,12 +1164,23 @@ def _positive_int_param(params: dict[str, Any], key: str) -> Optional[int]:
 
 
 def _subgraph_boundary_value_schema(
-    subgraph: Optional[GraphSpec],
+    subgraph: Any,
     port: str,
     direction: Literal["input", "output"],
 ) -> Optional[ValueSchema]:
     if subgraph is None:
         return None
+    if not isinstance(subgraph, GraphSpec):
+        return ValueSchema(
+            id=f"value:acausal-boundary:{port}:{direction}",
+            label=port,
+            kind="signal",
+            dtype=None,
+            shape=None,
+            rank=None,
+            origin="inferred_static",
+            metadata={"dimension_source": "acausal_boundary"},
+        )
     binding = (
         subgraph.input_bindings.get(port)
         if direction == "input"

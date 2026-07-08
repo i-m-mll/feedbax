@@ -71,12 +71,15 @@ from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
+from feedbax.contracts.graphs.domain_compilers import get_domain_compiler
 from feedbax.contracts.graphs.prototypes import (
     normalize_derived_dimensions,
     normalize_stateful_prototypes,
     prototypes_from_task_bindings,
     shape_from_proto,
 )
+from feedbax.component_registry import builtin_domain_registry
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.runtime.state_feedback import StateFeedbackSelector
 
 
@@ -1020,12 +1023,19 @@ def spec_to_graph(
             node_type = resolution.type_id
             node_params = resolution.params
 
+        required_domain = required_interior_domain(node_type, metadata_registry)
+        if required_domain is None and metadata_registry is not execution_registry:
+            required_domain = required_interior_domain(node_type, execution_registry)
         defaults = _lookup_defaults(metadata_registry, node_type)
         required_params = _lookup_required_params(metadata_registry, node_type)
         params = _merge_params(
             node_params,
             defaults,
-            required_params=required_params,
+            required_params=(
+                required_params
+                if required_domain is None or required_domain == CAUSAL_DOMAIN_ID
+                else None
+            ),
             node_name=node_name,
             node_type=node_type,
         )
@@ -1037,7 +1047,6 @@ def spec_to_graph(
             node_spec.output_ports,
         )
 
-        required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is not None:
             subgraph = (spec.subgraphs or {}).get(node_name)
             if subgraph is None:
@@ -1062,6 +1071,30 @@ def spec_to_graph(
                 node_type=node_type,
                 consumer="spec_to_graph",
             )
+            if required_domain != CAUSAL_DOMAIN_ID:
+                domain = builtin_domain_registry().get(required_domain)
+                if domain is None:
+                    raise ValueError(
+                        f"Node {node_name!r} ({node_type}) requires unknown "
+                        f"interior domain {required_domain!r}"
+                    )
+                if domain.compiler_id is None:
+                    raise ValueError(
+                        f"Interior domain {required_domain!r} for node {node_name!r} "
+                        "has no compiler"
+                    )
+                if (
+                    domain.interior_schema_id is not None
+                    and getattr(subgraph, "schema_id", None) != domain.interior_schema_id
+                ):
+                    raise ValueError(
+                        f"Node {node_name!r} ({node_type}) interior schema "
+                        f"{getattr(subgraph, 'schema_id', None)!r} does not match "
+                        f"domain {required_domain!r} schema {domain.interior_schema_id!r}"
+                    )
+                compiler = get_domain_compiler(domain.compiler_id)
+                nodes[node_name] = compiler(subgraph, node_name, execution_registry)
+                continue
             causal_subgraph = require_causal_subgraph(
                 subgraph,
                 node_name=node_name,

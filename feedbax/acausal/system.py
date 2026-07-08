@@ -11,6 +11,7 @@ like any other ``Component`` in a feedbax ``Graph``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Callable, Optional, Type
 
 import diffrax as dfx
@@ -85,6 +86,8 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     _compiled_vf: Callable = field(static=True)
     _compiled_sensor_fn: Callable = field(static=True)
     _output_indices: dict[str, int] = field(static=True)
+    _input_bindings: dict[str, str] = field(static=True)
+    _output_bindings: dict[str, str] = field(static=True)
     _input_size_val: int = field(static=True)
 
     def __init__(
@@ -95,6 +98,8 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
         root_finder: Optional[optx.AbstractRootFinder] = None,
         *,
+        input_bindings: Mapping[str, str] | None = None,
+        output_bindings: Mapping[str, str] | None = None,
         key: Optional[PRNGKeyArray] = None,
     ):
         """Assemble acausal elements into a DAE component.
@@ -106,6 +111,10 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
             solver_type: ``diffrax`` solver class.
             root_finder: Optional ``optimistix`` root finder for implicit
                 solvers.
+            input_bindings: Optional mapping from public causal input port
+                names to source element names in the assembled acausal graph.
+            output_bindings: Optional mapping from public causal output port
+                names to sensor element names in the assembled acausal graph.
             key: PRNG key (passed through to ``DAEComponent``).
         """
 
@@ -125,19 +134,49 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         self.params = AcausalParams(values=param_values)
 
         # ---- Ports -------------------------------------------------------
-        # Input ports: one per causal-input variable (ForceSource, etc.)
-        input_port_names: list[str] = []
+        element_input_names: list[str] = []
         for vname in sorted(layout._inputs.keys()):
-            # Use the element name as the port name for readability
-            parts = vname.split(".")
-            label = parts[0]  # element name
-            if label not in input_port_names:
-                input_port_names.append(label)
-        self.input_ports = tuple(input_port_names) if input_port_names else ("input",)
+            label = vname.split(".")[0]
+            if label not in element_input_names:
+                element_input_names.append(label)
 
-        # Output ports: one per sensor + always "state"
-        output_port_names = sorted(layout._outputs.keys())
-        self.output_ports = tuple(output_port_names) + ("state",)
+        if input_bindings is None:
+            public_input_bindings = {name: name for name in element_input_names}
+            include_default_input_port = not public_input_bindings
+        else:
+            public_input_bindings = dict(input_bindings)
+            include_default_input_port = False
+            unknown_inputs = set(public_input_bindings.values()) - set(element_input_names)
+            if unknown_inputs:
+                raise ValueError(
+                    "AcausalSystem input bindings reference unknown source elements: "
+                    f"{sorted(unknown_inputs)!r}"
+                )
+        if output_bindings is None:
+            public_output_bindings = {name: name for name in sorted(layout._outputs)}
+            include_state_port = True
+        else:
+            public_output_bindings = dict(output_bindings)
+            unknown_outputs = set(public_output_bindings.values()) - set(layout._outputs)
+            if unknown_outputs:
+                raise ValueError(
+                    "AcausalSystem output bindings reference unknown sensor elements: "
+                    f"{sorted(unknown_outputs)!r}"
+                )
+            include_state_port = False
+
+        self._input_bindings = public_input_bindings
+        self._output_bindings = public_output_bindings
+        self.input_ports = (
+            tuple(public_input_bindings)
+            if public_input_bindings or not include_default_input_port
+            else ("input",)
+        )
+
+        output_port_names = tuple(public_output_bindings)
+        self.output_ports = (
+            output_port_names + ("state",) if include_state_port else output_port_names
+        )
 
         # Output index map: sensor_label -> state-vector index
         out_idx: dict[str, int] = {}
@@ -202,13 +241,18 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         """
         # Build a flat input array from the causal input dict
         n_inputs = len(self._layout._inputs)
+        element_to_public_input = {
+            element_name: port_name
+            for port_name, element_name in self._input_bindings.items()
+        }
         if n_inputs > 0:
             input_val = jnp.zeros((n_inputs,))
             for vname, idx in sorted(
                 self._layout._inputs.items(), key=lambda item: item[1]
             ):
                 elem_name, slot_idx = self._layout._input_specs[vname]
-                val = inputs.get(elem_name, None)
+                public_port = element_to_public_input.get(elem_name, elem_name)
+                val = inputs.get(public_port, None)
                 if val is None:
                     val = inputs.get("input", jnp.zeros(1))
                 arr = jnp.atleast_1d(jnp.asarray(val)).ravel()
@@ -218,12 +262,25 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
 
         modified_inputs = {"input": input_val}
         outputs, state = super().__call__(modified_inputs, state, key=key)
+        if "state" not in self.output_ports:
+            outputs = {key: value for key, value in outputs.items() if key != "state"}
 
         dae_state = self.state_view(state)
         sensor_outputs = self._compiled_sensor_fn(
             dae_state.system.y, input_val, self.params.values
         )
-        outputs.update(sensor_outputs)
+        internal_outputs = {**outputs, **sensor_outputs}
+        for public_port, sensor_element in self._output_bindings.items():
+            if sensor_element in internal_outputs:
+                outputs[public_port] = internal_outputs[sensor_element]
+        if "state" not in self.output_ports:
+            outputs = {
+                port_name: outputs[port_name]
+                for port_name in self.output_ports
+                if port_name in outputs
+            }
+        else:
+            outputs.update(sensor_outputs)
         return outputs, state
 
     def _get_zero_input(self) -> Array:

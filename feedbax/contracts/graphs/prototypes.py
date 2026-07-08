@@ -18,6 +18,7 @@ from feedbax.contracts.graph import (
 )
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.component_registry.meta import MissingPrototypeInput
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
@@ -341,6 +342,8 @@ def output_prototypes_for_node(
             node_type=node_type,
             consumer="output_prototypes_for_node",
         )
+        if required_domain is not None and required_domain != CAUSAL_DOMAIN_ID:
+            return {port: jnp.zeros(()) for port in node_spec.output_ports}
         subgraph = require_causal_subgraph(
             subgraph,
             node_name=node_name,
@@ -735,8 +738,12 @@ def normalize_stateful_prototypes(
         nodes[node_name] = node_spec.model_copy(update={"params": params})
 
         if node_name in subgraphs:
+            raw_subgraph = subgraphs[node_name]
+            if not isinstance(raw_subgraph, GraphSpec):
+                normalized_subgraphs[node_name] = raw_subgraph
+                continue
             subgraph = require_causal_subgraph(
-                subgraphs[node_name],
+                raw_subgraph,
                 node_name=node_name,
                 node_type=node_spec.type,
                 consumer="normalize_stateful_prototypes",
@@ -850,6 +857,9 @@ def normalize_derived_dimensions(
 
     normalized_subgraphs: dict[str, GraphSubgraphSpec] = {}
     for node_name, subgraph in subgraphs.items():
+        if not isinstance(subgraph, GraphSpec):
+            normalized_subgraphs[node_name] = subgraph
+            continue
         causal_subgraph = require_causal_subgraph(
             subgraph,
             node_name=node_name,

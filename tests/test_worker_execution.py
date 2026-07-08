@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graphs.templates import network_template_graph
 from feedbax.contracts.graphs.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.contracts.graph import (
@@ -46,6 +47,58 @@ def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> 
         output_ports=["output"],
         output_bindings={"output": ("readout", "output")},
     ).model_dump(mode="json", exclude_none=True)
+
+
+def _acausal_training_graph_spec() -> dict:
+    interior = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes={
+            "wall": ComponentSpec(type="Ground"),
+            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
+            "damper": ComponentSpec(type="LinearDamper", params={"damping": 0.5}),
+            "act": ComponentSpec(
+                type="ActuationInput",
+                params={"port_name": "u", "source_kind": "force"},
+            ),
+            "sense": ComponentSpec(
+                type="SensorOutput",
+                params={"port_name": "output", "quantity": "position"},
+            ),
+        },
+        connections=[
+            {"a": ("wall", "flange"), "b": ("spring", "flange_a")},
+            {"a": ("wall", "flange"), "b": ("damper", "flange_a")},
+            {"a": ("spring", "flange_b"), "b": ("mass", "flange")},
+            {"a": ("damper", "flange_b"), "b": ("mass", "flange")},
+            {"a": ("act", "flange"), "b": ("mass", "flange")},
+            {"a": ("sense", "flange"), "b": ("mass", "flange")},
+        ],
+        solver={"solver_type": "euler", "dt": 0.001},
+    )
+    return GraphSpec(
+        nodes={
+            "plant": ComponentSpec(
+                type="AcausalSystem",
+                input_ports=["u"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("plant", "output")},
+        subgraphs={"plant": interior},
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _acausal_task_binding_spec() -> dict:
+    spec = _task_binding_spec()
+    spec["bindings"][0] = {
+        **spec["bindings"][0],
+        "id": "task:model_input->plant:u",
+        "target_node_id": "plant",
+        "target_port": "u",
+    }
+    return spec
 
 
 def _task_binding_spec() -> dict:
@@ -318,6 +371,21 @@ def test_compile_training_run_accepts_full_graph_without_bridge_nodes() -> None:
     assert compiled.task_inputs[0].target_node == "readout"
     assert compiled.task_inputs[0].graph_input in compiled.graph.input_ports
     assert compiled.trainable_nodes == ("readout",)
+
+
+def test_compile_training_run_dry_runs_acausal_graph_node() -> None:
+    compiled = compile_training_run(
+        graph_spec=_acausal_training_graph_spec(),
+        training_spec=_training_spec(n_batches=1),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_acausal_task_binding_spec(),
+        cfg=_cfg(n_reach_steps=3),
+    )
+
+    assert compiled.metadata["execution"] == "generic_graph"
+    assert compiled.task_inputs[0].target_node == "plant"
+    assert compiled.graph.nodes["plant"].input_ports == ("u",)
+    assert compiled.graph.nodes["plant"].output_ports == ("output",)
 
 
 def test_compile_training_run_uses_array_leaf_trainability_for_network_template() -> None:
