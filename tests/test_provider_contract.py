@@ -62,7 +62,13 @@ from feedbax.contracts.graph import (
     TapSpec,
     build_default_studio_workspace,
 )
-from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingRunSpec, TrainingSpec
+from feedbax.contracts.training import (
+    LossTermSpec,
+    LrScheduleSpec,
+    TaskSpec,
+    TrainingRunSpec,
+    TrainingSpec,
+)
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.web.worker.app import (
@@ -388,6 +394,7 @@ def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
         "AnalysisInputRequirement": AnalysisInputRequirement,
         "GraphSpec": GraphSpec,
         "LossTermSpec": LossTermSpec,
+        "LrScheduleSpec": LrScheduleSpec,
         "TaskSpec": TaskSpec,
         "TrainingRunSpec": TrainingRunSpec,
         "TrainingSpec": TrainingSpec,
