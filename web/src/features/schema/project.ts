@@ -1,5 +1,10 @@
 import type { ComponentDefinition } from '@/types/components';
-import type { GraphSpec, RetainedObservableSpec } from '@/types/graph';
+import {
+  isCausalGraphSpec,
+  type GraphSpec,
+  type GraphSubgraphSpec,
+  type RetainedObservableSpec,
+} from '@/types/graph';
 import type {
   PortSchema,
   SelectorTargetSchema,
@@ -325,7 +330,7 @@ function componentPortSchema(
   port: string,
   direction: 'input' | 'output',
   portType?: { dtype: string; shape?: number[] | null; rank?: number },
-  subgraph?: GraphSpec | null,
+  subgraph?: GraphSubgraphSpec | null,
   componentMap?: Map<string, ComponentDefinition>
 ): PortSchema {
   const portId = `port:${nodeId}.${port}:${direction}`;
@@ -434,12 +439,12 @@ function positiveIntParam(params: Record<string, unknown>, key: string): number 
 }
 
 function subgraphBoundaryValueSchema(
-  subgraph: GraphSpec | null | undefined,
+  subgraph: GraphSubgraphSpec | null | undefined,
   port: string,
   direction: 'input' | 'output',
   componentMap?: Map<string, ComponentDefinition>
 ): ValueSchema | null {
-  if (!subgraph || !componentMap) return null;
+  if (!isCausalGraphSpec(subgraph) || !componentMap) return null;
   const binding = direction === 'input'
     ? subgraph.input_bindings[port]
     : subgraph.output_bindings[port];

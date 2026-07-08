@@ -25,6 +25,7 @@ import type {
   SubgraphPreview,
   RetainedObservableSpec,
 } from '@/types/graph';
+import { isCausalGraphSpec } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import {
@@ -778,6 +779,7 @@ function normalizeUiState(
   const subgraph_states: Record<string, GraphUIState> = {};
   if (graph.subgraphs) {
     for (const [nodeId, subgraph] of Object.entries(graph.subgraphs)) {
+      if (!isCausalGraphSpec(subgraph)) continue;
       const childState = base.subgraph_states?.[nodeId];
       subgraph_states[nodeId] = normalizeUiState(subgraph, childState, defaultEdgeStyle);
     }
@@ -840,8 +842,8 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
     const size = ui.size;
     const subgraphGraph = graph.subgraphs?.[id];
     const subgraphUiState = uiState.subgraph_states?.[id];
-    const isSubgraphNode = Boolean(subgraphGraph);
-    const subgraph = subgraphGraph
+    const isSubgraphNode = isCausalGraphSpec(subgraphGraph);
+    const subgraph = isSubgraphNode
       ? subgraphPreviewFromGraph(subgraphGraph, subgraphUiState)
       : undefined;
     return {
@@ -1261,7 +1263,7 @@ function importTemplateGraphIntoGraph(
     target_node: nodeMap[wire.target_node] ?? wire.target_node,
   }));
 
-  const importedSubgraphs: Record<string, GraphSpec> = {};
+  const importedSubgraphs: NonNullable<GraphSpec['subgraphs']> = {};
   for (const [nodeId, subgraph] of Object.entries(imported.subgraphs ?? {})) {
     const remappedNodeId = nodeMap[nodeId];
     if (remappedNodeId) {
@@ -1778,6 +1780,11 @@ function restoreGraphStackPathFromRoot({
         `Cannot restore nested graph path: node "${nodeId}" has no saved subgraph.`
       );
     }
+    if (!isCausalGraphSpec(childGraph)) {
+      throw new Error(
+        `Cannot restore nested graph path: node "${nodeId}" has a non-causal interior.`
+      );
+    }
     const childUi = normalizeUiState(
       childGraph,
       parentUi.subgraph_states?.[nodeId] ?? { viewport: DEFAULT_VIEWPORT, node_states: {} },
@@ -2162,6 +2169,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       let derivedNext: GraphSpec;
       let nextUiState: GraphUIState;
       if (cachedGraph) {
+        if (!isCausalGraphSpec(cachedGraph)) {
+          return {
+            lastSubgraphError:
+              `Cannot open "${nodeId}" because its acausal editor is not available yet.`,
+          };
+        }
         derivedNext = cachedGraph;
         nextUiState = cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
       } else {
@@ -2787,7 +2800,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       if (!trimmed || trimmed === previousPort) return state;
       const nodeSpec = state.graph.nodes[nodeId];
       const subgraph = state.graph.subgraphs?.[nodeId];
-      if (!nodeSpec || !subgraph) return state;
+      if (!nodeSpec || !isCausalGraphSpec(subgraph)) return state;
 
       const renamedSubgraph = renameBoundaryPortInGraph(
         subgraph,

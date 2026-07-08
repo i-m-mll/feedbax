@@ -66,10 +66,12 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
     }
     subgraphs = None
     if graph.subgraphs:
-        subgraphs = {
-            node_id: normalize_graph_for_studio_authoring(subgraph)
-            for node_id, subgraph in graph.subgraphs.items()
-        }
+        subgraphs = {}
+        for node_id, subgraph in graph.subgraphs.items():
+            if isinstance(subgraph, GraphSpec):
+                subgraphs[node_id] = normalize_graph_for_studio_authoring(subgraph)
+            else:
+                subgraphs[node_id] = subgraph
     return graph.model_copy(
         update={
             "nodes": nodes,

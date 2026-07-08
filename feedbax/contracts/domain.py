@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID
+
 
 DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID = "feedbax.spec.domain"
 DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION = "feedbax.spec.domain.v1"
@@ -14,9 +16,6 @@ CAUSAL_DOMAIN_ID = "feedbax.domain.causal"
 ACAUSAL_DOMAIN_ID = "feedbax.domain.acausal"
 MECHANICS_DOMAIN_ID = "feedbax.domain.mechanics"
 PENZAI_DOMAIN_ID = "feedbax.domain.penzai"
-
-ACAUSAL_GRAPH_SCHEMA_ID = "feedbax.spec.acausal_graph"
-
 
 def validate_domain_id(domain_id: str) -> str:
     """Validate a domain registry identifier."""

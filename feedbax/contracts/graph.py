@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts.value_schema import ValueSchema
 
 
 GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
 GRAPH_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.graph.v2"
-GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v3"
+GRAPH_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.graph.v3"
+GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v4"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
 ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = (
     "feedbax.spec.analysis_data_product_requirement"
@@ -394,11 +395,11 @@ class GraphSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_id: str = Field(
+    schema_id: Literal[GRAPH_SPEC_SCHEMA_ID] = Field(
         default=GRAPH_SPEC_SCHEMA_ID,
         description="Stable machine-readable schema identity for GraphSpec payloads.",
     )
-    schema_version: str = Field(
+    schema_version: Literal[GRAPH_SPEC_SCHEMA_VERSION] = Field(
         default=GRAPH_SPEC_SCHEMA_VERSION,
         description="Machine-readable GraphSpec schema version.",
     )
@@ -409,7 +410,7 @@ class GraphSpec(BaseModel):
     output_ports: List[str] = Field(default_factory=list)
     input_bindings: Dict[str, Tuple[str, str]] = Field(default_factory=dict)
     output_bindings: Dict[str, Tuple[str, str]] = Field(default_factory=dict)
-    subgraphs: Optional[Dict[str, "GraphSpec"]] = None
+    subgraphs: Optional[Dict[str, "GraphSubgraphSpec"]] = None
     derived_dimensions: List[DerivedDimensionRuleSpec] = Field(default_factory=list)
     barnacles: Optional[Dict[str, List[BarnacleSpec]]] = None
     user_ports: Optional[Dict[str, UserPortSpec]] = None
@@ -417,6 +418,105 @@ class GraphSpec(BaseModel):
     retained_observables: Optional[List[RetainedObservableSpec]] = None
     parameter_constraints: List[ParameterConstraintSpec] = Field(default_factory=list)
     metadata: Optional[GraphMetadata] = None
+
+    @field_validator("subgraphs", mode="before")
+    @classmethod
+    def validate_subgraph_schema_family(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            return value
+        from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
+
+        subgraphs: dict[str, GraphSubgraphSpec] = {}
+        for node_id, raw_subgraph in value.items():
+            if isinstance(raw_subgraph, (GraphSpec, AcausalGraphSpec)):
+                subgraphs[str(node_id)] = raw_subgraph
+                continue
+            if not isinstance(raw_subgraph, dict):
+                raise ValueError(
+                    "GraphSpec.subgraphs values must be schema-bearing graph payloads: "
+                    f"node_id={node_id!r}, value_type={type(raw_subgraph).__name__}"
+                )
+            schema_id = raw_subgraph.get("schema_id", GRAPH_SPEC_SCHEMA_ID)
+            if schema_id == GRAPH_SPEC_SCHEMA_ID:
+                subgraphs[str(node_id)] = GraphSpec.model_validate(raw_subgraph)
+            elif schema_id == ACAUSAL_GRAPH_SCHEMA_ID:
+                subgraphs[str(node_id)] = AcausalGraphSpec.model_validate(raw_subgraph)
+            else:
+                raise ValueError(
+                    "Unsupported GraphSpec subgraph schema_id: "
+                    f"node_id={node_id!r}, schema_id={schema_id!r}, "
+                    f"expected one of {GRAPH_SPEC_SCHEMA_ID!r}, {ACAUSAL_GRAPH_SCHEMA_ID!r}"
+                )
+        return subgraphs
+
+
+from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
+
+GraphSubgraphSpec = Union[GraphSpec, AcausalGraphSpec]
+
+
+class GraphInteriorDomainMismatch(ValueError):
+    """Raised when a consumer receives a subgraph from an unsupported domain."""
+
+
+def schema_id_for_subgraph(subgraph: GraphSubgraphSpec | Mapping[str, Any]) -> str | None:
+    """Return the stable schema id for a causal or acausal subgraph payload."""
+    if isinstance(subgraph, GraphSpec):
+        return GRAPH_SPEC_SCHEMA_ID
+    if isinstance(subgraph, AcausalGraphSpec):
+        return ACAUSAL_GRAPH_SCHEMA_ID
+    schema_id = subgraph.get("schema_id") if isinstance(subgraph, dict) else None
+    return schema_id if isinstance(schema_id, str) else None
+
+
+def expected_subgraph_schema_id_for_domain(domain_id: str | None) -> str | None:
+    """Return the interior schema id for domains this backend can distinguish."""
+    if domain_id is None:
+        return None
+    if domain_id == "feedbax.domain.causal":
+        return GRAPH_SPEC_SCHEMA_ID
+    if domain_id in {"feedbax.domain.acausal", "feedbax.domain.mechanics"}:
+        return ACAUSAL_GRAPH_SCHEMA_ID
+    return None
+
+
+def require_causal_subgraph(
+    subgraph: GraphSubgraphSpec,
+    *,
+    node_name: str,
+    node_type: str,
+    consumer: str,
+) -> GraphSpec:
+    """Return a causal subgraph or raise a typed domain-mismatch error."""
+    if isinstance(subgraph, GraphSpec):
+        return subgraph
+    raise GraphInteriorDomainMismatch(
+        f"{consumer} requires a causal GraphSpec interior for node {node_name!r} "
+        f"({node_type}), but received schema_id={ACAUSAL_GRAPH_SCHEMA_ID!r}. "
+        "Acausal interiors must be handled by an acausal domain compiler."
+    )
+
+
+def validate_subgraph_domain(
+    subgraph: GraphSubgraphSpec,
+    *,
+    expected_domain: str | None,
+    node_name: str,
+    node_type: str,
+    consumer: str,
+) -> None:
+    """Raise when a subgraph payload does not match the node's interior domain."""
+    expected_schema_id = expected_subgraph_schema_id_for_domain(expected_domain)
+    actual_schema_id = schema_id_for_subgraph(subgraph)
+    if expected_schema_id is None or actual_schema_id == expected_schema_id:
+        return
+    raise GraphInteriorDomainMismatch(
+        f"{consumer} received an interior for node {node_name!r} ({node_type}) "
+        f"with schema_id={actual_schema_id!r}, but domain {expected_domain!r} "
+        f"requires schema_id={expected_schema_id!r}."
+    )
 
 
 class EdgeRoutingPoint(BaseModel):
@@ -1160,6 +1260,9 @@ class ValidationResult(BaseModel):
 
 
 # Enable forward references
-GraphSpec.model_rebuild()
+AcausalGraphSpec.model_rebuild(
+    _types_namespace={"ComponentSpec": ComponentSpec, "GraphMetadata": GraphMetadata}
+)
+GraphSpec.model_rebuild(_types_namespace={"AcausalGraphSpec": AcausalGraphSpec})
 GraphUIState.model_rebuild()
 ParamSchema.model_rebuild()

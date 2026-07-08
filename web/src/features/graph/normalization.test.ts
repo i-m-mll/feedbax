@@ -4,7 +4,7 @@ import {
   normalizeGraphForStudioAuthoring,
   normalizeTaskBindingSpecForStudioAuthoring,
 } from '@/features/graph/normalization';
-import type { GraphSpec } from '@/types/graph';
+import { isCausalGraphSpec, type GraphSpec } from '@/types/graph';
 
 const runtimeGraph: GraphSpec = {
   nodes: {
@@ -83,11 +83,14 @@ describe('graph authoring normalization', () => {
     expect(normalized.wires[0].target_port).toBe('target');
     expect(normalized.input_ports).toEqual(['input']);
     expect(normalized.input_bindings).toEqual({ input: ['network', 'target'] });
-    expect(normalized.subgraphs?.child.nodes.inner).toMatchObject({
+    const child = normalized.subgraphs?.child;
+    expect(isCausalGraphSpec(child)).toBe(true);
+    if (!isCausalGraphSpec(child)) throw new Error('expected causal child subgraph');
+    expect(child.nodes.inner).toMatchObject({
       type: 'SimpleStagedNetwork',
       input_ports: ['target'],
     });
-    expect(normalized.subgraphs?.child.input_bindings).toEqual({ input: ['inner', 'target'] });
+    expect(child.input_bindings).toEqual({ input: ['inner', 'target'] });
     expect(normalized.subgraphs?.network).toBeUndefined();
     expect(normalized.taps).toEqual([
       {
@@ -299,6 +302,8 @@ describe('graph authoring normalization', () => {
     const normalized = normalizeGraphAuthoringTypes(graph);
     const subgraph = normalized.subgraphs!.network;
 
+    expect(isCausalGraphSpec(subgraph)).toBe(true);
+    if (!isCausalGraphSpec(subgraph)) throw new Error('expected causal network subgraph');
     expect(subgraph.nodes.model?.type).toBe('Subgraph');
     expect(subgraph.subgraphs?.model.nodes.cell.type).toBe('GRU');
     expect(subgraph.output_bindings).toEqual({ output: ['model', 'output'] });

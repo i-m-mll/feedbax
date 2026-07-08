@@ -1,4 +1,4 @@
-import type { ComponentSpec, GraphSpec, TapSpec } from '@/types/graph';
+import { isCausalGraphSpec, type ComponentSpec, type GraphSpec, type TapSpec } from '@/types/graph';
 import type { StudioTaskBindingSpec, StudioWorkspaceSpec } from '@/types/workspace';
 import { taskBindingId } from '@/features/scenario/taskBindings';
 import { normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
@@ -137,7 +137,7 @@ export function normalizeGraphAuthoringTypes(graph: GraphSpec): GraphSpec {
       ? Object.fromEntries(
           Object.entries(graph.subgraphs).map(([id, subgraph]) => [
             id,
-            normalizeGraphAuthoringTypes(subgraph),
+            isCausalGraphSpec(subgraph) ? normalizeGraphAuthoringTypes(subgraph) : subgraph,
           ])
         )
       : undefined;

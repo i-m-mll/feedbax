@@ -35,6 +35,7 @@ from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_VERSION,
 )
 from feedbax.contracts.domain import (
+    ACAUSAL_GRAPH_SCHEMA_ID,
     DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID,
     DOMAIN_REGISTRY_PAYLOAD_SCHEMA_VERSION,
 )
@@ -48,9 +49,11 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
+    GRAPH_SPEC_SCHEMA_VERSION_V3,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
+from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_VERSION, AcausalGraphSpec
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
@@ -603,7 +606,7 @@ def _missing_path_message(
 
 
 def _mapping_payload(payload: Mapping[str, Any] | GraphSpec) -> dict[str, Any]:
-    if isinstance(payload, GraphSpec):
+    if isinstance(payload, (GraphSpec, AcausalGraphSpec)):
         return payload.model_dump(mode="json")
     return dict(payload)
 
@@ -938,6 +941,12 @@ def _migrate_graph_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, A
     return migrated
 
 
+def _migrate_graph_spec_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
+    return migrated
+
+
 def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     if "exposed_outputs" in migrated and "exposed_data" not in migrated:
@@ -1013,7 +1022,93 @@ def migrate_graph_spec(
                     or _payload_metadata_version(raw_subgraph)
                     or resolved_source
                 )
-            nested = migrate_graph_spec(
+            nested_path = f"{path}.subgraphs[{node_id!r}]"
+            nested_schema_id = None
+            if isinstance(raw_subgraph, AcausalGraphSpec):
+                nested_schema_id = ACAUSAL_GRAPH_SCHEMA_ID
+            elif isinstance(raw_subgraph, GraphSpec):
+                nested_schema_id = GRAPH_SPEC_SCHEMA_ID
+            elif isinstance(raw_subgraph, Mapping):
+                raw_schema_id = raw_subgraph.get("schema_id")
+                nested_schema_id = raw_schema_id if isinstance(raw_schema_id, str) else None
+            if nested_schema_id == ACAUSAL_GRAPH_SCHEMA_ID:
+                nested = migrate_acausal_graph_spec(
+                    raw_subgraph,
+                    source_version=nested_source,
+                    path=nested_path,
+                    registry=registry,
+                )
+            else:
+                nested = migrate_graph_spec(
+                    raw_subgraph,
+                    source_version=nested_source,
+                    target_version=resolved_target,
+                    path=nested_path,
+                    registry=registry,
+                )
+            migrated_subgraphs[str(node_id)] = nested.payload
+            records.extend(nested.migration_records)
+        migrated_payload["subgraphs"] = migrated_subgraphs
+
+    return SpecMigrationResult(
+        kind=result.kind,
+        schema_id=result.schema_id,
+        source_version=result.source_version,
+        target_version=result.target_version,
+        payload=migrated_payload,
+        migration_records=records,
+    )
+
+
+def _validate_acausal_graph_spec_schema_id(payload: Mapping[str, Any], *, path: str) -> None:
+    schema_id = payload.get("schema_id")
+    if schema_id is not None and schema_id != ACAUSAL_GRAPH_SCHEMA_ID:
+        raise UnsupportedSpecVersion(
+            "Unsupported Feedbax AcausalGraphSpec schema identity: "
+            f"path={path!r}, schema_id={schema_id!r}, expected={ACAUSAL_GRAPH_SCHEMA_ID!r}"
+        )
+
+
+def migrate_acausal_graph_spec(
+    payload: Mapping[str, Any] | AcausalGraphSpec,
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+    path: str = "graph",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Accept or migrate an AcausalGraphSpec payload and its nested acausal graphs."""
+    registry = registry or default_spec_registry
+    payload_dict = _mapping_payload(payload)
+    _validate_acausal_graph_spec_schema_id(payload_dict, path=path)
+    resolved_target = target_version or registry.current_version("AcausalGraphSpec")
+
+    result = registry.migrate(
+        "AcausalGraphSpec",
+        payload_dict,
+        source_version=source_version,
+        target_version=resolved_target,
+    )
+    migrated_payload = dict(result.payload)
+    migrated_payload.setdefault("schema_id", ACAUSAL_GRAPH_SCHEMA_ID)
+    migrated_payload.setdefault("schema_version", resolved_target)
+    records = [_record_with_graph_path(record, path) for record in result.migration_records]
+
+    subgraphs = migrated_payload.get("subgraphs")
+    if isinstance(subgraphs, Mapping):
+        migrated_subgraphs: dict[str, Any] = {}
+        for node_id in sorted(subgraphs):
+            raw_subgraph = subgraphs[node_id]
+            if not isinstance(raw_subgraph, Mapping) and not isinstance(
+                raw_subgraph,
+                AcausalGraphSpec,
+            ):
+                migrated_subgraphs[str(node_id)] = raw_subgraph
+                continue
+            nested_source = None
+            if isinstance(raw_subgraph, Mapping):
+                nested_source = _payload_schema_version(raw_subgraph)
+            nested = migrate_acausal_graph_spec(
                 raw_subgraph,
                 source_version=nested_source,
                 target_version=resolved_target,
@@ -1460,8 +1555,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Canvas-authored executable graph specification.",
             stance="migrate",
-            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_VERSION_V2),
+            supported_old_versions=(
+                LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+                GRAPH_SPEC_SCHEMA_VERSION_V2,
+                GRAPH_SPEC_SCHEMA_VERSION_V3,
+            ),
             rejected_old_versions=(),
+            required_tests=("tests/test_graphspec_schema_migrations.py",),
+        ),
+        _family(
+            "AcausalGraphSpec",
+            ACAUSAL_GRAPH_SCHEMA_ID,
+            ACAUSAL_GRAPH_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.acausal",
+            emitted_by=("GraphSpec.subgraphs", "provider_manifest.schemas"),
+            consumed_by=("Studio backend", "acausal domain compiler"),
+            description="Durable acausal graph interior specification.",
+            rejected_old_versions=("feedbax.spec.acausal_graph.v0",),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
         ),
         _family(
@@ -2660,10 +2770,20 @@ default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
         source_version=GRAPH_SPEC_SCHEMA_VERSION_V2,
-        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V3,
         migration_id="graph-spec-v2-to-v3-derived-dimensions",
         migrate=_migrate_graph_spec_v2_to_v3_payload,
         description="Add explicit derived_dimensions rules to GraphSpec.",
+    ),
+)
+default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=GRAPH_SPEC_SCHEMA_VERSION_V3,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-v3-to-v4-discriminated-subgraphs",
+        migrate=_migrate_graph_spec_v3_to_v4_payload,
+        description="Allow discriminated causal/acausal subgraph payloads.",
     ),
 )
 default_spec_registry.register_migration(

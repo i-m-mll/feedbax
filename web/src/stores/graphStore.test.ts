@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useGraphStore } from './graphStore';
-import type { GraphSpec, GraphUIState } from '@/types/graph';
+import { isCausalGraphSpec, type GraphSpec, type GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 
 const uiState: GraphUIState = {
@@ -246,6 +246,8 @@ describe('graphStore boundary aliases', () => {
     const subgraph = graph.subgraphs?.network;
 
     expect(network.input_ports).toEqual(['input', 'proprioception']);
+    expect(isCausalGraphSpec(subgraph)).toBe(true);
+    if (!isCausalGraphSpec(subgraph)) throw new Error('expected causal network subgraph');
     expect(subgraph?.input_ports).toEqual(['input', 'proprioception']);
     expect(subgraph?.input_bindings.proprioception).toEqual(['input_mux', 'in_1']);
     expect(subgraph?.input_bindings.feedback).toBeUndefined();
