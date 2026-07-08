@@ -12,6 +12,7 @@ from feedbax.contracts.graphs.templates import (
 from feedbax.contracts.graphs.mechanics_templates import (
     mass_spring_damper_template_graph,
     point_mass_with_muscles_template_graph,
+    two_link_arm_6muscle_template_graph,
 )
 
 from .meta import ComponentMeta, _template_ui_state
@@ -117,6 +118,53 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
             ),
             template_graph=muscle_graph,
             template_id="feedbax.templates.mechanics.point_mass_with_muscles",
+            template_kind="executable",
+        )
+    )
+
+    arm_graph = two_link_arm_6muscle_template_graph()
+    registry.register(
+        ComponentMeta(
+            name="TwoLinkArm6Muscle",
+            category="Templates",
+            description=(
+                "Editable planar multibody two-link arm with six rigid-tendon "
+                "muscle paths."
+            ),
+            param_schema=[],
+            input_ports=["excitation"],
+            output_ports=["effector", "state"],
+            icon="Activity",
+            domain=MECHANICS_DOMAIN_ID,
+            interior_domain=MECHANICS_DOMAIN_ID,
+            is_composite=True,
+            port_types=PortTypeSpec(
+                inputs={"excitation": PortType(dtype="vector", shape=[6])},
+                outputs={
+                    "effector": PortType(dtype="state"),
+                    "state": PortType(dtype="state"),
+                },
+            ),
+            template_graph=arm_graph,
+            template_ui_state=_template_ui_state(
+                {
+                    "world": (40, 140),
+                    "anchor": (180, 140),
+                    "shoulder": (320, 80),
+                    "upper": (460, 80),
+                    "elbow": (600, 80),
+                    "forearm": (740, 80),
+                    "excitation": (320, 300),
+                    "effector": (900, 80),
+                    "state": (900, 190),
+                    "effector_marker": (900, 300),
+                    **{
+                        f"muscle_{index}": (460 + (index % 3) * 140, 250 + (index // 3) * 90)
+                        for index in range(6)
+                    },
+                }
+            ),
+            template_id="feedbax.templates.mechanics.two_link_arm_6muscle",
             template_kind="executable",
         )
     )

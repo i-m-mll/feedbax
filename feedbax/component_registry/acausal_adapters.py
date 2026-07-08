@@ -19,6 +19,14 @@ from feedbax.acausal.rotational import (
     TorsionalSpring,
 )
 from feedbax.acausal.mechanics import RigidTendonHillMuscle
+from feedbax.acausal.multibody import (
+    Anchor,
+    MusclePath,
+    PlanarLink,
+    PointMarker,
+    RevoluteJoint,
+    WorldFrame,
+)
 from feedbax.acausal.translational import (
     ForceSensor,
     ForceSource,
@@ -34,6 +42,7 @@ from feedbax.contracts.acausal_interface import conserving_port_type, signal_por
 from feedbax.contracts.component import PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
+from feedbax.contracts.representation import RepresentationSpec
 
 from .meta import ComponentMeta
 
@@ -76,7 +85,21 @@ _ROTATIONAL_ELEMENTS: tuple[type[AcausalElement], ...] = (
 )
 
 
+_PLANAR_MULTIBODY_ELEMENTS: tuple[type[AcausalElement], ...] = (
+    PlanarLink,
+    RevoluteJoint,
+    WorldFrame,
+    Anchor,
+    MusclePath,
+    PointMarker,
+)
+
+
 def _schema_type(annotation: Any, default: Any) -> str:
+    if isinstance(default, (list, tuple)):
+        return "array"
+    if isinstance(default, dict):
+        return "object"
     if annotation in {int, "int"} or isinstance(default, int) and not isinstance(default, bool):
         return "int"
     if annotation in {bool, "bool"} or isinstance(default, bool):
@@ -127,6 +150,8 @@ def _element_meta(
     icon: str,
     name: str | None = None,
     domain: str = ACAUSAL_DOMAIN_ID,
+    representation: RepresentationSpec | None = None,
+    param_schema: list[ParamSchema] | None = None,
 ) -> ComponentMeta:
     probe = element_type("__probe__")
     port_names = sorted(probe.ports)
@@ -134,14 +159,160 @@ def _element_meta(
         name=name or element_type.__name__,
         category=category,
         description=(inspect.getdoc(element_type) or f"{element_type.__name__} acausal element."),
-        param_schema=_param_schema_from_constructor(element_type),
+        param_schema=(
+            param_schema
+            if param_schema is not None
+            else _param_schema_from_constructor(element_type)
+        ),
         input_ports=port_names,
         output_ports=[],
         icon=icon,
         port_types=_port_type_spec(probe.ports.values()),
         domain=domain,
         builder=None,
+        representation=representation,
     )
+
+
+def _literal_binding(value: Any, *, dim: int | None = None) -> dict[str, Any]:
+    binding: dict[str, Any] = {"kind": "literal", "value": value}
+    if dim is not None:
+        binding["dim"] = dim
+    return binding
+
+
+def _param_binding(path: str, *, expected_type: str | None = None, dim: int | None = None) -> dict[str, Any]:
+    binding: dict[str, Any] = {"kind": "param_path", "path": path}
+    if expected_type is not None:
+        binding["expected_type"] = expected_type
+    if dim is not None:
+        binding["dim"] = dim
+    return binding
+
+
+def _representation(data: dict[str, Any]) -> RepresentationSpec:
+    return RepresentationSpec.model_validate(data)
+
+
+def _planar_link_representation() -> RepresentationSpec:
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "anchors": [
+                {
+                    "id": "proximal",
+                    "semantic_role": "joint",
+                    "binding": _literal_binding([0.0, 0.0], dim=2),
+                    "units": "m",
+                    "dim": 2,
+                },
+                {
+                    "id": "distal",
+                    "semantic_role": "endpoint",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"computed_from": "length_and_orientation"},
+                },
+            ],
+            "elements": [
+                {
+                    "id": "link",
+                    "archetype": "planar_chain",
+                    "anchors": ["proximal", "distal"],
+                    "bindings": {
+                        "link_lengths": _param_binding("length", expected_type="float", dim=1)
+                    },
+                    "metadata": {"chain_kind": "planar_link_segment"},
+                }
+            ],
+        }
+    )
+
+
+def _muscle_path_representation() -> RepresentationSpec:
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "anchors": [
+                {
+                    "id": "path",
+                    "semantic_role": "path",
+                    "units": "m",
+                    "dim": 2,
+                    "metadata": {"collection": "path_points"},
+                }
+            ],
+            "elements": [
+                {
+                    "id": "muscle-path",
+                    "archetype": "muscle_path",
+                    "anchors": ["path"],
+                    "bindings": {
+                        "path_points": _param_binding("path_points", expected_type="array")
+                    },
+                    "metadata": {"activation_input": "activation"},
+                }
+            ],
+        }
+    )
+
+
+def _point_marker_representation() -> RepresentationSpec:
+    return _representation(
+        {
+            "frame": "world.xy",
+            "units": "m",
+            "dim": 2,
+            "anchors": [
+                {
+                    "id": "point",
+                    "semantic_role": "endpoint",
+                    "binding": _param_binding("offset", expected_type="array", dim=2),
+                    "units": "m",
+                    "dim": 2,
+                }
+            ],
+            "elements": [
+                {
+                    "id": "marker",
+                    "archetype": "marker",
+                    "anchors": ["point"],
+                    "metadata": {"frame_param": "frame"},
+                }
+            ],
+        }
+    )
+
+
+def _multibody_param_schema(element_type: type[AcausalElement]) -> list[ParamSchema] | None:
+    if element_type is MusclePath:
+        return [
+            ParamSchema(name="path_points", type="array", default=[], required=True),
+            ParamSchema(name="moment_arm", type="array", default=[], required=False),
+            ParamSchema(name="reference_length", type="float", default=0.2, min=0.0),
+            ParamSchema(name="max_isometric_force", type="float", default=1.0, min=0.0),
+        ]
+    if element_type is PointMarker:
+        return [
+            ParamSchema(name="frame", type="str", default="", required=True),
+            ParamSchema(name="offset", type="array", default=[0.0, 0.0], required=False),
+            ParamSchema(name="marker_name", type="str", default=None, required=False),
+        ]
+    return None
+
+
+def _multibody_representation(element_type: type[AcausalElement]) -> RepresentationSpec | None:
+    if element_type is PlanarLink:
+        return _planar_link_representation()
+    if element_type is MusclePath:
+        return _muscle_path_representation()
+    if element_type is PointMarker:
+        return _point_marker_representation()
+    return None
 
 
 def _adapter_metas() -> tuple[ComponentMeta, ...]:
@@ -246,6 +417,17 @@ def register_acausal_components(registry: _Registry) -> None:
                 element_type,
                 category="Acausal / Rotational",
                 icon="RotateCw",
+            )
+        )
+    for element_type in _PLANAR_MULTIBODY_ELEMENTS:
+        registry.register(
+            _element_meta(
+                element_type,
+                category="Acausal / Planar Multibody",
+                icon="Orbit",
+                domain=MECHANICS_DOMAIN_ID,
+                representation=_multibody_representation(element_type),
+                param_schema=_multibody_param_schema(element_type),
             )
         )
     for meta in _adapter_metas():

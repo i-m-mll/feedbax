@@ -34,6 +34,7 @@ class Domain(Enum):
     """Physical domain for acausal ports."""
     TRANSLATIONAL = "translational"
     ROTATIONAL = "rotational"
+    PLANAR_MULTIBODY = "planar_multibody"
 
 
 # ---------------------------------------------------------------------------

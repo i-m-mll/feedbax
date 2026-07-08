@@ -19,8 +19,10 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.graphs.builders import build_component
 from feedbax.contracts.graphs.acausal_compiler import compile_acausal_graph
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.mechanics.muscle_config import default_6muscle_2link_moment_arms
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 
 
@@ -47,6 +49,7 @@ def test_mechanics_templates_are_real_executable_acausal_graphs() -> None:
         ("PointMass", ("force",), ("position", "velocity")),
         ("MassSpringDamper", ("force",), ("position", "velocity")),
         ("PointMassWithMuscles", ("flexor", "extensor"), ("position", "velocity")),
+        ("TwoLinkArm6Muscle", ("excitation",), ("effector", "state")),
     ):
         meta = registry.get(name)
         assert meta is not None
@@ -57,6 +60,55 @@ def test_mechanics_templates_are_real_executable_acausal_graphs() -> None:
         system = compile_acausal_graph(meta.template_graph, name, registry)
         assert system.input_ports == inputs
         assert system.output_ports == outputs
+
+
+def test_two_link_arm_6muscle_template_uses_canonical_moment_arms() -> None:
+    registry = _registry()
+    template = registry.get("TwoLinkArm6Muscle")
+    assert template is not None
+    graph = template.template_graph
+    assert isinstance(graph, AcausalGraphSpec)
+    assert graph.physical_domain == "planar_multibody"
+
+    moment_arms = default_6muscle_2link_moment_arms()
+    muscle_nodes = [graph.nodes[f"muscle_{index}"] for index in range(6)]
+    assert jnp.allclose(
+        jnp.asarray([node.params["moment_arm"] for node in muscle_nodes]),
+        moment_arms,
+    )
+
+    compiled = compile_acausal_graph(graph, "arm", registry)
+    direct = build_component(
+        "direct",
+        "AnalyticalMusculoskeletalPlant",
+        {"dt": graph.solver.dt, "n_steps": 1},
+        component_registry=registry,
+    )
+    assert jnp.allclose(compiled.plant.moment_arms, direct.plant.moment_arms)
+
+    compiled_state = compiled.init_state(key=jax.random.PRNGKey(0))
+    direct_state = direct.init_state(key=jax.random.PRNGKey(0))
+    inputs = {"excitation": jnp.ones(6) * 0.25}
+    compiled_outputs, _ = compiled(inputs, compiled_state, key=jax.random.PRNGKey(1))
+    direct_outputs, _ = direct(inputs, direct_state, key=jax.random.PRNGKey(1))
+    assert jnp.allclose(
+        compiled_outputs["state"].plant.skeleton.angle,
+        direct_outputs["state"].plant.skeleton.angle,
+    )
+
+
+def test_multibody_registry_entries_declare_workspace_representations() -> None:
+    registry = _registry()
+    expected = {
+        "PlanarLink": "planar_chain",
+        "MusclePath": "muscle_path",
+        "PointMarker": "marker",
+    }
+    for name, archetype in expected.items():
+        meta = registry.get(name)
+        assert meta is not None
+        assert meta.representation is not None
+        assert {element.archetype for element in meta.representation.elements} == {archetype}
 
 
 def test_mass_spring_damper_template_matches_hand_built_system() -> None:
