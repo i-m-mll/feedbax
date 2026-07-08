@@ -58,6 +58,13 @@ LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
 _LOGGER = logging.getLogger(__name__)
+_STRUCTURAL_ABI_DIFF_FIELDS = (
+    "dtype",
+    "shape",
+    "weak_type",
+    "leaf_type",
+    "static_repr_sha256",
+)
 
 
 class CheckpointCustodyError(ValueError):
@@ -118,6 +125,14 @@ class _LoadedCheckpointTransaction:
     manifest: CheckpointTransactionManifest
     slots: Mapping[str, Any]
     provenance_notices: tuple[CheckpointProvenanceNotice, ...]
+
+
+@dataclass(frozen=True)
+class _StructuralAbiLeafDiff:
+    path: str
+    field: str
+    recorded: Any
+    actual: Any
 
 
 def checkpoint_barrier(program: PhaseProgramSpec, barrier_name: str) -> CheckpointBarrierSpec:
@@ -873,6 +888,163 @@ def structural_abi_fingerprint(value: Any) -> StructuralAbiFingerprint:
     )
 
 
+def _format_structural_abi_diff(
+    recorded: StructuralAbiFingerprint,
+    actual: StructuralAbiFingerprint,
+) -> str:
+    diffs = _structural_abi_leaf_diffs(recorded, actual)
+    displayed_diffs = diffs[:10]
+    leaf_diff_text = "; ".join(
+        _format_structural_abi_leaf_diff(diff) for diff in displayed_diffs
+    )
+    if not leaf_diff_text:
+        leaf_diff_text = "<none in comparable leaves>"
+    elif len(diffs) > len(displayed_diffs):
+        leaf_diff_text += f"; ... ({len(diffs)} total differing leaves)"
+    suffix = (
+        f"; treedef_equal={recorded.treedef == actual.treedef}"
+        f"; leaf_count_delta={actual.leaf_count - recorded.leaf_count}"
+        f" (recorded={recorded.leaf_count}, actual={actual.leaf_count})"
+        f"; differing_leaves={leaf_diff_text}"
+    )
+    x64_hint = _structural_abi_x64_hint(recorded, actual, diffs)
+    if x64_hint is not None:
+        suffix += f"; {x64_hint}"
+    return suffix
+
+
+def _structural_abi_leaf_diffs(
+    recorded: StructuralAbiFingerprint,
+    actual: StructuralAbiFingerprint,
+) -> list[_StructuralAbiLeafDiff]:
+    diffs: list[_StructuralAbiLeafDiff] = []
+    max_leaves = max(len(recorded.leaves), len(actual.leaves))
+    for index in range(max_leaves):
+        if index >= len(recorded.leaves):
+            actual_leaf = actual.leaves[index]
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=actual_leaf.path,
+                    field="leaf",
+                    recorded="<missing>",
+                    actual=_leaf_structural_content_payload(actual_leaf),
+                )
+            )
+            continue
+        if index >= len(actual.leaves):
+            recorded_leaf = recorded.leaves[index]
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=recorded_leaf.path,
+                    field="leaf",
+                    recorded=_leaf_structural_content_payload(recorded_leaf),
+                    actual="<missing>",
+                )
+            )
+            continue
+
+        recorded_leaf = recorded.leaves[index]
+        actual_leaf = actual.leaves[index]
+        if recorded_leaf.path != actual_leaf.path:
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=f"leaf[{index}]",
+                    field="path",
+                    recorded=recorded_leaf.path,
+                    actual=actual_leaf.path,
+                )
+            )
+        for field in _STRUCTURAL_ABI_DIFF_FIELDS:
+            recorded_value = getattr(recorded_leaf, field)
+            actual_value = getattr(actual_leaf, field)
+            if recorded_value == actual_value:
+                continue
+            diffs.append(
+                _StructuralAbiLeafDiff(
+                    path=recorded_leaf.path,
+                    field=field,
+                    recorded=recorded_value,
+                    actual=actual_value,
+                )
+            )
+    return diffs
+
+
+def _format_structural_abi_leaf_diff(diff: _StructuralAbiLeafDiff) -> str:
+    return (
+        f"path={diff.path} field={diff.field} "
+        f"recorded={_short_json(diff.recorded)} actual={_short_json(diff.actual)}"
+    )
+
+
+def _structural_abi_x64_hint(
+    recorded: StructuralAbiFingerprint,
+    actual: StructuralAbiFingerprint,
+    diffs: Sequence[_StructuralAbiLeafDiff],
+) -> str | None:
+    if not diffs:
+        return None
+    x64_sides: set[str] = set()
+    for diff in diffs:
+        if diff.field == "dtype":
+            x64_side = _x64_dtype_diff_side(diff.recorded, diff.actual)
+            if x64_side is None:
+                return None
+            x64_sides.add(x64_side)
+        elif diff.field == "weak_type":
+            if not isinstance(diff.recorded, bool) or not isinstance(diff.actual, bool):
+                return None
+        else:
+            return None
+    recorded_x64 = _fingerprint_x64_enabled(recorded)
+    actual_x64 = _fingerprint_x64_enabled(actual)
+    if not x64_sides:
+        if recorded_x64 is True and actual_x64 is False:
+            x64_sides.add("recorded")
+        elif recorded_x64 is False and actual_x64 is True:
+            x64_sides.add("actual")
+        else:
+            return None
+    if len(x64_sides) != 1:
+        return None
+    x64_side = next(iter(x64_sides))
+    return (
+        f"x64_side={x64_side}"
+        f"; recorded_x64_enabled={recorded_x64}"
+        f"; actual_x64_enabled={actual_x64}"
+        "; hint=jax_enable_x64 differs between checkpoint writer and reader"
+    )
+
+
+def _x64_dtype_diff_side(recorded: Any, actual: Any) -> str | None:
+    recorded_kind_bits = _dtype_kind_bits(recorded)
+    actual_kind_bits = _dtype_kind_bits(actual)
+    if recorded_kind_bits is None or actual_kind_bits is None:
+        return None
+    recorded_kind, recorded_bits = recorded_kind_bits
+    actual_kind, actual_bits = actual_kind_bits
+    if recorded_kind != actual_kind or {recorded_bits, actual_bits} != {32, 64}:
+        return None
+    if recorded_bits == 64:
+        return "recorded"
+    return "actual"
+
+
+def _dtype_kind_bits(dtype: Any) -> tuple[str, int] | None:
+    dtype_text = str(dtype)
+    for kind in ("float", "int"):
+        for bits in (32, 64):
+            if dtype_text == f"{kind}{bits}":
+                return kind, bits
+    return None
+
+
+def _fingerprint_x64_enabled(fingerprint: StructuralAbiFingerprint) -> bool | None:
+    if fingerprint.environment_provenance is None:
+        return None
+    return fingerprint.environment_provenance.x64_enabled
+
+
 def _validate_required_slots(
     slot_specs: tuple[CheckpointSlotSpec, ...],
     slots: Mapping[str, Any],
@@ -911,8 +1083,10 @@ def _validate_structural_abi(
         loaded_fingerprint = structural_abi_fingerprint(loaded)
         expected = structural_abi_fingerprint(expected_slots[slot.slot])
         if loaded_fingerprint.fingerprint_sha256 != expected.fingerprint_sha256:
+            diff_suffix = _format_structural_abi_diff(expected, loaded_fingerprint)
             raise CheckpointCompatibilityError(
                 f"checkpoint slot {slot.slot!r} structural ABI mismatch"
+                f"{diff_suffix}"
             )
 
 
@@ -929,8 +1103,13 @@ def _validate_manifest_structural_abi(
             loaded_fingerprint.fingerprint_sha256
             != slot.structural_abi_fingerprint.fingerprint_sha256
         ):
+            diff_suffix = _format_structural_abi_diff(
+                slot.structural_abi_fingerprint,
+                loaded_fingerprint,
+            )
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale"
+                f"{diff_suffix}"
             )
         notice = _environment_provenance_notice(slot.slot, slot.structural_abi_fingerprint)
         if notice is not None:

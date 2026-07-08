@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -700,15 +701,28 @@ def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
         slots=_minimax_slots(),
     )
     incompatible = _minimax_slots()
-    incompatible["controller"] = jnp.array([1.0, 2.0, 3.0])
+    incompatible["adversary_population"] = [
+        jnp.array([0.1, 0.2, 0.3]),
+        jnp.array([0.3, 0.4]),
+    ]
 
-    with pytest.raises(CheckpointCompatibilityError, match="structural ABI mismatch"):
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="structural ABI mismatch",
+    ) as exc_info:
         load_latest_checkpoint(
             tmp_path,
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=incompatible,
         )
+
+    message = str(exc_info.value)
+    assert "treedef_equal=True" in message
+    assert "leaf_count_delta=0" in message
+    assert "checkpoint slot 'adversary_population'" in message
+    assert "path=/0 field=shape recorded=[3] actual=[2]" in message
+    assert "jax_enable_x64 differs" not in message
 
 
 def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
@@ -735,6 +749,49 @@ def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
         )
+
+
+def test_manifest_structural_abi_x64_mismatch_reports_leaf_diff_and_hint(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    previous_x64 = bool(jax.config.jax_enable_x64)
+    try:
+        jax.config.update("jax_enable_x64", True)
+        write_checkpoint_transaction(
+            tmp_path,
+            run_spec=run_spec,
+            phase_program=program,
+            barrier_name="after_warmup",
+            coordinate=_coordinate(),
+            slots=_minimax_slots(),
+        )
+        jax.config.update("jax_enable_x64", False)
+
+        with pytest.raises(
+            CheckpointIntegrityError,
+            match="structural ABI fingerprint is stale",
+        ) as exc_info:
+            load_latest_checkpoint(
+                tmp_path,
+                expected_run_spec=run_spec,
+                expected_phase_program=program,
+                expected_slots=_minimax_slots(),
+            )
+    finally:
+        jax.config.update("jax_enable_x64", previous_x64)
+
+    message = str(exc_info.value)
+    assert "checkpoint slot 'controller'" in message
+    assert (
+        "path=/ field=dtype recorded=\"float64\" actual=\"float32\""
+        in message
+    )
+    assert "recorded_x64_enabled=True" in message
+    assert "actual_x64_enabled=False" in message
+    assert "x64_side=recorded" in message
+    assert "jax_enable_x64 differs between checkpoint writer and reader" in message
 
 
 def test_resume_slot_transform_runs_before_structural_abi_validation(
