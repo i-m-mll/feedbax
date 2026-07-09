@@ -1,8 +1,30 @@
 """Tests for the YAML config loader."""
 
+import tomllib
+from pathlib import Path
+
 import pytest
 
 from feedbax.config.yaml import get_yaml_loader
+
+
+def test_yaml_loader_dependency_is_base_runtime_dependency():
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    dependency_names = {
+        dependency.split(";", 1)[0]
+        .split("[", 1)[0]
+        .split("<", 1)[0]
+        .split(">", 1)[0]
+        .split("=", 1)[0]
+        .strip()
+        .lower()
+        .replace("_", "-")
+        for dependency in pyproject["project"]["dependencies"]
+    }
+
+    assert "ruamel-yaml" in dependency_names
+    assert callable(get_yaml_loader)
 
 
 def test_include_missing_file_raises_file_not_found_error(tmp_path):

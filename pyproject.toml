@@ -37,6 +37,7 @@ dependencies = [
     "numpy>=2.2.3",
     "optax>=0.2.4",
     "pydantic>=2.0",
+    "ruamel-yaml>=0.18.0",
     "treescope>=0.1.1",
     "tqdm>=4.67.1",
     "jax-cookbook",
