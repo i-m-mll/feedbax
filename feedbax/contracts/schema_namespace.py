@@ -7,6 +7,7 @@ families must use one of these namespaces instead of inventing flat
 - ``feedbax.spec.*`` for request/spec payloads and reusable nested specs.
 - ``feedbax.manifest.*`` for durable execution, artifact, provider, and manifest
   records.
+- ``feedbax.orchestration.*`` for durable run-orchestration control documents.
 - ``feedbax.run_event`` for the canonical training-run event stream envelope.
 - ``feedbax.component.<component>.params`` for globally named component
   parameter payload schemas.
@@ -31,6 +32,7 @@ class SchemaNamespaceKind(str, Enum):
 
     SPEC = "spec"
     MANIFEST = "manifest"
+    ORCHESTRATION = "orchestration"
     RUN_EVENT = "run_event"
     COMPONENT_PARAMS = "component_params"
     EXTERNAL = "external"
@@ -46,6 +48,8 @@ def classify_schema_identity(schema_id: str) -> SchemaNamespaceKind:
         return SchemaNamespaceKind.SPEC
     if schema_id.startswith("feedbax.manifest."):
         return SchemaNamespaceKind.MANIFEST
+    if schema_id.startswith("feedbax.orchestration."):
+        return SchemaNamespaceKind.ORCHESTRATION
     if schema_id == "feedbax.run_event":
         return SchemaNamespaceKind.RUN_EVENT
     if schema_id.startswith("feedbax.component.") and schema_id.endswith(".params"):
@@ -54,7 +58,7 @@ def classify_schema_identity(schema_id: str) -> SchemaNamespaceKind:
         raise SchemaNamespaceError(
             "Feedbax schema identity must use a governed namespace: "
             f"schema_id={schema_id!r}, expected_prefixes=('feedbax.spec.', "
-            "'feedbax.manifest.', 'feedbax.run_event', "
+            "'feedbax.manifest.', 'feedbax.orchestration.', 'feedbax.run_event', "
             "'feedbax.component.<component>.params')"
         )
     return SchemaNamespaceKind.EXTERNAL
@@ -86,6 +90,7 @@ def validate_schema_version(version: str, *, family: str) -> None:
     if (
         version.startswith("feedbax.spec.")
         or version.startswith("feedbax.manifest.")
+        or version.startswith("feedbax.orchestration.")
         or version.startswith("feedbax.run_event.")
         or version.startswith("feedbax.component.")
     ):
