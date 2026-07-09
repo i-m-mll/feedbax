@@ -2258,6 +2258,7 @@ def test_worker_emits_durable_training_manifest(
     event_queue: queue.Queue = queue.Queue()
     job = _Job(
         job_id="stub-job",
+        run_set_id="stub-run-set",
         total_batches=1,
         event_queue=event_queue,
         stop_event=threading.Event(),
@@ -2283,14 +2284,17 @@ def test_worker_emits_durable_training_manifest(
     assert Path(job.manifest_path).exists()
     assert job.manifest_payload is not None
     assert job.manifest_payload["kind"] == "TrainingRunManifest"
+    assert job.manifest_payload["run_set_id"] == "stub-run-set"
     assert job.manifest_payload["artifacts"][0]["role"] == "training_history"
 
     events = []
     while not event_queue.empty():
         events.append(event_queue.get())
-    log = next(event for event in events if event["type"] == "training_log")
-    assert log["manifest_id"] == job.manifest_payload["id"]
-    assert log["manifest_path"] == job.manifest_path
+    log = next(event for event in events if event["type"] == "log")
+    assert log["run_set_id"] == "stub-run-set"
+    assert log["row_id"] == "stub-job"
+    assert log["payload"]["manifest_id"] == job.manifest_payload["id"]
+    assert log["payload"]["manifest_path"] == job.manifest_path
 
 
 def _worker_contract_job(
@@ -2300,6 +2304,7 @@ def _worker_contract_job(
 ) -> _Job:
     return _Job(
         job_id="worker-contract",
+        run_set_id="worker-contract-set",
         total_batches=1,
         event_queue=queue.Queue(),
         stop_event=threading.Event(),
@@ -2533,6 +2538,7 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> Non
     event_queue: queue.Queue = queue.Queue()
     job = _Job(
         job_id="invalid-job",
+        run_set_id="invalid-run-set",
         total_batches=1,
         event_queue=event_queue,
         stop_event=threading.Event(),

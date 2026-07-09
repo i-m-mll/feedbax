@@ -448,7 +448,13 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     checks.append(_check("schema-current", bundle.schema_version == "feedbax.orchestration.run_bundle.v1"))
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
     checks.append(_check("budget-presence", bundle.budget.max_wall_clock_seconds > 0))
-    checks.append(_check("driver-preconditions", bundle.driver == "local", observed=bundle.driver))
+    checks.append(
+        _check(
+            "driver-preconditions",
+            bundle.driver in {"local", "worker-http"},
+            observed=bundle.driver,
+        )
+    )
     env_complete = bool(bundle.environment.python_version)
     checks.append(_check("environment-declaration", env_complete, observed=bundle.environment.python_version))
     mutable_pin = any("latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins)

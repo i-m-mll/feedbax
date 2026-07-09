@@ -11,7 +11,6 @@ import queue
 import shutil
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Deque, Dict, Optional, Tuple
@@ -64,6 +63,7 @@ _TERMINAL_JOB_RETENTION_MAX = 32
 @dataclass
 class _Job:
     job_id: str
+    run_set_id: str
     total_batches: int
     event_queue: queue.Queue
     stop_event: threading.Event
@@ -183,6 +183,7 @@ def _write_job_manifest(job: _Job) -> None:
         with job._state_lock:
             manifest_kwargs = {
                 "job_id": job.job_id,
+                "run_set_id": job.run_set_id,
                 "total_batches": job.total_batches,
                 "training_spec": job.training_spec,
                 "task_spec": job.task_spec,
@@ -535,7 +536,7 @@ def _emit(job: _Job, event: dict) -> None:
                 job.last_loss = float(legacy_event["loss"])
     run_event = run_event_from_legacy_worker_event(
         legacy_event,
-        run_set_id=job.job_id,
+        run_set_id=job.run_set_id,
         row_id=job.job_id,
         seq=seq,
         emitted_at_ms=emitted_at_ms,
@@ -630,12 +631,20 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         graph_spec: Optional[Dict[str, Any]] = body.get("graph_spec", None)
         snapshot_interval = int(body.get("snapshot_interval", 100))
 
-        job_id = str(uuid.uuid4())
+        job_id_raw = body.get("job_id")
+        run_set_id_raw = body.get("run_set_id")
+        if not isinstance(job_id_raw, str) or not job_id_raw.strip():
+            raise HTTPException(status_code=400, detail="start request requires job_id")
+        if not isinstance(run_set_id_raw, str) or not run_set_id_raw.strip():
+            raise HTTPException(status_code=400, detail="start request requires run_set_id")
+        job_id = job_id_raw.strip()
+        run_set_id = run_set_id_raw.strip()
         stop_event = threading.Event()
         event_queue: queue.Queue = queue.Queue()
 
         job = _Job(
             job_id=job_id,
+            run_set_id=run_set_id,
             total_batches=total_batches,
             event_queue=event_queue,
             stop_event=stop_event,
