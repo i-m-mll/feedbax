@@ -147,6 +147,10 @@ from feedbax.execution.models import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
 )
+from feedbax.orchestration.events import (
+    RUN_EVENT_SCHEMA_ID,
+    RUN_EVENT_SCHEMA_VERSION,
+)
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -1717,6 +1721,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "RunEvent",
+            RUN_EVENT_SCHEMA_ID,
+            RUN_EVENT_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.events",
+            emitted_by=(
+                "feedbax.orchestration.events.RunEventEmitter",
+                "feedbax.web.worker.app",
+            ),
+            consumed_by=(
+                "feedbax.orchestration.events.RunEventReader",
+                "feedbax.web.services.training_service",
+            ),
+            description="Canonical JSONL envelope for training-run row events.",
+            rejected_old_versions=("feedbax.run_event.v0",),
+            required_tests=(
+                "tests/test_run_events.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),

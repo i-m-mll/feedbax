@@ -30,6 +30,11 @@ from feedbax.contracts.graphs.normalization import (
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
+from feedbax.orchestration.events import (
+    RUN_EVENT_TERMINAL_TYPES,
+    run_event_from_legacy_worker_event,
+    legacy_worker_event_from_run_event,
+)
 from feedbax.web.worker.diagnostics import (
     GraphCompilationError,
     exception_diagnostic,
@@ -158,7 +163,15 @@ def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
     """Return compact event history suitable for a durable JSON artifact."""
     history_types = {"training_progress", "training_log", "training_error", "training_complete"}
     with job._state_lock:
-        return [dict(event) for _, event in job.event_buffer if event.get("type") in history_types]
+        events = []
+        for _, event in job.event_buffer:
+            if event.get("schema_id") == "feedbax.run_event":
+                legacy_event = legacy_worker_event_from_run_event(event)
+                if legacy_event.get("type") in history_types:
+                    events.append(legacy_event)
+            elif event.get("type") in history_types:
+                events.append(dict(event))
+        return events
 
 
 def _write_job_manifest(job: _Job) -> None:
@@ -511,15 +524,25 @@ def _run_training(job: _Job) -> None:
 def _emit(job: _Job, event: dict) -> None:
     """Assign a seq number to *event*, buffer it, and enqueue it for SSE delivery."""
     seq = job.next_seq()
-    event["seq"] = seq
-    if event.get("type") == "training_progress":
+    emitted_at_ms = int(time.time() * 1000)
+    legacy_event = dict(event)
+    legacy_event["seq"] = seq
+    legacy_event["emitted_at_ms"] = emitted_at_ms
+    if legacy_event.get("type") == "training_progress":
         with job._state_lock:
-            job.batch = int(event.get("batch", job.batch) or job.batch)
-            if "loss" in event:
-                job.last_loss = float(event["loss"])
+            job.batch = int(legacy_event.get("batch", job.batch) or job.batch)
+            if "loss" in legacy_event:
+                job.last_loss = float(legacy_event["loss"])
+    run_event = run_event_from_legacy_worker_event(
+        legacy_event,
+        run_set_id=job.job_id,
+        row_id=job.job_id,
+        seq=seq,
+        emitted_at_ms=emitted_at_ms,
+    ).model_dump(mode="json", exclude_none=True)
     with job._state_lock:
-        job.event_buffer.append((seq, event))
-    job.event_queue.put(event)
+        job.event_buffer.append((seq, run_event))
+    job.event_queue.put(run_event)
 
 
 def create_app(auth_token: Optional[str] = None) -> FastAPI:
@@ -690,7 +713,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             # --- Replay phase ---
             for event in replay_events:
                 yield f"data: {json.dumps(event)}\n\n"
-                if event.get("type") in ("training_complete", "training_error"):
+                if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get("type") in (
+                    "training_complete",
+                    "training_error",
+                ):
                     return
 
             # --- Live streaming phase ---
@@ -715,7 +741,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                 yield f"data: {json.dumps(event)}\n\n"
 
                 # Stop streaming after the terminal events.
-                if event.get("type") in ("training_complete", "training_error"):
+                if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get("type") in (
+                    "training_complete",
+                    "training_error",
+                ):
                     break
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
