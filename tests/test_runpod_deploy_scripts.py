@@ -239,6 +239,62 @@ def test_rows_manifest_payload_preflight_fails_before_acquisition(tmp_path: Path
     assert "runpodctl pod create" not in output
 
 
+def test_rows_manifest_preflight_resolves_relative_spec_against_workdir(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path)
+    row_workdir = tmp_path / "row-workdir"
+    row_workdir.mkdir()
+    run_spec = row_workdir / "training-run-spec.json"
+    write_training_run_spec(run_spec)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {
+                        "id": "row_rel",
+                        "workdir": str(row_workdir),
+                        "command": (
+                            f"{sys.executable} -m feedbax execute-training-run-spec "
+                            "training-run-spec.json"
+                        ),
+                        "training_run_spec": "training-run-spec.json",
+                        "training_payload": {
+                            "schema_version": "rlrmp.cs_stochastic_gru.v1",
+                            "experiment": "relative-path",
+                        },
+                        "training_payload_kind": "RLRMPRunSpec",
+                        "training_payload_schema_id": "rlrmp.run_spec",
+                        "training_payload_schema_version": "rlrmp.run_spec.v2",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--rows-manifest",
+        str(rows),
+    )
+
+    assert result.returncode == 1
+    output = result.stdout + result.stderr
+    resolved = str(run_spec)
+    assert f"preflighting TrainingRunManifest payload for row row_rel ({resolved})" in output
+    assert "Embedded SpecPayload schema version disagrees with inline payload" in output
+    assert "runpodctl pod create" not in output
+
+
 def test_resume_baseline_missing_source_fails_preflight(tmp_path: Path) -> None:
     config = write_config(tmp_path)
     missing = tmp_path / "rlrmp" / "_artifacts" / "missing-run" / "checkpoint_100"

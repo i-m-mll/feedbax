@@ -138,6 +138,7 @@ def entry($row_id):
   | select(($spec | tostring) != "")
   | {
       row_id: (($row_id // .id // "training") | tostring),
+      workdir: (.workdir // null),
       spec_path: ($spec | tostring),
       training_payload: (.training_payload // .payload // null),
       training_payload_path: (.training_payload_path // .payload_path // null),
@@ -186,10 +187,20 @@ command_requires_manifest_preflight() {
     return 1
 }
 
+resolve_manifest_preflight_path() {
+    local path=${1:-}
+    local workdir=${2:-}
+    if [ -z "$path" ] || [[ $path = /* ]] || [ -z "$workdir" ]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s/%s\n' "${workdir%/}" "$path"
+    fi
+}
+
 validate_training_manifest_preflight() {
     [ -n "$TRAIN_COMMAND" ] || [ -n "$ROWS_MANIFEST" ] || return 0
     local entries count i row_id spec_path payload_file payload_tmp
-    local kind schema_id schema_version ref task_binding_spec_path
+    local kind schema_id schema_version ref task_binding_spec_path workdir
     entries=$(manifest_preflight_entries_json)
     count=$(printf '%s\n' "$entries" | jq 'length')
     if [ "$count" -eq 0 ]; then
@@ -202,6 +213,7 @@ validate_training_manifest_preflight() {
     i=0
     while [ "$i" -lt "$count" ]; do
         row_id=$(printf '%s\n' "$entries" | jq -r ".[$i].row_id")
+        workdir=$(printf '%s\n' "$entries" | jq -r ".[$i].workdir // empty")
         spec_path=$(printf '%s\n' "$entries" | jq -r ".[$i].spec_path")
         payload_file=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_path // empty")
         kind=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_kind")
@@ -209,6 +221,11 @@ validate_training_manifest_preflight() {
         schema_version=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_schema_version // empty")
         ref=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_ref // empty")
         task_binding_spec_path=$(printf '%s\n' "$entries" | jq -r ".[$i].task_binding_spec_path // empty")
+        spec_path=$(resolve_manifest_preflight_path "$spec_path" "$workdir")
+        payload_file=$(resolve_manifest_preflight_path "$payload_file" "$workdir")
+        task_binding_spec_path=$(
+            resolve_manifest_preflight_path "$task_binding_spec_path" "$workdir"
+        )
         [ -f "$spec_path" ] ||
             die "TrainingRunManifest preflight failed: row_id=$row_id spec_path=$spec_path not found"
         payload_tmp=""
