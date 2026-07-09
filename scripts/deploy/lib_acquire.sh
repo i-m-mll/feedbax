@@ -274,19 +274,23 @@ rows_manifest_field() {
 
 # latest_pointer_completed_batches <latest.json>
 # Supports current Feedbax checkpoint custody pointers and older RLRMP indexes.
+# Coordinate fields are custody/barrier positions; use them only as a legacy
+# fallback when no explicit training-batch field exists.
 latest_pointer_completed_batches() {
     local latest_json=$1
     [ -f "$latest_json" ] || return 1
     jq -r '
-        .completed_coordinate.global_step
+        .completed_training_batches
         // .completed_batches
         // .completed_batch
         // .completedBatch
         // .n_batches
         // .batch
+        // .metadata.completed_training_batches
         // .metadata.completed_batches
         // .metadata.completed_batch
         // .metadata.completedBatch
+        // .completed_coordinate.global_step
         // empty
     ' "$latest_json" 2>/dev/null
 }
@@ -437,7 +441,7 @@ row_state() {
 # progress_report <sentinel_dir> <checkpoint_dir> <log_dir>
 # Emits ONE machine-readable status line (no jq needed by the consumer):
 #   rows_done=k rows_failed=j rows_running=r rows_stale=s rows_pending=p rows_total=N \
-#   last_checkpoint=<step|none> last_batch=<n|none> rows=<id:state,...>
+#   last_batch=<n|none> last_checkpoint=<step|none> rows=<id:state,...>
 # Distinguishes "compiling" (running, last_batch=none, last_checkpoint=none)
 # from "training" (a batch/checkpoint advancing) from "stalled" (running but no
 # recent progress — the caller compares last_batch/last_checkpoint across polls).
@@ -471,8 +475,8 @@ progress_report() {
         done
     fi
 
-    printf '%s last_checkpoint=%s last_batch=%s rows=%s\n' \
-        "$rollup" "$ckpt" "$batch" "${detail:-none}"
+    printf '%s last_batch=%s last_checkpoint=%s rows=%s\n' \
+        "$rollup" "$batch" "$ckpt" "${detail:-none}"
 }
 
 # last_batch_from_log <logfile>  -> last batch/step counter grepped from a log.

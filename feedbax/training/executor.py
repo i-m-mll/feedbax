@@ -153,6 +153,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             status="partial",
             parent_lineage=self.parent_lineage,
             history_availability={"progress": True},
+            completed_training_batches=saved.coordinate.global_step,
             metadata={"barrier_visit_ordinal": saved.visit_ordinal},
         )
         self._writes.append(write)

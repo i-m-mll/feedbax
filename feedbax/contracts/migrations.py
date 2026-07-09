@@ -15,6 +15,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -698,6 +699,39 @@ def _migrate_checkpoint_transaction_manifest_v2_to_v3_payload(
     if isinstance(binding, Mapping):
         migrated["run_contract_binding"] = _migrate_run_contract_binding_to_v2(binding)
 
+    return migrated
+
+
+def _migrate_checkpoint_transaction_manifest_v3_to_v4_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add explicit batch progress separate from checkpoint coordinates."""
+    migrated = dict(payload)
+    metadata = migrated.get("metadata")
+    completed_batches = None
+    if isinstance(metadata, Mapping):
+        for key in (
+            "completed_training_batches",
+            "completed_batches",
+            "completed_batch",
+            "n_batches",
+            "batch",
+        ):
+            if key in metadata and metadata[key] is not None:
+                try:
+                    completed_batches = int(metadata[key])
+                except (TypeError, ValueError):
+                    completed_batches = None
+                else:
+                    break
+    migrated.setdefault("completed_training_batches", completed_batches)
+    migrated.setdefault(
+        "completed_coordinate_semantics",
+        (
+            "Checkpoint/barrier coordinate for custody ordering; not the primary "
+            "training-batch progress field."
+        ),
+    )
     return migrated
 
 
@@ -1718,6 +1752,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -2757,12 +2792,25 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
         migration_id="training-checkpoint-transaction-v2-to-v3-portable-custody",
         migrate=_migrate_checkpoint_transaction_manifest_v2_to_v3_payload,
         description=(
             "Split structural content fingerprints from environment provenance and "
             "version run-contract binding projections."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v3-to-v4-batch-progress",
+        migrate=_migrate_checkpoint_transaction_manifest_v3_to_v4_payload,
+        description=(
+            "Add explicit completed training batches separate from checkpoint "
+            "coordinate progress."
         ),
     ),
 )
