@@ -131,6 +131,126 @@ validate_train_spec_gate() {
     fi
 }
 
+manifest_preflight_entry_filter() {
+    cat <<'JQ'
+def entry($row_id):
+  (.training_run_spec // .run_spec // .spec_path // empty) as $spec
+  | select(($spec | tostring) != "")
+  | {
+      row_id: (($row_id // .id // "training") | tostring),
+      workdir: (.workdir // null),
+      spec_path: ($spec | tostring),
+      training_payload: (.training_payload // .payload // null),
+      training_payload_path: (.training_payload_path // .payload_path // null),
+      training_payload_kind: (.training_payload_kind // .payload_kind // "TrainingRunSpec"),
+      training_payload_schema_id: (
+        .training_payload_schema_id // .payload_schema_id // null
+      ),
+      training_payload_schema_version: (
+        .training_payload_schema_version // .payload_schema_version // null
+      ),
+      training_payload_ref: (.training_payload_ref // .payload_ref // null),
+      task_binding_spec_path: (.task_binding_spec_path // null)
+    };
+
+if type != "object" then []
+elif has("rows") then
+  [ .rows[] | entry(.id) ]
+else
+  [ entry(.id // "training") ]
+end
+JQ
+}
+
+manifest_preflight_entries_json() {
+    local entries="[]"
+    if [ -n "$TRAIN_SPEC" ] && [ -f "$TRAIN_SPEC" ]; then
+        entries=$(jq "$(manifest_preflight_entry_filter)" "$TRAIN_SPEC")
+    fi
+    if [ -n "$ROWS_MANIFEST" ] && [ -f "$ROWS_MANIFEST" ]; then
+        entries=$(jq -s 'add' \
+            <(printf '%s\n' "$entries") \
+            <(jq "$(manifest_preflight_entry_filter)" "$ROWS_MANIFEST"))
+    fi
+    printf '%s\n' "$entries"
+}
+
+command_requires_manifest_preflight() {
+    if [[ ${TRAIN_COMMAND:-} == *"execute-training-run-spec"* ]]; then
+        return 0
+    fi
+    if [ -n "$ROWS_MANIFEST" ] && [ -f "$ROWS_MANIFEST" ] &&
+        jq -e '.rows[]? | select((.command // "") | contains("execute-training-run-spec"))' \
+            "$ROWS_MANIFEST" >/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+resolve_manifest_preflight_path() {
+    local path=${1:-}
+    local workdir=${2:-}
+    if [ -z "$path" ] || [[ $path = /* ]] || [ -z "$workdir" ]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s/%s\n' "${workdir%/}" "$path"
+    fi
+}
+
+validate_training_manifest_preflight() {
+    [ -n "$TRAIN_COMMAND" ] || [ -n "$ROWS_MANIFEST" ] || return 0
+    local entries count i row_id spec_path payload_file payload_tmp
+    local kind schema_id schema_version ref task_binding_spec_path workdir
+    entries=$(manifest_preflight_entries_json)
+    count=$(printf '%s\n' "$entries" | jq 'length')
+    if [ "$count" -eq 0 ]; then
+        if command_requires_manifest_preflight; then
+            die "TrainingRunManifest preflight failed: execute-training-run-spec launch requires training_run_spec/spec_path metadata"
+        fi
+        return 0
+    fi
+
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        row_id=$(printf '%s\n' "$entries" | jq -r ".[$i].row_id")
+        workdir=$(printf '%s\n' "$entries" | jq -r ".[$i].workdir // empty")
+        spec_path=$(printf '%s\n' "$entries" | jq -r ".[$i].spec_path")
+        payload_file=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_path // empty")
+        kind=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_kind")
+        schema_id=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_schema_id // empty")
+        schema_version=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_schema_version // empty")
+        ref=$(printf '%s\n' "$entries" | jq -r ".[$i].training_payload_ref // empty")
+        task_binding_spec_path=$(printf '%s\n' "$entries" | jq -r ".[$i].task_binding_spec_path // empty")
+        spec_path=$(resolve_manifest_preflight_path "$spec_path" "$workdir")
+        payload_file=$(resolve_manifest_preflight_path "$payload_file" "$workdir")
+        task_binding_spec_path=$(
+            resolve_manifest_preflight_path "$task_binding_spec_path" "$workdir"
+        )
+        [ -f "$spec_path" ] ||
+            die "TrainingRunManifest preflight failed: row_id=$row_id spec_path=$spec_path not found"
+        payload_tmp=""
+        if [ -z "$payload_file" ] &&
+            printf '%s\n' "$entries" | jq -e ".[$i].training_payload != null" >/dev/null; then
+            payload_tmp=$(mktemp "${TMPDIR:-/tmp}/feedbax-manifest-preflight.XXXXXX.json")
+            printf '%s\n' "$entries" | jq ".[$i].training_payload" >"$payload_tmp"
+            payload_file=$payload_tmp
+        fi
+        local cmd=(uv run --no-sync python -m feedbax preflight-training-run-manifest "$spec_path" --row-id "$row_id" --training-payload-kind "$kind")
+        [ -z "$payload_file" ] || cmd+=(--training-payload "$payload_file")
+        [ -z "$schema_id" ] || cmd+=(--training-payload-schema-id "$schema_id")
+        [ -z "$schema_version" ] || cmd+=(--training-payload-schema-version "$schema_version")
+        [ -z "$ref" ] || cmd+=(--training-payload-ref "$ref")
+        [ -z "$task_binding_spec_path" ] || cmd+=(--task-binding-spec "$task_binding_spec_path")
+        log "preflighting TrainingRunManifest payload for row $row_id ($spec_path)"
+        if ! (cd "$SCRIPT_DIR/../.." && "${cmd[@]}") >/dev/null; then
+            [ -z "$payload_tmp" ] || rm -f "$payload_tmp"
+            die "TrainingRunManifest preflight failed for row_id=$row_id spec_path=$spec_path"
+        fi
+        [ -z "$payload_tmp" ] || rm -f "$payload_tmp"
+        i=$((i + 1))
+    done
+}
+
 baseline_jq_filter() {
     cat <<'JQ'
 def baseline_entries($label):
@@ -262,7 +382,7 @@ validate_remote_declared_baselines() {
         label=$(printf '%s\n' "$baselines" | jq -r ".[$i].label")
         expected=$(printf '%s\n' "$baselines" | jq -r ".[$i].completed_batch")
         latest="$target/latest.json"
-        provider_exec "test -e $(sq "$target") && test -f $(sq "$latest") && actual=\$(jq -r '.completed_coordinate.global_step // .completed_batches // .completed_batch // .completedBatch // .n_batches // .batch // .metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // empty' $(sq "$latest")) && test -n \"\$actual\" && test \"\$actual\" = $(sq "$expected")" ||
+        provider_exec "test -e $(sq "$target") && test -f $(sq "$latest") && actual=\$(jq -r '.completed_training_batches // .completed_batches // .completed_batch // .completedBatch // .n_batches // .batch // .metadata.completed_training_batches // .metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // .completed_coordinate.global_step // empty' $(sq "$latest")) && test -n \"\$actual\" && test \"\$actual\" = $(sq "$expected")" ||
             die "baseline preflight failed: remote staged baseline mismatch for $label at $latest (expected completed batch $expected)"
         i=$((i + 1))
     done

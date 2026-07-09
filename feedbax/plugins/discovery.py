@@ -16,6 +16,14 @@ TRAINING_METHOD_REGISTRAR_NAMES = (
     "register_feedbax_training_methods",
     "register_training_methods",
 )
+CONFORMANCE_CHECK_REGISTRAR_NAMES = (
+    "register_feedbax_conformance_checks",
+    "register_conformance_checks",
+)
+CONFORMANCE_CHECK_ITERATOR_NAMES = (
+    "feedbax_conformance_checks",
+    "conformance_checks",
+)
 
 
 def discover_experiment_packages(
@@ -127,6 +135,86 @@ def _register_training_methods_from_plugin(
             f"Failed to register Feedbax training methods from {provenance}: {exc}"
         ) from exc
     logger.info("Registered Feedbax training methods from %s", provenance)
+
+
+def load_conformance_check_plugins(
+    *,
+    registry: Any,
+    entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP,
+    entry_points: Iterable[Any] | None = None,
+    modules: Sequence[str] | None = None,
+) -> None:
+    """Load run-conformance checks from Feedbax plugins.
+
+    Plugins share the existing ``feedbax.plugins`` entry-point group. A plugin
+    may expose ``register_feedbax_conformance_checks(registry)`` or
+    ``feedbax_conformance_checks()``; the latter must yield ``(check_id,
+    callable)`` pairs. Registration failures are raised so the conformance
+    certificate can fail closed instead of silently dropping project checks.
+    """
+    for entry_point in entry_points if entry_points is not None else feedbax_plugin_entry_points(
+        entry_point_group
+    ):
+        provenance = _entry_point_provenance(entry_point)
+        try:
+            plugin = entry_point.load()
+            _register_conformance_checks_from_plugin(plugin, registry, provenance=provenance)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to register Feedbax conformance checks from {provenance}: {exc}"
+            ) from exc
+
+    for module_name in modules or ():
+        module = importlib.import_module(module_name)
+        _register_conformance_checks_from_plugin(module, registry, provenance=f"module:{module_name}")
+
+
+def _register_conformance_checks_from_plugin(
+    plugin: Any,
+    registry: Any,
+    *,
+    provenance: str,
+) -> None:
+    registrar = _conformance_check_registrar(plugin)
+    if registrar is not None:
+        registrar(registry)
+        logger.info("Registered Feedbax conformance checks from %s", provenance)
+        return
+    iterator = _conformance_check_iterator(plugin)
+    if iterator is None:
+        return
+    registry.extend(iterator())
+    logger.info("Registered Feedbax conformance checks from %s", provenance)
+
+
+def _conformance_check_registrar(plugin: Any) -> Any | None:
+    for attr in CONFORMANCE_CHECK_REGISTRAR_NAMES:
+        registrar = getattr(plugin, attr, None)
+        if callable(registrar):
+            return registrar
+    return None
+
+
+def _conformance_check_iterator(plugin: Any) -> Any | None:
+    for attr in CONFORMANCE_CHECK_ITERATOR_NAMES:
+        iterator = getattr(plugin, attr, None)
+        if callable(iterator):
+            return iterator
+    if callable(plugin):
+        try:
+            signature = inspect.signature(plugin)
+        except (TypeError, ValueError):
+            return None
+        required = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.default is inspect.Signature.empty
+            and parameter.kind
+            in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+        ]
+        if not required:
+            return plugin
+    return None
 
 
 def _training_method_registrar(plugin: Any) -> Any | None:

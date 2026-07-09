@@ -7,6 +7,8 @@ families must use one of these namespaces instead of inventing flat
 - ``feedbax.spec.*`` for request/spec payloads and reusable nested specs.
 - ``feedbax.manifest.*`` for durable execution, artifact, provider, and manifest
   records.
+- ``feedbax.orchestration.*`` for durable run-orchestration control documents.
+- ``feedbax.run_event`` for the canonical training-run event stream envelope.
 - ``feedbax.component.<component>.params`` for globally named component
   parameter payload schemas.
 
@@ -30,23 +32,34 @@ class SchemaNamespaceKind(str, Enum):
 
     SPEC = "spec"
     MANIFEST = "manifest"
+    ORCHESTRATION = "orchestration"
+    RUN_EVENT = "run_event"
     COMPONENT_PARAMS = "component_params"
     EXTERNAL = "external"
 
 
 def classify_schema_identity(schema_id: str) -> SchemaNamespaceKind:
     """Classify a stable schema identity under the Feedbax namespace taxonomy."""
+    # The run-conformance certificate identity is fixed by the lifecycle
+    # contract that consumes it, even though it predates the governed prefixes.
+    if schema_id == "feedbax.run_conformance":
+        return SchemaNamespaceKind.MANIFEST
     if schema_id.startswith("feedbax.spec."):
         return SchemaNamespaceKind.SPEC
     if schema_id.startswith("feedbax.manifest."):
         return SchemaNamespaceKind.MANIFEST
+    if schema_id.startswith("feedbax.orchestration."):
+        return SchemaNamespaceKind.ORCHESTRATION
+    if schema_id == "feedbax.run_event":
+        return SchemaNamespaceKind.RUN_EVENT
     if schema_id.startswith("feedbax.component.") and schema_id.endswith(".params"):
         return SchemaNamespaceKind.COMPONENT_PARAMS
     if schema_id.startswith("feedbax."):
         raise SchemaNamespaceError(
             "Feedbax schema identity must use a governed namespace: "
             f"schema_id={schema_id!r}, expected_prefixes=('feedbax.spec.', "
-            "'feedbax.manifest.', 'feedbax.component.<component>.params')"
+            "'feedbax.manifest.', 'feedbax.orchestration.', 'feedbax.run_event', "
+            "'feedbax.component.<component>.params')"
         )
     return SchemaNamespaceKind.EXTERNAL
 
@@ -72,9 +85,13 @@ def validate_schema_version(version: str, *, family: str) -> None:
         raise SchemaNamespaceError(f"{family} current_version must be non-empty")
     if not version.startswith("feedbax."):
         return
+    if version == "feedbax.run_conformance.v1":
+        return
     if (
         version.startswith("feedbax.spec.")
         or version.startswith("feedbax.manifest.")
+        or version.startswith("feedbax.orchestration.")
+        or version.startswith("feedbax.run_event.")
         or version.startswith("feedbax.component.")
     ):
         return

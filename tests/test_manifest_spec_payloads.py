@@ -176,6 +176,27 @@ def test_migrate_spec_payload_accepts_explicit_external_family() -> None:
     assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
 
 
+def test_migrate_spec_payload_rejects_external_inline_schema_mismatch() -> None:
+    with pytest.raises(UnsupportedSpecVersion) as excinfo:
+        migrate_spec_payload(
+            SpecPayload(
+                kind="RLRMPRunSpec",
+                schema_id="rlrmp.run_spec",
+                schema_version="rlrmp.run_spec.v2",
+                inline={"schema_version": "rlrmp.cs_stochastic_gru.v1"},
+                metadata={"external": True},
+            ),
+            path="training_spec",
+        )
+
+    message = str(excinfo.value)
+    assert "Embedded SpecPayload schema version disagrees with inline payload" in message
+    assert "path='training_spec'" in message
+    assert "kind='RLRMPRunSpec'" in message
+    assert "schema_version='rlrmp.run_spec.v2'" in message
+    assert "inline_schema_version='rlrmp.cs_stochastic_gru.v1'" in message
+
+
 def test_generic_spec_payload_migration_records_non_graph_source_hash() -> None:
     registry = SpecSchemaRegistry()
     registry.register_family(

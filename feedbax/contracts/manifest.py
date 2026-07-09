@@ -924,6 +924,20 @@ def migrate_spec_payload(
     spec_payload_obj = (
         payload if isinstance(payload, SpecPayload) else SpecPayload.model_validate(payload)
     )
+    source_version = spec_payload_obj.schema_version
+    inline_schema_version = spec_payload_obj.inline.get("schema_version")
+    if (
+        source_version is not None
+        and isinstance(inline_schema_version, str)
+        and inline_schema_version
+        and inline_schema_version != source_version
+    ):
+        raise UnsupportedSpecVersion(
+            "Embedded SpecPayload schema version disagrees with inline payload: "
+            f"path={path!r}, kind={spec_payload_obj.kind!r}, "
+            f"schema_version={source_version!r}, "
+            f"inline_schema_version={inline_schema_version!r}"
+        )
     active_registry = registry or default_spec_registry
     try:
         family = active_registry.resolve(spec_payload_obj.kind)
@@ -958,21 +972,6 @@ def migrate_spec_payload(
         )
 
     source_sha256 = _ensure_spec_payload_hash(spec_payload_obj, path=path)
-    source_version = spec_payload_obj.schema_version
-    inline_schema_version = spec_payload_obj.inline.get("schema_version")
-    if (
-        source_version is not None
-        and isinstance(inline_schema_version, str)
-        and inline_schema_version
-        and inline_schema_version != source_version
-    ):
-        raise UnsupportedSpecVersion(
-            "Embedded SpecPayload schema version disagrees with inline payload: "
-            f"path={path!r}, kind={spec_payload_obj.kind!r}, "
-            f"schema_version={source_version!r}, "
-            f"inline_schema_version={inline_schema_version!r}"
-        )
-
     try:
         if spec_payload_obj.kind == "GraphSpec" and expected_schema_id == GRAPH_SPEC_SCHEMA_ID:
             result = migrate_graph_spec(
@@ -1712,6 +1711,7 @@ def training_run_manifest_id(job_id: Optional[str] = None) -> str:
 def write_training_run_manifest(
     *,
     job_id: Optional[str],
+    run_set_id: Optional[str] = None,
     total_batches: int,
     training_spec: Optional[dict[str, Any]] = None,
     task_spec: Optional[dict[str, Any]] = None,
@@ -1793,6 +1793,7 @@ def write_training_run_manifest(
     manifest = TrainingRunManifest(
         id=training_run_manifest_id(job_id),
         job_id=job_id,
+        run_set_id=run_set_id,
         status=status,
         completed_at=utc_now() if status in {"completed", "failed", "cancelled"} else None,
         graph_spec=spec_payload("GraphSpec", graph_spec) if graph_spec is not None else None,

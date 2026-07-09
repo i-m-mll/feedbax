@@ -36,7 +36,9 @@ dependencies = [
     "jaxtyping>=0.2.38",
     "numpy>=2.2.3",
     "optax>=0.2.4",
+    "optimistix>=0.0.10",
     "pydantic>=2.0",
+    "rich>=13.9.4",
     "ruamel-yaml>=0.18.0",
     "treescope>=0.1.1",
     "tqdm>=4.67.1",
@@ -133,6 +135,7 @@ feedbax-run = "feedbax.bin.run:main"
 feedbax-analysis = "feedbax.bin.analysis:main"
 feedbax-train = "feedbax.bin.train:main"
 feedbax-provider = "feedbax.bin.provider:main"
+feedbax-orchestrate = "feedbax.bin.orchestrate:main"
 
 [project.urls]
 repository = "https://github.com/i-m-mll/feedbax"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -49,6 +50,15 @@ def write_config(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return config
+
+
+def write_training_run_spec(path: Path) -> None:
+    from tests.test_training_run_executor import _run_spec
+
+    path.write_text(
+        json.dumps(_run_spec().model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def test_training_launch_requires_confirmed_spec(tmp_path: Path) -> None:
@@ -178,6 +188,113 @@ def test_rows_dry_run_uses_cache_env_and_warm_first_order(tmp_path: Path) -> Non
     assert "row_a.pid" not in warm_gate_output
 
 
+def test_rows_manifest_payload_preflight_fails_before_acquisition(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    run_spec = tmp_path / "training-run-spec.json"
+    write_training_run_spec(run_spec)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {
+                        "id": "flat_3e-5",
+                        "command": (
+                            f"{sys.executable} -m feedbax execute-training-run-spec {run_spec}"
+                        ),
+                        "training_run_spec": str(run_spec),
+                        "training_payload": {
+                            "schema_version": "rlrmp.cs_stochastic_gru.v1",
+                            "experiment": "flat_3e-5",
+                        },
+                        "training_payload_kind": "RLRMPRunSpec",
+                        "training_payload_schema_id": "rlrmp.run_spec",
+                        "training_payload_schema_version": "rlrmp.run_spec.v2",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--rows-manifest",
+        str(rows),
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "preflighting TrainingRunManifest payload for row flat_3e-5" in output
+    assert "Embedded SpecPayload schema version disagrees with inline payload" in output
+    assert "row_id='flat_3e-5'" in output
+    assert str(run_spec) in output
+    assert "runpodctl pod create" not in output
+
+
+def test_rows_manifest_preflight_resolves_relative_spec_against_workdir(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path)
+    row_workdir = tmp_path / "row-workdir"
+    row_workdir.mkdir()
+    run_spec = row_workdir / "training-run-spec.json"
+    write_training_run_spec(run_spec)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {
+                        "id": "row_rel",
+                        "workdir": str(row_workdir),
+                        "command": (
+                            f"{sys.executable} -m feedbax execute-training-run-spec "
+                            "training-run-spec.json"
+                        ),
+                        "training_run_spec": "training-run-spec.json",
+                        "training_payload": {
+                            "schema_version": "rlrmp.cs_stochastic_gru.v1",
+                            "experiment": "relative-path",
+                        },
+                        "training_payload_kind": "RLRMPRunSpec",
+                        "training_payload_schema_id": "rlrmp.run_spec",
+                        "training_payload_schema_version": "rlrmp.run_spec.v2",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--rows-manifest",
+        str(rows),
+    )
+
+    assert result.returncode == 1
+    output = result.stdout + result.stderr
+    resolved = str(run_spec)
+    assert f"preflighting TrainingRunManifest payload for row row_rel ({resolved})" in output
+    assert "Embedded SpecPayload schema version disagrees with inline payload" in output
+    assert "runpodctl pod create" not in output
+
+
 def test_resume_baseline_missing_source_fails_preflight(tmp_path: Path) -> None:
     config = write_config(tmp_path)
     missing = tmp_path / "rlrmp" / "_artifacts" / "missing-run" / "checkpoint_100"
@@ -277,6 +394,36 @@ def test_resume_baseline_completed_batch_mismatch_fails_preflight(tmp_path: Path
     assert "baseline preflight failed: completed_batch mismatch" in result.stderr
     assert "declared 100 but latest.json has 99" in result.stderr
     assert "runpodctl pod create" not in result.stdout + result.stderr
+
+
+def test_latest_pointer_completed_batches_prefers_batch_over_coordinate(
+    tmp_path: Path,
+) -> None:
+    latest = tmp_path / "latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "completed_coordinate": {"global_step": 12009},
+                "completed_training_batches": 16500,
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = (
+        f"source {str(REPO_ROOT / 'scripts' / 'deploy' / 'lib_acquire.sh')!r}\n"
+        f"latest_pointer_completed_batches {str(latest)!r}\n"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "16500"
 
 
 def test_resume_baseline_is_preflighted_and_staged_despite_artifact_exclude(
@@ -542,6 +689,7 @@ def test_poll_run_reports_started_without_terminal_sentinel_as_stale(
 
     assert result.returncode == 0, result.stderr
     assert "rows_done=1 rows_failed=0 rows_running=0 rows_stale=1" in result.stdout
+    assert result.stdout.index("last_batch=") < result.stdout.index("last_checkpoint=")
     assert "row_a:stale_started" in result.stdout
     assert "row_b:done" in result.stdout
     assert "train_process=" in result.stdout

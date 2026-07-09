@@ -23,14 +23,17 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1 = (
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2 = (
     "feedbax.manifest.training_checkpoint_transaction.v2"
 )
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3 = (
     "feedbax.manifest.training_checkpoint_transaction.v3"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint_transaction.v4"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = (
     "feedbax.manifest.training_checkpoint_latest_pointer"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION = (
-    "feedbax.manifest.training_checkpoint_latest_pointer.v1"
+    "feedbax.manifest.training_checkpoint_latest_pointer.v2"
 )
 LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID = (
     "feedbax.manifest.legacy_checkpoint_leaf_manifest"
@@ -314,6 +317,11 @@ class CheckpointTransactionManifest(StrictModel):
     status: Literal["partial", "final"] = "partial"
     barrier: str
     completed_coordinate: ProgressCoordinate
+    completed_training_batches: int | None = None
+    completed_coordinate_semantics: str = (
+        "Checkpoint/barrier coordinate for custody ordering; not the primary "
+        "training-batch progress field."
+    )
     consistency_predicate: ConsistencyPredicateSpec
     run_contract_binding: RunContractBinding
     slots: list[CheckpointSlotBlobRef]
@@ -352,6 +360,11 @@ class CheckpointLatestPointer(StrictModel):
     manifest_sha256: str
     transaction_root_sha256: str
     completed_coordinate: ProgressCoordinate
+    completed_training_batches: int | None = None
+    completed_coordinate_semantics: str = (
+        "Checkpoint/barrier coordinate for custody ordering; not the primary "
+        "training-batch progress field."
+    )
 
 
 class CheckpointResumeResult(StrictModel):

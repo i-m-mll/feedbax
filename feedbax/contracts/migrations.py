@@ -15,6 +15,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -147,6 +148,21 @@ from feedbax.execution.models import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
 )
+from feedbax.orchestration.events import (
+    RUN_EVENT_SCHEMA_ID,
+    RUN_EVENT_SCHEMA_VERSION,
+)
+from feedbax.orchestration.bundle import (
+    RUN_BUNDLE_SCHEMA_ID,
+    RUN_BUNDLE_SCHEMA_VERSION,
+)
+from feedbax.orchestration.state import (
+    RUN_SET_STATE_SCHEMA_ID,
+    RUN_SET_STATE_SCHEMA_VERSION,
+)
+
+RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
+RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -694,6 +710,39 @@ def _migrate_checkpoint_transaction_manifest_v2_to_v3_payload(
     if isinstance(binding, Mapping):
         migrated["run_contract_binding"] = _migrate_run_contract_binding_to_v2(binding)
 
+    return migrated
+
+
+def _migrate_checkpoint_transaction_manifest_v3_to_v4_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add explicit batch progress separate from checkpoint coordinates."""
+    migrated = dict(payload)
+    metadata = migrated.get("metadata")
+    completed_batches = None
+    if isinstance(metadata, Mapping):
+        for key in (
+            "completed_training_batches",
+            "completed_batches",
+            "completed_batch",
+            "n_batches",
+            "batch",
+        ):
+            if key in metadata and metadata[key] is not None:
+                try:
+                    completed_batches = int(metadata[key])
+                except (TypeError, ValueError):
+                    completed_batches = None
+                else:
+                    break
+    migrated.setdefault("completed_training_batches", completed_batches)
+    migrated.setdefault(
+        "completed_coordinate_semantics",
+        (
+            "Checkpoint/barrier coordinate for custody ordering; not the primary "
+            "training-batch progress field."
+        ),
+    )
     return migrated
 
 
@@ -1714,11 +1763,74 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "RunBundle",
+            RUN_BUNDLE_SCHEMA_ID,
+            RUN_BUNDLE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.bundle",
+            emitted_by=("feedbax.orchestration.bundle.RunBundle",),
+            consumed_by=(
+                "feedbax.orchestration.stages.StageEngine",
+                "orchestration CLI",
+            ),
+            description="Durable run-set orchestration request bundle.",
+            rejected_old_versions=("feedbax.orchestration.run_bundle.v0",),
+            required_tests=("tests/test_orchestration_core.py",),
+        ),
+        _family(
+            "RunSetState",
+            RUN_SET_STATE_SCHEMA_ID,
+            RUN_SET_STATE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.state",
+            emitted_by=("feedbax.orchestration.state.RunSetStateStore",),
+            consumed_by=(
+                "feedbax.orchestration.stages.StageEngine",
+                "orchestration drivers",
+            ),
+            description="Atomic run-set orchestration state document.",
+            rejected_old_versions=("feedbax.orchestration.run_set_state.v0",),
+            required_tests=("tests/test_orchestration_core.py",),
+        ),
+        _family(
+            "RunEvent",
+            RUN_EVENT_SCHEMA_ID,
+            RUN_EVENT_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.events",
+            emitted_by=(
+                "feedbax.orchestration.events.RunEventEmitter",
+                "feedbax.web.worker.app",
+            ),
+            consumed_by=(
+                "feedbax.orchestration.events.RunEventReader",
+                "feedbax.web.services.training_service",
+            ),
+            description="Canonical JSONL envelope for training-run row events.",
+            rejected_old_versions=("feedbax.run_event.v0",),
+            required_tests=(
+                "tests/test_run_events.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "RunConformanceCertificate",
+            RUN_CONFORMANCE_SCHEMA_ID,
+            RUN_CONFORMANCE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.conformance",
+            emitted_by=("feedbax.orchestration.conformance.write_conformance_certificate",),
+            consumed_by=(
+                "feedbax.orchestration.conformance.assert_certificate_allows_completed_registration",
+                "REGISTER stage",
+            ),
+            description="Run-set red/green certificate for realized spec conformance.",
+            rejected_old_versions=("feedbax.run_conformance.v0",),
+            required_tests=("tests/test_run_conformance.py",),
         ),
         _family(
             "LegacyCheckpointLeafManifest",
@@ -2733,12 +2845,25 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
         migration_id="training-checkpoint-transaction-v2-to-v3-portable-custody",
         migrate=_migrate_checkpoint_transaction_manifest_v2_to_v3_payload,
         description=(
             "Split structural content fingerprints from environment provenance and "
             "version run-contract binding projections."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v3-to-v4-batch-progress",
+        migrate=_migrate_checkpoint_transaction_manifest_v3_to_v4_payload,
+        description=(
+            "Add explicit completed training batches separate from checkpoint "
+            "coordinate progress."
         ),
     ),
 )

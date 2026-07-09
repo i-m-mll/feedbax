@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from .discovery import (
     discover_experiment_packages,
     feedbax_plugin_entry_points,
+    load_conformance_check_plugins,
     load_training_method_plugins,
 )
 from .registry import ExperimentRegistry, get_default_registry
@@ -43,5 +44,6 @@ __all__ = [
     "get_default_registry",
     "discover_experiment_packages",
     "feedbax_plugin_entry_points",
+    "load_conformance_check_plugins",
     "load_training_method_plugins",
 ]

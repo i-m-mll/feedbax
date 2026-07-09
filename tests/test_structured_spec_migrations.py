@@ -65,6 +65,7 @@ from feedbax.contracts.workspace_replay import (
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.execution.models import (
@@ -74,6 +75,7 @@ from feedbax.execution.models import (
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
 )
 from feedbax.objectives.spec import validate_objective_spec
+from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RUN_EVENT_SCHEMA_VERSION
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
 
@@ -243,6 +245,9 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
     assert families["TrainingRunSpec"].current_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    assert families["RunEvent"].identity == RUN_EVENT_SCHEMA_ID
+    assert families["RunEvent"].namespace == SchemaNamespaceKind.RUN_EVENT
+    assert families["RunEvent"].current_version == RUN_EVENT_SCHEMA_VERSION
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
     assert families["LrScheduleSpec"].identity == LR_SCHEDULE_SPEC_SCHEMA_ID
     assert families["LrScheduleSpec"].current_version == LR_SCHEDULE_SPEC_SCHEMA_VERSION
@@ -728,6 +733,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert checkpoint_policy.supported_old_versions == (
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
     )
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)

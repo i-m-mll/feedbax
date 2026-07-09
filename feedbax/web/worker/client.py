@@ -14,6 +14,8 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES
+
 # Maximum reconnection attempts for the SSE stream.
 _MAX_RECONNECT_ATTEMPTS = 10
 # Seconds to wait between reconnection attempts.
@@ -64,6 +66,9 @@ async def wait_for_health(
 async def start_job(
     base_url: str,
     total_batches: int,
+    *,
+    job_id: str,
+    run_set_id: str,
     training_config: Optional[dict] = None,
     training_spec: Optional[dict] = None,
     task_spec: Optional[dict] = None,
@@ -88,7 +93,11 @@ async def start_job(
     Returns:
         The ``job_id`` string assigned by the worker.
     """
-    body: dict = {"total_batches": total_batches}
+    body: dict = {
+        "job_id": job_id,
+        "run_set_id": run_set_id,
+        "total_batches": total_batches,
+    }
     if training_config is not None:
         body["training_config"] = training_config
     if training_spec is not None:
@@ -300,7 +309,9 @@ async def stream_events(
                             last_seq = event_seq
                         yield event
                         # Terminal events — stop cleanly, no reconnect.
-                        if event.get("type") in ("training_complete", "training_error"):
+                        if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get(
+                            "type"
+                        ) in ("training_complete", "training_error"):
                             return
         except (
             httpx.ConnectError,

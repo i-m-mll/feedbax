@@ -17,6 +17,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -307,6 +308,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
     assert family.policy.supported_old_versions == (
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
     )
 
 
@@ -339,6 +341,7 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
     assert [record.migration_id for record in migrated.migration_records] == [
         "training-checkpoint-transaction-v1-to-v2-fork-provenance",
         "training-checkpoint-transaction-v2-to-v3-portable-custody",
+        "training-checkpoint-transaction-v3-to-v4-batch-progress",
     ]
 
 
@@ -392,6 +395,64 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
         "schema_version"
     ] == run_spec.schema_version
     assert migrated_binding["canonical_projection"]["training_run_spec"]["on_nan"] == "raise"
+
+
+def test_checkpoint_transaction_manifest_v3_migrates_batch_progress_metadata(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12009),
+        slots=_minimax_slots(),
+        metadata={"completed_batches": 16500},
+    )
+    payload = result.manifest.model_dump(mode="json", exclude_none=True)
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3
+    payload.pop("completed_training_batches")
+    payload.pop("completed_coordinate_semantics")
+
+    migrated = migrate_structured_spec_payload(
+        "TrainingCheckpointTransactionManifest",
+        payload,
+        path="checkpoint_manifest",
+    )
+
+    assert migrated.source_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3
+    assert migrated.target_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert migrated.payload["completed_training_batches"] == 16500
+    assert "not the primary training-batch" in migrated.payload[
+        "completed_coordinate_semantics"
+    ]
+
+
+def test_checkpoint_latest_pointer_prefers_explicit_batches_over_coordinate(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12009),
+        slots=_minimax_slots(),
+        completed_training_batches=16500,
+    )
+
+    latest = json.loads(result.latest_pointer_path.read_text())
+
+    assert result.manifest.completed_coordinate.global_step == 12009
+    assert result.manifest.completed_training_batches == 16500
+    assert result.latest_pointer.completed_training_batches == 16500
+    assert latest["completed_training_batches"] == 16500
+    assert latest["completed_coordinate"]["global_step"] == 12009
+    assert "not the primary training-batch" in latest["completed_coordinate_semantics"]
 
 
 def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path) -> None:

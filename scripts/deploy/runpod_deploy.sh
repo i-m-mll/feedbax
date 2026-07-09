@@ -1087,6 +1087,7 @@ main() {
     if [ "$ACQUIRE_ONLY" -eq 0 ]; then
         validate_train_spec_gate
         validate_declared_baselines
+        validate_training_manifest_preflight
     fi
     write_run_config
     require_real_commands

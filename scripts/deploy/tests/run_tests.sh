@@ -242,8 +242,8 @@ case "$rendered" in
   *) no "remote status venv probe markers" "...venv_probe=done...probe_ok=done..." "$rendered" ;;
 esac
 case "$rendered" in
-  *"last_checkpoint=2400 last_batch=2350"*) ok "remote status progress signals" ;;
-  *) no "remote status progress signals" "...last_checkpoint=2400 last_batch=2350..." "$rendered" ;;
+  *"last_batch=2350 last_checkpoint=2400"*) ok "remote status progress signals" ;;
+  *) no "remote status progress signals" "...last_batch=2350 last_checkpoint=2400..." "$rendered" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -327,9 +327,9 @@ section "W8 latest pointer completed batches"
 BASE="$TMP/baseline"
 mkdir -p "$BASE"
 cat > "$BASE/latest.json" <<JSON
-{"completed_coordinate":{"global_step":1200}}
+{"completed_coordinate":{"global_step":1200},"completed_training_batches":16500}
 JSON
-eq "latest pointer completed_coordinate" "1200" "$(latest_pointer_completed_batches "$BASE/latest.json")"
+eq "latest pointer completed_training_batches before coordinate" "16500" "$(latest_pointer_completed_batches "$BASE/latest.json")"
 cat > "$TMP/old-latest.json" <<JSON
 {"completed_batches":900}
 JSON
