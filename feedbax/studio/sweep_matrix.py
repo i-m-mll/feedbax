@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import copy
-import math
-import random
-from itertools import product
 from typing import Any, Mapping
 
 from pydantic import ValidationError
@@ -14,11 +11,19 @@ from feedbax.contracts.manifest import (
     TrainingRunAxisCoordinate,
     TrainingRunSetAxes,
     TrainingSweepAxis,
-    TrainingSweepAxisGroup,
     TrainingSweepAxisVariation,
     TrainingSweepCombinationSpec,
     planned_training_run_manifest_id,
     planned_training_run_set_manifest_id,
+)
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TrainingRunMatrixSpec,
+)
+from feedbax.training.run_matrix import (
+    RunMatrixError,
+    expand_sweep_coordinates,
+    variation_values,
 )
 
 
@@ -71,6 +76,11 @@ def matrix_spec_from_selection(selection_spec: Mapping[str, Any]) -> Mapping[str
     for key in ("matrix", "sweep_matrix", "run_matrix"):
         value = selection_spec.get(key)
         if isinstance(value, Mapping):
+            if value.get("schema_id") == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID:
+                try:
+                    TrainingRunMatrixSpec.model_validate(value)
+                except ValidationError as exc:
+                    raise SweepMatrixError(f"invalid training run matrix spec: {exc}") from exc
             return value
     return None
 
@@ -243,109 +253,17 @@ def _expand_coordinates(
     axes: list[TrainingSweepAxis],
     combination: TrainingSweepCombinationSpec,
 ) -> list[dict[str, int]]:
-    axis_lengths = {axis.id: len(_variation_values(axis.variation)) for axis in axes}
-    if combination.mode == "manual":
-        if not combination.manual_coordinates:
-            raise SweepMatrixError("manual sweep matrix requires manual_coordinates")
-        return [
-            _validate_manual_coordinate(raw, axis_lengths, index)
-            for index, raw in enumerate(combination.manual_coordinates)
-        ]
-
-    groups = combination.groups or [
-        TrainingSweepAxisGroup(
-            id="all",
-            axes=[axis.id for axis in axes],
-            mode="zip" if combination.mode == "zip" else "cross",
-        )
-    ]
-    grouped_coordinates = [
-        _expand_group(group, axis_lengths)
-        for group in groups
-    ]
-    out: list[dict[str, int]] = []
-    for parts in product(*grouped_coordinates):
-        coordinate: dict[str, int] = {}
-        for part in parts:
-            coordinate.update(part)
-        out.append(coordinate)
-    return out
-
-
-def _expand_group(
-    group: TrainingSweepAxisGroup,
-    axis_lengths: Mapping[str, int],
-) -> list[dict[str, int]]:
-    if group.mode == "zip":
-        lengths = {axis_lengths[axis_id] for axis_id in group.axes}
-        if len(lengths) != 1:
-            raise SweepMatrixError(
-                f"zip sweep group {group.id!r} has mismatched lengths {sorted(lengths)!r}"
-            )
-        return [
-            {axis_id: index for axis_id in group.axes}
-            for index in range(next(iter(lengths)))
-        ]
-    return [
-        dict(zip(group.axes, indices))
-        for indices in product(*(range(axis_lengths[axis_id]) for axis_id in group.axes))
-    ]
-
-
-def _validate_manual_coordinate(
-    raw: Mapping[str, Any],
-    axis_lengths: Mapping[str, int],
-    index: int,
-) -> dict[str, int]:
-    coordinate: dict[str, int] = {}
-    for axis_id, length in axis_lengths.items():
-        value = raw.get(axis_id)
-        if not isinstance(value, int):
-            raise SweepMatrixError(
-                f"manual sweep coordinate {index} must include integer index for {axis_id!r}"
-            )
-        if value < 0 or value >= length:
-            raise SweepMatrixError(
-                f"manual sweep coordinate {index} index for {axis_id!r} is out of range"
-            )
-        coordinate[axis_id] = value
-    return coordinate
+    try:
+        return expand_sweep_coordinates(axes, combination)
+    except RunMatrixError as exc:
+        raise SweepMatrixError(str(exc)) from exc
 
 
 def _variation_values(variation: TrainingSweepAxisVariation) -> list[Any]:
-    if variation.kind == "explicit":
-        return list(variation.values)
-    if variation.kind == "linspace":
-        assert variation.min is not None and variation.max is not None and variation.n is not None
-        if variation.n == 1:
-            return [variation.min]
-        step = (variation.max - variation.min) / (variation.n - 1)
-        return [variation.min + step * index for index in range(variation.n)]
-    if variation.kind == "logspace":
-        assert variation.min is not None and variation.max is not None and variation.n is not None
-        if variation.n == 1:
-            return [variation.min]
-        start = math.log10(variation.min)
-        stop = math.log10(variation.max)
-        step = (stop - start) / (variation.n - 1)
-        return [10 ** (start + step * index) for index in range(variation.n)]
-    assert variation.sampler is not None and variation.n is not None
-    rng = random.Random(variation.seed)
-    if variation.sampler == "uniform":
-        low = float(variation.params.get("min", 0.0))
-        high = float(variation.params.get("max", 1.0))
-        return [rng.uniform(low, high) for _ in range(variation.n)]
-    if variation.sampler == "log_uniform":
-        low = float(variation.params.get("min"))
-        high = float(variation.params.get("max"))
-        if low <= 0 or high <= 0:
-            raise SweepMatrixError("log_uniform sampler requires positive min and max")
-        return [10 ** rng.uniform(math.log10(low), math.log10(high)) for _ in range(variation.n)]
-    if variation.sampler == "normal":
-        mean = float(variation.params.get("mean", 0.0))
-        std = float(variation.params.get("std", 1.0))
-        return [rng.gauss(mean, std) for _ in range(variation.n)]
-    raise SweepMatrixError(f"unsupported sweep sampler {variation.sampler!r}")
+    try:
+        return variation_values(variation)
+    except RunMatrixError as exc:
+        raise SweepMatrixError(str(exc)) from exc
 
 
 def _set_axis_value(

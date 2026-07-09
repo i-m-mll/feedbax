@@ -338,8 +338,23 @@ class OverridePatch(StrictModel):
     """Machine-readable override applied relative to a base spec."""
 
     path: str
-    value: Any
+    value: Any = None
     op: Literal["add", "replace", "remove"] = "replace"
+
+    @model_validator(mode="after")
+    def _validate_patch(self) -> "OverridePatch":
+        if not self.path.strip():
+            raise ValueError("OverridePatch path must not be empty")
+        if any(not part for part in self.path.split(".")):
+            raise ValueError(f"OverridePatch path is not dotted-path-like: {self.path!r}")
+        has_value = "value" in self.model_fields_set
+        if self.op == "remove":
+            if has_value:
+                raise ValueError("OverridePatch remove operation must not carry value")
+            return self
+        if not has_value:
+            raise ValueError(f"OverridePatch {self.op} operation requires value")
+        return self
 
 
 class TrainingSweepAxisVariation(StrictModel):
