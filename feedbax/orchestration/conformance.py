@@ -21,6 +21,12 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel, load_manifest
 from feedbax.contracts.training import OptimizerSpec
+from feedbax.orchestration.schedule_eval import (
+    _MISSING as _SCHEDULE_MISSING,
+    extract_resume_context,
+    learning_rate_from_build_optimizer,
+    require_schedule_context,
+)
 
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
@@ -487,7 +493,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     check_id = "lr_trace"
     optimizer_spec_payload = _optimizer_spec_payload(row)
     trace = _lr_trace(row)
-    context = _resume_context(row)
+    context = extract_resume_context(row.bundle_row_spec, row.training_diagnostics)
     if optimizer_spec_payload is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec optimizer spec")
     if trace is None:
@@ -495,21 +501,22 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     missing_context = [
         key
         for key in ("schedule_origin_step", "current_step", "optimizer_count_at_current_step")
-        if context.get(key) is _MISSING
+        if context.get(key) is _SCHEDULE_MISSING
     ]
     if missing_context:
         return missing_input_check(check_id, *missing_context)
 
     try:
+        eval_context = require_schedule_context(context, label="resume_context")
         optimizer_spec = OptimizerSpec.model_validate(optimizer_spec_payload)
         samples = _selected_lr_samples(trace, optimizer_spec)
         expected = {
-            step: _learning_rate_from_build_optimizer(
+            step: learning_rate_from_build_optimizer(
                 optimizer_spec,
                 sample_step=step,
-                schedule_origin_step=int(context["schedule_origin_step"]),
-                current_step=int(context["current_step"]),
-                optimizer_count_at_current_step=int(context["optimizer_count_at_current_step"]),
+                schedule_origin_step=eval_context.schedule_origin_step,
+                current_step=eval_context.current_step,
+                optimizer_count_at_current_step=eval_context.optimizer_count_at_current_step,
             )
             for step in samples
         }
@@ -530,77 +537,6 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     if not mismatches:
         return pass_check(check_id, expected=expected, observed=observed)
     return fail_check(check_id, expected=expected, observed=observed, detail=str(mismatches))
-
-
-def _learning_rate_from_build_optimizer(
-    optimizer_spec: OptimizerSpec,
-    *,
-    sample_step: int,
-    schedule_origin_step: int,
-    current_step: int,
-    optimizer_count_at_current_step: int,
-) -> float:
-    import jax.numpy as jnp
-    import jax.tree as jt
-
-    from feedbax.training.optimizers import build_optimizer
-
-    if sample_step < current_step:
-        raise ValueError(
-            f"lr_trace sample_step={sample_step} precedes current_step={current_step}"
-        )
-    optimizer = build_optimizer(
-        optimizer_spec,
-        schedule_origin_step=schedule_origin_step,
-        current_step=current_step,
-        optimizer_count_at_current_step=optimizer_count_at_current_step,
-    )
-    params = {"w": jnp.asarray(1.0)}
-    state = optimizer.init(params)
-    target_count = optimizer_count_at_current_step + (sample_step - current_step)
-    state = _with_injected_count(state, target_count)
-    grads = jt.map(jnp.zeros_like, params)
-    _updates, next_state = optimizer.update(grads, state, params)
-    return _scheduled_learning_rate(next_state)
-
-
-def _with_injected_count(value: Any, count: int) -> Any:
-    import jax.numpy as jnp
-
-    if _is_injected_hyperparams_state(value):
-        hyperparams_states = dict(value.hyperparams_states)
-        patched_states = {
-            key: state._replace(count=jnp.asarray(count, dtype=jnp.int32))
-            for key, state in hyperparams_states.items()
-            if hasattr(state, "_replace") and hasattr(state, "count")
-        }
-        hyperparams_states.update(patched_states)
-        return value._replace(
-            count=jnp.asarray(count, dtype=jnp.int32),
-            hyperparams_states=hyperparams_states,
-        )
-    if isinstance(value, tuple):
-        return type(value)(_with_injected_count(item, count) for item in value)
-    if isinstance(value, list):
-        return [_with_injected_count(item, count) for item in value]
-    if isinstance(value, dict):
-        return {key: _with_injected_count(item, count) for key, item in value.items()}
-    return value
-
-
-def _scheduled_learning_rate(value: Any) -> float:
-    import jax.tree as jt
-
-    leaves = jt.leaves(value, is_leaf=_is_injected_hyperparams_state)
-    for leaf in leaves:
-        if _is_injected_hyperparams_state(leaf):
-            return float(leaf.hyperparams["learning_rate"])
-    raise ValueError("scheduled optimizer state not found")
-
-
-def _is_injected_hyperparams_state(value: Any) -> bool:
-    fields = getattr(value, "_fields", ())
-    return {"hyperparams", "inner_state"}.issubset(set(fields))
 
 
 def _selected_lr_samples(
@@ -629,7 +565,9 @@ def _optimizer_spec_payload(row: ConformanceRowArtifacts) -> Any:
         _path(row.bundle_row_spec, "optimizer_spec"),
         _path(row.bundle_row_spec, "training", "optimizer"),
         _path(row.bundle_row_spec, "training_spec", "method_payload", "payload", "optimizer"),
-        _path(_training_spec_payload(_manifest_payload(row)), "method_payload", "payload", "optimizer"),
+        _path(
+            _training_spec_payload(_manifest_payload(row)), "method_payload", "payload", "optimizer"
+        ),
     )
 
 
@@ -650,31 +588,6 @@ def _lr_trace(row: ConformanceRowArtifacts) -> dict[int, float] | None:
             raise ValueError(f"invalid lr_trace item {item!r}")
         trace[int(step)] = float(value)
     return trace
-
-
-def _resume_context(row: ConformanceRowArtifacts) -> dict[str, Any]:
-    raw = _first_present(
-        _path(row.bundle_row_spec, "resume_context"),
-        _path(row.training_diagnostics, "resume_context"),
-        {},
-    )
-    return {
-        "schedule_origin_step": _first_present(
-            _path(raw, "schedule_origin_step"),
-            _path(row.bundle_row_spec, "schedule_origin_step"),
-            _path(row.training_diagnostics, "schedule_origin_step"),
-        ),
-        "current_step": _first_present(
-            _path(raw, "current_step"),
-            _path(row.bundle_row_spec, "current_step"),
-            _path(row.training_diagnostics, "current_step"),
-        ),
-        "optimizer_count_at_current_step": _first_present(
-            _path(raw, "optimizer_count_at_current_step"),
-            _path(row.bundle_row_spec, "optimizer_count_at_current_step"),
-            _path(row.training_diagnostics, "optimizer_count_at_current_step"),
-        ),
-    }
 
 
 def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
