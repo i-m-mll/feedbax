@@ -1711,6 +1711,7 @@ def training_run_manifest_id(job_id: Optional[str] = None) -> str:
 def write_training_run_manifest(
     *,
     job_id: Optional[str],
+    run_set_id: Optional[str] = None,
     total_batches: int,
     training_spec: Optional[dict[str, Any]] = None,
     task_spec: Optional[dict[str, Any]] = None,
@@ -1792,6 +1793,7 @@ def write_training_run_manifest(
     manifest = TrainingRunManifest(
         id=training_run_manifest_id(job_id),
         job_id=job_id,
+        run_set_id=run_set_id,
         status=status,
         completed_at=utc_now() if status in {"completed", "failed", "cancelled"} else None,
         graph_spec=spec_payload("GraphSpec", graph_spec) if graph_spec is not None else None,

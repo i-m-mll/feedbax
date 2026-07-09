@@ -40,6 +40,10 @@ def create_app() -> FastAPI:
         except Exception:
             logger.exception("Failed to reconcile orchestration state during startup")
         try:
+            await training_service.reconcile_from_state_docs()
+        except Exception:
+            logger.exception("Failed to reconcile training run state during startup")
+        try:
             yield
         finally:
             training_service._terminate_worker()

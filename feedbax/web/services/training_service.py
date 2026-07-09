@@ -7,9 +7,11 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from pathlib import Path
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
@@ -17,11 +19,31 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
+from feedbax.orchestration.bundle import (
+    BudgetPolicy,
+    EnvironmentDeclaration,
+    LaunchPolicy,
+    RunBundle,
+    RunRowSpec,
+    mint_run_set_id,
+)
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
+    RUN_EVENT_TERMINAL_TYPES,
+    RunEvent,
+    RunEventReader,
     legacy_worker_event_from_run_event,
 )
+from feedbax.orchestration.stages import (
+    STAGE_CERTIFY,
+    STAGE_COLLECT,
+    STAGE_MONITOR,
+    STAGE_REGISTER,
+    StageEngine,
+)
+from feedbax.orchestration.state import RunSetState, RunSetStateStore, utc_now
 import feedbax.web.worker.client as worker_client
+from feedbax.web.services.worker_driver import WorkerHttpDriver
 
 
 # ---------------------------------------------------------------------------
@@ -37,11 +59,13 @@ class TrainingEvent:
 
 
 @dataclass(frozen=True)
-class _StatusCoordinate:
-    """Monotonic coordinate for the cached status visible to REST callers."""
+class _JobRef:
+    """Rebuildable pointer from a Studio job id to durable orchestration state."""
 
-    seq: int
-    batch: int
+    job_id: str
+    run_set_id: str
+    state_path: Path
+    bundle_path: Path
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +93,13 @@ def _worker_stderr_excerpt(process: subprocess.Popen, *, limit: int = 4000) -> s
     return stderr.strip()[-limit:]
 
 
+def _orchestration_parent_root() -> Path:
+    configured = os.environ.get("FEEDBAX_ORCHESTRATION_ROOT")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".cache" / "feedbax" / "orchestration"
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -92,11 +123,8 @@ class TrainingService:
         self._auth_token: Optional[str] = None
         self._remote: bool = False
         self._lock = asyncio.Lock()
-        # Track last known job metadata for synchronous helpers and worker outages.
-        self._last_status_by_job: dict[str, dict] = {}
-        self._last_status_coord_by_job: dict[str, _StatusCoordinate] = {}
-        self._event_seq_by_job: dict[str, int] = {}
-        self._last_loss_by_job: dict[str, float] = {}
+        self._job_refs_by_job: dict[str, _JobRef] = {}
+        self._stage_threads_by_run_set: dict[str, threading.Thread] = {}
 
         # Honour the FEEDBAX_WORKER_URL env var: skip subprocess and connect
         # directly to an external worker.
@@ -104,6 +132,7 @@ class TrainingService:
         if env_url:
             self._base_url = env_url.rstrip("/")
             self._remote = True
+        self.rebuild_cache_from_state_docs()
 
     # ------------------------------------------------------------------
     # Remote mode
@@ -236,26 +265,29 @@ class TrainingService:
             The job ID assigned by the worker.
         """
         base_url = await self._ensure_worker()
-        job_id = await worker_client.start_job(
-            base_url,
-            total_batches,
-            training_config=training_config,
-            training_spec=training_spec,
-            task_spec=task_spec,
-            task_binding_spec=task_binding_spec,
-            graph_spec=graph_spec,
-            auth_token=self._auth_token,
-        )
-        self._last_status_by_job[job_id] = {
-            "status": "running",
-            "batch": 0,
+        body = {
             "total_batches": total_batches,
-            "last_loss": 0.0,
-            "job_id": job_id,
+            "training_config": training_config,
+            "training_spec": training_spec,
+            "task_spec": task_spec,
+            "task_binding_spec": task_binding_spec,
+            "graph_spec": graph_spec,
         }
-        self._last_status_coord_by_job[job_id] = _StatusCoordinate(seq=-1, batch=0)
-        self._event_seq_by_job[job_id] = -1
-        self._last_loss_by_job[job_id] = 0.0
+        body = {key: value for key, value in body.items() if value is not None}
+        bundle = self._build_worker_bundle(total_batches=total_batches, worker_start=body)
+        job_id = bundle.rows[0].row_id
+        driver = WorkerHttpDriver(base_url=base_url, auth_token=self._auth_token)
+        store = RunSetStateStore(bundle.run_set_dir / "state.json")
+        StageEngine(bundle=bundle, driver=driver, store=store).run(stop_after_stage="ASSEMBLE")
+        self._remember_job_ref(bundle)
+        thread = threading.Thread(
+            target=self._run_stage_engine,
+            args=(bundle, driver, store),
+            name=f"feedbax-training-stage-engine-{bundle.run_set_id}",
+            daemon=True,
+        )
+        self._stage_threads_by_run_set[bundle.run_set_id] = thread
+        thread.start()
         return job_id
 
     async def stop_training(self, job_id: str) -> None:
@@ -263,8 +295,9 @@ class TrainingService:
 
         Also kills the subprocess if the HTTP request fails (local mode only).
         """
+        ref = self._job_ref_for(job_id)
         if self._base_url is None:
-            if job_id not in self._last_status_by_job:
+            if ref is None:
                 raise ValueError(f"Unknown job {job_id!r}")
             return
         try:
@@ -273,18 +306,7 @@ class TrainingService:
                 job_id,
                 auth_token=self._auth_token,
             )
-            cached = self._last_status_by_job.setdefault(
-                job_id,
-                {
-                    "batch": self._last_status_by_job.get(job_id, {}).get("batch", 0),
-                    "total_batches": self._last_status_by_job.get(job_id, {}).get(
-                        "total_batches", 0
-                    ),
-                    "last_loss": self._last_loss_by_job.get(job_id, 0.0),
-                    "job_id": job_id,
-                },
-            )
-            cached["status"] = "idle"
+            self._mark_row_stopped(job_id)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise ValueError(f"Unknown job {job_id!r}") from exc
@@ -314,20 +336,19 @@ class TrainingService:
 
     async def get_status(self, job_id: str) -> Optional[dict]:
         """Return a job's worker status dict, or ``None`` if the job is unknown."""
-        fallback = self._last_status_by_job.get(job_id)
+        fallback = self._status_from_state(job_id)
+        if fallback is not None:
+            return fallback
         if self._base_url is None or (
             not self._remote and self._process is not None and self._process.poll() is not None
         ):
-            return fallback
+            return None
         try:
             status = await worker_client.get_status(
                 self._base_url,
                 job_id,
                 auth_token=self._auth_token,
             )
-            status = self._cache_status_from_rest(job_id, status)
-            if "last_loss" in status:
-                self._last_loss_by_job[job_id] = float(status["last_loss"])
             return status
         except Exception:
             return fallback
@@ -356,12 +377,6 @@ class TrainingService:
             )
         )
 
-    def _next_event_seq(self, job_id: str) -> int:
-        """Return the next Studio WebSocket event sequence for *job_id*."""
-        next_seq = self._event_seq_by_job.get(job_id, -1) + 1
-        self._event_seq_by_job[job_id] = next_seq
-        return next_seq
-
     def _normalize_training_event(self, job_id: str, event: dict) -> dict:
         """Add durable Studio protocol fields to a raw worker training event."""
         if event.get("schema_id") == RUN_EVENT_SCHEMA_ID:
@@ -372,45 +387,17 @@ class TrainingService:
         normalized["schema_id"] = STUDIO_API_TRANSPORT_SCHEMA_ID
         normalized["schema_version"] = STUDIO_API_TRANSPORT_SCHEMA_VERSION
         normalized["job_id"] = job_id
-        normalized["seq"] = self._next_event_seq(job_id)
+        normalized["seq"] = (
+            int(worker_seq) if worker_seq is not None else self._next_event_seq(job_id)
+        )
         normalized["emitted_at_ms"] = int(time.time() * 1000)
         if worker_seq is not None:
             normalized["worker_seq"] = int(worker_seq)
         if normalized.get("type") == "training_error":
-            fallback_batch = self._last_status_by_job.get(job_id, {}).get("batch", 0)
+            fallback_batch = (self._status_from_state(job_id) or {}).get("batch", 0)
             normalized.setdefault("batch", fallback_batch)
             normalized.setdefault("diagnostics", [])
         return normalized
-
-    def _cache_status(
-        self,
-        job_id: str,
-        status: dict,
-        *,
-        seq: Optional[int] = None,
-    ) -> dict:
-        """Store *status* unless it would regress the cached batch coordinate."""
-        status = dict(status)
-        status["job_id"] = job_id
-        batch = int(status.get("batch", 0) or 0)
-        coord = self._last_status_coord_by_job.get(job_id)
-        if coord is not None:
-            if seq is not None and seq < coord.seq:
-                return self._last_status_by_job.get(job_id, status)
-            if batch < coord.batch:
-                return self._last_status_by_job.get(job_id, status)
-
-        self._last_status_by_job[job_id] = status
-        next_coord_seq = seq if seq is not None else (coord.seq if coord is not None else -1)
-        self._last_status_coord_by_job[job_id] = _StatusCoordinate(
-            seq=next_coord_seq,
-            batch=batch,
-        )
-        return status
-
-    def _cache_status_from_rest(self, job_id: str, status: dict) -> dict:
-        """Store a REST-polled worker status without allowing stale batch regression."""
-        return self._cache_status(job_id, status, seq=None)
 
     async def stream_progress(self, job_id: str) -> AsyncIterator[TrainingEvent]:
         """Relay the worker SSE stream as :class:`TrainingEvent` objects.
@@ -422,6 +409,8 @@ class TrainingService:
             :class:`TrainingEvent` instances wrapping raw event dicts.
         """
         if self._base_url is None:
+            async for event in self._stream_from_event_log(job_id):
+                yield event
             return
         async for event in worker_client.stream_events(
             self._base_url,
@@ -429,43 +418,6 @@ class TrainingService:
             auth_token=self._auth_token,
         ):
             event = self._normalize_training_event(job_id, event)
-            # Keep last_loss in sync for synchronous callers.
-            if "loss" in event:
-                self._last_loss_by_job[job_id] = float(event["loss"])
-            if event.get("type") == "training_progress":
-                self._cache_status(
-                    job_id,
-                    {
-                        "status": "running",
-                        "batch": event.get("batch", 0),
-                        "total_batches": event.get("total_batches", 0),
-                        "last_loss": event.get("loss", self._last_loss_by_job.get(job_id, 0.0)),
-                    },
-                    seq=int(event["seq"]),
-                )
-            elif event.get("type") == "training_complete":
-                self._cache_status(
-                    job_id,
-                    {
-                        "status": "completed",
-                        "batch": event.get("batch", 0),
-                        "total_batches": event.get("batch", 0),
-                        "last_loss": event.get("loss", self._last_loss_by_job.get(job_id, 0.0)),
-                    },
-                    seq=int(event["seq"]),
-                )
-            elif event.get("type") == "training_error":
-                previous = self._last_status_by_job.get(job_id, {})
-                self._cache_status(
-                    job_id,
-                    {
-                        "status": "error",
-                        "batch": event.get("batch", previous.get("batch", 0)),
-                        "total_batches": previous.get("total_batches", 0),
-                        "last_loss": self._last_loss_by_job.get(job_id, 0.0),
-                    },
-                    seq=int(event["seq"]),
-                )
             yield TrainingEvent(raw=event)
 
     async def latest_checkpoint(self, job_id: str) -> Optional[dict]:
@@ -482,11 +434,12 @@ class TrainingService:
             ``weights_available``), or ``None`` if the job is unknown.
         """
         if self._base_url is None:
-            if job_id not in self._last_status_by_job:
+            status = self._status_from_state(job_id)
+            if status is None:
                 return None
             return {
-                "batch": self._last_status_by_job[job_id].get("batch", 0),
-                "loss": self._last_loss_by_job.get(job_id, 0.0),
+                "batch": status.get("batch", 0),
+                "loss": status.get("last_loss", 0.0),
                 "weights_available": False,
                 "job_id": job_id,
             }
@@ -499,11 +452,12 @@ class TrainingService:
             data["job_id"] = job_id
             return data
         except Exception:
-            if job_id not in self._last_status_by_job:
+            status = self._status_from_state(job_id)
+            if status is None:
                 return None
             return {
-                "batch": self._last_status_by_job[job_id].get("batch", 0),
-                "loss": self._last_loss_by_job.get(job_id, 0.0),
+                "batch": status.get("batch", 0),
+                "loss": status.get("last_loss", 0.0),
                 "weights_available": False,
                 "job_id": job_id,
             }
@@ -555,7 +509,285 @@ class TrainingService:
         Returns:
             The last loss value, or ``None`` if unknown.
         """
-        return self._last_loss_by_job.get(job_id)
+        status = self._status_from_state(job_id)
+        if status is None or status.get("last_loss") is None:
+            return None
+        return float(status["last_loss"])
+
+    def rebuild_cache_from_state_docs(self) -> None:
+        """Rebuild the in-memory job index from persisted orchestration state."""
+        refs: dict[str, _JobRef] = {}
+        for state_path in self._iter_state_paths():
+            bundle_path = state_path.with_name("bundle.json")
+            if not bundle_path.exists():
+                continue
+            try:
+                bundle = RunBundle.model_validate_json(bundle_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for row in bundle.rows:
+                refs[row.row_id] = _JobRef(
+                    job_id=row.row_id,
+                    run_set_id=bundle.run_set_id,
+                    state_path=state_path,
+                    bundle_path=bundle_path,
+                )
+        self._job_refs_by_job = refs
+
+    async def reconcile_from_state_docs(self) -> None:
+        """Finalize terminal rows and fail truly orphaned rows after backend restart."""
+        self.rebuild_cache_from_state_docs()
+        for ref in list(self._job_refs_by_job.values()):
+            try:
+                bundle = self._load_bundle(ref)
+                store = RunSetStateStore(ref.state_path)
+                state = store.load()
+            except Exception:
+                continue
+            changed = False
+            for row in bundle.rows:
+                row_state = state.rows.get(row.row_id)
+                if row_state is None or row_state.status in ("completed", "failed", "stopped"):
+                    continue
+                event_path = bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl"
+                done = bundle.run_set_dir / "sentinels" / f"{row.row_id}.done"
+                failed = bundle.run_set_dir / "sentinels" / f"{row.row_id}.failed"
+                reader = RunEventReader(event_path)
+                events = reader.read_all()
+                reconciled = reader.reconcile_sentinels(
+                    done_sentinel=done,
+                    failed_sentinel=failed,
+                )
+                high_water = events[-1].seq if events else row_state.event_seq_high_water_mark
+                last_type = events[-1].type if events else row_state.last_event_type
+                update: dict[str, Any] = {
+                    "event_seq_high_water_mark": high_water,
+                    "last_event_type": last_type,
+                    "event_discrepancies": [dict(item) for item in reconciled.discrepancies],
+                }
+                if reconciled.status == "completed":
+                    update.update({"status": "completed", "completed_at": utc_now()})
+                elif reconciled.status in ("failed", "error"):
+                    update.update(
+                        {
+                            "status": "failed",
+                            "completed_at": utc_now(),
+                            "error": "terminal event/sentinel reported failure",
+                        }
+                    )
+                else:
+                    discrepancies = list(update["event_discrepancies"])
+                    discrepancies.append(
+                        {
+                            "code": "backend_restart_orphaned_row",
+                            "detail": "row was non-terminal at startup with no live worker claim",
+                        }
+                    )
+                    update.update(
+                        {
+                            "status": "failed",
+                            "completed_at": utc_now(),
+                            "error": "orphaned after backend restart",
+                            "event_discrepancies": discrepancies,
+                        }
+                    )
+                state = state.with_row(row.row_id, row_state.model_copy(update=update))
+                changed = True
+            if changed:
+                state = self._finalize_terminal_state(state)
+                store.save(state)
+
+    def list_live_training_runs(self) -> list[dict[str, Any]]:
+        """Return state-backed rows that may not have durable manifests yet."""
+        self.rebuild_cache_from_state_docs()
+        rows: list[dict[str, Any]] = []
+        for ref in self._job_refs_by_job.values():
+            status = self._status_from_state(ref.job_id)
+            if status is None:
+                continue
+            rows.append(
+                {
+                    "id": status.get("manifest_id") or ref.job_id,
+                    "name": ref.job_id,
+                    "created_at": status.get("created_at", ""),
+                    "status": status.get("status", "unknown"),
+                    "hyperparams": {"run_set_id": ref.run_set_id},
+                    "metrics": {"last_loss": status.get("last_loss")},
+                    "provenance_id": ref.run_set_id,
+                    "job_id": ref.job_id,
+                    "run_set_id": ref.run_set_id,
+                }
+            )
+        return rows
+
+    def _build_worker_bundle(
+        self,
+        *,
+        total_batches: int,
+        worker_start: dict[str, Any],
+    ) -> RunBundle:
+        del total_batches
+        run_set_id = mint_run_set_id()
+        job_id = f"{run_set_id}-studio"
+        return RunBundle(
+            run_set_id=run_set_id,
+            driver="worker-http",
+            rows=[
+                RunRowSpec(
+                    row_id=job_id,
+                    command=["worker-http"],
+                    collect=[f"../events/{job_id}.events.jsonl"],
+                    metadata={"worker_start": worker_start},
+                )
+            ],
+            environment=EnvironmentDeclaration(python_version=sys.version.split()[0]),
+            launch_policy=LaunchPolicy(max_parallel_rows=1),
+            budget=BudgetPolicy(max_wall_clock_seconds=24 * 60 * 60),
+            metadata={"source": "studio-training-service"},
+        )
+
+    def _run_stage_engine(
+        self,
+        bundle: RunBundle,
+        driver: WorkerHttpDriver,
+        store: RunSetStateStore,
+    ) -> None:
+        try:
+            StageEngine(bundle=bundle, driver=driver, store=store).run(break_stale_lock=True)
+        except Exception:
+            # The durable state document carries the failed stage/row details.
+            return
+
+    def _remember_job_ref(self, bundle: RunBundle) -> None:
+        state_path = bundle.run_set_dir / "state.json"
+        bundle_path = bundle.run_set_dir / "bundle.json"
+        for row in bundle.rows:
+            self._job_refs_by_job[row.row_id] = _JobRef(
+                job_id=row.row_id,
+                run_set_id=bundle.run_set_id,
+                state_path=state_path,
+                bundle_path=bundle_path,
+            )
+
+    def _job_ref_for(self, job_id: str) -> _JobRef | None:
+        ref = self._job_refs_by_job.get(job_id)
+        if ref is not None:
+            return ref
+        self.rebuild_cache_from_state_docs()
+        return self._job_refs_by_job.get(job_id)
+
+    def _load_bundle(self, ref: _JobRef) -> RunBundle:
+        return RunBundle.model_validate_json(ref.bundle_path.read_text(encoding="utf-8"))
+
+    def _status_from_state(self, job_id: str) -> dict[str, Any] | None:
+        ref = self._job_ref_for(job_id)
+        if ref is None or not ref.state_path.exists():
+            return None
+        try:
+            state = RunSetStateStore(ref.state_path).load()
+            bundle = self._load_bundle(ref)
+        except Exception:
+            return None
+        row = state.rows.get(job_id)
+        if row is None:
+            return None
+        events = self._read_job_events(bundle, job_id)
+        latest = events[-1] if events else None
+        payload = dict(latest.payload) if latest is not None else {}
+        worker_start = dict(bundle.row(job_id).metadata.get("worker_start") or {})
+        status = row.status
+        if status == "failed":
+            status = "error"
+        elif status in ("launched", "ready"):
+            status = "running"
+        return {
+            "status": status,
+            "batch": int(payload.get("batch", 0) or 0),
+            "total_batches": int(
+                payload.get("total_batches", worker_start.get("total_batches", 0)) or 0
+            ),
+            "last_loss": float(payload.get("loss", 0.0) or 0.0),
+            "job_id": job_id,
+            "run_set_id": ref.run_set_id,
+            "manifest_path": payload.get("manifest_path"),
+            "manifest_id": payload.get("manifest_id"),
+            "created_at": state.created_at.isoformat(),
+            "updated_at": state.updated_at.isoformat(),
+            "last_event_type": row.last_event_type,
+            "event_seq_high_water_mark": row.event_seq_high_water_mark,
+            "event_discrepancies": row.event_discrepancies,
+        }
+
+    def _next_event_seq(self, job_id: str) -> int:
+        status = self._status_from_state(job_id)
+        if status is None:
+            return 0
+        return int(status.get("event_seq_high_water_mark", -1)) + 1
+
+    async def _stream_from_event_log(self, job_id: str) -> AsyncIterator[TrainingEvent]:
+        ref = self._job_ref_for(job_id)
+        if ref is None:
+            return
+        bundle = self._load_bundle(ref)
+        for event in self._read_job_events(bundle, job_id):
+            yield TrainingEvent(
+                raw=self._normalize_training_event(job_id, event.model_dump(mode="json"))
+            )
+            if event.type in RUN_EVENT_TERMINAL_TYPES:
+                return
+
+    def _read_job_events(self, bundle: RunBundle, job_id: str) -> list[RunEvent]:
+        path = bundle.run_set_dir / "events" / f"{job_id}.events.jsonl"
+        try:
+            return RunEventReader(path).read_all()
+        except Exception:
+            return []
+
+    def _mark_row_stopped(self, job_id: str) -> None:
+        ref = self._job_ref_for(job_id)
+        if ref is None or not ref.state_path.exists():
+            return
+        store = RunSetStateStore(ref.state_path)
+        state = store.load()
+        row = state.rows.get(job_id)
+        if row is None:
+            return
+        state = state.with_row(
+            job_id,
+            row.model_copy(update={"status": "stopped", "completed_at": utc_now()}),
+        )
+        store.save(state)
+
+    def _finalize_terminal_state(self, state: RunSetState) -> RunSetState:
+        if not state.rows:
+            return state
+        if not all(row.status in ("completed", "failed", "stopped") for row in state.rows.values()):
+            return state
+        for stage_id in (STAGE_MONITOR, STAGE_COLLECT, STAGE_CERTIFY, STAGE_REGISTER):
+            stage = state.stage(stage_id)
+            if stage.status != "completed":
+                state = state.with_stage(
+                    stage_id,
+                    stage.model_copy(
+                        update={
+                            "status": "completed",
+                            "started_at": stage.started_at or utc_now(),
+                            "completed_at": utc_now(),
+                            "outputs": {
+                                **stage.outputs,
+                                "reconciled_by": "TrainingService.reconcile_from_state_docs",
+                            },
+                            "error": None,
+                        }
+                    ),
+                )
+        return state
+
+    def _iter_state_paths(self) -> list[Path]:
+        root = _orchestration_parent_root()
+        if not root.exists():
+            return []
+        return sorted(root.glob("*/state.json"))
 
     def __del__(self) -> None:
         self._terminate_worker()
