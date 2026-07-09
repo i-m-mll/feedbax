@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.training.executor import execute_training_run_spec
+from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 from feedbax.training.checkpoint_custody import fork_checkpoint_transaction
 from feedbax.training.legacy_checkpoint_adoption import (
     ManifestDumpRequest,
@@ -200,6 +201,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Disable the default stderr progress printer.",
     )
+    preflight_parser = subparsers.add_parser(
+        "preflight-training-run-manifest",
+        help="Validate final TrainingRunManifest spec payloads without training.",
+    )
+    preflight_parser.add_argument("spec", help="TrainingRunSpec JSON path")
+    preflight_parser.add_argument("--row-id", help="Row id for failure context")
+    preflight_parser.add_argument(
+        "--training-payload",
+        help="Optional external training payload JSON",
+    )
+    preflight_parser.add_argument("--training-payload-kind", default="TrainingRunSpec")
+    preflight_parser.add_argument("--training-payload-schema-id")
+    preflight_parser.add_argument("--training-payload-schema-version")
+    preflight_parser.add_argument("--training-payload-ref")
+    preflight_parser.add_argument("--task-binding-spec")
+    preflight_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods before "
+            "TrainingRunSpec validation; may be repeated."
+        ),
+    )
     adopt_root = subparsers.add_parser(
         "adopt-legacy-checkpoint",
         help="Dump or adopt legacy Equinox tree_serialise_leaves checkpoint streams.",
@@ -361,6 +385,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             indent=2,
             sort_keys=True,
         )
+        print()
+        return 0
+    if args.command == "preflight-training-run-manifest":
+        _load_training_method_plugins(args.plugin)
+        training_payload = (
+            _read_json(args.training_payload) if args.training_payload else None
+        )
+        task_binding_spec = (
+            _read_json(args.task_binding_spec) if args.task_binding_spec else None
+        )
+        payloads = preflight_training_run_manifest_payloads(
+            _read_json(args.spec),
+            training_spec_payload=training_payload,
+            training_spec_payload_kind=args.training_payload_kind,
+            training_spec_payload_schema_id=args.training_payload_schema_id,
+            training_spec_payload_schema_version=args.training_payload_schema_version,
+            training_spec_payload_ref=args.training_payload_ref,
+            task_binding_spec=task_binding_spec,
+            row_id=args.row_id,
+            spec_path=args.spec,
+        )
+        json.dump(payloads.model_dump(), fp=sys.stdout, indent=2, sort_keys=True)
         print()
         return 0
     if args.command == "adopt-legacy-checkpoint":
