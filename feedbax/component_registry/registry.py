@@ -7,7 +7,7 @@ import importlib.util
 import inspect
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, cast
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, cast
 
 from feedbax.contracts.component import (
     ComponentDefinition,
@@ -90,11 +90,14 @@ class ComponentRegistry:
         *,
         load_user_components: bool = True,
         discover_plugins: bool = True,
+        template_packs: Iterable[Callable[[ComponentRegistry], None]] = (),
     ) -> None:
         self._components: Dict[str, ComponentMeta] = {}
         self._component_migrations: Dict[tuple[str, str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
         self._register_builtins()
+        for template_pack in template_packs:
+            self.register_template_pack(template_pack)
         if discover_plugins:
             self.discover_entry_point_components()
         if load_user_components:
@@ -106,6 +109,16 @@ class ComponentRegistry:
         from feedbax.contracts.graphs.builders import register_builtin_component_builders
 
         register_builtin_component_builders(self)
+
+    def register_template_pack(
+        self,
+        template_pack: Callable[[ComponentRegistry], None],
+        *,
+        provenance: str | None = None,
+    ) -> None:
+        """Register caller-selected composite templates."""
+        with _registration_provenance(provenance):
+            template_pack(self)
 
     def register(self, meta: ComponentMeta) -> None:
         if meta.provenance is None:

@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry import ComponentRegistry, register_cde_templates
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graphs.templates import network_template_graph
 from feedbax.contracts.graphs.normalization import normalize_task_binding_spec_for_studio_authoring
@@ -481,6 +481,7 @@ def test_rollout_graph_threads_network_template_recurrence() -> None:
 
 def test_compile_training_run_dry_runs_cde_templates() -> None:
     registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
     training_spec = _training_spec(
         loss={
             "type": "TargetStateLoss",

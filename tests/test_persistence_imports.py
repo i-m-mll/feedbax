@@ -244,9 +244,13 @@ def test_existing_persistence_db_is_reconciled_and_stamped(tmp_path: Path) -> No
         clear_db_session_cache()
 
     assert "hash_version" in model_columns
-    assert {"perturbation_config", "task_variants", "sisu_params", "eval_setup_params"} <= (
-        eval_columns
-    )
+    assert {
+        "perturbation_config",
+        "condition_metadata",
+        "task_variants",
+        "sisu_params",
+        "eval_setup_params",
+    } <= eval_columns
     assert {"created_at", "modified_at", "archived_at", "model_hashes"} <= figure_columns
     assert {"hash_version", "is_path_defunct", "postprocessed"} <= model_indexes
     assert schema_version == CURRENT_PERSISTENCE_SCHEMA_VERSION
@@ -294,6 +298,37 @@ def test_json_filters_use_canonical_serializer(tmp_path: Path) -> None:
     finally:
         session.close()
         clear_db_session_cache()
+
+
+def test_query_evaluations_by_setup_filters_condition_metadata(tmp_path: Path) -> None:
+    clear_db_session_cache()
+    session = init_db_session(f"sqlite:///{tmp_path / 'models.db'}")
+    try:
+        session.add_all(
+            [
+                EvaluationRecord(
+                    hash="eval-small",
+                    condition_metadata={"condition": "small", "gain": 1.0},
+                    archived=False,
+                ),
+                EvaluationRecord(
+                    hash="eval-large",
+                    condition_metadata={"condition": "large", "gain": 2.0},
+                    archived=False,
+                ),
+            ]
+        )
+        session.commit()
+
+        matches = database.query_evaluations_by_setup(
+            session,
+            condition_metadata={"condition": "small"},
+        )
+    finally:
+        session.close()
+        clear_db_session_cache()
+
+    assert [record.hash for record in matches] == ["eval-small"]
 
 
 def test_add_evaluation_figure_rolls_back_and_cleans_file_on_commit_failure(
