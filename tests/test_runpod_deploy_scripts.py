@@ -188,6 +188,125 @@ def test_rows_dry_run_uses_cache_env_and_warm_first_order(tmp_path: Path) -> Non
     assert "row_a.pid" not in warm_gate_output
 
 
+def run_warm_gate_probe(
+    tmp_path: Path,
+    *,
+    sentinel: str | None = None,
+    log_text: str = "",
+    timeout_seconds: int = 1,
+    ready_regex: str = "TRAINING_READY",
+) -> subprocess.CompletedProcess[str]:
+    run_dir = tmp_path / "run"
+    sentinel_dir = run_dir / "sentinels"
+    log_dir = run_dir / "logs"
+    sentinel_dir.mkdir(parents=True)
+    log_dir.mkdir()
+    if sentinel is not None:
+        for suffix in sentinel.split("+"):
+            (sentinel_dir / f"row_a.{suffix}").touch()
+    (log_dir / "row_a.log").write_text(log_text, encoding="utf-8")
+    script = f"""
+set -euo pipefail
+log() {{ printf '==> %s\\n' "$*" >&2; }}
+die() {{ printf 'error: %s\\n' "$*" >&2; exit 1; }}
+print_cmd() {{ :; }}
+run_cmd() {{ "$@"; }}
+capture_cmd() {{ "$@"; }}
+sq() {{ local v=${{1-}}; v=${{v//\\'/\\'\\\\\\'\\'}}; printf "'%s'" "$v"; }}
+source {str(LIB_RUN_PREP)!r}
+RUN_PREP_PROVIDER=local
+DRY_RUN=0
+REMOTE_RUN_DIR={str(run_dir)!r}
+REMOTE_SENTINEL_DIR={str(sentinel_dir)!r}
+SENTINEL_TIMEOUT_SECONDS={timeout_seconds}
+SENTINEL_POLL_SECONDS=1
+wait_for_row_active_training row_a {ready_regex!r}
+"""
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_warm_gate_completed_row_releases_without_readiness_marker(tmp_path: Path) -> None:
+    result = run_warm_gate_probe(tmp_path, sentinel="done")
+
+    assert result.returncode == 0, result.stderr
+    assert "completed before readiness marker matched" in result.stderr
+    assert "failed" not in result.stderr.lower()
+
+
+def test_warm_gate_readiness_marker_releases_fanout(tmp_path: Path) -> None:
+    result = run_warm_gate_probe(tmp_path, log_text="TRAINING_READY\n")
+
+    assert result.returncode == 0, result.stderr
+    assert "reached active training" in result.stderr
+
+
+def test_warm_gate_completed_row_wins_over_stale_failed_sentinel(tmp_path: Path) -> None:
+    result = run_warm_gate_probe(tmp_path, sentinel="done+failed")
+
+    assert result.returncode == 0, result.stderr
+    assert "completed before readiness marker matched" in result.stderr
+    assert "error:" not in result.stderr
+
+
+def test_warm_gate_failed_row_aborts_fanout(tmp_path: Path) -> None:
+    result = run_warm_gate_probe(tmp_path, sentinel="failed")
+
+    assert result.returncode == 1
+    assert "warm compile row row_a failed" in result.stderr
+
+
+def test_warm_gate_readiness_timeout_warns_and_releases(tmp_path: Path) -> None:
+    result = run_warm_gate_probe(tmp_path, timeout_seconds=0)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: timed out waiting for warm compile row row_a" in result.stderr
+    assert "marking the warm row failed" in result.stderr
+
+
+def test_rows_manifest_configures_warm_gate_readiness_marker(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "warm_compile_ready_string": "ROW_READY",
+                "rows": [
+                    {"id": "row_a", "command": "uv run --no-sync python train.py --row a"},
+                    {"id": "row_b", "command": "uv run --no-sync python train.py --row b"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--ssh-host",
+        "198.51.100.10",
+        "--ssh-port",
+        "2222",
+        "--train-spec",
+        str(spec),
+        "--rows-manifest",
+        str(rows),
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "string 'ROW_READY'" in output
+
+
 def test_rows_manifest_payload_preflight_fails_before_acquisition(tmp_path: Path) -> None:
     config = write_config(tmp_path)
     run_spec = tmp_path / "training-run-spec.json"

@@ -434,6 +434,16 @@ sync_rows_manifest() {
     provider_copy "$ROWS_MANIFEST" "$REMOTE_RUN_DIR/rows-manifest.json" 0
 }
 
+rows_manifest_warm_ready_field() {
+    local row_id=$1 field=$2 nested=$3
+    jq -r --arg id "$row_id" --arg field "$field" --arg nested "$nested" '
+        (.[$field] // .warm_compile[$nested] // "") as $global
+        | .rows[]
+        | select(.id == $id)
+        | (.[$field] // .warm_compile[$nested] // $global // "")
+    '
+}
+
 remote_nohup_sentinel() {
     local label=$1
     local workdir=$2
@@ -519,8 +529,8 @@ wait_for_row_active_training() {
     local ready_regex ready_string
     timeout="${SENTINEL_TIMEOUT_SECONDS:-7200}"
     poll_seconds="${SENTINEL_POLL_SECONDS:-30}"
-    ready_regex="${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}"
-    ready_string="${WARM_COMPILE_READY_STRING:-}"
+    ready_regex="${2:-${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}}"
+    ready_string="${3:-${WARM_COMPILE_READY_STRING:-}}"
     done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
     failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
     log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
@@ -542,6 +552,10 @@ wait_for_row_active_training() {
     local deadline
     deadline=$((SECONDS + timeout))
     while [ "$SECONDS" -lt "$deadline" ]; do
+        if provider_capture "test -f $(sq "$done_file")"; then
+            log "warm compile row $row_id completed before readiness marker matched; treating successful completion as warmed"
+            return 0
+        fi
         if provider_capture "test -f $(sq "$failed_file")"; then
             die "warm compile row $row_id failed; inspect $REMOTE_RUN_DIR/logs/${row_id}.log"
         fi
@@ -549,13 +563,10 @@ wait_for_row_active_training() {
             log "warm compile row $row_id reached active training; launching remaining rows"
             return 0
         fi
-        if provider_capture "test -f $(sq "$done_file")"; then
-            log "warm compile row $row_id completed before readiness marker matched; treating successful completion as warmed"
-            return 0
-        fi
         sleep "$poll_seconds"
     done
-    die "timed out waiting for warm compile row $row_id log readiness marker ($ready_description)"
+    log "WARNING: timed out waiting for warm compile row $row_id log readiness marker ($ready_description); launching remaining rows without marking the warm row failed"
+    return 0
 }
 
 count_running_rows() {
@@ -565,6 +576,7 @@ count_running_rows() {
 
 launch_training() {
     local ids workdir command default_wd warm_compile_first
+    local ready_regex ready_string
     default_wd=$(provider_workdir)
     warm_compile_first="${WARM_COMPILE_FIRST:-1}"
 
@@ -595,7 +607,11 @@ launch_training() {
             first=0
             launch_row "$row_id" "$workdir" "$command"
             if [ "$warm_compile_first" -eq 1 ]; then
-                wait_for_row_active_training "$row_id"
+                ready_regex=$(rows_manifest_warm_ready_field \
+                    "$row_id" warm_compile_ready_regex ready_regex <"$ROWS_MANIFEST")
+                ready_string=$(rows_manifest_warm_ready_field \
+                    "$row_id" warm_compile_ready_string ready_string <"$ROWS_MANIFEST")
+                wait_for_row_active_training "$row_id" "$ready_regex" "$ready_string"
                 warm_compile_first=0
             fi
         done
