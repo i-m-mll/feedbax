@@ -176,6 +176,23 @@ def test_manifest_valid_loads_manifest_and_compares_preflight_payload(tmp_path: 
     assert certificate.rows["row-a"].checks[0].status == "pass"
 
 
+@pytest.mark.parametrize("expected_status", ["complete", "completed", "done"])
+def test_events_terminal_complete_event_matches_success_aliases(
+    expected_status: str,
+) -> None:
+    result = check_events_terminal(
+        _row(
+            event_log=[
+                {"type": "started"},
+                {"type": "complete"},
+            ],
+            bundle_row_spec={"expected_terminal_status": expected_status},
+        )
+    )
+
+    assert result.status == "pass"
+
+
 def test_events_terminal_legacy_skip_and_terminal_validation() -> None:
     assert check_events_terminal(_row(event_log=None)).status == "skipped"
     passed = check_events_terminal(
@@ -198,6 +215,27 @@ def test_events_terminal_legacy_skip_and_terminal_validation() -> None:
 
     assert passed.status == "pass"
     assert failed.status == "fail"
+
+
+@pytest.mark.parametrize(
+    ("event_status", "expected_status"),
+    [
+        ("complete", "failed"),
+        ("failed", "complete"),
+    ],
+)
+def test_events_terminal_fails_success_failure_disagreement(
+    event_status: str,
+    expected_status: str,
+) -> None:
+    result = check_events_terminal(
+        _row(
+            event_log=[{"type": event_status}],
+            bundle_row_spec={"expected_terminal_status": expected_status},
+        )
+    )
+
+    assert result.status == "fail"
 
 
 def test_lr_trace_uses_optimizer_builder_resume_context_and_rejects_flat_terminal_lr() -> None:

@@ -467,7 +467,9 @@ def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
         )
     if expected_status is not _MISSING:
         terminal_status = _event_status(terminal_events[0])
-        if terminal_status != expected_status:
+        if _canonical_terminal_status(terminal_status) != _canonical_terminal_status(
+            expected_status
+        ):
             return fail_check(
                 check_id,
                 expected={"terminal_count": 1, "terminal_status": expected_status},
@@ -751,7 +753,12 @@ def _load_events(
 
 def _is_terminal_event(event: Mapping[str, Any]) -> bool:
     status = _event_status(event)
-    return status in {"completed", "failed", "cancelled", "done", "error"}
+    return _canonical_terminal_status(status) in {
+        "complete",
+        "failed",
+        "cancelled",
+        "error",
+    }
 
 
 def _event_status(event: Mapping[str, Any]) -> str | None:
@@ -762,6 +769,21 @@ def _event_status(event: Mapping[str, Any]) -> str | None:
         _path(event, "type"),
     )
     return None if value is _MISSING else str(value)
+
+
+def _canonical_terminal_status(status: Any) -> str | None:
+    if status is None or status is _MISSING:
+        return None
+    value = str(status).lower()
+    if value in {"complete", "completed", "done", "success", "succeeded"}:
+        return "complete"
+    if value in {"failed", "fail", "failure"}:
+        return "failed"
+    if value in {"cancelled", "canceled"}:
+        return "cancelled"
+    if value == "error":
+        return "error"
+    return value
 
 
 def _manifest_payload(row: ConformanceRowArtifacts, *, force_load: bool = False) -> Any:
