@@ -22,14 +22,12 @@ from feedbax.contracts.manifest import (
     ManifestStatus,
     ParentRef,
     Provenance,
-    SpecPayload,
     TrainingRunManifest,
     ArtifactRef,
     canonical_json_bytes,
     default_manifest_root,
     safe_manifest_key,
     sha256_bytes,
-    spec_payload,
     store_bytes_artifact,
     store_json_artifact,
     training_run_manifest_id,
@@ -56,6 +54,11 @@ from feedbax.training.phase_executor import (
     PhaseCheckpoint,
     PhaseProgramExecutor,
     StepGuardResult,
+)
+from feedbax.training.manifest_preflight import (
+    build_training_run_manifest_spec_payloads,
+    preflight_training_run_manifest_payloads,
+    validate_training_run_spec,
 )
 from feedbax.training.worker_validation import (
     WorkerExecutabilityEnvironment,
@@ -229,6 +232,15 @@ def execute_training_run_spec(
     training-loop failure behavior.
     """
     run_spec = _validate_spec(spec)
+    preflight_training_run_manifest_payloads(
+        run_spec,
+        training_spec_payload=training_spec_payload,
+        training_spec_payload_kind=training_spec_payload_kind,
+        training_spec_payload_schema_id=training_spec_payload_schema_id,
+        training_spec_payload_schema_version=training_spec_payload_schema_version,
+        training_spec_payload_ref=training_spec_payload_ref,
+        task_binding_spec=task_binding_spec,
+    )
     root_path = (
         Path(manifest_root)
         if manifest_root is not None
@@ -373,7 +385,6 @@ def execute_training_run_spec(
             run_spec,
             run_id=resolved_run_id,
             root_path=root_path,
-            graph_inline=graph_inline,
             training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
             training_spec_payload_kind=training_spec_payload_kind,
             training_spec_payload_schema_id=training_spec_payload_schema_id,
@@ -433,16 +444,7 @@ def execute_training_run_spec(
 
 def _validate_spec(spec: TrainingRunSpec | Mapping[str, Any]) -> TrainingRunSpec:
     try:
-        if isinstance(spec, TrainingRunSpec):
-            return spec
-        from feedbax.contracts.migrations import migrate_structured_spec_payload
-
-        migrated = migrate_structured_spec_payload(
-            "TrainingRunSpec",
-            spec,
-            path="training_run_spec",
-        ).payload
-        return TrainingRunSpec.model_validate(migrated)
+        return validate_training_run_spec(spec)
     except ValidationError as exc:
         raise TrainingRunExecutorError(f"/training_run_spec validation failed: {exc}") from exc
 
@@ -793,7 +795,6 @@ def _build_manifest(
     *,
     run_id: str,
     root_path: Path,
-    graph_inline: dict[str, Any] | None,
     training_spec_payload: dict[str, Any],
     training_spec_payload_kind: str,
     training_spec_payload_schema_id: str | None,
@@ -826,26 +827,25 @@ def _build_manifest(
         )
         for write in checkpoint_writes
     ]
+    payloads = build_training_run_manifest_spec_payloads(
+        spec,
+        training_spec_payload=training_spec_payload,
+        training_spec_payload_kind=training_spec_payload_kind,
+        training_spec_payload_schema_id=training_spec_payload_schema_id,
+        training_spec_payload_schema_version=training_spec_payload_schema_version,
+        training_spec_payload_ref=training_spec_payload_ref,
+        task_binding_spec=task_binding_spec,
+    )
     return TrainingRunManifest(
         id=training_run_manifest_id(run_id),
         job_id=run_id,
         status="completed",
         started_at=utc_now(),
         completed_at=utc_now(),
-        graph_spec=spec_payload("GraphSpec", graph_inline) if graph_inline is not None else None,
-        training_spec=_training_spec_payload(
-            training_spec_payload_kind,
-            training_spec_payload,
-            schema_id=training_spec_payload_schema_id,
-            schema_version=training_spec_payload_schema_version,
-            ref=training_spec_payload_ref,
-        ),
-        task_spec=spec_payload("TaskSpec", spec.task.model_dump(mode="json")),
-        task_binding_spec=(
-            spec_payload("StudioTaskBindingSpec", task_binding_spec)
-            if task_binding_spec is not None
-            else None
-        ),
+        graph_spec=payloads.graph_spec,
+        training_spec=payloads.training_spec,
+        task_spec=payloads.task_spec,
+        task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
         summary_metrics=final_metrics,
         provenance=Provenance(
@@ -858,31 +858,6 @@ def _build_manifest(
         ),
         artifacts=artifacts,
         metadata={"training_run_spec_schema_version": spec.schema_version},
-    )
-
-
-def _training_spec_payload(
-    kind: str,
-    inline: dict[str, Any],
-    *,
-    schema_id: str | None,
-    schema_version: str | None,
-    ref: str | None,
-) -> SpecPayload:
-    if kind == "TrainingRunSpec":
-        return spec_payload(kind, inline, ref=ref)
-    if schema_id is None or schema_version is None:
-        raise TrainingRunExecutorError(
-            "/training_spec_payload requires schema_id and schema_version for external kinds"
-        )
-    return SpecPayload(
-        kind=kind,
-        inline=inline,
-        schema_id=schema_id,
-        schema_version=schema_version,
-        ref=ref,
-        sha256=sha256_bytes(canonical_json_bytes(inline)),
-        metadata={"external": True},
     )
 
 

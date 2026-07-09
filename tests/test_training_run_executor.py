@@ -40,6 +40,11 @@ from feedbax.training.executor import (
     TrainingRunExecutorError,
     execute_training_run_spec,
 )
+from feedbax.training.manifest_preflight import (
+    TrainingRunManifestPreflightError,
+    build_training_run_manifest_spec_payloads,
+    preflight_training_run_manifest_payloads,
+)
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -228,6 +233,20 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _bad_rlrmp_payload() -> dict[str, object]:
+    return {
+        "schema_version": "rlrmp.cs_stochastic_gru.v1",
+        "experiment": "flat_3e-5",
+    }
+
+
+def _corrected_rlrmp_payload() -> dict[str, object]:
+    return {
+        "schema_version": "rlrmp.run_spec.v2",
+        "experiment": "flat_3e-5",
+    }
+
+
 def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     tmp_path: Path,
 ) -> None:
@@ -259,6 +278,77 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert Path(manifest.checkpoint_custody[0].uri).is_file()
     assert manifest.summary_metrics["train_loss"] == 1.0
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
+
+
+def test_training_manifest_preflight_rejects_observed_rlrmp_schema_mismatch() -> None:
+    with pytest.raises(TrainingRunManifestPreflightError) as excinfo:
+        preflight_training_run_manifest_payloads(
+            _run_spec(),
+            training_spec_payload=_bad_rlrmp_payload(),
+            training_spec_payload_kind="RLRMPRunSpec",
+            training_spec_payload_schema_id="rlrmp.run_spec",
+            training_spec_payload_schema_version="rlrmp.run_spec.v2",
+            row_id="flat_3e-5",
+            spec_path="specs/flat_3e-5.json",
+        )
+
+    message = str(excinfo.value)
+    assert "row_id='flat_3e-5'" in message
+    assert "spec_path='specs/flat_3e-5.json'" in message
+    assert "Embedded SpecPayload schema version disagrees with inline payload" in message
+    assert "kind='RLRMPRunSpec'" in message
+    assert "schema_version='rlrmp.run_spec.v2'" in message
+    assert "inline_schema_version='rlrmp.cs_stochastic_gru.v1'" in message
+
+
+def test_training_manifest_preflight_accepts_corrected_rlrmp_payload() -> None:
+    payloads = preflight_training_run_manifest_payloads(
+        _run_spec(),
+        training_spec_payload=_corrected_rlrmp_payload(),
+        training_spec_payload_kind="RLRMPRunSpec",
+        training_spec_payload_schema_id="rlrmp.run_spec",
+        training_spec_payload_schema_version="rlrmp.run_spec.v2",
+        row_id="flat_3e-5",
+        spec_path="specs/flat_3e-5.json",
+    )
+
+    assert payloads.training_spec.kind == "RLRMPRunSpec"
+    assert payloads.training_spec.schema_version == "rlrmp.run_spec.v2"
+    assert payloads.training_spec.inline["schema_version"] == "rlrmp.run_spec.v2"
+    assert payloads.training_spec.sha256 is not None
+
+
+def test_executor_runs_manifest_payload_preflight_before_execution_setup() -> None:
+    with pytest.raises(TrainingRunManifestPreflightError, match="RLRMPRunSpec"):
+        execute_training_run_spec(
+            _run_spec(),
+            run_id="bad-preflight",
+            initial_slots=None,
+            training_spec_payload=_bad_rlrmp_payload(),
+            training_spec_payload_kind="RLRMPRunSpec",
+            training_spec_payload_schema_id="rlrmp.run_spec",
+            training_spec_payload_schema_version="rlrmp.run_spec.v2",
+        )
+
+
+def test_manifest_writer_and_preflight_share_payload_builder() -> None:
+    spec = _run_spec()
+    preflight_payloads = preflight_training_run_manifest_payloads(
+        spec,
+        training_spec_payload=_corrected_rlrmp_payload(),
+        training_spec_payload_kind="RLRMPRunSpec",
+        training_spec_payload_schema_id="rlrmp.run_spec",
+        training_spec_payload_schema_version="rlrmp.run_spec.v2",
+    )
+    writer_payloads = build_training_run_manifest_spec_payloads(
+        spec,
+        training_spec_payload=_corrected_rlrmp_payload(),
+        training_spec_payload_kind="RLRMPRunSpec",
+        training_spec_payload_schema_id="rlrmp.run_spec",
+        training_spec_payload_schema_version="rlrmp.run_spec.v2",
+    )
+
+    assert writer_payloads.model_dump() == preflight_payloads.model_dump()
 
 
 def test_execute_training_run_spec_kernel_context_reaches_kernels_and_guards(
@@ -805,3 +895,43 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     assert "batch=1" in proc.stderr
     assert "loss=1" in proc.stderr
     assert "elapsed=" in proc.stderr
+
+
+def test_preflight_training_run_manifest_cli_reports_normalized_payload(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "training-run-spec.json"
+    payload_path = tmp_path / "rlrmp-payload.json"
+    _write_json(spec_path, _run_spec().model_dump(mode="json"))
+    _write_json(payload_path, _corrected_rlrmp_payload())
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "feedbax",
+            "preflight-training-run-manifest",
+            str(spec_path),
+            "--row-id",
+            "flat_3e-5",
+            "--training-payload",
+            str(payload_path),
+            "--training-payload-kind",
+            "RLRMPRunSpec",
+            "--training-payload-schema-id",
+            "rlrmp.run_spec",
+            "--training-payload-schema-version",
+            "rlrmp.run_spec.v2",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=20,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["training_spec"]["kind"] == "RLRMPRunSpec"
+    assert payload["training_spec"]["schema_version"] == "rlrmp.run_spec.v2"
+    assert payload["training_spec"]["sha256"]
