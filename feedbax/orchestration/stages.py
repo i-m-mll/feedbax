@@ -18,6 +18,7 @@ from feedbax.orchestration.conformance import (
 )
 from feedbax.orchestration.drivers.base import OrchestrationDriver
 from feedbax.orchestration.events import RunEventReader
+from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     PreflightCheckEntry,
     RowState,
@@ -175,7 +176,9 @@ class StageEngine:
         payload = self.bundle.model_dump(mode="json", exclude_none=True)
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         bundle_path = run_set_dir / "bundle.json"
-        bundle_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        bundle_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return state, {
             "bundle_path": str(bundle_path),
             "bundle_sha256": hashlib.sha256(encoded).hexdigest(),
@@ -436,16 +439,15 @@ class StageEngine:
         return state.model_copy(update={"abort_reason": reason, "updated_at": utc_now()})
 
     def _all_terminal(self, state: RunSetState) -> bool:
-        return all(
-            row.status in ("completed", "failed", "stopped")
-            for row in state.rows.values()
-        )
+        return all(row.status in ("completed", "failed", "stopped") for row in state.rows.values())
 
 
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     checks: list[PreflightCheckEntry] = []
-    checks.append(_check("schema-current", bundle.schema_version == "feedbax.orchestration.run_bundle.v1"))
+    checks.append(
+        _check("schema-current", bundle.schema_version == "feedbax.orchestration.run_bundle.v1")
+    )
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
     checks.append(_check("budget-presence", bundle.budget.max_wall_clock_seconds > 0))
     checks.append(
@@ -456,8 +458,12 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
         )
     )
     env_complete = bool(bundle.environment.python_version)
-    checks.append(_check("environment-declaration", env_complete, observed=bundle.environment.python_version))
-    mutable_pin = any("latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins)
+    checks.append(
+        _check("environment-declaration", env_complete, observed=bundle.environment.python_version)
+    )
+    mutable_pin = any(
+        "latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins
+    )
     checks.append(_check("custody-pins", not mutable_pin))
 
     manifest_failures: list[str] = []
@@ -504,32 +510,72 @@ def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[
         row_observed: list[dict[str, Any]] = []
         for index, payload in enumerate(optimizer_payloads):
             try:
-                _build_optimizer_at_preflight_points(payload)
+                result = _evaluate_optimizer_schedule_at_preflight(row, index, payload)
             except Exception as exc:
                 failures.append(f"{row.row_id}[{index}]: {exc}")
             else:
-                row_observed.append({"optimizer_index": index, "points": 3})
+                row_observed.append(result)
+                mismatches = result.get("mismatches")
+                if mismatches:
+                    failures.append(
+                        f"{row.row_id}[{index}]: learning-rate mismatch: {mismatches!r}"
+                    )
         observed[row.row_id] = row_observed
     return failures, observed
 
 
-def _build_optimizer_at_preflight_points(payload: Mapping[str, Any]) -> None:
+def _evaluate_optimizer_schedule_at_preflight(
+    row: RunRowSpec,
+    optimizer_index: int,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
     from feedbax.contracts.training import OptimizerSpec
     from feedbax.training.optimizers import build_optimizer
 
     optimizer_spec = OptimizerSpec.model_validate(payload)
-    for schedule_origin_step, current_step, optimizer_count in (
-        (0, 0, 0),
-        (0, 5, 0),
-        (3, 7, 2),
-    ):
+    if optimizer_spec.lr_schedule is None:
         optimizer = build_optimizer(
             optimizer_spec,
-            schedule_origin_step=schedule_origin_step,
-            current_step=current_step,
-            optimizer_count_at_current_step=optimizer_count,
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
         )
         optimizer.init({"preflight": 0.0})
+        return {"optimizer_index": optimizer_index, "scheduled": False, "points": 0}
+
+    if not isinstance(row.run_spec, Mapping):
+        raise ValueError("row run_spec must be an inline mapping for schedule preflight")
+    expected_context = schedule_eval.require_schedule_context(
+        schedule_eval.extract_resume_context(row.run_spec),
+        label="resume_context",
+    )
+    observed_context = schedule_eval.require_schedule_context(
+        schedule_eval.extract_optimizer_build_context(row.run_spec),
+        label="optimizer_build_context",
+    )
+    samples, mismatches = schedule_eval.compare_schedule_samples(
+        optimizer_spec,
+        expected_context=expected_context,
+        observed_context=observed_context,
+        rel_tol=1e-9,
+    )
+    optimizer = build_optimizer(
+        optimizer_spec,
+        schedule_origin_step=observed_context.schedule_origin_step,
+        current_step=observed_context.current_step,
+        optimizer_count_at_current_step=observed_context.optimizer_count_at_current_step,
+    )
+    optimizer.init({"preflight": 0.0})
+    result = {
+        "optimizer_index": optimizer_index,
+        "scheduled": True,
+        "expected_context": expected_context.model_dump(),
+        "observed_context": observed_context.model_dump(),
+        "samples": samples,
+    }
+    if mismatches:
+        result["mismatches"] = mismatches
+    return result
 
 
 def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:

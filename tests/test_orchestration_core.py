@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
+from feedbax.orchestration import conformance, schedule_eval, stages
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
@@ -106,6 +108,34 @@ def _bundle(
     )
 
 
+def _scheduled_optimizer_payload() -> dict[str, Any]:
+    return OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.1,
+            total_steps=3500,
+            constant_lr_iterations=500,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.2,
+        ),
+    ).model_dump(mode="json")
+
+
+def _schedule_context(
+    *,
+    schedule_origin_step: int,
+    current_step: int,
+    optimizer_count_at_current_step: int,
+) -> dict[str, int]:
+    return {
+        "schedule_origin_step": schedule_origin_step,
+        "current_step": current_step,
+        "optimizer_count_at_current_step": optimizer_count_at_current_step,
+    }
+
+
 def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     old = RunSetState(run_set_id="set", rows={"row": RowState(status="pending")})
@@ -135,8 +165,7 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     assert default_spec_registry.resolve("RunBundle").current_version == RUN_BUNDLE_SCHEMA_VERSION
     assert default_spec_registry.resolve("RunSetState").identity == RUN_SET_STATE_SCHEMA_ID
     assert (
-        default_spec_registry.resolve("RunSetState").current_version
-        == RUN_SET_STATE_SCHEMA_VERSION
+        default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
@@ -239,7 +268,7 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
 
     assert checks["schedule-realization"].status == "pass"
     assert checks["schedule-realization"].observed == {
-        "row-a": [{"optimizer_index": 0, "points": 3}]
+        "row-a": [{"optimizer_index": 0, "scheduled": False, "points": 0}]
     }
 
     invalid = bundle.model_copy(
@@ -255,7 +284,124 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
     )
     invalid_checks = {check.name: check for check in run_preflight_checks(invalid)}
     assert invalid_checks["schedule-realization"].status == "fail"
-    assert "/params/learning_rate is required" in (invalid_checks["schedule-realization"].detail or "")
+    assert "/params/learning_rate is required" in (
+        invalid_checks["schedule-realization"].detail or ""
+    )
+
+
+def test_preflight_schedule_realization_fails_miswired_resume_before_driver(
+    tmp_path: Path,
+) -> None:
+    declared_restart_context = _schedule_context(
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            RunRowSpec(
+                row_id="row-a",
+                command=[sys.executable, "-c", "pass"],
+                run_spec={
+                    "optimizer": _scheduled_optimizer_payload(),
+                    "resume_context": declared_restart_context,
+                    "optimizer_build_context": _schedule_context(
+                        schedule_origin_step=0,
+                        current_step=0,
+                        optimizer_count_at_current_step=0,
+                    ),
+                },
+            )
+        ],
+    )
+    driver = FakeDriver()
+
+    with pytest.raises(PreflightFailed):
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    assert driver.calls == []
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    checks = {check.name: check for check in state.stage(STAGE_PREFLIGHT).checks}
+    schedule_check = checks["schedule-realization"]
+    assert schedule_check.status == "fail"
+    assert "learning-rate mismatch" in (schedule_check.detail or "")
+    row_observed = schedule_check.observed["row-a"][0]
+    assert row_observed["expected_context"] == declared_restart_context
+    assert row_observed["observed_context"] == {
+        "schedule_origin_step": 0,
+        "current_step": 0,
+        "optimizer_count_at_current_step": 0,
+    }
+    assert len(row_observed["samples"]) >= 4
+    assert row_observed["mismatches"][0]["expected"] != row_observed["mismatches"][0]["observed"]
+
+
+def test_preflight_schedule_realization_passes_correct_resume_context(tmp_path: Path) -> None:
+    resume_context = _schedule_context(
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            RunRowSpec(
+                row_id="row-a",
+                command=[sys.executable, "-c", "pass"],
+                run_spec={
+                    "optimizer": _scheduled_optimizer_payload(),
+                    "resume_context": resume_context,
+                },
+            )
+        ],
+    )
+
+    checks = {check.name: check for check in run_preflight_checks(bundle)}
+
+    schedule_check = checks["schedule-realization"]
+    assert schedule_check.status == "pass"
+    row_observed = schedule_check.observed["row-a"][0]
+    assert row_observed["scheduled"] is True
+    assert row_observed["expected_context"] == resume_context
+    assert row_observed["observed_context"] == resume_context
+    assert len(row_observed["samples"]) >= 4
+
+
+def test_preflight_schedule_realization_fails_when_resume_context_is_dropped(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            RunRowSpec(
+                row_id="row-a",
+                command=[sys.executable, "-c", "pass"],
+                run_spec={
+                    "optimizer": _scheduled_optimizer_payload(),
+                    "optimizer_build_context": _schedule_context(
+                        schedule_origin_step=0,
+                        current_step=0,
+                        optimizer_count_at_current_step=0,
+                    ),
+                },
+            )
+        ],
+    )
+
+    checks = {check.name: check for check in run_preflight_checks(bundle)}
+
+    assert checks["schedule-realization"].status == "fail"
+    assert "resume_context missing" in (checks["schedule-realization"].detail or "")
+
+
+def test_schedule_preflight_and_conformance_share_schedule_eval_helper() -> None:
+    assert (
+        conformance.learning_rate_from_build_optimizer
+        is schedule_eval.learning_rate_from_build_optimizer
+    )
+    assert conformance.extract_resume_context is schedule_eval.extract_resume_context
+    assert stages.schedule_eval is schedule_eval
 
 
 def test_local_driver_warm_first_max_parallel_budget_and_demo(tmp_path: Path) -> None:
@@ -282,7 +428,9 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     )
     rows = [
         RunRowSpec(row_id="warm", command=[sys.executable, str(script)], collect=["payload.json"]),
-        RunRowSpec(row_id="second", command=[sys.executable, str(script)], collect=["payload.json"]),
+        RunRowSpec(
+            row_id="second", command=[sys.executable, str(script)], collect=["payload.json"]
+        ),
     ]
     bundle = _bundle(
         tmp_path,
