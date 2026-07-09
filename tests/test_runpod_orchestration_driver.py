@@ -269,6 +269,9 @@ def test_launch_row_exports_contract_env_and_starts_deadman(tmp_path: Path) -> N
     assert "FEEDBAX_ENV_FINGERPRINT=fingerprint-123" in launch_command
     assert "JAX_COMPILATION_CACHE_DIR=/workspace/jax_cache" in launch_command
     assert "XLA_PYTHON_CLIENT_PREALLOCATE=false" in launch_command
+    assert "kill -0 \"$pid\"" in launch_command
+    assert "orphaned launch: started sentinel present, process dead, no terminal sentinel" in launch_command
+    assert "rm -f" not in launch_command
     assert 'runpodctl remove pod "$pod_id"' in transport.ssh_commands[1]
 
 

@@ -20,6 +20,33 @@ from feedbax.orchestration.events import (
 )
 
 
+class FailingJsonlHandle:
+    def __init__(self, *, fail_writes: int | None) -> None:
+        self.fail_writes = fail_writes
+        self.lines: list[str] = []
+        self.closed = False
+
+    def write(self, line: str) -> int:
+        if self.fail_writes is None or self.fail_writes > 0:
+            if self.fail_writes is not None:
+                self.fail_writes -= 1
+            raise OSError("simulated write failure")
+        self.lines.append(line)
+        return len(line)
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _install_failing_handle(emitter: RunEventEmitter, handle: FailingJsonlHandle) -> None:
+    assert emitter._handle is not None
+    emitter._handle.close()
+    emitter._handle = handle
+
+
 def test_run_event_envelope_round_trips_and_preserves_payload_unknowns(tmp_path: Path) -> None:
     path = tmp_path / "events" / "row-1.events.jsonl"
     emitter = RunEventEmitter(run_set_id="set-1", row_id="row-1", path=path)
@@ -145,6 +172,87 @@ def test_emitter_heartbeat_and_io_errors_do_not_propagate(tmp_path: Path) -> Non
 
     assert broken.diagnostics
     assert warnings
+
+
+def test_emitter_retries_transient_jsonl_failures_in_order(tmp_path: Path) -> None:
+    warnings: list[str] = []
+    handle = FailingJsonlHandle(fail_writes=4)
+    emitter = RunEventEmitter(
+        run_set_id="set-1",
+        row_id="row-1",
+        path=tmp_path / "events.jsonl",
+        heartbeat_seconds=0.01,
+        retry_initial_seconds=0.001,
+        warn=warnings.append,
+    )
+    _install_failing_handle(emitter, handle)
+
+    try:
+        for seq in range(3):
+            emitter.emit("progress", {"batch": seq})
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and len(handle.lines) < 3:
+            time.sleep(0.01)
+    finally:
+        emitter.close()
+
+    assert [json.loads(line)["seq"] for line in handle.lines[:3]] == [0, 1, 2]
+    assert emitter.stats["dropped_events"] == 0
+    assert warnings
+
+
+def test_emitter_drops_after_bounded_retries_and_keeps_heartbeat_alive(
+    tmp_path: Path,
+) -> None:
+    warnings: list[str] = []
+    handle = FailingJsonlHandle(fail_writes=None)
+    emitter = RunEventEmitter(
+        run_set_id="set-1",
+        row_id="row-1",
+        path=tmp_path / "events.jsonl",
+        heartbeat_seconds=0.01,
+        max_write_attempts=3,
+        retry_initial_seconds=0.001,
+        warn=warnings.append,
+    )
+    _install_failing_handle(emitter, handle)
+
+    try:
+        emitter.emit("progress", {"batch": 1})
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and emitter.stats["dropped_events"] == 0:
+            time.sleep(0.01)
+    finally:
+        emitter.close()
+
+    assert emitter.stats["io_failures"] >= 3
+    assert emitter.stats["dropped_events"] > 0
+    assert any("dropped JSONL event" in warning for warning in warnings)
+
+
+def test_emitter_heartbeat_fires_after_retry_storm(tmp_path: Path) -> None:
+    handle = FailingJsonlHandle(fail_writes=2)
+    emitter = RunEventEmitter(
+        run_set_id="set-1",
+        row_id="row-1",
+        path=tmp_path / "events.jsonl",
+        heartbeat_seconds=0.01,
+        retry_initial_seconds=0.001,
+    )
+    _install_failing_handle(emitter, handle)
+
+    try:
+        emitter.emit("progress", {"batch": 1})
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            event_types = [json.loads(line)["type"] for line in handle.lines]
+            if "heartbeat" in event_types:
+                break
+            time.sleep(0.01)
+    finally:
+        emitter.close()
+
+    assert "heartbeat" in [json.loads(line)["type"] for line in handle.lines]
 
 
 def test_reader_reconciles_terminal_events_and_sentinels(tmp_path: Path) -> None:

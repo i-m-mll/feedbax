@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -9,6 +10,8 @@ from typing import Any
 import pytest
 
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
+from feedbax.orchestration import conformance, schedule_eval, stages
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
@@ -19,6 +22,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
 )
+from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.local import (
     LocalDriverError,
@@ -28,6 +32,7 @@ from feedbax.orchestration.drivers.local import (
 from feedbax.orchestration.stages import (
     STAGE_ORDER,
     STAGE_PREFLIGHT,
+    OrchestrationStageError,
     PreflightFailed,
     StageEngine,
     run_preflight_checks,
@@ -106,6 +111,34 @@ def _bundle(
     )
 
 
+def _scheduled_optimizer_payload() -> dict[str, Any]:
+    return OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.1,
+            total_steps=3500,
+            constant_lr_iterations=500,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.2,
+        ),
+    ).model_dump(mode="json")
+
+
+def _schedule_context(
+    *,
+    schedule_origin_step: int,
+    current_step: int,
+    optimizer_count_at_current_step: int,
+) -> dict[str, int]:
+    return {
+        "schedule_origin_step": schedule_origin_step,
+        "current_step": current_step,
+        "optimizer_count_at_current_step": optimizer_count_at_current_step,
+    }
+
+
 def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     old = RunSetState(run_set_id="set", rows={"row": RowState(status="pending")})
@@ -135,8 +168,7 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     assert default_spec_registry.resolve("RunBundle").current_version == RUN_BUNDLE_SCHEMA_VERSION
     assert default_spec_registry.resolve("RunSetState").identity == RUN_SET_STATE_SCHEMA_ID
     assert (
-        default_spec_registry.resolve("RunSetState").current_version
-        == RUN_SET_STATE_SCHEMA_VERSION
+        default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
@@ -239,7 +271,7 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
 
     assert checks["schedule-realization"].status == "pass"
     assert checks["schedule-realization"].observed == {
-        "row-a": [{"optimizer_index": 0, "points": 3}]
+        "row-a": [{"optimizer_index": 0, "scheduled": False, "points": 0}]
     }
 
     invalid = bundle.model_copy(
@@ -255,7 +287,124 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
     )
     invalid_checks = {check.name: check for check in run_preflight_checks(invalid)}
     assert invalid_checks["schedule-realization"].status == "fail"
-    assert "/params/learning_rate is required" in (invalid_checks["schedule-realization"].detail or "")
+    assert "/params/learning_rate is required" in (
+        invalid_checks["schedule-realization"].detail or ""
+    )
+
+
+def test_preflight_schedule_realization_fails_miswired_resume_before_driver(
+    tmp_path: Path,
+) -> None:
+    declared_restart_context = _schedule_context(
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            RunRowSpec(
+                row_id="row-a",
+                command=[sys.executable, "-c", "pass"],
+                run_spec={
+                    "optimizer": _scheduled_optimizer_payload(),
+                    "resume_context": declared_restart_context,
+                    "optimizer_build_context": _schedule_context(
+                        schedule_origin_step=0,
+                        current_step=0,
+                        optimizer_count_at_current_step=0,
+                    ),
+                },
+            )
+        ],
+    )
+    driver = FakeDriver()
+
+    with pytest.raises(PreflightFailed):
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    assert driver.calls == []
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    checks = {check.name: check for check in state.stage(STAGE_PREFLIGHT).checks}
+    schedule_check = checks["schedule-realization"]
+    assert schedule_check.status == "fail"
+    assert "learning-rate mismatch" in (schedule_check.detail or "")
+    row_observed = schedule_check.observed["row-a"][0]
+    assert row_observed["expected_context"] == declared_restart_context
+    assert row_observed["observed_context"] == {
+        "schedule_origin_step": 0,
+        "current_step": 0,
+        "optimizer_count_at_current_step": 0,
+    }
+    assert len(row_observed["samples"]) >= 4
+    assert row_observed["mismatches"][0]["expected"] != row_observed["mismatches"][0]["observed"]
+
+
+def test_preflight_schedule_realization_passes_correct_resume_context(tmp_path: Path) -> None:
+    resume_context = _schedule_context(
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            RunRowSpec(
+                row_id="row-a",
+                command=[sys.executable, "-c", "pass"],
+                run_spec={
+                    "optimizer": _scheduled_optimizer_payload(),
+                    "resume_context": resume_context,
+                },
+            )
+        ],
+    )
+
+    checks = {check.name: check for check in run_preflight_checks(bundle)}
+
+    schedule_check = checks["schedule-realization"]
+    assert schedule_check.status == "pass"
+    row_observed = schedule_check.observed["row-a"][0]
+    assert row_observed["scheduled"] is True
+    assert row_observed["expected_context"] == resume_context
+    assert row_observed["observed_context"] == resume_context
+    assert len(row_observed["samples"]) >= 4
+
+
+def test_preflight_schedule_realization_fails_when_resume_context_is_dropped(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            RunRowSpec(
+                row_id="row-a",
+                command=[sys.executable, "-c", "pass"],
+                run_spec={
+                    "optimizer": _scheduled_optimizer_payload(),
+                    "optimizer_build_context": _schedule_context(
+                        schedule_origin_step=0,
+                        current_step=0,
+                        optimizer_count_at_current_step=0,
+                    ),
+                },
+            )
+        ],
+    )
+
+    checks = {check.name: check for check in run_preflight_checks(bundle)}
+
+    assert checks["schedule-realization"].status == "fail"
+    assert "resume_context missing" in (checks["schedule-realization"].detail or "")
+
+
+def test_schedule_preflight_and_conformance_share_schedule_eval_helper() -> None:
+    assert (
+        conformance.learning_rate_from_build_optimizer
+        is schedule_eval.learning_rate_from_build_optimizer
+    )
+    assert conformance.extract_resume_context is schedule_eval.extract_resume_context
+    assert stages.schedule_eval is schedule_eval
 
 
 def test_local_driver_warm_first_max_parallel_budget_and_demo(tmp_path: Path) -> None:
@@ -282,7 +431,9 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     )
     rows = [
         RunRowSpec(row_id="warm", command=[sys.executable, str(script)], collect=["payload.json"]),
-        RunRowSpec(row_id="second", command=[sys.executable, str(script)], collect=["payload.json"]),
+        RunRowSpec(
+            row_id="second", command=[sys.executable, str(script)], collect=["payload.json"]
+        ),
     ]
     bundle = _bundle(
         tmp_path,
@@ -299,6 +450,10 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
 
     assert state.stage("REGISTER").status == "completed"
     assert state.registration_payload and state.registration_payload["status"] == "completed"
+    assert (
+        state.registration_payload["certificate_sha256"]
+        == hashlib.sha256((bundle.run_set_dir / "conformance.json").read_bytes()).hexdigest()
+    )
     assert {row_id: row.status for row_id, row in state.rows.items()} == {
         "warm": "completed",
         "second": "completed",
@@ -324,6 +479,169 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert budget_state.rows["slow"].status == "stopped"
     assert budget_state.registration_payload
     assert budget_state.registration_payload["status"] == "aborted"
+
+
+def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    registry = CheckRegistry(
+        {
+            "fixture_fail": lambda row: CheckEntry(
+                check_id="fixture_fail",
+                status="fail",
+                expected="pass",
+                observed="fail",
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=registry,
+        ).run()
+
+    register_path = bundle.run_set_dir / "registration.json"
+    certificate_path = bundle.run_set_dir / "conformance.json"
+    payload = json.loads(register_path.read_text(encoding="utf-8"))
+    certificate_digest = hashlib.sha256(certificate_path.read_bytes()).hexdigest()
+
+    assert payload == {
+        "abort_reason": None,
+        "certificate_overall": "fail",
+        "certificate_ref": str(certificate_path),
+        "certificate_sha256": certificate_digest,
+        "failure_reason": "conformance-failed",
+        "run_set_id": bundle.run_set_id,
+        "status": "failed",
+    }
+    failed_state = store.load()
+    assert failed_state.stage("REGISTER").status == "failed"
+    assert failed_state.registration_payload == payload
+
+    registration_mtime = register_path.stat().st_mtime_ns
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=registry,
+        ).run()
+    assert register_path.stat().st_mtime_ns == registration_mtime
+
+    tampered = dict(payload)
+    tampered["status"] = "completed"
+    register_path.write_text(
+        json.dumps(tampered, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match=r"registration payload mismatch at .*registration\.json.*conformance\.json",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=registry,
+        ).run()
+
+
+def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
+    marker = tmp_path / "spawned.txt"
+    row = RunRowSpec(
+        row_id="row-a",
+        command=[
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
+        ],
+    )
+    bundle = _bundle(tmp_path, rows=[row])
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}))
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+    try:
+        sentinels = bundle.run_set_dir / "sentinels"
+        (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
+        (sentinels / "row-a.pid").write_text(f"{process.pid}\n", encoding="utf-8")
+
+        outputs = driver.launch_row(
+            bundle,
+            row,
+            RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}),
+        )
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+    assert outputs["pid"] == process.pid
+    assert outputs["adopted"] is True
+    assert not marker.exists()
+
+
+def test_local_driver_marks_dead_started_pid_failed_without_spawning(tmp_path: Path) -> None:
+    marker = tmp_path / "spawned.txt"
+    row = RunRowSpec(
+        row_id="row-a",
+        command=[
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
+        ],
+    )
+    bundle = _bundle(tmp_path, rows=[row])
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}))
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
+    (sentinels / "row-a.pid").write_text("999999999\n", encoding="utf-8")
+
+    outputs = driver.launch_row(
+        bundle,
+        row,
+        RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}),
+    )
+
+    assert outputs["status"] == "failed"
+    assert outputs["event_discrepancies"][0]["code"] == "orphaned_launch"
+    assert "orphaned launch" in (sentinels / "row-a.failed").read_text(encoding="utf-8")
+    assert not marker.exists()
+
+
+def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> None:
+    marker = tmp_path / "spawned.txt"
+    row = RunRowSpec(
+        row_id="row-a",
+        command=[
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
+        ],
+    )
+    bundle = _bundle(tmp_path, rows=[row])
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    driver.provision(bundle, state)
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
+    (sentinels / "row-a.pid").write_text("999999999\n", encoding="utf-8")
+
+    final_state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        store=store,
+        poll_interval_seconds=0.01,
+    ).run()
+
+    assert final_state.rows["row-a"].status == "failed"
+    assert final_state.rows["row-a"].event_discrepancies[0]["code"] == "orphaned_launch"
+    assert not marker.exists()
 
 
 def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) -> None:

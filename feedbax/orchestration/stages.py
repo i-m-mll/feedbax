@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -13,11 +15,13 @@ from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
+    RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
 )
 from feedbax.orchestration.drivers.base import OrchestrationDriver
 from feedbax.orchestration.events import RunEventReader
+from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     PreflightCheckEntry,
     RowState,
@@ -175,7 +179,9 @@ class StageEngine:
         payload = self.bundle.model_dump(mode="json", exclude_none=True)
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         bundle_path = run_set_dir / "bundle.json"
-        bundle_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        bundle_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return state, {
             "bundle_path": str(bundle_path),
             "bundle_sha256": hashlib.sha256(encoded).hexdigest(),
@@ -290,23 +296,71 @@ class StageEngine:
 
     def _stage_register(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         certificate_path = Path(state.certificate_ref or "")
-        certificate_payload = json.loads(certificate_path.read_text(encoding="utf-8"))
-        certificate = assert_certificate_allows_completed_registration(certificate_payload)
-        status = "aborted" if state.abort_reason else "completed"
+        certificate_bytes = certificate_path.read_bytes()
+        certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
+        certificate = RunConformanceCertificate.model_validate(certificate_payload)
+        certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+        if certificate.overall == "pass":
+            status = "aborted" if state.abort_reason else "completed"
+        else:
+            status = "failed"
         payload = {
             "run_set_id": self.bundle.run_set_id,
             "status": status,
             "abort_reason": state.abort_reason,
             "certificate_ref": str(certificate_path),
+            "certificate_sha256": certificate_digest,
             "certificate_overall": certificate.overall,
         }
+        if status == "failed":
+            payload["failure_reason"] = "conformance-failed"
         state = state.model_copy(update={"registration_payload": payload, "updated_at": utc_now()})
         register_path = self.bundle.run_set_dir / "registration.json"
-        register_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        self._write_or_verify_registration(
+            register_path=register_path,
+            certificate_path=certificate_path,
+            payload=payload,
         )
+        self.store.save(state)
+        assert_certificate_allows_completed_registration(certificate_payload)
         return state, payload
+
+    def _write_or_verify_registration(
+        self,
+        *,
+        register_path: Path,
+        certificate_path: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        if register_path.exists():
+            existing = json.loads(register_path.read_text(encoding="utf-8"))
+            if existing == dict(payload):
+                return
+            raise OrchestrationStageError(
+                "registration payload mismatch at "
+                f"{register_path}; existing payload does not match current certificate "
+                f"outcome from {certificate_path}: status={payload.get('status')!r}, "
+                f"certificate_overall={payload.get('certificate_overall')!r}"
+            )
+
+        register_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{register_path.name}.",
+            suffix=".tmp",
+            dir=str(register_path.parent),
+            text=True,
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(dict(payload), handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, register_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
         if self.bundle.keep_alive:
@@ -344,11 +398,18 @@ class StageEngine:
 
     def _launch_one(self, row: RunRowSpec, state: RunSetState) -> RunSetState:
         outputs = self.driver.launch_row(self.bundle, row, state)
+        output_status = outputs.get("status")
+        status = "failed" if output_status == "failed" else "launched"
         row_state = state.rows[row.row_id].model_copy(
             update={
-                "status": "launched",
+                "status": status,
                 "pid": outputs.get("pid"),
                 "started_at": utc_now(),
+                "completed_at": utc_now() if status == "failed" else None,
+                "error": outputs.get("detail") if status == "failed" else None,
+                "event_discrepancies": [
+                    dict(item) for item in outputs.get("event_discrepancies", [])
+                ],
             }
         )
         state = state.with_row(row.row_id, row_state)
@@ -436,16 +497,15 @@ class StageEngine:
         return state.model_copy(update={"abort_reason": reason, "updated_at": utc_now()})
 
     def _all_terminal(self, state: RunSetState) -> bool:
-        return all(
-            row.status in ("completed", "failed", "stopped")
-            for row in state.rows.values()
-        )
+        return all(row.status in ("completed", "failed", "stopped") for row in state.rows.values())
 
 
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     checks: list[PreflightCheckEntry] = []
-    checks.append(_check("schema-current", bundle.schema_version == "feedbax.orchestration.run_bundle.v1"))
+    checks.append(
+        _check("schema-current", bundle.schema_version == "feedbax.orchestration.run_bundle.v1")
+    )
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
     checks.append(_check("budget-presence", bundle.budget.max_wall_clock_seconds > 0))
     checks.append(
@@ -456,8 +516,12 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
         )
     )
     env_complete = bool(bundle.environment.python_version)
-    checks.append(_check("environment-declaration", env_complete, observed=bundle.environment.python_version))
-    mutable_pin = any("latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins)
+    checks.append(
+        _check("environment-declaration", env_complete, observed=bundle.environment.python_version)
+    )
+    mutable_pin = any(
+        "latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins
+    )
     checks.append(_check("custody-pins", not mutable_pin))
 
     manifest_failures: list[str] = []
@@ -504,32 +568,72 @@ def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[
         row_observed: list[dict[str, Any]] = []
         for index, payload in enumerate(optimizer_payloads):
             try:
-                _build_optimizer_at_preflight_points(payload)
+                result = _evaluate_optimizer_schedule_at_preflight(row, index, payload)
             except Exception as exc:
                 failures.append(f"{row.row_id}[{index}]: {exc}")
             else:
-                row_observed.append({"optimizer_index": index, "points": 3})
+                row_observed.append(result)
+                mismatches = result.get("mismatches")
+                if mismatches:
+                    failures.append(
+                        f"{row.row_id}[{index}]: learning-rate mismatch: {mismatches!r}"
+                    )
         observed[row.row_id] = row_observed
     return failures, observed
 
 
-def _build_optimizer_at_preflight_points(payload: Mapping[str, Any]) -> None:
+def _evaluate_optimizer_schedule_at_preflight(
+    row: RunRowSpec,
+    optimizer_index: int,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
     from feedbax.contracts.training import OptimizerSpec
     from feedbax.training.optimizers import build_optimizer
 
     optimizer_spec = OptimizerSpec.model_validate(payload)
-    for schedule_origin_step, current_step, optimizer_count in (
-        (0, 0, 0),
-        (0, 5, 0),
-        (3, 7, 2),
-    ):
+    if optimizer_spec.lr_schedule is None:
         optimizer = build_optimizer(
             optimizer_spec,
-            schedule_origin_step=schedule_origin_step,
-            current_step=current_step,
-            optimizer_count_at_current_step=optimizer_count,
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
         )
         optimizer.init({"preflight": 0.0})
+        return {"optimizer_index": optimizer_index, "scheduled": False, "points": 0}
+
+    if not isinstance(row.run_spec, Mapping):
+        raise ValueError("row run_spec must be an inline mapping for schedule preflight")
+    expected_context = schedule_eval.require_schedule_context(
+        schedule_eval.extract_resume_context(row.run_spec),
+        label="resume_context",
+    )
+    observed_context = schedule_eval.require_schedule_context(
+        schedule_eval.extract_optimizer_build_context(row.run_spec),
+        label="optimizer_build_context",
+    )
+    samples, mismatches = schedule_eval.compare_schedule_samples(
+        optimizer_spec,
+        expected_context=expected_context,
+        observed_context=observed_context,
+        rel_tol=1e-9,
+    )
+    optimizer = build_optimizer(
+        optimizer_spec,
+        schedule_origin_step=observed_context.schedule_origin_step,
+        current_step=observed_context.current_step,
+        optimizer_count_at_current_step=observed_context.optimizer_count_at_current_step,
+    )
+    optimizer.init({"preflight": 0.0})
+    result = {
+        "optimizer_index": optimizer_index,
+        "scheduled": True,
+        "expected_context": expected_context.model_dump(),
+        "observed_context": observed_context.model_dump(),
+        "samples": samples,
+    }
+    if mismatches:
+        result["mismatches"] = mismatches
+    return result
 
 
 def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
