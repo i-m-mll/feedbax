@@ -1,5 +1,18 @@
 """Run-orchestration support surfaces."""
 
+from feedbax.orchestration.bundle import (
+    RUN_BUNDLE_SCHEMA_ID,
+    RUN_BUNDLE_SCHEMA_VERSION,
+    BudgetPolicy,
+    EnvironmentDeclaration,
+    InputCustodyPin,
+    LaunchPolicy,
+    RepoRevision,
+    RunBundle,
+    RunRowSpec,
+    default_orchestration_root,
+    mint_run_set_id,
+)
 from feedbax.orchestration.conformance import (
     CHECK_STATUS_FAIL,
     CHECK_STATUS_PASS,
@@ -17,6 +30,12 @@ from feedbax.orchestration.conformance import (
     run_conformance_checks,
     write_conformance_certificate,
 )
+from feedbax.orchestration.drivers.base import DriverRowProbe, OrchestrationDriver
+from feedbax.orchestration.drivers.local import (
+    LocalDriverError,
+    LocalOrchestrationDriver,
+    compute_environment_fingerprint,
+)
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
     RUN_EVENT_SCHEMA_VERSION,
@@ -28,8 +47,21 @@ from feedbax.orchestration.events import (
     RunEventReader,
     format_batch_line,
 )
+from feedbax.orchestration.stages import STAGE_ORDER, StageEngine, run_preflight_checks
+from feedbax.orchestration.state import (
+    RUN_SET_STATE_SCHEMA_ID,
+    RUN_SET_STATE_SCHEMA_VERSION,
+    PreflightCheckEntry,
+    RowState,
+    RunSetState,
+    RunSetStateStore,
+    StageState,
+    StateLockError,
+)
 
 __all__ = [
+    "RUN_BUNDLE_SCHEMA_ID",
+    "RUN_BUNDLE_SCHEMA_VERSION",
     "CHECK_STATUS_FAIL",
     "CHECK_STATUS_PASS",
     "CHECK_STATUS_SKIPPED",
@@ -37,21 +69,46 @@ __all__ = [
     "RUN_CONFORMANCE_SCHEMA_VERSION",
     "RUN_EVENT_SCHEMA_ID",
     "RUN_EVENT_SCHEMA_VERSION",
+    "RUN_SET_STATE_SCHEMA_ID",
+    "RUN_SET_STATE_SCHEMA_VERSION",
     "BatchLineFormatError",
+    "BudgetPolicy",
     "CertificateRow",
     "CheckEntry",
     "CheckRegistry",
     "ConformanceRowArtifacts",
+    "DriverRowProbe",
+    "EnvironmentDeclaration",
+    "InputCustodyPin",
+    "LaunchPolicy",
+    "LocalDriverError",
+    "LocalOrchestrationDriver",
+    "OrchestrationDriver",
+    "PreflightCheckEntry",
     "ReconciledRunStatus",
+    "RepoRevision",
+    "RowState",
+    "RunBundle",
     "RunConformanceCertificate",
     "RunEvent",
     "RunEventEmitter",
     "RunEventProtocolError",
     "RunEventReader",
+    "RunRowSpec",
+    "RunSetState",
+    "RunSetStateStore",
+    "STAGE_ORDER",
+    "StageEngine",
+    "StageState",
+    "StateLockError",
     "assert_certificate_allows_completed_registration",
     "build_core_check_registry",
     "build_default_check_registry",
+    "compute_environment_fingerprint",
+    "default_orchestration_root",
     "format_batch_line",
+    "mint_run_set_id",
+    "run_preflight_checks",
     "run_conformance_checks",
     "write_conformance_certificate",
 ]

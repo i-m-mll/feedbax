@@ -152,6 +152,14 @@ from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
     RUN_EVENT_SCHEMA_VERSION,
 )
+from feedbax.orchestration.bundle import (
+    RUN_BUNDLE_SCHEMA_ID,
+    RUN_BUNDLE_SCHEMA_VERSION,
+)
+from feedbax.orchestration.state import (
+    RUN_SET_STATE_SCHEMA_ID,
+    RUN_SET_STATE_SCHEMA_VERSION,
+)
 
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
@@ -1761,6 +1769,34 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "RunBundle",
+            RUN_BUNDLE_SCHEMA_ID,
+            RUN_BUNDLE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.bundle",
+            emitted_by=("feedbax.orchestration.bundle.RunBundle",),
+            consumed_by=(
+                "feedbax.orchestration.stages.StageEngine",
+                "orchestration CLI",
+            ),
+            description="Durable run-set orchestration request bundle.",
+            rejected_old_versions=("feedbax.orchestration.run_bundle.v0",),
+            required_tests=("tests/test_orchestration_core.py",),
+        ),
+        _family(
+            "RunSetState",
+            RUN_SET_STATE_SCHEMA_ID,
+            RUN_SET_STATE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.state",
+            emitted_by=("feedbax.orchestration.state.RunSetStateStore",),
+            consumed_by=(
+                "feedbax.orchestration.stages.StageEngine",
+                "orchestration drivers",
+            ),
+            description="Atomic run-set orchestration state document.",
+            rejected_old_versions=("feedbax.orchestration.run_set_state.v0",),
+            required_tests=("tests/test_orchestration_core.py",),
         ),
         _family(
             "RunEvent",
