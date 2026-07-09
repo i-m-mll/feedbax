@@ -329,7 +329,7 @@ class BundleStageDryRunRecord(StudioApiModel):
     """Side-effect-free stage plan for analysis bundle preflight."""
 
     name: str
-    kind: Literal["evaluation", "analysis", "materialization", "report"]
+    kind: Literal["evaluation", "analysis", "materialization", "figure", "report"]
     status: Literal["would_run", "would_skip", "missing", "not_applicable"]
     depends_on: list[str] = Field(default_factory=list)
     inputs: list[ParentRef] = Field(default_factory=list)
@@ -373,8 +373,10 @@ class GenerateAnalysisRequest(StudioApiModel):
     """Body for ``POST /api/analyses/jobs``."""
 
     node_id: str
+    job_kind: Literal["analysis", "figure"] = "analysis"
     force_rerun: bool = False
     eval_run_id: Optional[str] = None
+    figure_spec: Optional[dict[str, Any]] = None
 
 
 class GenerateAnalysisPayload(StudioApiModel):

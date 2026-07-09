@@ -102,6 +102,7 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     TrainingSpec,
 )
+from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.tasks.presets import apply_delayed_reaches_preset
 
@@ -250,6 +251,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "AnalysisDataProductRequirement": AnalysisDataProductRequirement,
         "TrainingSpec": TrainingSpec,
         "TrainingRunSpec": TrainingRunSpec,
+        "TrainingRunMatrixSpec": TrainingRunMatrixSpec,
         "LrScheduleSpec": LrScheduleSpec,
         "TaskSpec": TaskSpec,
         "LossTermSpec": LossTermSpec,

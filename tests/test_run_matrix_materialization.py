@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from feedbax.contracts.expressions import Coalesce, ValueQuery
+from feedbax.contracts.manifest import sha256_bytes
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TrainingRunMatrixSpec,
+    apply_override_patches,
+)
+from feedbax.contracts.training import (
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
+)
+from feedbax.training.run_matrix import (
+    RunMatrixError,
+    materialize_run_matrix,
+    render_spec_lock_table,
+    write_materialized_matrix,
+)
+
+
+def _minimal_graph() -> dict[str, object]:
+    return {
+        "nodes": {
+            "gain": {
+                "type": "Gain",
+                "params": {"gain": 1.0},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            }
+        },
+        "wires": [],
+        "input_ports": ["input"],
+        "output_ports": ["output"],
+        "input_bindings": {"input": ("gain", "input")},
+        "output_bindings": {"output": ("gain", "output")},
+    }
+
+
+def _training_run_payload() -> dict[str, object]:
+    worker = WorkerExecutionSpec(
+        method_contract=standard_supervised_method_contract(),
+        effective_phase=standard_supervised_effective_phase_spec(),
+    )
+    spec = TrainingRunSpec(
+        graph={"inline": _minimal_graph()},
+        task=TaskSpec(type="ReachingTask", params={"n_steps": 4}),
+        training_config=TrainingConfig(n_batches=2, batch_size=3, learning_rate=0.01),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(type="target_state", label="target", selector="output")
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=worker,
+    )
+    return spec.model_dump(mode="json")
+
+
+def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
+    return TrainingRunMatrixSpec.model_validate(
+        {
+            "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            "name": "lr rows",
+            "issue": "60c12f1",
+            "base": {"inline": base},
+            "fork": {"source_run_id": "feedbax-training-run:source", "lr_continuation": "continue"},
+            "rows": [
+                {
+                    "row_id": "lr_hi",
+                    "seed": 11,
+                    "overrides": [
+                        {"path": "training_config.learning_rate", "op": "replace", "value": 0.02},
+                        {"path": "metadata.row", "op": "add", "value": "hi"},
+                    ],
+                },
+                {
+                    "row_id": "lr_lo",
+                    "seed": 12,
+                    "overrides": [
+                        {"path": "training_config.learning_rate", "op": "replace", "value": 0.002}
+                    ],
+                },
+            ],
+        }
+    )
+
+
+def test_apply_override_patches_is_fail_closed() -> None:
+    base = {"a": {"b": 1}, "items": [0, 1]}
+
+    patched = apply_override_patches(
+        base,
+        [
+            {"path": "a.b", "op": "replace", "value": 2},  # type: ignore[list-item]
+            {"path": "a.c", "op": "add", "value": 3},  # type: ignore[list-item]
+            {"path": "items.0", "op": "remove"},  # type: ignore[list-item]
+        ],
+    )
+
+    assert patched == {"a": {"b": 2, "c": 3}, "items": [1]}
+    assert base == {"a": {"b": 1}, "items": [0, 1]}
+    with pytest.raises(ValueError, match="missing"):
+        apply_override_patches(base, [{"path": "a.x", "op": "replace", "value": 2}])  # type: ignore[list-item]
+
+
+def test_materialize_explicit_rows_plans_stable_ids_and_writes_deterministic_bytes(
+    tmp_path: Path,
+) -> None:
+    materialized = materialize_run_matrix(_matrix(_training_run_payload()), repo_root=tmp_path)
+    second = materialize_run_matrix(_matrix(_training_run_payload()), repo_root=tmp_path)
+
+    assert [row.row_id for row in materialized.rows] == ["lr_hi", "lr_lo"]
+    assert materialized.rows[0].payload["training_config"]["learning_rate"] == 0.02
+    assert materialized.rows[0].payload["metadata"]["row"] == "hi"
+    assert materialized.rows[0].planned_run_id != materialized.rows[1].planned_run_id
+    assert [row.planned_run_id for row in materialized.rows] == [
+        row.planned_run_id for row in second.rows
+    ]
+    first_manifest = write_materialized_matrix(materialized, tmp_path / "first", wrap_key="wrapped")
+    second_manifest = write_materialized_matrix(second, tmp_path / "second", wrap_key="wrapped")
+
+    assert first_manifest == second_manifest
+    assert (tmp_path / "first" / "lr_hi.json").read_text().startswith('{"wrapped"')
+
+
+def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path) -> None:
+    payload = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "sweep",
+        "base": {"inline": _training_run_payload()},
+        "axes": [
+            {
+                "id": "lr",
+                "path": "training_config.learning_rate",
+                "variation": {"kind": "explicit", "values": [0.1, 0.01]},
+            },
+            {"id": "seed", "path": "seed", "variation": {"kind": "explicit", "values": [1, 2]}},
+        ],
+        "combination": {"mode": "zip"},
+    }
+
+    materialized = materialize_run_matrix(payload, repo_root=tmp_path)
+
+    assert [row.payload["training_config"]["learning_rate"] for row in materialized.rows] == [
+        0.1,
+        0.01,
+    ]
+    assert [row.seed for row in materialized.rows] == [1, 2]
+    assert materialized.run_set_manifest.axes.runs[1].values == {"lr": 0.01, "seed": 2}
+
+
+def test_derivations_and_base_ref_sha_pin_are_fail_closed(tmp_path: Path) -> None:
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({"lr": 0.03}), encoding="utf-8")
+    base = tmp_path / "base.json"
+    base_payload = {"envelope": {"feedbax_training_run_spec": _training_run_payload()}}
+    base_bytes = json.dumps(base_payload).encode("utf-8")
+    base.write_bytes(base_bytes)
+    payload = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "derived",
+        "base": {
+            "ref": "base.json",
+            "payload_path": "envelope.feedbax_training_run_spec",
+            "sha256": sha256_bytes(base_bytes),
+        },
+        "sources": [{"alias": "src", "kind": "manifest", "uri": "source.json"}],
+        "derivations": [
+            {
+                "output_path": "training_config.learning_rate",
+                "query": Coalesce(queries=[ValueQuery(item="src", path="missing")], default=0.04),
+            }
+        ],
+        "rows": [{"row_id": "derived", "overrides": []}],
+    }
+
+    materialized = materialize_run_matrix(payload, repo_root=tmp_path)
+    assert materialized.rows[0].payload["training_config"]["learning_rate"] == 0.04
+
+    payload["base"]["sha256"] = "bad"
+    with pytest.raises(RunMatrixError, match="sha256 mismatch"):
+        materialize_run_matrix(payload, repo_root=tmp_path)
+
+
+def test_spec_lock_render_includes_legacy_lr_phrase(tmp_path: Path) -> None:
+    matrix = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+
+    rendered = render_spec_lock_table(matrix, materialized)
+
+    assert "LR continuation schedule: continue" in rendered
+    assert "training_config.learning_rate" in rendered
+    assert "lr_hi" in rendered

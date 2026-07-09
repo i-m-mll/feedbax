@@ -18,7 +18,6 @@ from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.aligned import DEFAULT_VARSET, get_varset_labels
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.state_utils import get_pos_endpoints
-from feedbax.plot.color_setup import COLORSCALES
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.defaults import REPLICATE_CRITERION
 from feedbax.config.utils import deep_merge
@@ -118,10 +117,7 @@ class EffectorTrajectories(AbstractAnalysis[NoPorts]):
             task_0 = jt.leaves(data.tasks[self.variant], is_leaf=is_type(AbstractTask))[0]
             pos_endpoints = get_pos_endpoints(task_0.validation_trials)
 
-            if self.colorscale_key == "reach_condition":
-                colorscale = COLORSCALES["reach_condition"]
-            else:
-                colorscale = None
+            colorscale = colorscales.get(self.colorscale_key) if self.colorscale_key else None
 
             init_marker_kws = dict(color="rgb(25, 25, 25)")
 

@@ -1,23 +1,26 @@
-"""API router for figure browsing and retrieval."""
+"""Manifest-backed API router for figure browsing and retrieval."""
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from feedbax.persistence.database import (
-    EvaluationRecord,
-    FigureRecord,
-    db_session,
+from feedbax.analysis.figures import FIGURE_RENDER_ROLE
+from feedbax.contracts.manifest import FigureManifest, default_manifest_root, load_manifest
+from feedbax.persistence.manifest_index import iter_manifest_files
+from feedbax.plot.constructors import (
+    constructor_catalog,
+    registered_figure_pieces,
+    registered_figure_templates,
 )
 
 router = APIRouter()
 
-# Maps file extension to MIME type for figure file serving.
 _CONTENT_TYPES: dict[str, str] = {
     "json": "application/json",
     "html": "text/html",
@@ -28,27 +31,25 @@ _CONTENT_TYPES: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Pydantic response models
-# ---------------------------------------------------------------------------
-
-
 class FigureInfo(BaseModel):
-    """Summary metadata for a single figure."""
+    """Summary metadata for one manifest-backed figure."""
 
     hash: str
-    evaluation_hash: str
+    manifest_id: str
+    name: str
     identifier: str
     figure_type: str
     saved_formats: list[str]
     created_at: datetime
     modified_at: datetime
+    status: str | None = None
+    template: str | None = None
+    constructors: list[str] = []
+    input_manifest_ids: list[str] = []
     expt_name: Optional[str] = None
     pert__type: Optional[str] = None
     pert__std: Optional[float] = None
     model_hashes: Optional[list[str]] = None
-
-    model_config = {"from_attributes": True}
 
 
 class FigureListResponse(BaseModel):
@@ -61,13 +62,15 @@ class FigureListResponse(BaseModel):
 
 
 class FigureDetail(FigureInfo):
-    """Full metadata for a single figure, including available files on disk."""
+    """Full metadata for a single figure, including available files."""
 
     available_files: list[str]
+    artifacts: list[dict[str, Any]]
+    binding_records: list[dict[str, Any]]
 
 
 class EvaluationFigureSummary(BaseModel):
-    """Summary of figures grouped by evaluation."""
+    """Compatibility summary of figures grouped by input manifest."""
 
     evaluation_hash: str
     expt_name: Optional[str] = None
@@ -75,85 +78,140 @@ class EvaluationFigureSummary(BaseModel):
     latest_figure_date: Optional[datetime] = None
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+class RegistryItem(BaseModel):
+    """Studio-enumerable figure registry item."""
+
+    name: str
+    description: str
+    metadata: dict[str, Any] = {}
 
 
-def _figure_to_info(
-    record: FigureRecord,
-    expt_name: Optional[str] = None,
-) -> FigureInfo:
-    """Convert a FigureRecord (+ optional eval context) to a FigureInfo."""
+def _figure_manifests(root: Path | None = None) -> list[FigureManifest]:
+    root_path = root or default_manifest_root()
+    manifests: list[FigureManifest] = []
+    for path in iter_manifest_files(root_path):
+        try:
+            manifest = load_manifest(path)
+        except Exception:
+            continue
+        if isinstance(manifest, FigureManifest):
+            manifests.append(manifest)
+    return sorted(manifests, key=lambda item: item.created_at, reverse=True)
+
+
+def _figure_spec_inline(manifest: FigureManifest) -> dict[str, Any]:
+    return dict(manifest.figure_spec.inline)
+
+
+def _available_formats(manifest: FigureManifest) -> list[str]:
+    formats: set[str] = set()
+    for artifact in manifest.artifacts:
+        if artifact.role != FIGURE_RENDER_ROLE:
+            continue
+        if artifact.media_type == "application/json":
+            formats.add("json")
+        elif artifact.media_type == "text/html":
+            formats.add("html")
+        elif artifact.uri:
+            suffix = Path(artifact.uri).suffix.strip(".")
+            if suffix:
+                formats.add(suffix)
+    return sorted(formats)
+
+
+def _figure_to_info(manifest: FigureManifest) -> FigureInfo:
+    spec = _figure_spec_inline(manifest)
+    constructors = sorted(manifest.constructor_versions)
+    figure_type = manifest.template_name or (constructors[0] if constructors else "custom")
     return FigureInfo(
-        hash=record.hash,
-        evaluation_hash=record.evaluation_hash,
-        identifier=record.identifier,
-        figure_type=record.figure_type,
-        saved_formats=list(record.saved_formats) if record.saved_formats else [],
-        created_at=record.created_at,
-        modified_at=record.modified_at,
-        expt_name=expt_name,
-        pert__type=record.pert__type,
-        pert__std=record.pert__std,
-        model_hashes=list(record.model_hashes) if record.model_hashes else None,
+        hash=manifest.id,
+        manifest_id=manifest.id,
+        name=str(spec.get("name", manifest.id)),
+        identifier=str(spec.get("name", manifest.id)),
+        figure_type=figure_type,
+        saved_formats=_available_formats(manifest),
+        created_at=manifest.created_at,
+        modified_at=manifest.created_at,
+        status=manifest.status,
+        template=manifest.template_name,
+        constructors=constructors,
+        input_manifest_ids=[ref.id for ref in manifest.inputs],
+        expt_name=spec.get("figure_routing", {}).get("experiment"),
     )
 
 
-def _available_files(record: FigureRecord) -> list[str]:
-    """Return list of format extensions whose files exist on disk."""
-    available: list[str] = []
-    formats = list(record.saved_formats) if record.saved_formats else []
-    for fmt in formats:
-        if record.get_path(fmt).exists():
-            available.append(fmt)
-    return available
+def _render_artifact(manifest: FigureManifest, fmt: str):
+    for artifact in manifest.artifacts:
+        if artifact.role != FIGURE_RENDER_ROLE or artifact.uri is None:
+            continue
+        if fmt == "json" and artifact.media_type == "application/json":
+            return artifact
+        if fmt == "html" and artifact.media_type == "text/html":
+            return artifact
+        if Path(artifact.uri).suffix.strip(".").lower() == fmt:
+            return artifact
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+@router.get("/constructors")
+async def list_figure_constructors() -> list[dict[str, Any]]:
+    """List registered figure constructors with descriptions and params schemas."""
+    return constructor_catalog()
 
 
-# NOTE: /evaluations must be registered before /{figure_hash} so that
-# "evaluations" is not captured as a path parameter.
+@router.get("/templates", response_model=list[RegistryItem])
+async def list_figure_templates() -> list[RegistryItem]:
+    """List registered figure templates."""
+    return [
+        RegistryItem(
+            name=template.name,
+            description=template.description,
+            metadata=template.model_dump(mode="json", exclude_none=True),
+        )
+        for template in registered_figure_templates()
+    ]
+
+
+@router.get("/pieces", response_model=list[RegistryItem])
+async def list_figure_pieces() -> list[RegistryItem]:
+    """List registered figure pieces."""
+    return [
+        RegistryItem(
+            name=piece.name,
+            description=piece.description,
+            metadata=piece.model_dump(mode="json", exclude_none=True),
+        )
+        for piece in registered_figure_pieces()
+    ]
+
+
 @router.get("/evaluations")
 async def list_evaluations_with_figures() -> list[EvaluationFigureSummary]:
-    """List distinct evaluations that have at least one (non-archived) figure.
-
-    Returns evaluation_hash, expt_name, figure count, and the date of the
-    most recently created figure.  Results are ordered by latest figure date
-    descending.
-    """
-    from sqlalchemy import func
-
-    with db_session(autocommit=False) as session:
-        rows = (
-            session.query(
-                FigureRecord.evaluation_hash,
-                EvaluationRecord.expt_name,
-                func.count(FigureRecord.id).label("figure_count"),
-                func.max(FigureRecord.created_at).label("latest_figure_date"),
-            )
-            .join(
-                EvaluationRecord,
-                FigureRecord.evaluation_hash == EvaluationRecord.hash,
-            )
-            .filter(FigureRecord.archived == False)  # noqa: E712
-            .group_by(FigureRecord.evaluation_hash, EvaluationRecord.expt_name)
-            .order_by(func.max(FigureRecord.created_at).desc())
-            .all()
-        )
-
-    return [
-        EvaluationFigureSummary(
-            evaluation_hash=row.evaluation_hash,
-            expt_name=row.expt_name,
-            figure_count=row.figure_count,
-            latest_figure_date=row.latest_figure_date,
-        )
-        for row in rows
-    ]
+    """List input manifests that have at least one generated figure."""
+    grouped: dict[str, EvaluationFigureSummary] = {}
+    for manifest in _figure_manifests():
+        for input_ref in manifest.inputs:
+            if input_ref.kind != "EvaluationRunManifest":
+                continue
+            current = grouped.get(input_ref.id)
+            if current is None:
+                grouped[input_ref.id] = EvaluationFigureSummary(
+                    evaluation_hash=input_ref.id,
+                    figure_count=1,
+                    latest_figure_date=manifest.created_at,
+                )
+            else:
+                current.figure_count += 1
+                if (
+                    current.latest_figure_date is None
+                    or manifest.created_at > current.latest_figure_date
+                ):
+                    current.latest_figure_date = manifest.created_at
+    return sorted(
+        grouped.values(),
+        key=lambda item: item.latest_figure_date or datetime.min,
+        reverse=True,
+    )
 
 
 @router.get("/", response_model=FigureListResponse)
@@ -169,82 +227,52 @@ async def list_figures(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> FigureListResponse:
-    """List and search figures with optional filters and pagination."""
-    with db_session(autocommit=False) as session:
-        query = (
-            session.query(FigureRecord, EvaluationRecord.expt_name)
-            .join(
-                EvaluationRecord,
-                FigureRecord.evaluation_hash == EvaluationRecord.hash,
-            )
-            .filter(FigureRecord.archived == False)  # noqa: E712
-        )
-
-        if evaluation_hash is not None:
-            query = query.filter(FigureRecord.evaluation_hash == evaluation_hash)
-        if expt_name is not None:
-            query = query.filter(EvaluationRecord.expt_name == expt_name)
-        if figure_type is not None:
-            query = query.filter(FigureRecord.figure_type == figure_type)
-        if identifier is not None:
-            # Escape SQL LIKE wildcards to prevent injection of % and _
-            escaped = identifier.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            query = query.filter(FigureRecord.identifier.ilike(f"%{escaped}%", escape="\\"))
-        if pert_type is not None:
-            query = query.filter(FigureRecord.pert__type == pert_type)
-        if pert_std is not None:
-            query = query.filter(FigureRecord.pert__std == pert_std)
-        if date_from is not None:
-            query = query.filter(FigureRecord.created_at >= date_from)
-        if date_to is not None:
-            query = query.filter(FigureRecord.created_at <= date_to)
-
-        total = query.count()
-
-        rows = (
-            query
-            .order_by(FigureRecord.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-
-    items = [_figure_to_info(fig_rec, eval_expt) for fig_rec, eval_expt in rows]
-
-    return FigureListResponse(items=items, total=total, limit=limit, offset=offset)
+    """List and search manifest-backed figures with optional filters."""
+    del pert_type, pert_std
+    items = [_figure_to_info(manifest) for manifest in _figure_manifests()]
+    if evaluation_hash is not None:
+        items = [item for item in items if evaluation_hash in item.input_manifest_ids]
+    if expt_name is not None:
+        items = [item for item in items if item.expt_name == expt_name]
+    if figure_type is not None:
+        items = [item for item in items if item.figure_type == figure_type]
+    if identifier is not None:
+        needle = identifier.lower()
+        items = [item for item in items if needle in item.identifier.lower()]
+    if date_from is not None:
+        items = [item for item in items if item.created_at >= date_from]
+    if date_to is not None:
+        items = [item for item in items if item.created_at <= date_to]
+    total = len(items)
+    return FigureListResponse(
+        items=items[offset : offset + limit],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{figure_hash}", response_model=FigureDetail)
 async def get_figure(figure_hash: str) -> FigureDetail:
-    """Get full metadata for a single figure by its hash."""
-    with db_session(autocommit=False) as session:
-        row = (
-            session.query(FigureRecord, EvaluationRecord.expt_name)
-            .join(
-                EvaluationRecord,
-                FigureRecord.evaluation_hash == EvaluationRecord.hash,
-            )
-            .filter(FigureRecord.hash == figure_hash)
-            .first()
-        )
-
-    if row is None:
+    """Get full metadata for a single figure manifest."""
+    manifest = next(
+        (item for item in _figure_manifests() if item.id == figure_hash),
+        None,
+    )
+    if manifest is None:
         raise HTTPException(status_code=404, detail=f"Figure '{figure_hash}' not found")
-
-    fig_rec, eval_expt = row
+    info = _figure_to_info(manifest)
     return FigureDetail(
-        hash=fig_rec.hash,
-        evaluation_hash=fig_rec.evaluation_hash,
-        identifier=fig_rec.identifier,
-        figure_type=fig_rec.figure_type,
-        saved_formats=list(fig_rec.saved_formats) if fig_rec.saved_formats else [],
-        created_at=fig_rec.created_at,
-        modified_at=fig_rec.modified_at,
-        expt_name=eval_expt,
-        pert__type=fig_rec.pert__type,
-        pert__std=fig_rec.pert__std,
-        model_hashes=list(fig_rec.model_hashes) if fig_rec.model_hashes else None,
-        available_files=_available_files(fig_rec),
+        **info.model_dump(),
+        available_files=_available_formats(manifest),
+        artifacts=[
+            artifact.model_dump(mode="json", exclude_none=True)
+            for artifact in manifest.artifacts
+        ],
+        binding_records=[
+            record.model_dump(mode="json", exclude_none=True)
+            for record in manifest.binding_records
+        ],
     )
 
 
@@ -253,60 +281,32 @@ async def get_figure_file(
     figure_hash: str,
     format: str = Query(default="json", description="File format: json, html, png, svg, webp, pdf"),
 ):
-    """Serve the actual figure file in the requested format.
-
-    For Plotly figures, ``json`` is the default and returns the full Plotly
-    JSON specification (suitable for interactive rendering in the browser).
-    """
-    with db_session(autocommit=False) as session:
-        fig_rec = (
-            session.query(FigureRecord)
-            .filter(FigureRecord.hash == figure_hash)
-            .first()
+    """Serve the rendered figure artifact in the requested format."""
+    fmt = format.strip(".").lower()
+    if fmt not in _CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format '{fmt}'. Allowed formats: {sorted(_CONTENT_TYPES)}",
         )
-
-        if fig_rec is None:
-            raise HTTPException(
-                status_code=404, detail=f"Figure '{figure_hash}' not found",
-            )
-
-        # Normalise the requested format and validate against allow-list
-        # to prevent path traversal via crafted format strings.
-        fmt = format.strip(".").lower()
-
-        if fmt not in _CONTENT_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unsupported format '{fmt}'. "
-                    f"Allowed formats: {sorted(_CONTENT_TYPES)}"
-                ),
-            )
-
-        saved = set(fig_rec.saved_formats) if fig_rec.saved_formats else set()
-        if fmt not in saved:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Format '{fmt}' not available for figure '{figure_hash}'. "
-                    f"Saved formats: {sorted(saved)}"
-                ),
-            )
-
-        path = fig_rec.get_path(fmt)
-
+    manifest = next(
+        (item for item in _figure_manifests() if item.id == figure_hash),
+        None,
+    )
+    if manifest is None:
+        raise HTTPException(status_code=404, detail=f"Figure '{figure_hash}' not found")
+    artifact = _render_artifact(manifest, fmt)
+    if artifact is None or artifact.uri is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"File for figure '{figure_hash}' in format '{fmt}' not found",
+        )
+    path = Path(artifact.uri)
     if not path.exists():
         raise HTTPException(
             status_code=404,
             detail=f"File for figure '{figure_hash}' in format '{fmt}' not found on disk",
         )
-
     content_type = _CONTENT_TYPES.get(fmt, "application/octet-stream")
-
-    # For text-based formats (json, html, svg) we can use Response directly;
-    # for binary formats FileResponse handles streaming efficiently.
     if fmt in {"json", "html", "svg"}:
-        data = path.read_text(encoding="utf-8")
-        return Response(content=data, media_type=content_type)
-
+        return Response(content=path.read_text(encoding="utf-8"), media_type=content_type)
     return FileResponse(path=str(path), media_type=content_type)

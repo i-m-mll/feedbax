@@ -24,6 +24,10 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
 )
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
     COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
@@ -245,6 +249,11 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
     assert families["TrainingRunSpec"].current_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    assert families["TrainingRunMatrixSpec"].identity == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+    assert (
+        families["TrainingRunMatrixSpec"].current_version
+        == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    )
     assert families["RunEvent"].identity == RUN_EVENT_SCHEMA_ID
     assert families["RunEvent"].namespace == SchemaNamespaceKind.RUN_EVENT
     assert families["RunEvent"].current_version == RUN_EVENT_SCHEMA_VERSION
@@ -440,6 +449,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.contracts.training",
             ("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
         ),
+        "TrainingRunMatrixSpec": (
+            "feedbax.contracts.run_matrix",
+            ("feedbax.training.run_matrix", "provider_manifest.schemas"),
+        ),
         "LrScheduleSpec": (
             "feedbax.contracts.training",
             ("OptimizerSpec.lr_schedule", "provider_manifest.schemas"),
@@ -542,6 +555,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "GraphSpec",
         "PopulationStructureSpec",
         "TrainingRunSpec",
+        "TrainingRunMatrixSpec",
         "TrainingSpec",
         "LrScheduleSpec",
         "TaskSpec",

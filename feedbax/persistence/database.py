@@ -218,6 +218,9 @@ class EvaluationRecord(RecordBase):
     perturbation_config: Mapped[Optional[dict[str, Any]]] = mapped_column(
         JSON, nullable=True, default=None
     )
+    condition_metadata: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSON, nullable=True, default=None
+    )
     task_variants: Mapped[Optional[dict[str, Any]]] = mapped_column(
         JSON, nullable=True, default=None
     )
@@ -906,6 +909,7 @@ def query_evaluations_by_setup(
     session: Session,
     perturbation_type: Optional[str] = None,
     perturbation_config: Optional[Dict[str, Any]] = None,
+    condition_metadata: Optional[Dict[str, Any]] = None,
     task_variant_key: Optional[str] = None,
     sisu_params: Optional[Dict[str, Any]] = None,
     expt_name: Optional[str] = None,
@@ -923,6 +927,8 @@ def query_evaluations_by_setup(
             key inside the JSON column).
         perturbation_config: Match evaluations whose perturbation_config
             is a superset of this dict (all key-value pairs must match).
+        condition_metadata: Match evaluations whose condition_metadata is a
+            superset of this dict (all key-value pairs must match).
         task_variant_key: Match evaluations whose task_variants dict
             contains this key.
         sisu_params: Match evaluations whose sisu_params is a superset
@@ -957,6 +963,14 @@ def query_evaluations_by_setup(
                 return False
             for k, v in perturbation_config.items():
                 if cfg.get(k) != v:
+                    return False
+
+        if condition_metadata is not None:
+            metadata = record.condition_metadata
+            if not isinstance(metadata, dict):
+                return False
+            for k, v in condition_metadata.items():
+                if metadata.get(k) != v:
                     return False
 
         if task_variant_key is not None:
@@ -1407,6 +1421,7 @@ def add_evaluation(
     expt_name: Optional[str] = None,
     version_info: Optional[dict[str, str]] = None,
     perturbation_config: Optional[Dict[str, Any]] = None,
+    condition_metadata: Optional[Dict[str, Any]] = None,
     task_variants: Optional[Dict[str, Any]] = None,
     sisu_params: Optional[Dict[str, Any]] = None,
     eval_setup_params: Optional[Dict[str, Any]] = None,
@@ -1422,6 +1437,8 @@ def add_evaluation(
         version_info: Optional version information
         perturbation_config: Perturbation type and parameters (amplitudes,
             where applied, etc.)
+        condition_metadata: Caller-defined condition fields used to reproduce
+            and query evaluations without project-specific columns.
         task_variants: Task variant definitions used in evaluation
         sisu_params: SISU values evaluated (if applicable)
         eval_setup_params: Catch-all for any additional
@@ -1442,6 +1459,8 @@ def add_evaluation(
     eval_setup_metadata = {}
     if perturbation_config is not None:
         eval_setup_metadata["perturbation_config"] = perturbation_config
+    if condition_metadata is not None:
+        eval_setup_metadata["condition_metadata"] = condition_metadata
     if task_variants is not None:
         eval_setup_metadata["task_variants"] = task_variants
     if sisu_params is not None:
@@ -1477,6 +1496,7 @@ def add_evaluation(
         existing_record.modified_at = datetime.utcnow()
         # Update setup metadata on existing records
         existing_record.perturbation_config = perturbation_config
+        existing_record.condition_metadata = condition_metadata
         existing_record.task_variants = task_variants
         existing_record.sisu_params = sisu_params
         existing_record.eval_setup_params = eval_setup_params
@@ -1488,6 +1508,7 @@ def add_evaluation(
             model_hashes=model_hashes,  # Can be None
             version_info_eval=version_info,
             perturbation_config=perturbation_config,
+            condition_metadata=condition_metadata,
             task_variants=task_variants,
             sisu_params=sisu_params,
             eval_setup_params=eval_setup_params,

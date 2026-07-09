@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
+from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
 from feedbax.analysis.specs import AnalysisRecipeResult, execute_analysis_run_spec
@@ -23,6 +24,7 @@ from feedbax.contracts.expressions import (
     canonical_expression_json,
     evaluate_expr,
 )
+from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -30,6 +32,7 @@ from feedbax.contracts.manifest import (
     AnyManifest,
     EvaluationRunManifest,
     EvaluationRunSpec,
+    FigureManifest,
     ParentRef,
     Provenance,
     RegenerationCommand,
@@ -66,7 +69,7 @@ ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_executio
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v1"
 
 AnalysisBundleMode = Literal["per-run", "grouped"]
-BundleStageKind = Literal["evaluation", "analysis", "materialization", "report"]
+BundleStageKind = Literal["evaluation", "analysis", "materialization", "figure", "report"]
 BundleOutputStatus = Literal["materialized", "skipped", "missing", "not_applicable"]
 BundleDryRunStageStatus = Literal["would_run", "would_skip", "missing", "not_applicable"]
 
@@ -115,6 +118,7 @@ class BundleStageSpec(StrictModel):
     include_bundle_inputs: bool = False
     evaluation_type: str | None = None
     analysis_type: str | None = None
+    figure: FigureSpec | None = None
     report_type: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     states_custody: Literal["cache", "durable"] | None = None
@@ -136,6 +140,8 @@ class BundleStageSpec(StrictModel):
             raise ValueError(
                 f"materialization bundle stage {self.name!r} requires analysis_type"
             )
+        if self.kind == "figure" and self.figure is None and no_static_status:
+            raise ValueError(f"figure bundle stage {self.name!r} requires figure")
         if self.kind == "report" and not self.report_type and no_static_status:
             raise ValueError(f"report bundle stage {self.name!r} requires report_type")
         if self.skip_reason and any(output.required for output in self.outputs):
@@ -179,14 +185,33 @@ class AnalysisBundleSpec(StrictModel):
         if self.templates and self.stages:
             raise ValueError("AnalysisBundleSpec cannot mix simple templates and staged plan")
         seen: set[str] = set()
+        stage_kinds: dict[str, BundleStageKind] = {}
         for stage in self.stages:
+            for dependency in stage.depends_on:
+                if dependency not in stage_kinds:
+                    raise ValueError(
+                        f"bundle stage {stage.name!r} depends_on entry for "
+                        f"stage {dependency!r} must refer to an earlier stage"
+                    )
+                if stage.kind != "report" and stage_kinds[dependency] == "figure":
+                    raise ValueError(
+                        f"bundle stage {stage.name!r} of kind {stage.kind!r} cannot "
+                        f"depend on figure stage {dependency!r}; figure stages are leaves"
+                    )
             for dependency in stage.depends_on_roles:
                 if dependency.stage not in seen:
                     raise ValueError(
                         f"bundle stage {stage.name!r} depends_on_roles entry for "
                         f"stage {dependency.stage!r} must refer to an earlier stage"
                     )
+                if stage.kind != "report" and stage_kinds.get(dependency.stage) == "figure":
+                    raise ValueError(
+                        f"bundle stage {stage.name!r} of kind {stage.kind!r} cannot "
+                        f"depend_on_roles from figure stage {dependency.stage!r}; "
+                        "figure stages are leaves"
+                    )
             seen.add(stage.name)
+            stage_kinds[stage.name] = stage.kind
         return self
 
     @field_validator("predicate", mode="before")
@@ -502,7 +527,7 @@ def _params_for_stage(stage: BundleStageSpec) -> dict[str, Any]:
 
 
 def _manifest_ref(
-    manifest: EvaluationRunManifest | AnalysisRunManifest | ReportManifest,
+    manifest: EvaluationRunManifest | AnalysisRunManifest | FigureManifest | ReportManifest,
     path: Path,
     role: str,
 ) -> ParentRef:
@@ -548,11 +573,11 @@ def _stage_regeneration_payload(
 
 
 def _with_regeneration_spec(
-    manifest: AnalysisRunManifest | ReportManifest,
+    manifest: AnalysisRunManifest | FigureManifest | ReportManifest,
     regeneration_payload: SpecPayload,
     *,
     root: Path,
-) -> tuple[AnalysisRunManifest | ReportManifest, Path]:
+) -> tuple[AnalysisRunManifest | FigureManifest | ReportManifest, Path]:
     updated = manifest.model_copy(
         update={"regeneration_specs": [*manifest.regeneration_specs, regeneration_payload]}
     )
@@ -708,6 +733,18 @@ def _artifact_groups(products: Sequence[StageMaterialization]) -> dict[str, list
     return groups
 
 
+def _default_outputs_for_stage(stage: BundleStageSpec) -> list[BundleStageOutputSpec]:
+    if stage.outputs:
+        return list(stage.outputs)
+    if stage.kind == "figure":
+        return [
+            BundleStageOutputSpec(role=FIGURE_RENDER_ROLE),
+            BundleStageOutputSpec(role="figure_spec", required=False),
+            BundleStageOutputSpec(role="manifest", required=False),
+        ]
+    return [BundleStageOutputSpec(role="manifest")]
+
+
 def _output_records(
     stage: BundleStageSpec,
     *,
@@ -715,7 +752,7 @@ def _output_records(
     skipped_reason: str | None = None,
     not_applicable_reason: str | None = None,
 ) -> list[BundleStageOutputRecord]:
-    output_specs = stage.outputs or [BundleStageOutputSpec(role="manifest")]
+    output_specs = _default_outputs_for_stage(stage)
     manifest_refs = [product.manifest_ref for product in products if product.manifest_ref]
     artifact_groups = _artifact_groups(products)
     records: list[BundleStageOutputRecord] = []
@@ -959,6 +996,74 @@ def _execute_materialization_stage(
     return products
 
 
+def _execute_figure_stage(
+    stage: BundleStageSpec,
+    input_groups: Sequence[Sequence[ParentRef]],
+    *,
+    root: Path,
+    issues: Sequence[str],
+    bundle: AnalysisBundleSpec,
+) -> list[StageMaterialization]:
+    products: list[StageMaterialization] = []
+    if stage.figure is None:
+        raise ValueError(f"figure bundle stage {stage.name!r} requires figure")
+    for index, inputs in enumerate(input_groups):
+        figure_spec = stage.figure.model_copy(
+            update={
+                "inputs": [*stage.figure.inputs, *inputs],
+                "metadata": {
+                    **stage.figure.metadata,
+                    "bundle": {
+                        "name": bundle.name,
+                        "stage": stage.name,
+                        "index": index,
+                        "schema_id": bundle.schema_id,
+                        "schema_version": bundle.schema_version,
+                    },
+                },
+            },
+            deep=True,
+        )
+        manifest, path = execute_figure_spec(
+            figure_spec,
+            root=root,
+            provenance=Provenance(
+                parents=list(figure_spec.inputs),
+                issues=list(issues),
+                metadata={"bundle": bundle.name, "stage": stage.name},
+            ),
+            metadata={
+                "bundle": {
+                    "name": bundle.name,
+                    "stage": stage.name,
+                    "schema_id": bundle.schema_id,
+                    "schema_version": bundle.schema_version,
+                }
+            },
+        )
+        manifest_ref = _manifest_ref(manifest, path, "figure")
+        regeneration_payload = _stage_regeneration_payload(
+            stage,
+            inputs=inputs,
+            outputs=[manifest_ref, *manifest.artifacts],
+            issues=issues,
+        )
+        updated_manifest, updated_path = _with_regeneration_spec(
+            manifest,
+            regeneration_payload,
+            root=root,
+        )
+        products.append(
+            StageMaterialization(
+                manifest_ref=_manifest_ref(updated_manifest, updated_path, "figure"),
+                artifacts=tuple(updated_manifest.artifacts),
+                manifest_path=updated_path,
+                regeneration_spec=regeneration_payload,
+            )
+        )
+    return products
+
+
 def _execute_report_stage(
     stage: BundleStageSpec,
     input_groups: Sequence[Sequence[ParentRef]],
@@ -1172,7 +1277,7 @@ def _dry_run_stage_outputs(
             status=status,
             reason=reason,
         )
-        for output in (stage.outputs or [BundleStageOutputSpec(role="manifest")])
+        for output in _default_outputs_for_stage(stage)
     ]
 
 
@@ -1222,12 +1327,13 @@ def _dry_run_manifest_role(stage: BundleStageSpec) -> str:
         "evaluation": "evaluation_run",
         "analysis": "analysis_run",
         "materialization": "analysis_run",
+        "figure": "figure",
         "report": "report",
     }[stage.kind]
 
 
 def _dry_run_products(stage: BundleStageSpec) -> list[StageMaterialization]:
-    outputs = stage.outputs or [BundleStageOutputSpec(role="manifest")]
+    outputs = _default_outputs_for_stage(stage)
     artifacts = tuple(
         ArtifactRef(
             role=output.role,
@@ -1242,6 +1348,7 @@ def _dry_run_products(stage: BundleStageSpec) -> list[StageMaterialization]:
             "evaluation": "EvaluationRunManifest",
             "analysis": "AnalysisRunManifest",
             "materialization": "AnalysisRunManifest",
+            "figure": "FigureManifest",
             "report": "ReportManifest",
         }[stage.kind],
         id=f"dry-run:{stage.name}",
@@ -1498,6 +1605,14 @@ def execute_staged_analysis_bundle(
                 bundle=bundle,
                 fig_dump_path=fig_dump_path,
                 fig_dump_formats=fig_dump_formats,
+            )
+        elif stage.kind == "figure":
+            products = _execute_figure_stage(
+                stage,
+                input_groups,
+                root=root_path,
+                issues=issue_refs,
+                bundle=bundle,
             )
         elif stage.kind == "report":
             products = _execute_report_stage(

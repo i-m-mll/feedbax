@@ -14,6 +14,7 @@ from feedbax.component_registry import (
     ComponentMigration,
     ComponentMigrationPack,
     get_component_registry,
+    register_cde_templates,
     register_component_type,
 )
 from feedbax.runtime.channel import Channel
@@ -329,12 +330,20 @@ def test_cde_primitives_build_and_execute_with_expected_semantics() -> None:
     assert jnp.array_equal(outputs["output"], jnp.array([0.0, 0.5, 1.0]))
 
 
-def test_all_cde_templates_are_executable_and_run_one_step() -> None:
+def test_cde_templates_are_not_builtin_defaults() -> None:
     registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    assert registry.get("CDE Standard") is None
+
+
+def test_caller_registered_cde_templates_are_executable_and_run_one_step() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
 
     for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
         meta = registry.get(template_name)
         assert meta is not None
+        assert meta.provenance == "test-cde-pack"
         assert meta.template_kind == "executable"
         assert meta.template_id is not None
         assert meta.template_id.startswith("feedbax.templates.cde_")
@@ -365,6 +374,7 @@ def test_executable_builtin_templates_have_complete_builders() -> None:
 
 def test_cde_standard_template_matches_standard_cde_network_step() -> None:
     registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
     meta = registry.get("CDE Standard")
     assert meta is not None
     graph = spec_to_graph(meta.template_graph, registry)
