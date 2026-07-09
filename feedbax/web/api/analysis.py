@@ -21,7 +21,13 @@ from feedbax.contracts.studio_api import (
     GenerateAnalysisRequest,
     GenerateAnalysisResponse,
 )
-from feedbax.contracts.manifest import AnalysisRunSpec, ParentRef, analysis_run_manifest_id
+from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
+    ParentRef,
+    analysis_run_manifest_id,
+    figure_manifest_id,
+)
 from feedbax.web.services.analysis_service import JobStatus, job_tracker
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,29 @@ def _spec_for_analysis_request(payload: GenerateAnalysisRequest) -> AnalysisRunS
             },
         },
     )
+
+
+def _figure_spec_for_request(payload: GenerateAnalysisRequest) -> FigureSpec:
+    """Build the executable figure spec demanded by the Studio request."""
+    if payload.figure_spec is None:
+        raise HTTPException(
+            status_code=400,
+            detail="figure_spec is required when job_kind='figure'",
+        )
+    spec = FigureSpec.model_validate(payload.figure_spec)
+    if payload.eval_run_id and not spec.inputs:
+        spec = spec.model_copy(
+            update={
+                "inputs": [
+                    ParentRef(
+                        kind="EvaluationRunManifest",
+                        id=payload.eval_run_id,
+                        role="evaluation_run",
+                    )
+                ]
+            }
+        )
+    return spec
 
 
 def _run_analysis_sync(spec: AnalysisRunSpec) -> AnalysisJobResult:
@@ -127,6 +156,49 @@ async def _run_analysis_background(request_id: str, spec: AnalysisRunSpec) -> No
         )
 
 
+def _run_figure_sync(spec: FigureSpec) -> AnalysisJobResult:
+    """Run a declarative figure spec synchronously inside the executor."""
+    from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
+
+    manifest, path = execute_figure_spec(spec)
+    return AnalysisJobResult(
+        manifest_id=manifest.id,
+        manifest_path=str(path),
+        figure_hashes=[manifest.id],
+        artifact_ids=[
+            artifact.artifact_id
+            for artifact in manifest.artifacts
+            if artifact.role == FIGURE_RENDER_ROLE and artifact.artifact_id is not None
+        ],
+        artifact_paths=[
+            str(Path(artifact.uri))
+            for artifact in manifest.artifacts
+            if artifact.role == FIGURE_RENDER_ROLE and artifact.uri is not None
+        ],
+    )
+
+
+async def _run_figure_background(request_id: str, spec: FigureSpec) -> None:
+    """Wrapper that updates the job tracker around declarative figure execution."""
+    await job_tracker.update_status(request_id, JobStatus.RUNNING)
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(_executor, _run_figure_sync, spec)
+        await job_tracker.update_status(
+            request_id,
+            JobStatus.COMPLETE,
+            figure_hashes=result.figure_hashes,
+            manifest_id=result.manifest_id,
+            manifest_path=result.manifest_path,
+            artifact_ids=result.artifact_ids,
+            artifact_paths=result.artifact_paths,
+        )
+    except Exception:
+        tb = traceback.format_exc()
+        logger.error("Figure job %s failed:\n%s", request_id, tb)
+        await job_tracker.update_status(request_id, JobStatus.ERROR, error=str(tb))
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -144,6 +216,24 @@ async def generate_figure(payload: GenerateAnalysisRequest) -> GenerateAnalysisR
     spec. The in-memory tracker is UX-only; the returned manifest ID is the
     durable result identity.
     """
+    if payload.job_kind == "figure":
+        figure_spec = _figure_spec_for_request(payload)
+        manifest_id = figure_manifest_id(figure_spec)
+        logger.info(
+            "Generate figure request for node_id=%s manifest_id=%s",
+            payload.node_id,
+            manifest_id,
+        )
+        request_id = await job_tracker.create_job(payload.node_id, manifest_id=manifest_id)
+        asyncio.create_task(_run_figure_background(request_id, figure_spec))
+        return GenerateAnalysisResponse(
+            data={
+                "request_id": request_id,
+                "status": JobStatus.PENDING.value,
+                "manifest_id": manifest_id,
+            }
+        )
+
     spec = _spec_for_analysis_request(payload)
     manifest_id = analysis_run_manifest_id(spec)
     logger.info(
