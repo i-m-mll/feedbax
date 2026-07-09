@@ -271,7 +271,7 @@ extract_ssh() {
 
 # build_remote_status_command renders the self-contained remote bash that the
 # pod runs over SSH. It reports gpu, bootstrap sentinels, and the per-row
-# aggregate progress (rows roll-up, last_checkpoint, last_batch) so "compiling"
+# aggregate progress (rows roll-up, last_batch, last_checkpoint) so "compiling"
 # is distinguishable from "training" from "stalled". The progress block mirrors
 # lib_acquire.sh::progress_report, which is unit-tested locally over a mock
 # remote layout. One status line, no jq.
@@ -326,20 +326,20 @@ for lf in '$log_dir'/*.log; do
   [ -z "\$b" ] && continue
   if [ "\$batch" = none ] || [ "\$b" -gt "\$batch" ]; then batch=\$b; fi
 done
-printf 'last_checkpoint=%s last_batch=%s train_process=%s rows=%s' "\$ckpt" "\$batch" "\$train_process_state" "\${detail:-none}"
+printf 'last_batch=%s last_checkpoint=%s train_process=%s rows=%s' "\$batch" "\$ckpt" "\$train_process_state" "\${detail:-none}"
 REMOTE
 }
 
 remote_status() {
     if [ -z "$SSH_HOST" ] || [ -z "$SSH_PORT" ]; then
         SSH_ERROR=${SSH_ERROR:-missing_ssh_endpoint}
-        printf 'ssh=missing gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_checkpoint=none last_batch=none rows=none'
+        printf 'ssh=missing gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none'
         return 0
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
         print_cmd ssh -p "$SSH_PORT" "root@$SSH_HOST" \
             "nvidia-smi && test -d '$REMOTE_SENTINEL_DIR'" >&2
-        printf 'ssh=dry-run gpu=dry-run uv_sync=dry-run jax_cuda=dry-run venv_probe=dry-run probe_ok=dry-run probe_failed_rebuilding=dry-run rebuild_done=dry-run rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_checkpoint=none last_batch=none rows=none'
+        printf 'ssh=dry-run gpu=dry-run uv_sync=dry-run jax_cuda=dry-run venv_probe=dry-run probe_ok=dry-run probe_failed_rebuilding=dry-run rebuild_done=dry-run rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none'
         return 0
     fi
 
@@ -355,7 +355,7 @@ remote_status() {
         "root@$SSH_HOST" \
         "$remote_cmd"); then
         SSH_ERROR="ssh_probe_failed"
-        printf 'ssh=failed gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_checkpoint=none last_batch=none rows=none'
+        printf 'ssh=failed gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none'
         return 0
     fi
     SSH_ERROR="none"

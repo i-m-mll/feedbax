@@ -186,6 +186,31 @@ def checkpoint_slot_names(program: PhaseProgramSpec, barrier_name: str) -> tuple
     return tuple(spec.slot for spec in checkpoint_slot_specs(program, barrier_name))
 
 
+def _completed_training_batches(
+    explicit: int | None,
+    metadata: Mapping[str, Any],
+    *,
+    default: int | None = None,
+) -> int | None:
+    if explicit is not None:
+        return int(explicit)
+    for key in (
+        "completed_training_batches",
+        "completed_batches",
+        "completed_batch",
+        "n_batches",
+        "batch",
+    ):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
 def write_checkpoint_transaction(
     root: str | Path,
     *,
@@ -199,6 +224,7 @@ def write_checkpoint_transaction(
     population_member_ids: Mapping[str, Sequence[str]] | None = None,
     history_availability: Mapping[str, bool] | None = None,
     parent_lineage: Sequence[CheckpointLineageRef] | None = None,
+    completed_training_batches: int | None = None,
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
 ) -> CheckpointWriteResult:
@@ -277,12 +303,17 @@ def write_checkpoint_transaction(
         transaction_root = _transaction_root_sha256(slot_digests)
         manifest_metadata = {"phase": barrier.phase}
         manifest_metadata.update(dict(metadata or {}))
+        completed_batches = _completed_training_batches(
+            completed_training_batches,
+            manifest_metadata,
+        )
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
             run_id=coordinate.run_id,
             status=status,  # type: ignore[arg-type]
             barrier=barrier.name,
             completed_coordinate=coordinate,
+            completed_training_batches=completed_batches,
             consistency_predicate=derive_consistency_predicate(phase_program),
             run_contract_binding=run_contract_binding(run_spec, phase_program),
             slots=slot_records,
@@ -307,6 +338,7 @@ def write_checkpoint_transaction(
             manifest_sha256=manifest_sha256,
             transaction_root_sha256=transaction_root,
             completed_coordinate=coordinate,
+            completed_training_batches=completed_batches,
         )
         latest_path = root_path / LATEST_POINTER_NAME
         if publish_latest:
@@ -651,12 +683,18 @@ def fork_checkpoint_transaction(
         manifest_metadata["phase"] = barrier.phase
         manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
         manifest_metadata.update(dict(metadata or {}))
+        completed_batches = _completed_training_batches(
+            None,
+            manifest_metadata,
+            default=source.manifest.completed_training_batches,
+        )
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
             run_id=coordinate.run_id,
             status=source.manifest.status,
             barrier=barrier.name,
             completed_coordinate=coordinate,
+            completed_training_batches=completed_batches,
             consistency_predicate=derive_consistency_predicate(phase_program),
             run_contract_binding=run_contract_binding(target_run_spec, phase_program),
             slots=slot_records,
@@ -705,6 +743,7 @@ def fork_checkpoint_transaction(
             manifest_sha256=manifest_sha256,
             transaction_root_sha256=transaction_root,
             completed_coordinate=coordinate,
+            completed_training_batches=completed_batches,
         )
         _load_checkpoint_from_pointer(
             target_root_path,

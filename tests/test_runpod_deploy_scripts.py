@@ -279,6 +279,36 @@ def test_resume_baseline_completed_batch_mismatch_fails_preflight(tmp_path: Path
     assert "runpodctl pod create" not in result.stdout + result.stderr
 
 
+def test_latest_pointer_completed_batches_prefers_batch_over_coordinate(
+    tmp_path: Path,
+) -> None:
+    latest = tmp_path / "latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "completed_coordinate": {"global_step": 12009},
+                "completed_training_batches": 16500,
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = (
+        f"source {str(REPO_ROOT / 'scripts' / 'deploy' / 'lib_acquire.sh')!r}\n"
+        f"latest_pointer_completed_batches {str(latest)!r}\n"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "16500"
+
+
 def test_resume_baseline_is_preflighted_and_staged_despite_artifact_exclude(
     tmp_path: Path,
 ) -> None:
@@ -542,6 +572,7 @@ def test_poll_run_reports_started_without_terminal_sentinel_as_stale(
 
     assert result.returncode == 0, result.stderr
     assert "rows_done=1 rows_failed=0 rows_running=0 rows_stale=1" in result.stdout
+    assert result.stdout.index("last_batch=") < result.stdout.index("last_checkpoint=")
     assert "row_a:stale_started" in result.stdout
     assert "row_b:done" in result.stdout
     assert "train_process=" in result.stdout
