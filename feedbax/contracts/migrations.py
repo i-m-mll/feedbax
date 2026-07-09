@@ -52,6 +52,14 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.figures import (
+    FIGURE_PIECE_SCHEMA_ID,
+    FIGURE_PIECE_SCHEMA_VERSION,
+    FIGURE_SPEC_SCHEMA_ID,
+    FIGURE_SPEC_SCHEMA_VERSION,
+    FIGURE_TEMPLATE_SCHEMA_ID,
+    FIGURE_TEMPLATE_SCHEMA_VERSION,
+)
 from feedbax.contracts.graph import (
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
@@ -1636,6 +1644,42 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Durable acausal graph interior specification.",
             rejected_old_versions=("feedbax.spec.acausal_graph.v0",),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
+        ),
+        _family(
+            "FigureSpec",
+            FIGURE_SPEC_SCHEMA_ID,
+            FIGURE_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=(
+                "feedbax.analysis.figures.execute_figure_spec",
+                "feedbax.analysis.bundles.execute_staged_analysis_bundle",
+            ),
+            consumed_by=(
+                "feedbax.analysis.figures.execute_figure_spec",
+                "Studio figure dashboards",
+            ),
+            description="Executable declarative figure specification.",
+            required_tests=("tests/test_declarative_figures.py",),
+        ),
+        _family(
+            "FigureTemplate",
+            FIGURE_TEMPLATE_SCHEMA_ID,
+            FIGURE_TEMPLATE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax.plot.constructors.register_figure_template",),
+            consumed_by=("feedbax.analysis.figures.execute_figure_spec",),
+            description="Registered data-free figure shape.",
+            required_tests=("tests/test_declarative_figures.py",),
+        ),
+        _family(
+            "FigurePiece",
+            FIGURE_PIECE_SCHEMA_ID,
+            FIGURE_PIECE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("feedbax.plot.constructors.register_figure_piece",),
+            consumed_by=("feedbax.analysis.figures.execute_figure_spec",),
+            description="Registered reusable figure trace ingredient.",
+            required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(
             "ComponentDefinition",

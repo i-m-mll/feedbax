@@ -2,12 +2,18 @@
 
 export interface FigureInfo {
   hash: string;
-  evaluation_hash: string;
+  manifest_id: string;
+  name: string;
+  evaluation_hash?: string;
   identifier: string;
   figure_type: string;
   saved_formats: string[];
   created_at: string;
   modified_at: string;
+  status: string | null;
+  template: string | null;
+  constructors: string[];
+  input_manifest_ids: string[];
   expt_name: string | null;
   pert__type: string | null;
   pert__std: number | null;
@@ -23,6 +29,8 @@ export interface FigureListResponse {
 
 export interface FigureDetail extends FigureInfo {
   available_files: string[];
+  artifacts: Array<Record<string, unknown>>;
+  binding_records: Array<Record<string, unknown>>;
 }
 
 export interface EvaluationFigureSummary {

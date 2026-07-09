@@ -1311,7 +1311,7 @@ export interface BundleStageDryRunRecord {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v2";
   name: string;
-  kind: "evaluation" | "analysis" | "materialization" | "report";
+  kind: "evaluation" | "analysis" | "materialization" | "figure" | "report";
   status: "would_run" | "would_skip" | "missing" | "not_applicable";
   depends_on?: string[];
   inputs?: ParentRef[];
@@ -1355,8 +1355,10 @@ export interface GenerateAnalysisRequest {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v2";
   node_id: string;
+  job_kind?: "analysis" | "figure";
   force_rerun?: boolean;
   eval_run_id?: string | null;
+  figure_spec?: Record<string, unknown> | null;
 }
 
 export interface GenerateAnalysisPayload {
@@ -3654,7 +3656,7 @@ export const BundleStageDryRunRecordSchema: z.ZodType<BundleStageDryRunRecord> =
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "name": z.string(),
-      "kind": z.union([z.literal("evaluation"), z.literal("analysis"), z.literal("materialization"), z.literal("report")]),
+      "kind": z.union([z.literal("evaluation"), z.literal("analysis"), z.literal("materialization"), z.literal("figure"), z.literal("report")]),
       "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
       "depends_on": z.array(z.string()).optional(),
       "inputs": z.array(ParentRefSchema).optional(),
@@ -3718,8 +3720,10 @@ export const GenerateAnalysisRequestSchema: z.ZodType<GenerateAnalysisRequest> =
       "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v2").optional(),
       "node_id": z.string(),
+      "job_kind": z.union([z.literal("analysis"), z.literal("figure")]).optional(),
       "force_rerun": z.boolean().optional(),
       "eval_run_id": z.string().nullable().optional(),
+      "figure_spec": z.record(z.string(), z.unknown()).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<GenerateAnalysisRequest>;

@@ -133,6 +133,7 @@ all = [
 [project.scripts]
 feedbax-run = "feedbax.bin.run:main"
 feedbax-analysis = "feedbax.bin.analysis:main"
+feedbax-figure = "feedbax.bin.figure:main"
 feedbax-train = "feedbax.bin.train:main"
 feedbax-provider = "feedbax.bin.provider:main"
 feedbax-orchestrate = "feedbax.bin.orchestrate:main"

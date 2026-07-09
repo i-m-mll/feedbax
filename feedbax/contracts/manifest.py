@@ -50,6 +50,8 @@ EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = (
 EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
     "feedbax.manifest.evaluation_states_container.v2"
 )
+FIGURE_MANIFEST_SCHEMA_ID = "feedbax.manifest.figure"
+FIGURE_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.figure.v1"
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
@@ -685,6 +687,47 @@ class ReportManifest(BaseManifest):
     )
 
 
+class FigureBindingRecord(StrictModel):
+    """Recorded outcome for one declarative figure binding."""
+
+    name: str
+    status: Literal["included", "omitted", "failed"]
+    reason: Optional[str] = None
+    panel: Optional[str] = None
+    constructor: Optional[str] = None
+    expression_hashes: list[str] = Field(default_factory=list)
+
+
+class FigurePieceResolution(StrictModel):
+    """Resolved identity for one piece consumed by a figure."""
+
+    name: str
+    source_kind: Literal["artifact_ref", "manifest_predicate", "generator_spec"]
+    artifact_refs: list[ArtifactRef] = Field(default_factory=list)
+    manifest_refs: list[ParentRef] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FigureManifest(BaseManifest):
+    """Durable provenance for a rendered declarative figure."""
+
+    kind: Literal["FigureManifest"] = "FigureManifest"
+    schema_version: str = FIGURE_MANIFEST_SCHEMA_VERSION
+    figure_spec: SpecPayload
+    inputs: list[ParentRef] = Field(default_factory=list)
+    resolved_inputs: list[ParentRef] = Field(default_factory=list)
+    resolved_pieces: list[FigurePieceResolution] = Field(default_factory=list)
+    constructor_versions: dict[str, str] = Field(default_factory=dict)
+    template_name: Optional[str] = None
+    template_version: Optional[str] = None
+    binding_records: list[FigureBindingRecord] = Field(default_factory=list)
+    expression_results_digest: Optional[str] = None
+    failure: Optional[dict[str, Any]] = None
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
+        default_factory=list
+    )
+
+
 AnyManifest = (
     GraphSpecManifest
     | ModelArtifactManifest
@@ -694,6 +737,7 @@ AnyManifest = (
     | CheckpointSelectionManifest
     | AnalysisRunManifest
     | ReportManifest
+    | FigureManifest
 )
 
 class GraphSpecLoadResult(StrictModel):
@@ -716,6 +760,7 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "CheckpointSelectionManifest": CheckpointSelectionManifest,
     "AnalysisRunManifest": AnalysisRunManifest,
     "ReportManifest": ReportManifest,
+    "FigureManifest": FigureManifest,
 }
 
 
@@ -740,6 +785,7 @@ SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     "CheckpointSelectionManifest": ("selection_spec",),
     "AnalysisRunManifest": ("analysis_spec", "regeneration_specs"),
     "ReportManifest": ("report_spec", "regeneration_specs"),
+    "FigureManifest": ("figure_spec", "regeneration_specs"),
 }
 
 
@@ -1493,6 +1539,12 @@ def report_manifest_id(spec: ReportSpec) -> str:
     """Return deterministic report identity for a report spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))
     return f"feedbax-report:{digest[:32]}"
+
+
+def figure_manifest_id(spec: Any) -> str:
+    """Return deterministic figure identity for a figure spec-like object."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-figure:{digest[:32]}"
 
 
 def checkpoint_selection_manifest_id(spec: CheckpointSelectionSpec) -> str:
