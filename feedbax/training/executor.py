@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import time
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
+from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
     ResumeSlotTransform,
@@ -108,6 +110,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         run_spec: TrainingRunSpec,
         phase_program: Any,
         parent_lineage: Sequence[CheckpointLineageRef] = (),
+        run_event_emitter: RunEventEmitter | None = None,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -115,6 +118,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self.run_spec = run_spec
         self.phase_program = phase_program
         self.parent_lineage = tuple(parent_lineage)
+        self.run_event_emitter = run_event_emitter
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
         }
@@ -152,6 +156,18 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             metadata={"barrier_visit_ordinal": saved.visit_ordinal},
         )
         self._writes.append(write)
+        if self.run_event_emitter is not None:
+            self.run_event_emitter.emit(
+                "checkpoint_written",
+                {
+                    "barrier": saved.barrier,
+                    "barrier_visit_ordinal": saved.visit_ordinal,
+                    "transaction_id": write.manifest.transaction_id,
+                    "coordinate": saved.coordinate.model_dump(mode="json", exclude_none=True),
+                    "batch": saved.coordinate.global_step,
+                    "global_step": saved.coordinate.global_step,
+                },
+            )
         for prepared in prepared_artifacts:
             self._barrier_artifacts.append(
                 store_bytes_artifact(
@@ -198,6 +214,7 @@ def execute_training_run_spec(
     manifest_conflict_policy: ManifestConflictPolicy = "error",
     issues: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    run_event_emitter: RunEventEmitter | None = None,
 ) -> TrainingRunExecutionResult:
     """Validate, execute, checkpoint, and natively emit one training-run manifest.
 
@@ -205,6 +222,10 @@ def execute_training_run_spec(
     history event, in history order, as each progress coordinate is produced
     during execution. Callback payloads have the same shape as stored history
     events. Exceptions raised by the callback propagate to the caller.
+
+    ``run_event_emitter`` optionally receives the versioned run-event protocol.
+    Emitter I/O diagnostics are contained by the emitter and do not change
+    training-loop failure behavior.
     """
     run_spec = _validate_spec(spec)
     root_path = (
@@ -284,6 +305,7 @@ def execute_training_run_spec(
         run_spec=run_spec,
         phase_program=program,
         parent_lineage=parent_lineage,
+        run_event_emitter=run_event_emitter,
     )
     if loaded_resume_checkpoint is not None:
         checkpoint_store.remember(loaded_resume_checkpoint)
@@ -296,6 +318,8 @@ def execute_training_run_spec(
         state_slots=effective_phase.state_slots,
     )
     live_history_events: list[dict[str, Any]] = []
+    total_batches = int(run_spec.training_config.n_batches or 0)
+    started_at = time.perf_counter()
     caller_kernel_context = dict(kernel_context or {})
     reserved_context_keys = sorted(
         set(caller_kernel_context).intersection(_RESERVED_KERNEL_CONTEXT_KEYS)
@@ -310,55 +334,90 @@ def execute_training_run_spec(
         "run_spec": run_spec,
         "method_payload": method_payload,
     }
-    execution = executor.run(
-        slots,
-        run_id=resolved_run_id,
-        resume_from_barrier=resume_barrier,
-        stop_after_barrier=stop_after_barrier,
-        context=executor_context,
-        progress_callback=(
-            _live_progress_callback(progress_callback, live_history_events)
-            if progress_callback is not None
-            else None
-        ),
-        step_guard=_executor_nan_guard(
-            run_spec=run_spec,
-            custody_root=custody_root,
-            program=program,
-            expected_slots=slots,
-            resume_slot_transform=resume_slot_transform,
-        ),
-    )
-    checkpoint_writes = checkpoint_store.writes
-    barrier_artifacts = checkpoint_store.barrier_artifacts
-    history_events = (
-        live_history_events
-        if progress_callback is not None
-        else _history_events(execution.progress)
-    )
-    final_metrics = _final_metrics(execution.slots, execution.coordinate)
-    manifest = _build_manifest(
-        run_spec,
-        run_id=resolved_run_id,
-        root_path=root_path,
-        graph_inline=graph_inline,
-        training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
-        training_spec_payload_kind=training_spec_payload_kind,
-        training_spec_payload_schema_id=training_spec_payload_schema_id,
-        training_spec_payload_schema_version=training_spec_payload_schema_version,
-        training_spec_payload_ref=training_spec_payload_ref,
-        task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
-        checkpoint_writes=checkpoint_writes,
-        barrier_artifacts=barrier_artifacts,
-        history_events=history_events,
-        final_metrics=final_metrics,
-        issues=issues,
-    )
-    manifest_path = _emit_manifest(
-        manifest,
-        root=root_path,
-        conflict_policy=manifest_conflict_policy,
-    )
+    try:
+        execution = executor.run(
+            slots,
+            run_id=resolved_run_id,
+            resume_from_barrier=resume_barrier,
+            stop_after_barrier=stop_after_barrier,
+            context=executor_context,
+            progress_callback=(
+                _live_progress_callback(
+                    progress_callback,
+                    live_history_events,
+                    run_event_emitter=run_event_emitter,
+                    total_batches=total_batches,
+                    started_at=started_at,
+                )
+                if progress_callback is not None or run_event_emitter is not None
+                else None
+            ),
+            step_guard=_executor_nan_guard(
+                run_spec=run_spec,
+                custody_root=custody_root,
+                program=program,
+                expected_slots=slots,
+                resume_slot_transform=resume_slot_transform,
+            ),
+        )
+        checkpoint_writes = checkpoint_store.writes
+        barrier_artifacts = checkpoint_store.barrier_artifacts
+        history_events = (
+            live_history_events
+            if progress_callback is not None or run_event_emitter is not None
+            else _history_events(execution.progress)
+        )
+        final_metrics = _final_metrics(execution.slots, execution.coordinate)
+        manifest = _build_manifest(
+            run_spec,
+            run_id=resolved_run_id,
+            root_path=root_path,
+            graph_inline=graph_inline,
+            training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
+            training_spec_payload_kind=training_spec_payload_kind,
+            training_spec_payload_schema_id=training_spec_payload_schema_id,
+            training_spec_payload_schema_version=training_spec_payload_schema_version,
+            training_spec_payload_ref=training_spec_payload_ref,
+            task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
+            checkpoint_writes=checkpoint_writes,
+            barrier_artifacts=barrier_artifacts,
+            history_events=history_events,
+            final_metrics=final_metrics,
+            issues=issues,
+        )
+        manifest_path = _emit_manifest(
+            manifest,
+            root=root_path,
+            conflict_policy=manifest_conflict_policy,
+        )
+        if run_event_emitter is not None:
+            run_event_emitter.emit_terminal(
+                "complete",
+                {
+                    "run_id": resolved_run_id,
+                    "status": "completed",
+                    "coordinate": execution.coordinate.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    ),
+                    "batch": execution.coordinate.global_step,
+                    "manifest_path": str(manifest_path),
+                    "manifest_id": manifest.id,
+                    "metrics": final_metrics,
+                },
+            )
+    except Exception as exc:
+        if run_event_emitter is not None:
+            run_event_emitter.emit_terminal(
+                "failed",
+                {
+                    "run_id": resolved_run_id,
+                    "status": "failed",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+        raise
     return TrainingRunExecutionResult(
         run_id=resolved_run_id,
         status="completed",
@@ -551,14 +610,76 @@ def _history_event(coordinate: ProgressCoordinate) -> dict[str, Any]:
 def _live_progress_callback(
     progress_callback: ProgressCallback | None,
     history_events: list[dict[str, Any]],
+    *,
+    run_event_emitter: RunEventEmitter | None = None,
+    total_batches: int | None = None,
+    started_at: float | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
+    ready_emitted = False
+
     def emit(coordinate: ProgressCoordinate) -> None:
+        nonlocal ready_emitted
         event = _history_event(coordinate)
         history_events.append(event)
+        if run_event_emitter is not None:
+            if not ready_emitted:
+                ready_emitted = True
+                run_event_emitter.emit(
+                    "ready",
+                    {
+                        "run_id": coordinate.run_id,
+                        "phase": coordinate.phase,
+                        "batch": coordinate.global_step,
+                        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
+                    },
+                )
+            elapsed_seconds = (
+                time.perf_counter() - started_at if started_at is not None else None
+            )
+            payload = _run_progress_event_payload(
+                event,
+                coordinate=coordinate,
+                total_batches=total_batches,
+                elapsed_seconds=elapsed_seconds,
+            )
+            run_event_emitter.emit_progress(
+                payload,
+                batch=coordinate.global_step,
+                total_batches=total_batches,
+            )
         if progress_callback is not None:
             progress_callback(deepcopy(event))
 
     return emit
+
+
+def _run_progress_event_payload(
+    event: Mapping[str, Any],
+    *,
+    coordinate: ProgressCoordinate,
+    total_batches: int | None,
+    elapsed_seconds: float | None,
+) -> dict[str, Any]:
+    metrics = event.get("metrics", {})
+    metrics = metrics if isinstance(metrics, Mapping) else {}
+    payload: dict[str, Any] = {
+        "run_id": coordinate.run_id,
+        "phase": coordinate.phase,
+        "batch": coordinate.global_step,
+        "total_batches": total_batches,
+        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
+        "metrics": dict(metrics),
+        "status": "running",
+    }
+    if elapsed_seconds is not None:
+        payload["elapsed_seconds"] = elapsed_seconds
+    loss = metrics.get("train_loss")
+    if loss is not None:
+        try:
+            payload["loss"] = float(jax.device_get(loss))
+        except (TypeError, ValueError):
+            payload["loss"] = loss
+    return payload
 
 
 def _prepare_barrier_artifacts(

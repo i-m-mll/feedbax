@@ -33,6 +33,7 @@ from feedbax.contracts.worker import (
     PhaseTransitionSpec,
     StateSlotSpec,
 )
+from feedbax.orchestration.events import RunEventEmitter, RunEventReader
 from feedbax.training.checkpoint_custody import load_latest_checkpoint
 from feedbax.training.executor import (
     ManifestEmissionConflictError,
@@ -357,6 +358,49 @@ def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
     assert [event["metrics"]["train_loss"] for event in callback_events] == [1.0, 2.0, 3.0]
     callback_events[0]["metrics"]["train_loss"] = 999.0
     assert result.history_events[0]["metrics"]["train_loss"] == 1.0
+
+
+def test_execute_training_run_spec_emits_run_events_without_changing_manifest(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(stop_after_global_step=3)
+    events_path = tmp_path / "events" / "row-1.events.jsonl"
+    emitter = RunEventEmitter(
+        run_set_id="set-1",
+        row_id="row-1",
+        path=events_path,
+        heartbeat_seconds=None,
+    )
+    try:
+        result = execute_training_run_spec(
+            _run_spec(),
+            run_id="event-run",
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path / "manifests",
+            checkpoint_root=tmp_path / "checkpoint-custody",
+            registry=registry,
+            run_event_emitter=emitter,
+        )
+    finally:
+        emitter.close()
+
+    events = RunEventReader(events_path).read_all()
+    event_types = [event.type for event in events]
+
+    assert event_types[0] == "ready"
+    assert event_types.count("complete") == 1
+    assert event_types[-1] == "complete"
+    assert [event.payload["batch"] for event in events if event.type == "progress"] == [
+        1,
+        2,
+        3,
+    ]
+    checkpoint_events = [event for event in events if event.type == "checkpoint_written"]
+    assert [event.payload["batch"] for event in checkpoint_events] == [1, 2, 3]
+    assert all("coordinate" in event.payload for event in checkpoint_events)
+    assert all("transaction_id" in event.payload for event in checkpoint_events)
+    assert result.manifest_path.exists()
+    assert result.manifest.checkpoint_custody
 
 
 def test_execute_training_run_spec_propagates_progress_callback_errors(

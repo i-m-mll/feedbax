@@ -18,6 +18,7 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
+from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent
 from feedbax.web.services.training_service import TrainingService
 from feedbax.web.worker.app import WorkerStatus
 
@@ -278,6 +279,83 @@ def test_training_service_rejects_stale_rest_status_after_newer_ws_event(monkeyp
 
         assert status["batch"] == 12
         assert status["last_loss"] == 0.25
+
+    asyncio.run(run())
+
+
+def test_worker_emit_buffers_run_event_envelopes() -> None:
+    job = worker_app._Job(
+        job_id="job-events",
+        total_batches=3,
+        event_queue=worker_app.queue.Queue(),
+        stop_event=threading.Event(),
+    )
+
+    worker_app._emit(
+        job,
+        {
+            "type": "training_progress",
+            "job_id": job.job_id,
+            "batch": 1,
+            "total_batches": 3,
+            "loss": 0.5,
+        },
+    )
+    worker_app._emit(
+        job,
+        {
+            "type": "training_complete",
+            "job_id": job.job_id,
+            "batch": 3,
+            "loss": 0.1,
+        },
+    )
+
+    first = job.event_queue.get_nowait()
+    second = job.event_queue.get_nowait()
+
+    assert first["schema_id"] == RUN_EVENT_SCHEMA_ID
+    assert first["type"] == "progress"
+    assert first["payload"]["legacy_type"] == "training_progress"
+    assert first["payload"]["batch"] == 1
+    assert second["type"] == "complete"
+    assert [seq for seq, _event in job.event_buffer] == [0, 1]
+
+
+def test_training_service_unwraps_run_event_worker_stream(monkeypatch) -> None:
+    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
+        assert base_url == "http://worker"
+        yield RunEvent(
+            run_set_id=job_id,
+            row_id=job_id,
+            seq=9,
+            emitted_at_ms=1783430000000,
+            type="progress",
+            payload={
+                "legacy_type": "training_progress",
+                "job_id": job_id,
+                "batch": 2,
+                "total_batches": 5,
+                "loss": 0.25,
+            },
+        ).model_dump(mode="json")
+
+    async def run() -> None:
+        monkeypatch.setattr(
+            training_service_module.worker_client,
+            "stream_events",
+            fake_stream_events,
+        )
+
+        service = TrainingService()
+        service.connect_remote("http://worker")
+        [event] = [event async for event in service.stream_progress("job-run-event")]
+
+        assert event.raw["type"] == "training_progress"
+        assert event.raw["worker_seq"] == 9
+        assert event.raw["seq"] == 0
+        assert event.raw["batch"] == 2
+        assert event.raw["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
 
     asyncio.run(run())
 

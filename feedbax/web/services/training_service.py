@@ -17,6 +17,10 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
+from feedbax.orchestration.events import (
+    RUN_EVENT_SCHEMA_ID,
+    legacy_worker_event_from_run_event,
+)
 import feedbax.web.worker.client as worker_client
 
 
@@ -360,7 +364,10 @@ class TrainingService:
 
     def _normalize_training_event(self, job_id: str, event: dict) -> dict:
         """Add durable Studio protocol fields to a raw worker training event."""
-        normalized = dict(event)
+        if event.get("schema_id") == RUN_EVENT_SCHEMA_ID:
+            normalized = legacy_worker_event_from_run_event(event)
+        else:
+            normalized = dict(event)
         worker_seq = normalized.pop("seq", None)
         normalized["schema_id"] = STUDIO_API_TRANSPORT_SCHEMA_ID
         normalized["schema_version"] = STUDIO_API_TRANSPORT_SCHEMA_VERSION

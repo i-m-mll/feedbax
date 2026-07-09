@@ -14,6 +14,8 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES
+
 # Maximum reconnection attempts for the SSE stream.
 _MAX_RECONNECT_ATTEMPTS = 10
 # Seconds to wait between reconnection attempts.
@@ -300,7 +302,9 @@ async def stream_events(
                             last_seq = event_seq
                         yield event
                         # Terminal events — stop cleanly, no reconnect.
-                        if event.get("type") in ("training_complete", "training_error"):
+                        if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get(
+                            "type"
+                        ) in ("training_complete", "training_error"):
                             return
         except (
             httpx.ConnectError,
