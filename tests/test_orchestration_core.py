@@ -551,6 +551,99 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
         ).run()
 
 
+def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
+    marker = tmp_path / "spawned.txt"
+    row = RunRowSpec(
+        row_id="row-a",
+        command=[
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
+        ],
+    )
+    bundle = _bundle(tmp_path, rows=[row])
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}))
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+    try:
+        sentinels = bundle.run_set_dir / "sentinels"
+        (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
+        (sentinels / "row-a.pid").write_text(f"{process.pid}\n", encoding="utf-8")
+
+        outputs = driver.launch_row(
+            bundle,
+            row,
+            RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}),
+        )
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+    assert outputs["pid"] == process.pid
+    assert outputs["adopted"] is True
+    assert not marker.exists()
+
+
+def test_local_driver_marks_dead_started_pid_failed_without_spawning(tmp_path: Path) -> None:
+    marker = tmp_path / "spawned.txt"
+    row = RunRowSpec(
+        row_id="row-a",
+        command=[
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
+        ],
+    )
+    bundle = _bundle(tmp_path, rows=[row])
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}))
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
+    (sentinels / "row-a.pid").write_text("999999999\n", encoding="utf-8")
+
+    outputs = driver.launch_row(
+        bundle,
+        row,
+        RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}),
+    )
+
+    assert outputs["status"] == "failed"
+    assert outputs["event_discrepancies"][0]["code"] == "orphaned_launch"
+    assert "orphaned launch" in (sentinels / "row-a.failed").read_text(encoding="utf-8")
+    assert not marker.exists()
+
+
+def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> None:
+    marker = tmp_path / "spawned.txt"
+    row = RunRowSpec(
+        row_id="row-a",
+        command=[
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
+        ],
+    )
+    bundle = _bundle(tmp_path, rows=[row])
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+    driver.provision(bundle, state)
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
+    (sentinels / "row-a.pid").write_text("999999999\n", encoding="utf-8")
+
+    final_state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        store=store,
+        poll_interval_seconds=0.01,
+    ).run()
+
+    assert final_state.rows["row-a"].status == "failed"
+    assert final_state.rows["row-a"].event_discrepancies[0]["code"] == "orphaned_launch"
+    assert not marker.exists()
+
+
 def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

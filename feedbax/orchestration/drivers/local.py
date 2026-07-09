@@ -78,6 +78,33 @@ class LocalOrchestrationDriver:
             return {"row_id": row.row_id, "status": "failed"}
         if row.row_id in self._processes and self._processes[row.row_id].poll() is None:
             return {"row_id": row.row_id, "pid": self._processes[row.row_id].pid}
+        if paths["started"].exists():
+            pid = _read_pid(paths["pid"])
+            if pid and _pid_alive(pid):
+                self._processes.pop(row.row_id, None)
+                return {
+                    "row_id": row.row_id,
+                    "pid": pid,
+                    "status": "launched",
+                    "adopted": True,
+                }
+            discrepancy = {
+                "code": "orphaned_launch",
+                "message": (
+                    "orphaned launch: started sentinel present, process dead, "
+                    "no terminal sentinel"
+                ),
+                "pid": pid,
+            }
+            paths["sentinels"].mkdir(parents=True, exist_ok=True)
+            paths["failed"].write_text(discrepancy["message"] + "\n", encoding="utf-8")
+            return {
+                "row_id": row.row_id,
+                "pid": pid,
+                "status": "failed",
+                "detail": discrepancy["message"],
+                "event_discrepancies": [discrepancy],
+            }
 
         paths["row_dir"].mkdir(parents=True, exist_ok=True)
         paths["sentinels"].mkdir(parents=True, exist_ok=True)
