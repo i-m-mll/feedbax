@@ -344,11 +344,18 @@ class StageEngine:
 
     def _launch_one(self, row: RunRowSpec, state: RunSetState) -> RunSetState:
         outputs = self.driver.launch_row(self.bundle, row, state)
+        output_status = outputs.get("status")
+        status = "failed" if output_status == "failed" else "launched"
         row_state = state.rows[row.row_id].model_copy(
             update={
-                "status": "launched",
+                "status": status,
                 "pid": outputs.get("pid"),
                 "started_at": utc_now(),
+                "completed_at": utc_now() if status == "failed" else None,
+                "error": outputs.get("detail") if status == "failed" else None,
+                "event_discrepancies": [
+                    dict(item) for item in outputs.get("event_discrepancies", [])
+                ],
             }
         )
         state = state.with_row(row.row_id, row_state)

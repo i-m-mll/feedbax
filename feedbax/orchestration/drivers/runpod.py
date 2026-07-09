@@ -930,7 +930,13 @@ def build_launch_row_command(
     return (
         f"mkdir -p {_sq(remote_sentinel_dir)} {_sq(remote_run_dir + '/logs')} "
         f"{_sq(events_dir)} {_sq(row_dir)} {_sq(jax_cache_dir)} && "
-        f"rm -f {_sq(done_file)} {_sq(failed_file)} && touch {_sq(started_file)} && "
+        f"if [ -f {_sq(done_file)} ] || [ -f {_sq(failed_file)} ]; then exit 0; fi && "
+        f"if [ -f {_sq(started_file)} ]; then "
+        f"pid=$(cat {_sq(pid_file)} 2>/dev/null || true); "
+        'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi; '
+        f"echo 'orphaned launch: started sentinel present, process dead, "
+        f"no terminal sentinel' > {_sq(failed_file)}; exit 0; fi && "
+        f"touch {_sq(started_file)} && "
         f"nohup bash -lc {_sq(inner)} >{_sq(log_file)} 2>&1 &"
     )
 

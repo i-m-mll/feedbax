@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import warnings
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,6 +83,13 @@ class ReconciledRunStatus:
     synthesized_event: RunEvent | None = None
 
 
+@dataclass
+class _PendingJsonlLine:
+    line: str
+    attempts: int
+    next_retry_at: float
+
+
 class RunEventEmitter:
     """Emit run events to canonical JSONL and optional human BATCH lines.
 
@@ -100,6 +108,9 @@ class RunEventEmitter:
         render_batch_lines: bool = False,
         batch_line_sink: TextIO | None = None,
         heartbeat_seconds: float | None = 60.0,
+        max_write_attempts: int = 5,
+        retry_initial_seconds: float = 0.1,
+        retry_max_seconds: float = 3.0,
         now_ms: Callable[[], int] | None = None,
         warn: Callable[[str], None] | None = None,
     ) -> None:
@@ -115,6 +126,11 @@ class RunEventEmitter:
         self.render_batch_lines = render_batch_lines
         self.batch_line_sink = batch_line_sink if batch_line_sink is not None else sys.stdout
         self.heartbeat_seconds = heartbeat_seconds
+        if max_write_attempts < 1:
+            raise ValueError("max_write_attempts must be at least 1")
+        self.max_write_attempts = max_write_attempts
+        self.retry_initial_seconds = retry_initial_seconds
+        self.retry_max_seconds = retry_max_seconds
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
         self._warn = warn or (lambda message: warnings.warn(message, RuntimeWarning, stacklevel=2))
         self._seq = 0
@@ -125,6 +141,10 @@ class RunEventEmitter:
         self._stop_heartbeat = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
         self._last_write_monotonic = time.monotonic()
+        self._retry_queue: deque[_PendingJsonlLine] = deque()
+        self._retry_wakeup = threading.Event()
+        self._io_failures = 0
+        self._dropped_events = 0
         self.diagnostics: list[dict[str, Any]] = []
 
         if self.path is not None:
@@ -182,10 +202,12 @@ class RunEventEmitter:
         """Stop heartbeat emission and close the JSONL handle."""
         self._closed = True
         self._stop_heartbeat.set()
+        self._retry_wakeup.set()
         thread = self._heartbeat_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         with self._lock:
+            self._drain_retry_queue(force=True)
             handle = self._handle
             self._handle = None
             if handle is not None:
@@ -193,6 +215,11 @@ class RunEventEmitter:
                     handle.close()
                 except OSError as exc:
                     self._record_io_failure("close", exc)
+
+    @property
+    def stats(self) -> dict[str, int]:
+        """Return emitter transport counters for final diagnostics."""
+        return {"io_failures": self._io_failures, "dropped_events": self._dropped_events}
 
     def should_emit_progress(self, *, batch: int, total_batches: int | None) -> bool:
         """Return whether a progress event should be emitted at the default cadence."""
@@ -251,12 +278,75 @@ class RunEventEmitter:
         if handle is None:
             return
         line = event.model_dump_json(exclude_none=True) + "\n"
+        if self._retry_queue:
+            self._retry_queue.append(
+                _PendingJsonlLine(line=line, attempts=0, next_retry_at=time.monotonic())
+            )
+            self._retry_wakeup.set()
+            return
+        if not self._write_jsonl_line(line):
+            self._enqueue_retry(line, attempts=1)
+
+    def _write_jsonl_line(self, line: str) -> bool:
+        handle = self._handle
+        if handle is None:
+            return True
         try:
             handle.write(line)
             handle.flush()
             self._last_write_monotonic = time.monotonic()
+            return True
         except OSError as exc:
             self._record_io_failure("write", exc)
+            return False
+
+    def _enqueue_retry(self, line: str, *, attempts: int) -> None:
+        if attempts >= self.max_write_attempts:
+            self._drop_jsonl_line(line, attempts=attempts)
+            return
+        delay = min(
+            self.retry_initial_seconds * (2 ** max(attempts - 1, 0)),
+            self.retry_max_seconds,
+        )
+        self._retry_queue.append(
+            _PendingJsonlLine(
+                line=line,
+                attempts=attempts,
+                next_retry_at=time.monotonic() + delay,
+            )
+        )
+        self._retry_wakeup.set()
+
+    def _drain_retry_queue(self, *, force: bool = False) -> None:
+        while self._retry_queue and self._handle is not None:
+            pending = self._retry_queue[0]
+            now = time.monotonic()
+            if not force and pending.next_retry_at > now:
+                return
+            if self._write_jsonl_line(pending.line):
+                self._retry_queue.popleft()
+                continue
+            attempts = pending.attempts + 1
+            if attempts >= self.max_write_attempts:
+                self._retry_queue.popleft()
+                self._drop_jsonl_line(pending.line, attempts=attempts)
+            else:
+                delay = min(
+                    self.retry_initial_seconds * (2 ** max(attempts - 1, 0)),
+                    self.retry_max_seconds,
+                )
+                pending.attempts = attempts
+                pending.next_retry_at = time.monotonic() + delay
+            if not force:
+                return
+
+    def _drop_jsonl_line(self, line: str, *, attempts: int) -> None:
+        self._dropped_events += 1
+        self._record_warning(
+            "io_write_dropped",
+            "RunEventEmitter dropped JSONL event after "
+            f"{attempts} write attempts for {self.path}",
+        )
 
     def _write_batch_line(self, event: RunEvent) -> None:
         try:
@@ -267,14 +357,37 @@ class RunEventEmitter:
 
     def _heartbeat_loop(self) -> None:
         assert self.heartbeat_seconds is not None
-        while not self._stop_heartbeat.wait(self.heartbeat_seconds):
-            if self._closed:
-                return
-            if time.monotonic() - self._last_write_monotonic < self.heartbeat_seconds:
+        while not self._closed:
+            emit_heartbeat = False
+            with self._lock:
+                self._drain_retry_queue()
+                now = time.monotonic()
+                retry_delay = (
+                    max(0.0, self._retry_queue[0].next_retry_at - now)
+                    if self._retry_queue
+                    else None
+                )
+                heartbeat_delay = max(
+                    0.0,
+                    self.heartbeat_seconds - (now - self._last_write_monotonic),
+                )
+                if heartbeat_delay == 0:
+                    emit_heartbeat = True
+                    timeout = retry_delay if retry_delay is not None else self.heartbeat_seconds
+                elif retry_delay is None:
+                    timeout = heartbeat_delay
+                else:
+                    timeout = min(heartbeat_delay, retry_delay)
+            if emit_heartbeat:
+                self.emit("heartbeat", {"idle_seconds": self.heartbeat_seconds})
                 continue
-            self.emit("heartbeat", {"idle_seconds": self.heartbeat_seconds})
+            if self._stop_heartbeat.is_set():
+                return
+            self._retry_wakeup.wait(timeout)
+            self._retry_wakeup.clear()
 
     def _record_io_failure(self, operation: str, exc: BaseException) -> None:
+        self._io_failures += 1
         self._record_warning(
             f"io_{operation}_failed",
             f"RunEventEmitter {operation} failed for {self.path}: {exc}",
