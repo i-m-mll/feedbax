@@ -326,6 +326,46 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert budget_state.registration_payload["status"] == "aborted"
 
 
+@pytest.mark.parametrize(
+    ("first_status", "second_status", "abort_reason", "expected_call"),
+    [
+        ("ready", "launched", None, "launch:second"),
+        ("completed", "launched", None, "launch:second"),
+        ("failed", "stopped", "warm-first-failed", "stop:second"),
+    ],
+)
+def test_warm_first_gate_releases_ready_and_completed_first_rows(
+    tmp_path: Path,
+    first_status: str,
+    second_status: str,
+    abort_reason: str | None,
+    expected_call: str,
+) -> None:
+    rows = [
+        RunRowSpec(row_id="warm", command=[sys.executable, "-c", "pass"]),
+        RunRowSpec(row_id="second", command=[sys.executable, "-c", "pass"]),
+    ]
+    bundle = _bundle(
+        tmp_path,
+        rows=rows,
+        launch_policy=LaunchPolicy(max_parallel_rows=2, warm_first=True),
+    )
+    driver = FakeDriver()
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={
+            "warm": RowState(status=first_status),
+            "second": RowState(status="pending"),
+        },
+    )
+
+    updated = StageEngine(bundle=bundle, driver=driver)._launch_pending_if_allowed(state)
+
+    assert updated.rows["second"].status == second_status
+    assert updated.abort_reason == abort_reason
+    assert expected_call in driver.calls
+
+
 def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
