@@ -52,6 +52,10 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.graph import (
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
@@ -1741,6 +1745,24 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             rejected_old_versions=("feedbax.spec.training_run.v0",),
             required_tests=(
                 "tests/test_training_run_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "TrainingRunMatrixSpec",
+            TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("feedbax.training.run_matrix", "provider_manifest.schemas"),
+            consumed_by=("training matrix materialization", "Studio schema enumeration"),
+            description=(
+                "Governed multi-row training launch document with explicit rows, "
+                "sweep axes, base-spec resolution, derivations, and fork semantics."
+            ),
+            rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
+            required_tests=(
+                "tests/test_run_matrix_spec.py",
+                "tests/test_run_matrix_materialization.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),

@@ -170,7 +170,7 @@ def materialize_extraction_product(
     """Build an :class:`AnalysisDataProduct` from declarative field mappings."""
 
     repo_root = Path(repo_root)
-    ctx = _load_expression_context(spec, repo_root)
+    ctx = load_expression_context(spec.sources, repo_root)
     parameters = deepcopy(spec.static_parameters)
 
     for field in spec.fields:
@@ -187,7 +187,7 @@ def materialize_extraction_product(
                 for key, child_value in value.items()
                 if key not in excluded
             }
-        _set_path(parameters, field.output_path, value)
+        set_dotted_path(parameters, field.output_path, value)
 
     _add_adoption_records(spec, ctx, parameters)
 
@@ -243,9 +243,14 @@ def verify_extraction_product(
     return persisted
 
 
-def _load_expression_context(spec: ExtractionProductSpec, repo_root: Path) -> ExpressionContext:
+def load_expression_context(
+    sources: list[SourceBinding],
+    repo_root: Path | str,
+) -> ExpressionContext:
+    """Load source bindings into an expression context from repo-relative JSON files."""
+    repo_root = Path(repo_root)
     items: dict[str, ContextItem] = {}
-    for source in spec.sources:
+    for source in sources:
         try:
             payload = _read_source_payload(repo_root, source.uri)
         except FileNotFoundError:
@@ -262,6 +267,10 @@ def _load_expression_context(spec: ExtractionProductSpec, repo_root: Path) -> Ex
             )
         items[source.alias] = ContextItem(kind=source.kind, payload=payload)
     return ExpressionContext(items=items)
+
+
+def _load_expression_context(spec: ExtractionProductSpec, repo_root: Path) -> ExpressionContext:
+    return load_expression_context(spec.sources, repo_root)
 
 
 def _read_source_payload(repo_root: Path, uri: str) -> Any:
@@ -340,7 +349,8 @@ def _select_pointer(select: Select) -> str | None:
     return f"{where.path}={where.value}"
 
 
-def _set_path(root: dict[str, Any], path: str, value: Any) -> None:
+def set_dotted_path(root: dict[str, Any], path: str, value: Any) -> None:
+    """Set a dotted path in a nested mapping, creating missing mappings."""
     current = root
     parts = path.split(".")
     for part in parts[:-1]:
@@ -352,6 +362,10 @@ def _set_path(root: dict[str, Any], path: str, value: Any) -> None:
             raise ValueError(f"cannot set nested output_path through non-dict segment: {path!r}")
         current = next_value
     current[parts[-1]] = value
+
+
+def _set_path(root: dict[str, Any], path: str, value: Any) -> None:
+    set_dotted_path(root, path, value)
 
 
 def _get_parameter_path(root: Mapping[str, Any], path: str) -> dict[str, Any]:
