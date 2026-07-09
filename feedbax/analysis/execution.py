@@ -1,6 +1,6 @@
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -34,7 +34,12 @@ from feedbax.analysis.evaluation import (
     load_evaluation_states_cache,
     write_evaluation_states_cache,
 )
-from feedbax.plot.color_setup import COMMON_COLOR_SPECS, setup_colors
+from feedbax.plot.color_setup import (
+    ColorConfig,
+    ColorscaleSpec,
+    GENERIC_COLOR_CONFIG,
+    setup_colors,
+)
 
 # Access project paths and string constants
 from feedbax.config import PATHS
@@ -69,6 +74,71 @@ from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace, namespace_to_dict
 
 STATES_CACHE_SUBDIR = "states"
+
+
+@dataclass(frozen=True)
+class AnalysisModelLoadConfig:
+    """Caller-supplied model-loading defaults for legacy analysis execution."""
+
+    training_module_name: str | Callable[[str], str]
+    sweep_label: str
+    sweep_values: Callable[[TreeNamespace], Sequence[Any]]
+    params_query: Callable[[TreeNamespace, Any, str], dict[str, Any]]
+    noise_stds: Callable[[TreeNamespace], dict[str, Any]] | None = None
+    surgeries: Callable[[TreeNamespace], dict[tuple[str, ...], Any]] | None = None
+    exclude_underperformers_by: str | None = REPLICATE_CRITERION
+
+    def resolve_training_module_name(self, module_key: str) -> str:
+        if callable(self.training_module_name):
+            return self.training_module_name(module_key)
+        return self.training_module_name
+
+
+@dataclass(frozen=True)
+class AnalysisSetupMetadataConfig:
+    """Caller-supplied metadata extraction for evaluation setup records."""
+
+    condition_metadata: Callable[[TreeNamespace], dict[str, Any] | None] | None = None
+    eval_setup_params: Callable[[TreeNamespace], dict[str, Any] | None] | None = None
+
+
+def _required_model_load_config(
+    module_key: str,
+    analysis_module: ModuleType,
+) -> AnalysisModelLoadConfig:
+    config = getattr(analysis_module, "MODEL_LOAD_CONFIG", None)
+    if not isinstance(config, AnalysisModelLoadConfig):
+        raise ValueError(
+            f"Analysis module {module_key!r} must define MODEL_LOAD_CONFIG as "
+            "feedbax.analysis.execution.AnalysisModelLoadConfig; Feedbax no "
+            "longer derives training-module or sweep defaults from module names."
+        )
+    return config
+
+
+def _analysis_color_config(analysis_module: ModuleType) -> ColorConfig:
+    config = getattr(analysis_module, "COLOR_CONFIG", GENERIC_COLOR_CONFIG)
+    if not isinstance(config, ColorConfig):
+        raise ValueError("Analysis module COLOR_CONFIG must be a feedbax ColorConfig")
+    return config
+
+
+def _analysis_color_specs(analysis_module: ModuleType) -> dict[str, ColorscaleSpec]:
+    specs = getattr(analysis_module, "COLOR_SPECS", {})
+    if not isinstance(specs, dict):
+        raise ValueError("Analysis module COLOR_SPECS must be a dict of ColorscaleSpec values")
+    if not all(isinstance(value, ColorscaleSpec) for value in specs.values()):
+        raise ValueError("Analysis module COLOR_SPECS values must be ColorscaleSpec instances")
+    return specs
+
+
+def _analysis_setup_metadata_config(analysis_module: ModuleType) -> AnalysisSetupMetadataConfig:
+    config = getattr(analysis_module, "SETUP_METADATA_CONFIG", AnalysisSetupMetadataConfig())
+    if not isinstance(config, AnalysisSetupMetadataConfig):
+        raise ValueError(
+            "Analysis module SETUP_METADATA_CONFIG must be an AnalysisSetupMetadataConfig"
+        )
+    return config
 
 
 @dataclass
@@ -207,36 +277,43 @@ def validate_and_convert_transforms(
 
 
 def load_trained_models_and_aux_objects(
-    training_module_name: str, hps: TreeNamespace, db_session: Session, registry
+    model_load_config: AnalysisModelLoadConfig,
+    training_module_name: str,
+    hps: TreeNamespace,
+    db_session: Session,
+    registry,
 ):
     """Given the analysis config, load the trained models and related objects (e.g. train tasks)."""
 
     # Load training module from registered packages
     training_module = registry.get_training_module(training_module_name)
+    sweep_values = model_load_config.sweep_values(hps)
+    if len(sweep_values) == 0:
+        raise ValueError("MODEL_LOAD_CONFIG.sweep_values returned no model groups")
 
     pairs, model_info, replicate_info, n_replicates_included, hps_train_dict = jtree.unzip(
-        #! Should this structure be hardcoded here?
-        #! At least for this project, we typically load spreads of trained models,
-        #! and those spreads are always over the training perturbation std.
-        LDict.of("train__pert__std")(
+        LDict.of(model_load_config.sweep_label)(
             {
-                train_pert_std: query_and_load_model(
+                sweep_value: query_and_load_model(
                     db_session,
                     training_module.setup_task_model_pair,
-                    params_query=namespace_to_dict(flatten_hps(hps.train))
-                    | dict(expt_name=training_module_name, pert__std=train_pert_std),
-                    noise_stds=dict(
-                        feedback=hps.model.feedback_noise_std,
-                        motor=hps.model.motor_noise_std,
+                    params_query=model_load_config.params_query(
+                        hps, sweep_value, training_module_name
                     ),
-                    surgeries={
-                        # Change
-                        ("n_steps",): hps.task.n_steps,
-                    },
-                    exclude_underperformers_by=REPLICATE_CRITERION,
+                    noise_stds=(
+                        model_load_config.noise_stds(hps)
+                        if model_load_config.noise_stds is not None
+                        else None
+                    ),
+                    surgeries=(
+                        model_load_config.surgeries(hps)
+                        if model_load_config.surgeries is not None
+                        else None
+                    ),
+                    exclude_underperformers_by=model_load_config.exclude_underperformers_by,
                     return_task=True,
                 )
-                for train_pert_std in hps.train.pert.std
+                for sweep_value in sweep_values
             }
         )
     )
@@ -261,15 +338,16 @@ def setup_eval_for_module(
     # Load analysis module from registered packages
     analysis_module: ModuleType = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
 
-    #! For this project, assume only a single-level mapping between training experiments and analysis subpackages;
-    #! thus `analysis.modules.part1` corresponds to `training.modules.part1`.
-    #! In general, it might be better to go back to explicitly specifying the `expt_name` for the
-    #! training experiment, in each analysis config file.
-    training_module_name = module_key.split(".")[0]
+    model_load_config = _required_model_load_config(module_key, analysis_module)
+    training_module_name = model_load_config.resolve_training_module_name(module_key)
 
     models_base, model_info, replicate_info, tasks_train, n_replicates_included, hps_train_dict = (
         load_trained_models_and_aux_objects(
-            training_module_name, hps, db_session, EXPERIMENT_REGISTRY
+            model_load_config,
+            training_module_name,
+            hps,
+            db_session,
+            EXPERIMENT_REGISTRY,
         )
     )
 
@@ -311,16 +389,6 @@ def setup_eval_for_module(
     if not any_system_noise:
         hps.task.eval_n = 1
 
-    # Get indices for taking important subsets of replicates
-    # best_replicate, included_replicates = jtree.unzip(LDict.of("train__pert__std")({
-    #     std: (
-    #         replicate_info[std]['best_replicates'][REPLICATE_CRITERION],
-    #         replicate_info[std]['included_replicates'][REPLICATE_CRITERION],
-    #     )
-    #     # Assumes that `train.pert.std` is given as a sequence
-    #     for std in hps.train.pert.std
-    # }))
-
     # Construct common inputs needed by transforms and analyses
     # Note: We construct trial_specs for all task variants here
     #! Note that modifying `n_steps` may not work here yet, because of the way that `n_steps` is
@@ -337,15 +405,17 @@ def setup_eval_for_module(
         }
     )
 
-    # Extract perturbation config from training hyperparameters
-    pert_config = None
-    if hasattr(hps, "train") and hasattr(hps.train, "pert"):
-        pert_config = namespace_to_dict(hps.train.pert)
-
-    # Extract SISU params if present
-    sisu = None
-    if hasattr(hps, "sisu"):
-        sisu = namespace_to_dict(hps.sisu)
+    metadata_config = _analysis_setup_metadata_config(analysis_module)
+    condition_metadata = (
+        metadata_config.condition_metadata(hps)
+        if metadata_config.condition_metadata is not None
+        else None
+    )
+    eval_setup_params = (
+        metadata_config.eval_setup_params(hps)
+        if metadata_config.eval_setup_params is not None
+        else None
+    )
 
     # Add evaluation record to the database, including setup metadata
     eval_info = add_evaluation(
@@ -356,14 +426,18 @@ def setup_eval_for_module(
         #! TODO: Could exclude train parameters, since
         eval_parameters=namespace_to_dict(flatten_hps(hps)),
         version_info=version_info,
-        perturbation_config=pert_config,
+        condition_metadata=condition_metadata,
         task_variants=task_variants_dict,
-        sisu_params=sisu,
+        eval_setup_params=eval_setup_params,
     )
 
     trial_specs = jt.map(get_validation_trial_specs, task_variants, is_leaf=is_module)
 
-    colors, colorscales = setup_colors(hps, COMMON_COLOR_SPECS | analysis_module.COLOR_FNS)
+    colors, colorscales = setup_colors(
+        hps,
+        _analysis_color_specs(analysis_module),
+        color_config=_analysis_color_config(analysis_module),
+    )
 
     common_inputs = dict(
         hps_common=hps,
@@ -592,14 +666,14 @@ def check_records_for_analysis(
     module_config: dict,
 ):
     hps = config_to_hps(module_config, config_type="analysis")
-
-    #! TODO: Along with `setup_eval_for_module`: reconcile this with `ExperimentRegistry` logic
-    training_module_name = module_key.split(".")[0]
+    analysis_module: ModuleType = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
+    model_load_config = _required_model_load_config(module_key, analysis_module)
+    training_module_name = model_load_config.resolve_training_module_name(module_key)
 
     with db_session(autocommit=False) as db:
-        for train_pert_std in hps.train.pert.std:
-            params_query = namespace_to_dict(flatten_hps(hps.train)) | dict(
-                expt_name=training_module_name, pert__std=train_pert_std
+        for sweep_value in model_load_config.sweep_values(hps):
+            params_query = model_load_config.params_query(
+                hps, sweep_value, training_module_name
             )
             model_info = get_model_record(
                 db,

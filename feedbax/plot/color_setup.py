@@ -1,6 +1,8 @@
 import logging
 import warnings
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Literal, NamedTuple, Optional, TypeVar, Union
 
 import feedbax.plot as fbp
@@ -28,38 +30,70 @@ class ColorscaleSpec(NamedTuple):
     colorscale: Optional[Union[str, Sequence[str], Sequence[tuple]]] = None
 
 
-# Colorscales
-COLORSCALES: dict[str, str] = dict(
-    train__pert__std="viridis",
-    pert__amp="plotly3",
-    sisu="thermal",
-    reach_condition="phase",
+@dataclass(frozen=True)
+class ColorConfig:
+    """Registered color defaults with explicit schema identity."""
+
+    schema_id: str
+    schema_version: str
+    colorscales: Mapping[str, str | Sequence[str] | Sequence[tuple]] = field(
+        default_factory=dict
+    )
+    color_specs: Mapping[str, ColorscaleSpec] = field(default_factory=dict)
+
+
+def _trial_sequence(hps: TreeNamespace) -> Sequence[int]:
+    return range(hps.eval_n)
+
+
+# Generic colorscales shipped by Feedbax. Project vocabulary such as
+# perturbation amplitudes, SISU settings, or task-condition names belongs in a
+# caller-supplied ColorConfig.
+COLORSCALES: dict[str, str | Sequence[str] | Sequence[tuple]] = dict(
     replicate="twilight",
     trial="Tealgrn",
-    # pert_var=plc.qualitative.D3,
 )
 
 DISCRETE_COLORSCALES = dict(
-    pert_var=plc.qualitative.D3,  # list[str]
+    category=plc.qualitative.D3,
 )
 
 
 """
-Default colorscales to try to set up, based on hyperparameters.
-Values are hyperparameter where-functions so we can try to load them one-by-one.
+Generic default colorscales to try to set up, based on caller-provided
+hyperparameters. Values are hyperparameter where-functions so we can try to
+load them one-by-one.
 """
 COMMON_COLOR_SPECS = {
-    k: ColorscaleSpec(func)
-    for k, func in dict(
-        # sisu=
-        pert__amp=lambda hps: hps.pert.amp,
-        train__pert__std=lambda hps: hps.train.pert.std,
-        # pert_var=  #?
-        #  reach_condition=  #?
-        sisu=lambda hps: hps.sisu,
-        trial=lambda hps: range(hps.eval_n),
-    ).items()
+    "trial": ColorscaleSpec(_trial_sequence),
 }
+
+GENERIC_COLOR_CONFIG = ColorConfig(
+    schema_id="feedbax.plot.color_config.generic",
+    schema_version="1",
+    colorscales=MappingProxyType(COLORSCALES),
+    color_specs=MappingProxyType(COMMON_COLOR_SPECS),
+)
+
+_COLOR_CONFIGS: dict[str, ColorConfig] = {
+    GENERIC_COLOR_CONFIG.schema_id: GENERIC_COLOR_CONFIG,
+}
+
+
+def register_color_config(config: ColorConfig, *, replace: bool = False) -> ColorConfig:
+    """Register a named color configuration for project-specific analysis defaults."""
+    if config.schema_id in _COLOR_CONFIGS and not replace:
+        raise ValueError(f"Color config {config.schema_id!r} is already registered")
+    _COLOR_CONFIGS[config.schema_id] = config
+    return config
+
+
+def get_color_config(schema_id: str) -> ColorConfig:
+    """Return a registered color configuration by stable schema id."""
+    try:
+        return _COLOR_CONFIGS[schema_id]
+    except KeyError as exc:
+        raise ValueError(f"Unknown color config {schema_id!r}") from exc
 
 
 def is_discrete_colorscale(colorscale):
@@ -136,22 +170,40 @@ def get_colors_dicts_from_discrete(
 
 
 def setup_colors(
-    hps: PyTree[TreeNamespace], var_fns: dict[str, ColorscaleSpec]
+    hps: PyTree[TreeNamespace],
+    var_fns: Mapping[str, ColorscaleSpec] | None = None,
+    *,
+    color_config: ColorConfig | str | None = None,
+    colorscales: Mapping[str, str | Sequence[str] | Sequence[tuple]] | None = None,
 ) -> tuple[PyTree[dict], dict]:
     """Get all the colorscales we might want for our analyses, given the experiment hyperparameters.
 
     Args:
         hps: Hyperparameters tree
         var_fns: Dictionary mapping variable names to `ColorscaleSpecs`
+        color_config: Registered color config or schema id to seed defaults from.
+        colorscales: Extra or overriding colorscale mappings.
 
     Returns:
         Tuple of (PyTree of color mappings, updated colorscales dictionary)
     """
+    if isinstance(color_config, str):
+        color_config = get_color_config(color_config)
+    elif color_config is None:
+        color_config = GENERIC_COLOR_CONFIG
+
+    if var_fns is None:
+        var_fns = dict(color_config.color_specs)
+    else:
+        var_fns = dict(color_config.color_specs) | dict(var_fns)
+
     # Create updated colorscales dictionary
-    colorscales = COLORSCALES.copy()
+    resolved_colorscales = dict(color_config.colorscales)
+    if colorscales is not None:
+        resolved_colorscales.update(colorscales)
     for k, spec in var_fns.items():
         if spec.colorscale is not None:
-            colorscales[k] = spec.colorscale
+            resolved_colorscales[k] = spec.colorscale
 
     def process_variable(hps, var_name, spec):
         # Get variable values
@@ -161,7 +213,7 @@ def setup_colors(
             return None
 
         # Get colorscale from updated dictionary
-        colorscale = colorscales.get(var_name)
+        colorscale = resolved_colorscales.get(var_name)
         if colorscale is None:
             logger.warn(f"no colorscale determined for variable '{var_name}'")
             return None
@@ -186,4 +238,4 @@ def setup_colors(
         is_leaf=is_type(TreeNamespace),
     )
 
-    return colors, colorscales
+    return colors, resolved_colorscales
