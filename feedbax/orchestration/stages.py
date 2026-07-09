@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -13,6 +15,7 @@ from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
+    RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
 )
@@ -293,23 +296,71 @@ class StageEngine:
 
     def _stage_register(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         certificate_path = Path(state.certificate_ref or "")
-        certificate_payload = json.loads(certificate_path.read_text(encoding="utf-8"))
-        certificate = assert_certificate_allows_completed_registration(certificate_payload)
-        status = "aborted" if state.abort_reason else "completed"
+        certificate_bytes = certificate_path.read_bytes()
+        certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
+        certificate = RunConformanceCertificate.model_validate(certificate_payload)
+        certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+        if certificate.overall == "pass":
+            status = "aborted" if state.abort_reason else "completed"
+        else:
+            status = "failed"
         payload = {
             "run_set_id": self.bundle.run_set_id,
             "status": status,
             "abort_reason": state.abort_reason,
             "certificate_ref": str(certificate_path),
+            "certificate_sha256": certificate_digest,
             "certificate_overall": certificate.overall,
         }
+        if status == "failed":
+            payload["failure_reason"] = "conformance-failed"
         state = state.model_copy(update={"registration_payload": payload, "updated_at": utc_now()})
         register_path = self.bundle.run_set_dir / "registration.json"
-        register_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        self._write_or_verify_registration(
+            register_path=register_path,
+            certificate_path=certificate_path,
+            payload=payload,
         )
+        self.store.save(state)
+        assert_certificate_allows_completed_registration(certificate_payload)
         return state, payload
+
+    def _write_or_verify_registration(
+        self,
+        *,
+        register_path: Path,
+        certificate_path: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        if register_path.exists():
+            existing = json.loads(register_path.read_text(encoding="utf-8"))
+            if existing == dict(payload):
+                return
+            raise OrchestrationStageError(
+                "registration payload mismatch at "
+                f"{register_path}; existing payload does not match current certificate "
+                f"outcome from {certificate_path}: status={payload.get('status')!r}, "
+                f"certificate_overall={payload.get('certificate_overall')!r}"
+            )
+
+        register_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{register_path.name}.",
+            suffix=".tmp",
+            dir=str(register_path.parent),
+            text=True,
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(dict(payload), handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, register_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
         if self.bundle.keep_alive:

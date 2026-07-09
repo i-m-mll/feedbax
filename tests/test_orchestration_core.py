@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
 )
+from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.local import (
     LocalDriverError,
@@ -30,6 +32,7 @@ from feedbax.orchestration.drivers.local import (
 from feedbax.orchestration.stages import (
     STAGE_ORDER,
     STAGE_PREFLIGHT,
+    OrchestrationStageError,
     PreflightFailed,
     StageEngine,
     run_preflight_checks,
@@ -447,6 +450,10 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
 
     assert state.stage("REGISTER").status == "completed"
     assert state.registration_payload and state.registration_payload["status"] == "completed"
+    assert (
+        state.registration_payload["certificate_sha256"]
+        == hashlib.sha256((bundle.run_set_dir / "conformance.json").read_bytes()).hexdigest()
+    )
     assert {row_id: row.status for row_id, row in state.rows.items()} == {
         "warm": "completed",
         "second": "completed",
@@ -472,6 +479,76 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert budget_state.rows["slow"].status == "stopped"
     assert budget_state.registration_payload
     assert budget_state.registration_payload["status"] == "aborted"
+
+
+def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    registry = CheckRegistry(
+        {
+            "fixture_fail": lambda row: CheckEntry(
+                check_id="fixture_fail",
+                status="fail",
+                expected="pass",
+                observed="fail",
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=registry,
+        ).run()
+
+    register_path = bundle.run_set_dir / "registration.json"
+    certificate_path = bundle.run_set_dir / "conformance.json"
+    payload = json.loads(register_path.read_text(encoding="utf-8"))
+    certificate_digest = hashlib.sha256(certificate_path.read_bytes()).hexdigest()
+
+    assert payload == {
+        "abort_reason": None,
+        "certificate_overall": "fail",
+        "certificate_ref": str(certificate_path),
+        "certificate_sha256": certificate_digest,
+        "failure_reason": "conformance-failed",
+        "run_set_id": bundle.run_set_id,
+        "status": "failed",
+    }
+    failed_state = store.load()
+    assert failed_state.stage("REGISTER").status == "failed"
+    assert failed_state.registration_payload == payload
+
+    registration_mtime = register_path.stat().st_mtime_ns
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=registry,
+        ).run()
+    assert register_path.stat().st_mtime_ns == registration_mtime
+
+    tampered = dict(payload)
+    tampered["status"] = "completed"
+    register_path.write_text(
+        json.dumps(tampered, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match=r"registration payload mismatch at .*registration\.json.*conformance\.json",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=registry,
+        ).run()
 
 
 def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) -> None:
