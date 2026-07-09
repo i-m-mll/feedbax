@@ -1,0 +1,819 @@
+"""Spec-conformance certificates for completed training run sets.
+
+Project plugins may publish additional checks through the existing
+``feedbax.plugins`` entry-point group. A plugin can expose either
+``register_feedbax_conformance_checks(registry)`` or
+``feedbax_conformance_checks()``, where each yielded item is a
+``(check_id, callable)`` pair. The callable receives a
+``ConformanceRowArtifacts`` instance and returns a ``CheckEntry``.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import Field, model_validator
+
+from feedbax.contracts.manifest import StrictModel, load_manifest
+from feedbax.contracts.training import OptimizerSpec
+
+RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
+RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
+
+CHECK_STATUS_PASS = "pass"
+CHECK_STATUS_FAIL = "fail"
+CHECK_STATUS_SKIPPED = "skipped"
+CHECK_STATUSES = (CHECK_STATUS_PASS, CHECK_STATUS_FAIL, CHECK_STATUS_SKIPPED)
+
+CheckStatus = Literal["pass", "fail", "skipped"]
+OverallStatus = Literal["pass", "fail"]
+CheckCallable = Callable[["ConformanceRowArtifacts"], "CheckEntry"]
+
+
+class CheckEntry(StrictModel):
+    """One conformance check outcome for one row."""
+
+    check_id: str = Field(min_length=1)
+    status: CheckStatus
+    expected: Any = None
+    observed: Any = None
+    detail: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_skipped_detail(self) -> "CheckEntry":
+        if self.status == CHECK_STATUS_SKIPPED and not self.detail:
+            raise ValueError("skipped conformance checks require a detail")
+        return self
+
+
+class CertificateRow(StrictModel):
+    """Conformance checks attached to one row id."""
+
+    checks: list[CheckEntry]
+
+
+class RunConformanceCertificate(StrictModel):
+    """Durable red/green conformance artifact for a run set."""
+
+    schema_id: Literal["feedbax.run_conformance"] = RUN_CONFORMANCE_SCHEMA_ID
+    schema_version: Literal["feedbax.run_conformance.v1"] = RUN_CONFORMANCE_SCHEMA_VERSION
+    run_set_id: str = Field(min_length=1)
+    generated_at: datetime
+    overall: OverallStatus
+    rows: dict[str, CertificateRow]
+
+    @model_validator(mode="after")
+    def _validate_overall(self) -> "RunConformanceCertificate":
+        expected = aggregate_overall(self.rows)
+        if self.overall != expected:
+            raise ValueError(
+                f"overall must be {expected!r} for the contained check statuses; "
+                f"got {self.overall!r}"
+            )
+        return self
+
+
+@dataclass(frozen=True)
+class ConformanceRowArtifacts:
+    """Collected row artifacts consumed by conformance checks.
+
+    Missing required fields are check failures, not skips. ``event_log`` is the
+    one legacy-safe exception: absence means the terminal-event protocol is not
+    available on this branch/row and ``events_terminal`` records a skipped check
+    with detail.
+    """
+
+    row_id: str
+    manifest_path: Path | str | None = None
+    training_diagnostics: Mapping[str, Any] | None = None
+    checkpoint_custody_root: Path | str | None = None
+    event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None
+    bundle_row_spec: Mapping[str, Any] | None = None
+    recorded_environment_fingerprint: Any = None
+    preflight_normalized_payload: Mapping[str, Any] | None = None
+    manifest_payload: Mapping[str, Any] | None = None
+
+
+class CheckRegistry:
+    """Deterministic registry of conformance checks."""
+
+    def __init__(self, checks: Mapping[str, CheckCallable] | None = None) -> None:
+        self._checks: dict[str, CheckCallable] = {}
+        for check_id, check in (checks or {}).items():
+            self.register(check_id, check)
+
+    def register(self, check_id: str, check: CheckCallable) -> None:
+        """Register one check callable."""
+        if not check_id:
+            raise ValueError("check_id must be non-empty")
+        if check_id in self._checks:
+            raise ValueError(f"conformance check already registered: {check_id!r}")
+        self._checks[check_id] = check
+
+    def extend(self, checks: Iterable[tuple[str, CheckCallable]]) -> None:
+        """Register several ``(check_id, callable)`` pairs."""
+        for check_id, check in checks:
+            self.register(check_id, check)
+
+    def items(self) -> tuple[tuple[str, CheckCallable], ...]:
+        """Return checks sorted by id for deterministic certificate output."""
+        return tuple((check_id, self._checks[check_id]) for check_id in sorted(self._checks))
+
+    def __len__(self) -> int:
+        return len(self._checks)
+
+
+def pass_check(check_id: str, *, expected: Any = None, observed: Any = None) -> CheckEntry:
+    """Build a passing check result."""
+    return CheckEntry(
+        check_id=check_id,
+        status=CHECK_STATUS_PASS,
+        expected=expected,
+        observed=observed,
+    )
+
+
+def fail_check(
+    check_id: str,
+    *,
+    expected: Any = None,
+    observed: Any = None,
+    detail: str | None = None,
+) -> CheckEntry:
+    """Build a failing check result."""
+    return CheckEntry(
+        check_id=check_id,
+        status=CHECK_STATUS_FAIL,
+        expected=expected,
+        observed=observed,
+        detail=detail,
+    )
+
+
+def skipped_check(
+    check_id: str,
+    *,
+    expected: Any = None,
+    observed: Any = None,
+    detail: str,
+) -> CheckEntry:
+    """Build a skipped check result. ``detail`` is required by the model."""
+    return CheckEntry(
+        check_id=check_id,
+        status=CHECK_STATUS_SKIPPED,
+        expected=expected,
+        observed=observed,
+        detail=detail,
+    )
+
+
+def missing_input_check(check_id: str, *missing: str) -> CheckEntry:
+    """Return a fail result for missing required inputs."""
+    return fail_check(
+        check_id,
+        expected={"required": list(missing)},
+        observed=None,
+        detail="missing required input: " + ", ".join(missing),
+    )
+
+
+def aggregate_overall(rows: Mapping[str, CertificateRow]) -> OverallStatus:
+    """Return pass iff every non-skipped check passes."""
+    for row in rows.values():
+        for check in row.checks:
+            if check.status == CHECK_STATUS_FAIL:
+                return CHECK_STATUS_FAIL
+    return CHECK_STATUS_PASS
+
+
+def assemble_certificate(
+    *,
+    run_set_id: str,
+    row_checks: Mapping[str, Sequence[CheckEntry]],
+    generated_at: datetime,
+) -> RunConformanceCertificate:
+    """Assemble and validate a deterministic certificate model."""
+    rows = {
+        row_id: CertificateRow(checks=sorted(checks, key=lambda check: check.check_id))
+        for row_id, checks in sorted(row_checks.items())
+    }
+    return RunConformanceCertificate(
+        run_set_id=run_set_id,
+        generated_at=generated_at,
+        overall=aggregate_overall(rows),
+        rows=rows,
+    )
+
+
+def run_conformance_checks(
+    *,
+    run_set_id: str,
+    rows: Sequence[ConformanceRowArtifacts],
+    registry: CheckRegistry,
+    generated_at: datetime | None = None,
+) -> RunConformanceCertificate:
+    """Run registered checks over collected row artifacts."""
+    row_results: dict[str, list[CheckEntry]] = {}
+    for row in sorted(rows, key=lambda item: item.row_id):
+        checks: list[CheckEntry] = []
+        for check_id, check in registry.items():
+            try:
+                result = check(row)
+            except Exception as exc:  # plugin/core failures belong in the certificate.
+                result = fail_check(
+                    check_id,
+                    expected="check completed without exception",
+                    observed=type(exc).__name__,
+                    detail=str(exc),
+                )
+            if result.check_id != check_id:
+                result = result.model_copy(update={"check_id": check_id})
+            checks.append(result)
+        row_results[row.row_id] = checks
+    return assemble_certificate(
+        run_set_id=run_set_id,
+        row_checks=row_results,
+        generated_at=generated_at or datetime.now(timezone.utc).replace(microsecond=0),
+    )
+
+
+def write_conformance_certificate(
+    *,
+    run_set_dir: Path | str,
+    run_set_id: str,
+    rows: Sequence[ConformanceRowArtifacts],
+    registry: CheckRegistry,
+    generated_at: datetime | None = None,
+) -> RunConformanceCertificate:
+    """Run checks and write ``<run_set_dir>/conformance.json`` deterministically."""
+    certificate = run_conformance_checks(
+        run_set_id=run_set_id,
+        rows=rows,
+        registry=registry,
+        generated_at=generated_at,
+    )
+    output = Path(run_set_dir) / "conformance.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload = certificate.model_dump(mode="json")
+    output.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return certificate
+
+
+def build_core_check_registry() -> CheckRegistry:
+    """Return the built-in conformance checks."""
+    return CheckRegistry(
+        {
+            "checkpoint_cadence": check_checkpoint_cadence,
+            "completed_batches": check_completed_batches,
+            "environment_fingerprint": check_environment_fingerprint,
+            "events_terminal": check_events_terminal,
+            "lr_trace": check_lr_trace,
+            "manifest_valid": check_manifest_valid,
+            "seeds": check_seeds,
+        }
+    )
+
+
+def build_default_check_registry(*, include_plugins: bool = True) -> CheckRegistry:
+    """Return core checks plus optional checks discovered from Feedbax plugins."""
+    registry = build_core_check_registry()
+    if include_plugins:
+        from feedbax.plugins.discovery import load_conformance_check_plugins
+
+        load_conformance_check_plugins(registry=registry)
+    return registry
+
+
+def assert_certificate_allows_completed_registration(
+    certificate: RunConformanceCertificate | Mapping[str, Any],
+) -> RunConformanceCertificate:
+    """Return the certificate or raise if REGISTER must not mark completion."""
+    cert = RunConformanceCertificate.model_validate(certificate)
+    if cert.overall != CHECK_STATUS_PASS:
+        raise ValueError("REGISTER cannot emit phase=completed for a failing certificate")
+    return cert
+
+
+def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify realized batch count equals the declared count."""
+    check_id = "completed_batches"
+    expected = _first_present(
+        _path(row.bundle_row_spec, "expected_batches"),
+        _path(row.bundle_row_spec, "completed_batches"),
+        _path(row.bundle_row_spec, "training", "n_batches"),
+        _path(row.bundle_row_spec, "training_config", "n_batches"),
+        _path(row.bundle_row_spec, "n_batches"),
+    )
+    observed = _first_present(
+        _path(row.training_diagnostics, "completed_batches"),
+        _path(row.training_diagnostics, "summary", "completed_batches"),
+        _path(row.training_diagnostics, "summary_metrics", "completed_batches"),
+        _path(row.training_diagnostics, "summary_metrics", "n_batches"),
+        _path(_manifest_payload(row), "summary_metrics", "completed_batches"),
+        _path(_manifest_payload(row), "summary_metrics", "n_batches"),
+    )
+    if expected is _MISSING:
+        return missing_input_check(check_id, "bundle_row_spec.n_batches")
+    if observed is _MISSING:
+        return missing_input_check(check_id, "training_diagnostics.completed_batches")
+    if int(observed) == int(expected):
+        return pass_check(check_id, expected=int(expected), observed=int(observed))
+    return fail_check(check_id, expected=int(expected), observed=int(observed))
+
+
+def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify realized seeds equal declared seeds."""
+    check_id = "seeds"
+    expected = _first_present(
+        _path(row.bundle_row_spec, "seeds"),
+        _path(row.bundle_row_spec, "seed"),
+        _path(row.bundle_row_spec, "training", "seeds"),
+    )
+    observed = _first_present(
+        _path(row.training_diagnostics, "seeds"),
+        _path(row.training_diagnostics, "seed"),
+        _path(_manifest_payload(row), "metadata", "seeds"),
+        _path(_manifest_payload(row), "metadata", "seed"),
+    )
+    if expected is _MISSING:
+        return missing_input_check(check_id, "bundle_row_spec.seeds")
+    if observed is _MISSING:
+        return missing_input_check(check_id, "manifest/training_diagnostics.seeds")
+    if _canonical(expected) == _canonical(observed):
+        return pass_check(check_id, expected=expected, observed=observed)
+    return fail_check(check_id, expected=expected, observed=observed)
+
+
+def check_environment_fingerprint(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify realized environment fingerprint equals the manifest stamp."""
+    check_id = "environment_fingerprint"
+    expected = row.recorded_environment_fingerprint
+    observed = _first_present(
+        _path(_manifest_payload(row), "metadata", "environment_fingerprint"),
+        _path(_manifest_payload(row), "provenance", "metadata", "environment_fingerprint"),
+    )
+    if expected is None:
+        return missing_input_check(check_id, "recorded_environment_fingerprint")
+    if observed is _MISSING:
+        return missing_input_check(check_id, "manifest.metadata.environment_fingerprint")
+    if _canonical(expected) == _canonical(observed):
+        return pass_check(check_id, expected=expected, observed=observed)
+    return fail_check(check_id, expected=expected, observed=observed)
+
+
+def check_manifest_valid(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify the final manifest loads and matches preflight-normalized payloads."""
+    check_id = "manifest_valid"
+    if row.manifest_path is None and row.manifest_payload is None:
+        return missing_input_check(check_id, "manifest_path")
+    if row.preflight_normalized_payload is None:
+        return missing_input_check(check_id, "preflight_normalized_payload")
+    try:
+        payload = _manifest_payload(row, force_load=True)
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="TrainingRunManifest loads",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
+    observed_spec = _training_spec_payload(payload)
+    expected_spec = dict(row.preflight_normalized_payload)
+    if observed_spec is _MISSING:
+        return missing_input_check(check_id, "manifest.training_spec.inline")
+    if _canonical(observed_spec) == _canonical(expected_spec):
+        return pass_check(check_id, expected=expected_spec, observed=observed_spec)
+    return fail_check(check_id, expected=expected_spec, observed=observed_spec)
+
+
+def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify checkpoint transaction coordinates follow the declared cadence."""
+    check_id = "checkpoint_cadence"
+    interval = _first_present(
+        _path(row.bundle_row_spec, "checkpoint_interval"),
+        _path(row.bundle_row_spec, "checkpoint_cadence", "interval"),
+        _path(row.bundle_row_spec, "training", "checkpoint_interval"),
+    )
+    completed = _first_present(
+        _path(row.training_diagnostics, "completed_batches"),
+        _path(row.training_diagnostics, "summary", "completed_batches"),
+        _path(row.bundle_row_spec, "expected_batches"),
+        _path(row.bundle_row_spec, "n_batches"),
+    )
+    coordinates = _checkpoint_coordinates(row)
+    if interval is _MISSING:
+        return missing_input_check(check_id, "bundle_row_spec.checkpoint_interval")
+    if completed is _MISSING:
+        return missing_input_check(check_id, "completed batch count")
+    if coordinates is None:
+        return missing_input_check(check_id, "checkpoint transaction coordinates")
+
+    interval_int = int(interval)
+    completed_int = int(completed)
+    expected = _expected_checkpoint_coordinates(interval_int, completed_int)
+    observed = sorted(int(coordinate) for coordinate in coordinates)
+    if observed == expected:
+        return pass_check(
+            check_id,
+            expected={"coordinate_interval": interval_int, "coordinates": expected},
+            observed={"coordinates": observed, "realized_batches": completed_int},
+        )
+    return fail_check(
+        check_id,
+        expected={"coordinate_interval": interval_int, "coordinates": expected},
+        observed={"coordinates": observed, "realized_batches": completed_int},
+    )
+
+
+def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify an optional event log ends in exactly one terminal event."""
+    check_id = "events_terminal"
+    if row.event_log is None:
+        return skipped_check(
+            check_id,
+            expected="exactly one terminal event",
+            observed=None,
+            detail="no event log/API is available for this row",
+        )
+    try:
+        events = _load_events(row.event_log)
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="event log loads",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
+    terminal_events = [event for event in events if _is_terminal_event(event)]
+    observed = {"terminal_count": len(terminal_events), "terminal_events": terminal_events}
+    expected_status = _first_present(
+        _path(row.bundle_row_spec, "expected_terminal_status"),
+        _path(row.bundle_row_spec, "sentinel_status"),
+        _path(row.training_diagnostics, "terminal_status"),
+    )
+    if len(terminal_events) != 1:
+        return fail_check(
+            check_id,
+            expected={"terminal_count": 1, "terminal_status": expected_status},
+            observed=observed,
+        )
+    if expected_status is not _MISSING:
+        terminal_status = _event_status(terminal_events[0])
+        if terminal_status != expected_status:
+            return fail_check(
+                check_id,
+                expected={"terminal_count": 1, "terminal_status": expected_status},
+                observed={"terminal_count": 1, "terminal_status": terminal_status},
+            )
+    return pass_check(
+        check_id,
+        expected={"terminal_count": 1, "terminal_status": expected_status},
+        observed=observed,
+    )
+
+
+def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify realized learning-rate samples against the declared schedule."""
+    check_id = "lr_trace"
+    optimizer_spec_payload = _optimizer_spec_payload(row)
+    trace = _lr_trace(row)
+    context = _resume_context(row)
+    if optimizer_spec_payload is _MISSING:
+        return missing_input_check(check_id, "bundle_row_spec optimizer spec")
+    if trace is None:
+        return missing_input_check(check_id, "training_diagnostics.lr_trace")
+    missing_context = [
+        key
+        for key in ("schedule_origin_step", "current_step", "optimizer_count_at_current_step")
+        if context.get(key) is _MISSING
+    ]
+    if missing_context:
+        return missing_input_check(check_id, *missing_context)
+
+    try:
+        optimizer_spec = OptimizerSpec.model_validate(optimizer_spec_payload)
+        samples = _selected_lr_samples(trace, optimizer_spec)
+        expected = {
+            step: _learning_rate_from_build_optimizer(
+                optimizer_spec,
+                sample_step=step,
+                schedule_origin_step=int(context["schedule_origin_step"]),
+                current_step=int(context["current_step"]),
+                optimizer_count_at_current_step=int(context["optimizer_count_at_current_step"]),
+            )
+            for step in samples
+        }
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="learning rates derived via build_optimizer",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
+
+    observed = {step: float(trace[step]) for step in samples}
+    mismatches = {
+        step: {"expected": expected[step], "observed": observed[step]}
+        for step in samples
+        if not _close(observed[step], expected[step], rel_tol=1e-6)
+    }
+    if not mismatches:
+        return pass_check(check_id, expected=expected, observed=observed)
+    return fail_check(check_id, expected=expected, observed=observed, detail=str(mismatches))
+
+
+def _learning_rate_from_build_optimizer(
+    optimizer_spec: OptimizerSpec,
+    *,
+    sample_step: int,
+    schedule_origin_step: int,
+    current_step: int,
+    optimizer_count_at_current_step: int,
+) -> float:
+    import jax.numpy as jnp
+    import jax.tree as jt
+
+    from feedbax.training.optimizers import build_optimizer
+
+    if sample_step < current_step:
+        raise ValueError(
+            f"lr_trace sample_step={sample_step} precedes current_step={current_step}"
+        )
+    optimizer = build_optimizer(
+        optimizer_spec,
+        schedule_origin_step=schedule_origin_step,
+        current_step=current_step,
+        optimizer_count_at_current_step=optimizer_count_at_current_step,
+    )
+    params = {"w": jnp.asarray(1.0)}
+    state = optimizer.init(params)
+    target_count = optimizer_count_at_current_step + (sample_step - current_step)
+    state = _with_injected_count(state, target_count)
+    grads = jt.map(jnp.zeros_like, params)
+    _updates, next_state = optimizer.update(grads, state, params)
+    return _scheduled_learning_rate(next_state)
+
+
+def _with_injected_count(value: Any, count: int) -> Any:
+    import jax.numpy as jnp
+
+    if _is_injected_hyperparams_state(value):
+        hyperparams_states = dict(value.hyperparams_states)
+        patched_states = {
+            key: state._replace(count=jnp.asarray(count, dtype=jnp.int32))
+            for key, state in hyperparams_states.items()
+            if hasattr(state, "_replace") and hasattr(state, "count")
+        }
+        hyperparams_states.update(patched_states)
+        return value._replace(
+            count=jnp.asarray(count, dtype=jnp.int32),
+            hyperparams_states=hyperparams_states,
+        )
+    if isinstance(value, tuple):
+        return type(value)(_with_injected_count(item, count) for item in value)
+    if isinstance(value, list):
+        return [_with_injected_count(item, count) for item in value]
+    if isinstance(value, dict):
+        return {key: _with_injected_count(item, count) for key, item in value.items()}
+    return value
+
+
+def _scheduled_learning_rate(value: Any) -> float:
+    import jax.tree as jt
+
+    leaves = jt.leaves(value, is_leaf=_is_injected_hyperparams_state)
+    for leaf in leaves:
+        if _is_injected_hyperparams_state(leaf):
+            return float(leaf.hyperparams["learning_rate"])
+    raise ValueError("scheduled optimizer state not found")
+
+
+def _is_injected_hyperparams_state(value: Any) -> bool:
+    fields = getattr(value, "_fields", ())
+    return {"hyperparams", "inner_state"}.issubset(set(fields))
+
+
+def _selected_lr_samples(
+    trace: Mapping[int, float],
+    optimizer_spec: OptimizerSpec,
+) -> tuple[int, ...]:
+    steps = sorted(trace)
+    if len(steps) < 3:
+        raise ValueError("lr_trace requires at least three realized samples")
+    schedule = optimizer_spec.lr_schedule
+    candidates = {steps[0], steps[-1], steps[len(steps) // 2]}
+    if schedule is not None:
+        if schedule.constant_lr_iterations:
+            candidates.add(int(schedule.constant_lr_iterations))
+        if schedule.total_steps is not None:
+            candidates.add(int(schedule.total_steps))
+    selected = tuple(step for step in steps if step in candidates)
+    if len(selected) >= 3:
+        return selected[:3] if len(selected) > 3 else selected
+    return (steps[0], steps[len(steps) // 2], steps[-1])
+
+
+def _optimizer_spec_payload(row: ConformanceRowArtifacts) -> Any:
+    return _first_present(
+        _path(row.bundle_row_spec, "optimizer"),
+        _path(row.bundle_row_spec, "optimizer_spec"),
+        _path(row.bundle_row_spec, "training", "optimizer"),
+        _path(row.bundle_row_spec, "training_spec", "method_payload", "payload", "optimizer"),
+        _path(_training_spec_payload(_manifest_payload(row)), "method_payload", "payload", "optimizer"),
+    )
+
+
+def _lr_trace(row: ConformanceRowArtifacts) -> dict[int, float] | None:
+    raw = _first_present(
+        _path(row.training_diagnostics, "lr_trace"),
+        _path(row.training_diagnostics, "learning_rate_trace"),
+    )
+    if raw is _MISSING:
+        return None
+    if isinstance(raw, Mapping):
+        return {int(step): float(value) for step, value in raw.items()}
+    trace: dict[int, float] = {}
+    for item in raw:
+        step = _first_present(_path(item, "step"), _path(item, "batch"), _path(item, "coordinate"))
+        value = _first_present(_path(item, "learning_rate"), _path(item, "lr"))
+        if step is _MISSING or value is _MISSING:
+            raise ValueError(f"invalid lr_trace item {item!r}")
+        trace[int(step)] = float(value)
+    return trace
+
+
+def _resume_context(row: ConformanceRowArtifacts) -> dict[str, Any]:
+    raw = _first_present(
+        _path(row.bundle_row_spec, "resume_context"),
+        _path(row.training_diagnostics, "resume_context"),
+        {},
+    )
+    return {
+        "schedule_origin_step": _first_present(
+            _path(raw, "schedule_origin_step"),
+            _path(row.bundle_row_spec, "schedule_origin_step"),
+            _path(row.training_diagnostics, "schedule_origin_step"),
+        ),
+        "current_step": _first_present(
+            _path(raw, "current_step"),
+            _path(row.bundle_row_spec, "current_step"),
+            _path(row.training_diagnostics, "current_step"),
+        ),
+        "optimizer_count_at_current_step": _first_present(
+            _path(raw, "optimizer_count_at_current_step"),
+            _path(row.bundle_row_spec, "optimizer_count_at_current_step"),
+            _path(row.training_diagnostics, "optimizer_count_at_current_step"),
+        ),
+    }
+
+
+def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
+    raw = _first_present(
+        _path(row.training_diagnostics, "checkpoint_coordinates"),
+        _path(row.training_diagnostics, "checkpoint_transactions"),
+    )
+    if raw is not _MISSING:
+        if all(isinstance(item, int) for item in raw):
+            return [int(item) for item in raw]
+        return [
+            int(
+                _first_present(
+                    _path(item, "coordinate", "global_step"),
+                    _path(item, "coordinate", "step"),
+                    _path(item, "global_step"),
+                    _path(item, "step"),
+                )
+            )
+            for item in raw
+        ]
+    if row.checkpoint_custody_root is None:
+        return None
+    root = Path(row.checkpoint_custody_root)
+    if not root.exists():
+        return None
+    coordinates: list[int] = []
+    for path in sorted(root.rglob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        coordinate = _first_present(
+            _path(payload, "coordinate", "global_step"),
+            _path(payload, "coordinate", "step"),
+            _path(payload, "global_step"),
+            _path(payload, "step"),
+        )
+        if coordinate is not _MISSING:
+            coordinates.append(int(coordinate))
+    return coordinates
+
+
+def _expected_checkpoint_coordinates(interval: int, completed_batches: int) -> list[int]:
+    if interval <= 0:
+        raise ValueError("checkpoint interval must be positive")
+    coordinates = list(range(interval, completed_batches + 1, interval))
+    if completed_batches not in coordinates:
+        coordinates.append(completed_batches)
+    return coordinates
+
+
+def _load_events(
+    event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    if isinstance(event_log, Mapping):
+        events = event_log.get("events")
+        if isinstance(events, Sequence):
+            return list(events)
+        return [event_log]
+    if isinstance(event_log, Sequence) and not isinstance(event_log, (str, bytes)):
+        return list(event_log)
+    path = Path(event_log)
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".jsonl":
+        return [json.loads(line) for line in text.splitlines() if line.strip()]
+    payload = json.loads(text)
+    if isinstance(payload, Mapping) and isinstance(payload.get("events"), Sequence):
+        return list(payload["events"])
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, Mapping):
+        return [payload]
+    raise ValueError(f"unsupported event log payload in {path}")
+
+
+def _is_terminal_event(event: Mapping[str, Any]) -> bool:
+    status = _event_status(event)
+    return status in {"completed", "failed", "cancelled", "done", "error"}
+
+
+def _event_status(event: Mapping[str, Any]) -> str | None:
+    value = _first_present(
+        _path(event, "phase"),
+        _path(event, "status"),
+        _path(event, "event_type"),
+        _path(event, "type"),
+    )
+    return None if value is _MISSING else str(value)
+
+
+def _manifest_payload(row: ConformanceRowArtifacts, *, force_load: bool = False) -> Any:
+    if row.manifest_payload is not None and not force_load:
+        return row.manifest_payload
+    if row.manifest_path is None:
+        return row.manifest_payload or {}
+    manifest = load_manifest(row.manifest_path)
+    return manifest.model_dump(mode="json", exclude_none=True)
+
+
+def _training_spec_payload(manifest_payload: Any) -> Any:
+    training_spec = _path(manifest_payload, "training_spec")
+    inline = _path(training_spec, "inline")
+    if inline is not _MISSING:
+        return inline
+    return training_spec
+
+
+class _Missing:
+    pass
+
+
+_MISSING = _Missing()
+
+
+def _path(value: Any, *keys: str) -> Any:
+    current = value
+    for key in keys:
+        if current is None:
+            return _MISSING
+        if isinstance(current, Mapping):
+            if key not in current:
+                return _MISSING
+            current = current[key]
+            continue
+        current = getattr(current, key, _MISSING)
+        if current is _MISSING:
+            return _MISSING
+    return current
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not _MISSING:
+            return value
+    return _MISSING
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _close(observed: float, expected: float, *, rel_tol: float) -> bool:
+    return abs(observed - expected) <= rel_tol * max(abs(expected), 1.0)
