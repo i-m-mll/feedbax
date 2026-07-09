@@ -38,6 +38,10 @@ class SchemaNamespaceKind(str, Enum):
 
 def classify_schema_identity(schema_id: str) -> SchemaNamespaceKind:
     """Classify a stable schema identity under the Feedbax namespace taxonomy."""
+    # The run-conformance certificate identity is fixed by the lifecycle
+    # contract that consumes it, even though it predates the governed prefixes.
+    if schema_id == "feedbax.run_conformance":
+        return SchemaNamespaceKind.MANIFEST
     if schema_id.startswith("feedbax.spec."):
         return SchemaNamespaceKind.SPEC
     if schema_id.startswith("feedbax.manifest."):
@@ -76,6 +80,8 @@ def validate_schema_version(version: str, *, family: str) -> None:
     if not version:
         raise SchemaNamespaceError(f"{family} current_version must be non-empty")
     if not version.startswith("feedbax."):
+        return
+    if version == "feedbax.run_conformance.v1":
         return
     if (
         version.startswith("feedbax.spec.")

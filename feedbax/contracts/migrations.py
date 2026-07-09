@@ -153,6 +153,9 @@ from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_VERSION,
 )
 
+RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
+RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
+
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
 ComponentParamMigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -1778,6 +1781,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_run_events.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "RunConformanceCertificate",
+            RUN_CONFORMANCE_SCHEMA_ID,
+            RUN_CONFORMANCE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.conformance",
+            emitted_by=("feedbax.orchestration.conformance.write_conformance_certificate",),
+            consumed_by=(
+                "feedbax.orchestration.conformance.assert_certificate_allows_completed_registration",
+                "REGISTER stage",
+            ),
+            description="Run-set red/green certificate for realized spec conformance.",
+            rejected_old_versions=("feedbax.run_conformance.v0",),
+            required_tests=("tests/test_run_conformance.py",),
         ),
         _family(
             "LegacyCheckpointLeafManifest",
