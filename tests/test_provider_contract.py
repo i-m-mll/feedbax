@@ -2555,8 +2555,11 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> Non
     events = []
     while not event_queue.empty():
         events.append(event_queue.get())
-    assert events[0]["type"] == "training_error"
-    assert "task_binding_spec" in events[0]["error"]
-    assert events[0]["diagnostics"][0]["code"] == "worker.missing_task_binding_spec"
-    assert events[0]["diagnostics"][0]["location"] == {"path": "/task_binding_spec"}
-    assert all(event is None or event.get("type") != "training_progress" for event in events)
+    assert events[0]["type"] == "failed"
+    assert events[0]["run_set_id"] == "invalid-run-set"
+    assert events[0]["row_id"] == "invalid-job"
+    assert events[0]["payload"]["legacy_type"] == "training_error"
+    assert "task_binding_spec" in events[0]["payload"]["error"]
+    assert events[0]["payload"]["diagnostics"][0]["code"] == "worker.missing_task_binding_spec"
+    assert events[0]["payload"]["diagnostics"][0]["location"] == {"path": "/task_binding_spec"}
+    assert all(event is None or event.get("type") != "progress" for event in events)
