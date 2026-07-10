@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import ast
 import importlib
+import inspect
 import json
 import sys
 from pathlib import Path
+from textwrap import dedent
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pytest
 
+import feedbax.analysis.bundles as bundle_module
 from feedbax.analysis.bundles import (
     ANALYSIS_BUNDLE_SCHEMA_VERSION,
     AnalysisBundleSpec,
@@ -66,6 +70,27 @@ TOY_ANALYSIS_TYPE = "feedbax.test.toy_analysis"
 TOY_EVALUATION_TYPE = "feedbax.test.bundle_eval"
 TOY_ARTIFACT_ANALYSIS_TYPE = "feedbax.test.bundle_artifact_analysis"
 TOY_MATERIALIZER_TYPE = "feedbax.test.bundle_materializer"
+
+
+def test_spec_emitting_bundle_stages_share_one_execution_loop() -> None:
+    """Guard the shared analysis/materialization/report execution skeleton."""
+
+    for function_name in (
+        "_execute_analysis_stage",
+        "_execute_materialization_stage",
+        "_execute_report_stage",
+    ):
+        function = getattr(bundle_module, function_name)
+        tree = ast.parse(dedent(inspect.getsource(function)))
+        common_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_execute_stage_common"
+        ]
+        assert len(common_calls) == 1, function_name
+        assert not any(isinstance(node, (ast.For, ast.AsyncFor)) for node in ast.walk(tree))
 
 
 def _register_toy_analysis_recipe() -> None:

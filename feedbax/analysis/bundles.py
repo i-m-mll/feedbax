@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from pydantic import Field, field_validator, model_validator
 
@@ -72,6 +72,8 @@ AnalysisBundleMode = Literal["per-run", "grouped"]
 BundleStageKind = Literal["evaluation", "analysis", "materialization", "figure", "report"]
 BundleOutputStatus = Literal["materialized", "skipped", "missing", "not_applicable"]
 BundleDryRunStageStatus = Literal["would_run", "would_skip", "missing", "not_applicable"]
+
+_StageSpecT = TypeVar("_StageSpecT")
 
 
 class AnalysisSpecTemplate(StrictModel):
@@ -863,17 +865,22 @@ def _execute_analysis_stage(
     fig_dump_path: Path | str | None,
     fig_dump_formats: Sequence[str],
 ) -> list[StageMaterialization]:
-    products: list[StageMaterialization] = []
-    for inputs in input_groups:
-        spec = AnalysisRunSpec(
+    def build_spec(inputs: Sequence[ParentRef], _index: int) -> AnalysisRunSpec:
+        return AnalysisRunSpec(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
             params=_params_for_stage(stage),
         )
+
+    def execute_spec(
+        spec: AnalysisRunSpec,
+        inputs: Sequence[ParentRef],
+        _index: int,
+    ) -> tuple[AnalysisRunManifest, Path]:
         base_provenance = collect_git_provenance()
         base_provenance.parents = list(inputs)
-        manifest, path = execute_analysis_run_spec(
+        return execute_analysis_run_spec(
             spec,
             root=root,
             issues=list(issues),
@@ -889,27 +896,16 @@ def _execute_analysis_stage(
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
         )
-        manifest_ref = _manifest_ref(manifest, path, "analysis_run")
-        regeneration_payload = _stage_regeneration_payload(
-            stage,
-            inputs=inputs,
-            outputs=[manifest_ref, *manifest.artifacts],
-            issues=issues,
-        )
-        updated_manifest, updated_path = _with_regeneration_spec(
-            manifest,
-            regeneration_payload,
-            root=root,
-        )
-        products.append(
-            StageMaterialization(
-                manifest_ref=_manifest_ref(updated_manifest, updated_path, "analysis_run"),
-                artifacts=tuple(updated_manifest.artifacts),
-                manifest_path=updated_path,
-                regeneration_spec=regeneration_payload,
-            )
-        )
-    return products
+
+    return _execute_stage_common(
+        stage,
+        input_groups,
+        root=root,
+        issues=issues,
+        manifest_role="analysis_run",
+        build_spec=build_spec,
+        execute_spec=execute_spec,
+    )
 
 
 def _has_materializer_capability(analysis: AbstractAnalysis) -> bool:
@@ -944,17 +940,22 @@ def _execute_materialization_stage(
     fig_dump_path: Path | str | None,
     fig_dump_formats: Sequence[str],
 ) -> list[StageMaterialization]:
-    products: list[StageMaterialization] = []
-    for inputs in input_groups:
-        spec = AnalysisRunSpec(
+    def build_spec(inputs: Sequence[ParentRef], _index: int) -> AnalysisRunSpec:
+        return AnalysisRunSpec(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
             params=_params_for_stage(stage),
         )
+
+    def execute_spec(
+        spec: AnalysisRunSpec,
+        inputs: Sequence[ParentRef],
+        _index: int,
+    ) -> tuple[AnalysisRunManifest, Path]:
         base_provenance = collect_git_provenance()
         base_provenance.parents = list(inputs)
-        manifest, path = execute_analysis_run_spec(
+        return execute_analysis_run_spec(
             spec,
             root=root,
             issues=list(issues),
@@ -973,27 +974,16 @@ def _execute_materialization_stage(
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
         )
-        manifest_ref = _manifest_ref(manifest, path, "analysis_run")
-        regeneration_payload = _stage_regeneration_payload(
-            stage,
-            inputs=inputs,
-            outputs=[manifest_ref, *manifest.artifacts],
-            issues=issues,
-        )
-        updated_manifest, updated_path = _with_regeneration_spec(
-            manifest,
-            regeneration_payload,
-            root=root,
-        )
-        products.append(
-            StageMaterialization(
-                manifest_ref=_manifest_ref(updated_manifest, updated_path, "analysis_run"),
-                artifacts=tuple(updated_manifest.artifacts),
-                manifest_path=updated_path,
-                regeneration_spec=regeneration_payload,
-            )
-        )
-    return products
+
+    return _execute_stage_common(
+        stage,
+        input_groups,
+        root=root,
+        issues=issues,
+        manifest_role="analysis_run",
+        build_spec=build_spec,
+        execute_spec=execute_spec,
+    )
 
 
 def _execute_figure_stage(
@@ -1072,8 +1062,7 @@ def _execute_report_stage(
     issues: Sequence[str],
     bundle: AnalysisBundleSpec,
 ) -> list[StageMaterialization]:
-    products: list[StageMaterialization] = []
-    for index, inputs in enumerate(input_groups):
+    def build_spec(inputs: Sequence[ParentRef], index: int) -> ReportSpec:
         stage_params = _params_for_stage(stage)
         bundle_metadata = {
             "name": bundle.name,
@@ -1082,7 +1071,7 @@ def _execute_report_stage(
             "schema_id": bundle.schema_id,
             "schema_version": bundle.schema_version,
         }
-        spec = ReportSpec(
+        return ReportSpec(
             report_type=str(stage.report_type or BUNDLE_SUMMARY_REPORT_TYPE),
             inputs=list(inputs),
             params={
@@ -1091,7 +1080,13 @@ def _execute_report_stage(
             },
             narrative=stage.params.get("narrative"),
         )
-        manifest, path = execute_report_spec(
+
+    def execute_spec(
+        spec: ReportSpec,
+        inputs: Sequence[ParentRef],
+        _index: int,
+    ) -> tuple[ReportManifest, Path]:
+        return execute_report_spec(
             spec,
             root=root,
             provenance=Provenance(
@@ -1108,7 +1103,39 @@ def _execute_report_stage(
                 }
             },
         )
-        manifest_ref = _manifest_ref(manifest, path, "report")
+
+    return _execute_stage_common(
+        stage,
+        input_groups,
+        root=root,
+        issues=issues,
+        manifest_role="report",
+        build_spec=build_spec,
+        execute_spec=execute_spec,
+    )
+
+
+def _execute_stage_common(
+    stage: BundleStageSpec,
+    input_groups: Sequence[Sequence[ParentRef]],
+    *,
+    root: Path,
+    issues: Sequence[str],
+    manifest_role: Literal["analysis_run", "report"],
+    build_spec: Callable[[Sequence[ParentRef], int], _StageSpecT],
+    execute_spec: Callable[
+        [_StageSpecT, Sequence[ParentRef], int],
+        tuple[AnyManifest, Path],
+    ],
+) -> list[StageMaterialization]:
+    """Execute and record one spec-emitting stage for each resolved input group."""
+
+    products: list[StageMaterialization] = []
+    for index, input_group in enumerate(input_groups):
+        inputs = tuple(input_group)
+        spec = build_spec(inputs, index)
+        manifest, path = execute_spec(spec, inputs, index)
+        manifest_ref = _manifest_ref(manifest, path, manifest_role)
         regeneration_payload = _stage_regeneration_payload(
             stage,
             inputs=inputs,
@@ -1122,7 +1149,7 @@ def _execute_report_stage(
         )
         products.append(
             StageMaterialization(
-                manifest_ref=_manifest_ref(updated_manifest, updated_path, "report"),
+                manifest_ref=_manifest_ref(updated_manifest, updated_path, manifest_role),
                 artifacts=tuple(updated_manifest.artifacts),
                 manifest_path=updated_path,
                 regeneration_spec=regeneration_payload,

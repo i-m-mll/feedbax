@@ -239,6 +239,78 @@ def test_rows_manifest_payload_preflight_fails_before_acquisition(tmp_path: Path
     assert "runpodctl pod create" not in output
 
 
+def test_rows_manifest_payload_preflight_temp_files_are_parallel_safe(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path)
+    run_spec = tmp_path / "training-run-spec.json"
+    write_training_run_spec(run_spec)
+    spec = tmp_path / "train-spec.json"
+    spec.write_text(json.dumps({"user_confirmed": True}), encoding="utf-8")
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {
+                        "id": "parallel_preflight",
+                        "command": (
+                            f"{sys.executable} -m feedbax execute-training-run-spec {run_spec}"
+                        ),
+                        "training_run_spec": str(run_spec),
+                        "training_payload": {
+                            "schema_version": "rlrmp.cs_stochastic_gru.v1",
+                            "experiment": "parallel_preflight",
+                        },
+                        "training_payload_kind": "RLRMPRunSpec",
+                        "training_payload_schema_id": "rlrmp.run_spec",
+                        "training_payload_schema_version": "rlrmp.run_spec.v2",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    temp_dir = tmp_path / "preflight-tmp"
+    temp_dir.mkdir()
+    env = {**os.environ, "TMPDIR": str(temp_dir)}
+    command = [
+        str(RUNPOD_DEPLOY),
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(spec),
+        "--rows-manifest",
+        str(rows),
+    ]
+
+    processes = [
+        subprocess.Popen(
+            command,
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        for _ in range(2)
+    ]
+    results = []
+    for process in processes:
+        stdout, stderr = process.communicate()
+        results.append((process.returncode, stdout, stderr))
+
+    for returncode, stdout, stderr in results:
+        output = stdout + stderr
+        assert returncode == 1
+        assert "Embedded SpecPayload schema version disagrees with inline payload" in output
+        assert "mktemp:" not in output
+        assert "File exists" not in output
+    assert list(temp_dir.glob("feedbax-manifest-preflight.*")) == []
+
+
 def test_rows_manifest_preflight_resolves_relative_spec_against_workdir(
     tmp_path: Path,
 ) -> None:
