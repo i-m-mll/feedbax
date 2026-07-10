@@ -358,9 +358,8 @@ def setup_eval_for_module(
     hps_filled = fill_hps_with_train_params(hps, hps_train_representative)
     hps = hps_filled  #  use the enriched version for everything below
 
-    # For this project, the training task should not vary with the train field std
-    # so we just keep a single one of them.
-    # TODO: In future, could keep the full `tasks_base`, and update `get_task_variant`/`setup_fn`
+    # Evaluation variants are derived from caller-supplied task configuration below, so one
+    # representative training task supplies the base model-compatible task structure.
     task_base = jt.leaves(tasks_train, is_leaf=is_module)[0]
 
     #! TODO: This should be generalized once we move `n_steps` to `task` (in YAML config)
@@ -373,21 +372,6 @@ def setup_eval_for_module(
     # Load and validate transforms once
     transforms_raw = getattr(analysis_module, "TRANSFORMS", None)
     transforms = validate_and_convert_transforms(transforms_raw)
-
-    # If there is no system noise (i.e. the stds are zero), set the number of evaluations per condition to zero.
-    # (Is there any other reason than the noise samples, why evaluations might differ?)
-    # TODO: Make this optional?
-    # ? What is the point of using `jt.leaves` here?
-    any_system_noise = any(
-        jt.leaves(
-            (
-                hps.model.feedback_noise_std,
-                hps.model.motor_noise_std,
-            )
-        )
-    )
-    if not any_system_noise:
-        hps.task.eval_n = 1
 
     # Construct common inputs needed by transforms and analyses
     # Note: We construct trial_specs for all task variants here
