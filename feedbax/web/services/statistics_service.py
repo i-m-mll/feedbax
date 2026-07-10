@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any
-
 import numpy as np
 
 from feedbax.web.models.statistics import (
@@ -22,8 +19,6 @@ from feedbax.web.models.statistics import (
     TimeseriesResponse,
 )
 from feedbax.web.services.trajectory_service import TrajectoryService
-
-logger = logging.getLogger(__name__)
 
 # Map task_type integers to human-readable labels.
 TASK_TYPE_LABELS: dict[int, str] = {

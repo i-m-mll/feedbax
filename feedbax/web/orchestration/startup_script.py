@@ -128,6 +128,3 @@ systemctl daemon-reload
 systemctl enable --now feedbax-worker.service
 echo "Feedbax worker service started on port ${{WORKER_PORT:-8765}}"
 """
-
-
-STARTUP_SCRIPT = make_startup_script()

@@ -33,13 +33,6 @@ def role_address_from_path(path: Sequence[Any], *, root_role: str = "model") -> 
     return validate_role_address(".".join([root_role, *(_path_part(part) for part in path)]))
 
 
-def array_role_address(tree: Any, path: Sequence[Any], *, root_role: str = "model") -> str:
-    """Convert an array-leaf path into the semantic stored role address."""
-
-    del tree
-    return role_address_from_path(path, root_role=root_role)
-
-
 def template_array_roles(tree: Any, *, root_role: str = "model") -> list[str]:
     """Return deterministic role addresses for array leaves in ``tree``."""
 

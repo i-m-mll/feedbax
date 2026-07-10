@@ -1,11 +1,10 @@
 from math import sqrt
-from typing import Literal, Optional, Type, TypeVar
+from typing import Literal, Optional, TypeVar
 
 import equinox as eqx
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 import numpy as np
-import plotly.express as px
 import plotly.graph_objs as go
 from jaxtyping import Array, Float, PyTree
 from plotly.colors import convert_colors_to_same_type
@@ -245,24 +244,4 @@ def profiles(
     if layout_kws is not None:
         fig.update_layout(layout_kws)
 
-    return fig
-
-
-def profile(
-    var: Float[Array, "batch timestep"],
-    var_label: str = "Value",
-    colors: Optional[list[str]] = None,
-    layout_kws: Optional[dict] = None,
-    **kwargs,
-) -> go.Figure:
-    """Plot a single batch of lines."""
-    # TODO: vlines
-    fig = px.line(
-        var.T,
-        color_discrete_sequence=colors,
-        labels=dict(index="Time step", value=var_label, variable="Trial"),
-        **kwargs,
-    )
-    if layout_kws is not None:
-        fig.update_layout(layout_kws)
     return fig

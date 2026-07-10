@@ -9,11 +9,9 @@ from feedbax.training.rl.tasks import (
     TASK_REACH,
     TASK_SWING,
     TASK_TRACK,
-    TaskSpec,
     hold_task,
     reach_task,
     sample_task,
-    sample_task_jax,
     swing_task,
     tracking_task,
 )
@@ -61,26 +59,3 @@ class TestTaskSpec:
         task = sample_task(timestamps, key)
         assert task.task_type in (TASK_REACH, TASK_HOLD, TASK_TRACK, TASK_SWING)
         assert task.target_pos.shape == (1000, 2)
-
-
-class TestSampleTaskJax:
-    def test_basic(self, timestamps, key):
-        task = sample_task_jax(timestamps, key)
-        assert task.target_pos.shape == (1000, 2)
-        assert jnp.all(jnp.isfinite(task.target_pos))
-
-    def test_jit_compatible(self, timestamps, key):
-        jitted = jax.jit(sample_task_jax)
-        task = jitted(timestamps, key)
-        assert task.target_pos.shape == (1000, 2)
-        assert jnp.all(jnp.isfinite(task.target_pos))
-
-    def test_vmap_compatible(self, timestamps):
-        keys = jax.random.split(jax.random.PRNGKey(0), 4)
-        tasks = jax.vmap(sample_task_jax, in_axes=(None, 0))(timestamps, keys)
-        assert tasks.target_pos.shape == (4, 1000, 2)
-
-    def test_deterministic(self, timestamps, key):
-        t1 = sample_task_jax(timestamps, key)
-        t2 = sample_task_jax(timestamps, key)
-        assert jnp.allclose(t1.target_pos, t2.target_pos)

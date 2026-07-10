@@ -9,7 +9,6 @@ into a single Component that converts excitation vectors to joint torques.
 
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 import equinox as eqx
@@ -23,7 +22,6 @@ from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 
 
-logger = logging.getLogger(__name__)
 
 
 class Arm6MuscleRigidTendon(Component):

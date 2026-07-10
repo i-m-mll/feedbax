@@ -1023,15 +1023,6 @@ def _pydantic_errors(exc: PydanticValidationError) -> list[ValidationIssue]:
     ]
 
 
-def _component_ports(node_type: str, node_ports: list[str], attr: str, registry: Any) -> list[str]:
-    if node_ports:
-        return node_ports
-    meta = registry.get(node_type)
-    if meta is None:
-        return []
-    return list(getattr(meta, attr))
-
-
 def _schema_issues_to_provider(
     issues: list[SchemaValidationIssue],
 ) -> tuple[list[ValidationIssue], list[ValidationIssue]]:

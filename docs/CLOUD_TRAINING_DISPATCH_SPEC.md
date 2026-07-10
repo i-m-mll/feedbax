@@ -348,8 +348,6 @@ nohup python -m feedbax.web.worker \\
 echo "Worker started on port ${{WORKER_PORT:-8765}}"
 """
 
-# Backwards compat: keep STARTUP_SCRIPT for any direct import
-STARTUP_SCRIPT = make_startup_script()
 ```
 
 **`orchestration/gcp.py`** — `InstanceConfig` gets new field:
@@ -359,7 +357,7 @@ feedbax_install_cmd: str = (
 )
 ```
 
-`create_instance` calls `make_startup_script(config.feedbax_install_cmd)` instead of `STARTUP_SCRIPT`.
+`create_instance` calls `make_startup_script(config.feedbax_install_cmd)` for each launch.
 
 **`api/orchestration.py`** — `LaunchRequest` gets:
 ```python

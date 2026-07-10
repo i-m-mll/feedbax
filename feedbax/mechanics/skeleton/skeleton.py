@@ -5,7 +5,6 @@
 """
 
 from abc import abstractmethod
-import logging
 from typing import Optional, TypeVar
 
 from equinox import Module
@@ -16,7 +15,6 @@ from feedbax.mechanics.dynamics import AbstractDynamicalSystem, LinearSystem
 from feedbax.runtime.state import CartesianState
 
 
-logger = logging.getLogger(__name__)
 
 
 class AbstractSkeletonState(Module):
@@ -111,4 +109,3 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
             f"Override on the subclass to provide a closed-form or "
             f"autodiff-based linearisation."
         )
-

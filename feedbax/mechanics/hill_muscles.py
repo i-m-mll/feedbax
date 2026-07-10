@@ -20,7 +20,6 @@ Key references:
 from __future__ import annotations
 
 from abc import abstractmethod
-import logging
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -38,7 +37,6 @@ from feedbax.mechanics.units import (
 )
 
 
-logger = logging.getLogger(__name__)
 
 
 # ============================================================================

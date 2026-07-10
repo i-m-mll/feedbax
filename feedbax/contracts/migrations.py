@@ -2902,7 +2902,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
 
 
-default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
 default_spec_registry.register_migration(

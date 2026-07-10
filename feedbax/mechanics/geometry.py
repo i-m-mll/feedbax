@@ -14,7 +14,6 @@ including:
 from __future__ import annotations
 
 from abc import abstractmethod
-import logging
 
 from equinox import Module, field
 import jax
@@ -28,7 +27,6 @@ from feedbax.mechanics.muscle_config import (
 )
 
 
-logger = logging.getLogger(__name__)
 
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 

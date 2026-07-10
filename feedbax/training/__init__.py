@@ -1,7 +1,6 @@
 try:
     from ..config.hyperparams import load_hps
     from .trainer import (
-        ActivityDependentWeightUpdate,
         SimpleTrainer,
         grad_wrap_simple_loss_func,
         training_step_for_abstract_loss,
@@ -40,7 +39,6 @@ except ImportError:
     pass
 
 __all__ = [
-    "ActivityDependentWeightUpdate",
     "CheckpointCompatibilityError",
     "CheckpointConsistencyError",
     "CheckpointContractBindingError",
