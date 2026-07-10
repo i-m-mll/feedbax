@@ -121,6 +121,7 @@ class LocalOrchestrationDriver:
                 "FEEDBAX_ROW_DIR": str(paths["row_dir"]),
             }
         )
+        env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
         command = _row_command(row, self.python_executable)
         stdout = (paths["row_dir"] / "stdout.log").open("ab")
         stderr = (paths["row_dir"] / "stderr.log").open("ab")
@@ -184,6 +185,26 @@ class LocalOrchestrationDriver:
                 os.kill(pid, signal.SIGTERM)
         paths["failed"].write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
+
+    def request_stop_at_checkpoint(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Ask a local row to stop itself at its next durable checkpoint."""
+        del state
+        paths = _row_paths(bundle, row.row_id)
+        process = self._processes.get(row.row_id)
+        pid = process.pid if process is not None else _read_pid(paths["pid"])
+        if pid and _pid_alive(pid):
+            try:
+                os.killpg(pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                os.kill(pid, signal.SIGINT)
+        return {"row_id": row.row_id, "pid": pid, "status": "stop_requested"}
 
     def collect(
         self,
@@ -267,6 +288,12 @@ def _row_command(row: RunRowSpec, python_executable: str) -> list[str]:
         return [str(part) for part in row.command]
     assert row.entry is not None
     return [python_executable, row.entry]
+
+
+def _prepend_feedbax_source_root(existing: str | None) -> str:
+    """Make this checkout importable to rows launched from an arbitrary cwd."""
+    source_root = str(Path(__file__).resolve().parents[3])
+    return source_root if not existing else os.pathsep.join((source_root, existing))
 
 
 def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:

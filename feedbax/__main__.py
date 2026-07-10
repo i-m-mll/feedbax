@@ -13,7 +13,9 @@ from typing import Any, Mapping, Sequence
 
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.executor import execute_training_run_spec
+from feedbax.training.interruption import RunInterruptionController
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 from feedbax.training.checkpoint_custody import fork_checkpoint_transaction
 from feedbax.training.legacy_checkpoint_adoption import (
@@ -118,11 +120,12 @@ def _console_progress_printer(started_at: float):
         metrics = event.get("metrics", {})
         metrics = metrics if isinstance(metrics, Mapping) else {}
         batch = int(coordinate.get("global_step") or 0)
+        phase = str(coordinate.get("phase") or "unknown")
         loss = _progress_loss(metrics)
         loss_text = "nan" if loss is None else f"{loss:.6g}"
         elapsed = time.perf_counter() - started_at
         print(
-            f"batch={batch} loss={loss_text} elapsed={elapsed:.2f}s",
+            f"phase={phase} batch={batch} loss={loss_text} elapsed={elapsed:.2f}s",
             file=sys.stderr,
             flush=True,
         )
@@ -357,23 +360,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             _read_json(args.training_payload) if args.training_payload else None
         )
         started_at = time.perf_counter()
-        result = execute_training_run_spec(
-            _read_json(args.spec),
-            run_id=args.run_id,
-            initial_slots=initial_slots,
-            manifest_root=args.manifest_root,
-            checkpoint_root=args.checkpoint_root,
-            training_spec_payload=training_payload,
-            training_spec_payload_kind=args.training_payload_kind,
-            training_spec_payload_schema_id=args.training_payload_schema_id,
-            training_spec_payload_schema_version=args.training_payload_schema_version,
-            training_spec_payload_ref=args.training_payload_ref,
-            resume=args.resume,
-            stop_after_barrier=args.stop_after_barrier,
-            progress_callback=(
-                None if args.no_progress else _console_progress_printer(started_at)
-            ),
-        )
+        emitter = RunEventEmitter.from_env(render_batch_lines=False)
+        with RunInterruptionController() as interruption:
+            try:
+                result = execute_training_run_spec(
+                    _read_json(args.spec),
+                    run_id=args.run_id,
+                    initial_slots=initial_slots,
+                    manifest_root=args.manifest_root,
+                    checkpoint_root=args.checkpoint_root,
+                    training_spec_payload=training_payload,
+                    training_spec_payload_kind=args.training_payload_kind,
+                    training_spec_payload_schema_id=args.training_payload_schema_id,
+                    training_spec_payload_schema_version=args.training_payload_schema_version,
+                    training_spec_payload_ref=args.training_payload_ref,
+                    resume=args.resume,
+                    stop_after_barrier=args.stop_after_barrier,
+                    progress_callback=(
+                        None if args.no_progress else _console_progress_printer(started_at)
+                    ),
+                    run_event_emitter=emitter,
+                    cancellation_probe=lambda _coordinate: interruption.poll(),
+                )
+            finally:
+                if emitter is not None:
+                    emitter.close()
         json.dump(
             {
                 "run_id": result.run_id,

@@ -17,7 +17,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from feedbax.orchestration import (
     STAGE_ORDER,
@@ -36,6 +36,7 @@ from feedbax.orchestration.stages import (
     StageEngine,
     run_preflight_checks,
 )
+from feedbax.training.interruption import CancellationDecision, RunInterruptionController
 
 
 EXIT_SUCCESS = 0
@@ -129,7 +130,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
     bundle = _load_launch_bundle(args.bundle, args.resume_run_set)
     if args.driver:
         bundle = bundle.model_copy(update={"driver": args.driver})
-    state = _run_engine(bundle)
+    with RunInterruptionController() as interruption:
+        state = _run_engine(bundle, interruption_probe=interruption.poll)
     return _state_exit_code(state)
 
 
@@ -179,7 +181,8 @@ def cmd_teardown(args: argparse.Namespace) -> int:
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    state = _run_existing(args.run_set)
+    with RunInterruptionController() as interruption:
+        state = _run_existing(args.run_set, interruption_probe=interruption.poll)
     return _state_exit_code(state)
 
 
@@ -217,9 +220,10 @@ def _run_engine(
     *,
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
+    interruption_probe: Callable[[], CancellationDecision | None] | None = None,
 ) -> RunSetState:
     driver = _driver_for_bundle(bundle)
-    state = StageEngine(bundle=bundle, driver=driver).run(
+    state = StageEngine(bundle=bundle, driver=driver, interruption_probe=interruption_probe).run(
         break_stale_lock=break_stale_lock,
         stop_after_stage=stop_after_stage,
     )
@@ -233,12 +237,14 @@ def _run_existing(
     *,
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
+    interruption_probe: Callable[[], CancellationDecision | None] | None = None,
 ) -> RunSetState:
     bundle = _load_existing_bundle(run_set_id)
     return _run_engine(
         bundle,
         stop_after_stage=stop_after_stage,
         break_stale_lock=break_stale_lock,
+        interruption_probe=interruption_probe,
     )
 
 
