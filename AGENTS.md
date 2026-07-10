@@ -1,8 +1,95 @@
 # feedbax Project Instructions
 
-## Python/JAX Coding Conventions
+**Protected branch: `develop`**
 
-### Coding Style & Naming
+## Worktree Layout
+
+- **Main worktree** (`/feedbax/`): tracks the protected `develop` branch and is
+  the integration target. Start implementation work in feature worktrees from
+  the repo root rather than committing directly here.
+- Feature worktrees: `worktrees/feature__<name>/` — created with
+  `wt feature/<name>` from the repo root.
+- Release/default `main`, when needed, lives in a named worktree such as
+  `worktrees/main`.
+
+## Repository Structure
+
+- **Python library**: `feedbax/` — core JAX/Equinox components, graph execution engine, networks
+  - CDE network: `feedbax/models/cde.py`
+  - Other networks (SimpleStagedNetwork, LeakyRNNCell): `feedbax/models/networks.py`
+  - Graph execution and Component base: `feedbax/runtime/graph.py`
+- **Studio backend** (FastAPI): `feedbax/web/`
+  - Training service: `feedbax/web/services/training_service.py` manages local
+    worker subprocesses, remote worker forwarding, SSE relay state, and
+    checkpoint proxy/download helpers
+  - Worker client/subprocess path: `feedbax/web/worker/client.py`,
+    `feedbax/web/worker/`, and `feedbax/web/ws/training.py`
+  - WebSocket handlers: `feedbax/web/ws/`
+  - API routes: `feedbax/web/api/`
+- **Studio frontend** (React/TypeScript): `web/`
+  - Canvas renderers: `web/src/components/canvas/`
+  - Shelves, sidebars, and panels: `web/src/components/layout/`,
+    `web/src/components/panels/`
+  - Zustand stores: `web/src/stores/`
+- **Docs**: `docs/STUDIO_CURRENT_ARCHITECTURE.md`,
+  `docs/WEB_UI_SPEC.md` (historical 2026-01 draft),
+  `docs/COLLIMATOR_COMPARISON.md`
+- **Design specs**: `docs/design/feedbax_merge_spec.md`, `docs/design/SPEC_EAGER_MODELS.md`
+
+## Core Principle
+
+**The graph is the model.** What is rendered in the Studio canvas is the literal model that is built and trained. No node type is decorative, templated, or a placeholder for something constructed elsewhere. The worker builds exactly what the graph spec describes — node types, params, and topology — without hardcoding or inferring any architectural choices. Any deviation from this is a bug, not a known limitation.
+
+Corollaries that must be respected without exception:
+
+- **No background construction.** Nothing in the build pipeline may construct architecture that the canvas does not describe. If a composite node has a subgraph, that subgraph is the source of truth — the outer/stale params stored on the node itself are not authoritative and must not be used to construct anything.
+- **Absence of a subgraph is an error, not a condition to work around.** If a composite node has not had its subgraph populated (e.g., the user has never opened it in Studio), that is an incomplete model state. Raise a clear error rather than falling back to outer params or synthesising a default subgraph.
+- **"Just for now" workarounds are bugs.** Temporary shims, display-only nodes that shadow real architectural choices, and fallback paths that substitute stale values silently are all bugs regardless of how they are labelled in the code.
+
+## Backward Compatibility
+
+**Backward compatibility is not a concern.** There is a single developer. When the architecture improves, old saved graphs are expected to be re-created from Studio. We do not maintain legacy code paths, fallback logic, or compatibility shims for older graph formats. When something is wrong, raise a clear error rather than silently substituting a stale value.
+
+## Artifact Schema And Migrations
+
+Durable artifact/schema changes require explicit migration handling. This is
+not a request for silent backward-compatibility shims. It is a requirement that
+Feedbax-owned saved formats remain semantically migratable as the library
+evolves.
+
+If a change alters GraphSpec semantics, component type IDs, parameter or state
+roles, selector meanings, manifest formats, storage layouts, or
+checkpoint/artifact codecs, the same implementation/auth request must either:
+
+- preserve the existing semantic schema; or
+- add a versioned migration rule/API plus focused tests for the affected
+  schema transition.
+
+When changing durable formats, record the migration issue and validation
+strategy in the implementation issue or auth spec. Do not leave
+schema-affecting refactors as agent archaeology for downstream projects.
+
+Any new or changed structured spec emitter must declare a stable schema
+identity, such as an explicit version field or registered schema ID, and must
+integrate with the migration path or explicitly reject older versions with a
+clear error. This applies to provider APIs, manifests, Studio save/load,
+workers, analysis/evaluation/report execution, registries, and downstream
+extension hooks. Validation-only Pydantic or TypeScript shapes are not
+sufficient for durable emitted specs; implementation issues and auth specs must
+include focused acceptance evidence for old-version accept, migrate, or reject
+behavior.
+
+## UI Conventions
+
+**No-jitter**: Interactive/editable page elements must not change geometry (size, position, spacing) when interacted with, except as explicitly intended (e.g. expand/collapse). Hover states, focus rings, edit mode transitions must preserve element dimensions.
+
+**No-volatility**: Everything the user sees in Studio must survive save/load/refresh cycles. If a UI element displays state, that state must be persisted. There are no exceptions — if it's visible, it's saved.
+
+## Development
+
+### Python/JAX Coding Conventions
+
+#### Coding Style & Naming
 
 - Follow PEP 8: 4-space indentation and a 100-character soft line limit.
 - Use type hints for public APIs.
@@ -13,9 +100,35 @@
 - Use Google-style docstrings when docstrings are useful; include shapes and
   dtypes for JAX arrays when relevant.
 
-### Environment Management
+#### Environment Management
 
 - Use `uv` for package management. Do not run `pip install` directly.
+
+#### Equinox Modules
+
+- Subclass `equinox.Module` for dataclasses-that-are-PyTrees; do not also add
+  `@dataclass`.
+- Treat `Module` instances as immutable. Use `equinox.tree_at` or
+  `eqx.tree_at` for out-of-place updates; avoid direct attribute assignment.
+- Use `eqx.field` for defaults and converters. Rely on `Module`'s default
+  PyTree behavior unless custom flattening is truly needed.
+- Module instances are frozen: never assign to `self.field` after `__init__`.
+  Use `eqx.tree_at` for out-of-place updates. Never use `dataclasses.replace`
+  on Modules with computed fields.
+
+#### JAX Tree API
+
+- Import once as `import jax.tree as jt` and use `jt.*` consistently
+  (`jt.map`, `jt.leaves`, `jt.structure`, `jt.flatten`, `jt.unflatten`).
+- Do not use deprecated `jax.tree_*` helpers such as `jax.tree_map` or
+  `jax.tree_leaves`.
+
+#### jax_cookbook Helpers
+
+- Use `import jax_cookbook.tree as jtree` for PyTree utilities not in core JAX,
+  such as `jtree.unzip` and `jtree.get_ensemble`.
+- Use `from jax_cookbook import is_type, is_module, is_none` for common
+  `is_leaf` predicates and shorthands.
 
 ### Test Policy
 
@@ -31,6 +144,12 @@
   rerun is justified. Do not use the full bar to check whether a single fix
   worked. Repo instructions define the integration bar; this norm governs how
   often to pay it.
+- Use as few full-suite runs as possible during integration: targeted pytest
+  selection (explicit node IDs, `-k`, `--lf`) is the default while iterating,
+  and the full bar is paid at lane closeout only. NEVER run two full-suite
+  invocations in parallel — not in one checkout, not across worktrees, and
+  never via concurrently-dispatched subagents. Delegating sessions must pass
+  this constraint down to every subagent they dispatch.
 - Run the integration test bar through `scripts/full_suite.sh`. The wrapper uses
   `uv run --no-sync python -m pytest tests -n auto`, configures the persistent
   JAX compilation cache, and records green-tree memo entries only for a clean Git
@@ -47,58 +166,12 @@
   not depend on collection or execution order.
 <!-- feedbax-test-policy:end -->
 
-### Equinox Modules
+### Running Studio
 
-- Subclass `equinox.Module` for dataclasses-that-are-PyTrees; do not also add
-  `@dataclass`.
-- Treat `Module` instances as immutable. Use `equinox.tree_at` or
-  `eqx.tree_at` for out-of-place updates; avoid direct attribute assignment.
-- Use `eqx.field` for defaults and converters. Rely on `Module`'s default
-  PyTree behavior unless custom flattening is truly needed.
-
-### JAX Tree API
-
-- Import once as `import jax.tree as jt` and use `jt.*` consistently
-  (`jt.map`, `jt.leaves`, `jt.structure`, `jt.flatten`, `jt.unflatten`).
-- Do not use deprecated `jax.tree_*` helpers such as `jax.tree_map` or
-  `jax.tree_leaves`.
-
-### jax_cookbook Helpers
-
-- Use `import jax_cookbook.tree as jtree` for PyTree utilities not in core JAX,
-  such as `jtree.unzip` and `jtree.get_ensemble`.
-- Use `from jax_cookbook import is_type, is_module, is_none` for common
-  `is_leaf` predicates and shorthands.
-
-## Project-Specific Rules
-
-- Protected branch: `develop`.
-- The repo root tracks the protected `develop` branch. Start implementation work
-  in feature worktrees from the repo root. When release/default `main` is needed,
-  use a named worktree such as `worktrees/main`.
-- The graph is the model. Studio canvas nodes and subgraphs are the source of
-  truth; do not synthesize background architecture or silently fall back to
-  stale outer params.
-- Backward compatibility is not a concern for saved graph formats. Raise clear
-  errors rather than preserving fallback paths or compatibility shims.
-- Durable artifact/schema changes require explicit migration handling. If a
-  Feedbax change alters GraphSpec semantics, component type IDs, parameter or
-  state roles, selector meanings, manifest formats, storage layouts, or
-  checkpoint/artifact codecs, the same implementation must either preserve the
-  existing semantic schema or include versioned migration logic and focused
-  migration tests. Do not leave schema-affecting refactors as agent archaeology
-  for downstream projects.
-- Any new or changed structured spec emitter must declare a stable schema
-  identity, such as an explicit version field or registered schema ID, and must
-  integrate with the migration path or explicitly reject older versions with a
-  clear error. This applies to provider APIs, manifests, Studio save/load,
-  workers, analysis/evaluation/report execution, registries, and downstream
-  extension hooks. Validation-only Pydantic or TypeScript shapes are not
-  sufficient for durable emitted specs; implementation issues and auth specs
-  must include focused acceptance evidence for old-version accept, migrate, or
-  reject behavior.
-- Studio needs both processes: frontend `cd web && npm run dev` and backend
-  `uv run uvicorn feedbax.web.app:app --port 8000`.
+Studio requires two processes:
+- Frontend: `cd web && npm run dev` (Vite, default port 3008)
+- Backend: `uv run uvicorn feedbax.web.app:app --port 8000` (FastAPI)
+Both must be running for full functionality.
 
 ### Cloud/Remote Training Practices
 
@@ -129,6 +202,8 @@
   crashed, clear `/tmp/libtpu_lockfile` and launch a new one.
 - Always verify the latest code is deployed before running on cloud instances.
   Stale code on TPU/GPU is a recurring source of wasted time.
-- Module instances are frozen: never assign to `self.field` after `__init__`.
-  Use `eqx.tree_at` for out-of-place updates. Never use `dataclasses.replace`
-  on Modules with computed fields.
+
+## Active Feature Context
+
+- `feature/differentiable-mjx`: CDE hidden-state stability experiments (v6→v9b), AnalyticalMusculoskeletalPlant, DiffraxBackend. Latest: hybrid fixed-decay + Anti-NF gate (v9b).
+- Issue d8de481: Feedbax Studio cloud training orchestration + CDE graph editing. Deep context at `~/.claude/projects/-Users-mll-Main-10-Projects-10-PhD-20-Feedbax-feedbax/memory/studio-cloud-training-context.md`.
