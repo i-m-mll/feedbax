@@ -93,6 +93,12 @@ class FigureTemplate(StrictModel):
                 f"unsupported FigureTemplate schema_version: {self.schema_version!r}, "
                 f"expected {FIGURE_TEMPLATE_SCHEMA_VERSION!r}"
             )
+        if len(set(self.facet_by)) != len(self.facet_by):
+            raise ValueError("FigureTemplate facet_by entries must be unique")
+        if any(slot.multiplicity == "per_facet" for slot in self.slots) and not self.facet_by:
+            raise ValueError(
+                "FigureTemplate per_facet slots require at least one facet_by dimension"
+            )
         return self
 
 

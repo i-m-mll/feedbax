@@ -49,7 +49,6 @@ from feedbax.contracts.manifest import (
     Provenance,
     ReportSpec,
     TrainingRunManifest,
-    TrainingRunSetManifest,
     checkpoint_selection_manifest_id,
     default_manifest_root,
     evaluation_run_manifest_id,
@@ -71,9 +70,8 @@ from feedbax.persistence.manifest_index import (
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.studio.sweep_matrix import (
-    ExpandedSweepRun,
     SweepMatrixError,
-    expand_sweep_matrix,
+    materialize_sweep_matrix,
     matrix_spec_from_selection,
     _coordinate_label,
     _expand_coordinates,
@@ -82,6 +80,7 @@ from feedbax.studio.sweep_matrix import (
     _validate_group_axes,
     _variation_values,
 )
+from feedbax.training.run_matrix import MaterializedMatrixRow
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
 from feedbax.contracts.graph import (
     GraphSpec,
@@ -1297,7 +1296,7 @@ def _stage_pending_training_manifests(
         }
 
     try:
-        expanded = expand_sweep_matrix(
+        materialized = materialize_sweep_matrix(
             matrix_spec,
             graph_spec=graph_spec,
             training_spec=training_spec,
@@ -1308,65 +1307,65 @@ def _stage_pending_training_manifests(
     except SweepMatrixError as exc:
         raise StudioExecutionPreparationError(str(exc)) from exc
 
-    for expanded_run in expanded.runs:
-        _validate_expanded_training_run(expanded_run)
+    for row in materialized.rows:
+        _validate_materialized_training_row(row)
 
     root_path = default_manifest_root()
-    run_set = TrainingRunSetManifest(
-        id=expanded.run_set_id,
-        name=expanded.name,
-        status="pending",
-        run_ids=[run.run_id for run in expanded.runs],
-        graph_spec=spec_payload("GraphSpec", graph_spec),
-        axes=expanded.axes,
-        provenance=Provenance(
-            entrypoint=EntrypointRef(
-                kind="feedbax-studio-pipeline",
-                name="stage_training_run_set",
-                metadata={"job_id": request.job_id},
-            ),
-            issues=list(request.issues),
-            metadata={
-                **request.metadata,
-                "studio": {
-                    "workspace_id": workspace.id,
-                    "workspace_schema_version": workspace.schema_version,
-                    "stage_id": stage.id,
-                    "stage_kind": stage.kind,
-                    "scenario_id": scenario_id,
-                    "selection_spec": stage.selection_spec,
-                    "run_count": len(expanded.runs),
-                    "execution_target": execution_target,
-                    "execution_backend": request.backend,
-                },
-            },
-        ),
-        metadata={
-            "studio": {
-                "workspace_id": workspace.id,
-                "workspace_schema_version": workspace.schema_version,
-                "stage_id": stage.id,
-                "stage_kind": stage.kind,
-                "scenario_id": scenario_id,
-                "selection_spec": stage.selection_spec,
-            },
-            "planned": True,
-            "staged_at": utc_now().isoformat(),
-            "run_count": len(expanded.runs),
-            "execution_target": execution_target,
-            "execution_backend": request.backend,
+    materialized_run_set = materialized.run_set_manifest
+    run_set_metadata = {
+        **materialized_run_set.metadata,
+        "studio": {
+            "workspace_id": workspace.id,
+            "workspace_schema_version": workspace.schema_version,
+            "stage_id": stage.id,
+            "stage_kind": stage.kind,
+            "scenario_id": scenario_id,
+            "selection_spec": stage.selection_spec,
         },
+        "planned": True,
+        "staged_at": utc_now().isoformat(),
+        "run_count": len(materialized.rows),
+        "execution_target": execution_target,
+        "execution_backend": request.backend,
+    }
+    run_set = materialized_run_set.model_copy(
+        update={
+            "status": "pending",
+            "provenance": Provenance(
+                entrypoint=EntrypointRef(
+                    kind="feedbax-studio-pipeline",
+                    name="stage_training_run_set",
+                    metadata={"job_id": request.job_id},
+                ),
+                issues=list(request.issues),
+                metadata={
+                    **request.metadata,
+                    "studio": {
+                        "workspace_id": workspace.id,
+                        "workspace_schema_version": workspace.schema_version,
+                        "stage_id": stage.id,
+                        "stage_kind": stage.kind,
+                        "scenario_id": scenario_id,
+                        "selection_spec": stage.selection_spec,
+                        "run_count": len(materialized.rows),
+                        "execution_target": execution_target,
+                        "execution_backend": request.backend,
+                    },
+                },
+            ),
+            "metadata": run_set_metadata,
+        }
     )
     run_set_path = write_manifest(run_set, root=root_path)
     run_refs: list[StudioManifestRef] = []
     run_paths: dict[str, str] = {}
-    for expanded_run in expanded.runs:
-        manifest, path = _write_pending_training_manifest_for_expanded_run(
-            expanded_run,
+    for row in materialized.rows:
+        manifest, path = _write_pending_training_manifest_for_matrix_row(
+            row,
             workspace=workspace,
             stage=stage,
             scenario_id=scenario_id,
-            run_set_id=expanded.run_set_id,
+            run_set_id=materialized.run_set_id,
             request=request,
             root=root_path,
             execution_target=execution_target,
@@ -1394,8 +1393,8 @@ def _stage_pending_training_manifests(
         "stage_id": stage.id,
         "scenario_id": scenario_id,
         "planned": True,
-        "run_count": len(expanded.runs),
-        "axes": expanded.axes.model_dump(mode="json", exclude_none=True),
+        "run_count": len(materialized.rows),
+        "axes": materialized_run_set.axes.model_dump(mode="json", exclude_none=True),
         "execution_target": execution_target,
         "execution_backend": request.backend,
     }
@@ -1404,15 +1403,15 @@ def _stage_pending_training_manifests(
         "status": run_set.status,
         "path": str(run_set_path),
         "staged_at": utc_now().isoformat(),
-        "run_count": len(expanded.runs),
-        "run_ids": [run.run_id for run in expanded.runs],
+        "run_count": len(materialized.rows),
+        "run_ids": [row.planned_run_id for row in materialized.rows],
         "run_paths": run_paths,
         "execution_target": execution_target,
     }
 
 
-def _write_pending_training_manifest_for_expanded_run(
-    expanded_run: ExpandedSweepRun,
+def _write_pending_training_manifest_for_matrix_row(
+    row: MaterializedMatrixRow,
     *,
     workspace: StudioWorkspaceSpec,
     stage: StudioStageSpec,
@@ -1425,7 +1424,7 @@ def _write_pending_training_manifest_for_expanded_run(
     from feedbax.contracts.manifest import load_manifest
     from feedbax.persistence.manifest_index import find_manifest_paths_by_id
 
-    existing_paths = find_manifest_paths_by_id(expanded_run.run_id, root=root)
+    existing_paths = find_manifest_paths_by_id(row.planned_run_id, root=root)
     if existing_paths:
         existing = load_manifest(existing_paths[0])
         if isinstance(existing, TrainingRunManifest):
@@ -1436,7 +1435,7 @@ def _write_pending_training_manifest_for_expanded_run(
                         "completed_at": None,
                         "metadata": _restaged_metadata(
                             existing.metadata,
-                            manifest_id=expanded_run.run_id,
+                            manifest_id=row.planned_run_id,
                             restaged_from_status="cancelled",
                         ),
                     }
@@ -1445,10 +1444,26 @@ def _write_pending_training_manifest_for_expanded_run(
             return existing, existing_paths[0]
 
     now = utc_now()
-    axis_coordinates = expanded_run.coordinate.values
+    graph_spec, training_spec, task_spec, task_binding_spec, training_kind = (
+        _materialized_row_specs(row)
+    )
+    coordinate = row.coordinate
+    axis_coordinates = (
+        coordinate.values
+        if coordinate is not None
+        else {
+            "row_id": row.row_id,
+            "overrides": [
+                override.model_dump(mode="json", exclude_none=True)
+                for override in row.overrides
+            ],
+        }
+    )
+    coordinate_label = coordinate.label if coordinate is not None else row.row_id
+    value_indices = coordinate.value_indices if coordinate is not None else {}
     metadata = {
-        "name": expanded_run.coordinate.label,
-        "label": expanded_run.coordinate.label,
+        "name": coordinate_label,
+        "label": coordinate_label,
         "studio": {
             "workspace_id": workspace.id,
             "workspace_schema_version": workspace.schema_version,
@@ -1457,9 +1472,9 @@ def _write_pending_training_manifest_for_expanded_run(
             "scenario_id": scenario_id,
             "selection_spec": stage.selection_spec,
             "axis_coordinates": axis_coordinates,
-            "axis_value_indices": expanded_run.coordinate.value_indices,
+            "axis_value_indices": value_indices,
             "run_set_id": run_set_id,
-            "planned_training_run_id": expanded_run.run_id,
+            "planned_training_run_id": row.planned_run_id,
             "execution_target": execution_target,
             "execution_backend": request.backend,
         },
@@ -1470,27 +1485,27 @@ def _write_pending_training_manifest_for_expanded_run(
     }
     metadata["spec_hashes"] = _ui_spec_hashes(
         {
-            "graph_spec": expanded_run.graph_spec,
-            "training_spec": expanded_run.training_spec,
-            "task_spec": expanded_run.task_spec,
-            "task_binding_spec": expanded_run.task_binding_spec,
+            "graph_spec": graph_spec,
+            "training_spec": training_spec,
+            "task_spec": task_spec,
+            "task_binding_spec": task_binding_spec,
         }
     )
     manifest = TrainingRunManifest(
-        id=expanded_run.run_id,
+        id=row.planned_run_id,
         run_set_id=run_set_id,
         job_id=request.job_id,
         status="pending",
-        graph_spec=spec_payload("GraphSpec", expanded_run.graph_spec),
-        training_spec=spec_payload("TrainingSpec", expanded_run.training_spec),
-        task_spec=spec_payload("TaskSpec", expanded_run.task_spec),
-        task_binding_spec=spec_payload("StudioTaskBindingSpec", expanded_run.task_binding_spec)
-        if expanded_run.task_binding_spec is not None
+        graph_spec=spec_payload("GraphSpec", graph_spec),
+        training_spec=spec_payload(training_kind, training_spec),
+        task_spec=spec_payload("TaskSpec", task_spec),
+        task_binding_spec=spec_payload("StudioTaskBindingSpec", task_binding_spec)
+        if task_binding_spec is not None
         else None,
-        overrides=expanded_run.overrides,
+        overrides=row.overrides,
         summary_metrics={
             key: value
-            for key, value in {"total_batches": expanded_run.training_spec.get("n_batches")}.items()
+            for key, value in {"total_batches": _matrix_row_n_batches(row)}.items()
             if value is not None
         },
         provenance=Provenance(
@@ -1507,12 +1522,15 @@ def _write_pending_training_manifest_for_expanded_run(
     return manifest, write_manifest(manifest, root=root)
 
 
-def _validate_expanded_training_run(expanded_run: ExpandedSweepRun) -> None:
+def _validate_materialized_training_row(row: MaterializedMatrixRow) -> None:
+    if row.spec is not None:
+        return
+    graph_spec, training_spec, task_spec, task_binding_spec, _ = _materialized_row_specs(row)
     validation = _validate_training_scenario(
-        graph=expanded_run.graph_spec,
-        training_spec=expanded_run.training_spec,
-        task_spec=expanded_run.task_spec,
-        task_binding_spec=expanded_run.task_binding_spec,
+        graph=graph_spec,
+        training_spec=training_spec,
+        task_spec=task_spec,
+        task_binding_spec=task_binding_spec,
     )
     if not validation.errors:
         return
@@ -1522,9 +1540,54 @@ def _validate_expanded_training_run(expanded_run: ExpandedSweepRun) -> None:
     )
     raise StudioExecutionPreparationError(
         "Expanded sweep training run is invalid: "
-        f"run_id={expanded_run.run_id!r}, coordinate={expanded_run.coordinate.values!r}; "
+        f"run_id={row.planned_run_id!r}, coordinate="
+        f"{row.coordinate.values if row.coordinate is not None else row.row_id!r}; "
         f"{details}"
     )
+
+
+def _materialized_row_specs(
+    row: MaterializedMatrixRow,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any] | None, str]:
+    if row.spec is not None:
+        graph_spec = row.spec.graph.inline
+        if graph_spec is None:
+            raise StudioExecutionPreparationError(
+                "Studio staging requires inline graph payloads in governed run matrices"
+            )
+        return (
+            dict(graph_spec),
+            row.payload,
+            row.spec.task.model_dump(mode="json", exclude_none=True),
+            None,
+            "TrainingRunSpec",
+        )
+    graph_spec = row.payload.get("graph_spec")
+    training_spec = row.payload.get("training_spec")
+    task_spec = row.payload.get("task_spec")
+    task_binding_spec = row.payload.get("task_binding_spec")
+    if (
+        not isinstance(graph_spec, dict)
+        or not isinstance(training_spec, dict)
+        or not isinstance(task_spec, dict)
+    ):
+        raise StudioExecutionPreparationError(
+            "Materialized Studio matrix row is missing its spec envelope"
+        )
+    return (
+        graph_spec,
+        training_spec,
+        task_spec,
+        task_binding_spec if isinstance(task_binding_spec, dict) else None,
+        "TrainingSpec",
+    )
+
+
+def _matrix_row_n_batches(row: MaterializedMatrixRow) -> Any | None:
+    if row.spec is not None:
+        return row.spec.training_config.n_batches
+    training_spec = row.payload.get("training_spec")
+    return training_spec.get("n_batches") if isinstance(training_spec, dict) else None
 
 
 def _pending_training_manifest_ref(

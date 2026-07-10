@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 
@@ -30,7 +31,13 @@ from feedbax.persistence.database import (
 from feedbax.persistence.manifest_index import connect_index, default_index_path
 
 
-def _legacy_persistence_db(path: Path, *, hash_version: str | None = None) -> None:
+def _legacy_persistence_db(
+    path: Path,
+    *,
+    hash_version: str | None = None,
+    legacy_condition_metadata: dict | None = None,
+    condition_metadata: dict | None = None,
+) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute(
             f"""
@@ -75,10 +82,27 @@ def _legacy_persistence_db(path: Path, *, hash_version: str | None = None) -> No
                 id INTEGER PRIMARY KEY,
                 hash VARCHAR UNIQUE NOT NULL,
                 model_hashes JSON,
-                archived BOOLEAN
+                archived BOOLEAN,
+                condition_metadata JSON,
+                sisu_params JSON
             )
             """
         )
+        if legacy_condition_metadata is not None:
+            conn.execute(
+                f"""
+                INSERT INTO {STRINGS.db_table_names.evaluations} (
+                    hash, model_hashes, archived, condition_metadata, sisu_params
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-evaluation",
+                    "[]",
+                    0,
+                    json.dumps(condition_metadata) if condition_metadata is not None else None,
+                    json.dumps(legacy_condition_metadata),
+                ),
+            )
         conn.execute(
             f"""
             CREATE TABLE {STRINGS.db_table_names.figures} (
@@ -248,14 +272,73 @@ def test_existing_persistence_db_is_reconciled_and_stamped(tmp_path: Path) -> No
         "perturbation_config",
         "condition_metadata",
         "task_variants",
-        "sisu_params",
         "eval_setup_params",
     } <= eval_columns
+    assert "sisu_params" not in eval_columns
     assert {"created_at", "modified_at", "archived_at", "model_hashes"} <= figure_columns
     assert {"hash_version", "is_path_defunct", "postprocessed"} <= model_indexes
     assert schema_version == CURRENT_PERSISTENCE_SCHEMA_VERSION
     assert record.hash_version == CURRENT_MODEL_HASH_VERSION
     assert record.path.name == "legacy-model.eqx"
+
+
+def test_existing_project_condition_column_migrates_to_generic_metadata(tmp_path: Path) -> None:
+    clear_db_session_cache()
+    db_path = tmp_path / "legacy-condition.db"
+    _legacy_persistence_db(
+        db_path,
+        legacy_condition_metadata={"gain": [0.25, 0.5]},
+        condition_metadata={"task": "reach"},
+    )
+
+    session = init_db_session(f"sqlite:///{db_path}")
+    try:
+        columns = {
+            column["name"]
+            for column in inspect(session.get_bind()).get_columns(EvaluationRecord.__tablename__)
+        }
+        record = session.query(EvaluationRecord).filter_by(hash="legacy-evaluation").one()
+        assert record.condition_metadata == {
+            "task": "reach",
+            "sisu_params": {"gain": [0.25, 0.5]},
+        }
+        matches = database.query_evaluations_by_setup(
+            session,
+            condition_metadata={"sisu_params": {"gain": [0.25, 0.5]}},
+        )
+        assert [match.hash for match in matches] == ["legacy-evaluation"]
+        assert "sisu_params" not in columns
+    finally:
+        session.close()
+        clear_db_session_cache()
+
+
+def test_conflicting_project_condition_metadata_migration_fails_closed(tmp_path: Path) -> None:
+    clear_db_session_cache()
+    db_path = tmp_path / "conflicting-condition.db"
+    _legacy_persistence_db(
+        db_path,
+        legacy_condition_metadata={"gain": [0.25, 0.5]},
+        condition_metadata={"sisu_params": {"gain": [1.0]}},
+    )
+
+    with pytest.raises(PersistenceSchemaMigrationError, match="conflicting"):
+        init_db_session(f"sqlite:///{db_path}")
+
+    with sqlite3.connect(db_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                f"PRAGMA table_info({STRINGS.db_table_names.evaluations})"
+            )
+        }
+        metadata = connection.execute(
+            f"SELECT condition_metadata FROM {STRINGS.db_table_names.evaluations}"
+        ).fetchone()[0]
+
+    assert "sisu_params" in columns
+    assert json.loads(metadata) == {"sisu_params": {"gain": [1.0]}}
+    clear_db_session_cache()
 
 
 def test_existing_persistence_db_rejects_unsupported_hash_version(tmp_path: Path) -> None:

@@ -88,6 +88,10 @@ from feedbax.persistence.support import (
     exclude_unshared_keys_and_identical_values,
     get_md5_hexdigest,
 )
+from feedbax.persistence.migrations import (
+    PersistenceSchemaMigrationError,
+    migrate_legacy_evaluation_condition_metadata,
+)
 from feedbax.plot.utils import savefig
 from jax_cookbook import LDict
 
@@ -97,12 +101,8 @@ logger.setLevel(logging.DEBUG)
 logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
 
 CURRENT_MODEL_HASH_VERSION = "v2"
-CURRENT_PERSISTENCE_SCHEMA_VERSION = 1
+CURRENT_PERSISTENCE_SCHEMA_VERSION = 2
 PERSISTENCE_SCHEMA_STATE_TABLE = "_feedbax_persistence_schema"
-
-
-class PersistenceSchemaMigrationError(RuntimeError):
-    """Raised when an existing persistence database cannot be safely reconciled."""
 
 
 class RecordBase(DeclarativeBase):
@@ -222,9 +222,6 @@ class EvaluationRecord(RecordBase):
         JSON, nullable=True, default=None
     )
     task_variants: Mapped[Optional[dict[str, Any]]] = mapped_column(
-        JSON, nullable=True, default=None
-    )
-    sisu_params: Mapped[Optional[dict[str, Any]]] = mapped_column(
         JSON, nullable=True, default=None
     )
     eval_setup_params: Mapped[Optional[dict[str, Any]]] = mapped_column(
@@ -465,6 +462,13 @@ def _sync_declared_schema(engine) -> None:
         for table_name, model_class in TABLE_NAME_TO_MODEL.items():
             if table_name in table_names:
                 _add_missing_declared_columns(engine, table_name, model_class)
+
+    if EvaluationRecord.__tablename__ in table_names:
+        migrate_legacy_evaluation_condition_metadata(
+            engine,
+            table_name=EvaluationRecord.__tablename__,
+            metadata_column="condition_metadata",
+        )
 
     RecordBase.metadata.create_all(engine, checkfirst=True)
     _backfill_declared_schema(engine)
@@ -911,7 +915,6 @@ def query_evaluations_by_setup(
     perturbation_config: Optional[Dict[str, Any]] = None,
     condition_metadata: Optional[Dict[str, Any]] = None,
     task_variant_key: Optional[str] = None,
-    sisu_params: Optional[Dict[str, Any]] = None,
     expt_name: Optional[str] = None,
     include_archived: bool = False,
 ) -> list[EvaluationRecord]:
@@ -931,8 +934,6 @@ def query_evaluations_by_setup(
             superset of this dict (all key-value pairs must match).
         task_variant_key: Match evaluations whose task_variants dict
             contains this key.
-        sisu_params: Match evaluations whose sisu_params is a superset
-            of this dict.
         expt_name: Filter by experiment name (exact match on column).
         include_archived: If True, also return archived evaluations.
 
@@ -977,14 +978,6 @@ def query_evaluations_by_setup(
             tv = record.task_variants
             if not isinstance(tv, dict) or task_variant_key not in tv:
                 return False
-
-        if sisu_params is not None:
-            sp = record.sisu_params
-            if not isinstance(sp, dict):
-                return False
-            for k, v in sisu_params.items():
-                if sp.get(k) != v:
-                    return False
 
         return True
 
@@ -1423,7 +1416,6 @@ def add_evaluation(
     perturbation_config: Optional[Dict[str, Any]] = None,
     condition_metadata: Optional[Dict[str, Any]] = None,
     task_variants: Optional[Dict[str, Any]] = None,
-    sisu_params: Optional[Dict[str, Any]] = None,
     eval_setup_params: Optional[Dict[str, Any]] = None,
     commit: bool = True,
 ) -> EvaluationRecord:
@@ -1440,7 +1432,6 @@ def add_evaluation(
         condition_metadata: Caller-defined condition fields used to reproduce
             and query evaluations without project-specific columns.
         task_variants: Task variant definitions used in evaluation
-        sisu_params: SISU values evaluated (if applicable)
         eval_setup_params: Catch-all for any additional
             setup_eval_tasks_and_models parameters
         commit: If True, commit immediately. If False, caller must commit.
@@ -1463,8 +1454,6 @@ def add_evaluation(
         eval_setup_metadata["condition_metadata"] = condition_metadata
     if task_variants is not None:
         eval_setup_metadata["task_variants"] = task_variants
-    if sisu_params is not None:
-        eval_setup_metadata["sisu_params"] = sisu_params
     if eval_setup_params is not None:
         eval_setup_metadata["eval_setup_params"] = eval_setup_params
 
@@ -1498,7 +1487,6 @@ def add_evaluation(
         existing_record.perturbation_config = perturbation_config
         existing_record.condition_metadata = condition_metadata
         existing_record.task_variants = task_variants
-        existing_record.sisu_params = sisu_params
         existing_record.eval_setup_params = eval_setup_params
         logger.info(f"Updating existing evaluation record with hash {eval_hash}")
         eval_record = existing_record
@@ -1510,7 +1498,6 @@ def add_evaluation(
             perturbation_config=perturbation_config,
             condition_metadata=condition_metadata,
             task_variants=task_variants,
-            sisu_params=sisu_params,
             eval_setup_params=eval_setup_params,
             **eval_parameters,
         )
