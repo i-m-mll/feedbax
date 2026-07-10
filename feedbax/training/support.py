@@ -7,10 +7,7 @@ import logging
 import os
 from pathlib import Path, PosixPath
 import platform
-import signal
 import subprocess
-from shutil import rmtree
-from time import perf_counter
 from types import ModuleType
 from typing import Optional
 
@@ -19,37 +16,6 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, Shaped
 
 logger = logging.getLogger(__name__)
-
-
-class Timer:
-    """Context manager for timing code blocks."""
-
-    def __init__(self):
-        self.times = []
-
-    def __enter__(self, printout=False):
-        self.start_time = perf_counter()
-        self.printout = printout
-        return self
-
-    def __exit__(self, *args, **kwargs):
-        self.time = perf_counter() - self.start_time
-        self.times.append(self.time)
-        self.readout = f"Time: {self.time:.3f} seconds"
-        if self.printout:
-            print(self.readout)
-
-    start = __enter__
-    stop = __exit__
-
-
-def delete_contents(path: str | Path):
-    """Delete all subdirectories and files of `path`."""
-    for p in Path(path).iterdir():
-        if p.is_dir():
-            rmtree(p)
-        elif p.is_file():
-            p.unlink()
 
 
 def _dirname_of_this_module():
@@ -73,11 +39,6 @@ def git_commit_id(
         .strip()
         .decode()
     )
-
-
-def discard(*args, **kwargs) -> None:
-    """No-op callback that accepts and discards any arguments."""
-    return None
 
 
 def with_caller_logger(func):
@@ -156,68 +117,3 @@ def exponential_smoothing(
 
     _, ema = jax.lax.scan(scan_fn, init_value, x_moved)
     return jnp.moveaxis(ema, 0, axis)
-
-
-class GracefulStopRequested(Exception):
-    """Custom exception for graceful stopping."""
-
-
-class GracefulInterruptHandler:
-    """Context manager and decorator for graceful keyboard interrupt handling."""
-
-    def __init__(
-        self,
-        sensitive_msg: Optional[str] = None,
-        stop_msg: Optional[str] = None,
-        logger: Optional[logging.Logger] = None,
-    ):
-        self.stop_requested = False
-        self.in_sensitive_operation = False
-        self.original_handler = None
-        self.sensitive_msg = (
-            sensitive_msg or "Ctrl-C caught: will exit after current operation completes..."
-        )
-        self.stop_msg = stop_msg or "Operation completed, stopping as requested..."
-        self.logger = logger
-
-    def _log_message(self, message: str):
-        if self.logger:
-            self.logger.info(message)
-        else:
-            print(f"\n{message}")
-
-    def __enter__(self):
-        self.original_handler = signal.signal(signal.SIGINT, self._signal_handler)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        signal.signal(signal.SIGINT, self.original_handler)
-
-    def _signal_handler(self, signum, frame):
-        if self.stop_requested:
-            signal.signal(signal.SIGINT, signal.SIG_DFL)
-            raise KeyboardInterrupt
-        self.stop_requested = True
-        if self.in_sensitive_operation:
-            self._log_message(self.sensitive_msg)
-        else:
-            self._log_message("Ctrl-C caught: stopping...")
-            raise KeyboardInterrupt
-
-    def __call__(self, func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            if self.stop_requested:
-                raise GracefulStopRequested()
-
-            self.in_sensitive_operation = True
-            try:
-                result = func(*args, **kwargs)
-                if self.stop_requested:
-                    self._log_message(self.stop_msg)
-                    raise GracefulStopRequested()
-                return result
-            finally:
-                self.in_sensitive_operation = False
-
-        return wrapper

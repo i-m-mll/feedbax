@@ -10,7 +10,6 @@ the implicit solver infrastructure before moving to more complex systems.
 from __future__ import annotations
 
 from functools import cached_property
-import logging
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -26,7 +25,6 @@ from feedbax.mechanics.dae import DAEComponent
 from feedbax.runtime.state import CartesianState
 
 
-logger = logging.getLogger(__name__)
 
 
 # Spatial dimensions

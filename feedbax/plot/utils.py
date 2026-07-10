@@ -10,7 +10,6 @@ from typing import Any, Optional
 import jax
 import jax.tree as jt
 import matplotlib.figure as mplf
-import matplotlib.figure as mplfig
 import numpy as np
 import plotly
 import plotly.graph_objects as go
@@ -21,11 +20,6 @@ from jax_cookbook import is_type
 from feedbax.config import STRINGS
 from feedbax.plot.lifecycle import close_figure
 pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
-
-
-def filename_join(strs, joinwith="__"):
-    """Format filename parts while skipping empty strings."""
-    return joinwith.join(s for s in strs if s)
 
 
 def with_caller_logger(func):
@@ -57,43 +51,6 @@ def get_label_str(s: str):
     # TODO: Optionally add in line breaks if the string is long
     subs = [_format_if_abbrev(sub) for sub in s.split("_") if sub]
     return " ".join(subs).capitalize()
-
-
-def get_savefig_fn(fig_dir: Path, suffix=""):
-    """Returns a function that saves Matplotlib and Plotly figures to file in a given directory.
-
-    This is convenient in notebooks, where all figures made within a single notebook are generally
-    saved to the same directory.
-    """
-
-    def savefig(fig, label, ext=".svg", transparent=True, subdir: Optional[str] = None, **kwargs):
-        if subdir is not None:
-            save_dir = fig_dir / subdir
-            save_dir.mkdir(exist_ok=True, parents=True)
-        else:
-            save_dir = fig_dir
-
-        label = filename_join([label, suffix])
-
-        if isinstance(fig, mplfig.Figure):
-            fig.savefig(
-                str(save_dir / f"{label}{ext}"),
-                transparent=transparent,
-                **kwargs,
-            )
-
-        elif isinstance(fig, go.Figure):
-            # Save HTML for easy viewing, and JSON for embedding.
-            # fig.write_html(save_dir / f'{label}.html')
-            fig.write_json(save_dir / f"{label}.json")
-
-            width = getattr(fig.layout, "width", None)
-            height = getattr(fig.layout, "height", None)
-            # Also save PNG for easy browsing and sharing
-            fig.write_image(save_dir / f"{label}.png", scale=2, width=width, height=height)
-            # fig.write_image(save_dir / f'{label}.webp', scale=2)
-
-    return savefig
 
 
 def figs_flatten_with_paths(figs):

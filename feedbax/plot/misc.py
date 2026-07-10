@@ -1,5 +1,5 @@
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal, NamedTuple, Optional, TypeAlias, TypeGuard, TypeVar
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, NamedTuple, Optional, TypeAlias, TypeGuard
 
 import equinox as eqx
 import jax.tree as jt
@@ -13,9 +13,6 @@ from plotly.basedatatypes import BaseTraceType
 AggMode: TypeAlias = Literal["standard", "circular"]
 
 StrMapping: TypeAlias = Mapping[str, Any]
-
-T = TypeVar("T")
-
 
 def _wrap_to_pi(x):
     TAU = 2 * np.pi
@@ -211,19 +208,6 @@ def _is_str_mapping(x: object) -> TypeGuard[StrMapping]:
     # Empty dict is fine; otherwise ensure keys are str
     for k in x.keys():
         if not isinstance(k, str):
-            return False
-    return True
-
-
-def _is_mapping_of_type(
-    x: object,
-    is_type_: Callable[[Any], bool],
-) -> TypeGuard[Mapping]:
-    """True if x is a Mapping whose values are Mapping[str, Any]."""
-    if not isinstance(x, Mapping):
-        return False
-    for v in x.values():
-        if not is_type_(v):
             return False
     return True
 

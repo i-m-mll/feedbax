@@ -6,7 +6,6 @@
 """
 
 from functools import cached_property
-import logging
 from typing import Optional
 
 import equinox as eqx
@@ -22,7 +21,6 @@ from feedbax.runtime.state import CartesianState, StateBounds
 from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS, corners_2d
 
 
-logger = logging.getLogger(__name__)
 
 
 class TwoLinkArmState(AbstractSkeletonState):

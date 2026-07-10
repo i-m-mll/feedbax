@@ -6,20 +6,13 @@
 
 from abc import abstractmethod
 from collections.abc import Callable
-from functools import partial, reduce
-import logging
+from functools import reduce
 
 import equinox as eqx
 # from equinox._pretty_print import tree_pp, bracketed
 import jax.numpy as jnp
 import jax.random as jr
-import jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, Shaped
-
-
-
-logger = logging.getLogger(__name__)
-
 
 class AbstractNoise(eqx.Module):
 
@@ -31,11 +24,6 @@ class AbstractNoise(eqx.Module):
 
     def __add__(self, other):
         return CompositeNoise(terms=(self, other))
-
-
-class ZeroNoise(AbstractNoise):
-    def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
-        return jnp.zeros_like(x)
 
 
 class CompositeNoise(AbstractNoise):
@@ -70,20 +58,6 @@ class Normal(AbstractNoise):
         return self.std * jr.normal(key, x.shape, x.dtype) + self.mean
 
 
-class HalfNormal2Vector(AbstractNoise):
-    """2-vectors with half-normally-distributed lengths, and uniform directions.
-
-    NOTE: This only makes sense when `x.shape[-1] == 2`
-    """
-    std: float = 1.0
-
-    def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
-        key_lengths, key_angles = jr.split(key)
-        lengths = self.std * jr.normal(key_lengths, x.shape[:-1], x.dtype)
-        angles = jr.uniform(key_angles, x.shape[:-1], minval=0, maxval=2*jnp.pi)
-        return lengths * jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=-1)
-
-
 class Multiplicative(AbstractNoise):
     """Scales the output of another noise term by the magnitude of the input signal.
 
@@ -101,12 +75,3 @@ class Multiplicative(AbstractNoise):
 
     # def __tree_pp__(self, **kwargs):
     #     return _simple_module_pprint("Multiplicative", self.noise_func, **kwargs)
-
-
-def replace_noise(tree, replace_fn: Callable = lambda _: None):
-    """Replaces all `AbstractNoise` leaves of a PyTree, by default with `None`."""
-    return eqx.tree_at(
-        partial(jtree.leaves_of_type, AbstractNoise),
-        tree,
-        replace_fn=replace_fn,
-    )

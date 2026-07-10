@@ -54,11 +54,6 @@ COLORSCALES: dict[str, str | Sequence[str] | Sequence[tuple]] = dict(
     trial="Tealgrn",
 )
 
-DISCRETE_COLORSCALES = dict(
-    category=plc.qualitative.D3,
-)
-
-
 """
 Generic default colorscales to try to set up, based on caller-provided
 hyperparameters. Values are hyperparameter where-functions so we can try to

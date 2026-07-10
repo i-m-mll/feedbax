@@ -5,7 +5,6 @@
 """
 
 from abc import abstractmethod, abstractproperty
-import logging
 from typing import Generic, Optional
 
 import equinox as eqx
@@ -17,7 +16,6 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 from feedbax.runtime.state import StateBounds, StateT
 
 
-logger = logging.getLogger(__name__)
 
 
 class LinearSystem(Module):

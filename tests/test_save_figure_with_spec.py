@@ -6,7 +6,6 @@
 
 import hashlib
 import json
-import logging
 from pathlib import Path
 from types import ModuleType
 
@@ -18,9 +17,6 @@ from feedbax.plot.io import _figure_render_filename, _sha256, save_figure, save_
 from feedbax.plugins.registry import ExperimentRegistry
 
 pytestmark = pytest.mark.feedbax_contract
-
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

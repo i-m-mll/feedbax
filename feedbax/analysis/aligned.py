@@ -1,7 +1,7 @@
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property, partial
 from types import MappingProxyType
-from typing import Optional, TypeVar
+from typing import Optional
 
 import equinox as eqx
 import feedbax.plot as fbp
@@ -32,8 +32,8 @@ from feedbax.analysis.state_utils import (
     get_trial_start_positions,
     unsqueezer,
 )
-from feedbax.config.defaults import EVAL_REACH_LENGTH
 from feedbax.analysis.support import _OptionalCallableFieldConverter
+from feedbax.config.defaults import EVAL_REACH_LENGTH
 from feedbax.config.namespace import TreeNamespace
 from feedbax.plot.experiments import add_endpoint_traces
 from feedbax.analysis.types import (
@@ -44,12 +44,8 @@ from feedbax.analysis.types import (
     VarSpec,
 )
 
-T = TypeVar("T")
-
-
 VAR_LEVEL_LABEL = "var"
 DIRECTION_LEVEL_LABEL = "direction"
-ENDPOINT_ERROR_STEPS = 10
 
 
 def get_reach_directions(task: AbstractTask, *args) -> Array:
@@ -364,249 +360,3 @@ class Measure(Module):
             Computed measure values
         """
         return compose_(*self._call_methods(**kwargs))(input)
-
-
-vector_magnitude = partial(jnp.linalg.norm, axis=-1)
-
-
-def signed_max(x, axis=None, keepdims=False):
-    """Return the value with the largest magnitude, positive or negative."""
-    abs_x = jnp.abs(x)
-    max_idx = jnp.argmax(abs_x, axis=axis)
-    if axis is None:
-        return x.flatten()[max_idx]
-    else:
-        return jnp.take_along_axis(x, jnp.expand_dims(max_idx, axis=axis), axis=axis)
-
-
-# Command measures
-initial_command = Measure(
-    response_var=ResponseVar.COMMAND,
-    transform_fn=vector_magnitude,
-    # (there is no command on time step 0)
-    timesteps=slice(1, 2),
-)
-max_net_command = Measure(
-    response_var=ResponseVar.COMMAND,
-    transform_fn=vector_magnitude,
-    agg_fn=jnp.max,
-)
-sum_net_command = Measure(
-    response_var=ResponseVar.COMMAND,
-    transform_fn=vector_magnitude,
-    agg_fn=jnp.sum,
-)
-
-
-# Force measures
-initial_force = Measure(
-    response_var=ResponseVar.FORCE,
-    transform_fn=vector_magnitude,
-    # agg_fn=jnp.mean,
-    timesteps=slice(1, 2),
-)
-max_net_force = Measure(
-    response_var=ResponseVar.FORCE,
-    transform_fn=vector_magnitude,
-    agg_fn=jnp.max,
-)
-sum_net_force = Measure(
-    response_var=ResponseVar.FORCE,
-    transform_fn=vector_magnitude,
-    agg_fn=jnp.sum,
-)
-max_parallel_force = Measure(
-    response_var=ResponseVar.FORCE,
-    direction=Direction.PARALLEL,
-    agg_fn=jnp.max,
-)
-sum_parallel_force = Measure(
-    response_var=ResponseVar.FORCE,
-    direction=Direction.PARALLEL,
-    transform_fn=jnp.abs,
-    agg_fn=jnp.sum,
-)
-max_lateral_force = Measure(
-    response_var=ResponseVar.FORCE,
-    direction=Direction.LATERAL,
-    agg_fn=jnp.max,
-)
-sum_lateral_force_abs = Measure(
-    response_var=ResponseVar.FORCE,
-    direction=Direction.LATERAL,
-    transform_fn=jnp.abs,
-    agg_fn=jnp.sum,
-)
-
-
-# Velocity measures
-max_parallel_vel = Measure(
-    response_var=ResponseVar.VELOCITY,
-    direction=Direction.PARALLEL,
-    agg_fn=jnp.max,
-)
-max_lateral_vel = Measure(
-    response_var=ResponseVar.VELOCITY,
-    direction=Direction.LATERAL,
-    agg_fn=jnp.max,
-)
-max_lateral_vel_signed = Measure(
-    response_var=ResponseVar.VELOCITY,
-    direction=Direction.LATERAL,
-    agg_fn=signed_max,
-)
-
-
-# Position measures
-max_lateral_distance = Measure(
-    response_var=ResponseVar.POSITION,
-    direction=Direction.LATERAL,
-    agg_fn=jnp.max,
-    normalizer=EVAL_REACH_LENGTH / 100,
-)
-largest_lateral_distance = Measure(
-    response_var=ResponseVar.POSITION,
-    direction=Direction.LATERAL,
-    agg_fn=signed_max,
-    normalizer=EVAL_REACH_LENGTH / 100,
-)
-sum_lateral_distance = Measure(
-    response_var=ResponseVar.POSITION,
-    direction=Direction.LATERAL,
-    agg_fn=jnp.sum,
-)
-sum_lateral_distance_abs = Measure(
-    response_var=ResponseVar.POSITION,
-    direction=Direction.LATERAL,
-    transform_fn=jnp.abs,
-    agg_fn=jnp.sum,
-)
-max_deviation = Measure(
-    response_var=ResponseVar.POSITION,
-    transform_fn=vector_magnitude,
-    agg_fn=jnp.max,
-)
-sum_deviation = Measure(
-    response_var=ResponseVar.POSITION,
-    transform_fn=vector_magnitude,
-    agg_fn=jnp.sum,
-)
-
-
-def make_end_velocity_error(last_n_steps: int = ENDPOINT_ERROR_STEPS) -> Measure:
-    return Measure(
-        response_var=ResponseVar.VELOCITY,
-        transform_fn=vector_magnitude,
-        agg_fn=jnp.mean,
-        timesteps=slice(-last_n_steps, None),
-    )
-
-
-def make_end_position_error(
-    reach_length: float = EVAL_REACH_LENGTH,
-    last_n_steps: int = ENDPOINT_ERROR_STEPS,
-) -> Measure:
-    """Create measure for endpoint position error."""
-    goal_pos = jnp.array([reach_length, 0.0])
-    return Measure(
-        response_var=ResponseVar.POSITION,
-        transform_fn=lambda x: jnp.linalg.norm(x - goal_pos, axis=-1),
-        agg_fn=jnp.mean,
-        timesteps=slice(-last_n_steps, None),
-        normalizer=reach_length / 100,
-    )
-
-
-def reverse_measure(measure: Measure) -> Measure:
-    """Create a new measure that inverts the sign of the states before computing.
-
-    For example, use this to turn a measure of the maximum forward velocity into a
-    measure of the maximum reverse velocity.
-    """
-    if measure.transform_fn is not None:
-        transform_fn = compose(measure.transform_fn).then(jnp.negative)
-    else:
-        transform_fn = jnp.negative
-
-    return eqx.tree_at(
-        lambda measure: measure.transform_fn,
-        measure,
-        transform_fn,
-        is_leaf=lambda x: x is None,
-    )
-
-
-def set_timesteps(measure: Measure, timesteps) -> Measure:
-    return eqx.tree_at(
-        lambda measure: measure.timesteps,
-        measure,
-        timesteps,
-        is_leaf=lambda x: x is None,
-    )
-
-
-ALL_MEASURES = LDict.of("measure")(
-    dict(
-        initial_command=initial_command,
-        max_net_command=max_net_command,
-        sum_net_command=sum_net_command,
-        initial_force=initial_force,
-        max_net_force=max_net_force,
-        sum_net_force=sum_net_force,
-        max_parallel_force_forward=max_parallel_force,
-        max_parallel_force_reverse=reverse_measure(max_parallel_force),
-        sum_parallel_force=sum_parallel_force,
-        max_lateral_force_left=max_lateral_force,
-        max_lateral_force_right=reverse_measure(max_lateral_force),
-        sum_lateral_force_abs=sum_lateral_force_abs,
-        max_parallel_vel_forward=max_parallel_vel,
-        max_parallel_vel_reverse=reverse_measure(max_parallel_vel),
-        max_lateral_vel_left=max_lateral_vel,
-        max_lateral_vel_right=reverse_measure(max_lateral_vel),
-        max_lateral_vel_signed=max_lateral_vel_signed,
-        max_lateral_distance_left=max_lateral_distance,
-        max_lateral_distance_right=reverse_measure(max_lateral_distance),
-        largest_lateral_distance=largest_lateral_distance,
-        sum_lateral_distance=sum_lateral_distance,
-        sum_lateral_distance_abs=sum_lateral_distance_abs,
-        max_deviation=max_deviation,
-        sum_deviation=sum_deviation,
-        end_velocity_error=make_end_velocity_error(),
-        end_position_error=make_end_position_error(),
-    )
-)
-
-
-MEASURE_LABELS = LDict.of("measure")(
-    dict(
-        initial_force="Initial control force",
-        max_net_force="Max net control force",
-        sum_net_force="Sum net control force",
-        initial_command="Initial control command",
-        max_net_command="Max net control command",
-        sum_net_command="Sum net control command",
-        max_parallel_force_forward="Max forward force",
-        max_parallel_force_reverse="Max reverse force",
-        sum_parallel_force="Sum of absolute parallel forces",
-        max_lateral_force_left="Max lateral force<br>(left)",
-        max_lateral_force_right="Max lateral force<br>(right)",
-        sum_lateral_force_abs="Sum of absolute lateral forces",
-        max_parallel_vel_forward="Max forward velocity",
-        max_parallel_vel_reverse="Max reverse velocity",
-        max_lateral_vel_left="Max lateral velocity<br>(left)",
-        max_lateral_vel_right="Max lateral velocity<br>(right)",
-        max_lateral_vel_signed="Largest lateral velocity",
-        max_lateral_distance_left="Max lateral distance<br>(left, % reach length)",
-        max_lateral_distance_right="Max lateral distance<br>(right, % reach length)",
-        largest_lateral_distance="Largest lateral distance<br>(% reach length)",
-        sum_lateral_distance="Sum of signed lateral distances",
-        sum_lateral_distance_abs="Sum of absolute lateral distances",
-        max_deviation="Max deviation",  # From zero/origin! i.e. stabilization task
-        sum_deviation="Sum of deviations",
-        end_velocity_error=f"Mean velocity error<br>(last {ENDPOINT_ERROR_STEPS} steps)",
-        end_position_error=f"Mean position error<br>(last {ENDPOINT_ERROR_STEPS} steps)",
-    )
-)
-
-
-ALL_MEASURE_KEYS = tuple(ALL_MEASURES.keys())
