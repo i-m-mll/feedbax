@@ -166,7 +166,9 @@ def _apply_patch(root: dict[str, Any], patch: OverridePatch) -> None:
         return
     if patch.op == "replace":
         if not exists:
-            raise ValueError(f"replace patch path is missing: {patch.path!r}")
+            raise ValueError(
+                f"replace patch cannot set missing field {leaf!r}: {patch.path!r}"
+            )
         _set_child(parent, leaf, deepcopy(patch.value), path=patch.path)
         return
     if not exists:

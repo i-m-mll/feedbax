@@ -5,16 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.contracts.run_matrix import (
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
-    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-    TrainingRunMatrixSpec,
-)
 from feedbax.training.run_matrix import (
     ForkParityError,
-    MaterializedMatrixRow,
     MaterializedRunMatrix,
     fork_matrix_checkpoints,
+    main,
 )
 
 from tests.test_run_matrix_materialization import _matrix, _training_run_payload
@@ -90,4 +85,66 @@ def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None
             target_checkpoint_roots={"lr_hi": target},
             parity_output_path=tmp_path / "parity.json",
             skip_fork=True,
+        )
+
+
+def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix.json"
+    matrix_path.write_text(
+        json.dumps(_matrix(_training_run_payload()).model_dump(mode="json", exclude_none=True)),
+        encoding="utf-8",
+    )
+    source = tmp_path / "source"
+    high = tmp_path / "high"
+    low = tmp_path / "low"
+    _write_latest(source, transaction_id="tx-source", digest="same")
+    _write_latest(high, transaction_id="tx-high", digest="same")
+    _write_latest(low, transaction_id="tx-low", digest="same")
+    parity_path = tmp_path / "parity.json"
+
+    exit_code = main(
+        [
+            "fork",
+            str(matrix_path),
+            "--repo-root",
+            str(tmp_path),
+            "--source-checkpoint-root",
+            str(source),
+            "--target",
+            f"lr_hi={high}",
+            "--target",
+            f"lr_lo={low}",
+            "--parity-output",
+            str(parity_path),
+            "--skip-fork",
+        ]
+    )
+
+    assert exit_code == 0
+    parity = json.loads(parity_path.read_text(encoding="utf-8"))
+    assert parity["schema_version"] == "feedbax.run_matrix_fork_parity.v1"
+    assert parity["ok"] is True
+    assert {row["row_id"] for row in parity["rows"]} == {"lr_hi", "lr_lo"}
+
+
+def test_fork_cli_rejects_malformed_target(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix.json"
+    matrix_path.write_text(
+        json.dumps(_matrix(_training_run_payload()).model_dump(mode="json", exclude_none=True)),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        main(
+            [
+                "fork",
+                str(matrix_path),
+                "--source-checkpoint-root",
+                str(tmp_path / "source"),
+                "--target",
+                "missing-separator",
+                "--parity-output",
+                str(tmp_path / "parity.json"),
+                "--skip-fork",
+            ]
         )

@@ -17,7 +17,11 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.studio.sweep_matrix import SweepMatrixError, expand_sweep_matrix
+from feedbax.studio.sweep_matrix import (
+    SweepMatrixError,
+    expand_sweep_matrix,
+    materialize_sweep_matrix,
+)
 
 
 def _base_specs() -> tuple[dict, dict, dict]:
@@ -57,6 +61,34 @@ def test_sweep_matrix_cross_expands_cartesian_coordinates() -> None:
     assert expanded.runs[-1].training_spec["loss"]["weight"] == 1e-5
     assert expanded.runs[-1].training_spec["seed"] == 3
     assert expanded.axes.runs[-1].values == {"loss_weight": 1e-5, "seed": 3}
+
+
+def test_studio_sweep_adapter_returns_shared_materialized_run_set() -> None:
+    graph_spec, training_spec, task_spec = _base_specs()
+
+    materialized = materialize_sweep_matrix(
+        {
+            "name": "Shared engine",
+            "axes": [
+                {"id": "loss_weight", "path": "training_spec.loss.weight", "values": [0, 1e-5]}
+            ],
+            "mode": "cross",
+        },
+        graph_spec=graph_spec,
+        training_spec=training_spec,
+        task_spec=task_spec,
+        task_binding_spec=None,
+        default_name="Fallback",
+    )
+
+    assert materialized.run_set_manifest.id == materialized.run_set_id
+    assert materialized.run_set_manifest.run_ids == [
+        row.planned_run_id for row in materialized.rows
+    ]
+    assert materialized.run_set_manifest.metadata["matrix_schema_version"] == (
+        "feedbax.spec.training_run_matrix.v1"
+    )
+    assert materialized.run_set_manifest.metadata["studio_legacy_adapter"] is True
 
 
 def test_sweep_matrix_zip_rejects_mismatched_lengths() -> None:

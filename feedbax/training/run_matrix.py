@@ -10,7 +10,8 @@ import json
 import math
 from pathlib import Path
 import random
-from typing import Any, Protocol
+import sys
+from typing import Any, Callable, Protocol
 
 from feedbax.contracts.expressions import evaluate_query
 from feedbax.contracts.extraction import load_expression_context, set_dotted_path
@@ -32,7 +33,6 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-    MatrixRow,
     TrainingRunMatrixSpec,
     apply_override_patches,
 )
@@ -63,7 +63,7 @@ class MaterializedMatrixRow:
 
     row_id: str
     planned_run_id: str
-    spec: TrainingRunSpec
+    spec: TrainingRunSpec | None
     payload: dict[str, Any]
     coordinate: TrainingRunAxisCoordinate | None
     overrides: list[Any]
@@ -93,6 +93,9 @@ class LrContinuationReporter(Protocol):
         declared_mode: str,
     ) -> list[dict[str, Any]]:
         """Return reportable LR points for one target row."""
+
+
+RowPayloadValidator = Callable[[dict[str, Any], str], TrainingRunSpec | None]
 
 
 class StandardLrContinuationReporter:
@@ -142,6 +145,37 @@ def materialize_run_matrix(
     method_registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY,
 ) -> MaterializedRunMatrix:
     """Materialize a ``TrainingRunMatrixSpec`` into validated row specs."""
+    return _materialize_run_matrix(
+        spec,
+        repo_root=repo_root,
+        row_validator=lambda payload, row_id: _validate_training_payload(
+            payload,
+            row_id=row_id,
+            method_registry=method_registry,
+        ),
+    )
+
+
+def materialize_adapted_run_matrix(
+    spec: TrainingRunMatrixSpec | Mapping[str, Any],
+    *,
+    repo_root: Path,
+    row_validator: RowPayloadValidator,
+) -> MaterializedRunMatrix:
+    """Materialize an adapter payload after validating every expanded row."""
+    return _materialize_run_matrix(
+        spec,
+        repo_root=repo_root,
+        row_validator=row_validator,
+    )
+
+
+def _materialize_run_matrix(
+    spec: TrainingRunMatrixSpec | Mapping[str, Any],
+    *,
+    repo_root: Path,
+    row_validator: RowPayloadValidator,
+) -> MaterializedRunMatrix:
     matrix = (
         spec
         if isinstance(spec, TrainingRunMatrixSpec)
@@ -161,7 +195,7 @@ def materialize_run_matrix(
         rows, axes_block = _materialize_explicit_rows(
             matrix,
             base_payload=base_payload,
-            method_registry=method_registry,
+            row_validator=row_validator,
         )
         axes_identity = {
             "mode": "explicit_rows",
@@ -171,7 +205,7 @@ def materialize_run_matrix(
         rows, axes_block = _materialize_sweep_rows(
             matrix,
             base_payload=base_payload,
-            method_registry=method_registry,
+            row_validator=row_validator,
         )
         axes_identity = axes_block.model_dump(mode="json", exclude_none=True)
 
@@ -179,7 +213,7 @@ def materialize_run_matrix(
         graph_spec=_identity_graph_spec(base_payload),
         base_training_spec=_identity_training_spec(base_payload),
         task_spec=_identity_task_spec(base_payload),
-        task_binding_spec=None,
+        task_binding_spec=_identity_task_binding_spec(base_payload),
         axes=axes_identity,
     )
     run_set_manifest = TrainingRunSetManifest(
@@ -303,10 +337,20 @@ def fork_matrix_checkpoints(
     """Fork a source checkpoint to all matrix rows and write a parity table."""
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
+    row_ids = {row.row_id for row in materialized.rows}
+    unexpected_targets = sorted(set(target_checkpoint_roots) - row_ids)
+    if unexpected_targets:
+        raise RunMatrixError(
+            f"target checkpoint roots contain unknown rows {unexpected_targets!r}"
+        )
     reporter = lr_reporter or StandardLrContinuationReporter()
     parity_rows: list[dict[str, Any]] = []
     mismatches: list[str] = []
     for row in materialized.rows:
+        if row.spec is None:
+            raise RunMatrixError(
+                f"row {row.row_id!r} does not contain a canonical TrainingRunSpec"
+            )
         target_root = target_checkpoint_roots.get(row.row_id)
         if target_root is None:
             raise RunMatrixError(f"missing target checkpoint root for row {row.row_id!r}")
@@ -438,14 +482,14 @@ def _materialize_explicit_rows(
     matrix: TrainingRunMatrixSpec,
     *,
     base_payload: dict[str, Any],
-    method_registry: TrainingMethodRegistry,
+    row_validator: RowPayloadValidator,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
     rows: list[MaterializedMatrixRow] = []
     explicit_records: list[dict[str, Any]] = []
     coordinates: list[TrainingRunAxisCoordinate] = []
     for index, row in enumerate(matrix.rows):
         payload = apply_override_patches(base_payload, row.overrides)
-        spec = _validate_training_payload(payload, row_id=row.row_id, method_registry=method_registry)
+        spec = row_validator(payload, row.row_id)
         axis_coordinates = {
             "row_id": row.row_id,
             "overrides": [
@@ -498,7 +542,7 @@ def _materialize_sweep_rows(
     matrix: TrainingRunMatrixSpec,
     *,
     base_payload: dict[str, Any],
-    method_registry: TrainingMethodRegistry,
+    row_validator: RowPayloadValidator,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
     axes_with_values = [
         axis.model_copy(update={"values": variation_values(axis.variation)})
@@ -524,15 +568,14 @@ def _materialize_sweep_rows(
             axis = axis_by_id[axis_id]
             if axis.path in {"seed", "master_prng_key", "prng_key"}:
                 seed = value
+                studio_training_spec = payload.get("training_spec")
+                if isinstance(studio_training_spec, dict):
+                    studio_training_spec["seed"] = value
             else:
                 patch = _patch_object({"path": axis.path, "value": value, "op": "replace"})
                 patches.append(patch)
                 payload = apply_override_patches(payload, [patch])
-        spec = _validate_training_payload(
-            payload,
-            row_id=f"sweep-{index}",
-            method_registry=method_registry,
-        )
+        spec = row_validator(payload, f"sweep-{index}")
         run_id = _planned_run_id(payload, seed=seed, axis_coordinates=values)
         coordinate = TrainingRunAxisCoordinate(
             run_id=run_id,
@@ -584,18 +627,24 @@ def _planned_run_id(
         graph_spec=_identity_graph_spec(payload),
         training_spec=_identity_training_spec(payload),
         task_spec=_identity_task_spec(payload),
-        task_binding_spec=None,
+        task_binding_spec=_identity_task_binding_spec(payload),
         seed=seed,
         axis_coordinates=axis_coordinates,
     )
 
 
 def _identity_graph_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
+    studio_graph = payload.get("graph_spec")
+    if isinstance(studio_graph, dict):
+        return copy.deepcopy(studio_graph)
     graph = payload.get("graph")
     return copy.deepcopy(graph) if isinstance(graph, dict) else {}
 
 
 def _identity_training_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
+    studio_training = payload.get("training_spec")
+    if isinstance(studio_training, dict):
+        return copy.deepcopy(studio_training)
     return {
         key: copy.deepcopy(payload[key])
         for key in (
@@ -616,11 +665,22 @@ def _identity_training_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _identity_task_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
+    studio_task = payload.get("task_spec")
+    if isinstance(studio_task, dict):
+        return copy.deepcopy(studio_task)
     task = payload.get("task")
     return copy.deepcopy(task) if isinstance(task, dict) else {}
 
 
+def _identity_task_binding_spec(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    task_binding = payload.get("task_binding_spec")
+    return copy.deepcopy(task_binding) if isinstance(task_binding, dict) else None
+
+
 def _manifest_graph_payload(payload: Mapping[str, Any]) -> SpecPayload | None:
+    studio_graph = payload.get("graph_spec")
+    if isinstance(studio_graph, dict):
+        return spec_payload("GraphSpec", studio_graph)
     graph = payload.get("graph")
     if not isinstance(graph, dict):
         return None
@@ -861,23 +921,67 @@ def _load_spec(path: Path) -> TrainingRunMatrixSpec:
     return TrainingRunMatrixSpec.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _parse_fork_target(value: str) -> tuple[str, Path]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("target must be ROW=CHECKPOINT_ROOT")
+    row_id, raw_path = value.split("=", 1)
+    if not row_id:
+        raise argparse.ArgumentTypeError("target row id must not be empty")
+    if not raw_path:
+        raise argparse.ArgumentTypeError("target checkpoint root must not be empty")
+    return row_id, Path(raw_path)
+
+
+def _fork_target_roots(targets: list[tuple[str, Path]]) -> dict[str, Path]:
+    roots: dict[str, Path] = {}
+    for row_id, root in targets:
+        if row_id in roots:
+            raise RunMatrixError(f"duplicate target row id {row_id!r}")
+        roots[row_id] = root
+    return roots
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("materialize", "render"):
+    for name in ("materialize", "render", "fork"):
         child = subparsers.add_parser(name)
         child.add_argument("spec", type=Path)
         child.add_argument("--repo-root", type=Path, default=Path.cwd())
-        child.add_argument("--out-dir", type=Path)
-        child.add_argument("--wrap-key")
+    materialize_parser = subparsers.choices["materialize"]
+    materialize_parser.add_argument("--out-dir", type=Path, required=True)
+    materialize_parser.add_argument("--wrap-key")
+    fork_parser = subparsers.choices["fork"]
+    fork_parser.add_argument("--source-checkpoint-root", type=Path, required=True)
+    fork_parser.add_argument(
+        "--target",
+        action="append",
+        type=_parse_fork_target,
+        required=True,
+        help="Target checkpoint root as ROW=CHECKPOINT_ROOT; may be repeated.",
+    )
+    fork_parser.add_argument("--parity-output", type=Path, required=True)
+    fork_parser.add_argument("--skip-fork", action="store_true")
     args = parser.parse_args(argv)
     spec = _load_spec(args.spec)
     materialized = materialize_run_matrix(spec, repo_root=args.repo_root)
     if args.command == "render":
         print(render_spec_lock_table(spec, materialized))
         return 0
-    if args.out_dir is None:
-        parser.error("materialize requires --out-dir")
+    if args.command == "fork":
+        try:
+            fork_matrix_checkpoints(
+                spec,
+                materialized,
+                source_checkpoint_root=args.source_checkpoint_root,
+                target_checkpoint_roots=_fork_target_roots(args.target),
+                parity_output_path=args.parity_output,
+                skip_fork=args.skip_fork,
+            )
+        except ForkParityError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
     write_materialized_matrix(materialized, args.out_dir, wrap_key=args.wrap_key)
     return 0
 
