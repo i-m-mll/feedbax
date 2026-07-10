@@ -231,7 +231,7 @@ validate_training_manifest_preflight() {
         payload_tmp=""
         if [ -z "$payload_file" ] &&
             printf '%s\n' "$entries" | jq -e ".[$i].training_payload != null" >/dev/null; then
-            payload_tmp=$(mktemp "${TMPDIR:-/tmp}/feedbax-manifest-preflight.XXXXXX.json")
+            payload_tmp=$(mktemp "${TMPDIR:-/tmp}/feedbax-manifest-preflight.XXXXXX")
             printf '%s\n' "$entries" | jq ".[$i].training_payload" >"$payload_tmp"
             payload_file=$payload_tmp
         fi
