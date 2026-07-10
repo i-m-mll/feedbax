@@ -359,6 +359,10 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
 
     assert isinstance(run_set, TrainingRunSetManifest)
     assert run_set.name == "Loss weight sweep"
+    assert run_set.metadata["matrix_schema_version"] == (
+        "feedbax.spec.training_run_matrix.v1"
+    )
+    assert run_set.metadata["studio_legacy_adapter"] is True
     assert run_set.axes.axes[0].role == "authored_sweep"
     assert run_set.axes.axes[0].values == [0, 1e-5]
     assert len(run_set.axes.runs) == 2

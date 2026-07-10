@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import copy
+from pathlib import Path
 from typing import Any, Mapping
 
 from pydantic import ValidationError
@@ -13,16 +13,18 @@ from feedbax.contracts.manifest import (
     TrainingSweepAxis,
     TrainingSweepAxisVariation,
     TrainingSweepCombinationSpec,
-    planned_training_run_manifest_id,
-    planned_training_run_set_manifest_id,
 )
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRunMatrixSpec,
 )
 from feedbax.training.run_matrix import (
+    MaterializedRunMatrix,
     RunMatrixError,
     expand_sweep_coordinates,
+    materialize_adapted_run_matrix,
+    materialize_run_matrix,
     variation_values,
 )
 
@@ -94,84 +96,127 @@ def expand_sweep_matrix(
     task_binding_spec: dict[str, Any] | None,
     default_name: str,
 ) -> ExpandedSweepMatrix:
-    """Expand one Studio matrix spec into concrete training run specs."""
+    """Adapt the shared materializer result to the legacy Studio return shape."""
+    materialized = materialize_sweep_matrix(
+        matrix_spec,
+        graph_spec=graph_spec,
+        training_spec=training_spec,
+        task_spec=task_spec,
+        task_binding_spec=task_binding_spec,
+        default_name=default_name,
+    )
+    runs: list[ExpandedSweepRun] = []
+    for row in materialized.rows:
+        graph, training, task, task_binding = _studio_payload_parts(row.payload)
+        coordinate = row.coordinate
+        if coordinate is None:
+            raise SweepMatrixError("legacy Studio sweep adapter requires sweep coordinates")
+        runs.append(
+            ExpandedSweepRun(
+                run_id=row.planned_run_id,
+                graph_spec=graph,
+                training_spec=training,
+                task_spec=task,
+                task_binding_spec=task_binding,
+                coordinate=coordinate,
+                overrides=[
+                    override.model_dump(mode="json", exclude_none=True)
+                    for override in row.overrides
+                ],
+            )
+        )
+    return ExpandedSweepMatrix(
+        run_set_id=materialized.run_set_id,
+        name=materialized.run_set_manifest.name,
+        axes=materialized.run_set_manifest.axes,
+        runs=runs,
+    )
+
+
+def materialize_sweep_matrix(
+    matrix_spec: Mapping[str, Any],
+    *,
+    graph_spec: dict[str, Any],
+    training_spec: dict[str, Any],
+    task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None,
+    default_name: str,
+    repo_root: Path | None = None,
+) -> MaterializedRunMatrix:
+    """Route governed and legacy Studio matrix documents through one materializer."""
+    if matrix_spec.get("schema_id") == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID:
+        governed = TrainingRunMatrixSpec.model_validate(matrix_spec)
+        try:
+            return materialize_run_matrix(
+                governed,
+                repo_root=Path.cwd() if repo_root is None else repo_root,
+            )
+        except ValueError as exc:
+            raise SweepMatrixError(str(exc)) from exc
+
     axes = _parse_axes(matrix_spec)
     combination = _parse_combination(matrix_spec)
     _validate_group_axes(axes, combination)
-    indexed_coordinates = _expand_coordinates(axes, combination)
-    axes_with_values = [
-        axis.model_copy(update={"values": _variation_values(axis.variation)})
-        for axis in axes
-    ]
-    axis_by_id = {axis.id: axis for axis in axes_with_values}
-    run_set_axes = TrainingRunSetAxes(
-        axes=axes_with_values,
-        combination=combination,
-        metadata={"axis_count": len(axes), "run_count": len(indexed_coordinates)},
-    )
-    run_set_id = planned_training_run_set_manifest_id(
-        graph_spec=graph_spec,
-        base_training_spec=training_spec,
-        task_spec=task_spec,
-        task_binding_spec=task_binding_spec,
-        axes=run_set_axes.model_dump(mode="json", exclude_none=True),
-    )
-    runs: list[ExpandedSweepRun] = []
-    for index, value_indices in enumerate(indexed_coordinates):
-        values = {
-            axis_id: axis_by_id[axis_id].values[value_index]
-            for axis_id, value_index in value_indices.items()
+    governed = TrainingRunMatrixSpec.model_validate(
+        {
+            "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            "name": str(matrix_spec.get("name") or matrix_spec.get("label") or default_name),
+            "base": {
+                "inline": {
+                    "graph_spec": graph_spec,
+                    "training_spec": training_spec,
+                    "task_spec": task_spec,
+                    "task_binding_spec": task_binding_spec,
+                }
+            },
+            "axes": [axis.model_dump(mode="json", exclude_none=True) for axis in axes],
+            "combination": combination.model_dump(mode="json", exclude_none=True),
+            "metadata": {"studio_legacy_adapter": True},
         }
-        next_graph_spec = copy.deepcopy(graph_spec)
-        next_training_spec = copy.deepcopy(training_spec)
-        next_task_spec = copy.deepcopy(task_spec)
-        next_task_binding_spec = copy.deepcopy(task_binding_spec)
-        for axis_id, value in values.items():
-            _set_axis_value(
-                axis_by_id[axis_id].path,
-                value,
-                graph_spec=next_graph_spec,
-                training_spec=next_training_spec,
-                task_spec=next_task_spec,
-                task_binding_spec=next_task_binding_spec,
-            )
-        run_id = planned_training_run_manifest_id(
-            graph_spec=next_graph_spec,
-            training_spec=next_training_spec,
-            task_spec=next_task_spec,
-            task_binding_spec=next_task_binding_spec,
-            seed=_training_seed(next_training_spec),
-            axis_coordinates=values,
-        )
-        overrides = [
-            {"path": axis_by_id[axis_id].path, "value": value, "op": "replace"}
-            for axis_id, value in values.items()
-        ]
-        coordinate = TrainingRunAxisCoordinate(
-            run_id=run_id,
-            index=index,
-            value_indices=value_indices,
-            values=values,
-            label=_coordinate_label(axis_by_id, values),
-        )
-        runs.append(
-            ExpandedSweepRun(
-                run_id=run_id,
-                graph_spec=next_graph_spec,
-                training_spec=next_training_spec,
-                task_spec=next_task_spec,
-                task_binding_spec=next_task_binding_spec,
-                coordinate=coordinate,
-                overrides=overrides,
-            )
-        )
-    run_set_axes.runs = [run.coordinate for run in runs]
-    return ExpandedSweepMatrix(
-        run_set_id=run_set_id,
-        name=str(matrix_spec.get("name") or matrix_spec.get("label") or default_name),
-        axes=run_set_axes,
-        runs=runs,
     )
+    try:
+        return materialize_adapted_run_matrix(
+            governed,
+            repo_root=Path.cwd() if repo_root is None else repo_root,
+            row_validator=_validate_studio_row_payload,
+        )
+    except ValueError as exc:
+        raise SweepMatrixError(str(exc)) from exc
+
+
+def _validate_studio_row_payload(
+    payload: dict[str, Any],
+    row_id: str,
+) -> None:
+    try:
+        _studio_payload_parts(payload)
+    except SweepMatrixError as exc:
+        raise SweepMatrixError(f"row {row_id!r}: {exc}") from exc
+    return None
+
+
+def _studio_payload_parts(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    graph = payload.get("graph_spec")
+    training = payload.get("training_spec")
+    task = payload.get("task_spec")
+    task_binding = payload.get("task_binding_spec")
+    if isinstance(graph, dict) and isinstance(training, dict) and isinstance(task, dict):
+        return (
+            graph,
+            training,
+            task,
+            task_binding if isinstance(task_binding, dict) else None,
+        )
+    graph_source = payload.get("graph")
+    canonical_task = payload.get("task")
+    if isinstance(graph_source, dict) and isinstance(canonical_task, dict):
+        graph_inline = graph_source.get("inline")
+        if isinstance(graph_inline, dict):
+            return graph_inline, dict(payload), canonical_task, None
+    raise SweepMatrixError("Studio matrix payload lost its spec envelope")
 
 
 def _parse_axes(matrix_spec: Mapping[str, Any]) -> list[TrainingSweepAxis]:
@@ -266,88 +311,6 @@ def _variation_values(variation: TrainingSweepAxisVariation) -> list[Any]:
         raise SweepMatrixError(str(exc)) from exc
 
 
-def _set_axis_value(
-    path: str,
-    value: Any,
-    *,
-    graph_spec: dict[str, Any],
-    training_spec: dict[str, Any],
-    task_spec: dict[str, Any],
-    task_binding_spec: dict[str, Any] | None,
-) -> None:
-    root_name, parts = _split_axis_path(path)
-    if root_name == "seed":
-        training_spec["seed"] = value
-        return
-    roots: dict[str, dict[str, Any] | None] = {
-        "graph_spec": graph_spec,
-        "training_spec": training_spec,
-        "task_spec": task_spec,
-        "task_binding_spec": task_binding_spec,
-    }
-    root = roots.get(root_name)
-    if root is None:
-        raise SweepMatrixError(f"sweep axis path {path!r} does not resolve to a spec root")
-    _set_nested(root, parts, value, path=path)
-
-
-def _split_axis_path(path: str) -> tuple[str, list[str]]:
-    if path in {"seed", "master_prng_key", "prng_key"}:
-        return "seed", []
-    if path.startswith("/"):
-        parts = [part for part in path.split("/") if part]
-    else:
-        parts = [part for part in path.split(".") if part]
-    if not parts:
-        raise SweepMatrixError("sweep axis path must be non-empty")
-    root = parts[0]
-    if root == "seed":
-        return "seed", []
-    if root == "master_prng_key":
-        return "seed", []
-    return root, parts[1:]
-
-
-def _set_nested(root: dict[str, Any], parts: list[str], value: Any, *, path: str) -> None:
-    if not parts:
-        raise SweepMatrixError(f"sweep axis path {path!r} must include a field after the root")
-    current: Any = root
-    for part in parts[:-1]:
-        if isinstance(current, dict):
-            if part not in current:
-                raise SweepMatrixError(
-                    f"sweep axis path {path!r} cannot traverse missing field {part!r}"
-                )
-            current = current[part]
-            continue
-        if isinstance(current, list) and part.isdigit():
-            index = int(part)
-            if index < 0 or index >= len(current):
-                raise SweepMatrixError(
-                    f"sweep axis path {path!r} list index {index} is out of range"
-                )
-            current = current[index]
-            continue
-        raise SweepMatrixError(f"sweep axis path {path!r} cannot traverse {part!r}")
-    leaf = parts[-1]
-    if isinstance(current, dict):
-        if leaf not in current:
-            raise SweepMatrixError(
-                f"sweep axis path {path!r} cannot set missing field {leaf!r}"
-            )
-        current[leaf] = value
-        return
-    if isinstance(current, list) and leaf.isdigit():
-        index = int(leaf)
-        if index < 0 or index >= len(current):
-            raise SweepMatrixError(
-                f"sweep axis path {path!r} list index {index} is out of range"
-            )
-        current[index] = value
-        return
-    raise SweepMatrixError(f"sweep axis path {path!r} cannot set {leaf!r}")
-
-
 def _coordinate_label(
     axis_by_id: Mapping[str, TrainingSweepAxis],
     values: Mapping[str, Any],
@@ -356,12 +319,3 @@ def _coordinate_label(
         f"{axis_by_id[axis_id].label or axis_by_id[axis_id].path}={values[axis_id]!r}"
         for axis_id in sorted(values)
     )
-
-
-def _training_seed(training_spec: Mapping[str, Any]) -> Any | None:
-    if "seed" in training_spec:
-        return training_spec["seed"]
-    params = training_spec.get("params")
-    if isinstance(params, Mapping) and "seed" in params:
-        return params["seed"]
-    return None
