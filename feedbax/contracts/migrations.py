@@ -90,6 +90,8 @@ from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
+    FIGURE_MANIFEST_SCHEMA_ID,
+    FIGURE_MANIFEST_SCHEMA_VERSION,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SET_SCHEMA_VERSION,
@@ -712,8 +714,8 @@ def _migrate_checkpoint_transaction_manifest_v2_to_v3_payload(
         slot = dict(raw_slot)
         fingerprint = slot.get("structural_abi_fingerprint")
         if isinstance(fingerprint, Mapping):
-            slot["structural_abi_fingerprint"] = (
-                _migrate_structural_abi_fingerprint_to_content_v2(fingerprint)
+            slot["structural_abi_fingerprint"] = _migrate_structural_abi_fingerprint_to_content_v2(
+                fingerprint
             )
         migrated_slots.append(slot)
     migrated["slots"] = migrated_slots
@@ -800,9 +802,7 @@ def _structural_abi_content_sha256(payload: Mapping[str, Any]) -> str:
         }
         leaves.append(leaf)
     content_payload = {
-        "fingerprint_algorithm_version": (
-            "feedbax.training_checkpoint.structural_abi.content.v2"
-        ),
+        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
         "treedef": payload.get("treedef"),
         "leaf_count": payload.get("leaf_count"),
         "leaves": leaves,
@@ -820,9 +820,7 @@ def _migrate_run_contract_binding_to_v2(payload: Mapping[str, Any]) -> dict[str,
     migrated.setdefault("canonical_projection", None)
     migrated.setdefault("canonical_projection_sha256", None)
     if isinstance(migrated["canonical_projection"], Mapping):
-        projection = _migrate_run_contract_projection_to_v2(
-            migrated["canonical_projection"]
-        )
+        projection = _migrate_run_contract_projection_to_v2(migrated["canonical_projection"])
         migrated["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
         migrated["canonical_projection"] = projection
         migrated["canonical_projection_sha256"] = _canonical_sha256(projection)
@@ -830,21 +828,15 @@ def _migrate_run_contract_binding_to_v2(payload: Mapping[str, Any]) -> dict[str,
         migrated["training_run_spec_schema_id"] = training_run_spec["schema_id"]
         migrated["training_run_spec_schema_version"] = training_run_spec["schema_version"]
         migrated["training_run_spec_sha256"] = _canonical_sha256(training_run_spec)
-        migrated["method_payload_schema_id"] = training_run_spec["method_payload"][
-            "schema_id"
-        ]
+        migrated["method_payload_schema_id"] = training_run_spec["method_payload"]["schema_id"]
         migrated["method_payload_schema_version"] = training_run_spec["method_payload"][
             "schema_version"
         ]
-        migrated["method_payload_sha256"] = _canonical_sha256(
-            training_run_spec["method_payload"]
-        )
+        migrated["method_payload_sha256"] = _canonical_sha256(training_run_spec["method_payload"])
         migrated["objective_sha256"] = _canonical_sha256(training_run_spec["objective"])
         migrated["graph_sha256"] = _canonical_sha256(training_run_spec["graph"])
         if isinstance(projection.get("phase_program"), Mapping):
-            migrated["phase_program_sha256"] = _canonical_sha256(
-                projection["phase_program"]
-            )
+            migrated["phase_program_sha256"] = _canonical_sha256(projection["phase_program"])
             migrated["optimizer_bindings_sha256"] = _canonical_sha256(
                 list(projection["phase_program"].get("optimizer_bindings") or ())
             )
@@ -864,13 +856,11 @@ def _migrate_run_contract_projection_to_v2(payload: Mapping[str, Any]) -> dict[s
             training_run_spec,
             path="checkpoint_manifest/run_contract_binding/canonical_projection/training_run_spec",
         ).payload
-        projection["training_run_spec"] = TrainingRunSpec.model_validate(
-            migrated_spec
-        ).model_dump(mode="json", exclude_none=True)
+        projection["training_run_spec"] = TrainingRunSpec.model_validate(migrated_spec).model_dump(
+            mode="json", exclude_none=True
+        )
     projection["schema_id"] = "feedbax.manifest.training_checkpoint.run_contract_projection"
-    projection["schema_version"] = (
-        "feedbax.manifest.training_checkpoint.run_contract_projection.v1"
-    )
+    projection["schema_version"] = "feedbax.manifest.training_checkpoint.run_contract_projection.v1"
     projection["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
     return projection
 
@@ -979,9 +969,7 @@ def _migrate_loss_term_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[st
     from feedbax.objectives.service import loss_term_spec_to_objective_spec
 
     legacy_payload = {
-        key: value
-        for key, value in payload.items()
-        if key not in {"schema_id", "schema_version"}
+        key: value for key, value in payload.items() if key not in {"schema_id", "schema_version"}
     }
     if "type" not in legacy_payload and "label" not in legacy_payload:
         return {
@@ -1544,6 +1532,7 @@ def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str
 
 def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     """Populate schema identities for emitted Feedbax spec families."""
+
     def _old(schema_id: str) -> str:
         return f"{schema_id}.v0"
 
@@ -1779,7 +1768,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             TRAINING_RUN_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.training",
             emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
-            consumed_by=("training executor pre-launch validation", "downstream run-spec consumers"),
+            consumed_by=(
+                "training executor pre-launch validation",
+                "downstream run-spec consumers",
+            ),
             description=(
                 "Public durable request envelope for graph, task, objective, method, "
                 "worker, execution, artifact, checkpoint, and progress policy."
@@ -1930,9 +1922,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.contracts.training",
             emitted_by=("OptimizerSpec.lr_schedule", "provider_manifest.schemas"),
             consumed_by=("feedbax.training.optimizers", "downstream optimizer builders"),
-            description=(
-                "Declarative learning-rate schedule contract for OptimizerSpec."
-            ),
+            description=("Declarative learning-rate schedule contract for OptimizerSpec."),
             rejected_old_versions=("feedbax.spec.training.lr_schedule.v0",),
             required_tests=(
                 "tests/test_optimizer_contract.py",
@@ -1973,9 +1963,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description=(
                 "Feedbax-owned payload schema for the standard supervised training method."
             ),
-            rejected_old_versions=(
-                "feedbax.spec.training_method.standard_supervised_payload.v0",
-            ),
+            rejected_old_versions=("feedbax.spec.training_method.standard_supervised_payload.v0",),
             required_tests=(
                 "tests/test_training_run_spec.py",
                 "tests/test_structured_spec_migrations.py",
@@ -2353,6 +2341,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "Durable checkpoint-selection manifest.",
         ),
         ("AnalysisRunManifest", "feedbax.manifest.analysis_run", "Durable analysis-run manifest."),
+        ("FigureManifest", FIGURE_MANIFEST_SCHEMA_ID, "Durable rendered-figure manifest."),
         (
             "AnalysisDataProduct",
             ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
@@ -2367,6 +2356,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 (
                     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
                     if kind == "AnalysisDataProduct"
+                    else FIGURE_MANIFEST_SCHEMA_VERSION
+                    if kind == "FigureManifest"
                     else TRAINING_RUN_SET_SCHEMA_VERSION
                     if kind == "TrainingRunSetManifest"
                     else MANIFEST_SCHEMA_VERSION
@@ -2473,7 +2464,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 version,
                 owner_module="feedbax.contracts.artifact_schema",
                 emitted_by=("feedbax.contracts.artifact_schema", "provider_manifest.schemas"),
-                consumed_by=("feedbax.contracts.artifact_schema.read_npz_array_store", "artifact materializer"),
+                consumed_by=(
+                    "feedbax.contracts.artifact_schema.read_npz_array_store",
+                    "artifact materializer",
+                ),
                 description=description,
             )
         )
@@ -2667,8 +2661,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 (
                     WORKSPACE_REPLAY_SCHEMA_VERSION
                     if kind == "WorkspaceReplayProduct"
-                    else
-                    "feedbax.manifest.studio.execution.v1"
+                    else "feedbax.manifest.studio.execution.v1"
                     if kind.endswith("Result")
                     else "feedbax.spec.studio.execution.v1"
                 ),
@@ -2711,7 +2704,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     for kind, schema_id, description in (
         ("ValueSchema", "feedbax.spec.studio.schema.value", "Provider-owned value schema record."),
         ("PortSchema", "feedbax.spec.studio.schema.port", "Provider-owned graph port schema."),
-        ("TaskDataSchema", "feedbax.spec.studio.schema.task_data", "Provider-owned task data schema."),
+        (
+            "TaskDataSchema",
+            "feedbax.spec.studio.schema.task_data",
+            "Provider-owned task data schema.",
+        ),
         (
             "SelectorTargetSchema",
             "feedbax.spec.studio.schema.selector_target",
@@ -2760,7 +2757,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 ),
                 emitted_by=studio_schema_emitters,
                 consumed_by=("Studio frontend", "provider HTTP API"),
-                durable=kind not in {
+                durable=kind
+                not in {
                     "StudioSchemaRegistry",
                     "RuntimeIntrospectionResult",
                     "RuntimeIntrospectionOptions",
@@ -2786,7 +2784,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             False,
             "Provider validation response.",
         ),
-        ("CapabilitySpec", "feedbax.manifest.provider_capability", False, "Provider capability record."),
+        (
+            "CapabilitySpec",
+            "feedbax.manifest.provider_capability",
+            False,
+            "Provider capability record.",
+        ),
         (
             "MandibleArtifactMapping",
             "feedbax.manifest.mandible_artifact_mapping",
@@ -2799,7 +2802,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             False,
             "Mandible manifest mapping metadata.",
         ),
-        ("RegistrySnapshot", "feedbax.manifest.registry_snapshot", True, "Provider registry snapshot."),
+        (
+            "RegistrySnapshot",
+            "feedbax.manifest.registry_snapshot",
+            True,
+            "Provider registry snapshot.",
+        ),
         (
             "RegistryEntry",
             "feedbax.manifest.registry_entry",
@@ -2928,8 +2936,7 @@ default_spec_registry.register_migration(
         migration_id="training-checkpoint-transaction-v3-to-v4-batch-progress",
         migrate=_migrate_checkpoint_transaction_manifest_v3_to_v4_payload,
         description=(
-            "Add explicit completed training batches separate from checkpoint "
-            "coordinate progress."
+            "Add explicit completed training batches separate from checkpoint coordinate progress."
         ),
     ),
 )
@@ -2996,9 +3003,7 @@ default_spec_registry.register_migration(
         target_version=SELECTION_SPEC_SCHEMA_VERSION,
         migration_id="selection-spec-v1-to-v2-query-forms",
         migrate=migrate_selection_spec_payload,
-        description=(
-            "Promote legacy id-list selection payloads to explicit SelectionSpec v2."
-        ),
+        description=("Promote legacy id-list selection payloads to explicit SelectionSpec v2."),
     ),
 )
 default_spec_registry.register_migration(

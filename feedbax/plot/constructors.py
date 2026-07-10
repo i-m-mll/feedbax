@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib import resources
 import re
 from typing import Any, Literal
 
@@ -12,7 +13,7 @@ import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 
 from feedbax.contracts.manifest import StrictModel
-from feedbax.plot.colors import color_add_alpha
+from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
 
 ConstructorTier = Literal["trace", "panel", "figure", "custom_figure"]
 
@@ -37,6 +38,9 @@ class Trajectory2DParams(StrictModel):
 
     label: str | None = None
     color: str | None = None
+    colorscale: str | list[str] | list[tuple[float, str]] | None = None
+    colorscale_key: str | None = None
+    colorscale_axis: int = 0
     stride: int = 1
     show_mean: bool = True
     opacity: float = 0.4
@@ -51,6 +55,27 @@ class EndpointMarkerParams(StrictModel):
     color: str = "rgb(25, 25, 25)"
     marker_size: int = 7
     straight_guides: bool = True
+
+
+class HLineParams(StrictModel):
+    """Defaults for a horizontal panel annotation."""
+
+    y: float | None = None
+    color: str = "grey"
+    dash: str = "dot"
+    width: float = 1.0
+    opacity: float = 1.0
+
+
+class VRectParams(StrictModel):
+    """Defaults for a vertical-region panel annotation."""
+
+    x0: float | None = None
+    x1: float | None = None
+    fillcolor: str = "grey"
+    opacity: float = 0.2
+    line_color: str | None = None
+    line_width: float = 0.0
 
 
 class ComparisonGridParams(StrictModel):
@@ -161,25 +186,27 @@ def register_figure_constructor(
     )
 
 
-def get_figure_constructor(key: str, *, tier: ConstructorTier | None = None) -> FigureConstructorRegistration:
+def get_figure_constructor(
+    key: str, *, tier: ConstructorTier | None = None
+) -> FigureConstructorRegistration:
     """Return a registered constructor, optionally enforcing its tier."""
     try:
         registration = _CONSTRUCTORS[key]
     except KeyError as exc:
         available = ", ".join(sorted(_CONSTRUCTORS)) or "none"
         raise ValueError(
-            f"Figure constructor {key!r} is not registered. "
-            f"Registered constructors: {available}."
+            f"Figure constructor {key!r} is not registered. Registered constructors: {available}."
         ) from exc
     if tier is not None and registration.tier != tier:
         raise ValueError(
-            f"Figure constructor {key!r} has tier {registration.tier!r}, "
-            f"expected {tier!r}"
+            f"Figure constructor {key!r} has tier {registration.tier!r}, expected {tier!r}"
         )
     return registration
 
 
-def registered_figure_constructors(*, tier: ConstructorTier | None = None) -> tuple[FigureConstructorRegistration, ...]:
+def registered_figure_constructors(
+    *, tier: ConstructorTier | None = None
+) -> tuple[FigureConstructorRegistration, ...]:
     """Return registered constructors sorted by key."""
     registrations = sorted(_CONSTRUCTORS.values(), key=lambda item: item.key)
     if tier is not None:
@@ -199,11 +226,16 @@ def get_figure_template(name: str) -> Any:
     try:
         return _TEMPLATES[name]
     except KeyError as exc:
-        available = ", ".join(sorted(_TEMPLATES)) or "none"
-        raise ValueError(
-            f"Figure template {name!r} is not registered. "
-            f"Registered templates: {available}."
-        ) from exc
+        try:
+            template = load_figure_template(name)
+        except FileNotFoundError:
+            available = ", ".join(sorted(_TEMPLATES)) or "none"
+            raise ValueError(
+                f"Figure template {name!r} is not registered and no package YAML resource "
+                f"was found. Registered templates: {available}."
+            ) from exc
+        register_figure_template(template)
+        return template
 
 
 def registered_figure_templates() -> tuple[Any, ...]:
@@ -222,14 +254,117 @@ def get_figure_piece(name: str) -> Any:
     try:
         return _PIECES[name]
     except KeyError as exc:
-        available = ", ".join(sorted(_PIECES)) or "none"
-        raise ValueError(
-            f"Figure piece {name!r} is not registered. Registered pieces: {available}."
-        ) from exc
+        try:
+            piece = load_figure_piece(name)
+        except FileNotFoundError:
+            available = ", ".join(sorted(_PIECES)) or "none"
+            raise ValueError(
+                f"Figure piece {name!r} is not registered and no package YAML resource "
+                f"was found. Registered pieces: {available}."
+            ) from exc
+        register_figure_piece(piece)
+        return piece
 
 
 def registered_figure_pieces() -> tuple[Any, ...]:
     return tuple(_PIECES[name] for name in sorted(_PIECES))
+
+
+def _resource_file(
+    key: str,
+    *,
+    directory: str,
+    registry: Any,
+) -> tuple[str, Any]:
+    """Resolve one package figure-resource key to an importlib resource."""
+    if "/" in key:
+        package_name, resource_name = key.split("/", 1)
+        if not resource_name:
+            raise ValueError(f"Empty figure resource name after package {package_name!r}")
+        metadata = registry.get_package_metadata(package_name)
+        candidates = [(package_name, metadata, resource_name)]
+    else:
+        package_prefix, separator, dotted_name = key.partition(".")
+        candidates = []
+        if separator:
+            try:
+                metadata = registry.get_package_metadata(package_prefix)
+            except (KeyError, ValueError):
+                pass
+            else:
+                candidates.append((package_prefix, metadata, dotted_name))
+        if not candidates:
+            single = registry.single_package_name()
+            if single is not None:
+                candidates.append((single, registry.get_package_metadata(single), key))
+            else:
+                candidates.extend(
+                    (package_name, metadata, key)
+                    for package_name, metadata in registry.iter_package_metadata()
+                )
+
+    matches: list[tuple[str, Any]] = []
+    for package_name, metadata, resource_name in candidates:
+        root = f"{metadata.package_module.__name__}.{metadata.config_resource_root}.{directory}"
+        try:
+            root_files = resources.files(root)
+        except (FileNotFoundError, ModuleNotFoundError):
+            continue
+        for suffix in (".yml", ".yaml"):
+            resource = root_files.joinpath(f"{resource_name}{suffix}")
+            if resource.is_file():
+                matches.append((package_name, resource))
+    if not matches:
+        raise FileNotFoundError(
+            f"Figure resource {key!r} not found under any registered package {directory!r} root"
+        )
+    if len(matches) > 1:
+        options = ", ".join(f"{package}/{key}" for package, _resource in matches)
+        raise ValueError(f"Figure resource {key!r} is ambiguous; use one of {options}")
+    return matches[0]
+
+
+def _load_figure_resource(key: str, *, directory: str, model: type[Any], registry: Any) -> Any:
+    from feedbax.config.yaml import get_yaml_loader
+
+    _package_name, resource = _resource_file(key, directory=directory, registry=registry)
+    with resource.open("r", encoding="utf-8") as stream:
+        payload = get_yaml_loader(typ="safe").load(stream) or {}
+    return model.model_validate(payload)
+
+
+def load_figure_template(key: str, *, registry: Any | None = None) -> Any:
+    """Load and validate a FigureTemplate YAML package resource."""
+    from feedbax.contracts.figures import FigureTemplate
+
+    if registry is None:
+        from feedbax.plugins import EXPERIMENT_REGISTRY
+
+        registry = EXPERIMENT_REGISTRY
+
+    return _load_figure_resource(
+        key,
+        directory="figure_templates",
+        model=FigureTemplate,
+        registry=registry,
+    )
+
+
+def load_figure_piece(key: str, *, registry: Any | None = None) -> Any:
+    """Load and validate a FigurePiece YAML package resource."""
+    from feedbax.contracts.figures import FigurePiece
+
+    if registry is None:
+        from feedbax.plugins import EXPERIMENT_REGISTRY
+
+        registry = EXPERIMENT_REGISTRY
+
+    return _load_figure_resource(
+        key,
+        directory="figure_pieces",
+        model=FigurePiece,
+        registry=registry,
+    )
 
 
 def constructor_catalog() -> list[dict[str, Any]]:
@@ -323,10 +458,42 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
     trajectories = _array(data.get("trajectories", data.get("y", [])))
     if trajectories.ndim == 2:
         trajectories = trajectories[None, :, :]
+    if trajectories.ndim < 3 or trajectories.shape[-1] != 2:
+        raise ValueError(
+            "trajectory_2d requires trajectories with shape (..., time, 2), "
+            f"got {trajectories.shape}"
+        )
     label = p.label or str(data.get("label", "Trajectory"))
-    color = p.color or str(data.get("color", "rgb(31,119,180)"))
+    colorscale = p.colorscale
+    if colorscale is None and p.colorscale_key is not None:
+        colorscales = data.get("colorscales")
+        if not isinstance(colorscales, Mapping) or p.colorscale_key not in colorscales:
+            raise ValueError(
+                f"trajectory_2d colorscale_key {p.colorscale_key!r} is not present in data.colorscales"
+            )
+        colorscale = colorscales[p.colorscale_key]
+    if colorscale is None:
+        colorscale = data.get("colorscale")
+
+    batch_shape = trajectories.shape[:-2]
+    axis = p.colorscale_axis if p.colorscale_axis >= 0 else len(batch_shape) + p.colorscale_axis
+    if axis < 0 or axis >= len(batch_shape):
+        raise ValueError(
+            f"trajectory_2d colorscale_axis {p.colorscale_axis} is outside batch shape {batch_shape}"
+        )
+    trajectories = np.moveaxis(trajectories, axis, 0)[:: max(1, p.stride)]
+    group_count = trajectories.shape[0]
+    curves_per_group = int(np.prod(trajectories.shape[1:-2], dtype=int)) or 1
+    trajectories = trajectories.reshape((-1, *trajectories.shape[-2:]))
+    if p.color is not None:
+        group_colors = [p.color] * group_count
+    elif colorscale is not None:
+        group_colors = list(sample_colorscale_unique(colorscale, group_count, colortype="rgb"))
+    else:
+        group_colors = [str(data.get("color", "rgb(31,119,180)"))] * group_count
+    colors = [color for color in group_colors for _ in range(curves_per_group)]
     traces: list[Any] = []
-    for index, traj in enumerate(trajectories[:: max(1, p.stride)]):
+    for index, (traj, color) in enumerate(zip(trajectories, colors, strict=True)):
         traces.append(
             go.Scatter(
                 name=label,
@@ -348,7 +515,7 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
                 x=mean[:, 0],
                 y=mean[:, 1],
                 mode="lines",
-                line={"color": color, "width": p.mean_line_width},
+                line={"color": group_colors[0], "width": p.mean_line_width},
             )
         )
     return traces
@@ -356,9 +523,35 @@ def _trajectory_2d(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any
 
 def _endpoint_markers(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
     p = EndpointMarkerParams.model_validate(params.model_dump())
-    endpoints = _array(data.get("endpoints", []))
+    trajectories_value = data.get("trajectories")
+    starts_value = data.get("starts")
+    endpoints_value = data.get("endpoints")
+    if trajectories_value is not None:
+        trajectories = _array(trajectories_value)
+        if trajectories.ndim < 2 or trajectories.shape[-1] != 2:
+            raise ValueError(
+                "endpoint_markers trajectories must have shape (..., time, 2), "
+                f"got {trajectories.shape}"
+            )
+        trajectories = trajectories.reshape((-1, *trajectories.shape[-2:]))
+        starts = trajectories[:, 0, :]
+        endpoints = trajectories[:, -1, :]
+    else:
+        endpoints = _array(endpoints_value if endpoints_value is not None else [])
+        starts = _array(starts_value) if starts_value is not None else None
+        if endpoints.ndim >= 3 and endpoints.shape[0] == 2 and starts is None:
+            starts = endpoints[0].reshape((-1, 2))
+            endpoints = endpoints[1].reshape((-1, 2))
     if endpoints.ndim == 1:
         endpoints = endpoints[None, :]
+    if endpoints.ndim != 2 or endpoints.shape[-1] != 2:
+        raise ValueError(
+            f"endpoint_markers requires endpoints with shape (n, 2), got {endpoints.shape}"
+        )
+    if starts is not None:
+        if starts.ndim == 1:
+            starts = starts[None, :]
+        starts = np.broadcast_to(starts, endpoints.shape)
     traces: list[Any] = [
         go.Scatter(
             name=p.label,
@@ -369,12 +562,17 @@ def _endpoint_markers(data: Mapping[str, Any], params: StrictModel) -> Sequence[
         )
     ]
     if p.straight_guides:
-        for endpoint in endpoints:
+        if starts is None:
+            raise ValueError(
+                "endpoint_markers straight_guides requires trajectory data or explicit starts; "
+                "guides are never inferred from the plot origin"
+            )
+        for start, endpoint in zip(starts, endpoints, strict=True):
             traces.append(
                 go.Scatter(
                     name=f"{p.label} guide",
-                    x=[0, endpoint[0]],
-                    y=[0, endpoint[1]],
+                    x=[start[0], endpoint[0]],
+                    y=[start[1], endpoint[1]],
                     mode="lines",
                     line={"color": p.color, "dash": "dot", "width": 1},
                     showlegend=False,
@@ -384,8 +582,46 @@ def _endpoint_markers(data: Mapping[str, Any], params: StrictModel) -> Sequence[
     return traces
 
 
-def _empty_annotation(_data: Mapping[str, Any], _params: StrictModel) -> Sequence[Any]:
-    return []
+def _hline(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
+    p = HLineParams.model_validate(params.model_dump())
+    y = p.y if p.y is not None else data.get("y")
+    if y is None:
+        raise ValueError("hline requires y in data or params")
+    return [
+        go.layout.Shape(
+            type="line",
+            x0=0,
+            x1=1,
+            xref="x domain",
+            y0=float(y),
+            y1=float(y),
+            yref="y",
+            line={"color": p.color, "dash": p.dash, "width": p.width},
+            opacity=p.opacity,
+        )
+    ]
+
+
+def _vrect(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
+    p = VRectParams.model_validate(params.model_dump())
+    x0 = p.x0 if p.x0 is not None else data.get("x0")
+    x1 = p.x1 if p.x1 is not None else data.get("x1")
+    if x0 is None or x1 is None:
+        raise ValueError("vrect requires x0 and x1 in data or params")
+    return [
+        go.layout.Shape(
+            type="rect",
+            x0=float(x0),
+            x1=float(x1),
+            xref="x",
+            y0=0,
+            y1=1,
+            yref="y domain",
+            fillcolor=p.fillcolor,
+            opacity=p.opacity,
+            line={"color": p.line_color or p.fillcolor, "width": p.line_width},
+        )
+    ]
 
 
 def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
@@ -407,7 +643,10 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
         row = panel.row or index + 1
         col = panel.col or 1
         for trace in panel.traces:
-            fig.add_trace(trace, row=row, col=col)
+            if isinstance(trace, go.layout.Shape):
+                fig.add_shape(trace, row=row, col=col)
+            else:
+                fig.add_trace(trace, row=row, col=col)
         if panel.axes_labels:
             fig.update_xaxes(title_text=panel.axes_labels.get("x"), row=row, col=col)
             fig.update_yaxes(title_text=panel.axes_labels.get("y"), row=row, col=col)
@@ -430,7 +669,9 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
     return fig
 
 
-def _trajectories_2d_row(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
+def _trajectories_2d_row(
+    fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel
+) -> go.Figure:
     p = Trajectories2DRowParams.model_validate(params.model_dump())
     n_panels = max(1, len(panels))
     fig.update_layout(
@@ -444,16 +685,64 @@ def _trajectories_2d_row(fig: go.Figure, panels: Sequence[PanelContent], params:
 def register_default_figure_constructors() -> None:
     """Install Feedbax's built-in constructor set idempotently."""
     defaults: list[tuple[str, ConstructorTier, Callable[..., Any], type[StrictModel], str]] = [
-        ("feedbax.profile_band", "trace", _profile_band, ProfileParams, "Mean line with standard-deviation band."),
-        ("feedbax.profile_curves", "trace", _profile_curves, ProfileParams, "Per-trial profile curves."),
-        ("feedbax.trajectory_2d", "trace", _trajectory_2d, Trajectory2DParams, "2D trajectory traces."),
-        ("feedbax.endpoint_markers", "trace", _endpoint_markers, EndpointMarkerParams, "Endpoint markers and optional straight guides."),
-        ("feedbax.hline", "trace", _empty_annotation, EmptyParams, "Horizontal annotation placeholder."),
-        ("feedbax.vrect", "trace", _empty_annotation, EmptyParams, "Vertical-region annotation placeholder."),
-        ("feedbax.comparison_grid", "panel", _comparison_grid, ComparisonGridParams, "N-panel comparison grid."),
-        ("feedbax.grid_figure", "figure", _grid_figure, GridFigureParams, "Generic grid figure layout finalizer."),
-        ("feedbax.trajectories_2d_row", "figure", _trajectories_2d_row, Trajectories2DRowParams, "2D trajectory row house style."),
+        (
+            "feedbax.profile_band",
+            "trace",
+            _profile_band,
+            ProfileParams,
+            "Mean line with standard-deviation band.",
+        ),
+        (
+            "feedbax.profile_curves",
+            "trace",
+            _profile_curves,
+            ProfileParams,
+            "Per-trial profile curves.",
+        ),
+        (
+            "feedbax.trajectory_2d",
+            "trace",
+            _trajectory_2d,
+            Trajectory2DParams,
+            "2D trajectory traces.",
+        ),
+        (
+            "feedbax.endpoint_markers",
+            "trace",
+            _endpoint_markers,
+            EndpointMarkerParams,
+            "Endpoint markers with trajectory-derived straight guides.",
+        ),
+        ("feedbax.hline", "trace", _hline, HLineParams, "Horizontal panel annotation."),
+        ("feedbax.vrect", "trace", _vrect, VRectParams, "Vertical-region panel annotation."),
+        (
+            "feedbax.comparison_grid",
+            "panel",
+            _comparison_grid,
+            ComparisonGridParams,
+            "N-panel comparison grid.",
+        ),
+        (
+            "feedbax.grid_figure",
+            "figure",
+            _grid_figure,
+            GridFigureParams,
+            "Generic grid figure layout finalizer.",
+        ),
+        (
+            "feedbax.trajectories_2d_row",
+            "figure",
+            _trajectories_2d_row,
+            Trajectories2DRowParams,
+            "2D trajectory row house style.",
+        ),
     ]
+    changed_versions = {
+        "feedbax.trajectory_2d": "v2",
+        "feedbax.endpoint_markers": "v2",
+        "feedbax.hline": "v2",
+        "feedbax.vrect": "v2",
+    }
     for key, tier, constructor, params_model, description in defaults:
         register_figure_constructor(
             key,
@@ -461,6 +750,7 @@ def register_default_figure_constructors() -> None:
             constructor=constructor,  # type: ignore[arg-type]
             params_model=params_model,
             description=description,
+            version=changed_versions.get(key, "v1"),
             replace=True,
         )
 

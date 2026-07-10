@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import product
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import plotly.graph_objs as go
@@ -76,6 +78,31 @@ class FigureExecutionTrace:
     resolved_pieces: list[FigurePieceResolution] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TraceBindingPlan:
+    """A trace binding paired with its template slot multiplicity."""
+
+    binding: TraceBinding
+    multiplicity: str
+
+
+@dataclass(frozen=True)
+class FacetCombination:
+    """One deterministic Cartesian product entry for template facets."""
+
+    values: dict[str, Any]
+    payloads: dict[str, Any]
+    label: str
+
+
+@dataclass(frozen=True)
+class RenderedFigure:
+    """One rendered output within a FigureManifest execution."""
+
+    name: str
+    figure: go.Figure
+
+
 class FigureSpecExecutionError(RuntimeError):
     """Raised after figure execution fails and a failed manifest is written."""
 
@@ -127,11 +154,7 @@ def execute_figure_spec(
     figure_spec = coerce_figure_spec(spec)
     root_path = Path(root) if root is not None else default_manifest_root()
     manifest_id = figure_manifest_id(figure_spec)
-    prov = (
-        provenance.model_copy(deep=True)
-        if provenance is not None
-        else collect_git_provenance()
-    )
+    prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     prov.parents = list(figure_spec.inputs)
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
@@ -158,9 +181,9 @@ def execute_figure_spec(
             )
             return manifest, write_manifest(manifest, root=root_path)
 
-        figure = _build_figure(figure_spec, context, exec_trace, root_path)
+        figures = _build_figures(figure_spec, context, exec_trace, root_path)
         artifacts = _write_figure_custody(
-            figure,
+            figures,
             figure_spec,
             root=root_path,
             manifest_id=manifest_id,
@@ -236,15 +259,13 @@ def _manifest_payload(manifest: AnyManifest | None, ref: ParentRef) -> dict[str,
         "id": manifest.id,
         "metadata": dict(manifest.metadata),
         "artifacts": [
-            artifact.model_dump(mode="json", exclude_none=True)
-            for artifact in manifest.artifacts
+            artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
         ],
     }
     produced_data = getattr(manifest, "produced_data", None)
     if produced_data is not None:
         payload["produced_data"] = [
-            product.model_dump(mode="json", exclude_none=True)
-            for product in produced_data
+            product.model_dump(mode="json", exclude_none=True) for product in produced_data
         ]
     for attr in ("summary_metrics", "inputs"):
         if hasattr(manifest, attr):
@@ -261,12 +282,12 @@ def _manifest_payload(manifest: AnyManifest | None, ref: ParentRef) -> dict[str,
     return payload
 
 
-def _build_figure(
+def _build_figures(
     spec: FigureSpec,
     context: ExpressionContext,
     exec_trace: FigureExecutionTrace,
     root: Path,
-) -> go.Figure:
+) -> list[RenderedFigure]:
     template = get_figure_template(spec.template) if spec.template else None
     assembler_key = spec.assembler or template.assembler
     assembler_params = {
@@ -274,28 +295,158 @@ def _build_figure(
         **spec.assembler_params,
     }
 
+    facet_combinations = _facet_combinations(spec, template, context)
     custom_registration = get_figure_constructor(assembler_key)
     if custom_registration.tier == "custom_figure":
         exec_trace.constructor_versions[assembler_key] = custom_registration.version
         params = custom_registration.params(assembler_params)
-        return custom_registration.callable(context.items, params)  # type: ignore[misc]
+        if facet_combinations and template.facet_target == "panels":
+            raise ValueError(
+                "facet_target='panels' requires registered trace/panel/figure constructors; "
+                "custom_figure assemblers cannot expose panel composition"
+            )
+        combinations = facet_combinations or [
+            FacetCombination(values={}, payloads={}, label="figure")
+        ]
+        return [
+            RenderedFigure(
+                name=combination.label,
+                figure=custom_registration.callable(
+                    _facet_context(context, combination).items,
+                    params,
+                ),  # type: ignore[misc]
+            )
+            for combination in combinations
+        ]
 
     trace_bindings = _trace_bindings_for_spec(spec, template)
-    panel_contents = _panel_contents(spec, context, trace_bindings, exec_trace, root)
     panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
     panel_registration = get_figure_constructor(panel_constructor_key, tier="panel")
     exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
     panel_params = panel_registration.params(assembler_params)
-    figure = panel_registration.callable(panel_contents, panel_params)  # type: ignore[misc]
-
     figure_registration = get_figure_constructor(assembler_key, tier="figure")
     exec_trace.constructor_versions[assembler_key] = figure_registration.version
     figure_params = figure_registration.params(assembler_params or GridFigureParams().model_dump())
-    return figure_registration.callable(figure, panel_contents, figure_params)  # type: ignore[misc]
+
+    if facet_combinations and template.facet_target == "panels":
+        panel_contents = _facet_panel_contents(
+            spec,
+            context,
+            facet_combinations,
+            trace_bindings,
+            exec_trace,
+            root,
+        )
+        figure = panel_registration.callable(panel_contents, panel_params)  # type: ignore[misc]
+        return [
+            RenderedFigure(
+                name="figure",
+                figure=figure_registration.callable(
+                    figure,
+                    panel_contents,
+                    figure_params,
+                ),  # type: ignore[misc]
+            )
+        ]
+
+    combinations = facet_combinations or [FacetCombination(values={}, payloads={}, label="figure")]
+    rendered: list[RenderedFigure] = []
+    for combination in combinations:
+        facet_context = _facet_context(context, combination)
+        panel_contents = _panel_contents(
+            spec,
+            facet_context,
+            trace_bindings,
+            exec_trace,
+            root,
+            nonfacet_context=context,
+        )
+        figure = panel_registration.callable(panel_contents, panel_params)  # type: ignore[misc]
+        rendered.append(
+            RenderedFigure(
+                name=combination.label,
+                figure=figure_registration.callable(
+                    figure,
+                    panel_contents,
+                    figure_params,
+                ),  # type: ignore[misc]
+            )
+        )
+    return rendered
 
 
-def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[TraceBinding]:
-    bindings: list[TraceBinding] = []
+def _facet_combinations(
+    spec: FigureSpec,
+    template: Any | None,
+    context: ExpressionContext,
+) -> list[FacetCombination]:
+    dimensions = list(getattr(template, "facet_by", [])) if template is not None else []
+    if not dimensions:
+        if spec.facet_bindings:
+            raise ValueError("FigureSpec facet_bindings require a template with facet_by")
+        return []
+    missing = [dimension for dimension in dimensions if dimension not in spec.facet_bindings]
+    extra = sorted(set(spec.facet_bindings) - set(dimensions))
+    if missing or extra:
+        raise ValueError(
+            "FigureSpec facet_bindings must exactly match template facet_by; "
+            f"missing={missing}, extra={extra}"
+        )
+
+    enumerated: list[list[tuple[Any, Any]]] = []
+    for dimension in dimensions:
+        values = _evaluate_value(spec.facet_bindings[dimension], context)
+        if isinstance(values, Mapping):
+            entries = list(values.items())
+        elif isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            entries = [(value, value) for value in values]
+        else:
+            raise ValueError(
+                f"facet binding {dimension!r} must evaluate to a mapping or sequence, "
+                f"got {type(values).__name__}"
+            )
+        if not entries:
+            raise ValueError(f"facet binding {dimension!r} evaluated to no values")
+        enumerated.append(entries)
+
+    combinations = []
+    for entries in product(*enumerated):
+        mapping = {
+            dimension: entry[0] for dimension, entry in zip(dimensions, entries, strict=True)
+        }
+        payloads = {
+            dimension: entry[1] for dimension, entry in zip(dimensions, entries, strict=True)
+        }
+        label = ", ".join(f"{name}={value}" for name, value in mapping.items())
+        combinations.append(FacetCombination(values=mapping, payloads=payloads, label=label))
+    return combinations
+
+
+def _facet_context(
+    context: ExpressionContext,
+    combination: FacetCombination,
+) -> ExpressionContext:
+    if not combination.values:
+        return context
+    facet_items = {
+        name: ContextItem(kind="figure_facet", payload=value)
+        for name, value in combination.values.items()
+    }
+    return ExpressionContext(
+        items={
+            **context.items,
+            "facet": ContextItem(kind="figure_facet", payload=dict(combination.values)),
+            "facet_values": ContextItem(
+                kind="figure_facet_values",
+                payload=dict(combination.payloads),
+            ),
+            **facet_items,
+        }
+    )
+
+
+def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[TraceBindingPlan]:
+    bindings: list[TraceBindingPlan] = []
     if template is not None:
         for slot in getattr(template, "slots", []):
             raw = spec.slot_bindings.get(slot.name)
@@ -304,23 +455,29 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
                     raise ValueError(f"FigureSpec missing required template slot {slot.name!r}")
                 continue
             slot_bindings = raw if isinstance(raw, list) else [raw]
+            if slot.multiplicity in {"one", "per_facet"} and len(slot_bindings) != 1:
+                raise ValueError(
+                    f"Template slot {slot.name!r} with multiplicity {slot.multiplicity!r} "
+                    "requires exactly one TraceBinding"
+                )
             for binding in slot_bindings:
                 merged_params = {**slot.params_defaults, **binding.params}
                 bindings.append(
-                    binding.model_copy(
-                        update={
-                            "constructor": binding.constructor or slot.constructor,
-                            "params": merged_params,
-                        }
+                    TraceBindingPlan(
+                        binding=binding.model_copy(
+                            update={
+                                "constructor": binding.constructor or slot.constructor,
+                                "params": merged_params,
+                            }
+                        ),
+                        multiplicity=slot.multiplicity,
                     )
                 )
-    bindings.extend(spec.traces)
+    bindings.extend(
+        TraceBindingPlan(binding=binding, multiplicity="many") for binding in spec.traces
+    )
     piece_names = [
-        *(
-            getattr(template, "default_pieces", [])
-            if template is not None
-            else []
-        ),
+        *(getattr(template, "default_pieces", []) if template is not None else []),
         *spec.pieces,
     ]
     excluded = set(spec.exclude_pieces)
@@ -329,13 +486,16 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
             continue
         piece = get_figure_piece(piece_name)
         bindings.append(
-            TraceBinding(
-                name=piece.name,
-                constructor=piece.constructor,
-                piece=piece.name,
-                data={},
-                params={"label": piece.label, **dict(piece.style)},
-                required=False,
+            TraceBindingPlan(
+                binding=TraceBinding(
+                    name=piece.name,
+                    constructor=piece.constructor,
+                    piece=piece.name,
+                    data={},
+                    params={"label": piece.label, **dict(piece.style)},
+                    required=False,
+                ),
+                multiplicity="many",
             )
         )
     return bindings
@@ -344,19 +504,26 @@ def _trace_bindings_for_spec(spec: FigureSpec, template: Any | None) -> list[Tra
 def _panel_contents(
     spec: FigureSpec,
     context: ExpressionContext,
-    trace_bindings: Sequence[TraceBinding],
+    trace_bindings: Sequence[TraceBindingPlan],
     exec_trace: FigureExecutionTrace,
     root: Path,
+    *,
+    nonfacet_context: ExpressionContext | None = None,
 ) -> list[PanelContent]:
     panel_map = {panel.name: panel for panel in spec.panels}
-    traces_by_panel: dict[str, list[Any]] = {
-        name: [] for name in panel_map
-    }
+    traces_by_panel: dict[str, list[Any]] = {name: [] for name in panel_map}
     if not traces_by_panel:
         traces_by_panel["main"] = []
-    for binding in trace_bindings:
+    for plan in trace_bindings:
+        binding = plan.binding
         panel_name = binding.panel or next(iter(traces_by_panel))
-        traces = _execute_trace_binding(binding, context, exec_trace, root)
+        traces = _execute_trace_binding(
+            binding,
+            context if plan.multiplicity == "per_facet" else (nonfacet_context or context),
+            exec_trace,
+            root,
+            panel_name=panel_name,
+        )
         traces_by_panel.setdefault(panel_name, []).extend(traces)
     contents: list[PanelContent] = []
     for index, (panel_name, traces) in enumerate(traces_by_panel.items()):
@@ -376,11 +543,58 @@ def _panel_contents(
     return contents
 
 
+def _facet_panel_contents(
+    spec: FigureSpec,
+    context: ExpressionContext,
+    combinations: Sequence[FacetCombination],
+    trace_bindings: Sequence[TraceBindingPlan],
+    exec_trace: FigureExecutionTrace,
+    root: Path,
+) -> list[PanelContent]:
+    base_panel = spec.panels[0] if spec.panels else None
+    contents: list[PanelContent] = []
+    for index, combination in enumerate(combinations):
+        facet_context = _facet_context(context, combination)
+        traces: list[Any] = []
+        for plan in trace_bindings:
+            traces.extend(
+                _execute_trace_binding(
+                    plan.binding,
+                    facet_context if plan.multiplicity == "per_facet" else context,
+                    exec_trace,
+                    root,
+                    panel_name=combination.label,
+                )
+            )
+        title = (
+            _evaluate_panel_title(base_panel.title, facet_context)
+            if base_panel is not None and base_panel.title is not None
+            else combination.label
+        )
+        contents.append(
+            PanelContent(
+                name=combination.label,
+                traces=tuple(traces),
+                title=title,
+                row=index + 1,
+                col=1,
+                axes_labels=(
+                    base_panel.axes_labels.model_dump()
+                    if base_panel is not None and base_panel.axes_labels is not None
+                    else None
+                ),
+            )
+        )
+    return contents
+
+
 def _execute_trace_binding(
     binding: TraceBinding,
     context: ExpressionContext,
     exec_trace: FigureExecutionTrace,
     root: Path,
+    *,
+    panel_name: str | None = None,
 ) -> list[Any]:
     expression_hashes = _binding_expression_hashes(binding)
     if binding.include_when is not None and not evaluate_expr(binding.include_when, context):
@@ -389,7 +603,7 @@ def _execute_trace_binding(
                 name=binding.name,
                 status="omitted",
                 reason="include_when evaluated false",
-                panel=binding.panel,
+                panel=panel_name or binding.panel,
                 constructor=binding.constructor,
                 expression_hashes=expression_hashes,
             )
@@ -404,7 +618,7 @@ def _execute_trace_binding(
                     name=binding.name,
                     status="failed",
                     reason=str(exc),
-                    panel=binding.panel,
+                    panel=panel_name or binding.panel,
                     constructor=binding.constructor,
                     expression_hashes=expression_hashes,
                 )
@@ -415,7 +629,7 @@ def _execute_trace_binding(
                 name=binding.name,
                 status="omitted",
                 reason=f"optional data binding absent: {exc}",
-                panel=binding.panel,
+                panel=panel_name or binding.panel,
                 constructor=binding.constructor,
                 expression_hashes=expression_hashes,
             )
@@ -427,7 +641,7 @@ def _execute_trace_binding(
                 name=binding.name,
                 status="failed",
                 reason=str(exc),
-                panel=binding.panel,
+                panel=panel_name or binding.panel,
                 constructor=binding.constructor,
                 expression_hashes=expression_hashes,
             )
@@ -442,7 +656,7 @@ def _execute_trace_binding(
         FigureBindingRecord(
             name=binding.name,
             status="included",
-            panel=binding.panel,
+            panel=panel_name or binding.panel,
             constructor=binding.constructor,
             expression_hashes=expression_hashes,
         )
@@ -558,7 +772,7 @@ def _piece_resolution(piece: Any) -> FigurePieceResolution:
 
 
 def _write_figure_custody(
-    figure: go.Figure,
+    figures: Sequence[RenderedFigure],
     spec: FigureSpec,
     *,
     root: Path,
@@ -567,48 +781,69 @@ def _write_figure_custody(
     output_dir = root / "figures" / manifest_id.replace(":", "_")
     output_dir.mkdir(parents=True, exist_ok=True)
     render_format = str(spec.figure_routing.get("render_format", "json"))
-    spec_path, render_path = save_figure_with_spec(
-        figure,
-        {
-            "kind": "FigureSpec",
-            "figure_spec": spec.model_dump(mode="json", exclude_none=True),
-        },
-        output_dir,
-        name="figure",
-        render_format=render_format,
-    )
-    artifacts = [
-        store_artifact(
-            spec_path,
-            root=root,
-            role=FIGURE_SPEC_ROLE,
-            logical_name=f"{spec.name}-spec.json",
-            media_type="application/json",
-            metadata={"figure": spec.name},
+    artifacts: list[ArtifactRef] = []
+    for index, rendered in enumerate(figures):
+        suffix = "" if len(figures) == 1 else f"-{_safe_figure_name(rendered.name, index)}"
+        output_name = f"figure{suffix}"
+        spec_path, render_path = save_figure_with_spec(
+            rendered.figure,
+            {
+                "kind": "FigureSpec",
+                "figure_spec": spec.model_dump(mode="json", exclude_none=True),
+                "facet": rendered.name if len(figures) > 1 else None,
+            },
+            output_dir,
+            name=output_name,
+            render_format=render_format,
         )
-    ]
-    if render_path is not None:
-        media_type = "text/html" if render_path.suffix == ".html" else "application/json"
         artifacts.append(
             store_artifact(
-                render_path,
+                spec_path,
                 root=root,
-                role=FIGURE_RENDER_ROLE,
-                logical_name=render_path.name,
-                media_type=media_type,
-                metadata={"figure": spec.name, "format": render_format},
+                role=FIGURE_SPEC_ROLE,
+                logical_name=f"{spec.name}{suffix}-spec.json",
+                media_type="application/json",
+                metadata={
+                    "figure": spec.name,
+                    "facet": rendered.name if len(figures) > 1 else None,
+                },
             )
         )
-    artifacts.append(
-        store_json_artifact(
-            figure.to_plotly_json(),
-            root=root,
-            role=FIGURE_RENDER_ROLE,
-            logical_name=f"{spec.name}.plotly.json",
-            metadata={"figure": spec.name, "format": "plotly-json"},
+        if render_path is not None:
+            media_type = "text/html" if render_path.suffix == ".html" else "application/json"
+            artifacts.append(
+                store_artifact(
+                    render_path,
+                    root=root,
+                    role=FIGURE_RENDER_ROLE,
+                    logical_name=render_path.name,
+                    media_type=media_type,
+                    metadata={
+                        "figure": spec.name,
+                        "facet": rendered.name if len(figures) > 1 else None,
+                        "format": render_format,
+                    },
+                )
+            )
+        artifacts.append(
+            store_json_artifact(
+                rendered.figure.to_plotly_json(),
+                root=root,
+                role=FIGURE_RENDER_ROLE,
+                logical_name=f"{spec.name}{suffix}.plotly.json",
+                metadata={
+                    "figure": spec.name,
+                    "facet": rendered.name if len(figures) > 1 else None,
+                    "format": "plotly-json",
+                },
+            )
         )
-    )
     return artifacts
+
+
+def _safe_figure_name(value: str, index: int) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-").lower()
+    return normalized or f"facet-{index + 1}"
 
 
 def _build_figure_manifest(
@@ -635,9 +870,7 @@ def _build_figure_manifest(
             figure_spec.model_dump(mode="json", exclude_none=True),
         ),
         inputs=list(figure_spec.inputs),
-        resolved_inputs=[
-            item.ref for item in resolved_inputs if item.manifest is not None
-        ],
+        resolved_inputs=[item.ref for item in resolved_inputs if item.manifest is not None],
         resolved_pieces=list(execution_trace.resolved_pieces),
         constructor_versions=dict(execution_trace.constructor_versions),
         template_name=figure_spec.template,
