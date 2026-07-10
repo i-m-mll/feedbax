@@ -52,7 +52,11 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_ID,
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
-from feedbax.contracts.manifest import EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+from feedbax.contracts.manifest import (
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    FIGURE_MANIFEST_SCHEMA_ID,
+    FIGURE_MANIFEST_SCHEMA_VERSION,
+)
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
@@ -174,9 +178,7 @@ def test_structured_spec_registry_applies_registered_family_migration() -> None:
 
     assert result.payload == {"schema_version": "feedbax.spec.demo.v2", "renamed": 7}
     assert result.migrated
-    assert [record.migration_id for record in result.migration_records] == [
-        "demo-spec-v1-to-v2"
-    ]
+    assert [record.migration_id for record in result.migration_records] == ["demo-spec-v1-to-v2"]
     assert result.migration_records[0].source_schema_version == "demo.v1"
     assert result.migration_records[0].target_schema_version == "feedbax.spec.demo.v2"
 
@@ -225,6 +227,16 @@ def test_default_registry_registers_evaluation_states_container_family() -> None
     ]
 
 
+def test_default_registry_registers_figure_manifest_family() -> None:
+    family = default_spec_registry.resolve("FigureManifest")
+
+    assert family.identity == FIGURE_MANIFEST_SCHEMA_ID
+    assert family.current_version == FIGURE_MANIFEST_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.owner_module == "feedbax.contracts.manifest"
+    assert family.policy.stance == "reject"
+
+
 def test_structured_spec_registry_reports_missing_migration_path() -> None:
     registry = _registry()
 
@@ -251,8 +263,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["TrainingRunSpec"].current_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
     assert families["TrainingRunMatrixSpec"].identity == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     assert (
-        families["TrainingRunMatrixSpec"].current_version
-        == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+        families["TrainingRunMatrixSpec"].current_version == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     )
     assert families["RunEvent"].identity == RUN_EVENT_SCHEMA_ID
     assert families["RunEvent"].namespace == SchemaNamespaceKind.RUN_EVENT
@@ -272,8 +283,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
     assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID
     assert (
-        families["ExtractionProductSpec"].current_version
-        == EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION
+        families["ExtractionProductSpec"].current_version == EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION
     )
     assert families["ReportSpec"].identity == "feedbax.spec.report"
     assert families["ReportSpec"].current_version == "feedbax.spec.report.v1"
@@ -281,23 +291,16 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         families["AnalysisDataProductRequirement"].identity
         == "feedbax.spec.analysis_data_product_requirement"
     )
-    assert (
-        families["AnalysisDataProduct"].identity
-        == "feedbax.manifest.analysis_data_product"
-    )
+    assert families["AnalysisDataProduct"].identity == "feedbax.manifest.analysis_data_product"
     assert families["ExecutionSpec"].identity == "feedbax.spec.execution"
     assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
     assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
     assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v3"
     assert families["ExecutionCloudPayload"].identity == EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID
     assert (
-        families["ExecutionCloudPayload"].current_version
-        == EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
+        families["ExecutionCloudPayload"].current_version == EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION
     )
-    assert (
-        families["ExecutionReproducibility"].identity
-        == EXECUTION_REPRODUCIBILITY_SCHEMA_ID
-    )
+    assert families["ExecutionReproducibility"].identity == EXECUTION_REPRODUCIBILITY_SCHEMA_ID
     assert (
         families["ExecutionReproducibility"].current_version
         == EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION
@@ -320,10 +323,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         families["TrainingCheckpointTransactionManifest"].identity
         == "feedbax.manifest.training_checkpoint_transaction"
     )
-    assert (
-        families["TrainingRunManifest"].identity
-        == "feedbax.manifest.training_run"
-    )
+    assert families["TrainingRunManifest"].identity == "feedbax.manifest.training_run"
     assert families["RegenerationSpec"].identity == "feedbax.spec.regeneration"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
@@ -601,15 +601,12 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
     families = {family.kind: family for family in default_spec_registry.families()}
 
     assert {families[kind].namespace for kind in spec_kinds} == {SchemaNamespaceKind.SPEC}
-    assert {families[kind].namespace for kind in manifest_kinds} == {
-        SchemaNamespaceKind.MANIFEST
-    }
+    assert {families[kind].namespace for kind in manifest_kinds} == {SchemaNamespaceKind.MANIFEST}
     assert families["WorkspaceReplayProduct"].current_version == WORKSPACE_REPLAY_SCHEMA_VERSION
     assert not any(
         family.namespace == SchemaNamespaceKind.COMPONENT_PARAMS
         for family in default_spec_registry.families()
     )
-
 
 
 def test_default_policy_matrix_covers_registered_emitted_families() -> None:
@@ -756,9 +753,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert report_policy.rejected_old_versions == ("feedbax.spec.report.v0",)
     assert extraction_policy is not None
     assert extraction_policy.stance == "reject"
-    assert extraction_policy.rejected_old_versions == (
-        "feedbax.spec.extraction_product.v0",
-    )
+    assert extraction_policy.rejected_old_versions == ("feedbax.spec.extraction_product.v0",)
     assert execution_plan_policy is not None
     assert execution_plan_policy.rejected_old_versions == (
         "feedbax.manifest.execution.v2",
@@ -778,9 +773,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         "feedbax.manifest.execution.v1",
     )
     assert studio_api_policy is not None
-    assert studio_api_policy.rejected_old_versions == (
-        "feedbax.spec.studio.api_transport.v0",
-    )
+    assert studio_api_policy.rejected_old_versions == ("feedbax.spec.studio.api_transport.v0",)
     assert population_policy.stance == "reject"
     assert population_policy.rejected_old_versions == ("feedbax.population_structure.v1",)
 
