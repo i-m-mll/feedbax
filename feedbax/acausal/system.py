@@ -10,7 +10,6 @@ like any other ``Component`` in a feedbax ``Graph``.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from typing import Callable, Optional, Type
 
@@ -34,7 +33,6 @@ from feedbax.acausal.base import (
 )
 
 
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

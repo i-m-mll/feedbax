@@ -5,7 +5,6 @@
 """
 
 from collections.abc import Callable, Sequence
-import logging
 from typing import Optional
 
 import equinox as eqx
@@ -16,9 +15,6 @@ from feedbax.runtime.graph import Component
 from feedbax.tasks import AbstractTask, SimpleReaches
 from feedbax.xabdeef.losses import simple_reach_loss
 from feedbax.xabdeef.models import point_mass_nn
-
-
-logger = logging.getLogger(__name__)
 
 
 class TrainingContext(eqx.Module):

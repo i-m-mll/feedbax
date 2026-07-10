@@ -5,28 +5,20 @@
 """
 
 from collections.abc import Callable
-from functools import partial
-import logging
 from typing import Optional
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
 from feedbax.models.feedback import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
-from feedbax.runtime.graph import Component
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork
 from feedbax.models.cde import CDENetwork
-from feedbax.runtime.noise import HalfNormal2Vector, Multiplicative, Normal
+from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.tasks import AbstractTask
-
-
-logger = logging.getLogger(__name__)
 
 
 def identity_func(x):
@@ -123,10 +115,8 @@ def point_mass_nn(
             # `broadcast=True` means only a single noise sample -- i.e. scale the vector, not the directions.
             Multiplicative(Normal(std=motor_noise_std)) + Normal(std=1.8 * motor_noise_std)
             # Multiplicative(
-            #     HalfNormal2Vector(std=motor_noise_std),
             #     scale_func=lambda x: jnp.linalg.norm(x, axis=-1)
             # )
-            # + HalfNormal2Vector(std=1.8 * motor_noise_std)
         ),
         tau_rise=tau_rise,
         tau_decay=tau_decay,

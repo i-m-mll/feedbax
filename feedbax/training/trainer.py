@@ -29,7 +29,6 @@ from feedbax.tasks import (
     infer_n_steps,
     prepare_inputs,
 )
-from feedbax.training.support import batched_outer, exponential_smoothing
 
 
 def _cast_to_state_dtypes(new_value, current_value):
@@ -222,74 +221,3 @@ def training_step_for_abstract_loss(
     updates, opt_state = optimizer.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
     return project_component_parameters(model), opt_state, losses, states
-
-
-def mask_diagonal(array):
-    """Set the diagonal of the last two dimensions of ``array`` to zero."""
-    mask = 1 - jnp.eye(array.shape[-1])
-    return array * mask
-
-
-def hebb_rule(
-    activity: Float[Array, "*batch time units"],
-) -> Float[Array, "*batch time units units"]:
-    """Standard Hebbian learning rule, unscaled."""
-    return batched_outer(activity, activity)
-
-
-def hebb_differential_rule(
-    activity: Float[Array, "*batch time units"],
-) -> Float[Array, "*batch time units units"]:
-    """Differential Hebbian learning rule, unscaled."""
-    d_activity = jnp.diff(activity, axis=-2)
-    return batched_outer(d_activity, d_activity)
-
-
-def hebb_covariance_rule(
-    activity: Float[Array, "*batch time units"],
-    alpha: float = 0.01,
-    init_window_size: int = 1,
-) -> Float[Array, "*batch time units units"]:
-    """Hebbian learning rule based on the local covariance of the activity."""
-    ema = exponential_smoothing(activity, alpha, init_window_size, axis=-2)
-    return hebb_rule(activity - ema)
-
-
-def oja_term(
-    activity: Float[Array, "*batch time units"],
-    weights: Float[Array, "units units"],
-) -> Float[Array, "*batch time units units"]:
-    """Regularization term from Oja's rule."""
-    return -(activity**2)[..., None, :] * weights
-
-
-def _null_weight_rule(
-    activity: Float[Array, "*batch time units"],
-    weights: Float[Array, "units units"],
-):
-    return 0.0
-
-
-class ActivityDependentWeightUpdate(eqx.Module):
-    """Compute a weight update according to a learning rule."""
-
-    scale: float = 0.01
-    rule: Callable[[Float[Array, "*batch time units"]], Float[Array, "*batch time units units"]] = (
-        hebb_rule
-    )
-    weight_dep_rule: Callable[
-        [Float[Array, "*batch time units"], Float[Array, "units units"]],
-        Float[Array, "*batch time units units"] | float,
-    ] = _null_weight_rule
-    weight_dep_scale: float = 1.0
-    agg_func: Callable = jnp.mean
-
-    def __call__(
-        self,
-        activity: Float[Array, "*batch time units"],
-        weights: Float[Array, "units units"],
-    ) -> Float[Array, "units units"]:
-        dW = self.rule(activity) + self.weight_dep_scale * self.weight_dep_rule(activity, weights)
-        dW = mask_diagonal(dW)
-        dW_batch = self.agg_func(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
-        return self.scale * dW_batch

@@ -1,22 +1,15 @@
 import math
 import re
-import warnings
-from collections.abc import Mapping, Sequence
-from functools import partial
+from collections.abc import Sequence
 from typing import Callable, Literal, Optional
 
-import equinox as eqx
-import feedbax.plot as fbp
 import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 from jax_cookbook import is_type
-from jaxtyping import Array, Bool, Float, PyTree
-from sklearn.decomposition import PCA
+from jaxtyping import Array, Float, PyTree
 
-from jax_cookbook import LDict
 
 
 def add_endpoint_traces(
@@ -342,155 +335,6 @@ def get_violins(
 # TODO
 # TODO: annotate types
 # TODO
-def get_measure_replicate_comparisons(
-    data,
-    measure_name: str,
-    colors: dict[float, str],
-    included_replicates: Optional[Bool[Array, " replicates"]] = None,
-):
-    labels = data.keys()
-    data = jnp.stack(list(data.values()))
-
-    # Exclude replicates which were excluded from analysis for either training condition
-    if included_replicates is not None:
-        data = jnp.take(data, included_replicates, axis=-2)
-
-    fig = go.Figure()
-    # x axis: replicates
-    for i in range(data.shape[-2]):
-        # split violin: smallest vs. largest train disturbance std
-        for j, train_std in enumerate(labels):
-            data_j = data[j, :, i].flatten()
-
-            fig.add_trace(
-                go.Violin(
-                    x=np.full_like(data_j, i),
-                    y=data_j.flatten(),
-                    name=train_std,
-                    legendgroup=train_std,
-                    box_visible=False,
-                    meanline_visible=True,
-                    line_color=colors[train_std],
-                    side="positive" if j == 1 else "negative",
-                    showlegend=(i == 0),
-                    spanmode="hard",
-                )
-            )
-    fig.update_layout(
-        xaxis_title="Model replicate",
-        yaxis_title=measure_name,
-        xaxis_range=[-0.5, data.shape[-2] - 0.5],
-        xaxis_tickvals=list(range(data.shape[-2])),
-        yaxis_range=[0, None],
-        violinmode="overlay",
-        violingap=0,
-        violingroupgap=0,
-    )
-
-    return fig
-
-
-def plot_eigvals_df(
-    df,
-    marginals="box",
-    trace_kws=None,
-    scatter_kws=None,
-    layout_kws=None,
-    marginal_boundary_lines=True,
-    **kwargs,
-):
-    stable_boundary_kws = dict(
-        line=dict(
-            color="grey",
-            width=2,
-        ),
-    )
-
-    fig = px.scatter(
-        df,
-        x="real",
-        y="imag",
-        marginal_x=marginals,
-        marginal_y=marginals,
-        render_mode="svg",
-        **kwargs,
-    )
-
-    if scatter_kws is not None:
-
-        def _update_scatter(trace):
-            if isinstance(trace, (go.Scatter, go.Scattergl)):
-                trace.update(**scatter_kws)
-
-        fig.for_each_trace(_update_scatter)
-
-    fig.update_layout(
-        yaxis=dict(scaleanchor="x", scaleratio=1),
-        width=600,
-        height=450,
-    )
-    fig.add_shape(
-        type="circle",
-        xref="x",
-        yref="y",
-        x0=-1,
-        y0=-1,
-        x1=1,
-        y1=1,
-        fillcolor="white",
-        layer="below",
-        name="boundary_circle",
-        **stable_boundary_kws,
-    )
-    if marginal_boundary_lines:
-        for coord in [-1, 1]:
-            fig.add_vline(
-                x=coord,
-                row=0,  # type: ignore
-                name="boundary_line",
-                **stable_boundary_kws,  # type: ignore
-            )
-            fig.add_hline(
-                y=coord,
-                col=2,  # type: ignore
-                name="boundary_line",
-                **stable_boundary_kws,  # type: ignore
-            )
-
-    fig.add_trace(
-        go.Scatter(
-            x=[-1, 1],
-            y=[0, 0],
-            mode="lines",
-            line_dash="dot",
-            line_color="grey",
-            line_width=1,
-            showlegend=False,
-            name="zerolines",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[0, 0],
-            y=[-1, 1],
-            mode="lines",
-            line_dash="dot",
-            line_color="grey",
-            line_width=1,
-            showlegend=False,
-            name="zerolines",
-        )
-    )
-
-    if trace_kws is not None:
-        fig.update_traces(**trace_kws)
-
-    if layout_kws is not None:
-        fig.update_layout(**layout_kws)
-
-    return fig
-
-
 # def plot_fp_loss(all_fps, fp_loss_fn, n_bins=50):
 #     fp_tols = list(all_fps.keys())
 
@@ -596,29 +440,6 @@ def plot_fp_pcs(
                     for eidx in range(emax)
                 ]
             )
-
-    return fig
-
-
-def plot_traj_and_fp_pcs_3D(
-    trajs: Float[Array, "trial time state"],
-    fps: Float[Array, "fp state"],
-    pca: PCA,  # transforms from "state" -> "3"
-    colors: str | Sequence[str] | None = None,
-    colors_fps: str | Sequence[str] | None = None,
-    fig: Optional[go.Figure] = None,
-):
-    if fig is None:
-        fig = go.Figure(layout=dict(width=1000, height=1000))
-    if colors_fps is None:
-        colors_fps = colors
-
-    fig = plot_fp_pcs(fps, pca, colors_fps, fig=fig)
-    trajs_pcs = pca.transform(np.array(trajs).reshape(-1, trajs.shape[-1])).reshape(
-        *trajs.shape[:-1], pca.n_components
-    )  # type: ignore
-    traj_fig = fbp.trajectories_3D(trajs_pcs, colors=colors)
-    fig.add_traces(traj_fig.data)
 
     return fig
 
@@ -792,29 +613,6 @@ def set_single_axis_bounds_equal(
     return jt.map(_update_leaf_single_axis, figs)
 
 
-def set_axis_bounds_equal(
-    axis: Literal["x", "y"],
-    figs: PyTree,
-    padding_factor: float = 0.1,
-    trace_selector: Callable = lambda trace: True,
-    **kwargs,
-) -> PyTree:
-    """Deprecated alias for :func:`set_single_axis_bounds_equal`."""
-    warnings.warn(
-        "`set_axis_bounds_equal` is deprecated; use `set_single_axis_bounds_equal` "
-        "for one-axis synchronization or `set_axes_bounds_equal` for x/y synchronization.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return set_single_axis_bounds_equal(
-        axis,
-        figs,
-        padding_factor=padding_factor,
-        trace_selector=trace_selector,
-        **kwargs,
-    )
-
-
 #! On preliminary tests this isn't actually very useful for anchored axes;
 #! in principle what we need to do for anchored axes is convert x and y
 #! extrema into a common frame (based on the scale ratio) and then scale
@@ -951,94 +749,3 @@ def set_axes_bounds_equal(
     # Corrected: Use jt.map
     result = jt.map(_update_leaf_final_axes, figs)
     return result
-
-
-# Case: for aligned effector trajectories
-set_axes_bounds_equal_traj2D = partial(
-    set_axes_bounds_equal,
-    padding_factor=0.1,
-    trace_selector=lambda trace: trace.showlegend is True,
-)
-
-
-def get_add_epoch_bounds_vlines(idxs: Sequence[int] | Mapping[int, dict], optional: bool = True):
-    """Returns a function that adds vertical lines at given epoch boundaries, for all trials.
-
-    By default (`optional=True`), if no epoch boundaries are defined in the task timeline,
-    no lines will be added. If `optional=False`, an error will be raised in that
-    """
-
-    default_params = dict(
-        line_width=1,
-        line_dash="dash",
-        line_color="black",
-        opacity=0.2,
-    )
-
-    if isinstance(idxs, Sequence):
-        idxs = dict(zip(idxs, [default_params] * len(idxs)))
-
-    def add_epoch_bounds_vlines(figs, *, data):
-        def _add_vline(fig, task):
-            trial_specs = task.validation_trials
-            if trial_specs.timeline.epoch_bounds is None:
-                if optional:
-                    return fig
-                else:
-                    raise ValueError("Task has no defined epoch boundaries for plotting")
-            for bounds in trial_specs.timeline.epoch_bounds:  # for each trial
-                for idx, params in idxs.items():  # for each requested epoch boundary
-                    fig.add_vline(x=bounds[idx], **{**default_params, **params})
-            return fig
-
-        return jt.map(_add_vline, figs, data.tasks["full"], is_leaf=is_type(go.Figure))
-
-    return add_epoch_bounds_vlines
-
-
-def get_add_aligned_epoch_vline(epoch_idx: int, params: dict | None = None, optional: bool = True):
-    """Returns a function that adds a single vertical line at an aligned epoch boundary.
-
-    This is intended for use with data that has been aligned using `get_align_epoch_start`,
-    where all trials have the same epoch start index (the max of the original starts).
-    Instead of adding one vline per trial, this adds a single vline at the aligned position.
-
-    Args:
-        epoch_idx: The epoch index to mark (e.g., 2 for the third epoch).
-        params: Optional dict of line parameters to override defaults.
-        optional: If True, silently skip if no epoch boundaries are defined.
-                  If False, raise an error in that case.
-
-    Returns:
-        A function that accepts `figs, *, data` and adds the vline to all figures.
-    """
-    default_params = dict(
-        line_width=1,
-        line_dash="dash",
-        line_color="black",
-        opacity=0.2,
-    )
-
-    if params is not None:
-        default_params.update(params)
-
-    def add_aligned_epoch_vline(figs, *, data):
-        def _add_vline(fig, task):
-            trial_specs = task.validation_trials
-            if trial_specs.timeline.epoch_bounds is None:
-                if optional:
-                    return fig
-                else:
-                    raise ValueError("Task has no defined epoch boundaries for plotting")
-
-            # Get the max of the epoch starts across all trials
-            # (this is the aligned position when using default anchor="max")
-            epoch_starts = trial_specs.timeline.epoch_bounds[:, epoch_idx]
-            aligned_position = int(jnp.max(epoch_starts))
-
-            fig.add_vline(x=aligned_position, **default_params)
-            return fig
-
-        return jt.map(_add_vline, figs, data.tasks["full"], is_leaf=is_type(go.Figure))
-
-    return add_aligned_epoch_vline

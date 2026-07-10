@@ -60,6 +60,7 @@ from feedbax.training.manifest_preflight import (
     preflight_training_run_manifest_payloads,
     validate_training_run_spec,
 )
+from feedbax.training.interruption import CancellationDecision
 from feedbax.training.worker_validation import (
     WorkerExecutabilityEnvironment,
     validate_worker_contract,
@@ -68,6 +69,7 @@ from feedbax.training.worker_validation import (
 
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
+CancellationProbe = Callable[[ProgressCoordinate], CancellationDecision | None]
 _RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
 
 
@@ -77,6 +79,14 @@ class TrainingRunExecutorError(ValueError):
 
 class ManifestEmissionConflictError(TrainingRunExecutorError):
     """Raised when a manifest id already exists with different content."""
+
+
+class _ImmediateCancellation(Exception):
+    """Internal control signal for an operator-requested immediate termination."""
+
+    def __init__(self, coordinate: ProgressCoordinate, decision: CancellationDecision) -> None:
+        self.coordinate = coordinate
+        self.decision = decision
 
 
 @dataclass(frozen=True)
@@ -219,6 +229,7 @@ def execute_training_run_spec(
     issues: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
     run_event_emitter: RunEventEmitter | None = None,
+    cancellation_probe: CancellationProbe | None = None,
 ) -> TrainingRunExecutionResult:
     """Validate, execute, checkpoint, and natively emit one training-run manifest.
 
@@ -230,6 +241,10 @@ def execute_training_run_spec(
     ``run_event_emitter`` optionally receives the versioned run-event protocol.
     Emitter I/O diagnostics are contained by the emitter and do not change
     training-loop failure behavior.
+
+    ``cancellation_probe`` is checked at progress boundaries. A ``stop``
+    decision completes the next durable checkpoint before returning a cancelled
+    manifest; ``terminate`` emits a cancelled manifest immediately.
     """
     run_spec = _validate_spec(spec)
     preflight_training_run_manifest_payloads(
@@ -347,12 +362,26 @@ def execute_training_run_spec(
         "run_spec": run_spec,
         "method_payload": method_payload,
     }
+    cancellation: CancellationDecision | None = None
+
+    def observe_cancellation(coordinate: ProgressCoordinate) -> None:
+        nonlocal cancellation
+        if cancellation_probe is None or cancellation is not None:
+            return
+        decision = cancellation_probe(coordinate)
+        if decision is None or decision.action == "continue":
+            return
+        if decision.action == "terminate":
+            raise _ImmediateCancellation(coordinate, decision)
+        cancellation = decision
+
     try:
         execution = executor.run(
             slots,
             run_id=resolved_run_id,
             resume_from_barrier=resume_barrier,
             stop_after_barrier=stop_after_barrier,
+            stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
             progress_callback=(
                 _live_progress_callback(
@@ -361,8 +390,13 @@ def execute_training_run_spec(
                     run_event_emitter=run_event_emitter,
                     total_batches=total_batches,
                     started_at=started_at,
+                    cancellation_observer=observe_cancellation,
                 )
-                if progress_callback is not None or run_event_emitter is not None
+                if (
+                    progress_callback is not None
+                    or run_event_emitter is not None
+                    or cancellation_probe is not None
+                )
                 else None
             ),
             step_guard=_executor_nan_guard(
@@ -396,6 +430,8 @@ def execute_training_run_spec(
             history_events=history_events,
             final_metrics=final_metrics,
             issues=issues,
+            status="cancelled" if cancellation is not None else "completed",
+            cancellation=cancellation,
         )
         manifest_path = _emit_manifest(
             manifest,
@@ -407,7 +443,7 @@ def execute_training_run_spec(
                 "complete",
                 {
                     "run_id": resolved_run_id,
-                    "status": "completed",
+                    "status": "cancelled" if cancellation is not None else "completed",
                     "coordinate": execution.coordinate.model_dump(
                         mode="json",
                         exclude_none=True,
@@ -416,8 +452,65 @@ def execute_training_run_spec(
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
                     "metrics": final_metrics,
+                    **(
+                        {"cancellation": cancellation.as_provenance()}
+                        if cancellation is not None
+                        else {}
+                    ),
                 },
             )
+    except _ImmediateCancellation as interrupted:
+        checkpoint_writes = checkpoint_store.writes
+        barrier_artifacts = checkpoint_store.barrier_artifacts
+        history_events = live_history_events
+        final_metrics = _final_metrics({}, interrupted.coordinate)
+        manifest = _build_manifest(
+            run_spec,
+            run_id=resolved_run_id,
+            root_path=root_path,
+            training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
+            training_spec_payload_kind=training_spec_payload_kind,
+            training_spec_payload_schema_id=training_spec_payload_schema_id,
+            training_spec_payload_schema_version=training_spec_payload_schema_version,
+            training_spec_payload_ref=training_spec_payload_ref,
+            task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
+            checkpoint_writes=checkpoint_writes,
+            barrier_artifacts=barrier_artifacts,
+            history_events=history_events,
+            final_metrics=final_metrics,
+            issues=issues,
+            status="cancelled",
+            cancellation=interrupted.decision,
+        )
+        manifest_path = _emit_manifest(
+            manifest,
+            root=root_path,
+            conflict_policy=manifest_conflict_policy,
+        )
+        if run_event_emitter is not None:
+            run_event_emitter.emit_terminal(
+                "complete",
+                {
+                    "run_id": resolved_run_id,
+                    "status": "cancelled",
+                    "coordinate": interrupted.coordinate.model_dump(mode="json", exclude_none=True),
+                    "batch": interrupted.coordinate.global_step,
+                    "manifest_path": str(manifest_path),
+                    "manifest_id": manifest.id,
+                    "metrics": final_metrics,
+                    "cancellation": interrupted.decision.as_provenance(),
+                },
+            )
+        return TrainingRunExecutionResult(
+            run_id=resolved_run_id,
+            status="cancelled",
+            manifest=manifest,
+            manifest_path=manifest_path,
+            final_slots={},
+            final_coordinate=interrupted.coordinate,
+            checkpoint_writes=tuple(checkpoint_writes),
+            history_events=tuple(history_events),
+        )
     except Exception as exc:
         if run_event_emitter is not None:
             run_event_emitter.emit_terminal(
@@ -432,7 +525,7 @@ def execute_training_run_spec(
         raise
     return TrainingRunExecutionResult(
         run_id=resolved_run_id,
-        status="completed",
+        status="cancelled" if cancellation is not None else "completed",
         manifest=manifest,
         manifest_path=manifest_path,
         final_slots=dict(execution.slots),
@@ -617,6 +710,7 @@ def _live_progress_callback(
     run_event_emitter: RunEventEmitter | None = None,
     total_batches: int | None = None,
     started_at: float | None = None,
+    cancellation_observer: Callable[[ProgressCoordinate], None] | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
     ready_emitted = False
 
@@ -652,6 +746,8 @@ def _live_progress_callback(
             )
         if progress_callback is not None:
             progress_callback(deepcopy(event))
+        if cancellation_observer is not None:
+            cancellation_observer(coordinate)
 
     return emit
 
@@ -806,6 +902,8 @@ def _build_manifest(
     history_events: list[dict[str, Any]],
     final_metrics: dict[str, Any],
     issues: Sequence[str] | None,
+    status: ManifestStatus = "completed",
+    cancellation: CancellationDecision | None = None,
 ) -> TrainingRunManifest:
     artifacts = list(barrier_artifacts)
     if history_events:
@@ -839,7 +937,7 @@ def _build_manifest(
     return TrainingRunManifest(
         id=training_run_manifest_id(run_id),
         job_id=run_id,
-        status="completed",
+        status=status,
         started_at=utc_now(),
         completed_at=utc_now(),
         graph_spec=payloads.graph_spec,
@@ -854,7 +952,14 @@ def _build_manifest(
                 command="python -m feedbax execute-training-run-spec",
             ),
             issues=list(issues or ()),
-            metadata={"training_executor": "native"},
+            metadata={
+                "training_executor": "native",
+                **(
+                    {"cancellation": cancellation.as_provenance()}
+                    if cancellation is not None
+                    else {}
+                ),
+            },
         ),
         artifacts=artifacts,
         metadata={"training_run_spec_schema_version": spec.schema_version},

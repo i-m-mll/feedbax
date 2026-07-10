@@ -8,7 +8,6 @@ graph and which data stays protocol-owned by the task/environment boundary.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Any, Optional
 
 from feedbax.contracts.training import TaskSpec
@@ -92,28 +91,6 @@ def is_bindable_task_data(data: Any) -> bool:
     return bool(_field(data, "bindable", False)) and (
         task_data_role(data) in GRAPH_BINDABLE_TASK_DATA_ROLES
     )
-
-
-def bindable_task_data(items: Iterable[Any]) -> list[Any]:
-    """Filter Task Data records to graph-facing bindable inputs."""
-
-    return [item for item in items if is_bindable_task_data(item)]
-
-
-def protocol_task_data(items: Iterable[Any]) -> list[Any]:
-    """Filter Task Data records to protocol-owned, non-graph data."""
-
-    return [item for item in items if not is_bindable_task_data(item)]
-
-
-def task_data_role_map(items: Iterable[Any]) -> dict[str, str]:
-    """Return a mapping from Task Data id to normalized protocol role."""
-
-    return {
-        str(_field(item, "id")): task_data_role(item)
-        for item in items
-        if _field(item, "id") is not None
-    }
 
 
 def task_data_uses_protocol_path(data: Any) -> bool:

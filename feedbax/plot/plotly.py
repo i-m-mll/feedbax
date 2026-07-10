@@ -14,14 +14,13 @@ from typing import (
     TypeVar,
 )
 
-import jax.random as jr
 import jax.tree as jt
 import numpy as np
 import plotly.express as px
 import plotly.graph_objs as go
 import polars as pl
 from jax_cookbook import identity
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float
 from plotly.subplots import make_subplots
 
 # pyright: reportMissingTypeStubs=false
@@ -234,7 +233,6 @@ def loss_history(
 
     return fig
 
-
 def _history_losses(
     history: Any,
     loss_context: Literal["training", "validation"],
@@ -442,122 +440,4 @@ def activity_heatmap(
     )
     if layout_kws is not None:
         fig.update_layout(layout_kws)
-    return fig
-
-
-def activity_sample_units(
-    activities: Float[Array, "*trial time unit"],
-    n_samples: int = 4,
-    unit_includes: Optional[Sequence[int]] = None,
-    colors: Optional[list[str]] = None,
-    row_height: int = 150,
-    layout_kws: Optional[dict] = None,
-    trial_label: str = "Trial",  # TODO: Rename
-    *,
-    key: PRNGKeyArray,
-    **kwargs,
-) -> go.Figure:
-    """Plot activity over multiple trials for a random sample of network units.
-
-    The result is a figure with `n_samples + len(unit_includes)` subplots, arranged
-    in `cols` columns.
-
-    When this function is called more than once in the course of an analysis, if the
-    same `key` is passed and the network layer has the same number of units—that
-    is, the last dimension of `activities` has the same size—then the same subset of
-    units will be sampled.
-
-    Arguments:
-        activities: An array of trial-by-trial activity over time for each unit in a
-            network layer.
-        n_samples: The number of units to sample from the layer. Along with `unit_includes`,
-            this determines the number of subplots in the figure.
-        unit_includes: Indices of specific units to include in the plot, in addition to
-            the `n_samples` randomly sampled units.
-        colors: A list of colors.
-        row_height: How tall (in pixels) to make the figure, as a factor of units sampled.
-        layout_kws: Additional kwargs with which to update the layout of the figure before
-            returning.
-        trial_label: The text label for the batch dimension. For example, if `activities`
-            gives evaluations across model replicates, we may wish to pass
-            `trial_label="Replicate"` to properly label the legend and tooltips.
-        key: A random key used to sample the units to plot.
-    """
-
-    # Make sure `activities` has shape (trials, time steps, units).
-    # If multiple batch dimensions are present, flatten them.
-    if len(activities.shape) == 2:
-        activities = activities[None, ...]
-    elif len(activities.shape) > 3:
-        activities = activities.reshape(-1, *activities.shape[-2:])
-    elif len(activities.shape) != 3:
-        raise ValueError("Invalid shape for ")
-
-    unit_idxs = jr.choice(key, np.arange(activities.shape[-1]), (n_samples,), replace=False)
-    if unit_includes is not None:
-        unit_idxs = np.concatenate([unit_idxs, np.array(unit_includes)])
-    unit_idxs = np.sort(unit_idxs)
-    unit_idx_strs = [str(i) for i in unit_idxs]
-
-    xs = np.array(activities[..., unit_idxs])
-
-    # Join all the data into a dataframe.
-    df = pl.concat(
-        [
-            # For each trial, construct all timesteps of x, y data.
-            pl.from_numpy(x, schema=unit_idx_strs).hstack(
-                pl.DataFrame(
-                    {
-                        "Timestep": np.arange(x.shape[0]),
-                        # Note that "trial" here could be between- or within-condition.
-                        trial_label: pl.repeat(i, x.shape[0], eager=True),
-                    }
-                )
-            )
-            for i, x in enumerate(xs)
-        ]
-    ).melt(
-        id_vars=["Timestep", trial_label],
-        value_name="Activity",
-        variable_name="Unit",
-    )
-
-    fig = px.line(
-        df,
-        x="Timestep",
-        y="Activity",
-        color=trial_label,
-        facet_row="Unit",
-        color_discrete_sequence=colors,
-        height=row_height * len(unit_idxs),
-        **kwargs,
-    )
-
-    # Replace multiple y-axis labels with a single one.
-    fig.for_each_yaxis(lambda y: y.update(title=""))
-    fig.add_annotation(
-        x=-0.07,
-        y=0.5,
-        text="Activity",
-        textangle=-90,
-        showarrow=False,
-        font=dict(size=14),
-        xref="paper",
-        yref="paper",
-    )
-
-    # fig.update_yaxes(zerolinewidth=2, zerolinecolor='rgb(200,200,200)')
-    fig.update_yaxes(zerolinewidth=0.5, zerolinecolor="black")
-
-    # Improve formatting of subplot "Unit=" labels.
-    fig.for_each_annotation(
-        lambda a: a.update(
-            text=a.text.replace("=", " "),
-            font=dict(size=14),
-        )
-    )
-
-    if layout_kws is not None:
-        fig.update_layout(layout_kws)
-
     return fig

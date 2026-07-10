@@ -209,6 +209,7 @@ class PhaseProgramExecutor:
         run_id: str,
         resume_from_barrier: str | None = None,
         stop_after_barrier: str | None = None,
+        stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
         step_guard: StepGuard | None = None,
@@ -291,7 +292,10 @@ class PhaseProgramExecutor:
                 coordinate = coordinate.model_copy(
                     update={"completed_barrier": saved_checkpoint.barrier}
                 )
-                if stop_after_barrier == phase.checkpoint_barrier:
+                if stop_after_barrier == phase.checkpoint_barrier or (
+                    stop_after_next_barrier is not None
+                    and stop_after_next_barrier(phase.checkpoint_barrier)
+                ):
                     return PhaseExecutionResult(
                         slots=current_slots,
                         coordinate=coordinate,

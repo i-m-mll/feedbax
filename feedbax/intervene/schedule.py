@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, Optional, Tuple, TypeAlias
 
 import equinox as eqx
@@ -16,9 +15,6 @@ from feedbax.runtime.batch import BatchInfo
 
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask
-
-
-logger = logging.getLogger(__name__)
 
 
 IntervenorLabelStr: TypeAlias = str
@@ -35,15 +31,6 @@ class InterventionSpec(eqx.Module):
 
     params: PyTree
     default_active: bool = False
-
-
-def _eval_intervenor_param_spec(
-    intervention_spec: InterventionSpec,
-    trial_spec,
-    batch_info: BatchInfo,
-    key: PRNGKeyArray,
-):
-    return evaluate_intervenor_params(intervention_spec.params, trial_spec, batch_info, key)
 
 
 def evaluate_intervenor_params(

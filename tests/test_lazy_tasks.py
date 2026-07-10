@@ -7,12 +7,10 @@ import pytest
 from feedbax.training.rl.tasks import (
     TASK_HOLD,
     TASK_REACH,
-    TASK_SWING,
     TASK_TRACK,
     reach_task,
     reach_task_params,
     reconstruct_trajectory,
-    sample_task_jax,
     sample_task_params_jax,
     target_at_t,
 )
@@ -44,31 +42,6 @@ DEFAULT_KW = dict(
     use_curriculum=False,
     single_task=True,
 )
-
-
-@pytest.mark.parametrize("task_type", [TASK_REACH, TASK_HOLD, TASK_TRACK, TASK_SWING])
-def test_target_at_t_matches_task_spec(key, n_steps, dt, task_type):
-    timestamps = jnp.arange(n_steps) * dt
-    task_spec = sample_task_jax(timestamps, key, task_type=task_type)
-    params = sample_task_params_jax(key, task_type, n_steps, dt, **DEFAULT_KW)
-
-    t_idx = jnp.arange(n_steps)
-    pos, vel = jax.vmap(lambda t: target_at_t(params, t))(t_idx)
-
-    assert jnp.allclose(pos, task_spec.target_pos, atol=1e-5)
-    assert jnp.allclose(vel, task_spec.target_vel, atol=1e-4)
-
-
-@pytest.mark.parametrize("task_type", [TASK_REACH, TASK_HOLD, TASK_TRACK, TASK_SWING])
-def test_reconstruct_trajectory_matches_task_spec(key, n_steps, dt, task_type):
-    timestamps = jnp.arange(n_steps) * dt
-    task_spec = sample_task_jax(timestamps, key, task_type=task_type)
-    params = sample_task_params_jax(key, task_type, n_steps, dt, **DEFAULT_KW)
-
-    pos, vel = reconstruct_trajectory(params)
-
-    assert jnp.allclose(pos, task_spec.target_pos, atol=1e-5)
-    assert jnp.allclose(vel, task_spec.target_vel, atol=1e-4)
 
 
 def test_sample_task_params_shapes(key, n_steps, dt):

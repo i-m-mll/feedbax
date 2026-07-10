@@ -10,7 +10,6 @@ useful for stiff dynamics or when coupled with muscle models.
 from __future__ import annotations
 
 from functools import cached_property
-import logging
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -29,7 +28,6 @@ from feedbax.runtime.state import CartesianState
 from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
 
 
-logger = logging.getLogger(__name__)
 
 
 class TwoLinkArmDAEParams(DAEParams):

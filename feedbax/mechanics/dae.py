@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from functools import cached_property
-import logging
 from typing import ClassVar, Optional, Type, TypeVar, Generic
 
 import diffrax as dfx
@@ -31,7 +30,6 @@ import optimistix as optx
 from feedbax.runtime.graph import Component
 
 
-logger = logging.getLogger(__name__)
 
 
 StateT = TypeVar("StateT", bound=Module)

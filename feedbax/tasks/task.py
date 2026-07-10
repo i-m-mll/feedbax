@@ -16,7 +16,7 @@ TODO:
 
 import logging
 from abc import abstractmethod
-from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cached_property, partial
 from typing import (
     Any,
@@ -175,6 +175,9 @@ def set_state_matching_dtypes(state, idx, new_value):
 
     current_value = state.get(idx)
     return state.set(idx, cast_to_state_dtypes(new_value, current_value))
+
+
+safe_state_set = set_state_matching_dtypes
 
 
 def _cast_to_state_type(value, state_value):
@@ -369,20 +372,6 @@ def prepare_trial(model: Component, trial_spec: "TaskTrialSpec") -> PreparedTria
     )
 
 
-# Backwards-compatible private aliases for existing internal callers. New code
-# should use the public names above.
-_where_key_to_path = where_key_to_path
-_set_state_by_path = set_state_by_path
-_cast_to_state_dtypes = cast_to_state_dtypes
-_state_set_matching_dtypes = set_state_matching_dtypes
-_extract_timeseries_params = extract_timeseries_params
-_merge_intervene_inputs = merge_intervene_inputs
-_prepare_inputs = prepare_inputs
-_infer_n_steps = infer_n_steps
-safe_state_set = set_state_matching_dtypes
-_safe_state_set = set_state_matching_dtypes
-
-
 class TrialTimeline(Module):
     """A typed, optional timeline: contiguous epochs + named point events.
 
@@ -572,12 +561,6 @@ class TaskTrialSpec(Module):
 
 
 T = TypeVar("T")
-# Strings are instances of `Sequence[str]`; we can use the following type to
-# distinguish sequences of strings (`NonCharSequence[str]`) from single strings
-# (i.e. which might be considered `CharSequence`)
-NonCharSequence: TypeAlias = MutableSequence[T] | tuple[T, ...]
-
-
 LabeledInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, InterventionSpec]
 
 
@@ -1319,10 +1302,6 @@ class AbstractTask(Module):
     # called when by active intervenors.
     # def activate_interventions(
     #     self,
-    #     labels: NonCharSequence[IntervenorLabelStr] | Literal['all', 'none'],
-    #     labels_validation: Optional[
-    #         NonCharSequence[IntervenorLabelStr] | Literal['all', 'none']
-    #     ] = None,
     #     validation_same_schedule=False,
     # ) -> Self:
     #     """Return a task where scheduling is active only for the interventions with the

@@ -10,7 +10,6 @@
 
 ::: feedbax.plot.reach_endpoint_dists
 
-::: feedbax.plot.activity_sample_units
 
 ::: feedbax.plot.activity_heatmap
 

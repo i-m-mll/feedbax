@@ -5,7 +5,6 @@
 """
 
 from functools import cached_property
-import logging
 from typing import Optional
 
 import equinox as eqx
@@ -18,7 +17,6 @@ from feedbax.mechanics.skeleton import AbstractSkeleton
 from feedbax.runtime.state import CartesianState
 
 
-logger = logging.getLogger(__name__)
 
 
 # global defaults

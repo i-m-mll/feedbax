@@ -272,27 +272,6 @@ def lower_retention_plan(
     return RetentionPlan(observables=observables, loss_terms=tuple(loss_terms))
 
 
-def validate_retention_plan(
-    graph: GraphSpec,
-    training: Optional[TrainingSpec | LossTermSpec] = None,
-    *,
-    task_spec: Optional[Mapping[str, Any] | Any] = None,
-    analysis_input_requirements: Iterable[AnalysisInputRequirement | Mapping[str, Any]] = (),
-) -> list[RetentionPlanError]:
-    """Return lowering errors without raising."""
-
-    try:
-        lower_retention_plan(
-            graph,
-            training,
-            task_spec=task_spec,
-            analysis_input_requirements=analysis_input_requirements,
-        )
-    except RetentionPlanError as exc:
-        return [exc]
-    return []
-
-
 def evaluate_loss_plan(
     loss_terms: Iterable[LossTermPlan],
     trace: Mapping[str, Any],

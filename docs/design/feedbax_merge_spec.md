@@ -209,7 +209,7 @@ class EffectorProfiles(AbstractAnalysis):
 
 **plot/ conflicts:**
 - `colors.py` exists in both — merge color definitions
-- `feedbax.plot.mpl` vs `feedbax_experiments.plot` — different purposes, both needed
+- The retired `feedbax.plot.mpl` stack is not part of the supported plotting surface.
 
 **_logging.py:**
 - feedbax version is simpler

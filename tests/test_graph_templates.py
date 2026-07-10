@@ -24,36 +24,6 @@ from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 
 
-def _task_binding_spec() -> dict:
-    return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
-        "exposed_data": [
-            {
-                "id": "inputs",
-                "label": "Inputs",
-                "kind": "signal",
-                "role": "model_input",
-                "path": "inputs",
-                "bindable": True,
-                "dtype": "vector",
-                "expected_shape": [3],
-                "metadata": {},
-            }
-        ],
-        "bindings": [
-            {
-                "id": "task:inputs->network:input",
-                "source_data_id": "inputs",
-                "target_node_id": "network",
-                "target_port": "input",
-                "role": "model_input",
-                "metadata": {},
-            }
-        ],
-        "metadata": {},
-    }
-
-
 def _network_controller_graph_spec() -> GraphSpec:
     network = network_template_graph(
         {

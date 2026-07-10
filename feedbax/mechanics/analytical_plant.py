@@ -16,7 +16,6 @@ Fiber lengths and velocities are determined algebraically (rigid tendon assumpti
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-import logging
 from typing import Optional
 
 import equinox as eqx
@@ -44,7 +43,6 @@ from feedbax.mechanics.units import (
 from feedbax.runtime.state import StateBounds
 
 
-logger = logging.getLogger(__name__)
 
 
 # Specific tension: force per unit PCSA.  30 N/cm^2 matches MJXPlant.

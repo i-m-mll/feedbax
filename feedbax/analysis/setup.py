@@ -4,7 +4,6 @@ import os
 import time
 from collections.abc import Callable, Sequence
 from functools import partial
-from pathlib import Path
 from typing import Any, Literal, Optional
 
 import equinox as eqx
@@ -17,9 +16,6 @@ from jax_cookbook import is_module, is_type
 from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS
-from feedbax.config.defaults import (
-    TASK_EVAL_PARAMS,
-)
 from feedbax.persistence.database import (
     get_model_record,
     load_tree_with_hps,
@@ -141,38 +137,6 @@ def choose_model_file(filter_pattern="*.eqx", timeout: float = 3600) -> str:
         return f"{fc.default_path}/{fc.default_filename}"
 
 
-def find_unique_filepath(path: str | Path, search_string: str) -> Optional[Path]:
-    """
-    Returns the path of the unique file in a directory whose filename contains a given string.
-
-    Arguments:
-        directory: The path to the directory to search in.
-        search_string: The string to search for in filenames.
-
-    Returns:
-        The path of the unique file if found, None otherwise.
-    """
-    # Convert directory to Path object if it's a string
-    dir_path = Path(path) if isinstance(path, str) else path
-
-    matching_files = [
-        filename
-        for filename in dir_path.iterdir()
-        if filename.is_file() and search_string.lower() in filename.name.lower()
-    ]
-
-    if len(matching_files) == 1:
-        return matching_files[0]
-    elif len(matching_files) == 0:
-        print(f"No files found containing '{search_string}'.")
-        return None
-    else:
-        print(f"Multiple files found containing '{search_string}':")
-        for file in matching_files:
-            print(file.name)
-        return None
-
-
 def set_model_noise(
     model,
     noise_stds: dict[Literal["feedback", "motor"] | str, Optional[float]],
@@ -229,19 +193,6 @@ def setup_tasks_only(task_model_pair_setup_fn, *args, **kwargs):
     task_model_pairs = task_model_pair_setup_fn(*args, **kwargs)
     tasks, _ = jtree.unzip(task_model_pairs)
     return tasks
-
-
-def convert_tasks_to_small(tasks):
-    """Given a PyTree of tasks, return a matching PyTree where each task uses the small set of validation trials."""
-    return jt.map(
-        lambda task: eqx.tree_at(
-            lambda task: tuple(getattr(task, k) for k in TASK_EVAL_PARAMS["small"]),
-            task,
-            tuple(TASK_EVAL_PARAMS["small"].values()),
-        ),
-        tasks,
-        is_leaf=is_module,
-    )
 
 
 # When excluding models based on performance measures aside from loss, these are the ones we'll consider

@@ -45,6 +45,7 @@ from feedbax.training.manifest_preflight import (
     build_training_run_manifest_spec_payloads,
     preflight_training_run_manifest_payloads,
 )
+from feedbax.training.interruption import CancellationDecision
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -493,6 +494,93 @@ def test_execute_training_run_spec_emits_run_events_without_changing_manifest(
     assert result.manifest.checkpoint_custody
 
 
+def test_execute_training_run_spec_stops_at_checkpoint_with_cancelled_provenance(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(stop_after_global_step=3)
+    events_path = tmp_path / "events" / "row-1.events.jsonl"
+    decision = CancellationDecision(
+        action="stop",
+        source="test",
+        requested_at_unix_seconds=123.0,
+    )
+    emitter = RunEventEmitter(
+        run_set_id="set-1",
+        row_id="row-1",
+        path=events_path,
+        heartbeat_seconds=None,
+    )
+    try:
+        result = execute_training_run_spec(
+            _run_spec(),
+            run_id="cancelled-run",
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path / "manifests",
+            checkpoint_root=tmp_path / "checkpoint-custody",
+            registry=registry,
+            run_event_emitter=emitter,
+            cancellation_probe=lambda coordinate: decision if coordinate.global_step == 1 else None,
+        )
+    finally:
+        emitter.close()
+
+    assert result.status == "cancelled"
+    assert result.final_coordinate.global_step == 1
+    assert result.manifest.status == "cancelled"
+    assert result.manifest.provenance.metadata["cancellation"] == decision.as_provenance()
+    assert len(result.checkpoint_writes) == 1
+    assert RunEventReader(events_path).read_all()[-1].payload["status"] == "cancelled"
+
+
+def test_execute_training_run_spec_can_continue_after_an_interruption_decision(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(stop_after_global_step=3)
+    decision = CancellationDecision("continue", "test", 123.0)
+    seen = False
+
+    def cancellation_probe(coordinate):
+        nonlocal seen
+        if coordinate.global_step == 1 and not seen:
+            seen = True
+            return decision
+        return None
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="continued-run",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path,
+        registry=registry,
+        cancellation_probe=cancellation_probe,
+    )
+
+    assert seen
+    assert result.status == "completed"
+    assert result.final_coordinate.global_step == 3
+
+
+def test_execute_training_run_spec_can_terminate_with_cancelled_manifest(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _chunked_registry(stop_after_global_step=3)
+    decision = CancellationDecision("terminate", "test", 123.0)
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="terminated-run",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path,
+        registry=registry,
+        cancellation_probe=lambda coordinate: decision if coordinate.global_step == 1 else None,
+    )
+
+    assert result.status == "cancelled"
+    assert result.final_coordinate.global_step == 1
+    assert not result.checkpoint_writes
+    assert result.manifest.provenance.metadata["cancellation"] == decision.as_provenance()
+
+
 def test_execute_training_run_spec_propagates_progress_callback_errors(
     tmp_path: Path,
 ) -> None:
@@ -892,6 +980,7 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     assert payload["run_id"] == "cli-toy"
     assert payload["status"] == "completed"
     assert Path(payload["manifest_path"]).is_file()
+    assert "phase=train_batch" in proc.stderr
     assert "batch=1" in proc.stderr
     assert "loss=1" in proc.stderr
     assert "elapsed=" in proc.stderr

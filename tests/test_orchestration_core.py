@@ -45,6 +45,7 @@ from feedbax.orchestration.state import (
     RunSetStateStore,
     StateLockError,
 )
+from feedbax.training.interruption import CancellationAction, CancellationDecision
 
 
 class FakeDriver:
@@ -479,6 +480,127 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert budget_state.rows["slow"].status == "stopped"
     assert budget_state.registration_payload
     assert budget_state.registration_payload["status"] == "aborted"
+
+
+def test_local_monitor_requests_checkpoint_stop_and_records_provenance(tmp_path: Path) -> None:
+    script = tmp_path / "interruptible_row.py"
+    script.write_text(
+        """
+import signal
+import time
+from feedbax.orchestration.events import RunEventEmitter
+
+emitter = RunEventEmitter.from_env(heartbeat_seconds=None)
+assert emitter is not None
+
+def stop_at_checkpoint(_signum, _frame):
+    emitter.emit_terminal("complete", {"status": "cancelled"})
+    emitter.close()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGINT, stop_at_checkpoint)
+emitter.emit("ready", {"phase": "train"})
+emitter.emit_progress(
+    {"phase": "train", "batch": 1, "total_batches": 10},
+    batch=1,
+    total_batches=10,
+    force=True,
+)
+while True:
+    time.sleep(0.01)
+""".strip(),
+        encoding="utf-8",
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[RunRowSpec(row_id="row", command=[sys.executable, str(script)])],
+        run_set_id="checkpoint-stop",
+    )
+    event_path = bundle.run_set_dir / "events" / "row.events.jsonl"
+    decision = CancellationDecision("stop", "test", 123.0)
+    dispatched = False
+
+    def interruption_probe() -> CancellationDecision | None:
+        nonlocal dispatched
+        if not dispatched and event_path.exists() and '"type":"ready"' in event_path.read_text():
+            dispatched = True
+            return decision
+        return None
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=LocalOrchestrationDriver(cwd=Path.cwd(), freeze_lines=("feedbax==test",)),
+        poll_interval_seconds=0.01,
+        interruption_probe=interruption_probe,
+    ).run(stop_after_stage="MONITOR")
+
+    assert dispatched
+    assert state.abort_reason == "operator-stop-after-checkpoint"
+    assert state.rows["row"].status == "stopped"
+    assert state.budget_counters["cancellation"] == decision.as_provenance()
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_abort_reason", "expected_row_status"),
+    [
+        ("continue", None, "completed"),
+        ("terminate", "operator-terminate", "stopped"),
+    ],
+)
+def test_local_monitor_applies_continue_and_terminate_decisions(
+    tmp_path: Path,
+    action: CancellationAction,
+    expected_abort_reason: str | None,
+    expected_row_status: str,
+) -> None:
+    script = tmp_path / "row.py"
+    script.write_text(
+        """
+import time
+from feedbax.orchestration.events import RunEventEmitter
+
+with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
+    assert emitter is not None
+    emitter.emit("ready", {"phase": "train"})
+    emitter.emit_progress(
+        {"phase": "train", "batch": 1, "total_batches": 1},
+        batch=1,
+        total_batches=1,
+        force=True,
+    )
+    time.sleep(0.1)
+    emitter.emit_terminal("complete", {"status": "completed"})
+""".strip(),
+        encoding="utf-8",
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[RunRowSpec(row_id="row", command=[sys.executable, str(script)])],
+        run_set_id=f"{action}-decision",
+    )
+    event_path = bundle.run_set_dir / "events" / "row.events.jsonl"
+    decision = CancellationDecision(action, "test", 123.0)
+    dispatched = False
+
+    def interruption_probe() -> CancellationDecision | None:
+        nonlocal dispatched
+        if not dispatched and event_path.exists() and '"type":"ready"' in event_path.read_text():
+            dispatched = True
+            return decision
+        return None
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=LocalOrchestrationDriver(cwd=Path.cwd(), freeze_lines=("feedbax==test",)),
+        poll_interval_seconds=0.01,
+        interruption_probe=interruption_probe,
+    ).run(stop_after_stage="MONITOR")
+
+    assert dispatched
+    assert state.abort_reason == expected_abort_reason
+    assert state.rows["row"].status == expected_row_status
+    if action == "terminate":
+        assert state.budget_counters["cancellation"] == decision.as_provenance()
 
 
 def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(

@@ -1902,7 +1902,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             is_leaf: Predicate identifying leaves to apply the transformation to. Defaults to
                 apply the transformation separately to each `go.Figure` leaf.
             levels: Levels to pass as part of the subtree argument to `fn`. For example,
-                if `fn` is `partial(set_axis_bounds_equal, 'y')` and `levels=['pert__amp',
+                if `fn` is `partial(set_single_axis_bounds_equal, 'y')` and `levels=['pert__amp',
                 'train__pert__std']` then all figures that vary in those two variables will
                 have their y-axes set to the same bounds.
             invert_levels: If `levels` is given, whether to invert the selection of levels.

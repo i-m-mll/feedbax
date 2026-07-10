@@ -15,7 +15,6 @@ delegate time integration to either:
 from __future__ import annotations
 
 from functools import cached_property
-import logging
 from typing import Optional, Protocol, runtime_checkable
 
 import diffrax as dfx
@@ -29,7 +28,6 @@ from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.runtime.state import CartesianState
 
 
-logger = logging.getLogger(__name__)
 
 
 class PhysicsState(Module):
