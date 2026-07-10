@@ -31,6 +31,7 @@ from feedbax.orchestration.state import (
     utc_now,
 )
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
+from feedbax.training.interruption import CancellationDecision
 
 
 STAGE_ASSEMBLE = "ASSEMBLE"
@@ -92,6 +93,7 @@ class StageEngine:
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
+        interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     ) -> None:
         self.bundle = bundle
         self.driver = driver
@@ -101,6 +103,7 @@ class StageEngine:
         self._sleep = sleep
         self._monotonic = monotonic
         self._wall_time = wall_time
+        self._interruption_probe = interruption_probe
 
     def run(
         self,
@@ -232,6 +235,9 @@ class StageEngine:
         self.store.save(state)
         budget_exceeded = False
         while True:
+            decision = self._interruption_probe() if self._interruption_probe is not None else None
+            if decision is not None and decision.action != "continue":
+                state = self._apply_interruption(state, decision)
             state = self._refresh_rows(state)
             if self._all_terminal(state):
                 break
@@ -239,7 +245,8 @@ class StageEngine:
                 budget_exceeded = True
                 state = self._stop_unfinished(state, reason="budget-exceeded")
                 break
-            state = self._launch_pending_if_allowed(state)
+            if state.abort_reason != "operator-stop-after-checkpoint":
+                state = self._launch_pending_if_allowed(state)
             self.store.save(state)
             if self._all_terminal(state):
                 break
@@ -459,8 +466,15 @@ class StageEngine:
             completed_at = row_state.completed_at
             error = row_state.error
             if reconciled.status == "completed" or probe.status == "completed":
-                status = "completed"
+                terminal_status = (
+                    reconciled.terminal_event.payload.get("status")
+                    if reconciled.terminal_event is not None
+                    else None
+                )
+                status = "stopped" if terminal_status == "cancelled" else "completed"
                 completed_at = completed_at or utc_now()
+                if terminal_status == "cancelled":
+                    error = "operator-stop-after-checkpoint"
             elif reconciled.status in ("failed", "error") or probe.status == "failed":
                 status = "failed"
                 completed_at = completed_at or utc_now()
@@ -495,6 +509,59 @@ class StageEngine:
             )
             state = state.with_row(row.row_id, updated)
         return state.model_copy(update={"abort_reason": reason, "updated_at": utc_now()})
+
+    def _apply_interruption(
+        self,
+        state: RunSetState,
+        decision: CancellationDecision,
+    ) -> RunSetState:
+        """Persist and propagate one monitor-level operator decision."""
+        provenance = decision.as_provenance()
+        counters = dict(state.budget_counters)
+        counters["cancellation"] = provenance
+        if decision.action == "terminate":
+            stopped = self._stop_unfinished(state, reason="operator-terminate")
+            return stopped.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+
+        assert decision.action == "stop"
+        for row in self.bundle.rows:
+            row_state = state.rows[row.row_id]
+            if row_state.status in ("completed", "failed", "stopped"):
+                continue
+            if row_state.status == "pending":
+                state = state.with_row(
+                    row.row_id,
+                    row_state.model_copy(
+                        update={
+                            "status": "stopped",
+                            "completed_at": utc_now(),
+                            "error": "operator-stop-after-checkpoint",
+                        }
+                    ),
+                )
+                continue
+            request_stop = getattr(self.driver, "request_stop_at_checkpoint", None)
+            if callable(request_stop):
+                request_stop(self.bundle, row, state)
+            else:
+                self.driver.stop_row(self.bundle, row, state)
+                state = state.with_row(
+                    row.row_id,
+                    row_state.model_copy(
+                        update={
+                            "status": "stopped",
+                            "completed_at": utc_now(),
+                            "error": "operator-stop-after-checkpoint",
+                        }
+                    ),
+                )
+        return state.model_copy(
+            update={
+                "abort_reason": "operator-stop-after-checkpoint",
+                "budget_counters": counters,
+                "updated_at": utc_now(),
+            }
+        )
 
     def _all_terminal(self, state: RunSetState) -> bool:
         return all(row.status in ("completed", "failed", "stopped") for row in state.rows.values())

@@ -185,6 +185,26 @@ class LocalOrchestrationDriver:
         paths["failed"].write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
 
+    def request_stop_at_checkpoint(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Ask a local row to stop itself at its next durable checkpoint."""
+        del state
+        paths = _row_paths(bundle, row.row_id)
+        process = self._processes.get(row.row_id)
+        pid = process.pid if process is not None else _read_pid(paths["pid"])
+        if pid and _pid_alive(pid):
+            try:
+                os.killpg(pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                os.kill(pid, signal.SIGINT)
+        return {"row_id": row.row_id, "pid": pid, "status": "stop_requested"}
+
     def collect(
         self,
         bundle: RunBundle,
