@@ -434,6 +434,16 @@ sync_rows_manifest() {
     provider_copy "$ROWS_MANIFEST" "$REMOTE_RUN_DIR/rows-manifest.json" 0
 }
 
+rows_manifest_warm_ready_field() {
+    local row_id=$1 field=$2 nested=$3
+    jq -r --arg id "$row_id" --arg field "$field" --arg nested "$nested" '
+        (.[$field] // .warm_compile[$nested] // "") as $global
+        | .rows[]
+        | select(.id == $id)
+        | (.[$field] // .warm_compile[$nested] // $global // "")
+    '
+}
+
 remote_nohup_sentinel() {
     local label=$1
     local workdir=$2
@@ -499,63 +509,82 @@ wait_for_sentinel_result() {
 
 launch_row() {
     local row_id=$1 workdir=$2 command=$3
-    local done_file failed_file log_file pid_file started_file remote cache_dir
+    local done_file failed_file ready_file log_file pid_file started_file remote cache_dir
+    local events_dir run_set_id
     cache_dir="${JAX_COMPILATION_CACHE_DIR:-${RUNPOD_VOLUME_MOUNT:-/workspace}/jax_cache}"
     validate_row_id "$row_id" >/dev/null ||
         die "unsafe row id: $row_id (must match [A-Za-z0-9_.-]+)"
     done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
     failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
+    ready_file="$REMOTE_SENTINEL_DIR/${row_id}.ready"
     log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
     pid_file="$REMOTE_SENTINEL_DIR/${row_id}.pid"
     started_file="$REMOTE_SENTINEL_DIR/${row_id}.started"
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") $(sq "$cache_dir") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false JAX_COMPILATION_CACHE_DIR=$(sq "$cache_dir") && ( $command ) & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") >$(sq "$log_file") 2>&1 &"
+    events_dir="$REMOTE_RUN_DIR/events"
+    run_set_id="${RUNPOD_NAME:-$(basename "$REMOTE_RUN_DIR")}"
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") $(sq "$events_dir") $(sq "$cache_dir") && rm -f $(sq "$done_file") $(sq "$failed_file") $(sq "$ready_file") $(sq "$started_file") $(sq "$pid_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && success=0; child=; mark_failed() { rc=\$?; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; if [ \"\$success\" -ne 1 ]; then touch $(sq "$failed_file"); fi; exit \"\$rc\"; }; signal_failed() { rc=\$1; if [ -n \"\$child\" ]; then kill \"\$child\" 2>/dev/null || true; fi; touch $(sq "$failed_file"); exit \"\$rc\"; }; trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; trap 'signal_failed 129' HUP; echo \$\$ > $(sq "$pid_file") && export PYTHONUNBUFFERED=1 XLA_PYTHON_CLIENT_PREALLOCATE=false JAX_COMPILATION_CACHE_DIR=$(sq "$cache_dir") FEEDBAX_RUN_SET_ID=$(sq "$run_set_id") FEEDBAX_ROW_ID=$(sq "$row_id") FEEDBAX_RUN_EVENTS_DIR=$(sq "$events_dir") && ( $command ) & child=\$!; wait \"\$child\"; rc=\$?; child=; if [ \"\$rc\" -eq 0 ]; then success=1; touch $(sq "$done_file"); else touch $(sq "$failed_file"); exit \$rc; fi") </dev/null >$(sq "$log_file") 2>&1 &"
     log "launching row $row_id"
     provider_exec "$remote"
 }
 
 wait_for_row_active_training() {
     local row_id=$1
-    local done_file failed_file log_file timeout poll_seconds ready_probe ready_description
+    local done_file failed_file ready_file event_file log_file timeout poll_seconds
+    local log_ready_probe structured_ready_probe ready_description
     local ready_regex ready_string
     timeout="${SENTINEL_TIMEOUT_SECONDS:-7200}"
     poll_seconds="${SENTINEL_POLL_SECONDS:-30}"
-    ready_regex="${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}"
-    ready_string="${WARM_COMPILE_READY_STRING:-}"
+    ready_regex="${2:-${WARM_COMPILE_READY_REGEX:-([Bb]atch|[Ss]tep|[Ii]ter|[Ii]t)[[:space:]=:]+[0-9]+}}"
+    ready_string="${3:-${WARM_COMPILE_READY_STRING:-}}"
     done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
     failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
+    ready_file="$REMOTE_SENTINEL_DIR/${row_id}.ready"
+    event_file="$REMOTE_RUN_DIR/events/${row_id}.events.jsonl"
     log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
     if [ -n "$ready_string" ]; then
-        ready_probe="test -f $(sq "$log_file") && grep -F -- $(sq "$ready_string") $(sq "$log_file") >/dev/null 2>&1"
+        log_ready_probe="test -f $(sq "$log_file") && grep -F -- $(sq "$ready_string") $(sq "$log_file") >/dev/null 2>&1"
         ready_description="string $(sq "$ready_string")"
     elif [ -n "$ready_regex" ]; then
-        ready_probe="test -f $(sq "$log_file") && grep -E -- $(sq "$ready_regex") $(sq "$log_file") >/dev/null 2>&1"
+        log_ready_probe="test -f $(sq "$log_file") && grep -E -- $(sq "$ready_regex") $(sq "$log_file") >/dev/null 2>&1"
         ready_description="regex $(sq "$ready_regex")"
     else
         die "warm compile readiness requires WARM_COMPILE_READY_REGEX or WARM_COMPILE_READY_STRING"
     fi
+    structured_ready_probe="test -f $(sq "$event_file") && grep -E -- $(sq '\"type\"[[:space:]]*:[[:space:]]*\"ready\"') $(sq "$event_file") >/dev/null 2>&1"
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "dry-run: warm compile first would poll row $row_id log for active training ($ready_description)"
-        provider_exec "$ready_probe || test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
+        log "dry-run: warm compile first would poll row $row_id structured readiness or log for active training ($ready_description)"
+        provider_exec "test -f $(sq "$ready_file") || $structured_ready_probe || $log_ready_probe || test -f $(sq "$done_file") || test -f $(sq "$failed_file")"
         return 0
     fi
 
     local deadline
     deadline=$((SECONDS + timeout))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        if provider_capture "test -f $(sq "$failed_file")"; then
-            die "warm compile row $row_id failed; inspect $REMOTE_RUN_DIR/logs/${row_id}.log"
-        fi
-        if provider_capture "$ready_probe"; then
-            log "warm compile row $row_id reached active training; launching remaining rows"
-            return 0
-        fi
         if provider_capture "test -f $(sq "$done_file")"; then
             log "warm compile row $row_id completed before readiness marker matched; treating successful completion as warmed"
             return 0
         fi
+        if provider_capture "test -f $(sq "$failed_file")"; then
+            die "warm compile row $row_id failed; inspect $REMOTE_RUN_DIR/logs/${row_id}.log"
+        fi
+        if provider_capture "test -f $(sq "$ready_file")"; then
+            log "warm compile row $row_id reported structured readiness; launching remaining rows"
+            return 0
+        fi
+        if provider_capture "$structured_ready_probe"; then
+            provider_exec "touch $(sq "$ready_file")"
+            log "warm compile row $row_id emitted a ready event; launching remaining rows"
+            return 0
+        fi
+        if provider_capture "$log_ready_probe"; then
+            provider_exec "touch $(sq "$ready_file")"
+            log "warm compile row $row_id reached active training; launching remaining rows"
+            return 0
+        fi
         sleep "$poll_seconds"
     done
-    die "timed out waiting for warm compile row $row_id log readiness marker ($ready_description)"
+    log "WARNING: timed out waiting for warm compile row $row_id log readiness marker ($ready_description); launching remaining rows without marking the warm row failed"
+    return 0
 }
 
 count_running_rows() {
@@ -565,6 +594,7 @@ count_running_rows() {
 
 launch_training() {
     local ids workdir command default_wd warm_compile_first
+    local ready_regex ready_string
     default_wd=$(provider_workdir)
     warm_compile_first="${WARM_COMPILE_FIRST:-1}"
 
@@ -595,7 +625,11 @@ launch_training() {
             first=0
             launch_row "$row_id" "$workdir" "$command"
             if [ "$warm_compile_first" -eq 1 ]; then
-                wait_for_row_active_training "$row_id"
+                ready_regex=$(rows_manifest_warm_ready_field \
+                    "$row_id" warm_compile_ready_regex ready_regex <"$ROWS_MANIFEST")
+                ready_string=$(rows_manifest_warm_ready_field \
+                    "$row_id" warm_compile_ready_string ready_string <"$ROWS_MANIFEST")
+                wait_for_row_active_training "$row_id" "$ready_regex" "$ready_string"
                 warm_compile_first=0
             fi
         done

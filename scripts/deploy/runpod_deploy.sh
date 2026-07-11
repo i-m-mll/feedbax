@@ -10,11 +10,13 @@ set -euo pipefail
 # shapes, compile options, jax/jaxlib version, and backend do. Concurrent first
 # compiles of the same program all miss the cache, so row launches warm the
 # first row before fanning out by default. The warm gate waits for a row log
-# readiness marker, not the wrapper PID; set WARM_COMPILE_READY_REGEX or
-# WARM_COMPILE_READY_STRING if a training command emits a better signal than
-# the default batch/step/iteration log pattern. Ephemeral pods do not need
-# eviction, but the cache directory can grow across reused persistent volumes.
-# Override these values with environment variables or `--config <file>`.
+# readiness marker or successful row completion, not the wrapper PID; set
+# WARM_COMPILE_READY_REGEX / WARM_COMPILE_READY_STRING or rows-manifest
+# warm_compile_ready_regex / warm_compile_ready_string fields when a training
+# command emits a better signal than the default batch/step/iteration log
+# pattern. Ephemeral pods do not need eviction, but the cache directory can grow
+# across reused persistent volumes. Override these values with environment
+# variables, `--config <file>`, or the rows manifest.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib_acquire.sh
 source "$SCRIPT_DIR/lib_acquire.sh"
@@ -832,7 +834,7 @@ remote_cmd() {
     local command=$1
     local key_path
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
-    local cmd=(ssh
+    local cmd=(ssh -n
         -o BatchMode=yes
         -o StrictHostKeyChecking=accept-new
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
@@ -848,7 +850,7 @@ remote_capture() {
     local command=$1
     local key_path
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
-    local cmd=(ssh
+    local cmd=(ssh -n
         -o BatchMode=yes
         -o StrictHostKeyChecking=accept-new
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
