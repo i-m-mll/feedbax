@@ -82,6 +82,7 @@ from feedbax.contracts.acausal import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
 from feedbax.contracts.manifest import (
@@ -1037,6 +1038,13 @@ def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, 
     from feedbax.contracts.graph import StudioValueSpec
 
     return StudioValueSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
+
+
+def _migrate_representation_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote v1 representations to the capability-aware v2 envelope."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
+    return migrated
 
 
 def migrate_graph_spec(
@@ -2550,6 +2558,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             consumed_by=("Studio frontend", "workspace renderer"),
             description="Component-owned workspace representation declaration.",
+            stance="migrate",
+            supported_old_versions=(REPRESENTATION_SCHEMA_VERSION_V1,),
             rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
             required_tests=(
                 "tests/test_component_registration.py",
@@ -2904,6 +2914,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "RepresentationSpec",
+    SchemaMigration(
+        source_version=REPRESENTATION_SCHEMA_VERSION_V1,
+        target_version=REPRESENTATION_SCHEMA_VERSION,
+        migration_id="representation-spec-v1-to-v2-reachability-capability",
+        migrate=_migrate_representation_spec_v1_to_v2_payload,
+        description="Add the optional provider-declared reachability capability envelope.",
+    ),
+)
 default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(

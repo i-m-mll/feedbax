@@ -24,7 +24,7 @@ from feedbax.contracts.graphs.builders import build_component
 from feedbax.models.cde import CDENetwork
 from feedbax.runtime.graph import Component
 from feedbax.contracts.graphs.serialization import spec_to_graph
-from feedbax.contracts.representation import RepresentationSpec
+from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION, RepresentationSpec
 
 
 class _PrototypeSource(Component):
@@ -543,7 +543,7 @@ def test_component_registry_round_trips_representation_contract() -> None:
     definition = next(item for item in registry.list_all() if item.name == "RepresentedGain")
     assert definition.representation is not None
     assert definition.representation.schema_id == "feedbax.spec.studio.representation"
-    assert definition.representation.schema_version == "feedbax.spec.studio.representation.v1"
+    assert definition.representation.schema_version == REPRESENTATION_SCHEMA_VERSION
     assert [anchor.id for anchor in definition.representation.anchors] == ["endpoint", "origin"]
     assert definition.representation.elements[0].archetype == "vector"
     assert definition.representation.elements[0].frame_provider is not None
@@ -565,6 +565,9 @@ def test_builtin_mechanics_expose_workspace_representations() -> None:
     two_link = definitions["TwoLinkArm"]
     assert two_link.default_params["link_lengths"] == [0.30, 0.33]
     assert two_link.representation is not None
+    assert two_link.representation.reachability is not None
+    assert two_link.representation.reachability.origin_anchor == "shoulder"
+    assert two_link.representation.reachability.radius_transform == "sum_abs"
     links = next(
         element
         for element in two_link.representation.elements
@@ -683,12 +686,24 @@ def test_component_registry_rejects_representation_unknown_param_path() -> None:
         )
 
 
-def test_representation_contract_rejects_old_schema_version() -> None:
+def test_representation_contract_rejects_non_current_schema_version() -> None:
     with pytest.raises(ValueError, match="literal_error"):
         RepresentationSpec.model_validate(
             {
                 "schema_id": "feedbax.spec.studio.representation",
                 "schema_version": "feedbax.spec.studio.representation.v0",
+            }
+        )
+
+
+def test_representation_reachability_requires_known_origin_anchor() -> None:
+    with pytest.raises(ValueError, match="unknown anchor"):
+        RepresentationSpec.model_validate(
+            {
+                "reachability": {
+                    "origin_anchor": "missing",
+                    "radius_binding": {"kind": "literal", "value": 1.0},
+                }
             }
         )
 

@@ -10,7 +10,8 @@ from feedbax.contracts.graph import ParamSchema, ParamValue, StudioSelectorRef
 
 
 REPRESENTATION_SCHEMA_ID = "feedbax.spec.studio.representation"
-REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v1"
+REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v2"
+REPRESENTATION_SCHEMA_VERSION_V1 = "feedbax.spec.studio.representation.v1"
 REPRESENTATION_SCHEMA_VERSION_V0 = "feedbax.spec.studio.representation.v0"
 
 RepresentationArchetype = Literal[
@@ -208,6 +209,18 @@ class RepresentationElementSpec(RepresentationContractModel):
         return self
 
 
+class RepresentationReachabilitySpec(RepresentationContractModel):
+    """Declare a component-owned radial reach envelope for workspace validation."""
+
+    kind: Literal["radial"] = "radial"
+    origin_anchor: str
+    radius_binding: Union[RepresentationParamPathBinding, RepresentationLiteralBinding]
+    radius_transform: Literal["identity", "sum_abs"] = "identity"
+    label: Optional[str] = None
+    units: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class RepresentationSpec(RepresentationContractModel):
     """Versioned representation declaration served through component metadata."""
 
@@ -221,6 +234,7 @@ class RepresentationSpec(RepresentationContractModel):
     units: Optional[str] = None
     dim: Optional[int] = None
     scale_invariant: bool = False
+    reachability: Optional[RepresentationReachabilitySpec] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -236,6 +250,11 @@ class RepresentationSpec(RepresentationContractModel):
             raise ValueError(f"Duplicate representation element ids: {duplicate_element_ids!r}")
 
         known_anchors = set(anchor_ids)
+        if self.reachability is not None and self.reachability.origin_anchor not in known_anchors:
+            raise ValueError(
+                "Representation reachability origin_anchor references an unknown anchor: "
+                f"{self.reachability.origin_anchor!r}"
+            )
         for element in self.elements:
             missing = sorted(anchor for anchor in element.anchors if anchor not in known_anchors)
             if missing:
@@ -316,6 +335,8 @@ def _duplicates(values: list[str]) -> set[str]:
 
 def _iter_bindings(spec: RepresentationSpec) -> list[tuple[str, RepresentationBinding]]:
     bindings: list[tuple[str, RepresentationBinding]] = []
+    if spec.reachability is not None:
+        bindings.append(("/reachability/radius_binding", spec.reachability.radius_binding))
     for index, anchor in enumerate(spec.anchors):
         if anchor.binding is not None:
             bindings.append((f"/anchors/{index}/binding", anchor.binding))

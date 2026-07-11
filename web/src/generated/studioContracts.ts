@@ -689,9 +689,19 @@ export interface RepresentationElementSpec {
   metadata?: Record<string, unknown>;
 }
 
+export interface RepresentationReachabilitySpec {
+  kind?: "radial";
+  origin_anchor: string;
+  radius_binding: RepresentationParamPathBinding | RepresentationLiteralBinding;
+  radius_transform?: "identity" | "sum_abs";
+  label?: string | null;
+  units?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface RepresentationSpec {
   schema_id?: "feedbax.spec.studio.representation";
-  schema_version?: "feedbax.spec.studio.representation.v1";
+  schema_version?: "feedbax.spec.studio.representation.v2";
   anchors?: RepresentationAnchorSpec[];
   elements?: RepresentationElementSpec[];
   style?: RepresentationStyleSpec[];
@@ -700,6 +710,7 @@ export interface RepresentationSpec {
   units?: string | null;
   dim?: number | null;
   scale_invariant?: boolean;
+  reachability?: RepresentationReachabilitySpec | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -2736,11 +2747,25 @@ export const RepresentationElementSpecSchema: z.ZodType<RepresentationElementSpe
     .strict()
 ) as unknown as z.ZodType<RepresentationElementSpec>;
 
+export const RepresentationReachabilitySpecSchema: z.ZodType<RepresentationReachabilitySpec> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("radial").optional(),
+      "origin_anchor": z.string(),
+      "radius_binding": z.union([RepresentationParamPathBindingSchema, RepresentationLiteralBindingSchema]),
+      "radius_transform": z.union([z.literal("identity"), z.literal("sum_abs")]).optional(),
+      "label": z.string().nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationReachabilitySpec>;
+
 export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.representation").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.representation.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.representation.v2").optional(),
       "anchors": z.array(RepresentationAnchorSpecSchema).optional(),
       "elements": z.array(RepresentationElementSpecSchema).optional(),
       "style": z.array(RepresentationStyleSpecSchema).optional(),
@@ -2749,6 +2774,7 @@ export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(()
       "units": z.string().nullable().optional(),
       "dim": z.number().int().nullable().optional(),
       "scale_invariant": z.boolean().optional(),
+      "reachability": RepresentationReachabilitySpecSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()

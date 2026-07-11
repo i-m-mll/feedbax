@@ -550,7 +550,7 @@ function resolveComponentRepresentation({
       ? planarChain.bindings.link_lengths.path
       : null;
   const twoLinkPoints =
-    planarChain?.metadata?.chain_kind === 'two_link_arm' || component.name === 'TwoLinkArm'
+    planarChain?.metadata?.chain_kind === 'two_link_arm'
       ? twoLinkRestPoints(component, nodeOrTask as ComponentSpec, linkLengthPath)
       : null;
 
@@ -829,43 +829,59 @@ function reachabilityMessages(
   componentsByName: Map<string, ComponentDefinition>,
   task: StudioScenarioSpec['task_spec']
 ) {
-  const armEntry = Object.entries(graph?.nodes ?? {}).find(
-    ([, node]) => node.type === 'TwoLinkArm'
-  );
-  const armComponent = componentsByName.get('TwoLinkArm');
   const taskComponent = task ? componentForTask(task.type, componentsByName) : null;
-  if (!armEntry || !armComponent || !taskComponent || !task) return;
-  const [nodeId, armNode] = armEntry;
-  const lengths = numericArray(paramValue(armComponent, armNode, 'link_lengths')) ?? [0.3, 0.33];
-  const reach = lengths.reduce((total, length) => total + Math.abs(length), 0);
+  if (!taskComponent || !task) return;
   const taskEntity = registry.entities[taskEntityId(registry.scenario_id)];
   const radius = numberParamValue(taskComponent, task, 'eval_reach_length', 0.5);
   const workspace = boundsParam(taskComponent, task, 'workspace');
-  if (radius > reach) {
-    scene.validation.push({
-      type: 'workspace_goal_out_of_reach',
-      severity: 'warning',
-      message: `Reach target radius ${radius.toFixed(3)} m exceeds TwoLinkArm reach ${reach.toFixed(3)} m.`,
-      entity_id: taskEntity?.id ?? null,
-      path: 'task_spec.params.eval_reach_length',
-    });
-  }
-  if (workspace) {
-    const corners: Array<[number, number]> = [
-      workspace.min,
-      [workspace.min[0], workspace.max[1]],
-      [workspace.max[0], workspace.min[1]],
-      workspace.max,
-    ];
-    const farthest = Math.max(...corners.map(([x, y]) => Math.hypot(x, y)));
-    if (farthest > reach) {
+  for (const [nodeId, node] of Object.entries(graph?.nodes ?? {})) {
+    const component = componentsByName.get(node.type);
+    const representation = component?.representation;
+    const capability = representation?.reachability;
+    if (!component || !representation || !capability) continue;
+
+    const rawRadius = bindingValue(component, node, capability.radius_binding);
+    const reach =
+      capability.radius_transform === 'sum_abs'
+        ? numericArray(rawRadius)?.reduce((total, value) => total + Math.abs(value), 0)
+        : Number(rawRadius);
+    if (reach == null || !Number.isFinite(reach) || reach < 0) continue;
+
+    const originAnchor = representation.anchors?.find(
+      (anchor) => anchor.id === capability.origin_anchor
+    );
+    const origin = numericPair(bindingValue(component, node, originAnchor?.binding)) ?? [0, 0];
+    const label = capability.label ?? `${component.name} reach`;
+    const units = capability.units ?? representation.units ?? scene.units;
+
+    if (radius > reach) {
       scene.validation.push({
-        type: 'workspace_region_partially_out_of_reach',
+        type: 'workspace_goal_out_of_reach',
         severity: 'warning',
-        message: `Workspace bounds extend to ${farthest.toFixed(3)} m from the shoulder, beyond TwoLinkArm reach ${reach.toFixed(3)} m.`,
-        entity_id: taskEntity?.id ?? mechanicsEntityId(registry.scenario_id, nodeId),
-        path: 'task_spec.params.workspace',
+        message: `Reach target radius ${radius.toFixed(3)} ${units} exceeds ${label} ${reach.toFixed(3)} ${units}.`,
+        entity_id: taskEntity?.id ?? null,
+        path: 'task_spec.params.eval_reach_length',
       });
+    }
+    if (workspace) {
+      const corners: Array<[number, number]> = [
+        workspace.min,
+        [workspace.min[0], workspace.max[1]],
+        [workspace.max[0], workspace.min[1]],
+        workspace.max,
+      ];
+      const farthest = Math.max(
+        ...corners.map(([x, y]) => Math.hypot(x - origin[0], y - origin[1]))
+      );
+      if (farthest > reach) {
+        scene.validation.push({
+          type: 'workspace_region_partially_out_of_reach',
+          severity: 'warning',
+          message: `Workspace bounds extend to ${farthest.toFixed(3)} ${units} from ${capability.origin_anchor}, beyond ${label} ${reach.toFixed(3)} ${units}.`,
+          entity_id: taskEntity?.id ?? mechanicsEntityId(registry.scenario_id, nodeId),
+          path: 'task_spec.params.workspace',
+        });
+      }
     }
   }
 }

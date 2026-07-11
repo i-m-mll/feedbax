@@ -64,7 +64,9 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
+    RepresentationSpec,
 )
 from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_ID,
@@ -725,7 +727,8 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert task_binding_policy.rejected_old_versions == ("feedbax.studio.task_bindings.v0",)
     representation_policy = default_spec_registry.resolve("RepresentationSpec").policy
     assert representation_policy is not None
-    assert representation_policy.stance == "reject"
+    assert representation_policy.stance == "migrate"
+    assert representation_policy.supported_old_versions == (REPRESENTATION_SCHEMA_VERSION_V1,)
     assert representation_policy.rejected_old_versions == (REPRESENTATION_SCHEMA_VERSION_V0,)
     assert objective_policy is not None
     assert objective_policy.stance == "reject"
@@ -794,6 +797,29 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert "family='StudioTaskBindingSpec'" in message
     assert "feedbax.studio.task_bindings.v0" in message
     assert "migration_intentionally_absent=yes" in message
+
+
+def test_representation_v1_migrates_to_capability_aware_v2() -> None:
+    result = default_spec_registry.migrate(
+        "RepresentationSpec",
+        {
+            "schema_id": REPRESENTATION_SCHEMA_ID,
+            "schema_version": REPRESENTATION_SCHEMA_VERSION_V1,
+            "anchors": [
+                {
+                    "id": "origin",
+                    "semantic_role": "origin",
+                    "binding": {"kind": "literal", "value": [0.0, 0.0]},
+                }
+            ],
+        },
+    )
+
+    assert result.source_version == REPRESENTATION_SCHEMA_VERSION_V1
+    assert result.target_version == REPRESENTATION_SCHEMA_VERSION
+    assert result.migrated
+    representation = RepresentationSpec.model_validate(result.payload)
+    assert representation.reachability is None
 
 
 def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:

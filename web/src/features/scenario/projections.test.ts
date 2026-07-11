@@ -229,6 +229,14 @@ const components: ComponentDefinition[] = [
         },
       ],
       scale_invariant: false,
+      reachability: {
+        kind: 'radial',
+        origin_anchor: 'shoulder',
+        radius_binding: { kind: 'param_path', path: 'link_lengths' },
+        radius_transform: 'sum_abs',
+        label: 'arm reach',
+        units: 'm',
+      },
       metadata: {},
     },
   },
@@ -319,6 +327,35 @@ describe('resolved scene projection', () => {
     ).toEqual(['output:effector', 'output:state']);
     expect(scene.elements.some((element) => element.archetype === 'objective_link')).toBe(false);
     expect(scene.validation.map((message) => message.type)).toContain('workspace_goal_out_of_reach');
+  });
+
+  it('validates reachability from provider metadata without component name sniffing', () => {
+    const genericGraph: GraphSpec = {
+      ...graph,
+      nodes: {
+        mechanics: { ...graph.nodes.mechanics, type: 'CustomRadialPlant' },
+      },
+    };
+    const genericScenario = { ...scenario, graph: genericGraph };
+    const sceneRegistry = buildScenarioEntityRegistry({
+      scenario: genericScenario,
+      graph: genericGraph,
+    });
+    const scene = buildResolvedScene({
+      scenario: genericScenario,
+      graph: genericGraph,
+      registry: sceneRegistry,
+      components: [{ ...components[0], name: 'CustomRadialPlant' }, components[1]],
+    });
+
+    expect(scene.validation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'workspace_goal_out_of_reach',
+          message: expect.stringContaining('arm reach 0.700 m'),
+        }),
+      ])
+    );
   });
 
   it('projects objective links from objective terms instead of representation elements', () => {

@@ -280,6 +280,14 @@ def _two_link_arm_representation() -> RepresentationSpec:
                     },
                 }
             ],
+            "reachability": {
+                "kind": "radial",
+                "origin_anchor": "shoulder",
+                "radius_binding": link_lengths,
+                "radius_transform": "sum_abs",
+                "label": "arm reach",
+                "units": "m",
+            },
         }
     )
 
