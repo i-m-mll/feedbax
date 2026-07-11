@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,10 +12,16 @@ from pydantic import BaseModel, Field
 
 from feedbax.contracts.manifest import (
     BaseManifest,
+    EntrypointRef,
     EvaluationRunManifest,
+    EvaluationRunSpec,
+    ParentRef,
+    Provenance,
     TrainingRunManifest,
     default_manifest_root,
+    evaluation_run_manifest_id,
     load_manifest,
+    spec_payload,
     utc_now,
     write_manifest,
 )
@@ -904,59 +909,65 @@ async def supersede_training_run(
 
 @router.post("/evaluation", response_model=EvalRunInfo)
 async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
-    """Create a new evaluation run entry.
+    """Create a pending evaluation run on the canonical manifest path.
 
     This endpoint registers the intent to run an evaluation with the
     given parameters.  The actual evaluation computation is triggered
     separately (via ``POST /api/analyses/jobs``).
-
-    A new ``EvaluationRecord`` is created before the endpoint reports success.
     """
-    import hashlib
-    import json
-
-    run_id = hashlib.sha256(
-        json.dumps(
-            {
-                "training_run_id": payload.training_run_id,
-                "name": payload.name,
-                "eval_params": payload.eval_params,
-                "ts": datetime.utcnow().isoformat(),
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()[:16]
-
-    now = datetime.utcnow()
-    description = _summarize_perturbation_config(payload.eval_params)
+    training_ref = ParentRef(
+        kind="TrainingRunManifest",
+        id=payload.training_run_id,
+        role="training_run",
+    )
+    run_spec = EvaluationRunSpec(
+        evaluation_type="feedbax.studio.default_eval",
+        training_run_ids=[payload.training_run_id],
+        inputs=[training_ref],
+        params={**payload.eval_params, "label": payload.name},
+    )
+    run_id = evaluation_run_manifest_id(run_spec)
+    existing_row = get_indexed_manifest_record(run_id)
+    if existing_row is not None:
+        if existing_row["kind"] != "EvaluationRunManifest":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Manifest {run_id!r} is not an EvaluationRunManifest",
+            )
+        return _eval_summary_from_index_row(existing_row)
+    manifest = EvaluationRunManifest(
+        id=run_id,
+        status="pending",
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec",
+            run_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        input_training_runs=[training_ref],
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-studio-api",
+                name="create_eval_run",
+            ),
+            parents=[training_ref],
+        ),
+        metadata={"name": payload.name, "planned": True},
+    )
 
     try:
-        with db_session() as session:
-            record = EvaluationRecord(
-                hash=run_id,
-                expt_name=payload.name,
-                model_hashes=[payload.training_run_id],
-                perturbation_config=payload.eval_params,
-                created_at=now,
-            )
-            session.add(record)
+        write_manifest(manifest, root=default_manifest_root())
+        row = get_indexed_manifest_record(run_id)
+        if row is None:
+            raise RuntimeError("evaluation manifest was not indexed")
         logger.info(
-            "Created evaluation run %s for training run %s",
+            "Created evaluation manifest %s for training run %s",
             run_id,
             payload.training_run_id,
         )
     except Exception as exc:
-        logger.exception("Could not persist eval run %s to DB", run_id)
+        logger.exception("Could not persist evaluation manifest %s", run_id)
         raise HTTPException(
             status_code=500,
-            detail=f"Could not persist evaluation run {run_id!r}",
+            detail=f"Could not persist evaluation manifest {run_id!r}",
         ) from exc
 
-    return EvalRunInfo(
-        id=run_id,
-        training_run_id=payload.training_run_id,
-        name=payload.name,
-        created_at=now.isoformat(),
-        status="running",
-        description=description,
-    )
+    return _eval_summary_from_index_row(row)

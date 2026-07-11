@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
     ParentRef,
     TrainingRunManifest,
     load_manifest,
@@ -38,11 +39,63 @@ def _training_manifest(run_id: str, status: str) -> TrainingRunManifest:
     )
 
 
-def test_create_eval_run_fails_when_persistence_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_eval_run_writes_versioned_manifest_not_legacy_row(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+
     def fail_db_session():
-        raise RuntimeError("database offline")
+        raise AssertionError("create_eval_run must not write the legacy evaluations table")
 
     monkeypatch.setattr(runs, "db_session", fail_db_session)
+
+    payload = runs.CreateEvalRunRequest(
+        training_run_id="training-a",
+        name="eval-a",
+        eval_params={"perturbation": "none"},
+    )
+
+    created = asyncio.run(runs.create_eval_run(payload))
+    manifest, path = runs._load_evaluation_manifest_from_index(created.id)
+
+    assert isinstance(manifest, EvaluationRunManifest)
+    assert path.is_file()
+    assert created.status == "pending"
+    assert created.training_run_id == "training-a"
+    assert created.name == "eval-a"
+    assert manifest.evaluation_spec.schema_id == "feedbax.spec.evaluation_run"
+    assert manifest.evaluation_spec.schema_version == "feedbax.spec.evaluation_run.v1"
+    assert manifest.evaluation_spec.inline["params"] == {
+        "perturbation": "none",
+        "label": "eval-a",
+    }
+    assert manifest.input_training_runs == [
+        ParentRef(kind="TrainingRunManifest", id="training-a", role="training_run")
+    ]
+
+    write_manifest(
+        manifest.model_copy(
+            update={"status": "completed", "summary_metrics": {"loss": 0.25}}
+        ),
+        root=tmp_path,
+    )
+    repeated = asyncio.run(runs.create_eval_run(payload))
+    preserved, _path = runs._load_evaluation_manifest_from_index(repeated.id)
+
+    assert repeated.id == created.id
+    assert repeated.status == "completed"
+    assert preserved.status == "completed"
+    assert preserved.summary_metrics == {"loss": 0.25}
+
+
+def test_create_eval_run_fails_when_manifest_persistence_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_write(*_args, **_kwargs):
+        raise RuntimeError("manifest store offline")
+
+    monkeypatch.setattr(runs, "write_manifest", fail_write)
 
     payload = runs.CreateEvalRunRequest(
         training_run_id="training-a",
@@ -54,7 +107,7 @@ def test_create_eval_run_fails_when_persistence_fails(monkeypatch: pytest.Monkey
         asyncio.run(runs.create_eval_run(payload))
 
     assert excinfo.value.status_code == 500
-    assert "Could not persist evaluation run" in str(excinfo.value.detail)
+    assert "Could not persist evaluation manifest" in str(excinfo.value.detail)
 
 
 def test_training_run_index_lists_pending_manifest_rows(
