@@ -39,7 +39,7 @@ def _warmup_update(slots, coordinate, context):
         "controller": slots["controller"] + 1,
         "controller_optimizer": slots["controller_optimizer"] + 10,
         "rng": slots["rng"] + 1,
-        "loss": 1.0 + coordinate.global_step,
+        "loss": 1.0 + coordinate.program_step,
     }
 
 
@@ -50,7 +50,7 @@ def _adversary_update(slots, coordinate, context):
         ],
         "adversary_optimizer": slots["adversary_optimizer"] + 100,
         "rng": slots["rng"] + 1,
-        "loss": 2.0 + coordinate.global_step,
+        "loss": 2.0 + coordinate.program_step,
     }
 
 
@@ -440,9 +440,9 @@ def test_population_length_mismatch_is_rejected_at_load() -> None:
 def test_cross_slot_checkpoint_pairing_is_rejected() -> None:
     manifest = CheckpointSlotManifest(
         slots=[
-            CheckpointSlotRecord(slot="controller", barrier="after_adversarial", global_step=2),
+            CheckpointSlotRecord(slot="controller", barrier="after_adversarial", program_step=2),
             CheckpointSlotRecord(
-                slot="adversary_population", barrier="after_adversarial", global_step=1
+                slot="adversary_population", barrier="after_adversarial", program_step=1
             ),
         ]
     )
