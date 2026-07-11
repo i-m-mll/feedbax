@@ -16,6 +16,7 @@ import feedbax.training.checkpoint_custody as custody_module
 from feedbax.contracts.checkpoints import (
     BatchIndexedCheckpointLeafSpec,
     CheckpointContinuationRequest,
+    CheckpointForkBarrierMapping,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
@@ -277,10 +278,7 @@ def test_slot_integrity_records_preserve_leaf_digest_and_fingerprint_values() ->
     integrity = custody_module._slot_integrity_records(value)
 
     assert integrity.leaf_digests == legacy_leaf_digests
-    assert (
-        integrity.structural_abi_fingerprint
-        == custody_module.structural_abi_fingerprint(value)
-    )
+    assert integrity.structural_abi_fingerprint == custody_module.structural_abi_fingerprint(value)
 
 
 def test_training_run_manifest_links_checkpoint_custody_ref() -> None:
@@ -371,9 +369,9 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
     binding = payload["run_contract_binding"]
     binding["schema_version"] = "feedbax.manifest.training_checkpoint.run_contract_binding.v1"
     binding.pop("algorithm_version")
-    binding["canonical_projection"]["training_run_spec"][
-        "schema_version"
-    ] = "feedbax.spec.training_run.v1"
+    binding["canonical_projection"]["training_run_spec"]["schema_version"] = (
+        "feedbax.spec.training_run.v1"
+    )
     binding["canonical_projection"]["training_run_spec"].pop("on_nan")
     binding["canonical_projection_sha256"] = "legacy-projection-hash"
 
@@ -393,9 +391,10 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
     assert migrated_fingerprint["fingerprint_sha256"] != "legacy-mixed-serializer-hash"
     migrated_binding = migrated.payload["run_contract_binding"]
     assert migrated_binding["algorithm_version"].endswith(".run_contract_binding.v2")
-    assert migrated_binding["canonical_projection"]["training_run_spec"][
-        "schema_version"
-    ] == run_spec.schema_version
+    assert (
+        migrated_binding["canonical_projection"]["training_run_spec"]["schema_version"]
+        == run_spec.schema_version
+    )
     assert migrated_binding["canonical_projection"]["training_run_spec"]["on_nan"] == "raise"
 
 
@@ -427,9 +426,7 @@ def test_checkpoint_transaction_manifest_v3_migrates_batch_progress_metadata(
     assert migrated.source_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3
     assert migrated.target_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert migrated.payload["completed_training_batches"] == 16500
-    assert "not the primary training-batch" in migrated.payload[
-        "completed_coordinate_semantics"
-    ]
+    assert "not the primary training-batch" in migrated.payload["completed_coordinate_semantics"]
 
 
 def test_checkpoint_latest_pointer_prefers_explicit_batches_over_coordinate(
@@ -598,9 +595,9 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     )
 
     assert forked.slot_transfer_modes["controller"] == "serialized"
-    assert {
-        mode for slot, mode in forked.slot_transfer_modes.items() if slot != "controller"
-    } == {"hardlink"}
+    assert {mode for slot, mode in forked.slot_transfer_modes.items() if slot != "controller"} == {
+        "hardlink"
+    }
     source_controller = _slot_blob_path(source.manifest_path, "controller")
     target_controller = _slot_blob_path(forked.manifest_path, "controller")
     assert source_controller.stat().st_ino != target_controller.stat().st_ino
@@ -616,12 +613,10 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     )
     assert loaded.slots["controller"].tolist() == [1.0, 2.0, 0.0]
     assert forked.manifest.fork_provenance is not None
-    controller_provenance = {
-        slot.slot: slot for slot in forked.manifest.fork_provenance.slots
-    }["controller"]
-    source_controller_slot = {
-        slot.slot: slot for slot in source.manifest.slots
-    }["controller"]
+    controller_provenance = {slot.slot: slot for slot in forked.manifest.fork_provenance.slots}[
+        "controller"
+    ]
+    source_controller_slot = {slot.slot: slot for slot in source.manifest.slots}["controller"]
     assert controller_provenance.source_sha256 == source_controller_slot.sha256
     assert controller_provenance.target_sha256 != source_controller_slot.sha256
     assert controller_provenance.transform is not None
@@ -766,9 +761,9 @@ def test_defaulted_legacy_projection_migrates_and_resumes(
     payload = json.loads(result.manifest_path.read_text())
     payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
     binding = payload["run_contract_binding"]
-    binding["canonical_projection"]["training_run_spec"][
-        "schema_version"
-    ] = "feedbax.spec.training_run.v1"
+    binding["canonical_projection"]["training_run_spec"]["schema_version"] = (
+        "feedbax.spec.training_run.v1"
+    )
     binding["canonical_projection"]["training_run_spec"].pop("on_nan")
     binding["canonical_projection_sha256"] = "legacy-v1-projection"
     _rewrite_manifest_and_latest(result, payload)
@@ -782,9 +777,10 @@ def test_defaulted_legacy_projection_migrates_and_resumes(
 
     assert loaded.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert loaded.manifest.run_contract_binding.canonical_projection is not None
-    assert loaded.manifest.run_contract_binding.canonical_projection["training_run_spec"][
-        "on_nan"
-    ] == "raise"
+    assert (
+        loaded.manifest.run_contract_binding.canonical_projection["training_run_spec"]["on_nan"]
+        == "raise"
+    )
 
 
 def test_checkpoint_fork_cli_batch_smoke_partial_failure(tmp_path: Path) -> None:
@@ -938,10 +934,7 @@ def test_manifest_structural_abi_x64_mismatch_reports_leaf_diff_and_hint(
 
     message = str(exc_info.value)
     assert "checkpoint slot 'controller'" in message
-    assert (
-        "path=/ field=dtype recorded=\"float64\" actual=\"float32\""
-        in message
-    )
+    assert 'path=/ field=dtype recorded="float64" actual="float32"' in message
     assert "recorded_x64_enabled=True" in message
     assert "actual_x64_enabled=False" in message
     assert "x64_side=recorded" in message
@@ -1001,9 +994,7 @@ def test_declared_continuation_extends_batch_indexed_leaf_to_requested_total(
     request = CheckpointContinuationRequest(
         source_completed_batches=12000,
         additional_batches=200,
-        batch_indexed_leaves=[
-            BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
-        ],
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
     )
 
     loaded = load_latest_checkpoint(
@@ -1090,14 +1081,14 @@ def test_declared_continuation_at_source_total_preserves_fork_blob_parity(
         continuation_request=CheckpointContinuationRequest(
             source_completed_batches=4,
             target_total_batches=4,
-            batch_indexed_leaves=[
-                BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
-            ],
+            batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
         ),
     )
 
     assert set(forked.slot_transfer_modes.values()) <= {"hardlink", "copy"}
-    assert all(slot.target_sha256 == slot.source_sha256 for slot in forked.manifest.fork_provenance.slots)
+    assert all(
+        slot.target_sha256 == slot.source_sha256 for slot in forked.manifest.fork_provenance.slots
+    )
 
 
 def test_declared_continuation_fork_extends_then_validates_target_resume(
@@ -1121,9 +1112,7 @@ def test_declared_continuation_fork_extends_then_validates_target_resume(
     request = CheckpointContinuationRequest(
         source_completed_batches=12000,
         additional_batches=200,
-        batch_indexed_leaves=[
-            BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
-        ],
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
     )
 
     forked = fork_checkpoint_transaction(
@@ -1297,9 +1286,7 @@ def test_population_length_and_member_identity_mismatch_rejects_resume(
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
-            expected_population_member_ids={
-                "adversary_population": ["adv-a", "adv-b", "adv-c"]
-            },
+            expected_population_member_ids={"adversary_population": ["adv-a", "adv-b", "adv-c"]},
         )
 
 
@@ -1359,9 +1346,7 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             lambda root: (
                 (root / "checkpoint_000001").mkdir(),
                 (root / "checkpoint_000001" / "model.eqx").write_bytes(b"model"),
-                (root / "checkpoint_000001" / "optimizer_state.eqx").write_bytes(
-                    b"optimizer"
-                ),
+                (root / "checkpoint_000001" / "optimizer_state.eqx").write_bytes(b"optimizer"),
                 (root / "checkpoint_000001" / "metadata.json").write_text("{}"),
             ),
         ),
@@ -1460,9 +1445,7 @@ def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
     )
 
     assert loaded.manifest.run_contract_binding.canonical_projection is None
-    assert loaded.manifest.run_contract_binding.metadata["projection_status"] == (
-        "legacy_absent"
-    )
+    assert loaded.manifest.run_contract_binding.metadata["projection_status"] == ("legacy_absent")
 
     changed = run_spec.model_copy(deep=True)
     changed.training_config.learning_rate = 0.5
@@ -1548,4 +1531,48 @@ def test_legacy_task_trainer_checkpoint_files_reject_with_clear_error(
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
+        )
+
+
+def test_distinct_barrier_mapping_requires_explicit_coordinate_provenance() -> None:
+    with pytest.raises(
+        ValueError, match="require explicit target_coordinate and coordinate_mapping"
+    ):
+        CheckpointForkBarrierMapping(
+            source_barrier="after_train_chunk",
+            target_barrier="after_adaptive_epsilon_train_chunk",
+        )
+
+
+def test_checkpoint_fork_rejects_mapping_for_wrong_actual_source_barrier(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    mapping = CheckpointForkBarrierMapping(
+        source_barrier="after_adversarial",
+        target_barrier="after_warmup",
+        target_coordinate=_coordinate(),
+        coordinate_mapping={"identity": "tests.invalid_source_barrier.v1", "parameters": {}},
+    )
+
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="source barrier mapping does not match source manifest",
+    ):
+        fork_checkpoint_transaction(
+            tmp_path / "source",
+            tmp_path / "target",
+            target_run_spec=run_spec,
+            target_phase_program=program,
+            expected_slots=_minimax_slots(),
+            barrier_mapping=mapping,
         )

@@ -36,6 +36,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
     apply_override_patches,
 )
+from feedbax.contracts.checkpoints import CheckpointForkBarrierMapping
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     LrScheduleSpec,
@@ -122,7 +123,9 @@ class StandardLrContinuationReporter:
         if schedule is None:
             params = optimizer.get("params")
             if isinstance(params, Mapping) and "learning_rate" in params:
-                return [{"step": current_step, "lr": params["learning_rate"], "mode": declared_mode}]
+                return [
+                    {"step": current_step, "lr": params["learning_rate"], "mode": declared_mode}
+                ]
             training_config = row_payload.get("training_config")
             if isinstance(training_config, Mapping) and "learning_rate" in training_config:
                 return [
@@ -275,9 +278,7 @@ def write_materialized_matrix(
         "run_set_id": materialized.run_set_id,
         "rows": row_records,
     }
-    (out_dir / "matrix_materialization.json").write_bytes(
-        canonical_json_bytes(manifest) + b"\n"
-    )
+    (out_dir / "matrix_materialization.json").write_bytes(canonical_json_bytes(manifest) + b"\n")
     return manifest
 
 
@@ -300,10 +301,7 @@ def render_spec_lock_table(
         f"Base ref: {spec.base.ref or '<inline>'}",
         f"Base sha256: {spec.base.sha256 or ''}",
         f"Fork source: {spec.fork.source_run_id if spec.fork else ''}",
-        (
-            "LR continuation schedule: "
-            f"{spec.fork.lr_continuation if spec.fork else ''}"
-        ),
+        (f"LR continuation schedule: {spec.fork.lr_continuation if spec.fork else ''}"),
         f"Row count: {len(materialized.rows)}",
         "",
     ]
@@ -341,6 +339,11 @@ def fork_matrix_checkpoints(
     row_target_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     row_target_transformed_slots: Mapping[str, Sequence[str]] | None = None,
     row_target_only_slots: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+    row_barrier_mappings: Mapping[
+        str,
+        CheckpointForkBarrierMapping | Mapping[str, Any],
+    ]
+    | None = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
     tool_version: str = "feedbax.run_matrix_fork.v1",
@@ -353,32 +356,27 @@ def fork_matrix_checkpoints(
     ``row_slot_transforms`` run before continuation; the explicit target/post
     transform family runs after it and must declare changed source slots and
     newly initialized target-only slots.
+
+    ``row_barrier_mappings`` is the only route to a distinct target checkpoint
+    barrier. It is caller-owned and passed unchanged to custody, which verifies
+    the actual source barrier and target coordinate before publishing a fork.
     """
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
     row_ids = {row.row_id for row in materialized.rows}
     unexpected_targets = sorted(set(target_checkpoint_roots) - row_ids)
     if unexpected_targets:
-        raise RunMatrixError(
-            f"target checkpoint roots contain unknown rows {unexpected_targets!r}"
-        )
+        raise RunMatrixError(f"target checkpoint roots contain unknown rows {unexpected_targets!r}")
     unexpected_templates = sorted(set(target_slot_templates or {}) - row_ids)
     if unexpected_templates:
-        raise RunMatrixError(
-            "target slot templates contain unknown rows "
-            f"{unexpected_templates!r}"
-        )
+        raise RunMatrixError(f"target slot templates contain unknown rows {unexpected_templates!r}")
     unexpected_transforms = sorted(set(row_slot_transforms or {}) - row_ids)
     if unexpected_transforms:
-        raise RunMatrixError(
-            "row slot transforms contain unknown rows "
-            f"{unexpected_transforms!r}"
-        )
+        raise RunMatrixError(f"row slot transforms contain unknown rows {unexpected_transforms!r}")
     unexpected_transform_metadata = sorted(set(row_transform_metadata or {}) - row_ids)
     if unexpected_transform_metadata:
         raise RunMatrixError(
-            "row transform metadata contains unknown rows "
-            f"{unexpected_transform_metadata!r}"
+            f"row transform metadata contains unknown rows {unexpected_transform_metadata!r}"
         )
     for label, values in (
         ("row continuation slot templates", row_continuation_slot_templates),
@@ -386,6 +384,7 @@ def fork_matrix_checkpoints(
         ("row target transform metadata", row_target_transform_metadata),
         ("row target transformed slots", row_target_transformed_slots),
         ("row target-only slots", row_target_only_slots),
+        ("row barrier mappings", row_barrier_mappings),
     ):
         unexpected = sorted(set(values or {}) - row_ids)
         if unexpected:
@@ -395,9 +394,7 @@ def fork_matrix_checkpoints(
     mismatches: list[str] = []
     for row in materialized.rows:
         if row.spec is None:
-            raise RunMatrixError(
-                f"row {row.row_id!r} does not contain a canonical TrainingRunSpec"
-            )
+            raise RunMatrixError(f"row {row.row_id!r} does not contain a canonical TrainingRunSpec")
         target_root = target_checkpoint_roots.get(row.row_id)
         if target_root is None:
             raise RunMatrixError(f"missing target checkpoint root for row {row.row_id!r}")
@@ -416,10 +413,12 @@ def fork_matrix_checkpoints(
                     f"row={row.row_id!r} contract=checkpoint_progress.continuation"
                 )
             target_transform = (row_target_slot_transforms or {}).get(row.row_id)
-            continuation_templates = (row_continuation_slot_templates or {}).get(
-                row.row_id
-            )
-            if continuation is not None and target_transform is not None and continuation_templates is None:
+            continuation_templates = (row_continuation_slot_templates or {}).get(row.row_id)
+            if (
+                continuation is not None
+                and target_transform is not None
+                and continuation_templates is None
+            ):
                 raise RunMatrixError(
                     "topology-changing continuation row has no raw continuation slot "
                     f"template; row={row.row_id!r} "
@@ -435,13 +434,10 @@ def fork_matrix_checkpoints(
                 transform_metadata=(row_transform_metadata or {}).get(row.row_id),
                 continuation_slot_templates=continuation_templates,
                 target_slot_transform=target_transform,
-                target_transform_metadata=(row_target_transform_metadata or {}).get(
-                    row.row_id
-                ),
-                target_transformed_slots=(row_target_transformed_slots or {}).get(
-                    row.row_id
-                ),
+                target_transform_metadata=(row_target_transform_metadata or {}).get(row.row_id),
+                target_transformed_slots=(row_target_transformed_slots or {}).get(row.row_id),
                 target_only_slots=(row_target_only_slots or {}).get(row.row_id),
+                barrier_mapping=(row_barrier_mappings or {}).get(row.row_id),
                 continuation_request=continuation,
                 tool_version=tool_version,
                 metadata={
@@ -570,8 +566,7 @@ def _materialize_explicit_rows(
         axis_coordinates = {
             "row_id": row.row_id,
             "overrides": [
-                patch.model_dump(mode="json", exclude_none=True)
-                for patch in row.overrides
+                patch.model_dump(mode="json", exclude_none=True) for patch in row.overrides
             ],
         }
         run_id = _planned_run_id(payload, seed=row.seed, axis_coordinates=axis_coordinates)
@@ -622,8 +617,7 @@ def _materialize_sweep_rows(
     row_validator: RowPayloadValidator,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
     axes_with_values = [
-        axis.model_copy(update={"values": variation_values(axis.variation)})
-        for axis in matrix.axes
+        axis.model_copy(update={"values": variation_values(axis.variation)}) for axis in matrix.axes
     ]
     axis_by_id = {axis.id: axis for axis in axes_with_values}
     indexed_coordinates = expand_sweep_coordinates(axes_with_values, matrix.combination)
@@ -789,8 +783,7 @@ def _validate_group_axes(
         missing = sorted(axis_ids - used)
         if missing:
             raise RunMatrixError(
-                "sweep matrix groups must cover every declared axis; "
-                f"missing axes {missing!r}"
+                f"sweep matrix groups must cover every declared axis; missing axes {missing!r}"
             )
 
 
@@ -865,7 +858,9 @@ def _product(*iterables: Any) -> Any:
     return product(*iterables)
 
 
-def _coordinate_label(axis_by_id: Mapping[str, TrainingSweepAxis], values: Mapping[str, Any]) -> str:
+def _coordinate_label(
+    axis_by_id: Mapping[str, TrainingSweepAxis], values: Mapping[str, Any]
+) -> str:
     return ", ".join(
         f"{axis_by_id[axis_id].label or axis_by_id[axis_id].path}={values[axis_id]!r}"
         for axis_id in sorted(values)
@@ -903,7 +898,9 @@ def _render_value(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _latest_manifest_pair(source_root: Path, target_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def _latest_manifest_pair(
+    source_root: Path, target_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
     return _read_latest_manifest(source_root), _read_latest_manifest(target_root)
 
 

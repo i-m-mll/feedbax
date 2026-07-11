@@ -14,9 +14,7 @@ from pydantic import Field, model_validator
 from feedbax.contracts.manifest import ArtifactRef, ParentRef, StrictModel
 from feedbax.contracts.worker import ConsistencyPredicateSpec, ProgressCoordinate
 
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = (
-    "feedbax.manifest.training_checkpoint_transaction"
-)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = "feedbax.manifest.training_checkpoint_transaction"
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.training_checkpoint_transaction.v1"
 )
@@ -29,15 +27,11 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3 = (
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
     "feedbax.manifest.training_checkpoint_transaction.v4"
 )
-TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = (
-    "feedbax.manifest.training_checkpoint_latest_pointer"
-)
+TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = "feedbax.manifest.training_checkpoint_latest_pointer"
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION = (
     "feedbax.manifest.training_checkpoint_latest_pointer.v2"
 )
-LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID = (
-    "feedbax.manifest.legacy_checkpoint_leaf_manifest"
-)
+LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID = "feedbax.manifest.legacy_checkpoint_leaf_manifest"
 LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION = (
     "feedbax.manifest.legacy_checkpoint_leaf_manifest.v1"
 )
@@ -59,9 +53,7 @@ CheckpointSlotRole = Literal[
 
 
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_continuation"
-CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = (
-    "feedbax.spec.training_checkpoint_continuation.v1"
-)
+CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v1"
 
 
 class BatchIndexedCheckpointLeafSpec(StrictModel):
@@ -90,9 +82,7 @@ class CheckpointContinuationRequest(StrictModel):
     source_completed_batches: int = Field(ge=0)
     additional_batches: int | None = Field(default=None, gt=0)
     target_total_batches: int | None = Field(default=None, ge=0)
-    batch_indexed_leaves: list[BatchIndexedCheckpointLeafSpec] = Field(
-        min_length=1
-    )
+    batch_indexed_leaves: list[BatchIndexedCheckpointLeafSpec] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _validate_request(self) -> "CheckpointContinuationRequest":
@@ -116,9 +106,7 @@ class CheckpointContinuationRequest(StrictModel):
         if self.target_total_batches is not None and (
             self.target_total_batches < self.source_completed_batches
         ):
-            raise ValueError(
-                "/target_total_batches must not precede /source_completed_batches"
-            )
+            raise ValueError("/target_total_batches must not precede /source_completed_batches")
         identities = [(leaf.slot, leaf.tree_path) for leaf in self.batch_indexed_leaves]
         if len(identities) != len(set(identities)):
             raise ValueError("/batch_indexed_leaves slot/tree_path pairs must be unique")
@@ -220,9 +208,7 @@ class StructuralAbiFingerprint(StrictModel):
 
     schema_id: str = "feedbax.manifest.training_checkpoint.structural_abi"
     schema_version: str = "feedbax.manifest.training_checkpoint.structural_abi.v2"
-    fingerprint_algorithm_version: str = (
-        "feedbax.training_checkpoint.structural_abi.content.v2"
-    )
+    fingerprint_algorithm_version: str = "feedbax.training_checkpoint.structural_abi.content.v2"
     treedef: str
     leaf_count: int
     leaves: list[SlotLeafFingerprint]
@@ -302,9 +288,7 @@ class PopulationIdentityRecord(StrictModel):
     @model_validator(mode="after")
     def _validate_length(self) -> "PopulationIdentityRecord":
         if self.length != len(self.member_ids):
-            raise ValueError(
-                f"population slot {self.slot!r} length must match member_ids length"
-            )
+            raise ValueError(f"population slot {self.slot!r} length must match member_ids length")
         return self
 
 
@@ -355,6 +339,42 @@ class CheckpointForkTransformRecord(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CheckpointForkBarrierMapping(StrictModel):
+    """Caller-declared source-to-target checkpoint barrier mapping.
+
+    A normal fork keeps the source barrier and its coordinate exactly. A fork
+    that crosses barriers must instead declare both the target coordinate and
+    its durable mapping rationale; Feedbax never infers a barrier or progress
+    coordinate transition from a target program.
+    """
+
+    source_barrier: str = Field(min_length=1)
+    target_barrier: str = Field(min_length=1)
+    target_coordinate: ProgressCoordinate | None = None
+    coordinate_mapping: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_distinct_barrier_coordinate_mapping(
+        self,
+    ) -> "CheckpointForkBarrierMapping":
+        if self.source_barrier == self.target_barrier:
+            return self
+        if self.target_coordinate is None or self.coordinate_mapping is None:
+            raise ValueError(
+                "distinct source/target checkpoint barriers require explicit "
+                "target_coordinate and coordinate_mapping"
+            )
+        if self.target_coordinate.completed_barrier != self.target_barrier:
+            raise ValueError("/target_coordinate/completed_barrier must equal /target_barrier")
+        identity = self.coordinate_mapping.get("identity")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("/coordinate_mapping/identity must be a non-empty string")
+        parameters = self.coordinate_mapping.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise ValueError("/coordinate_mapping/parameters must be a mapping")
+        return self
+
+
 class CheckpointForkSlotProvenance(StrictModel):
     """Per-slot payload provenance for a forked checkpoint."""
 
@@ -376,15 +396,14 @@ class CheckpointForkProvenance(StrictModel):
     source: CheckpointForkSourceRecord
     slots: list[CheckpointForkSlotProvenance]
     tool_version: str
+    barrier_mapping: CheckpointForkBarrierMapping | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CheckpointTransactionManifest(StrictModel):
     """Durable manifest for one atomic multi-slot checkpoint transaction."""
 
-    kind: Literal["TrainingCheckpointTransactionManifest"] = (
-        "TrainingCheckpointTransactionManifest"
-    )
+    kind: Literal["TrainingCheckpointTransactionManifest"] = "TrainingCheckpointTransactionManifest"
     schema_id: str = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID
     schema_version: str = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     transaction_id: str
@@ -410,13 +429,10 @@ class CheckpointTransactionManifest(StrictModel):
     @model_validator(mode="after")
     def _validate_schema_identity(self) -> "CheckpointTransactionManifest":
         if self.schema_id != TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID:
-            raise ValueError(
-                f"unsupported checkpoint transaction schema_id {self.schema_id!r}"
-            )
+            raise ValueError(f"unsupported checkpoint transaction schema_id {self.schema_id!r}")
         if self.schema_version != TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported checkpoint transaction schema_version "
-                f"{self.schema_version!r}"
+                f"unsupported checkpoint transaction schema_version {self.schema_version!r}"
             )
         slot_names = [slot.slot for slot in self.slots]
         if len(slot_names) != len(set(slot_names)):

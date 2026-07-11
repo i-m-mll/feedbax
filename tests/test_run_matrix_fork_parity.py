@@ -9,9 +9,10 @@ import pytest
 from feedbax.contracts.checkpoints import (
     BatchIndexedCheckpointLeafSpec,
     CheckpointContinuationRequest,
+    CheckpointForkBarrierMapping,
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
-from feedbax.contracts.worker import CheckpointSlotSpec
+from feedbax.contracts.worker import CheckpointSlotSpec, ProgressCoordinate
 from feedbax.training.checkpoint_custody import (
     load_latest_checkpoint,
     write_checkpoint_transaction,
@@ -106,9 +107,7 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
     continuation = CheckpointContinuationRequest(
         source_completed_batches=12000,
         additional_batches=200,
-        batch_indexed_leaves=[
-            BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
-        ],
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
     )
     source_spec = _run_spec(minimax=True).model_copy(deep=True)
     source_spec = source_spec.model_copy(
@@ -154,9 +153,7 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
     )
     materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
     source_slots = _minimax_slots()
-    source_slots["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(
-        5, 12000
-    )
+    source_slots["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
     write_checkpoint_transaction(
         tmp_path / "source",
         run_spec=source_spec,
@@ -199,9 +196,7 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
             }
         },
         row_target_transformed_slots={"continuation": ["controller"]},
-        row_target_only_slots={
-            "continuation": {"target_diagnostics": {"role": "diagnostic"}}
-        },
+        row_target_only_slots={"continuation": {"target_diagnostics": {"role": "diagnostic"}}},
         parity_output_path=tmp_path / "parity.json",
     )
 
@@ -217,24 +212,130 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
     )
     controller = resumed.slots["controller"]
     assert controller["history"].shape == (5, 12200)
-    assert jnp.array_equal(
-        controller["history"][..., :12000], source_slots["controller"]
-    )
+    assert jnp.array_equal(controller["history"][..., :12000], source_slots["controller"])
     assert jnp.all(controller["history"][..., 12000:] == -1.0)
     assert jnp.array_equal(controller["target_topology"], jnp.array([7], dtype=jnp.int32))
     assert jnp.array_equal(resumed.slots["target_diagnostics"], jnp.zeros((2,)))
-    provenance = {
-        slot.slot: slot for slot in resumed.manifest.fork_provenance.slots
-    }
+    provenance = {slot.slot: slot for slot in resumed.manifest.fork_provenance.slots}
     assert provenance["controller"].transform is not None
-    assert [
-        stage["stage"] for stage in provenance["controller"].transform.metadata["stages"]
-    ] == ["continuation_extension", "target_post"]
+    assert [stage["stage"] for stage in provenance["controller"].transform.metadata["stages"]] == [
+        "continuation_extension",
+        "target_post",
+    ]
     assert provenance["target_diagnostics"].source_sha256 is None
     assert provenance["target_diagnostics"].transform is not None
-    assert provenance["target_diagnostics"].transform.metadata[
-        "target_only_declaration"
-    ] == {"role": "diagnostic"}
+    assert provenance["target_diagnostics"].transform.metadata["target_only_declaration"] == {
+        "role": "diagnostic"
+    }
+
+
+def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
+    tmp_path: Path,
+) -> None:
+    """A continuation can cross barriers only through a declared mapping."""
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
+    )
+    source_spec = _run_spec(minimax=True).model_copy(
+        update={
+            "checkpoint_progress": _run_spec(minimax=True).checkpoint_progress.model_copy(
+                update={"continuation": continuation}
+            )
+        }
+    )
+    target_program = source_spec.worker_execution.method_contract.phase_program.model_copy(
+        deep=True
+    )
+    target_barrier = "after_adaptive_epsilon_train_chunk"
+    target_program.checkpoint_barriers[0].name = target_barrier
+    target_program.checkpoint_barriers[0].resume_coordinate.completed_barrier = target_barrier
+    target_program.phases[0].checkpoint_barrier = target_barrier
+    target_program.transitions[0].barrier = target_barrier
+    target_method_contract = source_spec.worker_execution.method_contract.model_copy(
+        update={"phase_program": target_program}
+    )
+    target_effective_phase = source_spec.worker_execution.effective_phase.model_copy(
+        update={"phase_program": target_program}
+    )
+    target_spec = source_spec.model_copy(
+        update={
+            "worker_execution": source_spec.worker_execution.model_copy(
+                update={
+                    "method_contract": target_method_contract,
+                    "effective_phase": target_effective_phase,
+                }
+            )
+        }
+    )
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "distinct barrier continuation row",
+            "base": {"inline": target_spec.model_dump(mode="json", exclude_none=True)},
+            "fork": {
+                "source_run_id": "feedbax-training-run:source",
+                "lr_continuation": "continue",
+                "parity": "skip",
+            },
+            "rows": [{"row_id": "continuation", "overrides": []}],
+        }
+    )
+    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    source_slots = _minimax_slots()
+    source_slots["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=source_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source_slots,
+        completed_training_batches=12000,
+    )
+    target_slots = _minimax_slots()
+    target_slots["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
+    target_coordinate = ProgressCoordinate(
+        run_id="run-1",
+        phase="warmup",
+        global_step=12000,
+        completed_barrier=target_barrier,
+    )
+    barrier_mapping = CheckpointForkBarrierMapping(
+        source_barrier="after_warmup",
+        target_barrier=target_barrier,
+        target_coordinate=target_coordinate,
+        coordinate_mapping={
+            "identity": "tests.after_warmup_to_adaptive_epsilon_chunk.v1",
+            "parameters": {"global_step": "preserve"},
+        },
+    )
+
+    fork_matrix_checkpoints(
+        matrix,
+        materialized,
+        source_checkpoint_root=tmp_path / "source",
+        target_checkpoint_roots={"continuation": tmp_path / "target"},
+        target_slot_templates={"continuation": target_slots},
+        row_barrier_mappings={"continuation": barrier_mapping},
+        parity_output_path=tmp_path / "parity.json",
+    )
+
+    resumed = load_latest_checkpoint(
+        tmp_path / "target",
+        expected_run_spec=materialized.rows[0].spec,
+        expected_phase_program=(
+            materialized.rows[0].spec.worker_execution.method_contract.phase_program
+        ),
+        expected_slots=target_slots,
+        continuation_request=continuation,
+    )
+    assert resumed.manifest.barrier == target_barrier
+    assert resumed.manifest.completed_coordinate == target_coordinate
+    assert resumed.manifest.fork_provenance is not None
+    assert resumed.manifest.fork_provenance.barrier_mapping == barrier_mapping
+    assert jnp.array_equal(resumed.slots["controller"][..., :12000], source_slots["controller"])
+    assert jnp.all(resumed.slots["controller"][..., 12000:] == -1.0)
 
 
 def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -> None:

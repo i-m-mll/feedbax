@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from feedbax.contracts.checkpoints import (
     BatchIndexedCheckpointLeafSpec,
     CheckpointContinuationRequest,
+    CheckpointForkBarrierMapping,
     CheckpointLatestPointer,
     CheckpointLineageRef,
     CheckpointForkProvenance,
@@ -518,9 +519,7 @@ def _load_checkpoint_from_pointer(
             expected_run_spec,
             expected_phase_program,
         ),
-        previous_transaction_id=(
-            manifest.transaction_id if allow_new_lineage_override else None
-        ),
+        previous_transaction_id=(manifest.transaction_id if allow_new_lineage_override else None),
     )
 
 
@@ -555,6 +554,7 @@ def fork_checkpoint_transaction(
     target_phase_program: PhaseProgramSpec | None = None,
     expected_slots: Mapping[str, Any] | None = None,
     target_coordinate: ProgressCoordinate | None = None,
+    barrier_mapping: CheckpointForkBarrierMapping | Mapping[str, Any] | None = None,
     expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
     slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
     transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
@@ -580,6 +580,11 @@ def fork_checkpoint_transaction(
     when possible; changed slots are serialized fresh. ``latest.json`` is
     written only after strict target-bound resume validation succeeds.
 
+    A fork retains its source barrier and progress coordinate unless the caller
+    supplies ``barrier_mapping``. Crossing barriers is therefore explicit: the
+    mapping must name the actual source barrier, an existing target barrier,
+    and a declared target coordinate/mapping rationale.
+
     ``slot_transforms`` and ``transform_metadata`` are retained as legacy
     aliases for ``source_slot_transforms`` and ``source_transform_metadata``.
     Callers must not supply both forms.
@@ -588,8 +593,40 @@ def fork_checkpoint_transaction(
     phase_program = target_phase_program or (
         target_run_spec.worker_execution.method_contract.phase_program
     )
-    barrier = checkpoint_barrier(phase_program, source.manifest.barrier)
-    coordinate = target_coordinate or source.manifest.completed_coordinate
+    resolved_barrier_mapping = _coerce_barrier_mapping(barrier_mapping)
+    if resolved_barrier_mapping is None:
+        barrier = checkpoint_barrier(phase_program, source.manifest.barrier)
+        coordinate = target_coordinate or source.manifest.completed_coordinate
+    else:
+        if source.manifest.barrier != resolved_barrier_mapping.source_barrier:
+            raise CheckpointCompatibilityError(
+                "checkpoint fork source barrier mapping does not match source manifest; "
+                f"declared={resolved_barrier_mapping.source_barrier!r} "
+                f"actual={source.manifest.barrier!r}"
+            )
+        if target_coordinate is not None and resolved_barrier_mapping.target_coordinate is not None:
+            raise CheckpointCompatibilityError(
+                "checkpoint fork received both target_coordinate and "
+                "barrier_mapping.target_coordinate"
+            )
+        barrier = checkpoint_barrier(
+            phase_program,
+            resolved_barrier_mapping.target_barrier,
+        )
+        coordinate = (
+            resolved_barrier_mapping.target_coordinate
+            or target_coordinate
+            or source.manifest.completed_coordinate
+        )
+        if (
+            resolved_barrier_mapping.target_coordinate is not None
+            and coordinate.completed_barrier != barrier.name
+        ):
+            raise CheckpointCompatibilityError(
+                "checkpoint fork target coordinate does not name mapped target barrier; "
+                f"coordinate.completed_barrier={coordinate.completed_barrier!r} "
+                f"target_barrier={barrier.name!r}"
+            )
     if slot_transforms is not None and source_slot_transforms is not None:
         raise CheckpointCompatibilityError(
             "checkpoint fork received both slot_transforms and source_slot_transforms; "
@@ -619,9 +656,7 @@ def fork_checkpoint_transaction(
     if target_slot_transform is not None:
         _validate_target_transform_metadata(target_transform_metadata)
     if len(declared_target_slots) != len(tuple(target_transformed_slots or ())):
-        raise CheckpointCompatibilityError(
-            "target_transformed_slots must not contain duplicates"
-        )
+        raise CheckpointCompatibilityError("target_transformed_slots must not contain duplicates")
     overlap = declared_target_slots & set(target_only_metadata)
     if overlap:
         raise CheckpointCompatibilityError(
@@ -711,9 +746,7 @@ def fork_checkpoint_transaction(
             for slot in target_post_transformed_slots:
                 target_metadata = dict(target_transform_metadata or {})
                 if slot in target_only_metadata:
-                    target_metadata["target_only_declaration"] = dict(
-                        target_only_metadata[slot]
-                    )
+                    target_metadata["target_only_declaration"] = dict(target_only_metadata[slot])
                 transform_stages.setdefault(slot, []).append(
                     _transform_record(
                         slot,
@@ -723,9 +756,7 @@ def fork_checkpoint_transaction(
                     )
                 )
         transformed_slots = (
-            set(transforms)
-            | continuation_transformed_slots
-            | target_post_transformed_slots
+            set(transforms) | continuation_transformed_slots | target_post_transformed_slots
         )
 
         for spec in barrier.slots:
@@ -866,12 +897,11 @@ def fork_checkpoint_transaction(
                         source.manifest.content_integrity_digest.transaction_root_sha256
                     ),
                     manifest_relative_path=source.latest_pointer.manifest_relative_path,
-                    slot_content_digests=list(
-                        source.manifest.content_integrity_digest.slots
-                    ),
+                    slot_content_digests=list(source.manifest.content_integrity_digest.slots),
                 ),
                 slots=slot_provenance,
                 tool_version=tool_version or feedbax_version(),
+                barrier_mapping=resolved_barrier_mapping,
             ),
             metadata=manifest_metadata,
         )
@@ -954,9 +984,7 @@ def _apply_slot_transforms(
     transformed_slots = dict(loaded_slots)
     for slot, transform in transforms.items():
         if slot not in transformed_slots:
-            raise CheckpointCompatibilityError(
-                f"cannot transform missing checkpoint slot {slot!r}"
-            )
+            raise CheckpointCompatibilityError(f"cannot transform missing checkpoint slot {slot!r}")
         try:
             transformed_mapping = dict(transform(transformed_slots))
         except CheckpointCustodyError:
@@ -966,9 +994,7 @@ def _apply_slot_transforms(
                 f"checkpoint fork transform failed for slot {slot!r}"
             ) from exc
         if slot not in transformed_mapping:
-            raise CheckpointCompatibilityError(
-                f"checkpoint fork transform dropped slot {slot!r}"
-            )
+            raise CheckpointCompatibilityError(f"checkpoint fork transform dropped slot {slot!r}")
         transformed_slots[slot] = transformed_mapping[slot]
     return transformed_slots
 
@@ -983,9 +1009,7 @@ def _validate_target_transform_metadata(metadata: Mapping[str, Any] | None) -> N
         )
     parameters = metadata.get("parameters", {})
     if not isinstance(parameters, Mapping):
-        raise CheckpointCompatibilityError(
-            "target_transform_metadata.parameters must be a mapping"
-        )
+        raise CheckpointCompatibilityError("target_transform_metadata.parameters must be a mapping")
 
 
 def _apply_target_slot_transform(
@@ -1012,8 +1036,7 @@ def _apply_target_slot_transform(
     overlap = declared_target_only_slots & set(source_slots)
     if overlap:
         raise CheckpointCompatibilityError(
-            "target-only slots already exist in source topology; "
-            f"slots={sorted(overlap)!r}"
+            f"target-only slots already exist in source topology; slots={sorted(overlap)!r}"
         )
     try:
         transformed = dict(transform(source_slots))
@@ -1025,8 +1048,7 @@ def _apply_target_slot_transform(
     dropped = set(source_slots) - set(transformed)
     if dropped:
         raise CheckpointCompatibilityError(
-            "checkpoint fork target transform dropped source slots; "
-            f"slots={sorted(dropped)!r}"
+            f"checkpoint fork target transform dropped source slots; slots={sorted(dropped)!r}"
         )
     added = set(transformed) - set(source_slots)
     undeclared_added = added - declared_target_only_slots
@@ -1042,9 +1064,7 @@ def _apply_target_slot_transform(
             f"slots={sorted(missing_target_only)!r}"
         )
     changed_source_slots = {
-        slot
-        for slot, source_value in source_slots.items()
-        if transformed[slot] is not source_value
+        slot for slot, source_value in source_slots.items() if transformed[slot] is not source_value
     }
     undeclared_changes = changed_source_slots - declared_transformed_slots
     if undeclared_changes:
@@ -1070,6 +1090,22 @@ def _coerce_continuation_request(
         ) from exc
 
 
+def _coerce_barrier_mapping(
+    value: CheckpointForkBarrierMapping | Mapping[str, Any] | None,
+) -> CheckpointForkBarrierMapping | None:
+    """Validate an optional durable source-to-target barrier mapping."""
+    if value is None:
+        return None
+    if isinstance(value, CheckpointForkBarrierMapping):
+        return value
+    try:
+        return CheckpointForkBarrierMapping.model_validate(value)
+    except ValidationError as exc:
+        raise CheckpointCompatibilityError(
+            f"checkpoint fork barrier mapping is invalid: {exc}"
+        ) from exc
+
+
 def _continuation_was_applied(
     manifest: CheckpointTransactionManifest,
     request: CheckpointContinuationRequest,
@@ -1086,8 +1122,7 @@ def _continuation_was_applied(
         return False
     if marker is not True:
         raise CheckpointCompatibilityError(
-            "checkpoint continuation applied marker must be boolean true; "
-            f"value={marker!r}"
+            f"checkpoint continuation applied marker must be boolean true; value={marker!r}"
         )
     recorded_payload = manifest.metadata.get("checkpoint_continuation")
     if not isinstance(recorded_payload, Mapping):
@@ -1151,9 +1186,7 @@ def _apply_declared_continuation_request(
             continue
         source_pairs, source_treedef = jt.flatten_with_path(source_value)
         target_pairs, _target_treedef = jt.flatten_with_path(target_value)
-        target_by_path = {
-            _key_path_to_text(path): leaf for path, leaf in target_pairs
-        }
+        target_by_path = {_key_path_to_text(path): leaf for path, leaf in target_pairs}
         source_paths = {_key_path_to_text(path) for path, _leaf in source_pairs}
         leaves = [leaf for _path, leaf in source_pairs]
         changed = False
@@ -1200,7 +1233,9 @@ def _apply_declared_continuation_request(
         if changed:
             extended[slot] = jt.unflatten(source_treedef, leaves)
 
-    undeclared_slots = sorted({leaf.slot for leaf in request.batch_indexed_leaves} - set(loaded_slots))
+    undeclared_slots = sorted(
+        {leaf.slot for leaf in request.batch_indexed_leaves} - set(loaded_slots)
+    )
     if undeclared_slots:
         raise CheckpointCompatibilityError(
             "declared batch-indexed continuation slots are missing; "
@@ -1390,9 +1425,7 @@ def _combine_transform_stages(
             "stage": record.metadata.get("stage"),
             "identity": record.identity,
             "parameters": record.parameters,
-            "metadata": {
-                key: value for key, value in record.metadata.items() if key != "stage"
-            },
+            "metadata": {key: value for key, value in record.metadata.items() if key != "stage"},
         }
         for record in stages
     ]
@@ -1489,9 +1522,7 @@ def _format_structural_abi_diff(
 ) -> str:
     diffs = _structural_abi_leaf_diffs(recorded, actual)
     displayed_diffs = diffs[:10]
-    leaf_diff_text = "; ".join(
-        _format_structural_abi_leaf_diff(diff) for diff in displayed_diffs
-    )
+    leaf_diff_text = "; ".join(_format_structural_abi_leaf_diff(diff) for diff in displayed_diffs)
     if not leaf_diff_text:
         leaf_diff_text = "<none in comparable leaves>"
     elif len(diffs) > len(displayed_diffs):
@@ -1685,8 +1716,7 @@ def _validate_structural_abi(
         if loaded_fingerprint.fingerprint_sha256 != expected.fingerprint_sha256:
             diff_suffix = _format_structural_abi_diff(expected, loaded_fingerprint)
             raise CheckpointCompatibilityError(
-                f"checkpoint slot {slot.slot!r} structural ABI mismatch"
-                f"{diff_suffix}"
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch{diff_suffix}"
             )
 
 
@@ -1710,8 +1740,7 @@ def _validate_manifest_structural_abi(
                 loaded_fingerprint,
             )
             raise CheckpointIntegrityError(
-                f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale"
-                f"{diff_suffix}"
+                f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale{diff_suffix}"
             )
         notice = _environment_provenance_notice(slot.slot, slot.structural_abi_fingerprint)
         if notice is not None:
@@ -1823,9 +1852,7 @@ def _format_binding_hash_field_summary(
 
     mismatches = _binding_hash_field_mismatches(recorded_hashes, comparison_hashes)
     matches = [
-        field
-        for field in recorded_hashes
-        if recorded_hashes[field] == comparison_hashes.get(field)
+        field for field in recorded_hashes if recorded_hashes[field] == comparison_hashes.get(field)
     ]
     return (
         f"; hash_comparison={comparison_label}"
@@ -1929,10 +1956,7 @@ def _value_diffs(
 
 def _format_binding_diff(diff: tuple[str, Any, Any]) -> str:
     path, recorded, expected = diff
-    return (
-        f"{path}: recorded={_short_json(recorded)}, "
-        f"expected={_short_json(expected)}"
-    )
+    return f"{path}: recorded={_short_json(recorded)}, expected={_short_json(expected)}"
 
 
 def _short_json(value: Any, *, limit: int = 160) -> str:
@@ -2080,9 +2104,7 @@ def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
 def _reject_legacy_checkpoint(root: Path) -> None:
     layout = detect_known_legacy_checkpoint_layout(root)
     if layout is not None:
-        raise CheckpointCompatibilityError(
-            _legacy_checkpoint_adoption_message(layout)
-        )
+        raise CheckpointCompatibilityError(_legacy_checkpoint_adoption_message(layout))
 
 
 def _legacy_checkpoint_adoption_message(layout: DetectedLegacyCheckpointLayout) -> str:
@@ -2157,10 +2179,7 @@ def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:
 
 
 def _slot_roles(run_spec: TrainingRunSpec) -> dict[str, str]:
-    return {
-        slot.name: slot.role
-        for slot in run_spec.worker_execution.method_contract.state_slots
-    }
+    return {slot.name: slot.role for slot in run_spec.worker_execution.method_contract.state_slots}
 
 
 def _population_slot_names(run_spec: TrainingRunSpec) -> set[str]:
@@ -2220,9 +2239,7 @@ def _structural_abi_content_payload(
     leaves: Sequence[SlotLeafFingerprint],
 ) -> dict[str, Any]:
     return {
-        "fingerprint_algorithm_version": (
-            "feedbax.training_checkpoint.structural_abi.content.v2"
-        ),
+        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
         "treedef": treedef,
         "leaf_count": len(leaves),
         "leaves": [_leaf_structural_content_payload(leaf) for leaf in leaves],
