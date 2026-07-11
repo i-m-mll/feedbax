@@ -36,6 +36,8 @@ from feedbax.contracts.representation import (
     RepresentationValidationIssue,
 )
 from feedbax.contracts.checkpoints import (
+    CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID,
+    CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
@@ -46,6 +48,8 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkSourceRecord,
     CheckpointForkTransformRecord,
     CheckpointLatestPointer,
+    CheckpointContinuationRequest,
+    BatchIndexedCheckpointLeafSpec,
     CheckpointLineageRef,
     CheckpointResumeResult,
     CheckpointSlotBlobRef,
@@ -355,6 +359,10 @@ __all__ = [
     "DescriptorResolutionError",
     "DescriptorValidationError",
     "CheckpointBarrierSpec",
+    "BatchIndexedCheckpointLeafSpec",
+    "CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID",
+    "CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION",
+    "CheckpointContinuationRequest",
     "CheckpointLatestPointer",
     "CheckpointLineageRef",
     "CheckpointSlotManifest",

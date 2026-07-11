@@ -78,6 +78,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
 )
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.execution.models import (
@@ -754,6 +755,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     )
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)

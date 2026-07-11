@@ -55,6 +55,75 @@ CheckpointSlotRole = Literal[
 ]
 
 
+CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_continuation"
+CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v1"
+
+
+class BatchIndexedCheckpointLeafSpec(StrictModel):
+    """One explicitly declared final-axis checkpoint leaf extended on resume."""
+
+    slot: str = Field(min_length=1)
+    tree_path: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_tree_path(self) -> "BatchIndexedCheckpointLeafSpec":
+        if not self.tree_path.startswith("/"):
+            raise ValueError("/batch_indexed_leaves/tree_path must start with '/'")
+        return self
+
+
+class CheckpointContinuationRequest(StrictModel):
+    """Durable declaration for extending a checkpointed row's total horizon.
+
+    Feedbax deliberately does not infer batch-indexed leaves from arbitrary
+    PyTrees. The producer must declare the exact slot/tree-path leaves whose
+    final axis represents the global training-batch horizon.
+    """
+
+    schema_id: str = CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID
+    schema_version: str = CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION
+    source_completed_batches: int = Field(ge=0)
+    additional_batches: int | None = Field(default=None, gt=0)
+    target_total_batches: int | None = Field(default=None, ge=0)
+    batch_indexed_leaves: list[BatchIndexedCheckpointLeafSpec] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_request(self) -> "CheckpointContinuationRequest":
+        if self.schema_id != CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID:
+            raise ValueError(
+                "/schema_id unsupported checkpoint continuation schema_id "
+                f"{self.schema_id!r}; expected "
+                f"{CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID!r}"
+            )
+        if self.schema_version != CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION:
+            raise ValueError(
+                "/schema_version unsupported checkpoint continuation schema_version "
+                f"{self.schema_version!r}; expected "
+                f"{CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        if (self.additional_batches is None) == (self.target_total_batches is None):
+            raise ValueError(
+                "exactly one of /additional_batches or /target_total_batches is required"
+            )
+        if self.target_total_batches is not None and (
+            self.target_total_batches < self.source_completed_batches
+        ):
+            raise ValueError("/target_total_batches must not precede /source_completed_batches")
+        identities = [(leaf.slot, leaf.tree_path) for leaf in self.batch_indexed_leaves]
+        if len(identities) != len(set(identities)):
+            raise ValueError("/batch_indexed_leaves slot/tree_path pairs must be unique")
+        return self
+
+    @property
+    def target_total(self) -> int:
+        """Return the target total implied by this unambiguous declaration."""
+        if self.additional_batches is not None:
+            return self.source_completed_batches + self.additional_batches
+        assert self.target_total_batches is not None
+        return self.target_total_batches
+
+
 class SerializerVersionRecord(StrictModel):
     """Serializer and runtime versions that affect checkpoint compatibility."""
 
@@ -273,6 +342,42 @@ class CheckpointForkTransformRecord(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CheckpointForkBarrierMapping(StrictModel):
+    """Caller-declared source-to-target checkpoint barrier mapping.
+
+    A normal fork keeps the source barrier and its coordinate exactly. A fork
+    that crosses barriers must instead declare both the target coordinate and
+    its durable mapping rationale; Feedbax never infers a barrier or progress
+    coordinate transition from a target program.
+    """
+
+    source_barrier: str = Field(min_length=1)
+    target_barrier: str = Field(min_length=1)
+    target_coordinate: ProgressCoordinate | None = None
+    coordinate_mapping: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_distinct_barrier_coordinate_mapping(
+        self,
+    ) -> "CheckpointForkBarrierMapping":
+        if self.source_barrier == self.target_barrier:
+            return self
+        if self.target_coordinate is None or self.coordinate_mapping is None:
+            raise ValueError(
+                "distinct source/target checkpoint barriers require explicit "
+                "target_coordinate and coordinate_mapping"
+            )
+        if self.target_coordinate.completed_barrier != self.target_barrier:
+            raise ValueError("/target_coordinate/completed_barrier must equal /target_barrier")
+        identity = self.coordinate_mapping.get("identity")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("/coordinate_mapping/identity must be a non-empty string")
+        parameters = self.coordinate_mapping.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise ValueError("/coordinate_mapping/parameters must be a mapping")
+        return self
+
+
 class CheckpointForkSlotProvenance(StrictModel):
     """Per-slot payload provenance for a forked checkpoint."""
 
@@ -294,6 +399,7 @@ class CheckpointForkProvenance(StrictModel):
     source: CheckpointForkSourceRecord
     slots: list[CheckpointForkSlotProvenance]
     tool_version: str
+    barrier_mapping: CheckpointForkBarrierMapping | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
