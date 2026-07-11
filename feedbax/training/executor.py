@@ -49,6 +49,7 @@ from feedbax.training.checkpoint_custody import (
     ResumeSlotTransform,
     load_latest_checkpoint,
     write_checkpoint_transaction,
+    materialize_concatenated_checkpoint_histories,
 )
 from feedbax.training.phase_executor import (
     InMemoryCheckpointStore,
@@ -193,6 +194,9 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         run_spec: TrainingRunSpec,
         phase_program: Any,
         parent_lineage: Sequence[CheckpointLineageRef] = (),
+        segment_start_batch: int = 0,
+        segment_batch_count: int | None = None,
+        segment_parent_transaction_id: str | None = None,
         run_event_emitter: RunEventEmitter | None = None,
     ) -> None:
         super().__init__()
@@ -201,6 +205,9 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self.run_spec = run_spec
         self.phase_program = phase_program
         self.parent_lineage = tuple(parent_lineage)
+        self.segment_start_batch = segment_start_batch
+        self.segment_batch_count = segment_batch_count
+        self.segment_parent_transaction_id = segment_parent_transaction_id
         self.run_event_emitter = run_event_emitter
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -235,6 +242,9 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             slots=saved.slots,
             status="partial",
             parent_lineage=self.parent_lineage,
+            segment_start_batch=self.segment_start_batch,
+            segment_batch_count=self.segment_batch_count,
+            segment_parent_transaction_id=self.segment_parent_transaction_id,
             history_availability={"progress": True},
             metadata={"barrier_visit_ordinal": saved.visit_ordinal},
         )
@@ -372,6 +382,9 @@ def execute_training_run_spec(
     resume_barrier: str | None = None
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
+    segment_start_batch = 0
+    segment_batch_count: int | None = None
+    segment_parent_transaction_id: str | None = None
     if resume:
         loaded = load_latest_checkpoint(
             custody_root,
@@ -398,6 +411,11 @@ def execute_training_run_spec(
                 ),
             )
         )
+        continuation = run_spec.checkpoint_progress.continuation
+        if continuation is not None:
+            segment_start_batch = continuation.source_completed_batches
+            segment_batch_count = continuation.additional_batches
+            segment_parent_transaction_id = loaded.manifest.transaction_id
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
@@ -405,6 +423,9 @@ def execute_training_run_spec(
         run_spec=run_spec,
         phase_program=program,
         parent_lineage=parent_lineage,
+        segment_start_batch=segment_start_batch,
+        segment_batch_count=segment_batch_count,
+        segment_parent_transaction_id=segment_parent_transaction_id,
         run_event_emitter=run_event_emitter,
     )
     if loaded_resume_checkpoint is not None:
@@ -482,6 +503,15 @@ def execute_training_run_spec(
             ),
         )
         checkpoint_writes = checkpoint_store.writes
+        continuation = run_spec.checkpoint_progress.continuation
+        if continuation is not None and continuation.self_contained and checkpoint_writes:
+            materialize_concatenated_checkpoint_histories(
+                custody_root,
+                custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl",
+                parent_roots={
+                    lineage.transaction_id: custody_root for lineage in parent_lineage
+                },
+            )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
         final_metrics = _final_metrics(execution.slots, execution.coordinate)

@@ -174,6 +174,7 @@ from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunResult,
 )
 from feedbax.contracts.training import (
+    BatchScheduleOriginSpec,
     EarlyStoppingSpec,
     LossTermSpec,
     LrScheduleSpec,
@@ -357,6 +358,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     WorkspaceReplayRequiredSelector,
     ResolvedWorkspaceReplayScene,
     ComponentDefinition,
+    BatchScheduleOriginSpec,
     LrScheduleSpec,
     OptimizerSpec,
     TimeAggregationSpec,

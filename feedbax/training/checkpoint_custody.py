@@ -20,11 +20,12 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+from jax_cookbook import is_type
 import numpy as np
 from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.checkpoints import (
-    BatchIndexedCheckpointLeafSpec,
+    BatchHistory,
     CheckpointContinuationRequest,
     CheckpointDocumentLoadResult,
     CheckpointForkBarrierMapping,
@@ -35,6 +36,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkSourceRecord,
     CheckpointForkTransformRecord,
     CheckpointResumeResult,
+    CheckpointSegmentLineage,
     CheckpointProvenanceNotice,
     CheckpointSlotBlobRef,
     CheckpointTransactionManifest,
@@ -150,6 +152,15 @@ class CheckpointForkResult:
     latest_pointer: CheckpointLatestPointer
     slot_transfer_modes: Mapping[str, str]
     source_provenance_notices: tuple[CheckpointProvenanceNotice, ...] = ()
+
+
+@dataclass(frozen=True)
+class ConcatenatedCheckpointHistories:
+    """Pure read result for a validated terminal segment lineage."""
+
+    histories: Mapping[str, BatchHistory[Any]]
+    transaction_ids: tuple[str, ...]
+    completed_training_batches: int
 
 
 @dataclass(frozen=True)
@@ -455,6 +466,168 @@ def _resolve_completed_training_batches(
     return authoritative
 
 
+def _validate_batch_histories(
+    slots: Mapping[str, Any],
+    *,
+    segment_batch_count: int | None,
+) -> None:
+    """Validate every marked history against this transaction's segment length."""
+    marked: list[tuple[str, str, BatchHistory[Any]]] = []
+    for slot, value in slots.items():
+        pairs, _ = jt.flatten_with_path(value, is_leaf=is_type(BatchHistory))
+        marked.extend(
+            (slot, _key_path_to_text(path), leaf)
+            for path, leaf in pairs
+            if isinstance(leaf, BatchHistory)
+        )
+    if not marked:
+        return
+    if segment_batch_count is None:
+        raise CheckpointConsistencyError(
+            "BatchHistory custody requires completed_training_batches for segment validation"
+        )
+    for slot, path, history in marked:
+        if not eqx.is_array(history.value):
+            raise CheckpointConsistencyError(
+                f"BatchHistory must wrap an array; slot={slot!r} path={path!r}"
+            )
+        shape = tuple(jnp.asarray(history.value).shape)
+        axis = history.batch_axis
+        if axis < 0:
+            axis += len(shape)
+        if axis < 0 or axis >= len(shape):
+            raise CheckpointConsistencyError(
+                "BatchHistory batch_axis is out of bounds; "
+                f"slot={slot!r} path={path!r} shape={shape!r} axis={history.batch_axis}"
+            )
+        expected = history.granularity.expected_entries(segment_batch_count)
+        if shape[axis] != expected:
+            raise CheckpointConsistencyError(
+                "BatchHistory length must match the owning segment; "
+                f"slot={slot!r} path={path!r} axis={history.batch_axis} "
+                f"actual={shape[axis]} expected={expected} "
+                f"segment_batches={segment_batch_count} "
+                f"interval={history.granularity.interval}. Histories must be segment-local; "
+                "whole-training statistics belong in fixed-size streaming state "
+                "(for example an EMA, ring buffer, reservoir sample, or scalar accumulator)."
+            )
+
+
+def _history_granularities(slots: Mapping[str, Any]) -> dict[str, int]:
+    granularities: dict[str, int] = {}
+    for slot, value in slots.items():
+        pairs, _ = jt.flatten_with_path(value, is_leaf=is_type(BatchHistory))
+        for path, leaf in pairs:
+            if isinstance(leaf, BatchHistory):
+                granularities[f"{slot}{_key_path_to_text(path)}"] = leaf.granularity.interval
+    return granularities
+
+
+def _wrap_migrated_v5_batch_histories(
+    slots: Mapping[str, Any],
+    manifest: CheckpointTransactionManifest,
+) -> dict[str, Any]:
+    """Wrap v5 declared paths after envelope migration, without extension semantics."""
+    if manifest.metadata.get("batch_history_tree_migration") != "declared_paths_v5_to_v6":
+        return dict(slots)
+    raw_request = manifest.metadata.get("checkpoint_continuation")
+    if not isinstance(raw_request, Mapping):
+        return dict(slots)
+    if raw_request.get("schema_version") != "feedbax.spec.training_checkpoint_continuation.v1":
+        return dict(slots)
+    raw_declarations = raw_request.get("batch_indexed_leaves")
+    if not isinstance(raw_declarations, list):
+        raise CheckpointCompatibilityError(
+            "legacy v1 continuation batch_indexed_leaves must be a list"
+        )
+    by_slot: dict[str, set[str]] = {}
+    for index, declaration in enumerate(raw_declarations):
+        if not isinstance(declaration, Mapping):
+            raise CheckpointCompatibilityError(
+                f"legacy v1 BatchHistory declaration must be a mapping; index={index}"
+            )
+        slot = declaration.get("slot")
+        path = declaration.get("tree_path")
+        if not isinstance(slot, str) or not slot or not isinstance(path, str) or not path.startswith(
+            "/"
+        ):
+            raise CheckpointCompatibilityError(
+                f"legacy v1 BatchHistory declaration is invalid; index={index}"
+            )
+        by_slot.setdefault(slot, set()).add(path)
+    migrated = dict(slots)
+    for slot, paths in by_slot.items():
+        if slot not in slots:
+            raise CheckpointCompatibilityError(
+                f"legacy BatchHistory migration slot is missing; slot={slot!r}"
+            )
+        pairs, treedef = jt.flatten_with_path(slots[slot])
+        found: set[str] = set()
+        leaves: list[Any] = []
+        for path, leaf in pairs:
+            path_text = _key_path_to_text(path)
+            if path_text in paths:
+                if not eqx.is_array(leaf):
+                    raise CheckpointCompatibilityError(
+                        "legacy BatchHistory migration target must be an array; "
+                        f"slot={slot!r} path={path_text!r}"
+                    )
+                leaf = BatchHistory(leaf)
+                found.add(path_text)
+            leaves.append(leaf)
+        missing = sorted(paths - found)
+        if missing:
+            raise CheckpointCompatibilityError(
+                "legacy BatchHistory migration path is missing; "
+                f"slot={slot!r} paths={missing!r}"
+            )
+        migrated[slot] = jt.unflatten(treedef, leaves)
+    return migrated
+
+
+def _allocate_segment_histories(
+    source_slots: Mapping[str, Any],
+    templates: Mapping[str, Any],
+) -> tuple[dict[str, Any], set[str]]:
+    """Preserve dynamical leaves while replacing histories with segment templates."""
+    result = dict(source_slots)
+    changed: set[str] = set()
+    for slot, source in source_slots.items():
+        if slot not in templates:
+            continue
+        source_leaves, source_def = jt.flatten(source, is_leaf=is_type(BatchHistory))
+        target_leaves, target_def = jt.flatten(templates[slot], is_leaf=is_type(BatchHistory))
+        if source_def != target_def or len(source_leaves) != len(target_leaves):
+            raise CheckpointCompatibilityError(
+                f"continuation slot structure differs before history allocation; slot={slot!r}"
+            )
+        output: list[Any] = []
+        slot_changed = False
+        for source_leaf, target_leaf in zip(source_leaves, target_leaves, strict=True):
+            if isinstance(source_leaf, BatchHistory) or isinstance(target_leaf, BatchHistory):
+                if not isinstance(source_leaf, BatchHistory) or not isinstance(
+                    target_leaf, BatchHistory
+                ):
+                    raise CheckpointCompatibilityError(
+                        f"continuation BatchHistory marking differs; slot={slot!r}"
+                    )
+                if (
+                    source_leaf.batch_axis != target_leaf.batch_axis
+                    or source_leaf.granularity.interval != target_leaf.granularity.interval
+                ):
+                    raise CheckpointCompatibilityError(
+                        f"continuation BatchHistory granularity differs; slot={slot!r}"
+                    )
+                output.append(target_leaf)
+                slot_changed = True
+            else:
+                output.append(source_leaf)
+        if slot_changed:
+            result[slot] = jt.unflatten(source_def, output)
+            changed.add(slot)
+    return result, changed
+
+
 def write_checkpoint_transaction(
     root: str | Path,
     *,
@@ -469,6 +642,9 @@ def write_checkpoint_transaction(
     history_availability: Mapping[str, bool] | None = None,
     parent_lineage: Sequence[CheckpointLineageRef] | None = None,
     completed_training_batches: int | None = None,
+    segment_start_batch: int = 0,
+    segment_batch_count: int | None = None,
+    segment_parent_transaction_id: str | None = None,
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
 ) -> CheckpointWriteResult:
@@ -558,6 +734,10 @@ def write_checkpoint_transaction(
             explicit=completed_training_batches,
             metadata=manifest_metadata,
         )
+        resolved_segment_batches = (
+            segment_batch_count if segment_batch_count is not None else completed_batches
+        )
+        _validate_batch_histories(slots, segment_batch_count=resolved_segment_batches)
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
             run_id=coordinate.run_id,
@@ -565,6 +745,12 @@ def write_checkpoint_transaction(
             barrier=barrier.name,
             completed_coordinate=coordinate,
             completed_training_batches=completed_batches,
+            segment_lineage=CheckpointSegmentLineage(
+                parent_transaction_id=segment_parent_transaction_id,
+                start_batch=segment_start_batch,
+                segment_batch_count=resolved_segment_batches or 0,
+                history_granularities=_history_granularities(slots),
+            ),
             consistency_predicate=derive_consistency_predicate(phase_program),
             run_contract_binding=run_contract_binding(run_spec, phase_program),
             slots=slot_records,
@@ -709,6 +895,11 @@ def _load_checkpoint_from_pointer(
         manifest,
         loaded_slots,
     )
+    migrated_slots = _wrap_migrated_v5_batch_histories(loaded_slots, manifest)
+    if any(migrated_slots.get(slot) is not value for slot, value in loaded_slots.items()):
+        loaded_slots = migrated_slots
+        loaded_fingerprints = {}
+    request = _coerce_continuation_request(continuation_request)
     loaded_fingerprint_slots = dict(loaded_slots)
     if resume_slot_transform is not None:
         try:
@@ -727,25 +918,17 @@ def _load_checkpoint_from_pointer(
             for slot, fingerprint in loaded_fingerprints.items()
             if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
         }
-    request = _coerce_continuation_request(continuation_request)
+    if request is not None and request.source_completed_batches != (
+        manifest.segment_lineage.start_batch + manifest.segment_lineage.segment_batch_count
+    ):
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation source offset mismatch; "
+            f"lineage_total={manifest.segment_lineage.start_batch + manifest.segment_lineage.segment_batch_count} "
+            f"requested={request.source_completed_batches}"
+        )
     if request is not None:
-        if _continuation_was_applied(manifest, request):
-            # Fork custody already extended the source/raw topology before any
-            # target/post transform. Reapplying it at resume would incorrectly
-            # traverse the final topology.
-            pass
-        else:
-            loaded_slots = _apply_declared_continuation_request(
-                loaded_slots,
-                expected_slots=expected_slots,
-                manifest=manifest,
-                request=request,
-            )
-            loaded_fingerprints = {
-                slot: fingerprint
-                for slot, fingerprint in loaded_fingerprints.items()
-                if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
-            }
+        loaded_slots, _ = _allocate_segment_histories(loaded_slots, expected_slots)
+        loaded_fingerprints = {}
     _validate_structural_abi(
         manifest,
         expected_slots,
@@ -808,7 +991,7 @@ def fork_checkpoint_transaction(
     transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     source_slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
     source_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
-    continuation_slot_templates: Mapping[str, Any] | None = None,
+    segment_history_templates: Mapping[str, Any] | None = None,
     target_slot_transform: ResumeSlotTransform | None = None,
     target_transform_metadata: Mapping[str, Any] | None = None,
     target_transformed_slots: Sequence[str] | None = None,
@@ -928,18 +1111,19 @@ def fork_checkpoint_transaction(
     )
     continuation_transformed_slots: set[str] = set()
     if request is not None:
-        before_continuation = dict(prepared_slots)
-        prepared_slots = _apply_declared_continuation_request(
-            prepared_slots,
-            expected_slots=dict(continuation_slot_templates or validation_slots),
-            manifest=source.manifest,
-            request=request,
+        source_total = (
+            source.manifest.segment_lineage.start_batch
+            + source.manifest.segment_lineage.segment_batch_count
         )
-        continuation_transformed_slots = {
-            slot
-            for slot in prepared_slots
-            if prepared_slots[slot] is not before_continuation.get(slot)
-        }
+        if request.source_completed_batches != source_total:
+            raise CheckpointCompatibilityError(
+                "checkpoint continuation source offset mismatch; "
+                f"lineage_total={source_total} requested={request.source_completed_batches}"
+            )
+        prepared_slots, continuation_transformed_slots = _allocate_segment_histories(
+            prepared_slots,
+            dict(segment_history_templates or validation_slots),
+        )
     target_post_transformed_slots: set[str] = set()
     if target_slot_transform is not None:
         prepared_slots, target_post_transformed_slots = _apply_target_slot_transform(
@@ -991,11 +1175,11 @@ def fork_checkpoint_transaction(
             transform_stages.setdefault(slot, []).append(
                 CheckpointForkTransformRecord(
                     slot=slot,
-                    identity="feedbax.training_checkpoint.declared_continuation.v1",
+                    identity="feedbax.training_checkpoint.segment_history_allocation.v1",
                     parameters=request.model_dump(mode="json", exclude_none=True)
                     if request is not None
                     else {},
-                    metadata={"stage": "continuation_extension"},
+                    metadata={"stage": "segment_history_allocation"},
                 )
             )
         if target_slot_transform is not None:
@@ -1113,7 +1297,6 @@ def fork_checkpoint_transaction(
                 mode="json",
                 exclude_none=True,
             )
-            manifest_metadata["checkpoint_continuation_applied"] = True
         manifest_metadata.update(dict(metadata or {}))
         _validate_program_step_units(
             coordinate,
@@ -1131,6 +1314,10 @@ def fork_checkpoint_transaction(
             metadata=manifest_metadata,
             default=None if request is not None else source.manifest.completed_training_batches,
         )
+        _validate_batch_histories(
+            prepared_slots,
+            segment_batch_count=(request.additional_batches if request else completed_batches),
+        )
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
             run_id=coordinate.run_id,
@@ -1138,6 +1325,14 @@ def fork_checkpoint_transaction(
             barrier=barrier.name,
             completed_coordinate=coordinate,
             completed_training_batches=completed_batches,
+            segment_lineage=CheckpointSegmentLineage(
+                parent_transaction_id=(source.manifest.transaction_id if request else None),
+                start_batch=(request.source_completed_batches if request else 0),
+                segment_batch_count=(
+                    request.additional_batches if request else (completed_batches or 0)
+                ),
+                history_granularities=_history_granularities(prepared_slots),
+            ),
             consistency_predicate=derive_consistency_predicate(phase_program),
             run_contract_binding=run_contract_binding(target_run_spec, phase_program),
             slots=slot_records,
@@ -1241,6 +1436,157 @@ def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTr
         slots=loaded_slots,
         provenance_notices=tuple(provenance_notices),
     )
+
+
+def _load_checkpoint_transaction_by_id(
+    root: str | Path,
+    transaction_id: str,
+) -> _LoadedCheckpointTransaction:
+    root_path = Path(root)
+    manifest_path = root_path / TRANSACTIONS_DIR_NAME / transaction_id / MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise CheckpointIntegrityError(
+            f"checkpoint segment lineage parent is unavailable; transaction={transaction_id!r}"
+        )
+    manifest = _load_transaction_manifest(manifest_path)
+    if manifest.transaction_id != transaction_id:
+        raise CheckpointIntegrityError(
+            f"checkpoint transaction directory identity mismatch; expected={transaction_id!r}"
+        )
+    slots: dict[str, Any] = {}
+    for slot in manifest.slots:
+        slots[slot.slot] = pickle.loads(_read_blob(slot, manifest_path.parent / slot.relative_path))
+    return _LoadedCheckpointTransaction(
+        root=root_path,
+        latest_pointer=CheckpointLatestPointer(
+            run_id=manifest.run_id,
+            transaction_id=transaction_id,
+            manifest_relative_path=str(manifest_path.relative_to(root_path)),
+            manifest_sha256=_sha256_file(manifest_path),
+            transaction_root_sha256=manifest.content_integrity_digest.transaction_root_sha256,
+            completed_coordinate=manifest.completed_coordinate,
+            completed_training_batches=manifest.completed_training_batches,
+        ),
+        manifest_path=manifest_path,
+        manifest=manifest,
+        slots=slots,
+        provenance_notices=(),
+    )
+
+
+def concatenate_checkpoint_histories(
+    terminal_root: str | Path,
+    *,
+    parent_roots: Mapping[str, str | Path],
+) -> ConcatenatedCheckpointHistories:
+    """Walk and concatenate a checkpoint segment lineage without mutating custody.
+
+    ``parent_roots`` deliberately resolves transaction identities outside the
+    manifests: local paths are deployment details, not durable artifact identity.
+    """
+    newest = _load_latest_checkpoint_transaction(terminal_root)
+    reversed_segments = [newest]
+    seen = {newest.manifest.transaction_id}
+    while newest.manifest.segment_lineage.parent_transaction_id is not None:
+        parent_id = newest.manifest.segment_lineage.parent_transaction_id
+        if parent_id in seen:
+            raise CheckpointIntegrityError(
+                f"checkpoint segment lineage contains duplicate/cycle transaction={parent_id!r}"
+            )
+        parent_root = parent_roots.get(parent_id, newest.root)
+        if parent_root is None:
+            raise CheckpointIntegrityError(
+                f"checkpoint segment lineage parent is unavailable; transaction={parent_id!r}"
+            )
+        parent = _load_checkpoint_transaction_by_id(parent_root, parent_id)
+        if parent.manifest.transaction_id != parent_id:
+            raise CheckpointIntegrityError(
+                "checkpoint segment lineage parent root resolved the wrong transaction; "
+                f"expected={parent_id!r} actual={parent.manifest.transaction_id!r}"
+            )
+        parent_total = (
+            parent.manifest.segment_lineage.start_batch
+            + parent.manifest.segment_lineage.segment_batch_count
+        )
+        if newest.manifest.segment_lineage.start_batch != parent_total:
+            raise CheckpointIntegrityError(
+                "checkpoint segment lineage offset discontinuity; "
+                f"parent_total={parent_total} child_start="
+                f"{newest.manifest.segment_lineage.start_batch}"
+            )
+        reversed_segments.append(parent)
+        seen.add(parent_id)
+        newest = parent
+    segments = list(reversed(reversed_segments))
+    if segments[0].manifest.segment_lineage.start_batch != 0:
+        raise CheckpointIntegrityError("checkpoint segment lineage root must start at batch zero")
+
+    per_segment: list[dict[str, BatchHistory[Any]]] = []
+    for segment in segments:
+        found: dict[str, BatchHistory[Any]] = {}
+        for slot, value in segment.slots.items():
+            pairs, _ = jt.flatten_with_path(value, is_leaf=is_type(BatchHistory))
+            for path, leaf in pairs:
+                if isinstance(leaf, BatchHistory):
+                    found[f"{slot}{_key_path_to_text(path)}"] = leaf
+        declared = segment.manifest.segment_lineage.history_granularities
+        actual = {path: history.granularity.interval for path, history in found.items()}
+        if actual != declared:
+            raise CheckpointIntegrityError(
+                "checkpoint segment history granularities do not match manifest; "
+                f"transaction={segment.manifest.transaction_id!r}"
+            )
+        per_segment.append(found)
+    keys = set(per_segment[0])
+    if any(set(histories) != keys for histories in per_segment[1:]):
+        raise CheckpointIntegrityError("checkpoint segment history paths differ across lineage")
+    stitched: dict[str, BatchHistory[Any]] = {}
+    for path in sorted(keys):
+        histories = [segment[path] for segment in per_segment]
+        first = histories[0]
+        if any(
+            history.batch_axis != first.batch_axis
+            or history.granularity.interval != first.granularity.interval
+            for history in histories[1:]
+        ):
+            raise CheckpointIntegrityError(
+                f"checkpoint segment history granularity mismatch; path={path!r}"
+            )
+        stitched[path] = BatchHistory(
+            jnp.concatenate([history.value for history in histories], axis=first.batch_axis),
+            batch_axis=first.batch_axis,
+            granularity=first.granularity,
+        )
+    total = segments[-1].manifest.segment_lineage.start_batch + (
+        segments[-1].manifest.segment_lineage.segment_batch_count
+    )
+    return ConcatenatedCheckpointHistories(
+        histories=stitched,
+        transaction_ids=tuple(segment.manifest.transaction_id for segment in segments),
+        completed_training_batches=total,
+    )
+
+
+def materialize_concatenated_checkpoint_histories(
+    terminal_root: str | Path,
+    output_path: str | Path,
+    *,
+    parent_roots: Mapping[str, str | Path],
+) -> Path:
+    """Write an explicitly derived, provenance-stamped stitched history product."""
+    result = concatenate_checkpoint_histories(terminal_root, parent_roots=parent_roots)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "feedbax.derived.checkpoint_histories.v1",
+        "derived": True,
+        "resume_source": False,
+        "source_transaction_ids": result.transaction_ids,
+        "completed_training_batches": result.completed_training_batches,
+        "histories": result.histories,
+    }
+    _write_bytes_atomic(output, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    return output
 
 
 def _apply_slot_transforms(
@@ -1373,144 +1719,6 @@ def _coerce_barrier_mapping(
         ) from exc
 
 
-def _continuation_was_applied(
-    manifest: CheckpointTransactionManifest,
-    request: CheckpointContinuationRequest,
-) -> bool:
-    """Return whether this fork already applied exactly ``request``.
-
-    A continuation fork writes the raw continuation before an optional target
-    topology transform. The target manifest therefore records the request as
-    applied; resuming it must validate that contract but must not traverse the
-    final topology a second time.
-    """
-    marker = manifest.metadata.get("checkpoint_continuation_applied")
-    if marker is None or marker is False:
-        return False
-    if marker is not True:
-        raise CheckpointCompatibilityError(
-            f"checkpoint continuation applied marker must be boolean true; value={marker!r}"
-        )
-    recorded_payload = manifest.metadata.get("checkpoint_continuation")
-    if not isinstance(recorded_payload, Mapping):
-        raise CheckpointCompatibilityError(
-            "checkpoint continuation is marked applied but recorded request is missing"
-        )
-    try:
-        recorded = CheckpointContinuationRequest.model_validate(recorded_payload)
-    except ValidationError as exc:
-        raise CheckpointCompatibilityError(
-            "checkpoint continuation is marked applied but recorded request is invalid"
-        ) from exc
-    if recorded != request:
-        raise CheckpointCompatibilityError(
-            "checkpoint continuation request does not match the already-applied "
-            "fork contract; "
-            f"recorded={recorded.model_dump(mode='json', exclude_none=True)!r} "
-            f"requested={request.model_dump(mode='json', exclude_none=True)!r}"
-        )
-    return True
-
-
-def _apply_declared_continuation_request(
-    loaded_slots: Mapping[str, Any],
-    *,
-    expected_slots: Mapping[str, Any],
-    manifest: CheckpointTransactionManifest,
-    request: CheckpointContinuationRequest,
-) -> dict[str, Any]:
-    """Extend declared final-axis leaves while preserving checkpoint prefixes.
-
-    The target template supplies only the new tail.  This keeps the loaded
-    checkpoint's completed-history prefix byte-for-byte in value while avoiding
-    any inference about arbitrary PyTree leaves.
-    """
-    completed = manifest.completed_training_batches
-    if completed is None:
-        raise CheckpointCompatibilityError(
-            "checkpoint continuation requires manifest.completed_training_batches; "
-            f"contract_source_completed={request.source_completed_batches}"
-        )
-    if int(completed) != request.source_completed_batches:
-        raise CheckpointCompatibilityError(
-            "checkpoint continuation source completed batches mismatch; "
-            f"manifest={completed} contract={request.source_completed_batches}"
-        )
-    target_total = request.target_total
-    if target_total < int(completed):
-        raise CheckpointCompatibilityError(
-            "checkpoint continuation target total precedes source; "
-            f"source_completed={completed} target_total={target_total}"
-        )
-    if target_total == int(completed):
-        return dict(loaded_slots)
-
-    declarations = {(leaf.slot, leaf.tree_path): leaf for leaf in request.batch_indexed_leaves}
-    extended: dict[str, Any] = dict(loaded_slots)
-    for slot, source_value in loaded_slots.items():
-        target_value = expected_slots.get(slot)
-        if target_value is None:
-            continue
-        source_pairs, source_treedef = jt.flatten_with_path(source_value)
-        target_pairs, _target_treedef = jt.flatten_with_path(target_value)
-        target_by_path = {_key_path_to_text(path): leaf for path, leaf in target_pairs}
-        source_paths = {_key_path_to_text(path) for path, _leaf in source_pairs}
-        leaves = [leaf for _path, leaf in source_pairs]
-        changed = False
-        for index, (path, source_leaf) in enumerate(source_pairs):
-            tree_path = _key_path_to_text(path)
-            target_leaf = target_by_path.get(tree_path)
-            declaration = declarations.get((slot, tree_path))
-            if declaration is not None:
-                leaves[index] = _extend_declared_batch_leaf(
-                    source_leaf,
-                    target_leaf,
-                    slot=slot,
-                    tree_path=tree_path,
-                    source_completed=int(completed),
-                    target_total=target_total,
-                    declaration=declaration,
-                )
-                changed = True
-                continue
-            if _is_undeclared_batch_horizon_mismatch(
-                source_leaf,
-                target_leaf,
-                source_completed=int(completed),
-                target_total=target_total,
-            ):
-                raise CheckpointCompatibilityError(
-                    "unsupported batch-indexed continuation leaf; "
-                    f"slot={slot!r} path={tree_path!r} "
-                    f"source_shape={tuple(jnp.asarray(source_leaf).shape)!r} "
-                    f"target_shape={tuple(jnp.asarray(target_leaf).shape)!r} "
-                    "contract=batch_indexed_leaves"
-                )
-        missing = [
-            leaf
-            for leaf in request.batch_indexed_leaves
-            if leaf.slot == slot and leaf.tree_path not in source_paths
-        ]
-        if missing:
-            raise CheckpointCompatibilityError(
-                "declared batch-indexed continuation leaf is missing from source slot; "
-                f"slot={slot!r} paths={[leaf.tree_path for leaf in missing]!r} "
-                "contract=batch_indexed_leaves"
-            )
-        if changed:
-            extended[slot] = jt.unflatten(source_treedef, leaves)
-
-    undeclared_slots = sorted(
-        {leaf.slot for leaf in request.batch_indexed_leaves} - set(loaded_slots)
-    )
-    if undeclared_slots:
-        raise CheckpointCompatibilityError(
-            "declared batch-indexed continuation slots are missing; "
-            f"slots={undeclared_slots!r} contract=batch_indexed_leaves"
-        )
-    return extended
-
-
 def _resolve_fork_continuation_request(
     *,
     target_run_spec: TrainingRunSpec,
@@ -1519,9 +1727,7 @@ def _resolve_fork_continuation_request(
     """Resolve the target-bound continuation contract for a checkpoint fork.
 
     A fork is published under ``target_run_spec`` and therefore must not omit or
-    replace that spec's continuation declaration.  Applying it implicitly here
-    also guarantees that batch-indexed source leaves are extended before an
-    optional target topology transform serializes them.
+    replace that spec's continuation declaration.
     """
     declared = target_run_spec.checkpoint_progress.continuation
     supplied = _coerce_continuation_request(continuation_request)
@@ -1533,69 +1739,6 @@ def _resolve_fork_continuation_request(
             "contract=checkpoint_progress.continuation"
         )
     return declared
-
-
-def _extend_declared_batch_leaf(
-    source_leaf: Any,
-    target_leaf: Any,
-    *,
-    slot: str,
-    tree_path: str,
-    source_completed: int,
-    target_total: int,
-    declaration: BatchIndexedCheckpointLeafSpec,
-) -> Any:
-    if target_leaf is None or not eqx.is_array(source_leaf) or not eqx.is_array(target_leaf):
-        raise CheckpointCompatibilityError(
-            "declared batch-indexed continuation leaf must be arrays in source and target; "
-            f"slot={slot!r} path={tree_path!r} contract={declaration.model_dump()!r}"
-        )
-    source = jnp.asarray(source_leaf)
-    target = jnp.asarray(target_leaf)
-    if source.ndim < 1 or target.ndim < 1:
-        raise CheckpointCompatibilityError(
-            "declared batch-indexed continuation leaf must have a final axis; "
-            f"slot={slot!r} path={tree_path!r} source_shape={source.shape!r} "
-            f"target_shape={target.shape!r}"
-        )
-    if source.shape[:-1] != target.shape[:-1] or source.dtype != target.dtype:
-        raise CheckpointCompatibilityError(
-            "declared batch-indexed continuation leaf prefix shape or dtype mismatch; "
-            f"slot={slot!r} path={tree_path!r} source_shape={source.shape!r} "
-            f"target_shape={target.shape!r} source_dtype={source.dtype} "
-            f"target_dtype={target.dtype} contract={declaration.model_dump()!r}"
-        )
-    if source.shape[-1] == target_total and target.shape[-1] == target_total:
-        return source_leaf
-    if source.shape[-1] != source_completed or target.shape[-1] != target_total:
-        raise CheckpointCompatibilityError(
-            "declared batch-indexed continuation leaf does not match declared horizons; "
-            f"slot={slot!r} path={tree_path!r} source_shape={source.shape!r} "
-            f"target_shape={target.shape!r} source_completed={source_completed} "
-            f"target_total={target_total} contract={declaration.model_dump()!r}"
-        )
-    return jnp.concatenate((source, target[..., source_completed:]), axis=-1)
-
-
-def _is_undeclared_batch_horizon_mismatch(
-    source_leaf: Any,
-    target_leaf: Any,
-    *,
-    source_completed: int,
-    target_total: int,
-) -> bool:
-    if target_leaf is None or not eqx.is_array(source_leaf) or not eqx.is_array(target_leaf):
-        return False
-    source = jnp.asarray(source_leaf)
-    target = jnp.asarray(target_leaf)
-    return (
-        source.ndim >= 1
-        and target.ndim >= 1
-        and source.shape[:-1] == target.shape[:-1]
-        and source.shape[-1] == source_completed
-        and target.shape[-1] == target_total
-        and source.shape != target.shape
-    )
 
 
 def _write_fresh_slot_blob(
