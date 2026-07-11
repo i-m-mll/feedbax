@@ -55,6 +55,15 @@ from feedbax.contracts.graph import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_manifest_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep every Studio execution test's manifests in its unique temp directory."""
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+
+
 def _graph() -> GraphSpec:
     return GraphSpec(
         nodes={
