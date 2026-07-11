@@ -327,7 +327,7 @@ section "W8 latest pointer completed batches"
 BASE="$TMP/baseline"
 mkdir -p "$BASE"
 cat > "$BASE/latest.json" <<JSON
-{"completed_coordinate":{"global_step":1200},"completed_training_batches":16500}
+{"completed_coordinate":{"program_step":1200},"completed_training_batches":16500}
 JSON
 eq "latest pointer completed_training_batches before coordinate" "16500" "$(latest_pointer_completed_batches "$BASE/latest.json")"
 cat > "$TMP/old-latest.json" <<JSON

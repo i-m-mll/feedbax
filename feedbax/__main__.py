@@ -92,9 +92,7 @@ def _checkpoint_fork_targets(args: argparse.Namespace) -> list[str]:
 def _parse_checkpoint_fork_target(raw: str) -> tuple[Path, Path]:
     spec, sep, root = raw.partition(":")
     if not sep or not spec or not root:
-        raise ValueError(
-            "checkpoint fork targets must use '<run-spec-json>:<checkpoint-root>'"
-        )
+        raise ValueError("checkpoint fork targets must use '<run-spec-json>:<checkpoint-root>'")
     return Path(spec), Path(root)
 
 
@@ -119,7 +117,7 @@ def _console_progress_printer(started_at: float):
         coordinate = coordinate if isinstance(coordinate, Mapping) else {}
         metrics = event.get("metrics", {})
         metrics = metrics if isinstance(metrics, Mapping) else {}
-        batch = int(coordinate.get("global_step") or 0)
+        batch = int(coordinate.get("program_step") or 0)
         phase = str(coordinate.get("phase") or "unknown")
         loss = _progress_loss(metrics)
         loss_text = "nan" if loss is None else f"{loss:.6g}"
@@ -356,9 +354,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "execute-training-run-spec":
         _load_training_method_plugins(args.plugin)
         initial_slots = _read_json(args.initial_slots) if args.initial_slots else None
-        training_payload = (
-            _read_json(args.training_payload) if args.training_payload else None
-        )
+        training_payload = _read_json(args.training_payload) if args.training_payload else None
         started_at = time.perf_counter()
         emitter = RunEventEmitter.from_env(render_batch_lines=False)
         with RunInterruptionController() as interruption:
@@ -400,12 +396,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "preflight-training-run-manifest":
         _load_training_method_plugins(args.plugin)
-        training_payload = (
-            _read_json(args.training_payload) if args.training_payload else None
-        )
-        task_binding_spec = (
-            _read_json(args.task_binding_spec) if args.task_binding_spec else None
-        )
+        training_payload = _read_json(args.training_payload) if args.training_payload else None
+        task_binding_spec = _read_json(args.task_binding_spec) if args.task_binding_spec else None
         payloads = preflight_training_run_manifest_payloads(
             _read_json(args.spec),
             training_spec_payload=training_payload,
@@ -463,7 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 coordinate=ProgressCoordinate(
                     run_id=args.run_id,
                     phase=args.phase,
-                    global_step=args.global_step,
+                    program_step=args.program_step,
                     completed_barrier=args.completed_barrier,
                 ),
                 current_slots=_read_pickle(args.current_slots),
@@ -501,9 +493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "checkpoint":
         if args.checkpoint_command == "fork":
             _load_training_method_plugins(args.plugin)
-            expected_slots = (
-                _read_pickle(args.expected_slots) if args.expected_slots else None
-            )
+            expected_slots = _read_pickle(args.expected_slots) if args.expected_slots else None
             slot_transforms = _load_slot_transforms(args.slot_transform)
             target_summaries: list[dict[str, Any]] = []
             had_error = False

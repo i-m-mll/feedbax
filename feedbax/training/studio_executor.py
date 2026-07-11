@@ -109,6 +109,7 @@ def studio_training_registry(
             "model": updated_graph,
             "optimizer": optimizer_state,
             "prng": rng_key,
+            "batch_counter": slots["batch_counter"] + 1,
             "train_loss": loss,
             "loss_terms": {
                 key: float(jax.block_until_ready(value)) for key, value in loss_terms.items()
@@ -123,7 +124,7 @@ def studio_training_registry(
         context: Mapping[str, Any],
     ) -> bool:
         del slots, context
-        return coordinate.global_step < total_batches and not stop_event.is_set()
+        return coordinate.program_step < total_batches and not stop_event.is_set()
 
     registry = TrainingMethodRegistry()
     registry.register(
