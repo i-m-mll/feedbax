@@ -20,6 +20,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -814,6 +815,18 @@ def _migrate_checkpoint_coordinate_v4_to_v5_payload(
         "Cumulative phase-program coordinate for custody ordering; not the primary "
         "training-batch progress field or checkpoint count."
     )
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    return migrated
+
+
+def _migrate_checkpoint_history_v5_to_v6_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Mark legacy slot trees for declaration-guided BatchHistory wrapping."""
+    migrated = dict(payload)
+    metadata = dict(migrated.get("metadata") or {})
+    metadata["batch_history_tree_migration"] = "declared_paths_v5_to_v6"
+    migrated["metadata"] = metadata
     migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     return migrated
 
@@ -1946,6 +1959,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -3196,13 +3210,23 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
         migration_id="training-checkpoint-transaction-v4-to-v5-program-coordinate",
         migrate=_migrate_checkpoint_coordinate_v4_to_v5_payload,
         description=(
             "Rename global_step to cumulative program_step without inferring "
             "completed training batches from the coordinate."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v5-to-v6-batch-history",
+        migrate=_migrate_checkpoint_history_v5_to_v6_payload,
+        description="Mark legacy slot trees for typed batch-history migration.",
     ),
 )
 default_spec_registry.register_migration(

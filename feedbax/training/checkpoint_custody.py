@@ -20,10 +20,12 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+from jax_cookbook import is_type
 import numpy as np
 from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.checkpoints import (
+    BatchHistory,
     BatchIndexedCheckpointLeafSpec,
     CheckpointContinuationRequest,
     CheckpointDocumentLoadResult,
@@ -455,6 +457,92 @@ def _resolve_completed_training_batches(
     return authoritative
 
 
+def _validate_batch_histories(
+    slots: Mapping[str, Any],
+    *,
+    segment_batch_count: int | None,
+) -> None:
+    """Validate every marked history against this transaction's segment length."""
+    marked: list[tuple[str, str, BatchHistory[Any]]] = []
+    for slot, value in slots.items():
+        pairs, _ = jt.flatten_with_path(value, is_leaf=is_type(BatchHistory))
+        marked.extend(
+            (slot, _key_path_to_text(path), leaf)
+            for path, leaf in pairs
+            if isinstance(leaf, BatchHistory)
+        )
+    if not marked:
+        return
+    if segment_batch_count is None:
+        raise CheckpointConsistencyError(
+            "BatchHistory custody requires completed_training_batches for segment validation"
+        )
+    for slot, path, history in marked:
+        if not eqx.is_array(history.value):
+            raise CheckpointConsistencyError(
+                f"BatchHistory must wrap an array; slot={slot!r} path={path!r}"
+            )
+        shape = tuple(jnp.asarray(history.value).shape)
+        axis = history.batch_axis
+        if axis < 0:
+            axis += len(shape)
+        if axis < 0 or axis >= len(shape):
+            raise CheckpointConsistencyError(
+                "BatchHistory batch_axis is out of bounds; "
+                f"slot={slot!r} path={path!r} shape={shape!r} axis={history.batch_axis}"
+            )
+        expected = history.granularity.expected_entries(segment_batch_count)
+        if shape[axis] != expected:
+            raise CheckpointConsistencyError(
+                "BatchHistory length must match the owning segment; "
+                f"slot={slot!r} path={path!r} axis={history.batch_axis} "
+                f"actual={shape[axis]} expected={expected} "
+                f"segment_batches={segment_batch_count} "
+                f"interval={history.granularity.interval}"
+            )
+
+
+def _wrap_legacy_declared_batch_histories(
+    slots: Mapping[str, Any],
+    *,
+    request: CheckpointContinuationRequest | None,
+) -> dict[str, Any]:
+    """Migrate known v5 declaration paths to typed history containers."""
+    if request is None or not request.batch_indexed_leaves:
+        return dict(slots)
+    by_slot: dict[str, set[str]] = {}
+    for declaration in request.batch_indexed_leaves:
+        by_slot.setdefault(declaration.slot, set()).add(declaration.tree_path)
+    migrated = dict(slots)
+    for slot, paths in by_slot.items():
+        if slot not in slots:
+            raise CheckpointCompatibilityError(
+                f"legacy BatchHistory migration slot is missing; slot={slot!r}"
+            )
+        pairs, treedef = jt.flatten_with_path(slots[slot])
+        found: set[str] = set()
+        leaves: list[Any] = []
+        for path, leaf in pairs:
+            path_text = _key_path_to_text(path)
+            if path_text in paths:
+                if not eqx.is_array(leaf):
+                    raise CheckpointCompatibilityError(
+                        "legacy BatchHistory migration target must be an array; "
+                        f"slot={slot!r} path={path_text!r}"
+                    )
+                leaf = BatchHistory(leaf)
+                found.add(path_text)
+            leaves.append(leaf)
+        missing = sorted(paths - found)
+        if missing:
+            raise CheckpointCompatibilityError(
+                "legacy BatchHistory migration path is missing; "
+                f"slot={slot!r} paths={missing!r}"
+            )
+        migrated[slot] = jt.unflatten(treedef, leaves)
+    return migrated
+
+
 def write_checkpoint_transaction(
     root: str | Path,
     *,
@@ -558,6 +646,7 @@ def write_checkpoint_transaction(
             explicit=completed_training_batches,
             metadata=manifest_metadata,
         )
+        _validate_batch_histories(slots, segment_batch_count=completed_batches)
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
             run_id=coordinate.run_id,
@@ -709,6 +798,10 @@ def _load_checkpoint_from_pointer(
         manifest,
         loaded_slots,
     )
+    request = _coerce_continuation_request(continuation_request)
+    if manifest.metadata.get("batch_history_tree_migration") == "declared_paths_v5_to_v6":
+        loaded_slots = _wrap_legacy_declared_batch_histories(loaded_slots, request=request)
+        loaded_fingerprints = {}
     loaded_fingerprint_slots = dict(loaded_slots)
     if resume_slot_transform is not None:
         try:
@@ -727,7 +820,6 @@ def _load_checkpoint_from_pointer(
             for slot, fingerprint in loaded_fingerprints.items()
             if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
         }
-    request = _coerce_continuation_request(continuation_request)
     if request is not None:
         if _continuation_was_applied(manifest, request):
             # Fork custody already extended the source/raw topology before any
