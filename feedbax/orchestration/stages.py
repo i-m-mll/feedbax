@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import RUN_BUNDLE_SCHEMA_VERSION, RunBundle, RunRowSpec
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
@@ -89,7 +89,7 @@ class StageEngine:
         driver: OrchestrationDriver,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
-        poll_interval_seconds: float = 0.05,
+        poll_interval_seconds: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
@@ -99,7 +99,11 @@ class StageEngine:
         self.driver = driver
         self.store = store or RunSetStateStore(bundle.run_set_dir / "state.json")
         self.conformance_registry = conformance_registry or CheckRegistry()
-        self.poll_interval_seconds = poll_interval_seconds
+        self.poll_interval_seconds = (
+            float(getattr(driver, "poll_interval_seconds", 0.05))
+            if poll_interval_seconds is None
+            else poll_interval_seconds
+        )
         self._sleep = sleep
         self._monotonic = monotonic
         self._wall_time = wall_time
@@ -192,6 +196,9 @@ class StageEngine:
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)
+        driver_preflight = getattr(self.driver, "preflight_checks", None)
+        if callable(driver_preflight):
+            checks.extend(driver_preflight(self.bundle))
         stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
         state = state.with_stage(STAGE_PREFLIGHT, stage)
         self.store.save(state)
@@ -483,11 +490,24 @@ class StageEngine:
         return state
 
     def _refresh_rows(self, state: RunSetState) -> RunSetState:
+        unfinished = [
+            row
+            for row in self.bundle.rows
+            if state.rows[row.row_id].status not in ("completed", "failed", "stopped")
+        ]
+        if not unfinished:
+            self.store.save(state)
+            return state
+        probe_rows = getattr(self.driver, "probe_rows", None)
+        if callable(probe_rows):
+            probes = dict(probe_rows(self.bundle, unfinished, state))
+        else:
+            probes = {row.row_id: self.driver.probe(self.bundle, row, state) for row in unfinished}
         for row in self.bundle.rows:
             row_state = state.rows[row.row_id]
             if row_state.status in ("completed", "failed", "stopped"):
                 continue
-            probe = self.driver.probe(self.bundle, row, state)
+            probe = probes[row.row_id]
             event_path = self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl"
             done = self.bundle.run_set_dir / "sentinels" / f"{row.row_id}.done"
             failed = self.bundle.run_set_dir / "sentinels" / f"{row.row_id}.failed"
@@ -607,15 +627,13 @@ class StageEngine:
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     checks: list[PreflightCheckEntry] = []
-    checks.append(
-        _check("schema-current", bundle.schema_version == "feedbax.orchestration.run_bundle.v1")
-    )
+    checks.append(_check("schema-current", bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION))
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
     checks.append(_check("budget-presence", bundle.budget.max_wall_clock_seconds > 0))
     checks.append(
         _check(
             "driver-preconditions",
-            bundle.driver in {"local", "worker-http"},
+            bundle.driver in {"local", "worker-http", "runpod"},
             observed=bundle.driver,
         )
     )

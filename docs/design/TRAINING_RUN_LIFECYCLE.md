@@ -416,7 +416,7 @@ Wave 2 (children specced with this document; unblocked by review):
 |---|---|---|
 | W2-1 | Run-event protocol: contract types, migrations registration, `RunEventEmitter`/`RunEventReader`, executor integration, BATCH-line rendering, worker envelope adoption. | — |
 | W2-2 | Orchestration core: `RunBundle`, state machine + stage engine, PREFLIGHT composition, `local` driver, advisory locking, resume. | W2-1 |
-| W2-3 | RunPod driver extraction (existing issue `0ab7d01`, scope refined): script logic behind the driver interface; scripts to shims; parity tests. | W2-2 |
+| W2-3 | RunPod driver extraction (existing issue `0ab7d01`, scope refined): script logic behind the driver interface; scripts to shims; parity tests; retire rlrmp's interim `cbb5b66` realized-LR guard only after this migration and fail-closed certification both land. | W2-2 |
 | W2-4 | Conformance certificate framework + core checks + plugin check registration. | W2-1 (events_terminal check), else independent of W2-2 internals |
 | W2-5 | CLI `feedbax-orchestrate` + script shims + machine-readable status contract. | W2-2 |
 | W2-6 | Studio adoption: external job identity, persisted job state, run-event envelope in the worker, reconcile-on-startup. | W2-1, W2-2 |

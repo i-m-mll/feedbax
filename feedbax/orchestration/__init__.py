@@ -3,6 +3,7 @@
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
+    RUN_BUNDLE_SCHEMA_VERSION_V1,
     BudgetPolicy,
     EnvironmentDeclaration,
     InputCustodyPin,
@@ -62,6 +63,7 @@ from feedbax.orchestration.state import (
 __all__ = [
     "RUN_BUNDLE_SCHEMA_ID",
     "RUN_BUNDLE_SCHEMA_VERSION",
+    "RUN_BUNDLE_SCHEMA_VERSION_V1",
     "CHECK_STATUS_FAIL",
     "CHECK_STATUS_PASS",
     "CHECK_STATUS_SKIPPED",

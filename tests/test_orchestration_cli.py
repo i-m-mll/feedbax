@@ -22,6 +22,7 @@ from feedbax.orchestration import (
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.conformance import CheckRegistry, pass_check
+from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
 from feedbax.orchestration.stages import PreflightFailed
 from feedbax.orchestration.state import RowState
 
@@ -295,8 +296,62 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     ]
 
 
-def test_runpod_driver_is_explicitly_gated(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path).model_copy(update={"driver": "runpod"})
+def test_runpod_driver_is_constructed_from_durable_bundle_metadata(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path).model_copy(
+        update={
+            "driver": "runpod",
+            "environment": EnvironmentDeclaration(
+                python_version="3.12",
+                image_id="runpod/pytorch:1.0.3",
+                metadata={
+                    "runpod_pod_id": "pod-123",
+                    "runpod_ssh_host": "198.51.100.10",
+                    "runpod_ssh_port": 2222,
+                    "runpod_gpu_id": "NVIDIA GeForce RTX 4090",
+                    "runpod_path_patches": [
+                        {
+                            "remote_file": "/workspace/feedbax/pyproject.toml",
+                            "from": "/local/feedbax",
+                            "to": "/workspace/feedbax",
+                        }
+                    ],
+                },
+            ),
+        }
+    )
 
-    with pytest.raises(RuntimeError, match="0ab7d01 driver parity"):
-        orchestrate._driver_for_bundle(bundle)
+    driver = orchestrate._driver_for_bundle(bundle)
+
+    assert isinstance(driver, RunPodOrchestrationDriver)
+    assert driver.config.pod_id == "pod-123"
+    assert driver.config.path_patches[0][0] == "/workspace/feedbax/pyproject.toml"
+
+
+def test_load_bundle_migrates_v1_deadman_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "bundle-v1.json"
+    payload = _bundle(tmp_path).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.orchestration.run_bundle.v1"
+    payload.pop("deadman_enabled")
+    payload.pop("deadman_silence_seconds")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    bundle = orchestrate._load_bundle(path)
+
+    assert bundle.deadman_enabled is False
+    assert bundle.deadman_silence_seconds == 1800
+
+
+def test_launch_cli_exposes_deadman_bundle_overrides() -> None:
+    args = orchestrate.build_parser().parse_args(
+        [
+            "launch",
+            "--bundle",
+            "bundle.json",
+            "--deadman",
+            "--deadman-silence-seconds",
+            "900",
+        ]
+    )
+
+    assert args.deadman is True
+    assert args.deadman_silence_seconds == 900
