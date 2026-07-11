@@ -276,7 +276,7 @@ for tool in rsync curl runpodctl; do
 done
 
 jq -n \
-  --arg cmd_a "sleep 0.5; if [ -f '$WARM/guard/row_b_started' ]; then touch '$WARM/guard/fanout_before_ready'; fi; echo WARM_READY; sleep 0.1" \
+  --arg cmd_a "sleep 0.5; if [ -f '$WARM/guard/row_b_started' ]; then touch '$WARM/guard/fanout_before_ready'; fi; echo WARM_READY; sleep 2" \
   --arg cmd_b "touch '$WARM/guard/row_b_started'; sleep 0.1" \
   '{schema_version: 1, rows: [{id: "row_a", command: $cmd_a}, {id: "row_b", command: $cmd_b}]}' \
   > "$WARM/rows.json"
@@ -910,7 +910,7 @@ fi
 
 mkdir -p "$W8/rlrmp/_artifacts/run/checkpoints"
 cat > "$W8/rlrmp/_artifacts/run/checkpoints/latest.json" <<JSON
-{"completed_coordinate":{"program_step":42}}
+{"completed_training_batches":42,"completed_coordinate":{"program_step":42}}
 JSON
 cat > "$W8/spec_ok.json" <<JSON
 {"user_confirmed":true,"resume":{"baseline_checkpoint":"_artifacts/run/checkpoints","completed_batches":42}}
