@@ -333,6 +333,64 @@ describe('resolved scene projection', () => {
     expect(scene.validation.map((message) => message.type)).toContain('workspace_goal_out_of_reach');
   });
 
+  it('does not synthesize planar-chain geometry without valid provider-bound lengths', () => {
+    const mechanics = components[0];
+    const links = mechanics.representation!.elements![0];
+    const withoutLengthBinding: ComponentDefinition = {
+      ...mechanics,
+      representation: {
+        ...mechanics.representation!,
+        elements: [{
+          ...links,
+          bindings: { joint_angles: links.bindings!.joint_angles },
+        }],
+      },
+    };
+    const missingBinding = buildResolvedScene({
+      scenario,
+      graph,
+      registry: buildScenarioEntityRegistry({ scenario, graph }),
+      components: [withoutLengthBinding, components[1]],
+    });
+    const mechanicsId = mechanicsEntityId(scenario.id, 'mechanics');
+
+    expect(
+      missingBinding.elements.find(
+        (element) => element.entity_id === mechanicsId && element.local_id === 'links'
+      )?.geometry
+    ).toEqual({ kind: 'none' });
+    expect(missingBinding.validation).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'workspace_planar_chain_lengths_invalid',
+        severity: 'error',
+        path: 'representation.elements.links.bindings.link_lengths',
+      }),
+    ]));
+
+    const invalidGraph: GraphSpec = {
+      ...graph,
+      nodes: {
+        mechanics: { ...graph.nodes.mechanics, params: { link_lengths: [0.3] } },
+      },
+    };
+    const invalidScenario = { ...scenario, graph: invalidGraph };
+    const invalidValue = buildResolvedScene({
+      scenario: invalidScenario,
+      graph: invalidGraph,
+      registry: buildScenarioEntityRegistry({ scenario: invalidScenario, graph: invalidGraph }),
+      components,
+    });
+
+    expect(
+      invalidValue.elements.find(
+        (element) => element.entity_id === mechanicsId && element.local_id === 'links'
+      )?.geometry
+    ).toEqual({ kind: 'none' });
+    expect(invalidValue.validation).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'workspace_planar_chain_lengths_invalid' }),
+    ]));
+  });
+
   it('validates reachability from provider metadata without component name sniffing', () => {
     const genericGraph: GraphSpec = {
       ...graph,
