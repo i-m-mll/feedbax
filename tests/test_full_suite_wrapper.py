@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 
@@ -52,6 +55,50 @@ def make_full_suite_repo(repo: Path) -> Path:
     (repo / "uv.lock").write_text("lock\n", encoding="utf-8")
     commit_all(repo, "initial")
     return repo
+
+
+def lock_helper_code() -> str:
+    return """
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import time
+
+script_path, lock_path, worktree, release_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("feedbax_full_suite_helper", script_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+with module.FullSuiteLock(Path(lock_path), repo_root=Path(worktree)):
+    print("acquired " + str(os.getpid()), flush=True)
+    release = Path(release_path)
+    while not release.exists():
+        time.sleep(0.02)
+"""
+
+
+def start_lock_helper(
+    script_path: Path,
+    lock_path: Path,
+    worktree: Path,
+    release_path: Path,
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            lock_helper_code(),
+            str(script_path),
+            str(lock_path),
+            str(worktree),
+            str(release_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
 
 def test_fingerprint_key_changes_when_uv_lock_hash_changes() -> None:
@@ -201,3 +248,87 @@ def test_untracked_relevant_test_file_disables_memo_recording(
 
     assert not fingerprint.memo_allowed
     assert "git working tree is dirty" in fingerprint.refusal_reasons
+
+
+def test_shared_cache_root_is_common_across_worktrees(tmp_path: Path) -> None:
+    full_suite = load_full_suite_module()
+    repo = make_full_suite_repo(tmp_path / "repo")
+    worktree = tmp_path / "other-worktree"
+    run_git(repo, "worktree", "add", "-b", "test-other-worktree", str(worktree))
+
+    assert full_suite.shared_cache_root(repo) == full_suite.shared_cache_root(worktree)
+
+
+def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"
+    lock_path = tmp_path / "common.git" / "feedbax_test_cache" / "full_suite.lock"
+    holder_release = tmp_path / "release-holder"
+    contender_release = tmp_path / "release-contender"
+    holder = start_lock_helper(
+        script_path, lock_path, Path("/worktrees/holder"), holder_release
+    )
+    assert holder.stdout is not None
+    assert holder.stdout.readline().startswith("acquired ")
+
+    contender = start_lock_helper(
+        script_path, lock_path, Path("/worktrees/contender"), contender_release
+    )
+    contender_stdout, contender_stderr = contender.communicate(timeout=5)
+    assert contender.returncode != 0
+    assert contender_stdout == ""
+    assert "Full suite already running; active holder:" in contender_stderr
+    assert "worktree=/worktrees/holder" in contender_stderr
+
+    holder_release.touch()
+    holder_stdout, holder_stderr = holder.communicate(timeout=5)
+    assert holder.returncode == 0, holder_stderr
+    assert holder_stdout == ""
+    released_metadata = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert released_metadata["worktree"] == "/worktrees/holder"
+
+
+def test_main_returns_temporary_failure_when_lock_is_held(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    full_suite = load_full_suite_module()
+    repo_root = Path(__file__).resolve().parents[1]
+    cache_root = tmp_path / "common.git" / "feedbax_test_cache"
+    monkeypatch.setattr(full_suite, "shared_cache_root", lambda unused: cache_root)
+
+    with full_suite.FullSuiteLock(cache_root / "full_suite.lock", repo_root=repo_root):
+        result = full_suite.main(["--force", "--no-memo"])
+
+    assert result == 75
+    assert "Full suite already running; active holder:" in capsys.readouterr().err
+
+
+def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"
+    lock_path = tmp_path / "common.git" / "feedbax_test_cache" / "full_suite.lock"
+    holder_release = tmp_path / "release-holder"
+    contender_release = tmp_path / "release-contender"
+    holder = start_lock_helper(
+        script_path,
+        lock_path,
+        Path("/worktrees/interrupted-holder"),
+        holder_release,
+    )
+    assert holder.stdout is not None
+    assert holder.stdout.readline().startswith("acquired ")
+
+    os.kill(holder.pid, signal.SIGKILL)
+    holder.wait(timeout=5)
+    contender = start_lock_helper(
+        script_path, lock_path, Path("/worktrees/after-interrupt"), contender_release
+    )
+    assert contender.stdout is not None
+    assert contender.stdout.readline().startswith("acquired ")
+    contender_release.touch()
+    _, contender_stderr = contender.communicate(timeout=5)
+    assert contender.returncode == 0, contender_stderr
+
+    # The kernel releases the advisory lock after SIGKILL. The next holder
+    # safely replaces stale metadata before running; release retains that last
+    # complete record so contenders never observe an intentional empty window.
+    metadata = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert metadata["worktree"] == "/worktrees/after-interrupt"
