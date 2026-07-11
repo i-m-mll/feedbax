@@ -2317,7 +2317,12 @@ def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
     if not path.is_file():
         _reject_legacy_checkpoint(root)
         raise CheckpointIntegrityError("checkpoint latest pointer is missing")
-    return load_checkpoint_latest_pointer_file(path).document
+    try:
+        return load_checkpoint_latest_pointer_file(path).document
+    except CheckpointIntegrityError as exc:
+        # Keep the custody reader's established boundary contract while the
+        # public loader retains its more specific typed diagnostic.
+        raise CheckpointIntegrityError("checkpoint latest pointer is corrupt") from exc
 
 
 def _reject_legacy_checkpoint(root: Path) -> None:
