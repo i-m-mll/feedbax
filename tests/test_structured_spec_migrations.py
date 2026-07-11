@@ -328,6 +328,10 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         families["TrainingCheckpointTransactionManifest"].identity
         == "feedbax.manifest.training_checkpoint_transaction"
     )
+    assert (
+        families["TrainingCheckpointLatestPointer"].identity
+        == "feedbax.manifest.training_checkpoint_latest_pointer"
+    )
     assert families["TrainingRunManifest"].identity == "feedbax.manifest.training_run"
     assert families["RegenerationSpec"].identity == "feedbax.spec.regeneration"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
@@ -409,6 +413,7 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         "TrainingCheckpointTransactionManifest": (
             "feedbax.manifest.training_checkpoint_transaction"
         ),
+        "TrainingCheckpointLatestPointer": "feedbax.manifest.training_checkpoint_latest_pointer",
         "TrainingRunManifest": "feedbax.manifest.training_run",
         "ExecutionCloudPayload": EXECUTION_CLOUD_PAYLOAD_SCHEMA_ID,
         "ExecutionReproducibility": EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
@@ -467,6 +472,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             ("feedbax.contracts.manifest", "feedbax.integrations.provider"),
         ),
         "TrainingCheckpointTransactionManifest": (
+            "feedbax.contracts.checkpoints",
+            ("feedbax.training.checkpoint_custody",),
+        ),
+        "TrainingCheckpointLatestPointer": (
             "feedbax.contracts.checkpoints",
             ("feedbax.training.checkpoint_custody",),
         ),
@@ -590,6 +599,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ArrayStorePayload",
         "ArrayRecord",
         "TrainingCheckpointTransactionManifest",
+        "TrainingCheckpointLatestPointer",
         "TrainingRunManifest",
         "AnalysisDataProduct",
         "ExecutionPlan",
