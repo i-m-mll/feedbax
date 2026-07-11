@@ -276,7 +276,7 @@ extract_ssh() {
 # lib_acquire.sh::progress_report, which is unit-tested locally over a mock
 # remote layout. One status line, no jq.
 build_remote_status_command() {
-    local sentinel_dir=$1 checkpoint_dir=$2 log_dir=$3
+    local sentinel_dir=$1 checkpoint_dir=$2 log_dir=$3 events_dir=$4
     cat <<REMOTE
 gpu=\$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
 gpu_safe=\$(printf '%s' "\${gpu:-unknown}" | tr ' ' '_')
@@ -295,7 +295,7 @@ ids=\$( { for f in "\$sdir"/*.started "\$sdir"/*.pid "\$sdir"/*.done "\$sdir"/*.
            fi
            echo "\$b"
          done; } | sort -u )
-nd=0; nf=0; nr=0; ns=0; np=0; nt=0; detail=''
+nd=0; nf=0; nr=0; ns=0; np=0; nt=0; detail=''; telemetry=''
 for id in \$ids; do
   nt=\$((nt+1))
   if [ -f "\$sdir/\$id.done" ]; then st=done; nd=\$((nd+1))
@@ -307,6 +307,16 @@ for id in \$ids; do
   elif [ -f "\$sdir/\$id.started" ]; then st=stale_started; ns=\$((ns+1))
   else st=pending; np=\$((np+1)); fi
   detail="\${detail:+\$detail,}\$id:\$st"
+  event_file='$events_dir/'"\$id"'.events.jsonl'
+  first_progress=none; cache_proxy=unavailable
+  if [ -f "\$event_file" ]; then
+    ready_line=\$(grep '"type":"ready"' "\$event_file" 2>/dev/null | tail -1 || true)
+    observed=\$(printf '%s' "\$ready_line" | sed -n 's/.*"start_to_first_progress_seconds":\([0-9.eE+-]*\).*/\1/p')
+    proxy=\$(printf '%s' "\$ready_line" | sed -n 's/.*"persistent_cache_effectiveness_proxy":"\([^"]*\)".*/\1/p')
+    [ -z "\$observed" ] || first_progress=\$observed
+    [ -z "\$proxy" ] || cache_proxy=\$proxy
+  fi
+  telemetry="\${telemetry:+\$telemetry,}\$id:first_progress_s=\$first_progress:cache_proxy=\$cache_proxy"
 done
 printf 'rows_done=%s rows_failed=%s rows_running=%s rows_stale=%s rows_pending=%s rows_total=%s ' "\$nd" "\$nf" "\$nr" "\$ns" "\$np" "\$nt"
 train_process_state=absent
@@ -326,27 +336,28 @@ for lf in '$log_dir'/*.log; do
   [ -z "\$b" ] && continue
   if [ "\$batch" = none ] || [ "\$b" -gt "\$batch" ]; then batch=\$b; fi
 done
-printf 'last_batch=%s last_checkpoint=%s train_process=%s rows=%s' "\$batch" "\$ckpt" "\$train_process_state" "\${detail:-none}"
+printf 'last_batch=%s last_checkpoint=%s train_process=%s rows=%s row_telemetry=%s' "\$batch" "\$ckpt" "\$train_process_state" "\${detail:-none}" "\${telemetry:-none}"
 REMOTE
 }
 
 remote_status() {
     if [ -z "$SSH_HOST" ] || [ -z "$SSH_PORT" ]; then
         SSH_ERROR=${SSH_ERROR:-missing_ssh_endpoint}
-        printf 'ssh=missing gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none'
+        printf 'ssh=missing gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none row_telemetry=none'
         return 0
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
         print_cmd ssh -p "$SSH_PORT" "root@$SSH_HOST" \
             "nvidia-smi && test -d '$REMOTE_SENTINEL_DIR'" >&2
-        printf 'ssh=dry-run gpu=dry-run uv_sync=dry-run jax_cuda=dry-run venv_probe=dry-run probe_ok=dry-run probe_failed_rebuilding=dry-run rebuild_done=dry-run rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none'
+        printf 'ssh=dry-run gpu=dry-run uv_sync=dry-run jax_cuda=dry-run venv_probe=dry-run probe_ok=dry-run probe_failed_rebuilding=dry-run rebuild_done=dry-run rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none row_telemetry=none'
         return 0
     fi
 
     local key_path output remote_cmd
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
     remote_cmd=$(build_remote_status_command \
-        "$REMOTE_SENTINEL_DIR" "$REMOTE_CHECKPOINT_DIR" "$REMOTE_LOG_DIR")
+        "$REMOTE_SENTINEL_DIR" "$REMOTE_CHECKPOINT_DIR" "$REMOTE_LOG_DIR" \
+        "$REMOTE_RUN_DIR/events")
     if ! output=$(ssh -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
@@ -355,7 +366,7 @@ remote_status() {
         "root@$SSH_HOST" \
         "$remote_cmd"); then
         SSH_ERROR="ssh_probe_failed"
-        printf 'ssh=failed gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none'
+        printf 'ssh=failed gpu=unknown uv_sync=unknown jax_cuda=unknown venv_probe=unknown probe_ok=unknown probe_failed_rebuilding=unknown rebuild_done=unknown rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none row_telemetry=none'
         return 0
     fi
     SSH_ERROR="none"
