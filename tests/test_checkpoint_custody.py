@@ -364,6 +364,11 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
     )
+    assert migrated.payload["segment_lineage"] == {
+        "start_batch": 0,
+        "segment_batch_count": 0,
+        "history_granularities": {},
+    }
 
 
 def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_contracts(
@@ -1315,7 +1320,7 @@ def test_batch_history_rejects_cumulative_length_at_segment_write(tmp_path: Path
     slots = _minimax_slots()
     slots["controller"] = BatchHistory(jnp.zeros((6,), dtype=jnp.float32), batch_axis=0)
 
-    with pytest.raises(CheckpointConsistencyError, match="owning segment"):
+    with pytest.raises(CheckpointConsistencyError, match="fixed-size streaming state"):
         write_checkpoint_transaction(
             tmp_path,
             run_spec=run_spec,
