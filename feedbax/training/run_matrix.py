@@ -36,7 +36,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
     apply_override_patches,
 )
-from feedbax.contracts.checkpoints import CheckpointForkBarrierMapping
+from feedbax.contracts.checkpoints import CheckpointForkBarrierMapping, CheckpointSegmentLineage
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     LrScheduleSpec,
@@ -48,6 +48,7 @@ from feedbax.training.checkpoint_custody import (
     fork_checkpoint_transaction,
 )
 from feedbax.training.optimizers import learning_rate_at_step
+from feedbax.training.schedule_clocks import resolve_schedule_window
 
 
 RUN_MATRIX_FORK_PARITY_SCHEMA_VERSION = "feedbax.run_matrix_fork_parity.v1"
@@ -116,9 +117,8 @@ class StandardLrContinuationReporter:
         optimizer = _find_optimizer_spec(row_payload)
         if optimizer is None:
             return []
-        current_step = _source_completed_step(source_manifest)
-        if declared_mode == "restart":
-            current_step = 0
+        segment_start = _source_completed_step(source_manifest)
+        current_step = segment_start
         schedule = optimizer.get("lr_schedule")
         if schedule is None:
             params = optimizer.get("params")
@@ -136,10 +136,26 @@ class StandardLrContinuationReporter:
                     }
                 ]
             return []
+        schedule_spec = LrScheduleSpec.model_validate(schedule)
+        lineage = CheckpointSegmentLineage(
+            start_batch=segment_start,
+            segment_batch_count=0,
+            parent_transaction_id=(
+                None
+                if segment_start == 0
+                else str(source_manifest.get("transaction_id") or "source")
+            ),
+        )
+        window = resolve_schedule_window(
+            schedule_spec.origin,
+            lineage=lineage,
+            duration=schedule_spec.total_steps,
+            allow_inert=schedule_spec.allow_inert,
+        )
         lr = learning_rate_at_step(
-            LrScheduleSpec.model_validate(schedule),
+            schedule_spec,
             current_step=current_step,
-            schedule_origin_step=0,
+            schedule_origin_step=window.start_batch,
         )
         return [{"step": current_step, "lr": float(lr), "mode": declared_mode}]
 
@@ -285,6 +301,8 @@ def write_materialized_matrix(
 def render_spec_lock_table(
     spec: TrainingRunMatrixSpec,
     materialized: MaterializedRunMatrix,
+    *,
+    segment_lineages: Mapping[str, CheckpointSegmentLineage] | None = None,
 ) -> str:
     """Render a Markdown spec-lock summary for reviewable launch plans."""
     override_paths = sorted(
@@ -295,6 +313,7 @@ def render_spec_lock_table(
             if hasattr(override, "path")
         }
     )
+    schedule_lines = _resolved_schedule_lines(materialized, segment_lineages or {})
     header = [
         f"Matrix: {spec.name}",
         f"Issue: {spec.issue or ''}",
@@ -303,6 +322,7 @@ def render_spec_lock_table(
         f"Fork source: {spec.fork.source_run_id if spec.fork else ''}",
         (f"LR continuation schedule: {spec.fork.lr_continuation if spec.fork else ''}"),
         f"Row count: {len(materialized.rows)}",
+        *schedule_lines,
         "",
     ]
     columns = ["row_id", "seed", "planned_run_id", *override_paths]
@@ -324,6 +344,38 @@ def render_spec_lock_table(
     return "\n".join([*header, *rows])
 
 
+def _resolved_schedule_lines(
+    materialized: MaterializedRunMatrix,
+    segment_lineages: Mapping[str, CheckpointSegmentLineage],
+) -> list[str]:
+    lines: list[str] = []
+    for row in materialized.rows:
+        optimizer = _find_optimizer_spec(row.payload)
+        if optimizer is None or optimizer.get("lr_schedule") is None:
+            continue
+        schedule = LrScheduleSpec.model_validate(optimizer["lr_schedule"])
+        lineage = segment_lineages.get(row.row_id)
+        if lineage is None:
+            continuation = row.spec.checkpoint_progress.continuation if row.spec else None
+            start_batch = 0 if continuation is None else continuation.source_completed_batches
+            lineage = CheckpointSegmentLineage(
+                start_batch=start_batch,
+                segment_batch_count=0,
+                parent_transaction_id=None if start_batch == 0 else "prelaunch-source",
+            )
+        window = resolve_schedule_window(
+            schedule.origin,
+            lineage=lineage,
+            duration=schedule.total_steps,
+            allow_inert=schedule.allow_inert,
+        )
+        end = "ongoing" if window.end_batch is None else f"{window.end_batch:,}"
+        lines.append(
+            f"{row.row_id} LR schedule: batches {window.start_batch:,} -> {end}"
+        )
+    return lines
+
+
 def fork_matrix_checkpoints(
     spec: TrainingRunMatrixSpec,
     materialized: MaterializedRunMatrix,
@@ -334,7 +386,7 @@ def fork_matrix_checkpoints(
     target_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
     row_slot_transforms: Mapping[str, Mapping[str, ResumeSlotTransform]] | None = None,
     row_transform_metadata: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
-    row_continuation_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
+    row_segment_history_templates: Mapping[str, Mapping[str, Any]] | None = None,
     row_target_slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
     row_target_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     row_target_transformed_slots: Mapping[str, Sequence[str]] | None = None,
@@ -351,9 +403,9 @@ def fork_matrix_checkpoints(
     """Fork a source checkpoint to all matrix rows and write a parity table.
 
     ``target_slot_templates`` describes the final target topology. Rows that
-    both extend a continuation and change topology must also provide
-    ``row_continuation_slot_templates`` for the raw pre-topology target tail.
-    ``row_slot_transforms`` run before continuation; the explicit target/post
+    both continue and change topology must also provide
+    ``row_segment_history_templates`` for the raw pre-topology segment logs.
+    ``row_slot_transforms`` run before segment allocation; the explicit target/post
     transform family runs after it and must declare changed source slots and
     newly initialized target-only slots.
 
@@ -379,7 +431,7 @@ def fork_matrix_checkpoints(
             f"row transform metadata contains unknown rows {unexpected_transform_metadata!r}"
         )
     for label, values in (
-        ("row continuation slot templates", row_continuation_slot_templates),
+        ("row segment history templates", row_segment_history_templates),
         ("row target slot transforms", row_target_slot_transforms),
         ("row target transform metadata", row_target_transform_metadata),
         ("row target transformed slots", row_target_transformed_slots),
@@ -413,16 +465,16 @@ def fork_matrix_checkpoints(
                     f"row={row.row_id!r} contract=checkpoint_progress.continuation"
                 )
             target_transform = (row_target_slot_transforms or {}).get(row.row_id)
-            continuation_templates = (row_continuation_slot_templates or {}).get(row.row_id)
+            continuation_templates = (row_segment_history_templates or {}).get(row.row_id)
             if (
                 continuation is not None
                 and target_transform is not None
                 and continuation_templates is None
             ):
                 raise RunMatrixError(
-                    "topology-changing continuation row has no raw continuation slot "
+                    "topology-changing continuation row has no raw segment history slot "
                     f"template; row={row.row_id!r} "
-                    "contract=row_continuation_slot_templates"
+                    "contract=row_segment_history_templates"
                 )
             result = fork_checkpoint_transaction(
                 source_checkpoint_root,
@@ -432,7 +484,7 @@ def fork_matrix_checkpoints(
                 expected_slots=expected_slots,
                 slot_transforms=(row_slot_transforms or {}).get(row.row_id),
                 transform_metadata=(row_transform_metadata or {}).get(row.row_id),
-                continuation_slot_templates=continuation_templates,
+                segment_history_templates=continuation_templates,
                 target_slot_transform=target_transform,
                 target_transform_metadata=(row_target_transform_metadata or {}).get(row.row_id),
                 target_transformed_slots=(row_target_transformed_slots or {}).get(row.row_id),

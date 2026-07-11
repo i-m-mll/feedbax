@@ -25,6 +25,12 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
+from feedbax.contracts.checkpoints import CheckpointSegmentLineage
+from feedbax.training.schedule_clocks import (
+    lr_origin_for_continuation,
+    resolve_schedule_window,
+    schedule_progress,
+)
 from feedbax.integrations.provider import provider_manifest
 from feedbax.training.optimizers import (
     OptimizerStateCompatibilityError,
@@ -298,3 +304,111 @@ def test_lr_schedule_schema_identity_is_publicly_discoverable() -> None:
         LrScheduleSpec.model_fields["schema_version"].default
         == LR_SCHEDULE_SPEC_SCHEMA_VERSION
     )
+
+
+def test_segment_start_clock_resolves_incident_ramp_values() -> None:
+    schedule = LrScheduleSpec(
+        kind="warmup_cosine",
+        learning_rate_0=0.1,
+        total_steps=1000,
+        constant_lr_iterations=500,
+        origin={"kind": "segment_start"},
+    )
+    lineage = CheckpointSegmentLineage(
+        start_batch=12_000,
+        segment_batch_count=1_000,
+        parent_transaction_id="parent",
+    )
+    window = resolve_schedule_window(
+        schedule.origin,
+        lineage=lineage,
+        duration=schedule.total_steps,
+    )
+
+    assert [schedule_progress(batch, window=window) for batch in (12_000, 12_500, 13_000)] == [
+        0.0,
+        0.5,
+        1.0,
+    ]
+
+
+def test_run_start_clock_is_continuous_across_seam() -> None:
+    root = CheckpointSegmentLineage(start_batch=0, segment_batch_count=20_000)
+    continuation = CheckpointSegmentLineage(
+        start_batch=12_000,
+        segment_batch_count=8_000,
+        parent_transaction_id="parent",
+    )
+    origin = {"kind": "run_start"}
+    schedule = LrScheduleSpec(
+        kind="delayed_cosine",
+        learning_rate_0=0.1,
+        total_steps=20_000,
+        constant_lr_iterations=1_000,
+        origin=origin,
+    )
+    root_window = resolve_schedule_window(schedule.origin, lineage=root, duration=20_000)
+    resumed_window = resolve_schedule_window(
+        schedule.origin, lineage=continuation, duration=20_000
+    )
+    assert root_window == resumed_window
+    assert float(
+        learning_rate_at_step(schedule, current_step=12_500, schedule_origin_step=root_window.start_batch)
+    ) == pytest.approx(
+        float(
+            learning_rate_at_step(
+                schedule,
+                current_step=12_500,
+                schedule_origin_step=resumed_window.start_batch,
+            )
+        )
+    )
+
+
+def test_absolute_past_window_requires_explicit_inert_override() -> None:
+    schedule = LrScheduleSpec(
+        kind="warmup_cosine",
+        learning_rate_0=0.1,
+        total_steps=1_000,
+        constant_lr_iterations=500,
+        origin={"kind": "absolute", "batch": 1_000},
+    )
+    lineage = CheckpointSegmentLineage(
+        start_batch=12_000,
+        segment_batch_count=1_000,
+        parent_transaction_id="parent",
+    )
+    with pytest.raises(ValueError, match="allow_inert=true"):
+        resolve_schedule_window(schedule.origin, lineage=lineage, duration=schedule.total_steps)
+    assert resolve_schedule_window(
+        schedule.origin,
+        lineage=lineage,
+        duration=schedule.total_steps,
+        allow_inert=True,
+    ).start_batch == 1_000
+
+
+def test_lr_schedule_v1_migrates_origin_and_v2_requires_it() -> None:
+    migrated = LrScheduleSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.training.lr_schedule.v1",
+            "kind": "constant",
+            "learning_rate_0": 0.1,
+        }
+    )
+    assert migrated.schema_version == LR_SCHEDULE_SPEC_SCHEMA_VERSION
+    assert migrated.origin.kind == "run_start"
+
+    with pytest.raises(ValueError, match="origin"):
+        LrScheduleSpec.model_validate(
+            {
+                "schema_version": LR_SCHEDULE_SPEC_SCHEMA_VERSION,
+                "kind": "constant",
+                "learning_rate_0": 0.1,
+            }
+        )
+
+
+def test_lr_continuation_modes_map_to_typed_clocks() -> None:
+    assert lr_origin_for_continuation("continue").kind == "run_start"
+    assert lr_origin_for_continuation("restart").kind == "segment_start"

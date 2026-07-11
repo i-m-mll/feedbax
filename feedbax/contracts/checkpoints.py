@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Generic, Literal, TypeVar
 
+import equinox as eqx
+
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import ArtifactMigrationRecord, ArtifactRef, ParentRef, StrictModel
@@ -28,8 +30,14 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3 = (
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4 = (
     "feedbax.manifest.training_checkpoint_transaction.v4"
 )
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5 = (
     "feedbax.manifest.training_checkpoint_transaction.v5"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6 = (
+    "feedbax.manifest.training_checkpoint_transaction.v6"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint_transaction.v7"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = "feedbax.manifest.training_checkpoint_latest_pointer"
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2 = (
@@ -60,10 +68,59 @@ CheckpointSlotRole = Literal[
 
 
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_continuation"
-CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v1"
+CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v2"
 
 
 CheckpointDocumentT = TypeVar("CheckpointDocumentT")
+BatchHistoryValueT = TypeVar("BatchHistoryValueT")
+
+
+class Granularity(eqx.Module):
+    """Static sampling granularity for a batch-indexed history."""
+
+    interval: int = eqx.field(static=True)
+
+    def __init__(self, interval: int = 1):
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
+            raise ValueError("BatchHistory granularity interval must be a positive integer")
+        object.__setattr__(self, "interval", interval)
+
+    @classmethod
+    def per_batch(cls) -> "Granularity":
+        """Return one history entry per training batch."""
+        return cls(1)
+
+    @classmethod
+    def per_interval(cls, interval: int) -> "Granularity":
+        """Return one history entry per ``interval`` training batches."""
+        return cls(interval)
+
+    def expected_entries(self, batch_count: int) -> int:
+        """Return the segment-local entry count for ``batch_count`` batches."""
+        if batch_count < 0:
+            raise ValueError("BatchHistory segment batch count must be non-negative")
+        return (batch_count + self.interval - 1) // self.interval
+
+
+class BatchHistory(eqx.Module, Generic[BatchHistoryValueT]):
+    """Mark an array as a segment-local batch-indexed checkpoint history."""
+
+    value: BatchHistoryValueT
+    batch_axis: int = eqx.field(static=True)
+    granularity: Granularity = eqx.field(static=True)
+
+    def __init__(
+        self,
+        value: BatchHistoryValueT,
+        *,
+        batch_axis: int = -1,
+        granularity: Granularity | None = None,
+    ):
+        if isinstance(batch_axis, bool) or not isinstance(batch_axis, int):
+            raise ValueError("BatchHistory batch_axis must be an integer")
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "batch_axis", batch_axis)
+        object.__setattr__(self, "granularity", granularity or Granularity.per_batch())
 
 
 @dataclass(frozen=True)
@@ -87,33 +144,14 @@ class CheckpointDocumentLoadResult(Generic[CheckpointDocumentT]):
         return bool(self.migration_records)
 
 
-class BatchIndexedCheckpointLeafSpec(StrictModel):
-    """One explicitly declared final-axis checkpoint leaf extended on resume."""
-
-    slot: str = Field(min_length=1)
-    tree_path: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _validate_tree_path(self) -> "BatchIndexedCheckpointLeafSpec":
-        if not self.tree_path.startswith("/"):
-            raise ValueError("/batch_indexed_leaves/tree_path must start with '/'")
-        return self
-
-
 class CheckpointContinuationRequest(StrictModel):
-    """Durable declaration for extending a checkpointed row's total horizon.
-
-    Feedbax deliberately does not infer batch-indexed leaves from arbitrary
-    PyTrees. The producer must declare the exact slot/tree-path leaves whose
-    final axis represents the global training-batch horizon.
-    """
+    """Durable declaration for a segment-local continuation."""
 
     schema_id: str = CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID
     schema_version: str = CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION
     source_completed_batches: int = Field(ge=0)
     additional_batches: int | None = Field(default=None, gt=0)
-    target_total_batches: int | None = Field(default=None, ge=0)
-    batch_indexed_leaves: list[BatchIndexedCheckpointLeafSpec] = Field(min_length=1)
+    self_contained: bool = False
 
     @model_validator(mode="after")
     def _validate_request(self) -> "CheckpointContinuationRequest":
@@ -130,26 +168,36 @@ class CheckpointContinuationRequest(StrictModel):
                 f"{CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION!r}; "
                 "migration_intentionally_absent=yes"
             )
-        if (self.additional_batches is None) == (self.target_total_batches is None):
-            raise ValueError(
-                "exactly one of /additional_batches or /target_total_batches is required"
-            )
-        if self.target_total_batches is not None and (
-            self.target_total_batches < self.source_completed_batches
-        ):
-            raise ValueError("/target_total_batches must not precede /source_completed_batches")
-        identities = [(leaf.slot, leaf.tree_path) for leaf in self.batch_indexed_leaves]
-        if len(identities) != len(set(identities)):
-            raise ValueError("/batch_indexed_leaves slot/tree_path pairs must be unique")
+        if self.additional_batches is None:
+            raise ValueError("/additional_batches is required for segment-local continuation")
         return self
 
     @property
     def target_total(self) -> int:
         """Return the target total implied by this unambiguous declaration."""
-        if self.additional_batches is not None:
-            return self.source_completed_batches + self.additional_batches
-        assert self.target_total_batches is not None
-        return self.target_total_batches
+        assert self.additional_batches is not None
+        return self.source_completed_batches + self.additional_batches
+
+
+class CheckpointSegmentLineage(StrictModel):
+    """Versioned identity and offsets for one canonical checkpoint segment."""
+
+    schema_id: str = "feedbax.manifest.training_checkpoint.segment_lineage"
+    schema_version: str = "feedbax.manifest.training_checkpoint.segment_lineage.v1"
+    parent_transaction_id: str | None = None
+    start_batch: int = Field(ge=0)
+    segment_batch_count: int = Field(ge=0)
+    history_granularities: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_lineage(self) -> "CheckpointSegmentLineage":
+        if self.start_batch == 0 and self.parent_transaction_id is not None:
+            raise ValueError("root segment cannot declare parent_transaction_id")
+        if self.start_batch > 0 and self.parent_transaction_id is None:
+            raise ValueError("continuation segment requires parent_transaction_id")
+        if any(interval < 1 for interval in self.history_granularities.values()):
+            raise ValueError("history granularity intervals must be positive")
+        return self
 
 
 class SerializerVersionRecord(StrictModel):
@@ -443,6 +491,7 @@ class CheckpointTransactionManifest(StrictModel):
     barrier: str
     completed_coordinate: ProgressCoordinate
     completed_training_batches: int | None = None
+    segment_lineage: CheckpointSegmentLineage
     completed_coordinate_semantics: str = (
         "Cumulative phase-program coordinate for custody ordering; not the primary "
         "training-batch progress field or checkpoint count."

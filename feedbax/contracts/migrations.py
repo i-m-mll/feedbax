@@ -20,6 +20,8 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -146,6 +148,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.training import (
     LR_SCHEDULE_SPEC_SCHEMA_ID,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
+    LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1,
     LOSS_TERM_SPEC_SCHEMA_ID,
     LOSS_TERM_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
@@ -814,6 +817,40 @@ def _migrate_checkpoint_coordinate_v4_to_v5_payload(
         "Cumulative phase-program coordinate for custody ordering; not the primary "
         "training-batch progress field or checkpoint count."
     )
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    return migrated
+
+
+def _migrate_checkpoint_history_v5_to_v6_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Mark legacy slot trees for declaration-guided BatchHistory wrapping."""
+    migrated = dict(payload)
+    metadata = dict(migrated.get("metadata") or {})
+    metadata["batch_history_tree_migration"] = "declared_paths_v5_to_v6"
+    migrated["metadata"] = metadata
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6
+    return migrated
+
+
+def _migrate_checkpoint_lineage_v6_to_v7_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Backfill legacy checkpoints as self-contained single-segment lineages."""
+    migrated = dict(payload)
+    completed = migrated.get("completed_training_batches")
+    if completed is None:
+        completed = 0
+    if not isinstance(completed, int) or isinstance(completed, bool) or completed < 0:
+        raise ValueError(
+            "v6 checkpoint lineage migration requires non-negative "
+            "/completed_training_batches"
+        )
+    migrated["segment_lineage"] = {
+        "start_batch": 0,
+        "segment_batch_count": completed,
+        "history_granularities": {},
+    }
     migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     return migrated
 
@@ -1065,6 +1102,15 @@ def _migrate_loss_term_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[st
     migrated = loss_term.model_dump(mode="json", exclude_none=True)
     migrated["schema_id"] = LOSS_TERM_SPEC_SCHEMA_ID
     migrated["schema_version"] = LOSS_TERM_SPEC_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_lr_schedule_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_id"] = LR_SCHEDULE_SPEC_SCHEMA_ID
+    migrated["schema_version"] = LR_SCHEDULE_SPEC_SCHEMA_VERSION
+    migrated.setdefault("origin", {"kind": "run_start"})
+    migrated.setdefault("allow_inert", False)
     return migrated
 
 
@@ -1946,6 +1992,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -2068,6 +2116,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("OptimizerSpec.lr_schedule", "provider_manifest.schemas"),
             consumed_by=("feedbax.training.optimizers", "downstream optimizer builders"),
             description=("Declarative learning-rate schedule contract for OptimizerSpec."),
+            stance="migrate",
+            supported_old_versions=("feedbax.spec.training.lr_schedule.v1",),
             rejected_old_versions=("feedbax.spec.training.lr_schedule.v0",),
             required_tests=(
                 "tests/test_optimizer_contract.py",
@@ -3196,13 +3246,33 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
         migration_id="training-checkpoint-transaction-v4-to-v5-program-coordinate",
         migrate=_migrate_checkpoint_coordinate_v4_to_v5_payload,
         description=(
             "Rename global_step to cumulative program_step without inferring "
             "completed training batches from the coordinate."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+        migration_id="training-checkpoint-transaction-v5-to-v6-batch-history",
+        migrate=_migrate_checkpoint_history_v5_to_v6_payload,
+        description="Mark legacy slot trees for typed batch-history migration.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v6-to-v7-segment-lineage",
+        migrate=_migrate_checkpoint_lineage_v6_to_v7_payload,
+        description="Backfill self-contained checkpoints as root segment lineages.",
     ),
 )
 default_spec_registry.register_migration(
@@ -3233,6 +3303,16 @@ default_spec_registry.register_migration(
         migration_id="training-run-set-manifest-v1-to-v2-axes",
         migrate=_migrate_training_run_set_manifest_v1_to_v2_payload,
         description="Add explicit axes metadata to training run-set manifests.",
+    ),
+)
+default_spec_registry.register_migration(
+    "LrScheduleSpec",
+    SchemaMigration(
+        source_version=LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1,
+        target_version=LR_SCHEDULE_SPEC_SCHEMA_VERSION,
+        migration_id="lr-schedule-spec-v1-to-v2-typed-origin",
+        migrate=_migrate_lr_schedule_spec_v1_to_v2_payload,
+        description="Preserve legacy global-zero clocks as explicit run_start origins.",
     ),
 )
 default_spec_registry.register_migration(
