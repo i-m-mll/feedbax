@@ -22,6 +22,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/lib_acquire.sh"
 # shellcheck source=lib_run_prep.sh
 source "$SCRIPT_DIR/lib_run_prep.sh"
+# shellcheck source=lib_checkout_provenance.sh
+source "$SCRIPT_DIR/lib_checkout_provenance.sh"
 FEEDBAX_ROOT="${FEEDBAX_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd -P)}"
 PROJECTS_ROOT="${PROJECTS_ROOT:-$(cd "$FEEDBAX_ROOT/../.." && pwd -P)}"
 UTILS_ROOT="${UTILS_ROOT:-$(cd "$FEEDBAX_ROOT/../../.." && pwd -P)/05 Utils}"
@@ -1075,6 +1077,7 @@ PY"
 main() {
     first_pass_config "$@"
     load_config
+    emit_checkout_provenance "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}" "$FEEDBAX_ROOT" "$RLRMP_ROOT"
     parse_args "$@"
     if { [ -n "$SSH_HOST" ] && [ -z "$SSH_PORT" ]; } ||
         { [ -z "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; }; then
