@@ -27,6 +27,7 @@ from feedbax.contracts.studio_api import (
     TrainingStartPayload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
 from feedbax.web.api import components as components_api
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
@@ -255,7 +256,7 @@ def test_component_api_serves_representation_contract(monkeypatch: pytest.Monkey
         item for item in contract.data.components if item.name == "ApiRepresentedGain"
     )
     assert represented.representation is not None
-    assert represented.representation.schema_version == "feedbax.spec.studio.representation.v4"
+    assert represented.representation.schema_version == REPRESENTATION_SCHEMA_VERSION
     assert represented.representation.elements[0].archetype == "marker"
 
 

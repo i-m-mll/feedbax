@@ -10,7 +10,8 @@ from feedbax.contracts.graph import ParamSchema, ParamValue, StudioSelectorRef
 
 
 REPRESENTATION_SCHEMA_ID = "feedbax.spec.studio.representation"
-REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v4"
+REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v5"
+REPRESENTATION_SCHEMA_VERSION_V4 = "feedbax.spec.studio.representation.v4"
 REPRESENTATION_SCHEMA_VERSION_V3 = "feedbax.spec.studio.representation.v3"
 REPRESENTATION_SCHEMA_VERSION_V2 = "feedbax.spec.studio.representation.v2"
 REPRESENTATION_SCHEMA_VERSION_V1 = "feedbax.spec.studio.representation.v1"
@@ -169,11 +170,19 @@ class RepresentationFrameProvider(RepresentationContractModel):
         return self
 
 
+class RepresentationReferencePoseSpec(RepresentationContractModel):
+    """Provider-declared authoring pose in configuration coordinates."""
+
+    coordinate_space: Literal["configuration"] = "configuration"
+    values: List[float] = Field(min_length=1)
+
+
 class RepresentationPlanarChainSpec(RepresentationContractModel):
     """Typed kinematics capability exposed by a planar-chain element."""
 
     frame_ids: List[str] = Field(min_length=2)
     pose_fallback: Optional[Literal["zero"]] = None
+    reference_pose: Optional[RepresentationReferencePoseSpec] = None
 
     @model_validator(mode="after")
     def validate_frame_ids(self) -> "RepresentationPlanarChainSpec":
@@ -182,6 +191,14 @@ class RepresentationPlanarChainSpec(RepresentationContractModel):
             raise ValueError(f"Duplicate planar-chain frame ids: {duplicate_frames!r}")
         if self.frame_ids[0] != "world":
             raise ValueError("planar-chain frame_ids must start with 'world'")
+        if (
+            self.reference_pose is not None
+            and len(self.reference_pose.values) != len(self.frame_ids) - 1
+        ):
+            raise ValueError(
+                "planar-chain reference_pose must provide one configuration coordinate "
+                "per non-world frame"
+            )
         return self
 
 

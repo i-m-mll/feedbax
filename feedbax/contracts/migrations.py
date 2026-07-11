@@ -75,7 +75,12 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+    STUDIO_BIOMECHANICS_SCHEMA_ID,
+    STUDIO_BIOMECHANICS_SCHEMA_VERSION,
+    STUDIO_SCENARIO_SCHEMA_VERSION,
+    STUDIO_SCENARIO_SCHEMA_VERSION_V1,
     GraphSpec,
 )
 from feedbax.contracts.acausal import (
@@ -86,6 +91,7 @@ from feedbax.contracts.acausal import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V4,
     REPRESENTATION_SCHEMA_VERSION_V3,
     REPRESENTATION_SCHEMA_VERSION_V2,
     REPRESENTATION_SCHEMA_VERSION_V1,
@@ -1143,6 +1149,18 @@ def _migrate_representation_spec_v3_to_v4_payload(payload: dict[str, Any]) -> di
     return migrated
 
 
+def _migrate_representation_spec_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote v4 representations to provider-declared reference poses."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
+    return migrated
+
+
+def _migrate_studio_scenario_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote scenarios to the typed biomechanics-spec boundary."""
+    return dict(payload)
+
+
 def migrate_graph_spec(
     payload: Mapping[str, Any] | GraphSpec,
     *,
@@ -1376,6 +1394,7 @@ _SCENARIO_STRUCTURED_FIELDS = {
     "task_spec": "TaskSpec",
     "objective_spec": "ObjectiveSpec",
     "temporal_spec": "StudioTaskTimelineSpec",
+    "biomechanics_spec": "StudioBiomechanicsSpec",
     "analysis_spec": "AnalysisRunSpec",
     "report_spec": "ReportSpec",
 }
@@ -2681,6 +2700,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 REPRESENTATION_SCHEMA_VERSION_V1,
                 REPRESENTATION_SCHEMA_VERSION_V2,
                 REPRESENTATION_SCHEMA_VERSION_V3,
+                REPRESENTATION_SCHEMA_VERSION_V4,
             ),
             rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
             required_tests=(
@@ -2703,6 +2723,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "Durable Studio scenario draft state.",
         ),
         (
+            "StudioBiomechanicsSpec",
+            STUDIO_BIOMECHANICS_SCHEMA_ID,
+            "Scenario-local biomechanics metadata boundary.",
+        ),
+        (
             "StudioStageSpec",
             "feedbax.spec.studio.stage",
             "Durable Studio pipeline stage state.",
@@ -2719,7 +2744,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         ("StudioValueSpec", "feedbax.spec.studio.value", "Structured Studio-authored value."),
     ):
-        if kind == "StudioTaskBindingSpec":
+        if kind == "StudioScenarioSpec":
+            current_version = STUDIO_SCENARIO_SCHEMA_VERSION
+            stance = "migrate"
+            supported = (
+                LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
+                STUDIO_SCENARIO_SCHEMA_VERSION_V1,
+            )
+            rejected = ("feedbax.spec.studio.scenario.v0",)
+        elif kind == "StudioBiomechanicsSpec":
+            current_version = STUDIO_BIOMECHANICS_SCHEMA_VERSION
+            stance = "reject"
+            supported = None
+            rejected = ("feedbax.spec.studio.biomechanics.v0",)
+        elif kind == "StudioTaskBindingSpec":
             current_version = f"{schema_id}.v2"
             stance = "migrate"
             supported = (STUDIO_TASK_BINDING_LEGACY_V1,)
@@ -3063,12 +3101,47 @@ default_spec_registry.register_migration(
     "RepresentationSpec",
     SchemaMigration(
         source_version=REPRESENTATION_SCHEMA_VERSION_V3,
-        target_version=REPRESENTATION_SCHEMA_VERSION,
+        target_version=REPRESENTATION_SCHEMA_VERSION_V4,
         migration_id="representation-spec-v3-to-v4-same-entity-frame-provider",
         migrate=_migrate_representation_spec_v3_to_v4_payload,
         description=(
             "Add typed same-entity planar-chain frame providers for self-contained components."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RepresentationSpec",
+    SchemaMigration(
+        source_version=REPRESENTATION_SCHEMA_VERSION_V4,
+        target_version=REPRESENTATION_SCHEMA_VERSION,
+        migration_id="representation-spec-v4-to-v5-reference-pose",
+        migrate=_migrate_representation_spec_v4_to_v5_payload,
+        description=(
+            "Add optional provider-declared planar-chain reference poses in configuration "
+            "coordinates."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioScenarioSpec",
+    SchemaMigration(
+        source_version=LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
+        target_version=STUDIO_SCENARIO_SCHEMA_VERSION,
+        migration_id="studio-scenario-legacy-v1-to-v2-typed-biomechanics",
+        migrate=_migrate_studio_scenario_v1_to_v2_payload,
+        description=(
+            "Canonicalize frontend-authored v1 scenarios and type their biomechanics boundary."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioScenarioSpec",
+    SchemaMigration(
+        source_version=STUDIO_SCENARIO_SCHEMA_VERSION_V1,
+        target_version=STUDIO_SCENARIO_SCHEMA_VERSION,
+        migration_id="studio-scenario-v1-to-v2-typed-biomechanics",
+        migrate=_migrate_studio_scenario_v1_to_v2_payload,
+        description="Type and version the scenario biomechanics representation boundary.",
     ),
 )
 default_spec_registry.register_migration(

@@ -284,6 +284,10 @@ def _two_link_arm_representation() -> RepresentationSpec:
                     },
                     "planar_chain": {
                         "frame_ids": ["world", "link0", "link1"],
+                        "reference_pose": {
+                            "coordinate_space": "configuration",
+                            "values": [0.0, 0.0],
+                        },
                         "pose_fallback": "zero",
                     },
                 }

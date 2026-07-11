@@ -18,7 +18,7 @@ import {
 function scenario(): StudioScenarioSpec {
   return {
     id: 'scenario:train',
-    schema_version: 'feedbax.studio.scenario.v1',
+    schema_version: 'feedbax.spec.studio.scenario.v2',
     label: 'Train',
     stage_id: 'stage:train',
     graph: null,

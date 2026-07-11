@@ -373,31 +373,41 @@ function elementGlobalId(entityId: string, elementId: string): string {
   return `${entityId}::element:${elementId}`;
 }
 
-function twoLinkRestPoints(
+function twoLinkReferencePoints(
   component: ComponentDefinition,
   node: ComponentSpec,
-  linkLengthsBinding: RepresentationBinding,
+  element: RepresentationElementSpec,
+  nodeId: string | null,
+  poseValues: ResolvedScenePoseValues | undefined,
+  requirePoseValues: boolean,
   messages: ResolvedSceneValidationMessage[],
-  entityId: string,
-  elementId: string
+  entityId: string
 ): Array<[number, number]> | null {
+  const linkLengthsBinding = element.bindings?.link_lengths;
   const lengths = numericArray(bindingValue(component, node, linkLengthsBinding));
   if (!lengths || lengths.length !== 2 || lengths.some((length) => length <= 0)) {
     messages.push({
       type: 'workspace_planar_chain_lengths_invalid',
       severity: 'error',
-      message: `Planar-chain element '${elementId}' requires two positive provider-bound link lengths.`,
+      message: `Planar-chain element '${element.id}' requires two positive provider-bound link lengths.`,
       entity_id: entityId,
-      path: `representation.elements.${elementId}.bindings.link_lengths`,
+      path: `representation.elements.${element.id}.bindings.link_lengths`,
     });
     return null;
   }
-  const angles =
-    numericArray(
-      valueAtPath(node.params ?? {}, 'joint_angles') ??
-        valueAtPath(node.params ?? {}, 'rest_joint_angles') ??
-        valueAtPath(node.params ?? {}, 'initial_angles')
-    ) ?? [0, 0];
+  const angleSelector = bindingSelector(element.bindings?.joint_angles);
+  const dynamicPose =
+    nodeId && angleSelector
+      ? poseValues?.[resolvedScenePoseKey(nodeId, angleSelector.compact)]
+      : undefined;
+  let angles = dynamicPose ? numericArray(dynamicPose) : null;
+  if (!angles && !requirePoseValues) {
+    angles = numericArray(element.planar_chain?.reference_pose?.values);
+  }
+  if (!angles && !requirePoseValues && element.planar_chain?.pose_fallback === 'zero') {
+    angles = lengths.map(() => 0);
+  }
+  if (!angles || angles.length < lengths.length) return null;
   const shoulder: [number, number] = [0, 0];
   const theta0 = angles[0] ?? 0;
   const theta1 = theta0 + (angles[1] ?? 0);
@@ -661,11 +671,7 @@ function planarChainFrames({
   const dynamicPose = poseValues?.[poseKey];
   let angles = dynamicPose ? numericArray(dynamicPose) : null;
   if (!angles && !requirePoseValues) {
-    angles = numericArray(
-      valueAtPath(hostNode.params ?? {}, 'joint_angles') ??
-        valueAtPath(hostNode.params ?? {}, 'rest_joint_angles') ??
-        valueAtPath(hostNode.params ?? {}, 'initial_angles')
-    );
+    angles = numericArray(chainElement.planar_chain.reference_pose?.values);
   }
   if (!angles && !requirePoseValues && chainElement.planar_chain.pose_fallback === 'zero') {
     angles = lengths.map(() => 0);
@@ -798,17 +804,18 @@ function resolveComponentRepresentation({
   const planarChain = representation.elements?.find(
     (element) => element.archetype === 'planar_chain'
   );
-  const linkLengthsBinding = planarChain?.bindings?.link_lengths;
   const isTwoLinkChain = planarChain?.metadata?.chain_kind === 'two_link_arm';
   const twoLinkPoints =
     isTwoLinkChain && planarChain
-      ? twoLinkRestPoints(
+      ? twoLinkReferencePoints(
           component,
           nodeOrTask as ComponentSpec,
-          linkLengthsBinding,
+          planarChain,
+          nodeId,
+          poseValues,
+          requirePoseValues,
           scene.validation,
-          entity.id,
-          planarChain.id
+          entity.id
         )
       : null;
 

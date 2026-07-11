@@ -576,6 +576,10 @@ def test_builtin_mechanics_expose_workspace_representations() -> None:
     assert links.anchors == ["shoulder", "elbow", "effector"]
     assert links.bindings["link_lengths"].kind == "param_path"
     assert links.bindings["link_lengths"].path == "link_lengths"
+    assert links.planar_chain is not None
+    assert links.planar_chain.reference_pose is not None
+    assert links.planar_chain.reference_pose.coordinate_space == "configuration"
+    assert links.planar_chain.reference_pose.values == [0.0, 0.0]
 
 
 def test_two_link_arm_builder_uses_representation_link_lengths_param() -> None:
@@ -735,6 +739,66 @@ def test_representation_reachability_requires_known_origin_anchor() -> None:
                     "origin_anchor": "missing",
                     "radius_binding": {"kind": "literal", "value": 1.0},
                 }
+            }
+        )
+
+
+def test_planar_chain_reference_pose_uses_configuration_coordinates() -> None:
+    representation = RepresentationSpec.model_validate(
+        {
+            "elements": [
+                {
+                    "id": "links",
+                    "archetype": "planar_chain",
+                    "planar_chain": {
+                        "frame_ids": ["world", "link0", "link1"],
+                        "reference_pose": {
+                            "coordinate_space": "configuration",
+                            "values": [-1.2, 1.7],
+                        },
+                    },
+                }
+            ]
+        }
+    )
+
+    planar_chain = representation.elements[0].planar_chain
+    assert planar_chain is not None
+    assert planar_chain.reference_pose is not None
+    assert planar_chain.reference_pose.values == [-1.2, 1.7]
+
+    with pytest.raises(ValueError, match="configuration coordinate"):
+        RepresentationSpec.model_validate(
+            {
+                "elements": [
+                    {
+                        "id": "links",
+                        "archetype": "planar_chain",
+                        "planar_chain": {
+                            "frame_ids": ["world", "link0", "link1"],
+                            "reference_pose": {"values": [0.0]},
+                        },
+                    }
+                ]
+            }
+        )
+
+    with pytest.raises(ValueError, match="literal_error"):
+        RepresentationSpec.model_validate(
+            {
+                "elements": [
+                    {
+                        "id": "links",
+                        "archetype": "planar_chain",
+                        "planar_chain": {
+                            "frame_ids": ["world", "link0", "link1"],
+                            "reference_pose": {
+                                "coordinate_space": "workspace",
+                                "values": [0.0, 0.0],
+                            },
+                        },
+                    }
+                ]
             }
         )
 

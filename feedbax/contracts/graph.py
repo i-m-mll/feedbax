@@ -596,8 +596,12 @@ class AnalysisPageSpec(BaseModel):
 
 
 STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.spec.studio.workspace.v1"
-STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v1"
+LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
+STUDIO_SCENARIO_SCHEMA_VERSION_V1 = "feedbax.spec.studio.scenario.v1"
+STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v2"
 STUDIO_STAGE_SCHEMA_VERSION = "feedbax.spec.studio.stage.v1"
+STUDIO_BIOMECHANICS_SCHEMA_ID = "feedbax.spec.studio.biomechanics"
+STUDIO_BIOMECHANICS_SCHEMA_VERSION = "feedbax.spec.studio.biomechanics.v1"
 
 StudioStageKind = Literal[
     "train",
@@ -1008,6 +1012,23 @@ class StudioTaskBindingSpec(BaseModel):
         return data
 
 
+class StudioBiomechanicsSpec(BaseModel):
+    """Versioned boundary for scenario-local biomechanics metadata.
+
+    Physical topology, configuration, and pose remain owned by graph, task, and
+    provider representation contracts. This envelope must not become a persisted
+    resolved scene or a shadow mechanics model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_BIOMECHANICS_SCHEMA_ID] = STUDIO_BIOMECHANICS_SCHEMA_ID
+    schema_version: Literal[STUDIO_BIOMECHANICS_SCHEMA_VERSION] = (
+        STUDIO_BIOMECHANICS_SCHEMA_VERSION
+    )
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class StudioScenarioSpec(BaseModel):
     """Stage-owned structural scenario draft for model/task/objective state.
 
@@ -1020,7 +1041,7 @@ class StudioScenarioSpec(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     id: str
-    schema_version: str = STUDIO_SCENARIO_SCHEMA_VERSION
+    schema_version: Literal[STUDIO_SCENARIO_SCHEMA_VERSION] = STUDIO_SCENARIO_SCHEMA_VERSION
     label: str
     stage_id: Optional[str] = None
     parent_scenario_id: Optional[str] = None
@@ -1032,7 +1053,7 @@ class StudioScenarioSpec(BaseModel):
     objective_spec: Optional[Dict[str, Any]] = None
     probe_specs: List[RetainedObservableSpec] = Field(default_factory=list)
     temporal_spec: Optional[Dict[str, Any]] = None
-    biomechanics_spec: Optional[Dict[str, Any]] = None
+    biomechanics_spec: Optional[StudioBiomechanicsSpec] = None
     analysis_spec: Optional[Dict[str, Any]] = None
     report_spec: Optional[Dict[str, Any]] = None
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
