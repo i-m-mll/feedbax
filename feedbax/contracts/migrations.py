@@ -119,6 +119,8 @@ from feedbax.contracts.representation import (
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
@@ -2105,6 +2107,21 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=("tests/test_lineage_graph.py",),
         ),
         _family(
+            "EvaluationRunMatrixSpec",
+            EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+            EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.analysis.evaluation",
+            emitted_by=("feedbax.analysis.harness",),
+            consumed_by=("evaluation matrix materialization",),
+            description=(
+                "Governed evaluation conditions expressed as one typed base plus "
+                "ordered row deltas and post-delta derivations."
+            ),
+            stance="reject",
+            rejected_old_versions=("feedbax.spec.evaluation_run_matrix.v0",),
+            required_tests=("tests/test_evaluation_matrix.py",),
+        ),
+        _family(
             "TrainingCheckpointTransactionManifest",
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
@@ -2419,7 +2436,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
-            "feedbax.spec.analysis_bundle.v2",
+            "feedbax.spec.analysis_bundle.v3",
             owner_module="feedbax.analysis.bundles",
             emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
             consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
@@ -2427,8 +2444,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Schema-bearing analysis bundle plan for ordered evaluation, analysis, "
                 "materialization, and report stages."
             ),
+            stance="migrate",
+            supported_old_versions=("feedbax.spec.analysis_bundle.v2",),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
-            required_tests=("tests/test_analysis_spec_bundles.py",),
+            required_tests=("tests/test_analysis_bundle_base_patches.py",),
         ),
         _family(
             "PathExpression",
@@ -3255,8 +3274,41 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
 
 
+def _migrate_analysis_bundle_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Lift v2 stage-local params into the explicit v3 local-params escape hatch."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", "feedbax.spec.analysis_bundle")
+    migrated.setdefault("params_base", {"params": {}})
+    raw_stages = migrated.get("stages", [])
+    if not isinstance(raw_stages, list):
+        return migrated
+    stages: list[Any] = []
+    for raw_stage in raw_stages:
+        if not isinstance(raw_stage, Mapping):
+            stages.append(raw_stage)
+            continue
+        stage = dict(raw_stage)
+        stage["local_params"] = stage.pop("params", {})
+        stages.append(stage)
+    migrated["stages"] = stages
+    return migrated
+
+
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "AnalysisBundleSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.analysis_bundle.v2",
+        target_version="feedbax.spec.analysis_bundle.v3",
+        migration_id="analysis-bundle-v2-to-v3-shared-params-base",
+        migrate=_migrate_analysis_bundle_v2_to_v3_payload,
+        description=(
+            "Preserve v2 stage-local params explicitly while introducing the shared typed "
+            "parameter base and per-stage patches."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "TrainingRunMatrixSpec",
     SchemaMigration(

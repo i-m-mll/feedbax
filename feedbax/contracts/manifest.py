@@ -555,6 +555,10 @@ class EvaluationRunSpec(StrictModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.evaluation_run_matrix"
+EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run_matrix.v1"
+
+
 class EvaluationRunManifest(BaseManifest):
     kind: Literal["EvaluationRunManifest"] = "EvaluationRunManifest"
     evaluation_spec: SpecPayload

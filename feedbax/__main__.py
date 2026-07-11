@@ -359,7 +359,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     fork_parser.add_argument("--tool-version", help="Tool version to record in provenance")
 
+    harness_parser = subparsers.add_parser(
+        "matrix-harness",
+        help="Materialize evaluation condition rows with manifests and custody records.",
+    )
+    harness_parser.add_argument("spec", help="EvaluationRunMatrixSpec JSON path")
+    harness_parser.add_argument("--manifest-root", required=True)
+    harness_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods and analysis recipes; "
+            "may be repeated."
+        ),
+    )
+    harness_parser.add_argument(
+        "--escape-hatch-reason",
+        help="Required reason when materializing a flat spec outside the row model.",
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "matrix-harness":
+        from feedbax.analysis.harness import main as harness_main
+
+        harness_argv = [args.spec, "--manifest-root", args.manifest_root]
+        for module_name in args.plugin or ():
+            harness_argv.extend(("--plugin", module_name))
+        if args.escape_hatch_reason is not None:
+            harness_argv.extend(("--escape-hatch-reason", args.escape_hatch_reason))
+        return harness_main(harness_argv)
     if args.command == "execute-training-run-spec":
         _load_training_method_plugins(args.plugin)
         run_spec = validate_training_run_spec(_read_json(args.spec))

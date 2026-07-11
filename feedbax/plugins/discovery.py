@@ -16,6 +16,10 @@ TRAINING_METHOD_REGISTRAR_NAMES = (
     "register_feedbax_training_methods",
     "register_training_methods",
 )
+ANALYSIS_RECIPE_REGISTRAR_NAMES = (
+    "register_feedbax_analysis_recipes",
+    "register_analysis_recipes",
+)
 EXECUTION_PREPARATION_REGISTRAR_NAMES = (
     "register_feedbax_execution_preparations",
     "register_execution_preparations",
@@ -167,6 +171,7 @@ def _register_training_plugin(
     provenance: str,
 ) -> None:
     _register_training_methods_from_plugin(plugin, registry, provenance=provenance)
+    _register_analysis_recipes_from_plugin(plugin, provenance=provenance)
     registrar = _execution_preparation_registrar(plugin)
     if registrar is None:
         return
@@ -177,6 +182,27 @@ def _register_training_plugin(
             f"Failed to register Feedbax execution preparations from {provenance}: {exc}"
         ) from exc
     logger.info("Registered Feedbax execution preparations from %s", provenance)
+
+
+def _register_analysis_recipes_from_plugin(plugin: Any, *, provenance: str) -> None:
+    """Invoke an optional plugin hook that populates public analysis registries."""
+    registrar = next(
+        (
+            candidate
+            for name in ANALYSIS_RECIPE_REGISTRAR_NAMES
+            if callable(candidate := getattr(plugin, name, None))
+        ),
+        None,
+    )
+    if registrar is None:
+        return
+    try:
+        registrar()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to register Feedbax analysis recipes from {provenance}: {exc}"
+        ) from exc
+    logger.info("Registered Feedbax analysis recipes from %s", provenance)
 
 
 def _register_training_methods_from_plugin(

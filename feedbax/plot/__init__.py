@@ -17,6 +17,9 @@ from .constructors import (
     registered_figure_constructors,
     registered_figure_pieces,
     registered_figure_templates,
+    unregister_figure_constructor,
+    unregister_figure_piece,
+    unregister_figure_template,
 )
 from .plotly import loss_history, loss_history_compare
 from .profiles import profiles

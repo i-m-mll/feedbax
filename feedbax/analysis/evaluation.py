@@ -46,6 +46,13 @@ from feedbax.contracts.manifest import (
     safe_manifest_key,
     spec_payload,
     write_manifest,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+)
+from feedbax.contracts.matrix_core import (
+    MaterializedMatrixRow,
+    RowMatrixSpec,
+    materialize_matrix_rows,
 )
 from feedbax.analysis.validation import (
     EvaluationRecipeProtocol,
@@ -74,6 +81,90 @@ STATES_SCHEMA_METADATA_KEY = "states_schema"
 EVALUATION_STATES_CACHE_SCHEMA_VERSION = "feedbax.analysis.evaluation-states-cache.v1"
 
 _EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
+
+
+class EvaluationRunMatrixSpec(RowMatrixSpec[EvaluationRunSpec]):
+    """Durable base/row/delta authoring contract for evaluation conditions."""
+
+    schema_id: str = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID
+    schema_version: str = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.schema_id != EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID:
+            raise ValueError(f"unsupported EvaluationRunMatrixSpec schema_id {self.schema_id!r}")
+        if self.schema_version != EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported EvaluationRunMatrixSpec schema_version {self.schema_version!r}"
+            )
+
+
+def materialize_evaluation_run_matrix(
+    spec: EvaluationRunMatrixSpec | Mapping[str, Any],
+    *,
+    repo_root: Path | str | None = None,
+) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
+    """Resolve an evaluation matrix into executable evaluation requests."""
+    matrix = (
+        spec
+        if isinstance(spec, EvaluationRunMatrixSpec)
+        else EvaluationRunMatrixSpec.model_validate(spec)
+    )
+    return materialize_matrix_rows(matrix, repo_root=repo_root)
+
+
+def execute_evaluation_run_matrix(
+    spec: EvaluationRunMatrixSpec | EvaluationRunSpec | Mapping[str, Any],
+    *,
+    root: Path | str,
+    repo_root: Path | str | None = None,
+    escape_hatch_reason: str | None = None,
+):
+    """Resolve and execute every evaluation condition through the shared harness."""
+    from feedbax.analysis.harness import MatrixMaterializerHarness
+
+    if isinstance(spec, EvaluationRunSpec) or (
+        isinstance(spec, Mapping) and "evaluation_type" in spec and "base" not in spec
+    ):
+        if escape_hatch_reason is None or not escape_hatch_reason.strip():
+            raise ValueError(
+                "flat EvaluationRunSpec escape hatch requires a stated non-empty reason"
+            )
+        run_spec = (
+            spec if isinstance(spec, EvaluationRunSpec) else EvaluationRunSpec.model_validate(spec)
+        )
+        rows = [("flat", run_spec.model_dump(mode="python"))]
+    else:
+        matrix = (
+            spec
+            if isinstance(spec, EvaluationRunMatrixSpec)
+            else EvaluationRunMatrixSpec.model_validate(spec)
+        )
+        rows = [
+            (row.row_id, row.payload.model_dump(mode="python"))
+            for row in materialize_matrix_rows(matrix, repo_root=repo_root)
+        ]
+
+    def execute(row_id: str, resolved: Mapping[str, Any], row_root: Path):
+        manifest, path = execute_evaluation_run_spec(
+            EvaluationRunSpec.model_validate(resolved),
+            root=row_root,
+            metadata={
+                "matrix_harness": {
+                    "row_id": row_id,
+                    "escape_hatch_reason": escape_hatch_reason,
+                }
+            },
+        )
+        return manifest, path
+
+    return MatrixMaterializerHarness(root=root).materialize(
+        rows,
+        execute=execute,
+        command=["python", "-m", "feedbax", "matrix-harness"],
+        title="Evaluation run matrix",
+        source="EvaluationRunMatrixSpec",
+        escape_hatch_reason=escape_hatch_reason,
+    )
 
 
 class EvaluationRecipeExecutionError(RuntimeError):
@@ -162,6 +253,11 @@ def register_evaluation_recipe(
 def unregister_evaluation_recipe(evaluation_type: str) -> None:
     """Remove a previously registered evaluation recipe."""
     _EVALUATION_RECIPES.pop(evaluation_type, None)
+
+
+def registered_evaluation_recipes() -> tuple[str, ...]:
+    """Return registered computation recipe keys in deterministic order."""
+    return tuple(sorted(_EVALUATION_RECIPES))
 
 
 def get_evaluation_recipe(evaluation_type: str) -> EvaluationRecipe:

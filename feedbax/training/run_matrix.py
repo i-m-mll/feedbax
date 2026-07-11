@@ -1165,6 +1165,14 @@ def main(argv: list[str] | None = None) -> int:
     materialize_parser = subparsers.choices["materialize"]
     materialize_parser.add_argument("--out-dir", type=Path, required=True)
     materialize_parser.add_argument("--wrap-key")
+    materialize_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods before "
+            "run-matrix validation; may be repeated."
+        ),
+    )
     fork_parser = subparsers.choices["fork"]
     fork_parser.add_argument("--source-checkpoint-root", type=Path, required=True)
     fork_parser.add_argument(
@@ -1177,6 +1185,10 @@ def main(argv: list[str] | None = None) -> int:
     fork_parser.add_argument("--parity-output", type=Path, required=True)
     fork_parser.add_argument("--skip-fork", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "materialize":
+        from feedbax.plugins import load_training_method_plugins
+
+        load_training_method_plugins(modules=args.plugin)
     spec = _load_spec(args.spec)
     materialized = materialize_run_matrix(spec, repo_root=args.repo_root)
     if args.command == "render":
