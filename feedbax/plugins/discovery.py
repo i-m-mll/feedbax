@@ -16,6 +16,10 @@ TRAINING_METHOD_REGISTRAR_NAMES = (
     "register_feedbax_training_methods",
     "register_training_methods",
 )
+EXECUTION_PREPARATION_REGISTRAR_NAMES = (
+    "register_feedbax_execution_preparations",
+    "register_execution_preparations",
+)
 CONFORMANCE_CHECK_REGISTRAR_NAMES = (
     "register_feedbax_conformance_checks",
     "register_conformance_checks",
@@ -68,7 +72,9 @@ def discover_experiment_packages(
     return registry
 
 
-def feedbax_plugin_entry_points(entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP) -> Iterable[Any]:
+def feedbax_plugin_entry_points(
+    entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP,
+) -> Iterable[Any]:
     """Return entry points published through the shared Feedbax plugin group."""
     try:
         return importlib.metadata.entry_points(group=entry_point_group)
@@ -87,6 +93,7 @@ def feedbax_plugin_entry_points(entry_point_group: str = DEFAULT_ENTRY_POINT_GRO
 def load_training_method_plugins(
     *,
     registry: Any | None = None,
+    preparation_registry: Any | None = None,
     entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP,
     entry_points: Iterable[Any] | None = None,
     modules: Sequence[str] | None = None,
@@ -95,16 +102,30 @@ def load_training_method_plugins(
 
     Entry points share the existing ``feedbax.plugins`` group. A plugin can expose
     ``register_feedbax_training_methods(registry)`` or ``register_training_methods(registry)``
-    on the loaded object/module. Explicit module names are imported as an escape
-    hatch for local/downstream code that is not installed as an entry point.
+    on the loaded object/module. Runtime-only providers use
+    ``register_feedbax_execution_preparations(registry)`` or
+    ``register_execution_preparations(registry)``. Explicit module names are imported as an
+    escape hatch for local/downstream code that is not installed as an entry point.
     """
-    if registry is None:
+    uses_default_method_registry = registry is None
+    if uses_default_method_registry:
         from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY
 
         registry = DEFAULT_TRAINING_METHOD_REGISTRY
+    if preparation_registry is None:
+        if uses_default_method_registry:
+            from feedbax.training.preparation import (
+                DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+            )
 
-    for entry_point in entry_points if entry_points is not None else feedbax_plugin_entry_points(
-        entry_point_group
+            preparation_registry = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY
+        else:
+            from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+
+            preparation_registry = ExecutionPreparationProviderRegistry()
+
+    for entry_point in (
+        entry_points if entry_points is not None else feedbax_plugin_entry_points(entry_point_group)
     ):
         provenance = _entry_point_provenance(entry_point)
         try:
@@ -112,11 +133,50 @@ def load_training_method_plugins(
         except Exception as exc:
             logger.warning("Failed to load Feedbax plugin entry point %s: %s", provenance, exc)
             continue
-        _register_training_methods_from_plugin(plugin, registry, provenance=provenance)
+        _register_training_plugin(
+            plugin,
+            registry,
+            preparation_registry,
+            provenance=provenance,
+        )
 
     for module_name in modules or ():
         module = importlib.import_module(module_name)
-        _register_training_methods_from_plugin(module, registry, provenance=f"module:{module_name}")
+        _register_training_plugin(
+            module,
+            registry,
+            preparation_registry,
+            provenance=f"module:{module_name}",
+        )
+
+    unknown_provider_keys = set(preparation_registry.available_keys()) - set(
+        registry.available_keys()
+    )
+    if unknown_provider_keys:
+        raise RuntimeError(
+            "Execution-preparation providers do not match registered training methods: "
+            f"{sorted(unknown_provider_keys)!r}"
+        )
+
+
+def _register_training_plugin(
+    plugin: Any,
+    registry: Any,
+    preparation_registry: Any,
+    *,
+    provenance: str,
+) -> None:
+    _register_training_methods_from_plugin(plugin, registry, provenance=provenance)
+    registrar = _execution_preparation_registrar(plugin)
+    if registrar is None:
+        return
+    try:
+        registrar(preparation_registry)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to register Feedbax execution preparations from {provenance}: {exc}"
+        ) from exc
+    logger.info("Registered Feedbax execution preparations from %s", provenance)
 
 
 def _register_training_methods_from_plugin(
@@ -152,8 +212,8 @@ def load_conformance_check_plugins(
     callable)`` pairs. Registration failures are raised so the conformance
     certificate can fail closed instead of silently dropping project checks.
     """
-    for entry_point in entry_points if entry_points is not None else feedbax_plugin_entry_points(
-        entry_point_group
+    for entry_point in (
+        entry_points if entry_points is not None else feedbax_plugin_entry_points(entry_point_group)
     ):
         provenance = _entry_point_provenance(entry_point)
         try:
@@ -166,7 +226,9 @@ def load_conformance_check_plugins(
 
     for module_name in modules or ():
         module = importlib.import_module(module_name)
-        _register_conformance_checks_from_plugin(module, registry, provenance=f"module:{module_name}")
+        _register_conformance_checks_from_plugin(
+            module, registry, provenance=f"module:{module_name}"
+        )
 
 
 def _register_conformance_checks_from_plugin(
@@ -230,6 +292,23 @@ def _training_method_registrar(plugin: Any) -> Any | None:
         return None
     parameter_names = set(signature.parameters)
     if parameter_names & {"training_method_registry", "method_registry", "training_methods"}:
+        return plugin
+    return None
+
+
+def _execution_preparation_registrar(plugin: Any) -> Any | None:
+    for attr in EXECUTION_PREPARATION_REGISTRAR_NAMES:
+        registrar = getattr(plugin, attr, None)
+        if callable(registrar):
+            return registrar
+    if not callable(plugin):
+        return None
+    try:
+        signature = inspect.signature(plugin)
+    except (TypeError, ValueError):
+        return None
+    parameter_names = set(signature.parameters)
+    if parameter_names & {"execution_preparation_registry", "preparation_registry"}:
         return plugin
     return None
 

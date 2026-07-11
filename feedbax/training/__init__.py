@@ -19,6 +19,16 @@ from .checkpoint_custody import (
     structural_abi_fingerprint,
     write_checkpoint_transaction,
 )
+from .preparation import (
+    DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+    ExecutionPreparationError,
+    ExecutionPreparationProvider,
+    ExecutionPreparationProviderRegistry,
+    ExecutionPreparationRegistration,
+    ExecutionPreparationRequest,
+    ExecutionPreparationResult,
+    require_execution_preparation_provider,
+)
 
 try:
     from ..config.hyperparams import load_hps
@@ -66,6 +76,13 @@ __all__ = [
     "TrainingRunExecutionResult",
     "TrainingSpecStorageResult",
     "TrainingRunExecutorError",
+    "DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY",
+    "ExecutionPreparationError",
+    "ExecutionPreparationProvider",
+    "ExecutionPreparationProviderRegistry",
+    "ExecutionPreparationRegistration",
+    "ExecutionPreparationRequest",
+    "ExecutionPreparationResult",
     "build_optimizer",
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
@@ -83,6 +100,7 @@ __all__ = [
     "learning_rate_at_step",
     "learning_rate_schedule",
     "run_contract_binding",
+    "require_execution_preparation_provider",
     "structural_abi_fingerprint",
     "stamp_training_run_manifest_identities",
     "training_step_for_abstract_loss",

@@ -421,6 +421,7 @@ class TrainingMethodRegistration:
     rejected_payload_versions: tuple[str, ...] = ()
     owner: str = "feedbax"
     package: str | None = None
+    requires_execution_preparation: bool = False
 
 
 class TrainingMethodRegistry:
