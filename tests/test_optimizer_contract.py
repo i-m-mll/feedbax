@@ -224,7 +224,7 @@ def test_optimizer_builder_resume_barrier_decouples_restored_count() -> None:
     assert _scheduled_learning_rate(next_state) == pytest.approx(0.01)
 
 
-def test_optimizer_builder_run_start_origin_reproduces_global_step_schedule() -> None:
+def test_optimizer_builder_run_start_origin_reproduces_program_step_schedule() -> None:
     schedule = LrScheduleSpec(
         kind="warmup_cosine",
         learning_rate_0=0.1,

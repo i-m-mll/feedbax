@@ -224,7 +224,7 @@ class PhaseProgramExecutor:
             coordinate = ProgressCoordinate(
                 run_id=run_id,
                 phase=start_phase,
-                global_step=checkpoint.coordinate.global_step,
+                program_step=checkpoint.coordinate.program_step,
                 completed_barrier=resume_from_barrier,
             )
         else:
@@ -261,7 +261,7 @@ class PhaseProgramExecutor:
                     current_slots.update(_copy_executor_mapping(updates))
                 coordinate = coordinate.model_copy(
                     update={
-                        "global_step": coordinate.global_step + 1,
+                        "program_step": coordinate.program_step + 1,
                         "metrics": self._progress_metrics(current_slots),
                     }
                 )
@@ -382,7 +382,7 @@ class PhaseProgramExecutor:
         if phase.schedule_origin.mode == "run_start":
             return phase.schedule_origin.step_offset
         if phase.schedule_origin.mode in {"phase_entry", "resume_barrier"}:
-            return coordinate.global_step + phase.schedule_origin.step_offset
+            return coordinate.program_step + phase.schedule_origin.step_offset
         return coordinate.schedule_origin_step
 
     def _next_phase(

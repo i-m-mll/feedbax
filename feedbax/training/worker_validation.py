@@ -491,6 +491,20 @@ def validate_worker_contract(
                 f"missing explicit transition {phase.name!r} -> {target!r}",
             )
 
+    batch_progress = contract.phase_program.batch_progress
+    if batch_progress is not None:
+        _require(
+            batch_progress.slot in slots,
+            "/phase_program/batch_progress/slot",
+            f"unknown batch-progress slot {batch_progress.slot!r}",
+        )
+        _require(
+            slots[batch_progress.slot].role not in {"metric", "checkpoint"},
+            "/phase_program/batch_progress/slot",
+            "batch-progress authority must be a persistent bookkeeping/state slot, "
+            f"not role={slots[batch_progress.slot].role!r}",
+        )
+
     for step_index, step in enumerate(contract.phase_program.update_steps):
         step_path = f"/phase_program/update_steps/{step_index}"
         _require(
@@ -707,7 +721,7 @@ def validate_resume_checkpoint_pairing(
     )
     records = [by_slot[slot] for slot in required_slots]
     barriers = {record.barrier for record in records}
-    steps = {record.global_step for record in records}
+    steps = {record.program_step for record in records}
     _require(
         len(barriers) == 1,
         "/checkpoint_slots",
@@ -715,7 +729,7 @@ def validate_resume_checkpoint_pairing(
     )
     if len(steps) != 1:
         offenders = {
-            record.slot: {"barrier": record.barrier, "global_step": record.global_step}
+            record.slot: {"barrier": record.barrier, "program_step": record.program_step}
             for record in records
         }
         raise WorkerContractValidationError(
@@ -728,13 +742,13 @@ def progress_coordinate_for_barrier(
     *,
     run_id: str,
     phase: str,
-    global_step: int,
+    program_step: int,
     completed_barrier: str | None,
 ) -> ProgressCoordinate:
     """Build a generic progress coordinate for checkpoint/resume tests."""
     return ProgressCoordinate(
         run_id=run_id,
         phase=phase,
-        global_step=global_step,
+        program_step=program_step,
         completed_barrier=completed_barrier,
     )
