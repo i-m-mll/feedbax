@@ -5,20 +5,28 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import fcntl
+import getpass
 import hashlib
 from importlib import metadata
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import socket
 import subprocess
 import sys
+import tempfile
 from types import TracebackType
 from typing import Any, Self, Sequence
 
 
 SCHEMA_VERSION = 1
+LOCK_PROTOCOL_VERSION = 1
+LOCK_BUSY_EXIT = 75
+LOCK_ENV_VAR = "FULL_SUITE_LOCK_DIR"
+LOCK_FILENAME = "full-suite.lock"
+LOCK_REPOSITORY = "feedbax"
 REQUIRED_FINGERPRINT_FIELDS = (
     "git_tree",
     "uv_lock_sha256",
@@ -44,11 +52,20 @@ class FullSuiteLockBusy(RuntimeError):
 
 
 class FullSuiteLock(AbstractContextManager["FullSuiteLock"]):
-    """Serialize full-suite runs through an advisory lock shared by worktrees."""
+    """Hold the machine-wide advisory lock used by participating test suites."""
 
-    def __init__(self, path: Path, *, repo_root: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        repo_root: Path,
+        repository: str = LOCK_REPOSITORY,
+        command: Sequence[str] | None = None,
+    ) -> None:
         self.path = path
         self.repo_root = repo_root
+        self.repository = repository
+        self.command = list(sys.argv if command is None else command)
         self._handle: Any | None = None
 
     def _read_holder(self) -> str:
@@ -63,18 +80,21 @@ class FullSuiteLock(AbstractContextManager["FullSuiteLock"]):
             return f"unreadable holder metadata: {raw!r}"
         return ", ".join(
             f"{key}={data[key]}"
-            for key in ("pid", "host", "started_at", "worktree")
+            for key in ("repository", "pid", "host", "started_at", "worktree", "command")
             if data.get(key) is not None
         )
 
     def _write_holder(self) -> None:
         assert self._handle is not None
         holder = {
+            "schema_version": LOCK_PROTOCOL_VERSION,
+            "protocol_version": LOCK_PROTOCOL_VERSION,
+            "repository": self.repository,
             "pid": os.getpid(),
             "host": socket.gethostname(),
             "started_at": datetime.now(UTC).isoformat(),
             "worktree": str(self.repo_root),
-            "command": sys.argv,
+            "command": self.command,
         }
         self._handle.seek(0)
         self._handle.truncate()
@@ -89,10 +109,10 @@ class FullSuiteLock(AbstractContextManager["FullSuiteLock"]):
         try:
             try:
                 fcntl.flock(self._handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
+            except BlockingIOError as exc:
                 raise FullSuiteLockBusy(
                     f"Full suite already running; active holder: {self._read_holder()}"
-                )
+                ) from exc
             self._write_holder()
             print(f"Acquired full-suite lock: {self.path}", file=sys.stderr, flush=True)
             return self
@@ -114,6 +134,23 @@ class FullSuiteLock(AbstractContextManager["FullSuiteLock"]):
         finally:
             self._handle.close()
             self._handle = None
+
+
+def full_suite_lock_dir(environ: dict[str, str] | None = None) -> Path:
+    """Return the shared, user-scoped full-suite lock directory."""
+    env = dict(os.environ) if environ is None else environ
+    if override := env.get(LOCK_ENV_VAR):
+        return Path(override).expanduser()
+    try:
+        user_token = str(os.getuid())
+    except AttributeError:  # pragma: no cover - exercised only on platforms without getuid.
+        user_token = re.sub(r"[^A-Za-z0-9_.-]", "_", getpass.getuser()) or "unknown"
+    return Path(tempfile.gettempdir()) / f"full-suite-lock-{user_token}"
+
+
+def full_suite_lock_path(environ: dict[str, str] | None = None) -> Path:
+    """Return the shared lock-file path used across participating repositories."""
+    return full_suite_lock_dir(environ) / LOCK_FILENAME
 
 
 @dataclass(frozen=True)
@@ -326,11 +363,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     configure_jax_cache_env(cache_root)
 
-    fingerprint = build_fingerprint(repo_root)
     command = pytest_command(passthrough)
-    would_skip = not args.force and not args.no_memo and has_green_memo(memo_dir, fingerprint)
 
     if args.print_fingerprint:
+        fingerprint = build_fingerprint(repo_root)
         print(
             json.dumps(
                 {
@@ -346,6 +382,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.dry_run:
+        fingerprint = build_fingerprint(repo_root)
+        would_skip = not args.force and not args.no_memo and has_green_memo(memo_dir, fingerprint)
         print(
             json.dumps(
                 {
@@ -361,12 +399,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    lock_path = cache_root / "full_suite.lock"
+    lock_path = full_suite_lock_path()
     try:
         with FullSuiteLock(lock_path, repo_root=repo_root):
             fingerprint = build_fingerprint(repo_root)
-            would_skip = not args.force and not args.no_memo and has_green_memo(
-                memo_dir, fingerprint
+            would_skip = (
+                not args.force and not args.no_memo and has_green_memo(memo_dir, fingerprint)
             )
 
             if fingerprint.refusal_reasons:
@@ -389,7 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return result.returncode
     except FullSuiteLockBusy as error:
         print(error, file=sys.stderr, flush=True)
-        return 75
+        return LOCK_BUSY_EXIT
 
 
 if __name__ == "__main__":
