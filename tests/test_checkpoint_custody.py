@@ -1327,6 +1327,73 @@ def test_batch_history_rejects_cumulative_length_at_segment_write(tmp_path: Path
         )
 
 
+def test_v5_declared_path_migrates_untyped_array_to_batch_history(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = {"loss": jnp.arange(4, dtype=jnp.float32)}
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=slots,
+        completed_training_batches=4,
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    payload["metadata"]["checkpoint_continuation"] = {
+        "schema_version": "feedbax.spec.training_checkpoint_continuation.v1",
+        "source_completed_batches": 4,
+        "target_total_batches": 4,
+        "batch_indexed_leaves": [{"slot": "controller", "tree_path": "/loss"}],
+    }
+    _rewrite_manifest_and_latest(result, payload)
+    expected = _minimax_slots()
+    expected["controller"] = {"loss": BatchHistory(jnp.arange(4, dtype=jnp.float32))}
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+    )
+
+    assert isinstance(loaded.slots["controller"]["loss"], BatchHistory)
+
+
+def test_v5_declared_path_migration_rejects_missing_path(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=_minimax_slots(),
+        completed_training_batches=4,
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    payload["metadata"]["checkpoint_continuation"] = {
+        "schema_version": "feedbax.spec.training_checkpoint_continuation.v1",
+        "source_completed_batches": 4,
+        "target_total_batches": 4,
+        "batch_indexed_leaves": [{"slot": "controller", "tree_path": "/missing"}],
+    }
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointCompatibilityError, match="migration path is missing"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
 def test_segment_lineage_concatenates_histories_and_materializes_derived(
     tmp_path: Path,
 ) -> None:
@@ -1422,6 +1489,17 @@ def test_checkpoint_continuation_rejects_unknown_schema_version() -> None:
             {
                 "schema_version": "feedbax.spec.training_checkpoint_continuation.v0",
                 "source_completed_batches": 12000,
+                "additional_batches": 200,
+            }
+        )
+
+
+def test_checkpoint_continuation_v1_is_explicitly_rejected() -> None:
+    with pytest.raises(ValueError, match="migration_intentionally_absent=yes"):
+        CheckpointContinuationRequest.model_validate(
+            {
+                "schema_version": "feedbax.spec.training_checkpoint_continuation.v1",
+                "source_completed_batches": 12_000,
                 "additional_batches": 200,
             }
         )

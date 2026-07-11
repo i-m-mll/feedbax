@@ -523,6 +523,68 @@ def _history_granularities(slots: Mapping[str, Any]) -> dict[str, int]:
     return granularities
 
 
+def _wrap_migrated_v5_batch_histories(
+    slots: Mapping[str, Any],
+    manifest: CheckpointTransactionManifest,
+) -> dict[str, Any]:
+    """Wrap v5 declared paths after envelope migration, without extension semantics."""
+    if manifest.metadata.get("batch_history_tree_migration") != "declared_paths_v5_to_v6":
+        return dict(slots)
+    raw_request = manifest.metadata.get("checkpoint_continuation")
+    if not isinstance(raw_request, Mapping):
+        return dict(slots)
+    if raw_request.get("schema_version") != "feedbax.spec.training_checkpoint_continuation.v1":
+        return dict(slots)
+    raw_declarations = raw_request.get("batch_indexed_leaves")
+    if not isinstance(raw_declarations, list):
+        raise CheckpointCompatibilityError(
+            "legacy v1 continuation batch_indexed_leaves must be a list"
+        )
+    by_slot: dict[str, set[str]] = {}
+    for index, declaration in enumerate(raw_declarations):
+        if not isinstance(declaration, Mapping):
+            raise CheckpointCompatibilityError(
+                f"legacy v1 BatchHistory declaration must be a mapping; index={index}"
+            )
+        slot = declaration.get("slot")
+        path = declaration.get("tree_path")
+        if not isinstance(slot, str) or not slot or not isinstance(path, str) or not path.startswith(
+            "/"
+        ):
+            raise CheckpointCompatibilityError(
+                f"legacy v1 BatchHistory declaration is invalid; index={index}"
+            )
+        by_slot.setdefault(slot, set()).add(path)
+    migrated = dict(slots)
+    for slot, paths in by_slot.items():
+        if slot not in slots:
+            raise CheckpointCompatibilityError(
+                f"legacy BatchHistory migration slot is missing; slot={slot!r}"
+            )
+        pairs, treedef = jt.flatten_with_path(slots[slot])
+        found: set[str] = set()
+        leaves: list[Any] = []
+        for path, leaf in pairs:
+            path_text = _key_path_to_text(path)
+            if path_text in paths:
+                if not eqx.is_array(leaf):
+                    raise CheckpointCompatibilityError(
+                        "legacy BatchHistory migration target must be an array; "
+                        f"slot={slot!r} path={path_text!r}"
+                    )
+                leaf = BatchHistory(leaf)
+                found.add(path_text)
+            leaves.append(leaf)
+        missing = sorted(paths - found)
+        if missing:
+            raise CheckpointCompatibilityError(
+                "legacy BatchHistory migration path is missing; "
+                f"slot={slot!r} paths={missing!r}"
+            )
+        migrated[slot] = jt.unflatten(treedef, leaves)
+    return migrated
+
+
 def _allocate_segment_histories(
     source_slots: Mapping[str, Any],
     templates: Mapping[str, Any],
@@ -833,6 +895,10 @@ def _load_checkpoint_from_pointer(
         manifest,
         loaded_slots,
     )
+    migrated_slots = _wrap_migrated_v5_batch_histories(loaded_slots, manifest)
+    if any(migrated_slots.get(slot) is not value for slot, value in loaded_slots.items()):
+        loaded_slots = migrated_slots
+        loaded_fingerprints = {}
     request = _coerce_continuation_request(continuation_request)
     loaded_fingerprint_slots = dict(loaded_slots)
     if resume_slot_transform is not None:
