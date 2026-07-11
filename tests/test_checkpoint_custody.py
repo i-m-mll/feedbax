@@ -364,6 +364,11 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
     )
+    assert migrated.payload["segment_lineage"] == {
+        "start_batch": 0,
+        "segment_batch_count": 0,
+        "history_granularities": {},
+    }
 
 
 def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_contracts(
@@ -1315,7 +1320,7 @@ def test_batch_history_rejects_cumulative_length_at_segment_write(tmp_path: Path
     slots = _minimax_slots()
     slots["controller"] = BatchHistory(jnp.zeros((6,), dtype=jnp.float32), batch_axis=0)
 
-    with pytest.raises(CheckpointConsistencyError, match="owning segment"):
+    with pytest.raises(CheckpointConsistencyError, match="fixed-size streaming state"):
         write_checkpoint_transaction(
             tmp_path,
             run_spec=run_spec,
@@ -1480,6 +1485,33 @@ def test_segment_lineage_reader_fails_closed(tmp_path: Path, failure: str) -> No
     roots = {} if failure == "missing" else {parent.manifest.transaction_id: parent_root}
     with pytest.raises(CheckpointIntegrityError):
         concatenate_checkpoint_histories(child_root, parent_roots=roots)
+
+
+def test_segment_lineage_reader_fails_closed_on_duplicate_cyclic_parent_chain(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = BatchHistory(jnp.arange(2), batch_axis=0)
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=2),
+        slots=slots,
+        completed_training_batches=2,
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["segment_lineage"].update(
+        parent_transaction_id=result.manifest.transaction_id,
+        start_batch=2,
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointIntegrityError, match="duplicate/cycle"):
+        concatenate_checkpoint_histories(tmp_path, parent_roots={})
 
 
 

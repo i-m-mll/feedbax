@@ -5,12 +5,14 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNPOD_DEPLOY = REPO_ROOT / "scripts" / "deploy" / "runpod_deploy.sh"
 LIB_RUN_PREP = REPO_ROOT / "scripts" / "deploy" / "lib_run_prep.sh"
+LIB_ACQUIRE = REPO_ROOT / "scripts" / "deploy" / "lib_acquire.sh"
 POLL_RUN = REPO_ROOT / "scripts" / "deploy" / "poll_run.sh"
 
 
@@ -60,6 +62,88 @@ def write_training_run_spec(path: Path) -> None:
         json.dumps(_run_spec().model_dump(mode="json"), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def init_repo(path: Path, branch: str) -> str:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-b", branch], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=path, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=path, check=True, capture_output=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_deploy_starts_log_with_checkout_provenance_and_warns_on_pin_skew(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path)
+    feedbax = tmp_path / "feedbax"
+    rlrmp = tmp_path / "rlrmp"
+    feedbax_sha = init_repo(feedbax, "feedbax-test")
+    consumer_sha = init_repo(rlrmp, "consumer-test")
+    (feedbax / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    (rlrmp / "ci").mkdir()
+    (rlrmp / "ci" / "feedbax-ref.toml").write_text(
+        f'rev = "{"1" * 40}"\n', encoding="utf-8"
+    )
+
+    result = run_script(
+        "--config",
+        str(config),
+        "--help",
+    )
+
+    lines = result.stderr.splitlines()
+    assert result.returncode == 0
+    assert lines[0].startswith("provenance ")
+    assert f"feedbax_sha={feedbax_sha}" in lines[0]
+    assert "feedbax_branch=feedbax-test" in lines[0]
+    assert "feedbax_dirty=true" in lines[0]
+    assert f"consumer_sha={consumer_sha}" in lines[0]
+    assert "consumer_branch=consumer-test" in lines[0]
+    assert f"script={RUNPOD_DEPLOY}" in lines[0]
+    assert lines[1].startswith("WARNING: feedbax checkout/pin skew")
+
+
+def test_poll_starts_log_with_checkout_provenance(tmp_path: Path) -> None:
+    feedbax = tmp_path / "feedbax"
+    rlrmp = tmp_path / "rlrmp"
+    feedbax_sha = init_repo(feedbax, "feedbax-poll")
+    consumer_sha = init_repo(rlrmp, "consumer-poll")
+    (rlrmp / "ci").mkdir()
+    (rlrmp / "ci" / "feedbax-ref.toml").write_text(
+        f'rev = "{feedbax_sha}"\n', encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [str(POLL_RUN), "--help"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "FEEDBAX_ROOT": str(feedbax),
+            "RLRMP_ROOT": str(rlrmp),
+        },
+    )
+
+    lines = result.stderr.splitlines()
+    assert result.returncode == 0
+    assert len(lines) == 1
+    assert lines[0].startswith("provenance ")
+    assert f"feedbax_sha={feedbax_sha}" in lines[0]
+    assert "feedbax_branch=feedbax-poll" in lines[0]
+    assert "feedbax_dirty=false" in lines[0]
+    assert f"consumer_sha={consumer_sha}" in lines[0]
+    assert "consumer_branch=consumer-poll" in lines[0]
+    assert f"script={POLL_RUN}" in lines[0]
 
 
 def test_training_launch_requires_confirmed_spec(tmp_path: Path) -> None:
@@ -267,13 +351,26 @@ def test_warm_gate_structured_ready_event_releases_without_log_output(tmp_path: 
     assert (tmp_path / "run" / "sentinels" / "row_a.ready").exists()
 
 
-def test_launch_row_forces_unbuffered_output_and_returns_after_detach(tmp_path: Path) -> None:
+def test_buffered_child_trips_structured_readiness_before_stdout_flush(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     sentinel_dir = run_dir / "sentinels"
-    command = (
-        f"{shlex.quote(sys.executable)} -c \"import time; "
-        "print('TRAINING_READY'); time.sleep(10)\""
+    child = tmp_path / "buffered_child.py"
+    child.write_text(
+        """import json
+import os
+import pathlib
+import time
+
+events = pathlib.Path(os.environ["FEEDBAX_RUN_EVENTS_DIR"])
+events.mkdir(parents=True, exist_ok=True)
+event_file = events / f"{os.environ['FEEDBAX_ROW_ID']}.events.jsonl"
+event_file.write_text(json.dumps({"type": "ready"}) + "\\n", encoding="utf-8")
+print("TRAINING_READY", end="")
+time.sleep(3)
+""",
+        encoding="utf-8",
     )
+    command = f"env -u PYTHONUNBUFFERED {shlex.quote(sys.executable)} {shlex.quote(str(child))}"
     script = f"""
 set -euo pipefail
 log() {{ printf '==> %s\\n' "$*" >&2; }}
@@ -289,10 +386,13 @@ REMOTE_RUN_DIR={str(run_dir)!r}
 REMOTE_SENTINEL_DIR={str(sentinel_dir)!r}
 JAX_COMPILATION_CACHE_DIR={str(tmp_path / 'cache')!r}
 SENTINEL_TIMEOUT_SECONDS=5
-SENTINEL_POLL_SECONDS=1
+SENTINEL_POLL_SECONDS=0.05
 launch_row row_a {str(tmp_path)!r} {shlex.quote(command)}
 wait_for_row_active_training row_a TRAINING_READY
-kill "$(cat {str(sentinel_dir / 'row_a.pid')!r})" 2>/dev/null || true
+if grep -F TRAINING_READY {str(run_dir / 'logs' / 'row_a.log')!r}; then
+    exit 3
+fi
+touch {str(tmp_path / 'gate-before-flush')!r}
 """
 
     result = subprocess.run(
@@ -305,7 +405,109 @@ kill "$(cat {str(sentinel_dir / 'row_a.pid')!r})" 2>/dev/null || true
     )
 
     assert result.returncode == 0, result.stderr
-    assert "reached active training" in result.stderr
+    assert "emitted a ready event" in result.stderr
+    assert (tmp_path / "gate-before-flush").exists()
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline and not (sentinel_dir / "row_a.done").exists():
+        time.sleep(0.05)
+    assert (sentinel_dir / "row_a.done").exists()
+
+
+def test_provider_mocked_multi_row_launch_completes_without_manual_release_or_kill(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    sentinel_dir = run_dir / "sentinels"
+    first = tmp_path / "first.py"
+    first.write_text(
+        """import json
+import os
+import pathlib
+import time
+
+events = pathlib.Path(os.environ["FEEDBAX_RUN_EVENTS_DIR"])
+events.mkdir(parents=True, exist_ok=True)
+(events / f"{os.environ['FEEDBAX_ROW_ID']}.events.jsonl").write_text(
+    json.dumps({"type": "ready"}) + "\\n", encoding="utf-8"
+)
+print("buffered", end="")
+time.sleep(0.3)
+""",
+        encoding="utf-8",
+    )
+    second_marker = tmp_path / "second-ran"
+    second = tmp_path / "second.py"
+    second.write_text(
+        f"from pathlib import Path\nPath({str(second_marker)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {
+                        "id": "row_a",
+                        "command": (
+                            f"env -u PYTHONUNBUFFERED {shlex.quote(sys.executable)} "
+                            f"{shlex.quote(str(first))}"
+                        ),
+                    },
+                    {
+                        "id": "row_b",
+                        "command": f"{shlex.quote(sys.executable)} {shlex.quote(str(second))}",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = f"""
+set -euo pipefail
+log() {{ printf '==> %s\\n' "$*" >&2; }}
+die() {{ printf 'error: %s\\n' "$*" >&2; exit 1; }}
+run_cmd() {{ "$@"; }}
+capture_cmd() {{ "$@"; }}
+sq() {{ printf '%q' "${{1-}}"; }}
+source {str(LIB_ACQUIRE)!r}
+source {str(LIB_RUN_PREP)!r}
+RUN_PREP_PROVIDER=local
+DRY_RUN=0
+REMOTE_RLRMP_ROOT={str(tmp_path)!r}
+REMOTE_RUN_DIR={str(run_dir)!r}
+REMOTE_SENTINEL_DIR={str(sentinel_dir)!r}
+JAX_COMPILATION_CACHE_DIR={str(tmp_path / 'cache')!r}
+ROWS_MANIFEST={str(rows)!r}
+ROW_LAUNCH_STAGGER_SECONDS=0
+MAX_PARALLEL_ROWS=2
+WARM_COMPILE_FIRST=1
+WARM_COMPILE_READY_REGEX=TRAINING_READY
+SENTINEL_TIMEOUT_SECONDS=5
+SENTINEL_POLL_SECONDS=0.1
+launch_training
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "emitted a ready event" in result.stderr
+    assert "launched 2 row(s)" in result.stderr
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline and not all(
+        (sentinel_dir / f"{row}.done").exists() for row in ("row_a", "row_b")
+    ):
+        time.sleep(0.05)
+    assert second_marker.exists()
+    assert (sentinel_dir / "row_a.done").exists()
+    assert (sentinel_dir / "row_b.done").exists()
     assert (sentinel_dir / "row_a.ready").exists()
 
 

@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib_acquire.sh
 source "$SCRIPT_DIR/lib_acquire.sh"
+# shellcheck source=lib_checkout_provenance.sh
+source "$SCRIPT_DIR/lib_checkout_provenance.sh"
+FEEDBAX_ROOT="${FEEDBAX_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd -P)}"
+PROJECTS_ROOT="${PROJECTS_ROOT:-$(cd "$FEEDBAX_ROOT/../.." && pwd -P)}"
+RLRMP_ROOT="${RLRMP_ROOT:-$PROJECTS_ROOT/rlrmp}"
 
 EARLY_CADENCE_SECONDS="${EARLY_CADENCE_SECONDS:-300}"
 STEADY_CADENCE_SECONDS="${STEADY_CADENCE_SECONDS:-1800}"
@@ -101,7 +106,7 @@ sq() {
 remote_capture() {
     local command=$1 key_path
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
-    ssh -o BatchMode=yes \
+    ssh -n -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
         -i "$key_path" \
@@ -347,7 +352,7 @@ remote_status() {
         return 0
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
-        print_cmd ssh -p "$SSH_PORT" "root@$SSH_HOST" \
+        print_cmd ssh -n -p "$SSH_PORT" "root@$SSH_HOST" \
             "nvidia-smi && test -d '$REMOTE_SENTINEL_DIR'" >&2
         printf 'ssh=dry-run gpu=dry-run uv_sync=dry-run jax_cuda=dry-run venv_probe=dry-run probe_ok=dry-run probe_failed_rebuilding=dry-run rebuild_done=dry-run rows_done=0 rows_failed=0 rows_running=0 rows_stale=0 rows_pending=0 rows_total=0 last_batch=none last_checkpoint=none rows=none row_telemetry=none'
         return 0
@@ -358,7 +363,7 @@ remote_status() {
     remote_cmd=$(build_remote_status_command \
         "$REMOTE_SENTINEL_DIR" "$REMOTE_CHECKPOINT_DIR" "$REMOTE_LOG_DIR" \
         "$REMOTE_RUN_DIR/events")
-    if ! output=$(ssh -o BatchMode=yes \
+    if ! output=$(ssh -n -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
         -i "$key_path" \
@@ -374,6 +379,7 @@ remote_status() {
 }
 
 main() {
+    emit_checkout_provenance "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}" "$FEEDBAX_ROOT" "$RLRMP_ROOT"
     parse_args "$@"
     command -v jq >/dev/null 2>&1 || die "required command not found: jq"
     [ -n "$POD_ID" ] || die "--pod-id is required"

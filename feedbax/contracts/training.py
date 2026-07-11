@@ -50,7 +50,12 @@ STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION = (
 
 
 class BatchScheduleOriginSpec(BaseModel):
-    """Typed clock origin for a batch-parameterized schedule."""
+    """Typed clock origin for a batch-parameterized schedule.
+
+    This origin selects the training-batch clock for learning-rate and other
+    batch schedules. For phase-program step clocks, use
+    :class:`feedbax.contracts.worker.ScheduleOriginSpec` instead.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

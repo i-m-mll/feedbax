@@ -87,7 +87,9 @@ def modal_bootstrap_steps(spec: ExecutionSpec) -> list[PlanStep]:
 def ssh_prefix_for_backend(spec: ExecutionSpec) -> str:
     if spec.backend == "runpod":
         key_path = expand_local_path(spec.runpod.ssh_key_path)
-        return shlex.join(["ssh", "-i", key_path, "-p", "<ssh.port>", "root@<ssh.ip>"])
+        return shlex.join(
+            ["ssh", "-n", "-i", key_path, "-p", "<ssh.port>", "root@<ssh.ip>"]
+        )
     return spec.ssh.ssh_prefix()
 
 

@@ -333,6 +333,7 @@ def _background_launcher_command(script: str, log_dir: str, run_directory: str) 
     return (
         f"mkdir -p {shlex.quote(log_dir)} {shlex.quote(run_directory)} && "
         f"nohup bash -lc {shlex.quote(script)} "
+        "</dev/null "
         f"> {shlex.quote(log_dir + '/launcher.stdout.log')} "
         f"2> {shlex.quote(log_dir + '/launcher.stderr.log')} & "
         f"echo $! > {shlex.quote(run_directory.rstrip('/') + '/pid')}"

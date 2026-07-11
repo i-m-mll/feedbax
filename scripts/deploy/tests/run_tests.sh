@@ -224,7 +224,7 @@ REMOTE_STATUS_FN=$(
   sed -n '/^build_remote_status_command() {/,/^}/p' "$DEPLOY_DIR/poll_run.sh"
 )
 eval "$REMOTE_STATUS_FN"
-remote_cmd=$(build_remote_status_command "$SDIR" "$CDIR" "$LDIR")
+remote_cmd=$(build_remote_status_command "$SDIR" "$CDIR" "$LDIR" "$RR/events")
 rendered=$(bash -c "$remote_cmd" 2>/dev/null)
 case "$rendered" in
   *"rows_done=1 rows_failed=1 rows_running=0 rows_stale=1 rows_pending=0 rows_total=3"*)

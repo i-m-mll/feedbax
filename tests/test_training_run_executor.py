@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 import jax.numpy as jnp
 
 from feedbax.contracts.manifest import load_manifest, sha256_bytes
+from feedbax.contracts.checkpoints import BatchHistory, CheckpointContinuationRequest
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -30,12 +32,16 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.worker import (
     BarrierArtifactSinkSpec,
+    CheckpointSlotSpec,
     MetricGuardSpec,
     PhaseTransitionSpec,
     StateSlotSpec,
 )
 from feedbax.orchestration.events import RunEventEmitter, RunEventReader
-from feedbax.training.checkpoint_custody import load_latest_checkpoint
+from feedbax.training.checkpoint_custody import (
+    concatenate_checkpoint_histories,
+    load_latest_checkpoint,
+)
 from feedbax.training.executor import (
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
@@ -184,6 +190,86 @@ def _chunked_registry(
             },
             guard_predicates_factory=lambda _payload: {
                 "tests.continue_train_chunk": continue_train_chunk
+            },
+            owner="tests.test_training_run_executor",
+            package="feedbax",
+        )
+    )
+    return registry, program
+
+
+def _history_registry(*, stop_after_program_step: int) -> tuple[TrainingMethodRegistry, object]:
+    """Return a small registry whose checkpointed history is segment-local."""
+    contract = standard_supervised_method_contract()
+    program = contract.phase_program.model_copy(deep=True)
+    phase = program.phases[0].model_copy(
+        update={"writes": [*program.phases[0].writes, "batch_history"]}
+    )
+    update_step = program.update_steps[0].model_copy(
+        update={"writes": [*program.update_steps[0].writes, "batch_history"]}
+    )
+    checkpoint_barrier = program.checkpoint_barriers[0].model_copy(
+        update={
+            "slots": [
+                *program.checkpoint_barriers[0].slots,
+                CheckpointSlotSpec(slot="batch_history"),
+            ]
+        }
+    )
+    transition = PhaseTransitionSpec(
+        source="train_batch",
+        target="train_batch",
+        barrier="after_train_batch",
+        guard=MetricGuardSpec(predicate_ref="tests.continue_history_segment", metric_slots=[]),
+    )
+    program = program.model_copy(
+        update={
+            "phases": [phase],
+            "transitions": [transition],
+            "update_steps": [update_step],
+            "checkpoint_barriers": [checkpoint_barrier],
+        }
+    )
+    contract = contract.model_copy(
+        update={
+            "phase_program": program,
+            "state_slots": [
+                *contract.state_slots,
+                StateSlotSpec(name="batch_history", role="auxiliary"),
+            ],
+        }
+    )
+    base_kernel = standard_supervised_update_kernels()[
+        "feedbax.training.standard_supervised.gradient_update"
+    ]
+
+    def gradient_update(slots, coordinate, context):
+        updates = dict(base_kernel(slots, coordinate, context))
+        history = slots["batch_history"]
+        updates["batch_history"] = BatchHistory(
+            jnp.append(history.value, updates["batch_counter"]),
+            batch_axis=history.batch_axis,
+            granularity=history.granularity,
+        )
+        return updates
+
+    def continue_history_segment(slots, coordinate, context):
+        del slots, context
+        return coordinate.program_step < stop_after_program_step
+
+    registry = TrainingMethodRegistry()
+    registry.register(
+        TrainingMethodRegistration(
+            method_ref="feedbax/standard_supervised/v1",
+            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            payload_model=StandardSupervisedMethodPayload,
+            contract_factory=lambda: contract,
+            update_kernels_factory=lambda _payload: {
+                "feedbax.training.standard_supervised.gradient_update": gradient_update
+            },
+            guard_predicates_factory=lambda _payload: {
+                "tests.continue_history_segment": continue_history_segment
             },
             owner="tests.test_training_run_executor",
             package="feedbax",
@@ -639,6 +725,84 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
     assert resumed.final_slots["optimizer"]["count"].tolist() == [3.0]
     assert resumed.final_coordinate.program_step == 2
     assert resumed.checkpoint_writes[0].manifest.parent_lineage
+
+
+@pytest.mark.parametrize("self_contained", [False, True])
+def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histories(
+    tmp_path: Path,
+    self_contained: bool,
+) -> None:
+    checkpoint_root = tmp_path / "checkpoint-custody"
+    initial_slots = {
+        **_initial_slots(arrays=True),
+        "batch_history": BatchHistory(jnp.array([], dtype=jnp.int32)),
+    }
+    source_registry, _program = _history_registry(stop_after_program_step=1)
+    source = execute_training_run_spec(
+        _run_spec(),
+        run_id="history-source",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "source-runs",
+        checkpoint_root=checkpoint_root,
+        registry=source_registry,
+    )
+    parent = source.checkpoint_writes[-1]
+    assert parent.manifest.completed_training_batches == 1
+
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=1,
+        additional_batches=1,
+        self_contained=self_contained,
+    )
+    continuation_spec = _run_spec().model_copy(
+        update={
+            "checkpoint_progress": _run_spec().checkpoint_progress.model_copy(
+                update={"continuation": continuation}
+            )
+        }
+    )
+    resume_registry, resume_program = _history_registry(stop_after_program_step=2)
+    resumed = execute_training_run_spec(
+        continuation_spec,
+        run_id="history-continuation",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "continuation-runs",
+        checkpoint_root=checkpoint_root,
+        registry=resume_registry,
+        resume=True,
+    )
+
+    child = resumed.checkpoint_writes[-1]
+    assert child.manifest.segment_lineage.parent_transaction_id == parent.manifest.transaction_id
+    assert child.manifest.segment_lineage.start_batch == 1
+    assert child.manifest.segment_lineage.segment_batch_count == 1
+    expected_child_slots = {
+        **initial_slots,
+        "batch_history": BatchHistory(jnp.array([0], dtype=jnp.int32)),
+    }
+    loaded = load_latest_checkpoint(
+        checkpoint_root,
+        expected_run_spec=continuation_spec,
+        expected_phase_program=resume_program,
+        expected_slots=expected_child_slots,
+    )
+    assert loaded.slots["batch_history"].value.tolist() == [2]
+
+    stitched = concatenate_checkpoint_histories(checkpoint_root, parent_roots={})
+    assert stitched.completed_training_batches == 2
+    assert stitched.histories["batch_history/"].value.tolist() == [1, 2]
+
+    derived_path = checkpoint_root / "derived" / "history-continuation-stitched-histories.pkl"
+    assert derived_path.exists() is self_contained
+    if self_contained:
+        with derived_path.open("rb") as stream:
+            derived = pickle.load(stream)
+        assert derived["schema_version"] == "feedbax.derived.checkpoint_histories.v1"
+        assert derived["derived"] is True
+        assert derived["resume_source"] is False
+        assert derived["source_transaction_ids"] == stitched.transaction_ids
+        assert derived["completed_training_batches"] == stitched.completed_training_batches
+        assert derived["histories"]["batch_history/"].value.tolist() == [1, 2]
 
 
 def test_execute_training_run_spec_applies_resume_slot_transform(

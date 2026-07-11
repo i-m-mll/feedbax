@@ -393,6 +393,7 @@ def execute_training_run_spec(
             expected_slots=slots,
             resume_slot_transform=resume_slot_transform,
             continuation_request=run_spec.checkpoint_progress.continuation,
+            allow_new_lineage_override=(run_spec.checkpoint_progress.continuation is not None),
         )
         loaded_resume_checkpoint = PhaseCheckpoint(
             barrier=loaded.manifest.barrier,
