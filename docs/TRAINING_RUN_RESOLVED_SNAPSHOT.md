@@ -1,5 +1,9 @@
 # Training-run resolved-semantics snapshot v1
 
+Recursive authored intent is described in
+[`TRAINING_RUN_COMPOSITION.md`](TRAINING_RUN_COMPOSITION.md). Composition is flattened before the
+resolved snapshot is built; execution dependencies and lineage events remain separate evidence.
+
 Schema identity: `feedbax.spec.training_run_resolved_semantics`, version
 `feedbax.spec.training_run_resolved_semantics.v1`.
 

@@ -197,6 +197,8 @@ def _write_bundle_package(tmp_path: Path, monkeypatch) -> ExperimentRegistry:
         path.write_text("", encoding="utf-8")
     (bundle_root / "matrix.yml").write_text(
         f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
 name: toy_matrix
 description: Toy matrix bundle
 predicate:
@@ -220,6 +222,8 @@ templates:
     )
     (bundle_root / "params_match.yml").write_text(
         f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
 name: toy_params_match
 predicate:
   manifest_kind: EvaluationRunManifest
@@ -237,6 +241,8 @@ templates:
     )
     (bundle_root / "missing_output.yml").write_text(
         f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
 name: toy_missing_output
 predicate:
   manifest_kind: EvaluationRunManifest
@@ -252,6 +258,8 @@ templates:
     )
     (bundle_root / "routed.yml").write_text(
         f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
 name: toy_routed
 description: Toy routed figure bundle
 predicate:
@@ -733,7 +741,7 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
                     name="eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 3},
+                    local_params={"n_trials": 3},
                     outputs=[BundleStageOutputSpec(role="manifest")],
                 ),
                 BundleStageSpec(
@@ -742,7 +750,7 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
                     depends_on=["eval"],
                     analysis_type=TOY_ANALYSIS_TYPE,
                     requested_outputs=["toy"],
-                    params={"variant": "summary"},
+                    local_params={"variant": "summary"},
                     outputs=[BundleStageOutputSpec(role="manifest")],
                 ),
                 BundleStageSpec(
@@ -751,7 +759,7 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
                     depends_on=["eval"],
                     analysis_type=TOY_ANALYSIS_TYPE,
                     requested_outputs=["toy"],
-                    params={"variant": "detail"},
+                    local_params={"variant": "detail"},
                     outputs=[BundleStageOutputSpec(role="manifest")],
                 ),
                 BundleStageSpec(
@@ -843,13 +851,13 @@ def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs
                     name="short_eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 3},
+                    local_params={"n_trials": 3},
                 ),
                 BundleStageSpec(
                     name="long_eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 5},
+                    local_params={"n_trials": 5},
                 ),
                 BundleStageSpec(
                     name="comparison",
@@ -858,7 +866,7 @@ def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs
                     include_bundle_inputs=True,
                     analysis_type=paired_analysis_type,
                     requested_outputs=["toy"],
-                    params={"variant": "paired"},
+                    local_params={"variant": "paired"},
                     outputs=[BundleStageOutputSpec(role="manifest")],
                 ),
             ],
@@ -929,7 +937,7 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(tmp_path: Path) 
                     name="eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 7},
+                    local_params={"n_trials": 7},
                 ),
                 BundleStageSpec(
                     name="summary",
@@ -979,7 +987,7 @@ def test_staged_bundle_evaluation_stage_can_request_durable_states(
                     name="eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 3},
+                    local_params={"n_trials": 3},
                     states_custody="durable",
                     outputs=[
                         BundleStageOutputSpec(role="manifest"),
@@ -1021,7 +1029,7 @@ def test_staged_bundle_records_optional_output_statuses(tmp_path: Path) -> None:
                     name="eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 1},
+                    local_params={"n_trials": 1},
                 ),
                 BundleStageSpec(
                     name="analysis",
@@ -1104,7 +1112,7 @@ def test_staged_bundle_runtime_condition_skips_required_outputs_and_optional_rol
                     name="gated",
                     kind="analysis",
                     analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
-                    params={"enabled": False},
+                    local_params={"enabled": False},
                     run_condition=condition,
                     outputs=[
                         BundleStageOutputSpec(role="manifest"),
@@ -1167,7 +1175,7 @@ def test_staged_bundle_dry_run_reports_condition_skip_without_side_effects(
                 name="gated",
                 kind="analysis",
                 analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
-                params={"enabled": False},
+                local_params={"enabled": False},
                 run_condition=condition,
                 outputs=[BundleStageOutputSpec(role="analysis_summary")],
             ),
@@ -1200,7 +1208,7 @@ def test_staged_bundle_required_role_dependency_fails_closed(tmp_path: Path) -> 
                     name="eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 2},
+                    local_params={"n_trials": 2},
                 ),
                 BundleStageSpec(
                     name="producer",
@@ -1262,7 +1270,7 @@ def test_staged_bundle_dry_run_reports_missing_required_role(
                     op="eq",
                     value=True,
                 ),
-                params={"enabled": False},
+                local_params={"enabled": False},
                 outputs=[BundleStageOutputSpec(role="analysis_summary")],
             ),
             BundleStageSpec(
@@ -1313,7 +1321,7 @@ def test_staged_bundle_role_dependency_binds_artifact_input_alias(tmp_path: Path
                     name="eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 4},
+                    local_params={"n_trials": 4},
                 ),
                 BundleStageSpec(
                     name="producer",
@@ -1462,7 +1470,7 @@ def test_staged_bundle_existing_execution_record_omits_new_fields(tmp_path: Path
                     name="eval",
                     kind="evaluation",
                     evaluation_type=TOY_EVALUATION_TYPE,
-                    params={"n_trials": 3},
+                    local_params={"n_trials": 3},
                     outputs=[BundleStageOutputSpec(role="manifest")],
                 ),
                 BundleStageSpec(

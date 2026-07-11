@@ -336,7 +336,7 @@ def test_custody_reuse_verifies_existing_bytes_and_public_exports(tmp_path: Path
     )
 
 
-def test_reference_variants_are_distinct_and_recursive_authored_base_rejects(
+def test_reference_variants_are_distinct_and_recursive_authored_base_composes(
     tmp_path: Path,
 ) -> None:
     parent = _matrix({"value": 1}).model_dump(mode="json", exclude_none=True)
@@ -363,18 +363,24 @@ def test_reference_variants_are_distinct_and_recursive_authored_base_rejects(
     assert resolved.base.kind == "resolved_output"
 
     recursive_parent = parent.copy()
-    recursive_parent.pop("schema_id")
     recursive_parent["base"] = resolved_payload["base"]
+    recursive_parent["deltas"] = [
+        {
+            "layer_id": "parent",
+            "patches": [{"path": "value", "op": "replace", "value": 2}],
+        }
+    ]
     parent_path.write_bytes(training_spec_canonical_bytes(recursive_parent))
     authored_payload = authored.model_dump(mode="json")
     authored_payload["base"]["content_hash"] = training_spec_sha256(recursive_parent)
     recursive = TrainingRunMatrixSpec.model_validate(authored_payload)
-    with pytest.raises(RunMatrixError, match="de01170"):
-        materialize_adapted_run_matrix(
-            recursive,
-            repo_root=tmp_path,
-            row_validator=lambda _payload, _row_id: None,
-        )
+    seen: list[dict[str, object]] = []
+    materialize_adapted_run_matrix(
+        recursive,
+        repo_root=tmp_path,
+        row_validator=lambda payload, _row_id: seen.append(payload) or None,
+    )
+    assert seen == [{"value": 2}]
 
 
 def test_v3_graph_base_is_migrated_before_row_validation(tmp_path: Path) -> None:

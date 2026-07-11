@@ -292,7 +292,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.spec.training_method.standard_supervised_payload"
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
-    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v2"
+    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v3"
     assert families["PathExpression"].identity == PATH_EXPRESSION_SCHEMA_ID
     assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
     assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID

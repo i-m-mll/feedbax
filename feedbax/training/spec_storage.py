@@ -19,6 +19,8 @@ from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
     store_canonical_json_artifact,
     training_run_execution_hash,
+    training_run_authored_envelope_hash,
+    training_run_composed_intent_hash,
     training_run_intent_hash,
     training_spec_canonical_bytes,
 )
@@ -34,6 +36,8 @@ class TrainingSpecStorageResult(StrictModel):
     """Identity and custody pointers returned by the registered emitter."""
 
     intent_hash: str
+    authored_envelope_hash: str
+    composed_intent_hash: str
     execution_hash: str
     resolved_root_hash: str
     authored_path: str
@@ -104,6 +108,7 @@ def emit_training_run_spec_storage(
         )
     authored_document = matrix.model_dump(mode="json", exclude_none=True)
     intent_hash = training_run_intent_hash(authored_document)
+    authored_envelope_hash = training_run_authored_envelope_hash(authored_document)
     if row_validator is None:
         materialized = materialize_run_matrix(matrix, repo_root=repo_root)
     else:
@@ -142,6 +147,7 @@ def emit_training_run_spec_storage(
             for row in materialized.rows
         ],
     }
+    composed_intent_hash = training_run_composed_intent_hash(resolved_tree)
     snapshot = build_resolved_semantics_snapshot(resolved_tree)
     snapshot_artifact = store_canonical_json_artifact(
         snapshot,
@@ -175,6 +181,8 @@ def emit_training_run_spec_storage(
     assert capsule.execution_hash is not None
     return TrainingSpecStorageResult(
         intent_hash=intent_hash,
+        authored_envelope_hash=authored_envelope_hash,
+        composed_intent_hash=composed_intent_hash,
         execution_hash=capsule.execution_hash,
         resolved_root_hash=snapshot["root_hash"],
         authored_path=str(authored_path),

@@ -62,7 +62,15 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
 )
+from feedbax.contracts.run_composition import (
+    COMPOSITION_SCHEMA_ID,
+    COMPOSITION_SCHEMA_VERSION,
+    EXECUTION_DEPENDENCY_SCHEMA_ID,
+    EXECUTION_DEPENDENCY_SCHEMA_VERSION,
+)
+from feedbax.contracts.lineage import LINEAGE_EVENT_SCHEMA_ID, LINEAGE_EVENT_SCHEMA_VERSION
 from feedbax.contracts.resolved_snapshot_decoder import (
     SNAPSHOT_SCHEMA_ID,
     SNAPSHOT_SCHEMA_VERSION,
@@ -111,6 +119,8 @@ from feedbax.contracts.representation import (
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
@@ -1750,6 +1760,16 @@ def _migrate_training_run_matrix_v1_to_v2_payload(payload: dict[str, Any]) -> di
     else:
         raise ValueError("TrainingRunMatrixSpec v1 /base requires inline or ref")
     migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2
+    return migrated
+
+
+def _migrate_training_run_matrix_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add explicit composition and execution-dependency layers."""
+    migrated = dict(payload)
+    migrated.setdefault("deltas", [])
+    migrated.setdefault("execution_dependencies", [])
+    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     return migrated
 
@@ -2042,13 +2062,64 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "sweep axes, base-spec resolution, derivations, and fork semantics."
             ),
             stance="migrate",
-            supported_old_versions=(TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
             required_tests=(
                 "tests/test_run_matrix_spec.py",
                 "tests/test_run_matrix_materialization.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "TrainingRunComposition",
+            COMPOSITION_SCHEMA_ID,
+            COMPOSITION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_composition",
+            emitted_by=("authored training program composition",),
+            consumed_by=("training intent flattening",),
+            description="Single-parent recursive authored composition with ordered deltas.",
+            rejected_old_versions=(f"{COMPOSITION_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_training_run_composition.py",),
+        ),
+        _family(
+            "TrainingExecutionDependencyLayer",
+            EXECUTION_DEPENDENCY_SCHEMA_ID,
+            EXECUTION_DEPENDENCY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_composition",
+            emitted_by=("authored training program composition",),
+            consumed_by=("training execution preparation",),
+            description="Typed immutable execution dependencies separate from authored deltas.",
+            rejected_old_versions=(f"{EXECUTION_DEPENDENCY_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_training_run_composition.py",),
+        ),
+        _family(
+            "TrainingLineageEvent",
+            LINEAGE_EVENT_SCHEMA_ID,
+            LINEAGE_EVENT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.lineage",
+            emitted_by=("feedbax.contracts.lineage.store_lineage_event",),
+            consumed_by=("training lineage replay",),
+            description="Append-only content-pinned execution lineage and graft events.",
+            rejected_old_versions=(f"{LINEAGE_EVENT_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_lineage_graph.py",),
+        ),
+        _family(
+            "EvaluationRunMatrixSpec",
+            EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+            EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.analysis.evaluation",
+            emitted_by=("feedbax.analysis.harness",),
+            consumed_by=("evaluation matrix materialization",),
+            description=(
+                "Governed evaluation conditions expressed as one typed base plus "
+                "ordered row deltas and post-delta derivations."
+            ),
+            stance="reject",
+            rejected_old_versions=("feedbax.spec.evaluation_run_matrix.v0",),
+            required_tests=("tests/test_evaluation_matrix.py",),
         ),
         _family(
             "TrainingCheckpointTransactionManifest",
@@ -2365,7 +2436,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
-            "feedbax.spec.analysis_bundle.v2",
+            "feedbax.spec.analysis_bundle.v3",
             owner_module="feedbax.analysis.bundles",
             emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
             consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
@@ -2373,8 +2444,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Schema-bearing analysis bundle plan for ordered evaluation, analysis, "
                 "materialization, and report stages."
             ),
+            stance="migrate",
+            supported_old_versions=("feedbax.spec.analysis_bundle.v2",),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
-            required_tests=("tests/test_analysis_spec_bundles.py",),
+            required_tests=("tests/test_analysis_bundle_base_patches.py",),
         ),
         _family(
             "PathExpression",
@@ -3201,16 +3274,59 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
 
 
+def _migrate_analysis_bundle_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Lift v2 stage-local params into the explicit v3 local-params escape hatch."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", "feedbax.spec.analysis_bundle")
+    migrated.setdefault("params_base", {"params": {}})
+    raw_stages = migrated.get("stages", [])
+    if not isinstance(raw_stages, list):
+        return migrated
+    stages: list[Any] = []
+    for raw_stage in raw_stages:
+        if not isinstance(raw_stage, Mapping):
+            stages.append(raw_stage)
+            continue
+        stage = dict(raw_stage)
+        stage["local_params"] = stage.pop("params", {})
+        stages.append(stage)
+    migrated["stages"] = stages
+    return migrated
+
+
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "AnalysisBundleSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.analysis_bundle.v2",
+        target_version="feedbax.spec.analysis_bundle.v3",
+        migration_id="analysis-bundle-v2-to-v3-shared-params-base",
+        migrate=_migrate_analysis_bundle_v2_to_v3_payload,
+        description=(
+            "Preserve v2 stage-local params explicitly while introducing the shared typed "
+            "parameter base and per-stage patches."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "TrainingRunMatrixSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
         migration_id="training-run-matrix-v1-to-v2-typed-base",
         migrate=_migrate_training_run_matrix_v1_to_v2_payload,
         description="Replace the untyped base locator with the content-pinned base union.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunMatrixSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-matrix-v2-to-v3-composition",
+        migrate=_migrate_training_run_matrix_v2_to_v3_payload,
+        description="Add ordered composition deltas and typed execution dependencies.",
     ),
 )
 default_spec_registry.register_migration(
