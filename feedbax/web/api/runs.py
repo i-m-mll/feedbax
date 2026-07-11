@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,10 +12,16 @@ from pydantic import BaseModel, Field
 
 from feedbax.contracts.manifest import (
     BaseManifest,
+    EntrypointRef,
     EvaluationRunManifest,
+    EvaluationRunSpec,
+    ParentRef,
+    Provenance,
     TrainingRunManifest,
     default_manifest_root,
+    evaluation_run_manifest_id,
     load_manifest,
+    spec_payload,
     utc_now,
     write_manifest,
 )
@@ -481,6 +486,67 @@ def _load_evaluation_manifest_from_index(eval_run_id: str) -> tuple[EvaluationRu
     return manifest, path
 
 
+def _mark_dependent_evaluations_stale(
+    training_run_id: str,
+    *,
+    superseded_by: str | None,
+    reason: str | None,
+    superseded_at: str,
+) -> int:
+    """Mark indexed evaluations derived from a superseded training run stale."""
+
+    updated_count = 0
+    for row in iter_indexed_manifest_records_by_kind("EvaluationRunManifest"):
+        manifest = load_manifest(row["path"])
+        if not isinstance(manifest, EvaluationRunManifest):
+            continue
+        if not any(parent.id == training_run_id for parent in manifest.input_training_runs):
+            continue
+
+        metadata = dict(manifest.metadata)
+        raw_stale_parent_ids = metadata.get("stale_parent_ids")
+        stale_parent_ids = {
+            parent_id
+            for parent_id in (
+                raw_stale_parent_ids if isinstance(raw_stale_parent_ids, list) else []
+            )
+            if isinstance(parent_id, str)
+        }
+        raw_supersessions = metadata.get("upstream_supersessions")
+        upstream_supersessions = (
+            dict(raw_supersessions) if isinstance(raw_supersessions, dict) else {}
+        )
+        supersession = {
+            "superseded_at": superseded_at,
+            "superseded_by": superseded_by,
+            "reason": reason,
+        }
+        if (
+            manifest.status == "stale"
+            and training_run_id in stale_parent_ids
+            and upstream_supersessions.get(training_run_id) == supersession
+        ):
+            continue
+
+        stale_parent_ids.add(training_run_id)
+        upstream_supersessions[training_run_id] = supersession
+        metadata.update(
+            {
+                "staleness_reason": "upstream superseded",
+                "stale_parent_ids": sorted(stale_parent_ids),
+                "upstream_supersessions": upstream_supersessions,
+            }
+        )
+        metadata.setdefault("stale_at", superseded_at)
+        metadata.setdefault("stale_from_status", manifest.status)
+        write_manifest(
+            manifest.model_copy(update={"status": "stale", "metadata": metadata}),
+            root=default_manifest_root(),
+        )
+        updated_count += 1
+    return updated_count
+
+
 def _summaries_for_manifest_ids(
     manifest_ids: set[str],
     *,
@@ -885,17 +951,42 @@ async def supersede_training_run(
             status_code=409,
             detail=f"Only completed training runs can be superseded; got {manifest.status!r}.",
         )
-    updated = manifest.model_copy(
-        update={
-            "metadata": {
-                **manifest.metadata,
-                "superseded_at": utc_now().isoformat(),
-                "superseded_by": payload.superseded_by,
-                "superseded_reason": payload.reason,
+    if payload.superseded_by == training_run_id:
+        raise HTTPException(status_code=409, detail="A training run cannot supersede itself.")
+
+    already_superseded = "superseded_at" in manifest.metadata
+    if already_superseded:
+        previous_target = manifest.metadata.get("superseded_by")
+        previous_reason = manifest.metadata.get("superseded_reason")
+        if previous_target != payload.superseded_by or previous_reason != payload.reason:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Training run {training_run_id!r} is already superseded by "
+                    f"{previous_target!r}."
+                ),
+            )
+        superseded_at = str(manifest.metadata["superseded_at"])
+    else:
+        superseded_at = utc_now().isoformat()
+        updated = manifest.model_copy(
+            update={
+                "metadata": {
+                    **manifest.metadata,
+                    "superseded_at": superseded_at,
+                    "superseded_by": payload.superseded_by,
+                    "superseded_reason": payload.reason,
+                }
             }
-        }
+        )
+        write_manifest(updated, root=default_manifest_root())
+
+    _mark_dependent_evaluations_stale(
+        training_run_id,
+        superseded_by=payload.superseded_by,
+        reason=payload.reason,
+        superseded_at=superseded_at,
     )
-    write_manifest(updated, root=default_manifest_root())
     row = get_indexed_manifest_record(training_run_id)
     if row is None:
         raise HTTPException(status_code=500, detail="Superseded manifest was not re-indexed")
@@ -904,59 +995,65 @@ async def supersede_training_run(
 
 @router.post("/evaluation", response_model=EvalRunInfo)
 async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
-    """Create a new evaluation run entry.
+    """Create a pending evaluation run on the canonical manifest path.
 
     This endpoint registers the intent to run an evaluation with the
     given parameters.  The actual evaluation computation is triggered
     separately (via ``POST /api/analyses/jobs``).
-
-    A new ``EvaluationRecord`` is created before the endpoint reports success.
     """
-    import hashlib
-    import json
-
-    run_id = hashlib.sha256(
-        json.dumps(
-            {
-                "training_run_id": payload.training_run_id,
-                "name": payload.name,
-                "eval_params": payload.eval_params,
-                "ts": datetime.utcnow().isoformat(),
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()[:16]
-
-    now = datetime.utcnow()
-    description = _summarize_perturbation_config(payload.eval_params)
+    training_ref = ParentRef(
+        kind="TrainingRunManifest",
+        id=payload.training_run_id,
+        role="training_run",
+    )
+    run_spec = EvaluationRunSpec(
+        evaluation_type="feedbax.studio.default_eval",
+        training_run_ids=[payload.training_run_id],
+        inputs=[training_ref],
+        params={**payload.eval_params, "label": payload.name},
+    )
+    run_id = evaluation_run_manifest_id(run_spec)
+    existing_row = get_indexed_manifest_record(run_id)
+    if existing_row is not None:
+        if existing_row["kind"] != "EvaluationRunManifest":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Manifest {run_id!r} is not an EvaluationRunManifest",
+            )
+        return _eval_summary_from_index_row(existing_row)
+    manifest = EvaluationRunManifest(
+        id=run_id,
+        status="pending",
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec",
+            run_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        input_training_runs=[training_ref],
+        provenance=Provenance(
+            entrypoint=EntrypointRef(
+                kind="feedbax-studio-api",
+                name="create_eval_run",
+            ),
+            parents=[training_ref],
+        ),
+        metadata={"name": payload.name, "planned": True},
+    )
 
     try:
-        with db_session() as session:
-            record = EvaluationRecord(
-                hash=run_id,
-                expt_name=payload.name,
-                model_hashes=[payload.training_run_id],
-                perturbation_config=payload.eval_params,
-                created_at=now,
-            )
-            session.add(record)
+        write_manifest(manifest, root=default_manifest_root())
+        row = get_indexed_manifest_record(run_id)
+        if row is None:
+            raise RuntimeError("evaluation manifest was not indexed")
         logger.info(
-            "Created evaluation run %s for training run %s",
+            "Created evaluation manifest %s for training run %s",
             run_id,
             payload.training_run_id,
         )
     except Exception as exc:
-        logger.exception("Could not persist eval run %s to DB", run_id)
+        logger.exception("Could not persist evaluation manifest %s", run_id)
         raise HTTPException(
             status_code=500,
-            detail=f"Could not persist evaluation run {run_id!r}",
+            detail=f"Could not persist evaluation manifest {run_id!r}",
         ) from exc
 
-    return EvalRunInfo(
-        id=run_id,
-        training_run_id=payload.training_run_id,
-        name=payload.name,
-        created_at=now.isoformat(),
-        status="running",
-        description=description,
-    )
+    return _eval_summary_from_index_row(row)

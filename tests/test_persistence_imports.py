@@ -29,6 +29,11 @@ from feedbax.persistence.database import (
     update_table_schema,
 )
 from feedbax.persistence.manifest_index import connect_index, default_index_path
+from feedbax.persistence.migrations import (
+    LEGACY_EVALUATION_RECORD_MIGRATION_VERSION,
+    LEGACY_EVALUATION_RECORD_SCHEMA_VERSION,
+    migrate_legacy_evaluation_record,
+)
 
 
 def _legacy_persistence_db(
@@ -353,6 +358,48 @@ def test_persistence_database_doc_records_runtime_schema_reconciliation_decision
     assert "runtime" in doc
     assert "_sync_declared_schema" in doc
     assert "accepted migration mechanism" in doc
+
+
+def test_legacy_evaluation_record_migrates_to_versioned_manifest() -> None:
+    record = EvaluationRecord(
+        hash="legacy-eval-id",
+        expt_name="Legacy eval",
+        model_hashes=["legacy-training-id"],
+        perturbation_config={"perturbation_type": "curl_field"},
+        condition_metadata={"condition": "left"},
+        task_variants={"target": "far"},
+        eval_setup_params={"n_trials": 8},
+    )
+
+    manifest = migrate_legacy_evaluation_record(record)
+
+    assert manifest.id == "legacy-eval-id"
+    assert manifest.status == "completed"
+    assert manifest.evaluation_spec.schema_id == "feedbax.spec.evaluation_run"
+    assert manifest.evaluation_spec.schema_version == "feedbax.spec.evaluation_run.v1"
+    assert manifest.evaluation_spec.inline["training_run_ids"] == ["legacy-training-id"]
+    assert manifest.evaluation_spec.inline["params"] == {
+        "perturbation_type": "curl_field",
+        "condition_metadata": {"condition": "left"},
+        "task_variants": {"target": "far"},
+        "eval_setup_params": {"n_trials": 8},
+        "label": "Legacy eval",
+    }
+    transition = manifest.metadata["legacy_evaluation_record"]
+    assert transition["source_schema_version"] == LEGACY_EVALUATION_RECORD_SCHEMA_VERSION
+    assert transition["migration_schema_version"] == (
+        LEGACY_EVALUATION_RECORD_MIGRATION_VERSION
+    )
+
+
+def test_legacy_evaluation_record_migration_rejects_unknown_snapshot_version() -> None:
+    with pytest.raises(ValueError, match="schema_version"):
+        migrate_legacy_evaluation_record(
+            {
+                "schema_version": "feedbax.persistence.evaluation_record.v0",
+                "hash": "legacy-eval-id",
+            }
+        )
 
 
 def test_json_filters_use_canonical_serializer(tmp_path: Path) -> None:
