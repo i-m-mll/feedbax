@@ -486,6 +486,67 @@ def _load_evaluation_manifest_from_index(eval_run_id: str) -> tuple[EvaluationRu
     return manifest, path
 
 
+def _mark_dependent_evaluations_stale(
+    training_run_id: str,
+    *,
+    superseded_by: str | None,
+    reason: str | None,
+    superseded_at: str,
+) -> int:
+    """Mark indexed evaluations derived from a superseded training run stale."""
+
+    updated_count = 0
+    for row in iter_indexed_manifest_records_by_kind("EvaluationRunManifest"):
+        manifest = load_manifest(row["path"])
+        if not isinstance(manifest, EvaluationRunManifest):
+            continue
+        if not any(parent.id == training_run_id for parent in manifest.input_training_runs):
+            continue
+
+        metadata = dict(manifest.metadata)
+        raw_stale_parent_ids = metadata.get("stale_parent_ids")
+        stale_parent_ids = {
+            parent_id
+            for parent_id in (
+                raw_stale_parent_ids if isinstance(raw_stale_parent_ids, list) else []
+            )
+            if isinstance(parent_id, str)
+        }
+        raw_supersessions = metadata.get("upstream_supersessions")
+        upstream_supersessions = (
+            dict(raw_supersessions) if isinstance(raw_supersessions, dict) else {}
+        )
+        supersession = {
+            "superseded_at": superseded_at,
+            "superseded_by": superseded_by,
+            "reason": reason,
+        }
+        if (
+            manifest.status == "stale"
+            and training_run_id in stale_parent_ids
+            and upstream_supersessions.get(training_run_id) == supersession
+        ):
+            continue
+
+        stale_parent_ids.add(training_run_id)
+        upstream_supersessions[training_run_id] = supersession
+        metadata.update(
+            {
+                "staleness_reason": "upstream superseded",
+                "stale_parent_ids": sorted(stale_parent_ids),
+                "upstream_supersessions": upstream_supersessions,
+            }
+        )
+        metadata.setdefault("stale_at", superseded_at)
+        metadata.setdefault("stale_from_status", manifest.status)
+        write_manifest(
+            manifest.model_copy(update={"status": "stale", "metadata": metadata}),
+            root=default_manifest_root(),
+        )
+        updated_count += 1
+    return updated_count
+
+
 def _summaries_for_manifest_ids(
     manifest_ids: set[str],
     *,
@@ -890,17 +951,42 @@ async def supersede_training_run(
             status_code=409,
             detail=f"Only completed training runs can be superseded; got {manifest.status!r}.",
         )
-    updated = manifest.model_copy(
-        update={
-            "metadata": {
-                **manifest.metadata,
-                "superseded_at": utc_now().isoformat(),
-                "superseded_by": payload.superseded_by,
-                "superseded_reason": payload.reason,
+    if payload.superseded_by == training_run_id:
+        raise HTTPException(status_code=409, detail="A training run cannot supersede itself.")
+
+    already_superseded = "superseded_at" in manifest.metadata
+    if already_superseded:
+        previous_target = manifest.metadata.get("superseded_by")
+        previous_reason = manifest.metadata.get("superseded_reason")
+        if previous_target != payload.superseded_by or previous_reason != payload.reason:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Training run {training_run_id!r} is already superseded by "
+                    f"{previous_target!r}."
+                ),
+            )
+        superseded_at = str(manifest.metadata["superseded_at"])
+    else:
+        superseded_at = utc_now().isoformat()
+        updated = manifest.model_copy(
+            update={
+                "metadata": {
+                    **manifest.metadata,
+                    "superseded_at": superseded_at,
+                    "superseded_by": payload.superseded_by,
+                    "superseded_reason": payload.reason,
+                }
             }
-        }
+        )
+        write_manifest(updated, root=default_manifest_root())
+
+    _mark_dependent_evaluations_stale(
+        training_run_id,
+        superseded_by=payload.superseded_by,
+        reason=payload.reason,
+        superseded_at=superseded_at,
     )
-    write_manifest(updated, root=default_manifest_root())
     row = get_indexed_manifest_record(training_run_id)
     if row is None:
         raise HTTPException(status_code=500, detail="Superseded manifest was not re-indexed")

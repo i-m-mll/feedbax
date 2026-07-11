@@ -39,6 +39,30 @@ def _training_manifest(run_id: str, status: str) -> TrainingRunManifest:
     )
 
 
+def _evaluation_manifest(
+    run_id: str,
+    training_run_ids: list[str],
+    *,
+    status: str = "completed",
+) -> EvaluationRunManifest:
+    return EvaluationRunManifest(
+        id=run_id,
+        status=status,
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec",
+            {
+                "evaluation_type": "test",
+                "training_run_ids": training_run_ids,
+                "inputs": [],
+                "params": {},
+            },
+        ),
+        input_training_runs=[
+            ParentRef(kind="TrainingRunManifest", id=value) for value in training_run_ids
+        ],
+    )
+
+
 def test_create_eval_run_writes_versioned_manifest_not_legacy_row(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -263,6 +287,89 @@ def test_pending_training_manifest_lifecycle_is_status_guarded(
     )
     assert superseded.status_code == 200
     assert superseded.json()["superseded_by"] == "feedbax-training-run:replacement"
+
+
+def test_superseding_training_run_marks_dependent_evaluations_stale(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(runs, "_legacy_training_runs_from_model_db", lambda: [])
+    training_id = "feedbax-training-run:completed"
+    replacement_id = "feedbax-training-run:replacement"
+    write_manifest(_training_manifest(training_id, "completed"), root=tmp_path)
+    dependent_path = write_manifest(
+        _evaluation_manifest("feedbax-eval-run:dependent", [training_id]),
+        root=tmp_path,
+    )
+    unrelated_path = write_manifest(
+        _evaluation_manifest("feedbax-eval-run:unrelated", ["feedbax-training-run:other"]),
+        root=tmp_path,
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        f"/api/runs/training/{training_id}/supersede",
+        json={"superseded_by": replacement_id, "reason": "new sweep"},
+    )
+
+    assert response.status_code == 200
+    dependent = load_manifest(dependent_path)
+    unrelated = load_manifest(unrelated_path)
+    assert isinstance(dependent, EvaluationRunManifest)
+    assert dependent.status == "stale"
+    assert dependent.metadata["staleness_reason"] == "upstream superseded"
+    assert dependent.metadata["stale_from_status"] == "completed"
+    assert dependent.metadata["stale_parent_ids"] == [training_id]
+    assert dependent.metadata["upstream_supersessions"][training_id] == {
+        "superseded_at": dependent.metadata["stale_at"],
+        "superseded_by": replacement_id,
+        "reason": "new sweep",
+    }
+    assert isinstance(unrelated, EvaluationRunManifest)
+    assert unrelated.status == "completed"
+
+
+def test_superseding_training_run_is_idempotent_and_rejects_self_supersession(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(runs, "_legacy_training_runs_from_model_db", lambda: [])
+    training_id = "feedbax-training-run:completed"
+    replacement_id = "feedbax-training-run:replacement"
+    training_path = write_manifest(
+        _training_manifest(training_id, "completed"),
+        root=tmp_path,
+    )
+    evaluation_path = write_manifest(
+        _evaluation_manifest("feedbax-eval-run:dependent", [training_id]),
+        root=tmp_path,
+    )
+    client = TestClient(create_app())
+    payload = {"superseded_by": replacement_id, "reason": "new sweep"}
+
+    self_link = client.post(
+        f"/api/runs/training/{training_id}/supersede",
+        json={"superseded_by": training_id},
+    )
+    first = client.post(f"/api/runs/training/{training_id}/supersede", json=payload)
+    first_training = load_manifest(training_path)
+    first_evaluation = load_manifest(evaluation_path)
+    second = client.post(f"/api/runs/training/{training_id}/supersede", json=payload)
+    second_training = load_manifest(training_path)
+    second_evaluation = load_manifest(evaluation_path)
+    conflicting = client.post(
+        f"/api/runs/training/{training_id}/supersede",
+        json={"superseded_by": "feedbax-training-run:different"},
+    )
+
+    assert self_link.status_code == 409
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert conflicting.status_code == 409
+    assert first_training == second_training
+    assert first_evaluation == second_evaluation
 
 
 def test_pending_training_manifest_delete_removes_only_pending(
