@@ -1,24 +1,31 @@
+from .checkpoint_custody import (
+    CheckpointCompatibilityError,
+    CheckpointConsistencyError,
+    CheckpointContractBindingError,
+    CheckpointCustodyError,
+    CheckpointIntegrityError,
+    CheckpointWriteResult,
+    CheckpointCustodyDocuments,
+    ResumeSlotTransform,
+    checkpoint_slot_names,
+    checkpoint_slot_specs,
+    load_latest_checkpoint,
+    load_checkpoint_custody_documents,
+    load_checkpoint_latest_pointer_file,
+    load_checkpoint_latest_pointer_json,
+    load_checkpoint_transaction_manifest_file,
+    load_checkpoint_transaction_manifest_json,
+    run_contract_binding,
+    structural_abi_fingerprint,
+    write_checkpoint_transaction,
+)
+
 try:
     from ..config.hyperparams import load_hps
     from .trainer import (
         SimpleTrainer,
         grad_wrap_simple_loss_func,
         training_step_for_abstract_loss,
-    )
-    from .checkpoint_custody import (
-        CheckpointCompatibilityError,
-        CheckpointConsistencyError,
-        CheckpointContractBindingError,
-        CheckpointCustodyError,
-        CheckpointIntegrityError,
-        CheckpointWriteResult,
-        ResumeSlotTransform,
-        checkpoint_slot_names,
-        checkpoint_slot_specs,
-        load_latest_checkpoint,
-        run_contract_binding,
-        structural_abi_fingerprint,
-        write_checkpoint_transaction,
     )
     from .executor import (
         ManifestEmissionConflictError,
@@ -45,6 +52,7 @@ __all__ = [
     "CheckpointCustodyError",
     "CheckpointIntegrityError",
     "CheckpointWriteResult",
+    "CheckpointCustodyDocuments",
     "ResumeSlotTransform",
     "SimpleTrainer",
     "StreamingCheckpointStore",
@@ -59,6 +67,11 @@ __all__ = [
     "grad_wrap_simple_loss_func",
     "load_hps",
     "load_latest_checkpoint",
+    "load_checkpoint_custody_documents",
+    "load_checkpoint_latest_pointer_file",
+    "load_checkpoint_latest_pointer_json",
+    "load_checkpoint_transaction_manifest_file",
+    "load_checkpoint_transaction_manifest_json",
     "load_training_run_spec",
     "learning_rate_at_step",
     "learning_rate_schedule",
