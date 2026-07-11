@@ -1487,6 +1487,33 @@ def test_segment_lineage_reader_fails_closed(tmp_path: Path, failure: str) -> No
         concatenate_checkpoint_histories(child_root, parent_roots=roots)
 
 
+def test_segment_lineage_reader_fails_closed_on_duplicate_cyclic_parent_chain(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = BatchHistory(jnp.arange(2), batch_axis=0)
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=2),
+        slots=slots,
+        completed_training_batches=2,
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["segment_lineage"].update(
+        parent_transaction_id=result.manifest.transaction_id,
+        start_batch=2,
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointIntegrityError, match="duplicate/cycle"):
+        concatenate_checkpoint_histories(tmp_path, parent_roots={})
+
+
 
 def test_checkpoint_continuation_rejects_unknown_schema_version() -> None:
     with pytest.raises(ValueError, match="migration_intentionally_absent=yes"):
