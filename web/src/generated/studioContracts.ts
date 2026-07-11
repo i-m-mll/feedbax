@@ -669,9 +669,10 @@ export interface RepresentationMusclePathGeometrySpec {
 }
 
 export interface RepresentationFrameProvider {
-  kind: "fixed" | "from_input_port" | "registered_renderer";
+  kind: "fixed" | "from_input_port" | "from_representation_element" | "registered_renderer";
   frame?: string | null;
   input_port?: string | null;
+  element_id?: string | null;
   renderer_id?: string | null;
   metadata?: Record<string, unknown>;
 }
@@ -723,7 +724,7 @@ export interface RepresentationReachabilitySpec {
 
 export interface RepresentationSpec {
   schema_id?: "feedbax.spec.studio.representation";
-  schema_version?: "feedbax.spec.studio.representation.v3";
+  schema_version?: "feedbax.spec.studio.representation.v4";
   anchors?: RepresentationAnchorSpec[];
   elements?: RepresentationElementSpec[];
   style?: RepresentationStyleSpec[];
@@ -2752,9 +2753,10 @@ export const RepresentationMusclePathGeometrySpecSchema: z.ZodType<Representatio
 export const RepresentationFrameProviderSchema: z.ZodType<RepresentationFrameProvider> = z.lazy(() =>
   z
     .object({
-      "kind": z.union([z.literal("fixed"), z.literal("from_input_port"), z.literal("registered_renderer")]),
+      "kind": z.union([z.literal("fixed"), z.literal("from_input_port"), z.literal("from_representation_element"), z.literal("registered_renderer")]),
       "frame": z.string().nullable().optional(),
       "input_port": z.string().nullable().optional(),
+      "element_id": z.string().nullable().optional(),
       "renderer_id": z.string().nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
@@ -2826,7 +2828,7 @@ export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.representation").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.representation.v3").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.representation.v4").optional(),
       "anchors": z.array(RepresentationAnchorSpecSchema).optional(),
       "elements": z.array(RepresentationElementSpecSchema).optional(),
       "style": z.array(RepresentationStyleSpecSchema).optional(),

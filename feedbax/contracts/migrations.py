@@ -82,6 +82,7 @@ from feedbax.contracts.acausal import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V3,
     REPRESENTATION_SCHEMA_VERSION_V2,
     REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
@@ -1057,6 +1058,13 @@ def _migrate_representation_spec_v2_to_v3_payload(payload: dict[str, Any]) -> di
         migrated["muscle_path_geometry"] = {
             key: value for key, value in geometry.items() if key != "frames"
         }
+    return migrated
+
+
+def _migrate_representation_spec_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote v3 representations to same-entity frame-provider support."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
     return migrated
 
 
@@ -2575,6 +2583,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 REPRESENTATION_SCHEMA_VERSION_V1,
                 REPRESENTATION_SCHEMA_VERSION_V2,
+                REPRESENTATION_SCHEMA_VERSION_V3,
             ),
             rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
             required_tests=(
@@ -2944,12 +2953,24 @@ default_spec_registry.register_migration(
     "RepresentationSpec",
     SchemaMigration(
         source_version=REPRESENTATION_SCHEMA_VERSION_V2,
-        target_version=REPRESENTATION_SCHEMA_VERSION,
+        target_version=REPRESENTATION_SCHEMA_VERSION_V3,
         migration_id="representation-spec-v2-to-v3-muscle-path-geometry",
         migrate=_migrate_representation_spec_v2_to_v3_payload,
         description=(
             "Add provider-owned muscle-path topology; frame transforms are resolved from graph "
             "wiring and are never persisted in the geometry payload."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RepresentationSpec",
+    SchemaMigration(
+        source_version=REPRESENTATION_SCHEMA_VERSION_V3,
+        target_version=REPRESENTATION_SCHEMA_VERSION,
+        migration_id="representation-spec-v3-to-v4-same-entity-frame-provider",
+        migrate=_migrate_representation_spec_v3_to_v4_payload,
+        description=(
+            "Add typed same-entity planar-chain frame providers for self-contained components."
         ),
     ),
 )

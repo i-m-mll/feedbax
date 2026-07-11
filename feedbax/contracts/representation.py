@@ -10,7 +10,8 @@ from feedbax.contracts.graph import ParamSchema, ParamValue, StudioSelectorRef
 
 
 REPRESENTATION_SCHEMA_ID = "feedbax.spec.studio.representation"
-REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v3"
+REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v4"
+REPRESENTATION_SCHEMA_VERSION_V3 = "feedbax.spec.studio.representation.v3"
 REPRESENTATION_SCHEMA_VERSION_V2 = "feedbax.spec.studio.representation.v2"
 REPRESENTATION_SCHEMA_VERSION_V1 = "feedbax.spec.studio.representation.v1"
 REPRESENTATION_SCHEMA_VERSION_V0 = "feedbax.spec.studio.representation.v0"
@@ -143,9 +144,15 @@ RepresentationBinding = Union[
 class RepresentationFrameProvider(RepresentationContractModel):
     """Declare how a representation frame is resolved."""
 
-    kind: Literal["fixed", "from_input_port", "registered_renderer"]
+    kind: Literal[
+        "fixed",
+        "from_input_port",
+        "from_representation_element",
+        "registered_renderer",
+    ]
     frame: Optional[str] = None
     input_port: Optional[str] = None
+    element_id: Optional[str] = None
     renderer_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -155,6 +162,8 @@ class RepresentationFrameProvider(RepresentationContractModel):
             raise ValueError("fixed frame providers require frame")
         if self.kind == "from_input_port" and not self.input_port:
             raise ValueError("from_input_port frame providers require input_port")
+        if self.kind == "from_representation_element" and not self.element_id:
+            raise ValueError("from_representation_element frame providers require element_id")
         if self.kind == "registered_renderer" and not self.renderer_id:
             raise ValueError("registered_renderer frame providers require renderer_id")
         return self

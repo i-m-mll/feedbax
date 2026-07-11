@@ -64,6 +64,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V3,
     REPRESENTATION_SCHEMA_VERSION_V2,
     REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
@@ -732,6 +733,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert representation_policy.supported_old_versions == (
         REPRESENTATION_SCHEMA_VERSION_V1,
         REPRESENTATION_SCHEMA_VERSION_V2,
+        REPRESENTATION_SCHEMA_VERSION_V3,
     )
     assert representation_policy.rejected_old_versions == (REPRESENTATION_SCHEMA_VERSION_V0,)
     assert objective_policy is not None
@@ -856,6 +858,23 @@ def test_representation_v2_migrates_to_muscle_path_aware_v3() -> None:
     assert representation.muscle_path_geometry is not None
     assert len(representation.muscle_path_geometry.paths) == 1
     assert "frames" not in result.payload["muscle_path_geometry"]
+
+
+def test_representation_v3_migrates_to_same_entity_frame_provider_v4() -> None:
+    result = default_spec_registry.migrate(
+        "RepresentationSpec",
+        {
+            "schema_id": REPRESENTATION_SCHEMA_ID,
+            "schema_version": REPRESENTATION_SCHEMA_VERSION_V3,
+            "elements": [{"id": "paths", "archetype": "muscle_path"}],
+        },
+    )
+
+    assert result.source_version == REPRESENTATION_SCHEMA_VERSION_V3
+    assert result.target_version == REPRESENTATION_SCHEMA_VERSION
+    assert result.migrated
+    representation = RepresentationSpec.model_validate(result.payload)
+    assert representation.elements[0].frame_provider is None
 
 
 def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:

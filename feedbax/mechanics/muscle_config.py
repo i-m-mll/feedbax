@@ -398,6 +398,14 @@ def _attachment_geometry(
     return tuple(origin_body), tuple(insertion_body), origin_pos, insertion_pos
 
 
+def default_6muscle_2link_segment_lengths() -> Float[Array, "2"]:
+    """Return the canonical segment lengths used by the default two-link plant."""
+    from feedbax.mechanics.body import default_2link_bounds
+
+    bounds = default_2link_bounds()
+    return (bounds.segment_lengths_min + bounds.segment_lengths_max) / 2.0
+
+
 def default_6muscle_2link_attachment_paths() -> tuple[MuscleAttachmentPath, ...]:
     """Return canonical body-local paths for the two-link muscle layout.
 
@@ -405,10 +413,7 @@ def default_6muscle_2link_attachment_paths() -> tuple[MuscleAttachmentPath, ...]
     used by :func:`default_muscle_config`; catalog metadata therefore cannot
     drift from the analytical plant's default geometry.
     """
-    from feedbax.mechanics.body import default_2link_bounds
-
-    bounds = default_2link_bounds()
-    lengths = (bounds.segment_lengths_min + bounds.segment_lengths_max) / 2.0
+    lengths = default_6muscle_2link_segment_lengths()
     topology = default_6muscle_2link_topology()
     origin_body, insertion_body, origin_pos, insertion_pos = _attachment_geometry(
         lengths,

@@ -344,6 +344,9 @@ function frameFromProvider(
     }
     return provider.frame ?? fallbackFrame;
   }
+  if (provider.kind === 'from_representation_element') {
+    return provider.frame ?? fallbackFrame;
+  }
   messages.push({
     type: 'workspace_unresolved_frame_provider',
     severity: 'warning',
@@ -373,11 +376,9 @@ function elementGlobalId(entityId: string, elementId: string): string {
 function twoLinkRestPoints(
   component: ComponentDefinition,
   node: ComponentSpec,
-  linkLengthPath: string | null
+  linkLengthsBinding: RepresentationBinding
 ): Array<[number, number]> {
-  const lengths = numericArray(
-    linkLengthPath ? paramValue(component, node, linkLengthPath) : undefined
-  ) ?? [0.3, 0.33];
+  const lengths = numericArray(bindingValue(component, node, linkLengthsBinding)) ?? [0.3, 0.33];
   const angles =
     numericArray(
       valueAtPath(node.params ?? {}, 'joint_angles') ??
@@ -555,10 +556,13 @@ function planarChainFrames({
     messages.push({ type, severity: 'error', message, entity_id: entityId, path });
     return null;
   };
-  if (!provider || provider.kind !== 'from_input_port' || !provider.input_port) {
+  if (
+    !provider ||
+    (provider.kind !== 'from_input_port' && provider.kind !== 'from_representation_element')
+  ) {
     return fail(
       'workspace_muscle_path_frame_provider_missing',
-      `Muscle path element '${elementId}' requires a graph input frame-provider binding.`,
+      `Muscle path element '${elementId}' requires a graph or same-entity frame-provider binding.`,
       `elements.${elementId}.frame_provider`
     );
   }
@@ -569,57 +573,78 @@ function planarChainFrames({
       `elements.${elementId}.frame_provider`
     );
   }
-  const wires = (graph?.wires ?? []).filter(
-    (wire) => wire.target_node === muscleNodeId && wire.target_port === provider.input_port
-  );
-  if (wires.length !== 1) {
-    return fail(
-      'workspace_muscle_path_host_wire_unresolved',
-      `Muscle path input '${provider.input_port}' requires exactly one host wire; found ${wires.length}.`,
-      `graph.wires.${muscleNodeId}.${provider.input_port}`
+  let hostNodeId: string;
+  let wiredSourcePort: string | null = null;
+  let requestedElementId: string | null = null;
+  if (provider.kind === 'from_input_port') {
+    const wires = (graph?.wires ?? []).filter(
+      (wire) => wire.target_node === muscleNodeId && wire.target_port === provider.input_port
     );
+    if (wires.length !== 1) {
+      return fail(
+        'workspace_muscle_path_host_wire_unresolved',
+        `Muscle path input '${provider.input_port ?? 'unknown'}' requires exactly one host wire; found ${wires.length}.`,
+        `graph.wires.${muscleNodeId}.${provider.input_port ?? 'unknown'}`
+      );
+    }
+    hostNodeId = wires[0].source_node;
+    wiredSourcePort = wires[0].source_port;
+  } else {
+    if (!provider.element_id) {
+      return fail(
+        'workspace_muscle_path_host_element_missing',
+        `Muscle path element '${elementId}' does not name a same-entity planar-chain element.`,
+        `elements.${elementId}.frame_provider.element_id`
+      );
+    }
+    hostNodeId = muscleNodeId;
+    requestedElementId = provider.element_id;
   }
-  const wire = wires[0];
-  const hostNode = graph?.nodes?.[wire.source_node];
+  const hostNode = graph?.nodes?.[hostNodeId];
   const hostComponent = hostNode ? componentsByName.get(hostNode.type) : undefined;
   const chainElement = hostComponent?.representation?.elements?.find(
-    (element) => element.archetype === 'planar_chain' && element.planar_chain
+    (element) =>
+      element.archetype === 'planar_chain' &&
+      element.planar_chain &&
+      (requestedElementId === null || element.id === requestedElementId)
   );
   if (!hostNode || !hostComponent || !chainElement?.planar_chain) {
     return fail(
-      'workspace_muscle_path_host_planar_chain_missing',
-      `Wire source '${wire.source_node}' does not declare a typed planar-chain representation.`,
-      `graph.nodes.${wire.source_node}.representation`
+      requestedElementId === null
+        ? 'workspace_muscle_path_host_planar_chain_missing'
+        : 'workspace_muscle_path_host_element_missing',
+      `Host '${hostNodeId}' does not declare the required typed planar-chain element${requestedElementId ? ` '${requestedElementId}'` : ''}.`,
+      `graph.nodes.${hostNodeId}.representation`
     );
   }
   const lengthBinding = chainElement.bindings?.link_lengths;
   const angleBinding = chainElement.bindings?.joint_angles;
-  if (lengthBinding?.kind !== 'param_path' || angleBinding?.kind !== 'selector') {
+  if (!lengthBinding || angleBinding?.kind !== 'selector') {
     return fail(
       'workspace_muscle_path_host_binding_invalid',
-      `Planar-chain host '${wire.source_node}' must bind link_lengths and joint_angles.`,
-      `graph.nodes.${wire.source_node}.representation.elements.${chainElement.id}.bindings`
+      `Planar-chain host '${hostNodeId}' must bind link_lengths and joint_angles.`,
+      `graph.nodes.${hostNodeId}.representation.elements.${chainElement.id}.bindings`
     );
   }
   const selectorPort = angleBinding.selector.compact.startsWith('output:')
     ? angleBinding.selector.compact.replace(/^output:/, '')
     : null;
-  if (selectorPort !== wire.source_port) {
+  if (wiredSourcePort !== null && selectorPort !== wiredSourcePort) {
     return fail(
       'workspace_muscle_path_host_pose_port_mismatch',
-      `Host pose selector '${angleBinding.selector.compact}' does not match wired source port '${wire.source_port}'.`,
-      `graph.wires.${muscleNodeId}.${provider.input_port}`
+      `Host pose selector '${angleBinding.selector.compact}' does not match wired source port '${wiredSourcePort}'.`,
+      `graph.wires.${muscleNodeId}.${provider.input_port ?? 'unknown'}`
     );
   }
-  const lengths = numericArray(paramValue(hostComponent, hostNode, lengthBinding.path));
+  const lengths = numericArray(bindingValue(hostComponent, hostNode, lengthBinding));
   if (!lengths || lengths.length === 0 || lengths.some((value) => !Number.isFinite(value))) {
     return fail(
       'workspace_muscle_path_host_lengths_invalid',
-      `Planar-chain host '${wire.source_node}' has invalid link lengths.`,
-      `graph.nodes.${wire.source_node}.params.${lengthBinding.path}`
+      `Planar-chain host '${hostNodeId}' has invalid link lengths.`,
+      `graph.nodes.${hostNodeId}.representation.elements.${chainElement.id}.bindings.link_lengths`
     );
   }
-  const poseKey = resolvedScenePoseKey(wire.source_node, angleBinding.selector.compact);
+  const poseKey = resolvedScenePoseKey(hostNodeId, angleBinding.selector.compact);
   const dynamicPose = poseValues?.[poseKey];
   let angles = dynamicPose ? numericArray(dynamicPose) : null;
   if (!angles && !requirePoseValues) {
@@ -635,7 +660,7 @@ function planarChainFrames({
   if (!angles || angles.length < lengths.length) {
     return fail(
       'workspace_muscle_path_host_pose_missing',
-      `No correlated pose value is available for '${wire.source_node}' selector '${angleBinding.selector.compact}'.`,
+      `No correlated pose value is available for '${hostNodeId}' selector '${angleBinding.selector.compact}'.`,
       `pose_values.${poseKey}`
     );
   }
@@ -643,8 +668,8 @@ function planarChainFrames({
   if (frameIds.length !== lengths.length + 1) {
     return fail(
       'workspace_muscle_path_host_frames_invalid',
-      `Planar-chain host '${wire.source_node}' declares ${frameIds.length} frames for ${lengths.length} links.`,
-      `graph.nodes.${wire.source_node}.representation.elements.${chainElement.id}.planar_chain`
+      `Planar-chain host '${hostNodeId}' declares ${frameIds.length} frames for ${lengths.length} links.`,
+      `graph.nodes.${hostNodeId}.representation.elements.${chainElement.id}.planar_chain`
     );
   }
   const frames = new Map<string, { origin: [number, number]; rotation: number }>();
@@ -760,13 +785,10 @@ function resolveComponentRepresentation({
   const planarChain = representation.elements?.find(
     (element) => element.archetype === 'planar_chain'
   );
-  const linkLengthPath =
-    planarChain?.bindings?.link_lengths?.kind === 'param_path'
-      ? planarChain.bindings.link_lengths.path
-      : null;
+  const linkLengthsBinding = planarChain?.bindings?.link_lengths;
   const twoLinkPoints =
     planarChain?.metadata?.chain_kind === 'two_link_arm'
-      ? twoLinkRestPoints(component, nodeOrTask as ComponentSpec, linkLengthPath)
+      ? twoLinkRestPoints(component, nodeOrTask as ComponentSpec, linkLengthsBinding)
       : null;
 
   for (const anchor of representation.anchors ?? []) {

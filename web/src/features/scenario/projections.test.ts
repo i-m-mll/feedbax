@@ -430,6 +430,149 @@ describe('resolved scene projection', () => {
     expect(rewiredMuscle?.geometry).toEqual({ kind: 'polyline', points: [[0, 0], [0.7, 0]] });
   });
 
+  it('resolves self-contained analytical paths from its declared chain and current pose', () => {
+    const analytical: ComponentDefinition = {
+      ...components[0],
+      name: 'AnalyticalPlant',
+      representation: {
+        ...components[0].representation!,
+        elements: [
+          {
+            ...components[0].representation!.elements![0],
+            bindings: {
+              ...components[0].representation!.elements![0].bindings,
+              link_lengths: { kind: 'literal', value: [0.3, 0.4], dim: 2 },
+            },
+          },
+          {
+            id: 'muscles',
+            archetype: 'muscle_path',
+            frame_provider: { kind: 'from_representation_element', element_id: 'links' },
+          },
+        ],
+        muscle_path_geometry: {
+          paths: [{
+            id: 'flexor',
+            points: [
+              { frame: 'world', position: [0, 0] },
+              { frame: 'link1', position: [0.1, 0] },
+            ],
+          }],
+        },
+      },
+    };
+    const analyticalGraph: GraphSpec = {
+      ...graph,
+      nodes: {
+        analytical: { type: 'AnalyticalPlant', params: {}, input_ports: [], output_ports: ['state'] },
+      },
+      wires: [],
+    };
+    const analyticalScenario = { ...scenario, graph: analyticalGraph };
+    const registry = buildScenarioEntityRegistry({
+      scenario: analyticalScenario,
+      graph: analyticalGraph,
+    });
+    const authoring = buildResolvedScene({
+      scenario: analyticalScenario,
+      graph: analyticalGraph,
+      registry,
+      components: [analytical, components[1]],
+    });
+    const authoringPath = authoring.elements.find(
+      (element) => element.local_id === 'muscles:flexor'
+    );
+    expect(authoringPath?.geometry).toEqual({
+      kind: 'polyline',
+      points: [[0, 0], [0.4, 0]],
+    });
+    expect(authoring.validation).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'workspace_unresolved_frame_provider' }),
+    ]));
+
+    const posed = buildResolvedScene({
+      scenario: analyticalScenario,
+      graph: analyticalGraph,
+      registry,
+      components: [analytical, components[1]],
+      poseValues: { 'analytical::output:state': [Math.PI / 2, 0] },
+      requirePoseValues: true,
+    });
+    const posedPath = posed.elements.find((element) => element.local_id === 'muscles:flexor');
+    expect(posedPath?.geometry.kind).toBe('polyline');
+    if (posedPath?.geometry.kind !== 'polyline') throw new Error('expected posed muscle path');
+    expect(posedPath.geometry.points[1][0]).toBeCloseTo(0);
+    expect(posedPath.geometry.points[1][1]).toBeCloseTo(0.4);
+  });
+
+  it('reports missing same-entity chain elements and pose selectors', () => {
+    const selfBound: ComponentDefinition = {
+      ...components[0],
+      name: 'SelfBoundPlant',
+      representation: {
+        ...components[0].representation!,
+        elements: [
+          {
+            id: 'muscles',
+            archetype: 'muscle_path',
+            frame_provider: { kind: 'from_representation_element', element_id: 'missing' },
+          },
+        ],
+        muscle_path_geometry: {
+          paths: [{ id: 'path', points: [
+            { frame: 'world', position: [0, 0] },
+            { frame: 'link0', position: [0.1, 0] },
+          ] }],
+        },
+      },
+    };
+    const selfGraph: GraphSpec = {
+      ...graph,
+      nodes: { self: { type: 'SelfBoundPlant', params: {}, input_ports: [], output_ports: ['state'] } },
+      wires: [],
+    };
+    const selfScenario = { ...scenario, graph: selfGraph };
+    const registry = buildScenarioEntityRegistry({ scenario: selfScenario, graph: selfGraph });
+    const missingElement = buildResolvedScene({
+      scenario: selfScenario,
+      graph: selfGraph,
+      registry,
+      components: [selfBound, components[1]],
+    });
+    expect(missingElement.validation).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'workspace_muscle_path_host_element_missing' }),
+    ]));
+
+    const missingSelector: ComponentDefinition = {
+      ...selfBound,
+      representation: {
+        ...selfBound.representation!,
+        elements: [
+          {
+            id: 'links',
+            archetype: 'planar_chain',
+            bindings: { link_lengths: { kind: 'literal', value: [0.3, 0.4] } },
+            planar_chain: { frame_ids: ['world', 'link0', 'link1'], pose_fallback: 'zero' },
+          },
+          {
+            id: 'muscles',
+            archetype: 'muscle_path',
+            frame_provider: { kind: 'from_representation_element', element_id: 'links' },
+          },
+        ],
+      },
+    };
+    const selectorError = buildResolvedScene({
+      scenario: selfScenario,
+      graph: selfGraph,
+      registry,
+      components: [missingSelector, components[1]],
+    });
+    expect(selectorError.validation).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'workspace_muscle_path_host_binding_invalid' }),
+    ]));
+  });
+
   it('reports unresolved provider, host, pose, and frame without synthesizing geometry', () => {
     const baseMuscle: ComponentDefinition = {
       name: 'MusclePaths', category: 'Mechanics', description: 'paths',

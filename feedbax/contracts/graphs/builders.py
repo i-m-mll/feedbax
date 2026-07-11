@@ -69,7 +69,10 @@ from feedbax.mechanics.backend import DiffraxBackend
 from feedbax.mechanics.body import BodyPreset, default_2link_bounds
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.model_builder import ChainConfig
-from feedbax.mechanics.muscle_config import default_6muscle_2link_topology
+from feedbax.mechanics.muscle_config import (
+    default_6muscle_2link_segment_lengths,
+    default_6muscle_2link_topology,
+)
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
@@ -231,7 +234,7 @@ def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
     tau_act = float(params.get("tau_act", 0.01))
     tau_deact = float(params.get("tau_deact", 0.04))
     return BodyPreset(
-        segment_lengths=(bounds.segment_lengths_min + bounds.segment_lengths_max) / 2.0,
+        segment_lengths=default_6muscle_2link_segment_lengths(),
         segment_masses=(bounds.segment_masses_min + bounds.segment_masses_max) / 2.0,
         joint_damping=(bounds.joint_damping_min + bounds.joint_damping_max) / 2.0,
         joint_stiffness=(bounds.joint_stiffness_min + bounds.joint_stiffness_max) / 2.0,

@@ -636,7 +636,15 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
         "link1",
     }
     analytical_elements = {element.id: element for element in analytical.representation.elements}
-    assert analytical_elements["muscle-paths"].frame_provider is None
+    assert analytical_elements["muscle-paths"].frame_provider is not None
+    assert (
+        analytical_elements["muscle-paths"].frame_provider.kind
+        == "from_representation_element"
+    )
+    assert analytical_elements["muscle-paths"].frame_provider.element_id == "links"
+    assert analytical_elements["links"].planar_chain is not None
+    assert analytical_elements["links"].planar_chain.pose_fallback == "zero"
+    assert analytical_elements["links"].bindings["link_lengths"].kind == "literal"
 
     serialized = analytical.representation.model_dump(mode="json", exclude_none=True)
     assert serialized["schema_version"] == REPRESENTATION_SCHEMA_VERSION

@@ -14,7 +14,10 @@ from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
-from feedbax.mechanics.muscle_config import default_6muscle_2link_attachment_paths
+from feedbax.mechanics.muscle_config import (
+    default_6muscle_2link_attachment_paths,
+    default_6muscle_2link_segment_lengths,
+)
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
     affine_value_composer_output_prototype,
@@ -329,7 +332,11 @@ def _two_link_muscle_representation(
     composite: bool,
     muscle_path_geometry: Mapping[str, Any] | None = None,
     frame_input_port: str | None = None,
+    frame_element_id: str | None = None,
+    self_link_lengths: list[float] | None = None,
 ) -> RepresentationSpec:
+    if frame_input_port is not None and frame_element_id is not None:
+        raise ValueError("muscle path representation accepts only one frame provider")
     metadata = {
         "geometry_source": source,
         "chain_source": "feedbax.mechanics.skeleton.arm.TwoLinkArm",
@@ -410,9 +417,24 @@ def _two_link_muscle_representation(
                             path="skeleton.angle",
                             anchor_subpath="orientation",
                             dim=2,
-                        )
+                        ),
+                        **(
+                            {"link_lengths": _literal_binding(self_link_lengths, dim=2)}
+                            if self_link_lengths is not None
+                            else {}
+                        ),
                     },
                     "metadata": {"chain_kind": "two_link_arm"},
+                    **(
+                        {
+                            "planar_chain": {
+                                "frame_ids": ["world", "link0", "link1"],
+                                "pose_fallback": "zero",
+                            }
+                        }
+                        if self_link_lengths is not None
+                        else {}
+                    ),
                 },
                 {
                     "id": "muscle-paths",
@@ -443,7 +465,16 @@ def _two_link_muscle_representation(
                             }
                         }
                         if frame_input_port is not None
-                        else {}
+                        else (
+                            {
+                                "frame_provider": {
+                                    "kind": "from_representation_element",
+                                    "element_id": frame_element_id,
+                                }
+                            }
+                            if frame_element_id is not None
+                            else {}
+                        )
                     ),
                     "metadata": {
                         "geometry_source": source,
@@ -2342,6 +2373,10 @@ def register_builtin_components(registry: _Registry) -> None:
                 ),
                 composite=False,
                 muscle_path_geometry=_default_two_link_muscle_path_geometry(),
+                frame_element_id="links",
+                self_link_lengths=[
+                    float(value) for value in default_6muscle_2link_segment_lengths()
+                ],
             ),
         )
     )

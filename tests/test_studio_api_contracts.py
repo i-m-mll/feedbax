@@ -248,7 +248,7 @@ def test_component_api_serves_representation_contract(monkeypatch: pytest.Monkey
         item for item in contract.data.components if item.name == "ApiRepresentedGain"
     )
     assert represented.representation is not None
-    assert represented.representation.schema_version == "feedbax.spec.studio.representation.v3"
+    assert represented.representation.schema_version == "feedbax.spec.studio.representation.v4"
     assert represented.representation.elements[0].archetype == "marker"
 
 
