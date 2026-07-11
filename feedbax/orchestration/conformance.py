@@ -224,6 +224,8 @@ def run_conformance_checks(
     generated_at: datetime | None = None,
 ) -> RunConformanceCertificate:
     """Run registered checks over collected row artifacts."""
+    if len(registry) == 0:
+        raise ValueError("CERTIFY requires at least one registered conformance check")
     row_results: dict[str, list[CheckEntry]] = {}
     for row in sorted(rows, key=lambda item: item.row_id):
         checks: list[CheckEntry] = []
@@ -239,6 +241,13 @@ def run_conformance_checks(
                 )
             if result.check_id != check_id:
                 result = result.model_copy(update={"check_id": check_id})
+            if result.status == CHECK_STATUS_SKIPPED:
+                result = fail_check(
+                    check_id,
+                    expected=result.expected,
+                    observed=result.observed,
+                    detail=f"check did not produce a verdict: {result.detail}",
+                )
             checks.append(result)
         row_results[row.row_id] = checks
     return assemble_certificate(
@@ -465,10 +474,11 @@ def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "sentinel_status"),
         _path(row.training_diagnostics, "terminal_status"),
     )
+    expected_status_value = None if expected_status is _MISSING else expected_status
     if len(terminal_events) != 1:
         return fail_check(
             check_id,
-            expected={"terminal_count": 1, "terminal_status": expected_status},
+            expected={"terminal_count": 1, "terminal_status": expected_status_value},
             observed=observed,
         )
     if expected_status is not _MISSING:
@@ -483,7 +493,7 @@ def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
             )
     return pass_check(
         check_id,
-        expected={"terminal_count": 1, "terminal_status": expected_status},
+        expected={"terminal_count": 1, "terminal_status": expected_status_value},
         observed=observed,
     )
 

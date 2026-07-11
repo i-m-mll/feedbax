@@ -30,6 +30,7 @@ from feedbax.orchestration import (
     StateLockError,
 )
 from feedbax.orchestration.bundle import default_orchestration_root
+from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.stages import (
     BudgetExceeded,
     PreflightFailed,
@@ -114,9 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_preflight(args: argparse.Namespace) -> int:
     bundle = _load_bundle(args.bundle)
     try:
-        state = StageEngine(bundle=bundle, driver=_driver_for_bundle(bundle)).run(
-            stop_after_stage="PREFLIGHT"
-        )
+        state = StageEngine(
+            bundle=bundle,
+            driver=_driver_for_bundle(bundle),
+            conformance_registry=build_default_check_registry(),
+        ).run(stop_after_stage="PREFLIGHT")
     except PreflightFailed:
         state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
     checks = state.stage("PREFLIGHT").checks or run_preflight_checks(bundle)
@@ -223,7 +226,12 @@ def _run_engine(
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
 ) -> RunSetState:
     driver = _driver_for_bundle(bundle)
-    state = StageEngine(bundle=bundle, driver=driver, interruption_probe=interruption_probe).run(
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=build_default_check_registry(),
+        interruption_probe=interruption_probe,
+    ).run(
         break_stale_lock=break_stale_lock,
         stop_after_stage=stop_after_stage,
     )

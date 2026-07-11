@@ -94,11 +94,28 @@ def test_certificate_assembly_rules_and_deterministic_write(tmp_path: Path) -> N
         "m_skip",
         "z_pass",
     ]
+    skipped = next(
+        check for check in certificate.rows["row-a"].checks if check.check_id == "m_skip"
+    )
+    assert skipped.status == "fail"
+    assert "did not produce a verdict" in str(skipped.detail)
     written = (tmp_path / "conformance.json").read_text(encoding="utf-8")
-    assert written == json.dumps(certificate.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    assert (
+        written == json.dumps(certificate.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    )
 
     with pytest.raises(ValueError, match="skipped conformance checks require a detail"):
         CheckEntry(check_id="bad_skip", status="skipped")
+
+
+def test_empty_registry_cannot_certify() -> None:
+    with pytest.raises(ValueError, match="at least one registered"):
+        run_conformance_checks(
+            run_set_id="run-set-a",
+            rows=[_row()],
+            registry=CheckRegistry(),
+            generated_at=GENERATED_AT,
+        )
 
 
 def test_schema_round_trip_and_registry_identity() -> None:
@@ -123,9 +140,10 @@ def test_schema_round_trip_and_registry_identity() -> None:
 
 def test_core_checks_pass_fail_and_missing_inputs() -> None:
     assert check_completed_batches(_row()).status == "pass"
-    assert check_completed_batches(
-        _row(training_diagnostics={"completed_batches": 9})
-    ).status == "fail"
+    assert (
+        check_completed_batches(_row(training_diagnostics={"completed_batches": 9})).status
+        == "fail"
+    )
     missing = check_completed_batches(_row(bundle_row_spec={}))
     assert missing.status == "fail"
     assert "missing required input" in str(missing.detail)
@@ -143,8 +161,8 @@ def test_core_checks_pass_fail_and_missing_inputs() -> None:
     assert checks["checkpoint_cadence"].status == "pass"
     assert checks["environment_fingerprint"].status == "pass"
     assert checks["seeds"].status == "pass"
-    assert checks["events_terminal"].status == "skipped"
-    assert checks["events_terminal"].detail
+    assert checks["events_terminal"].status == "fail"
+    assert "did not produce a verdict" in str(checks["events_terminal"].detail)
 
 
 def test_manifest_valid_loads_manifest_and_compares_preflight_payload(tmp_path: Path) -> None:

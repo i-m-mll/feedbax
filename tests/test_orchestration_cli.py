@@ -21,6 +21,7 @@ from feedbax.orchestration import (
     StateLockError,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
+from feedbax.orchestration.conformance import CheckRegistry, pass_check
 from feedbax.orchestration.stages import PreflightFailed
 from feedbax.orchestration.state import RowState
 
@@ -86,10 +87,7 @@ def test_status_line_format_is_stable(tmp_path: Path) -> None:
         now_ms=event_path.stat().st_mtime_ns // 1_000_000 + 10_000,
     )
 
-    assert line.startswith(
-        "row=row-a status=running batch=3/8 last_loss=0.125 "
-        "last_event_age_s="
-    )
+    assert line.startswith("row=row-a status=running batch=3/8 last_loss=0.125 last_event_age_s=")
     assert " seq=0 stages=ASSEMBLE:completed,PREFLIGHT:completed,PROVISION:pending" in line
 
 
@@ -267,6 +265,11 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
             super().__init__(cwd=tmp_path, freeze_lines=("feedbax==test",))
 
     monkeypatch.setattr(orchestrate, "LocalOrchestrationDriver", FastLocalDriver)
+    monkeypatch.setattr(
+        orchestrate,
+        "build_default_check_registry",
+        lambda: CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
+    )
 
     assert orchestrate.main(["preflight", "--bundle", str(bundle_path)]) == 0
     assert orchestrate.main(["launch", "--bundle", str(bundle_path), "--driver", "local"]) == 0
