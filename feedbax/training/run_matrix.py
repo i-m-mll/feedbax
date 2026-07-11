@@ -334,7 +334,7 @@ def fork_matrix_checkpoints(
     target_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
     row_slot_transforms: Mapping[str, Mapping[str, ResumeSlotTransform]] | None = None,
     row_transform_metadata: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
-    row_continuation_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
+    row_segment_history_templates: Mapping[str, Mapping[str, Any]] | None = None,
     row_target_slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
     row_target_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     row_target_transformed_slots: Mapping[str, Sequence[str]] | None = None,
@@ -351,9 +351,9 @@ def fork_matrix_checkpoints(
     """Fork a source checkpoint to all matrix rows and write a parity table.
 
     ``target_slot_templates`` describes the final target topology. Rows that
-    both extend a continuation and change topology must also provide
-    ``row_continuation_slot_templates`` for the raw pre-topology target tail.
-    ``row_slot_transforms`` run before continuation; the explicit target/post
+    both continue and change topology must also provide
+    ``row_segment_history_templates`` for the raw pre-topology segment logs.
+    ``row_slot_transforms`` run before segment allocation; the explicit target/post
     transform family runs after it and must declare changed source slots and
     newly initialized target-only slots.
 
@@ -379,7 +379,7 @@ def fork_matrix_checkpoints(
             f"row transform metadata contains unknown rows {unexpected_transform_metadata!r}"
         )
     for label, values in (
-        ("row continuation slot templates", row_continuation_slot_templates),
+        ("row segment history templates", row_segment_history_templates),
         ("row target slot transforms", row_target_slot_transforms),
         ("row target transform metadata", row_target_transform_metadata),
         ("row target transformed slots", row_target_transformed_slots),
@@ -413,16 +413,16 @@ def fork_matrix_checkpoints(
                     f"row={row.row_id!r} contract=checkpoint_progress.continuation"
                 )
             target_transform = (row_target_slot_transforms or {}).get(row.row_id)
-            continuation_templates = (row_continuation_slot_templates or {}).get(row.row_id)
+            continuation_templates = (row_segment_history_templates or {}).get(row.row_id)
             if (
                 continuation is not None
                 and target_transform is not None
                 and continuation_templates is None
             ):
                 raise RunMatrixError(
-                    "topology-changing continuation row has no raw continuation slot "
+                    "topology-changing continuation row has no raw segment history slot "
                     f"template; row={row.row_id!r} "
-                    "contract=row_continuation_slot_templates"
+                    "contract=row_segment_history_templates"
                 )
             result = fork_checkpoint_transaction(
                 source_checkpoint_root,
@@ -432,7 +432,7 @@ def fork_matrix_checkpoints(
                 expected_slots=expected_slots,
                 slot_transforms=(row_slot_transforms or {}).get(row.row_id),
                 transform_metadata=(row_transform_metadata or {}).get(row.row_id),
-                continuation_slot_templates=continuation_templates,
+                segment_history_templates=continuation_templates,
                 target_slot_transform=target_transform,
                 target_transform_metadata=(row_target_transform_metadata or {}).get(row.row_id),
                 target_transformed_slots=(row_target_transformed_slots or {}).get(row.row_id),
