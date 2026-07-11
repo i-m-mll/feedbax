@@ -29,7 +29,14 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.web.app import create_app
 from feedbax.web.api import components as components_api
-from scripts.generate_studio_contracts import CONTRACT_MODEL_NAMES, MODEL_TYPES, OUTPUT, generate
+from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
+from scripts.generate_studio_contracts import (
+    CONTRACT_MODEL_NAMES,
+    MODEL_TYPES,
+    OUTPUT,
+    generate,
+    model_dependencies,
+)
 
 
 GENERATED_STUDIO_PREFIXES = (
@@ -329,6 +336,21 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
                 missing.append(f"{route.path} contractSchemas missing {model_name}")
 
     assert missing == []
+
+
+def test_generated_studio_contracts_include_nested_model_dependencies() -> None:
+    registered_models = set(MODEL_TYPES)
+    missing = {
+        model.__name__: sorted(
+            dependency.__name__
+            for dependency in model_dependencies(model)
+            if dependency not in registered_models
+        )
+        for model in MODEL_TYPES
+    }
+
+    assert {name: dependencies for name, dependencies in missing.items() if dependencies} == {}
+    assert MODEL_TYPES.index(LrScheduleSpec) < MODEL_TYPES.index(OptimizerSpec)
 
 
 def test_generated_studio_contracts_are_current() -> None:

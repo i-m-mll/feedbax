@@ -938,6 +938,17 @@ export interface ComponentDefinition {
   representation?: RepresentationSpec | null;
 }
 
+export interface LrScheduleSpec {
+  schema_id?: "feedbax.spec.training.lr_schedule";
+  schema_version?: string;
+  kind?: "constant" | "warmup_cosine" | "delayed_cosine";
+  learning_rate_0: number;
+  total_steps?: number | null;
+  constant_lr_iterations?: number;
+  warmup_init_fraction?: number;
+  cosine_annealing_alpha?: number;
+}
+
 export interface OptimizerSpec {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
@@ -3123,6 +3134,21 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
     })
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;
+
+export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.training.lr_schedule").optional(),
+      "schema_version": z.string().optional(),
+      "kind": z.union([z.literal("constant"), z.literal("warmup_cosine"), z.literal("delayed_cosine")]).optional(),
+      "learning_rate_0": z.number(),
+      "total_steps": z.number().int().nullable().optional(),
+      "constant_lr_iterations": z.number().int().optional(),
+      "warmup_init_fraction": z.number().optional(),
+      "cosine_annealing_alpha": z.number().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<LrScheduleSpec>;
 
 export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
   z

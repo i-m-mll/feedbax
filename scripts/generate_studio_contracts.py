@@ -174,6 +174,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.training import (
     EarlyStoppingSpec,
     LossTermSpec,
+    LrScheduleSpec,
     OptimizerSpec,
     TaskSpec,
     TimeAggregationSpec,
@@ -352,6 +353,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     WorkspaceReplayRequiredSelector,
     ResolvedWorkspaceReplayScene,
     ComponentDefinition,
+    LrScheduleSpec,
     OptimizerSpec,
     TimeAggregationSpec,
     LossTermSpec,
@@ -669,6 +671,23 @@ def model_type_hints(model: type[BaseModel]) -> dict[str, Any]:
         }
     )
     return get_type_hints(model, globalns=module_globals, include_extras=True)
+
+
+def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
+    """Return Pydantic models referenced by a generated model's fields."""
+    dependencies: list[type[BaseModel]] = []
+
+    def collect(annotation: Any) -> None:
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if annotation is not model and annotation not in dependencies:
+                dependencies.append(annotation)
+            return
+        for argument in get_args(annotation):
+            collect(argument)
+
+    for annotation in model_type_hints(model).values():
+        collect(annotation)
+    return tuple(dependencies)
 
 
 def generate() -> str:
