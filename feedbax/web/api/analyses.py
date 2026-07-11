@@ -204,7 +204,10 @@ async def dry_run_analysis_bundle(
 ) -> AnalysisBundleDryRunResponse:
     """Evaluate analysis bundle bindings and stage conditions without launching."""
     try:
-        bundle = AnalysisBundleSpec.model_validate(payload.bundle)
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        migrated = migrate_structured_spec_payload("AnalysisBundleSpec", payload.bundle)
+        bundle = AnalysisBundleSpec.model_validate(migrated.payload)
         dry_run = dry_run_staged_analysis_bundle(
             bundle,
             root=payload.root,
