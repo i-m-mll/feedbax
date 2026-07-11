@@ -522,6 +522,16 @@ def fork_matrix_checkpoints(
             source_manifest=source_manifest,
             target_manifest=target_manifest,
             expected_slots=spec.fork.expected_slots,
+            source_transformed_slots=tuple(
+                (row_slot_transforms or {}).get(row.row_id, {})
+            ),
+            source_transform_metadata={
+                slot: dict(metadata)
+                for slot, metadata in (row_transform_metadata or {}).get(row.row_id, {}).items()
+            },
+            target_transform_metadata=(row_target_transform_metadata or {}).get(row.row_id),
+            target_transformed_slots=(row_target_transformed_slots or {}).get(row.row_id, ()),
+            target_only_slots=(row_target_only_slots or {}).get(row.row_id, {}),
         )
         parity_rows.extend(slot_rows)
         mismatches.extend(row_mismatches)
@@ -1064,6 +1074,67 @@ def _slot_digest_map(manifest: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
+def _slot_blob_digest_map(manifest: Mapping[str, Any]) -> dict[str, str]:
+    slots = manifest.get("slots", [])
+    if not isinstance(slots, list):
+        return {}
+    return {
+        str(slot["slot"]): str(slot["sha256"])
+        for slot in slots
+        if isinstance(slot, Mapping) and "slot" in slot and "sha256" in slot
+    }
+
+
+def _fork_slot_provenance(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    fork = manifest.get("fork_provenance")
+    if not isinstance(fork, Mapping):
+        return {}
+    slots = fork.get("slots", [])
+    if not isinstance(slots, list):
+        return {}
+    return {
+        str(slot["slot"]): slot for slot in slots if isinstance(slot, Mapping) and "slot" in slot
+    }
+
+
+def _transform_provenance_mismatches(
+    *,
+    row_id: str,
+    slot: str,
+    provenance: Mapping[str, Any] | None,
+    expected_metadata: Mapping[str, Any] | None,
+    expected_target_only_declaration: Mapping[str, Any] | None = None,
+) -> list[str]:
+    context = f"row={row_id} slot={slot}"
+    if provenance is None:
+        return [f"{context} missing fork provenance"]
+    transform = provenance.get("transform")
+    if not isinstance(transform, Mapping):
+        return [f"{context} missing transform provenance"]
+    mismatches: list[str] = []
+    if transform.get("slot") != slot:
+        mismatches.append(f"{context} transform provenance names wrong slot")
+    if expected_metadata is not None:
+        identity = expected_metadata.get("identity")
+        if identity is not None and transform.get("identity") != identity:
+            mismatches.append(f"{context} transform identity mismatch")
+        parameters = expected_metadata.get("parameters", {})
+        if transform.get("parameters", {}) != parameters:
+            mismatches.append(f"{context} transform parameters mismatch")
+    metadata = transform.get("metadata")
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    if expected_target_only_declaration is not None:
+        if metadata.get("target_only_declaration") != dict(expected_target_only_declaration):
+            mismatches.append(f"{context} target-only declaration mismatch")
+        stages = metadata.get("stages")
+        if not isinstance(stages, list) or not stages:
+            mismatches.append(f"{context} missing ordered transform stages")
+        elif not isinstance(stages[-1], Mapping) or stages[-1].get("stage") != "target_post":
+            mismatches.append(f"{context} target-only provenance is not target_post")
+    return mismatches
+
+
 def _parity_rows(
     *,
     row_id: str,
@@ -1071,23 +1142,84 @@ def _parity_rows(
     source_manifest: Mapping[str, Any],
     target_manifest: Mapping[str, Any],
     expected_slots: list[str],
+    source_transformed_slots: Sequence[str] = (),
+    source_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    target_transform_metadata: Mapping[str, Any] | None = None,
+    target_transformed_slots: Sequence[str] = (),
+    target_only_slots: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     source_digests = _slot_digest_map(source_manifest)
     target_digests = _slot_digest_map(target_manifest)
-    slots = sorted(set(source_digests) | set(target_digests))
-    if expected_slots:
-        if sorted(expected_slots) != slots:
-            return [], [f"row={row_id} slots={slots!r} expected={sorted(expected_slots)!r}"]
-        slots = sorted(expected_slots)
+    comparable_slots = set(expected_slots) if expected_slots else set(source_digests)
+    declared_target_only = dict(target_only_slots or {})
+    declared_transformed = set(source_transformed_slots) | set(target_transformed_slots)
     rows: list[dict[str, Any]] = []
     mismatches: list[str] = []
     transaction_id = target_manifest.get("transaction_id")
-    for slot in slots:
+    if len(comparable_slots) != len(expected_slots) and expected_slots:
+        mismatches.append(f"row={row_id} expected_slots contains duplicates")
+    if set(source_digests) != comparable_slots:
+        mismatches.append(
+            f"row={row_id} source_slots={sorted(source_digests)!r} "
+            f"expected_comparable={sorted(comparable_slots)!r}"
+        )
+    expected_target_slots = comparable_slots | set(declared_target_only)
+    if set(target_digests) != expected_target_slots:
+        mismatches.append(
+            f"row={row_id} target_slots={sorted(target_digests)!r} "
+            f"expected_topology={sorted(expected_target_slots)!r}"
+        )
+    undeclared_transformed = declared_transformed - comparable_slots
+    if undeclared_transformed:
+        mismatches.append(
+            f"row={row_id} transformed slots are not source-comparable; "
+            f"slots={sorted(undeclared_transformed)!r}"
+        )
+    if (declared_target_only or target_transformed_slots) and target_transform_metadata is None:
+        mismatches.append(f"row={row_id} missing target transform declaration")
+
+    provenance = _fork_slot_provenance(target_manifest)
+    source_blob_digests = _slot_blob_digest_map(source_manifest)
+    target_blob_digests = _slot_blob_digest_map(target_manifest)
+    for slot in sorted(comparable_slots):
         source = source_digests.get(slot)
         target = target_digests.get(slot)
-        ok = source == target
-        if not ok:
-            mismatches.append(f"row={row_id} slot={slot}")
+        transformed = slot in declared_transformed
+        slot_mismatches: list[str] = []
+        if source is None or target is None:
+            slot_mismatches.append(f"row={row_id} slot={slot} missing comparable digest")
+        elif transformed:
+            expected_metadata = (
+                target_transform_metadata
+                if slot in target_transformed_slots
+                else (source_transform_metadata or {}).get(slot)
+            )
+            slot_mismatches.extend(
+                _transform_provenance_mismatches(
+                    row_id=row_id,
+                    slot=slot,
+                    provenance=provenance.get(slot),
+                    expected_metadata=expected_metadata,
+                )
+            )
+        elif source != target:
+            slot_mismatches.append(f"row={row_id} slot={slot}")
+        slot_provenance = provenance.get(slot)
+        if transformed and slot_provenance is not None:
+            if slot_provenance.get("transfer_mode") != "serialized":
+                slot_mismatches.append(
+                    f"row={row_id} slot={slot} transformed provenance is not serialized"
+                )
+            if source_blob_digests and slot_provenance.get("source_sha256") != (
+                source_blob_digests.get(slot)
+            ):
+                slot_mismatches.append(f"row={row_id} slot={slot} source provenance mismatch")
+            if target_blob_digests and slot_provenance.get("target_sha256") != (
+                target_blob_digests.get(slot)
+            ):
+                slot_mismatches.append(f"row={row_id} slot={slot} target provenance mismatch")
+        ok = not slot_mismatches
+        mismatches.extend(slot_mismatches)
         rows.append(
             {
                 "kind": "slot_parity",
@@ -1097,7 +1229,44 @@ def _parity_rows(
                 "slot": slot,
                 "source_digest": source,
                 "target_digest": target,
+                "parity_mode": "transformed" if transformed else "preserved",
                 "ok": ok,
+            }
+        )
+    for slot, declaration in sorted(declared_target_only.items()):
+        slot_provenance = provenance.get(slot)
+        slot_mismatches = _transform_provenance_mismatches(
+            row_id=row_id,
+            slot=slot,
+            provenance=slot_provenance,
+            expected_metadata=target_transform_metadata,
+            expected_target_only_declaration=declaration,
+        )
+        if slot_provenance is not None and slot_provenance.get("source_sha256") is not None:
+            slot_mismatches.append(f"row={row_id} slot={slot} target-only source must be absent")
+        if slot_provenance is not None and slot_provenance.get("transfer_mode") != "serialized":
+            slot_mismatches.append(
+                f"row={row_id} slot={slot} target-only provenance is not serialized"
+            )
+        if (
+            target_blob_digests
+            and slot_provenance is not None
+            and (slot_provenance.get("target_sha256") != target_blob_digests.get(slot))
+        ):
+            slot_mismatches.append(f"row={row_id} slot={slot} target provenance mismatch")
+        if slot not in target_digests:
+            slot_mismatches.append(f"row={row_id} slot={slot} missing target-only digest")
+        mismatches.extend(slot_mismatches)
+        rows.append(
+            {
+                "kind": "target_only_provenance",
+                "row_id": row_id,
+                "planned_run_id": planned_run_id,
+                "transaction_id": transaction_id,
+                "slot": slot,
+                "target_digest": target_digests.get(slot),
+                "declaration": dict(declaration),
+                "ok": not slot_mismatches,
             }
         )
     return rows, mismatches

@@ -47,6 +47,113 @@ def _write_latest(root: Path, *, transaction_id: str, digest: str) -> None:
     )
 
 
+def _write_topology_latest(
+    root: Path,
+    *,
+    transaction_id: str,
+    digests: dict[str, str],
+    blob_digests: dict[str, str],
+    provenance: list[dict[str, object]] | None = None,
+) -> None:
+    tx_dir = root / "transactions" / transaction_id
+    tx_dir.mkdir(parents=True)
+    manifest: dict[str, object] = {
+        "transaction_id": transaction_id,
+        "completed_training_batches": 5,
+        "slots": [{"slot": slot, "sha256": blob_digests[slot]} for slot in sorted(blob_digests)],
+        "content_integrity_digest": {
+            "slots": [
+                {"slot": slot, "slot_root_sha256": digest}
+                for slot, digest in sorted(digests.items())
+            ],
+        },
+    }
+    if provenance is not None:
+        manifest["fork_provenance"] = {"slots": provenance}
+    (tx_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "latest.json").write_text(
+        json.dumps({"manifest_relative_path": f"transactions/{transaction_id}/manifest.json"}),
+        encoding="utf-8",
+    )
+
+
+def _target_transform_provenance(
+    slot: str,
+    *,
+    source_sha256: str | None,
+    target_sha256: str,
+    target_only_declaration: dict[str, str] | None = None,
+) -> dict[str, object]:
+    transform_metadata: dict[str, object] = {
+        "stage": "target_post",
+        "stages": [
+            {
+                "stage": "target_post",
+                "identity": "tests.target_topology.v1",
+                "parameters": {"mode": "adaptive"},
+                "metadata": {},
+            }
+        ],
+    }
+    if target_only_declaration is not None:
+        transform_metadata["target_only_declaration"] = target_only_declaration
+    return {
+        "slot": slot,
+        "source_sha256": source_sha256,
+        "target_sha256": target_sha256,
+        "transfer_mode": "serialized",
+        "transform": {
+            "slot": slot,
+            "identity": "tests.target_topology.v1",
+            "parameters": {"mode": "adaptive"},
+            "metadata": transform_metadata,
+        },
+    }
+
+
+def _topology_parity_inputs(
+    tmp_path: Path,
+) -> tuple[TrainingRunMatrixSpec, MaterializedRunMatrix, Path, Path, dict[str, str]]:
+    spec = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    one_row = MaterializedRunMatrix(
+        matrix_spec_sha256=materialized.matrix_spec_sha256,
+        run_set_id=materialized.run_set_id,
+        base_payload=materialized.base_payload,
+        rows=[materialized.rows[0]],
+        run_set_manifest=materialized.run_set_manifest,
+    )
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    declaration = {"identity": "tests.target_only.v1"}
+    _write_topology_latest(
+        source,
+        transaction_id="tx-source",
+        digests={"model": "source-content"},
+        blob_digests={"model": "source-blob"},
+    )
+    _write_topology_latest(
+        target,
+        transaction_id="tx-target",
+        digests={"model": "transformed-content", "adaptive_state": "new-content"},
+        blob_digests={"model": "target-model-blob", "adaptive_state": "target-new-blob"},
+        provenance=[
+            _target_transform_provenance(
+                "model",
+                source_sha256="source-blob",
+                target_sha256="target-model-blob",
+            ),
+            _target_transform_provenance(
+                "adaptive_state",
+                source_sha256=None,
+                target_sha256="target-new-blob",
+                target_only_declaration=declaration,
+            ),
+        ],
+    )
+    return spec, one_row, source, target, declaration
+
+
 def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -> None:
     spec = _matrix(_training_run_payload())
     materialized = materialize_run_matrix(spec, repo_root=tmp_path)
@@ -135,6 +242,106 @@ def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None
             source_checkpoint_root=source,
             target_checkpoint_roots={"lr_hi": target},
             parity_output_path=tmp_path / "parity.json",
+            skip_fork=True,
+        )
+
+
+def test_fork_matrix_parity_accepts_declared_topology_change(tmp_path: Path) -> None:
+    spec, materialized, source, target, declaration = _topology_parity_inputs(tmp_path)
+
+    table = fork_matrix_checkpoints(
+        spec,
+        materialized,
+        source_checkpoint_root=source,
+        target_checkpoint_roots={"lr_hi": target},
+        parity_output_path=tmp_path / "parity.json",
+        row_target_transform_metadata={
+            "lr_hi": {
+                "identity": "tests.target_topology.v1",
+                "parameters": {"mode": "adaptive"},
+            }
+        },
+        row_target_transformed_slots={"lr_hi": ["model"]},
+        row_target_only_slots={"lr_hi": {"adaptive_state": declaration}},
+        skip_fork=True,
+    )
+
+    assert table["ok"] is True
+    assert {
+        (row["kind"], row["slot"], row["ok"])
+        for row in table["rows"]
+        if row["kind"] != "lr_continuation"
+    } == {
+        ("slot_parity", "model", True),
+        ("target_only_provenance", "adaptive_state", True),
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("missing_comparable", "missing comparable digest"),
+        ("undeclared_extra", "expected_topology"),
+        ("preserved_drift", "row=lr_hi slot=model"),
+        ("missing_target_only_provenance", "missing fork provenance"),
+        ("incorrect_target_only_provenance", "target-only declaration mismatch"),
+    ],
+)
+def test_fork_matrix_parity_rejects_topology_contract_drift(
+    tmp_path: Path,
+    mutation: str,
+    error: str,
+) -> None:
+    spec, materialized, source, target, declaration = _topology_parity_inputs(tmp_path)
+    target_manifest_path = next((target / "transactions").glob("*/manifest.json"))
+    target_manifest = json.loads(target_manifest_path.read_text(encoding="utf-8"))
+    transformed_slots: list[str] = ["model"]
+    if mutation == "missing_comparable":
+        target_manifest["slots"] = [
+            slot for slot in target_manifest["slots"] if slot["slot"] != "model"
+        ]
+        target_manifest["content_integrity_digest"]["slots"] = [
+            slot
+            for slot in target_manifest["content_integrity_digest"]["slots"]
+            if slot["slot"] != "model"
+        ]
+    elif mutation == "undeclared_extra":
+        target_manifest["slots"].append({"slot": "rogue", "sha256": "rogue-blob"})
+        target_manifest["content_integrity_digest"]["slots"].append(
+            {"slot": "rogue", "slot_root_sha256": "rogue-content"}
+        )
+    elif mutation == "preserved_drift":
+        transformed_slots = []
+    elif mutation == "missing_target_only_provenance":
+        target_manifest["fork_provenance"]["slots"] = [
+            slot
+            for slot in target_manifest["fork_provenance"]["slots"]
+            if slot["slot"] != "adaptive_state"
+        ]
+    elif mutation == "incorrect_target_only_provenance":
+        target_only = next(
+            slot
+            for slot in target_manifest["fork_provenance"]["slots"]
+            if slot["slot"] == "adaptive_state"
+        )
+        target_only["transform"]["metadata"]["target_only_declaration"] = {"identity": "wrong"}
+    target_manifest_path.write_text(json.dumps(target_manifest), encoding="utf-8")
+
+    with pytest.raises(ForkParityError, match=error):
+        fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=source,
+            target_checkpoint_roots={"lr_hi": target},
+            parity_output_path=tmp_path / "parity.json",
+            row_target_transform_metadata={
+                "lr_hi": {
+                    "identity": "tests.target_topology.v1",
+                    "parameters": {"mode": "adaptive"},
+                }
+            },
+            row_target_transformed_slots={"lr_hi": transformed_slots},
+            row_target_only_slots={"lr_hi": {"adaptive_state": declaration}},
             skip_fork=True,
         )
 
