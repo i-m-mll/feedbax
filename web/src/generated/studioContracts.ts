@@ -500,9 +500,15 @@ export interface StudioTaskBindingSpec {
   metadata?: Record<string, unknown>;
 }
 
+export interface StudioBiomechanicsSpec {
+  schema_id?: "feedbax.spec.studio.biomechanics";
+  schema_version?: "feedbax.spec.studio.biomechanics.v1";
+  metadata?: Record<string, unknown>;
+}
+
 export interface StudioScenarioSpec {
   id: string;
-  schema_version?: string;
+  schema_version?: "feedbax.spec.studio.scenario.v2";
   label: string;
   stage_id?: string | null;
   parent_scenario_id?: string | null;
@@ -514,7 +520,7 @@ export interface StudioScenarioSpec {
   objective_spec?: Record<string, unknown> | null;
   probe_specs?: RetainedObservableSpec[];
   temporal_spec?: Record<string, unknown> | null;
-  biomechanics_spec?: Record<string, unknown> | null;
+  biomechanics_spec?: StudioBiomechanicsSpec | null;
   analysis_spec?: Record<string, unknown> | null;
   report_spec?: Record<string, unknown> | null;
   validation?: StudioValidationState;
@@ -647,9 +653,15 @@ export interface RepresentationLiteralBinding {
   dim?: number | null;
 }
 
+export interface RepresentationReferencePoseSpec {
+  coordinate_space?: "configuration";
+  values: number[];
+}
+
 export interface RepresentationPlanarChainSpec {
   frame_ids: string[];
   pose_fallback?: "zero" | null;
+  reference_pose?: RepresentationReferencePoseSpec | null;
 }
 
 export interface RepresentationMusclePathPointSpec {
@@ -724,7 +736,7 @@ export interface RepresentationReachabilitySpec {
 
 export interface RepresentationSpec {
   schema_id?: "feedbax.spec.studio.representation";
-  schema_version?: "feedbax.spec.studio.representation.v4";
+  schema_version?: "feedbax.spec.studio.representation.v5";
   anchors?: RepresentationAnchorSpec[];
   elements?: RepresentationElementSpec[];
   style?: RepresentationStyleSpec[];
@@ -2506,11 +2518,21 @@ export const StudioTaskBindingSpecSchema: z.ZodType<StudioTaskBindingSpec> = z.l
     .strict()
 ) as unknown as z.ZodType<StudioTaskBindingSpec>;
 
+export const StudioBiomechanicsSpecSchema: z.ZodType<StudioBiomechanicsSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.biomechanics").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.biomechanics.v1").optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioBiomechanicsSpec>;
+
 export const StudioScenarioSpecSchema: z.ZodType<StudioScenarioSpec> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
-      "schema_version": z.string().optional(),
+      "schema_version": z.literal("feedbax.spec.studio.scenario.v2").optional(),
       "label": z.string(),
       "stage_id": z.string().nullable().optional(),
       "parent_scenario_id": z.string().nullable().optional(),
@@ -2522,7 +2544,7 @@ export const StudioScenarioSpecSchema: z.ZodType<StudioScenarioSpec> = z.lazy(()
       "objective_spec": z.record(z.string(), z.unknown()).nullable().optional(),
       "probe_specs": z.array(RetainedObservableSpecSchema).optional(),
       "temporal_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "biomechanics_spec": z.record(z.string(), z.unknown()).nullable().optional(),
+      "biomechanics_spec": StudioBiomechanicsSpecSchema.nullable().optional(),
       "analysis_spec": z.record(z.string(), z.unknown()).nullable().optional(),
       "report_spec": z.record(z.string(), z.unknown()).nullable().optional(),
       "validation": StudioValidationStateSchema.optional(),
@@ -2713,11 +2735,21 @@ export const RepresentationLiteralBindingSchema: z.ZodType<RepresentationLiteral
     .strict()
 ) as unknown as z.ZodType<RepresentationLiteralBinding>;
 
+export const RepresentationReferencePoseSpecSchema: z.ZodType<RepresentationReferencePoseSpec> = z.lazy(() =>
+  z
+    .object({
+      "coordinate_space": z.literal("configuration").optional(),
+      "values": z.array(z.number()),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationReferencePoseSpec>;
+
 export const RepresentationPlanarChainSpecSchema: z.ZodType<RepresentationPlanarChainSpec> = z.lazy(() =>
   z
     .object({
       "frame_ids": z.array(z.string()),
       "pose_fallback": z.literal("zero").nullable().optional(),
+      "reference_pose": RepresentationReferencePoseSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationPlanarChainSpec>;
@@ -2828,7 +2860,7 @@ export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(()
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.representation").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.representation.v4").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.representation.v5").optional(),
       "anchors": z.array(RepresentationAnchorSpecSchema).optional(),
       "elements": z.array(RepresentationElementSpecSchema).optional(),
       "style": z.array(RepresentationStyleSpecSchema).optional(),

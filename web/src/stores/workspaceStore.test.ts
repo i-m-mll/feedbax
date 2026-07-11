@@ -591,6 +591,14 @@ describe('buildWorkspaceSnapshot', () => {
       ...workspace,
       scenarios: {
         ...workspace.scenarios,
+        [trainStage.scenario_id!]: {
+          ...trainScenario,
+          biomechanics_spec: {
+            schema_id: 'feedbax.spec.studio.biomechanics',
+            schema_version: 'feedbax.spec.studio.biomechanics.v1',
+            metadata: { source: 'persisted' },
+          },
+        },
         [evalStage.scenario_id!]: {
           ...evalScenario,
           task_spec: {
@@ -610,6 +618,11 @@ describe('buildWorkspaceSnapshot', () => {
     expect(trainObjective.terms[0].label).toBe('Train endpoint loss');
     expect(evalProjection.graph).toBe(trainScenario.graph);
     expect(evalProjection.task_spec?.params.target_radius).toBe(0.08);
+    expect(evalProjection.biomechanics_spec).toEqual({
+      schema_id: 'feedbax.spec.studio.biomechanics',
+      schema_version: 'feedbax.spec.studio.biomechanics.v1',
+      metadata: { source: 'persisted' },
+    });
     expect(projectedEvalObjective).toEqual(evalObjective);
     expect(projectedEvalObjective.terms.map((term) => term.label)).not.toContain(
       'Train endpoint loss'

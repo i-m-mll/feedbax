@@ -31,7 +31,7 @@ function stage(selectionSpec: Record<string, unknown>): StudioStageSpec {
 function scenario(analysisSpec: Record<string, unknown> | null): StudioScenarioSpec {
   return {
     id: 'scenario:analysis',
-    schema_version: 'feedbax.studio.scenario.v1',
+    schema_version: 'feedbax.spec.studio.scenario.v2',
     label: 'Analysis',
     stage_id: 'stage:analysis',
     parent_scenario_id: null,

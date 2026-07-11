@@ -42,7 +42,7 @@ import type {
 } from '@/types/workspace';
 
 const WORKSPACE_SCHEMA_VERSION = 'feedbax.studio.workspace.v1';
-const SCENARIO_SCHEMA_VERSION = 'feedbax.studio.scenario.v1';
+const SCENARIO_SCHEMA_VERSION = 'feedbax.spec.studio.scenario.v2';
 const OBJECTIVE_SCHEMA_VERSION = 'feedbax.studio.objective.v1';
 
 const DEFAULT_STAGE_IDS = {

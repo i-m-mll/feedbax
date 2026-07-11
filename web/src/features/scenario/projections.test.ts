@@ -131,7 +131,7 @@ const graph: GraphSpec = {
 
 const scenario: StudioScenarioSpec = {
   id: 'scenario:train',
-  schema_version: 'feedbax.studio.scenario.v1',
+  schema_version: 'feedbax.spec.studio.scenario.v2',
   label: 'Training scenario',
   stage_id: 'stage:train',
   parent_scenario_id: null,
@@ -227,6 +227,10 @@ const components: ComponentDefinition[] = [
           },
           planar_chain: {
             frame_ids: ['world', 'link0', 'link1'],
+            reference_pose: {
+              coordinate_space: 'configuration',
+              values: [0, 0],
+            },
             pose_fallback: 'zero',
           },
           metadata: { chain_kind: 'two_link_arm' },
@@ -331,6 +335,81 @@ describe('resolved scene projection', () => {
     ).toEqual(['output:effector', 'output:state']);
     expect(scene.elements.some((element) => element.archetype === 'objective_link')).toBe(false);
     expect(scene.validation.map((message) => message.type)).toContain('workspace_goal_out_of_reach');
+  });
+
+  it('uses provider reference configuration only when correlated pose data is absent', () => {
+    const mechanics = components[0];
+    const links = mechanics.representation!.elements![0];
+    const representedMechanics: ComponentDefinition = {
+      ...mechanics,
+      representation: {
+        ...mechanics.representation!,
+        elements: [
+          {
+            ...links,
+            planar_chain: {
+              ...links.planar_chain!,
+              reference_pose: {
+                coordinate_space: 'configuration',
+                values: [Math.PI / 2, 0],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const graphWithUndeclaredPoseParams: GraphSpec = {
+      ...graph,
+      nodes: {
+        mechanics: {
+          ...graph.nodes.mechanics,
+          params: {
+            ...graph.nodes.mechanics.params,
+            rest_joint_angles: [0, 0],
+            initial_angles: [0, 0],
+          },
+        },
+      },
+    };
+    const representedScenario = { ...scenario, graph: graphWithUndeclaredPoseParams };
+    const sceneRegistry = buildScenarioEntityRegistry({
+      scenario: representedScenario,
+      graph: graphWithUndeclaredPoseParams,
+    });
+    const authoring = buildResolvedScene({
+      scenario: representedScenario,
+      graph: graphWithUndeclaredPoseParams,
+      registry: sceneRegistry,
+      components: [representedMechanics, components[1]],
+    });
+    const mechanicsId = mechanicsEntityId(scenario.id, 'mechanics');
+    const authoringArm = authoring.elements.find(
+      (element) => element.entity_id === mechanicsId && element.local_id === 'links'
+    );
+
+    expect(authoringArm?.geometry.kind).toBe('polyline');
+    if (authoringArm?.geometry.kind !== 'polyline') throw new Error('expected arm geometry');
+    expect(authoringArm.geometry.points[1][0]).toBeCloseTo(0);
+    expect(authoringArm.geometry.points[1][1]).toBeCloseTo(0.3);
+    expect(authoringArm.geometry.points[2][0]).toBeCloseTo(0);
+    expect(authoringArm.geometry.points[2][1]).toBeCloseTo(0.7);
+
+    const dataBacked = buildResolvedScene({
+      scenario: representedScenario,
+      graph: graphWithUndeclaredPoseParams,
+      registry: sceneRegistry,
+      components: [representedMechanics, components[1]],
+      poseValues: { 'mechanics::output:state': [0, 0] },
+      requirePoseValues: true,
+    });
+    const dataBackedArm = dataBacked.elements.find(
+      (element) => element.entity_id === mechanicsId && element.local_id === 'links'
+    );
+
+    expect(dataBackedArm?.geometry).toEqual({
+      kind: 'polyline',
+      points: [[0, 0], [0.3, 0], [0.7, 0]],
+    });
   });
 
   it('validates reachability from provider metadata without component name sniffing', () => {

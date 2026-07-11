@@ -373,18 +373,29 @@ function elementGlobalId(entityId: string, elementId: string): string {
   return `${entityId}::element:${elementId}`;
 }
 
-function twoLinkRestPoints(
+function twoLinkReferencePoints(
   component: ComponentDefinition,
   node: ComponentSpec,
-  linkLengthsBinding: RepresentationBinding
-): Array<[number, number]> {
+  element: RepresentationElementSpec,
+  nodeId: string | null,
+  poseValues: ResolvedScenePoseValues | undefined,
+  requirePoseValues: boolean
+): Array<[number, number]> | null {
+  const linkLengthsBinding = element.bindings?.link_lengths;
   const lengths = numericArray(bindingValue(component, node, linkLengthsBinding)) ?? [0.3, 0.33];
-  const angles =
-    numericArray(
-      valueAtPath(node.params ?? {}, 'joint_angles') ??
-        valueAtPath(node.params ?? {}, 'rest_joint_angles') ??
-        valueAtPath(node.params ?? {}, 'initial_angles')
-    ) ?? [0, 0];
+  const angleSelector = bindingSelector(element.bindings?.joint_angles);
+  const dynamicPose =
+    nodeId && angleSelector
+      ? poseValues?.[resolvedScenePoseKey(nodeId, angleSelector.compact)]
+      : undefined;
+  let angles = dynamicPose ? numericArray(dynamicPose) : null;
+  if (!angles && !requirePoseValues) {
+    angles = numericArray(element.planar_chain?.reference_pose?.values);
+  }
+  if (!angles && !requirePoseValues && element.planar_chain?.pose_fallback === 'zero') {
+    angles = lengths.map(() => 0);
+  }
+  if (!angles || angles.length < lengths.length) return null;
   const shoulder: [number, number] = [0, 0];
   const theta0 = angles[0] ?? 0;
   const theta1 = theta0 + (angles[1] ?? 0);
@@ -648,11 +659,7 @@ function planarChainFrames({
   const dynamicPose = poseValues?.[poseKey];
   let angles = dynamicPose ? numericArray(dynamicPose) : null;
   if (!angles && !requirePoseValues) {
-    angles = numericArray(
-      valueAtPath(hostNode.params ?? {}, 'joint_angles') ??
-        valueAtPath(hostNode.params ?? {}, 'rest_joint_angles') ??
-        valueAtPath(hostNode.params ?? {}, 'initial_angles')
-    );
+    angles = numericArray(chainElement.planar_chain.reference_pose?.values);
   }
   if (!angles && !requirePoseValues && chainElement.planar_chain.pose_fallback === 'zero') {
     angles = lengths.map(() => 0);
@@ -785,10 +792,16 @@ function resolveComponentRepresentation({
   const planarChain = representation.elements?.find(
     (element) => element.archetype === 'planar_chain'
   );
-  const linkLengthsBinding = planarChain?.bindings?.link_lengths;
   const twoLinkPoints =
     planarChain?.metadata?.chain_kind === 'two_link_arm'
-      ? twoLinkRestPoints(component, nodeOrTask as ComponentSpec, linkLengthsBinding)
+      ? twoLinkReferencePoints(
+          component,
+          nodeOrTask as ComponentSpec,
+          planarChain,
+          nodeId,
+          poseValues,
+          requirePoseValues
+        )
       : null;
 
   for (const anchor of representation.anchors ?? []) {

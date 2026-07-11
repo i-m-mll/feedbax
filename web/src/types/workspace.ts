@@ -6,6 +6,7 @@ import type {
 } from '@/types/graph';
 import type { AnalysisInputRequirement } from '@/types/analysis';
 import type { LossTermSpec, TaskSpec, TimeAggregationSpec, TrainingSpec } from '@/types/training';
+import type { StudioBiomechanicsSpec } from '@/generated/studioContracts';
 
 export type StudioStageKind =
   | 'train'
@@ -486,7 +487,7 @@ export interface AnalysisPageWire {
 
 export interface StudioScenarioSpec {
   id: string;
-  schema_version: 'feedbax.studio.scenario.v1' | string;
+  schema_version: 'feedbax.spec.studio.scenario.v2' | string;
   label: string;
   stage_id?: string | null;
   parent_scenario_id?: string | null;
@@ -498,7 +499,7 @@ export interface StudioScenarioSpec {
   objective_spec?: StudioObjectiveSpec | Record<string, unknown> | null;
   probe_specs?: RetainedObservableSpec[] | Array<Record<string, unknown>>;
   temporal_spec?: Record<string, unknown> | null;
-  biomechanics_spec?: Record<string, unknown> | null;
+  biomechanics_spec?: StudioBiomechanicsSpec | null;
   analysis_spec?: Record<string, unknown> | null;
   report_spec?: Record<string, unknown> | null;
   validation: StudioValidationState;

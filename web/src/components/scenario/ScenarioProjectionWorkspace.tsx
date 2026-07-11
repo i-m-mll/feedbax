@@ -1085,7 +1085,7 @@ function WorkspaceProjection({
         ? comparisonActive
           ? 'Comparison playback'
           : 'Playback'
-        : 'Authoring rest pose';
+        : 'Authoring reference pose';
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_17rem] bg-slate-50">
@@ -1221,7 +1221,7 @@ function WorkspaceProjection({
                       : 'text-slate-500 hover:text-slate-800'
                   )}
                 >
-                  {mode === 'authoring' ? 'Rest' : mode}
+                  {mode === 'authoring' ? 'Reference' : mode}
                 </button>
               ))}
             </div>

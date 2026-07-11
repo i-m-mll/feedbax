@@ -85,7 +85,7 @@ const graph: GraphSpec = {
 
 const scenario: StudioScenarioSpec = {
   id: 'scenario:train',
-  schema_version: 'feedbax.studio.scenario.v1',
+  schema_version: 'feedbax.spec.studio.scenario.v2',
   label: 'Training scenario',
   stage_id: 'stage:train',
   parent_scenario_id: null,

@@ -41,7 +41,13 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
+    LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+    STUDIO_BIOMECHANICS_SCHEMA_ID,
+    STUDIO_BIOMECHANICS_SCHEMA_VERSION,
+    STUDIO_SCENARIO_SCHEMA_VERSION,
+    STUDIO_SCENARIO_SCHEMA_VERSION_V1,
+    StudioScenarioSpec,
 )
 from feedbax.contracts.component import COMPONENT_DEFINITION_SCHEMA_VERSION_V1
 from feedbax.contracts.expressions import (
@@ -64,6 +70,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V4,
     REPRESENTATION_SCHEMA_VERSION_V3,
     REPRESENTATION_SCHEMA_VERSION_V2,
     REPRESENTATION_SCHEMA_VERSION_V1,
@@ -734,6 +741,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         REPRESENTATION_SCHEMA_VERSION_V1,
         REPRESENTATION_SCHEMA_VERSION_V2,
         REPRESENTATION_SCHEMA_VERSION_V3,
+        REPRESENTATION_SCHEMA_VERSION_V4,
     )
     assert representation_policy.rejected_old_versions == (REPRESENTATION_SCHEMA_VERSION_V0,)
     assert objective_policy is not None
@@ -875,6 +883,82 @@ def test_representation_v3_migrates_to_same_entity_frame_provider_v4() -> None:
     assert result.migrated
     representation = RepresentationSpec.model_validate(result.payload)
     assert representation.elements[0].frame_provider is None
+
+
+def test_representation_v4_migrates_to_reference_pose_aware_v5() -> None:
+    result = default_spec_registry.migrate(
+        "RepresentationSpec",
+        {
+            "schema_id": REPRESENTATION_SCHEMA_ID,
+            "schema_version": REPRESENTATION_SCHEMA_VERSION_V4,
+            "elements": [
+                {
+                    "id": "links",
+                    "archetype": "planar_chain",
+                    "planar_chain": {"frame_ids": ["world", "link0", "link1"]},
+                }
+            ],
+        },
+    )
+
+    assert result.source_version == REPRESENTATION_SCHEMA_VERSION_V4
+    assert result.target_version == REPRESENTATION_SCHEMA_VERSION
+    assert result.migrated
+    representation = RepresentationSpec.model_validate(result.payload)
+    assert representation.elements[0].planar_chain is not None
+    assert representation.elements[0].planar_chain.reference_pose is None
+
+
+@pytest.mark.parametrize(
+    "source_version",
+    [LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION, STUDIO_SCENARIO_SCHEMA_VERSION_V1],
+)
+def test_studio_scenario_v1_migrates_empty_biomechanics_to_typed_v2(
+    source_version: str,
+) -> None:
+    result = migrate_studio_scenario_spec(
+        {
+            "id": "scenario:train",
+            "schema_version": source_version,
+            "label": "Train",
+            "biomechanics_spec": {},
+        }
+    )
+
+    assert result.source_version == source_version
+    assert result.target_version == STUDIO_SCENARIO_SCHEMA_VERSION
+    assert result.migrated
+    assert result.payload["biomechanics_spec"] == {
+        "schema_version": STUDIO_BIOMECHANICS_SCHEMA_VERSION,
+    }
+    scenario = StudioScenarioSpec.model_validate(result.payload)
+    assert scenario.biomechanics_spec is not None
+    assert scenario.biomechanics_spec.schema_id == STUDIO_BIOMECHANICS_SCHEMA_ID
+
+
+def test_studio_scenario_v1_does_not_silently_accept_unknown_biomechanics_fields() -> None:
+    result = migrate_studio_scenario_spec(
+        {
+            "id": "scenario:train",
+            "schema_version": STUDIO_SCENARIO_SCHEMA_VERSION_V1,
+            "label": "Train",
+            "biomechanics_spec": {"rest_pose": [0.0, 0.0]},
+        }
+    )
+
+    with pytest.raises(ValueError, match="rest_pose"):
+        StudioScenarioSpec.model_validate(result.payload)
+
+
+def test_studio_biomechanics_rejects_unmigratable_old_versions() -> None:
+    with pytest.raises(UnsupportedSpecVersion, match="studio.biomechanics.v0"):
+        default_spec_registry.migrate(
+            "StudioBiomechanicsSpec",
+            {
+                "schema_id": STUDIO_BIOMECHANICS_SCHEMA_ID,
+                "schema_version": "feedbax.spec.studio.biomechanics.v0",
+            },
+        )
 
 
 def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:
