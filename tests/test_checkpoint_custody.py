@@ -17,6 +17,8 @@ from feedbax.contracts.checkpoints import (
     BatchIndexedCheckpointLeafSpec,
     CheckpointContinuationRequest,
     CheckpointForkBarrierMapping,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
@@ -57,6 +59,9 @@ from feedbax.training.checkpoint_custody import (
     detect_known_legacy_checkpoint_layout,
     fork_checkpoint_transaction,
     load_latest_checkpoint,
+    load_checkpoint_custody_documents,
+    load_checkpoint_latest_pointer_json,
+    load_checkpoint_transaction_manifest_file,
     write_checkpoint_transaction,
 )
 
@@ -587,6 +592,104 @@ def test_legacy_latest_pointer_migrates_global_step_without_creating_batches(
     )
     assert loaded.manifest.completed_coordinate.program_step == 24
     assert loaded.manifest.completed_training_batches == 12000
+
+
+def test_public_checkpoint_document_loaders_migrate_and_preserve_provenance(
+    tmp_path: Path,
+) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="public-loader", phase="train_batch", program_step=24
+        ),
+        slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": jnp.array(12000, dtype=jnp.int32),
+        },
+    )
+    pointer = json.loads(result.latest_pointer_path.read_text())
+    pointer["schema_version"] = TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2
+    pointer["completed_coordinate"]["global_step"] = pointer["completed_coordinate"].pop(
+        "program_step"
+    )
+
+    migrated_pointer = load_checkpoint_latest_pointer_json(json.dumps(pointer).encode())
+    current_manifest = load_checkpoint_transaction_manifest_file(result.manifest_path)
+    documents = load_checkpoint_custody_documents(tmp_path)
+
+    assert migrated_pointer.migrated
+    assert migrated_pointer.source_version == TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2
+    assert migrated_pointer.target_version == TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION
+    assert migrated_pointer.document.completed_coordinate.program_step == 24
+    assert migrated_pointer.document.completed_training_batches == 12000
+    assert not current_manifest.migrated
+    assert current_manifest.source_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert current_manifest.document.transaction_id == result.manifest.transaction_id
+    assert documents.latest_pointer.document.transaction_id == result.manifest.transaction_id
+    assert documents.manifest.document.transaction_id == result.manifest.transaction_id
+
+
+def test_public_custody_document_loader_rejects_escaped_manifest_path(tmp_path: Path) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="escaped-manifest", phase="train_batch", program_step=1
+        ),
+        slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": jnp.array(1, dtype=jnp.int32),
+        },
+    )
+    pointer = json.loads(result.latest_pointer_path.read_text())
+    pointer["manifest_relative_path"] = "../outside/manifest.json"
+    _write_json(result.latest_pointer_path, pointer)
+
+    with pytest.raises(CheckpointIntegrityError, match="escapes custody root"):
+        load_checkpoint_custody_documents(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"{not-json", "not valid JSON"),
+        (
+            json.dumps(
+                {
+                    "schema_id": "wrong.pointer.schema",
+                    "schema_version": TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
+                }
+            ).encode(),
+            "schema_id",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_id": "feedbax.manifest.training_checkpoint_latest_pointer",
+                    "schema_version": "feedbax.manifest.training_checkpoint_latest_pointer.v99",
+                }
+            ).encode(),
+            "source_version",
+        ),
+    ],
+)
+def test_public_latest_pointer_loader_fails_closed_on_invalid_documents(
+    payload: bytes,
+    message: str,
+) -> None:
+    with pytest.raises(CheckpointIntegrityError, match=message):
+        load_checkpoint_latest_pointer_json(payload)
 
 
 def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path) -> None:

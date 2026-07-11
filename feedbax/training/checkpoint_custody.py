@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from feedbax.contracts.checkpoints import (
     BatchIndexedCheckpointLeafSpec,
     CheckpointContinuationRequest,
+    CheckpointDocumentLoadResult,
     CheckpointForkBarrierMapping,
     CheckpointLatestPointer,
     CheckpointLineageRef,
@@ -45,7 +46,6 @@ from feedbax.contracts.checkpoints import (
     SlotLeafContentDigest,
     SlotLeafFingerprint,
     StructuralAbiFingerprint,
-    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
 )
 from feedbax.contracts.manifest import canonical_json_bytes, feedbax_version, sha256_bytes
 from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_VERSION_V1, TrainingRunSpec
@@ -153,6 +153,20 @@ class _LoadedCheckpointTransaction:
 
 
 @dataclass(frozen=True)
+class CheckpointCustodyDocuments:
+    """Latest-pointer and transaction-manifest documents resolved under one root.
+
+    Each document result retains whether its bytes were already current or
+    required registered migration before strict model validation.
+    """
+
+    root: Path
+    latest_pointer: CheckpointDocumentLoadResult[CheckpointLatestPointer]
+    manifest_path: Path
+    manifest: CheckpointDocumentLoadResult[CheckpointTransactionManifest]
+
+
+@dataclass(frozen=True)
 class _StructuralAbiLeafDiff:
     path: str
     field: str
@@ -164,6 +178,137 @@ class _StructuralAbiLeafDiff:
 class _SlotIntegrityRecords:
     leaf_digests: list[SlotLeafContentDigest]
     structural_abi_fingerprint: StructuralAbiFingerprint
+
+
+def load_checkpoint_latest_pointer_json(
+    data: bytes | str,
+    *,
+    path: str = "checkpoint_latest_pointer",
+) -> CheckpointDocumentLoadResult[CheckpointLatestPointer]:
+    """Load a latest-pointer JSON document through its registered migrations."""
+    return _load_checkpoint_document_json(
+        data,
+        kind="TrainingCheckpointLatestPointer",
+        model=CheckpointLatestPointer,
+        path=path,
+        document_name="checkpoint latest pointer",
+    )
+
+
+def load_checkpoint_latest_pointer_file(
+    path: str | Path,
+) -> CheckpointDocumentLoadResult[CheckpointLatestPointer]:
+    """Load a latest-pointer file through its registered migrations."""
+    path_obj = Path(path)
+    try:
+        return load_checkpoint_latest_pointer_json(
+            path_obj.read_bytes(),
+            path=str(path_obj),
+        )
+    except OSError as exc:
+        raise CheckpointIntegrityError(
+            f"checkpoint latest pointer could not be read: {path_obj}"
+        ) from exc
+
+
+def load_checkpoint_transaction_manifest_json(
+    data: bytes | str,
+    *,
+    path: str = "checkpoint_transaction_manifest",
+) -> CheckpointDocumentLoadResult[CheckpointTransactionManifest]:
+    """Load a transaction-manifest JSON document through registered migrations."""
+    return _load_checkpoint_document_json(
+        data,
+        kind="TrainingCheckpointTransactionManifest",
+        model=CheckpointTransactionManifest,
+        path=path,
+        document_name="checkpoint transaction manifest",
+    )
+
+
+def load_checkpoint_transaction_manifest_file(
+    path: str | Path,
+) -> CheckpointDocumentLoadResult[CheckpointTransactionManifest]:
+    """Load a transaction-manifest file through its registered migrations."""
+    path_obj = Path(path)
+    try:
+        return load_checkpoint_transaction_manifest_json(
+            path_obj.read_bytes(),
+            path=str(path_obj),
+        )
+    except OSError as exc:
+        raise CheckpointIntegrityError(
+            f"checkpoint transaction manifest could not be read: {path_obj}"
+        ) from exc
+
+
+def load_checkpoint_custody_documents(root: str | Path) -> CheckpointCustodyDocuments:
+    """Load the published latest pointer and its contained manifest safely.
+
+    The pointer's manifest path is required to remain under ``root``; a
+    traversal or absolute path is rejected before the manifest is opened.
+    """
+    root_path = Path(root).resolve()
+    latest = load_checkpoint_latest_pointer_file(root_path / LATEST_POINTER_NAME)
+    manifest_path = _resolve_latest_manifest_path(root_path, latest.document)
+    manifest = load_checkpoint_transaction_manifest_file(manifest_path)
+    return CheckpointCustodyDocuments(
+        root=root_path,
+        latest_pointer=latest,
+        manifest_path=manifest_path,
+        manifest=manifest,
+    )
+
+
+def _load_checkpoint_document_json(
+    data: bytes | str,
+    *,
+    kind: str,
+    model: type[CheckpointLatestPointer] | type[CheckpointTransactionManifest],
+    path: str,
+    document_name: str,
+) -> CheckpointDocumentLoadResult[Any]:
+    """Migrate one JSON mapping through the shared durable-schema registry."""
+    try:
+        payload = json.loads(data)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CheckpointIntegrityError(f"{document_name} is not valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise CheckpointIntegrityError(f"{document_name} must be a JSON object")
+    try:
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        migrated = migrate_structured_spec_payload(kind, payload, path=path)
+        document = model.model_validate(migrated.payload)
+    except (ValueError, ValidationError) as exc:
+        raise CheckpointIntegrityError(f"{document_name} is invalid: {exc}") from exc
+    return CheckpointDocumentLoadResult(
+        document=document,
+        schema_id=migrated.schema_id,
+        source_version=migrated.source_version,
+        target_version=migrated.target_version,
+        migration_records=tuple(migrated.migration_records),
+    )
+
+
+def _resolve_latest_manifest_path(
+    root_path: Path,
+    latest: CheckpointLatestPointer,
+) -> Path:
+    relative = Path(latest.manifest_relative_path)
+    if relative.is_absolute():
+        raise CheckpointIntegrityError(
+            "latest pointer manifest_relative_path must be relative to custody root"
+        )
+    candidate = (root_path / relative).resolve()
+    try:
+        candidate.relative_to(root_path)
+    except ValueError as exc:
+        raise CheckpointIntegrityError(
+            "latest pointer manifest_relative_path escapes custody root: "
+            f"{latest.manifest_relative_path!r}"
+        ) from exc
+    return candidate
 
 
 def checkpoint_barrier(program: PhaseProgramSpec, barrier_name: str) -> CheckpointBarrierSpec:
@@ -599,7 +744,7 @@ def _manifest_from_latest_pointer(
     root_path: Path,
     latest: CheckpointLatestPointer,
 ) -> tuple[Path, CheckpointTransactionManifest]:
-    manifest_path = root_path / latest.manifest_relative_path
+    manifest_path = _resolve_latest_manifest_path(root_path.resolve(), latest)
     if not manifest_path.is_file():
         raise CheckpointIntegrityError(
             f"latest pointer references missing manifest: {latest.manifest_relative_path}"
@@ -2172,48 +2317,7 @@ def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
     if not path.is_file():
         _reject_legacy_checkpoint(root)
         raise CheckpointIntegrityError("checkpoint latest pointer is missing")
-    try:
-        payload = json.loads(path.read_text())
-        payload = _migrate_latest_pointer_payload(payload)
-        return CheckpointLatestPointer.model_validate(payload)
-    except (OSError, json.JSONDecodeError, ValidationError) as exc:
-        raise CheckpointIntegrityError("checkpoint latest pointer is corrupt") from exc
-
-
-def _migrate_latest_pointer_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Upgrade the latest pointer's coordinate name with explicit compatibility."""
-    migrated = dict(payload)
-    version = migrated.get("schema_version")
-    if version == TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION:
-        return migrated
-    if version != "feedbax.manifest.training_checkpoint_latest_pointer.v2":
-        raise CheckpointIntegrityError(
-            "unsupported checkpoint latest schema_version "
-            f"{version!r}; expected current {TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION!r} "
-            "or migratable legacy v2"
-        )
-    coordinate = migrated.get("completed_coordinate")
-    if not isinstance(coordinate, Mapping):
-        raise CheckpointIntegrityError(
-            "legacy checkpoint latest pointer missing /completed_coordinate"
-        )
-    updated_coordinate = dict(coordinate)
-    legacy = updated_coordinate.pop("global_step", None)
-    current = updated_coordinate.get("program_step")
-    if legacy is not None and current is not None and legacy != current:
-        raise CheckpointIntegrityError(
-            "legacy checkpoint latest pointer conflicts at /completed_coordinate: "
-            f"global_step={legacy!r}, program_step={current!r}"
-        )
-    if legacy is not None:
-        updated_coordinate["program_step"] = legacy
-    migrated["completed_coordinate"] = updated_coordinate
-    migrated["completed_coordinate_semantics"] = (
-        "Cumulative phase-program coordinate for custody ordering; not the primary "
-        "training-batch progress field or checkpoint count."
-    )
-    migrated["schema_version"] = TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION
-    return migrated
+    return load_checkpoint_latest_pointer_file(path).document
 
 
 def _reject_legacy_checkpoint(root: Path) -> None:
@@ -2279,18 +2383,7 @@ _KNOWN_LEGACY_CHECKPOINT_LAYOUTS = (
 
 
 def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:
-    try:
-        payload = json.loads(path.read_text())
-        from feedbax.contracts.migrations import migrate_structured_spec_payload
-
-        payload = migrate_structured_spec_payload(
-            "TrainingCheckpointTransactionManifest",
-            payload,
-            path="checkpoint_manifest",
-        ).payload
-        return CheckpointTransactionManifest.model_validate(payload)
-    except (OSError, json.JSONDecodeError, ValidationError) as exc:
-        raise CheckpointIntegrityError("checkpoint transaction manifest is corrupt") from exc
+    return load_checkpoint_transaction_manifest_file(path).document
 
 
 def _slot_roles(run_spec: TrainingRunSpec) -> dict[str, str]:
