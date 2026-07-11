@@ -11,6 +11,9 @@ from feedbax.contracts.checkpoints import (
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
@@ -812,6 +815,32 @@ def _migrate_checkpoint_coordinate_v4_to_v5_payload(
         "training-batch progress field or checkpoint count."
     )
     migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_checkpoint_latest_pointer_v2_to_v3_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rename the custody-order coordinate without deriving batch progress."""
+    migrated = dict(payload)
+    coordinate = migrated.get("completed_coordinate")
+    if not isinstance(coordinate, Mapping):
+        return migrated
+    updated_coordinate = dict(coordinate)
+    legacy = updated_coordinate.pop("global_step", None)
+    current = updated_coordinate.get("program_step")
+    if legacy is not None and current is not None and legacy != current:
+        raise ValueError(
+            "legacy checkpoint latest pointer conflicts at /completed_coordinate: "
+            f"global_step={legacy!r}, program_step={current!r}"
+        )
+    if legacy is not None:
+        updated_coordinate["program_step"] = legacy
+    migrated["completed_coordinate"] = updated_coordinate
+    migrated["completed_coordinate_semantics"] = (
+        "Cumulative phase-program coordinate for custody ordering; not the primary "
+        "training-batch progress field or checkpoint count."
+    )
     return migrated
 
 
@@ -1918,6 +1947,27 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
             ),
+            required_tests=(
+                "tests/test_checkpoint_custody.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "TrainingCheckpointLatestPointer",
+            TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID,
+            TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoints",
+            emitted_by=("feedbax.training.checkpoint_custody",),
+            consumed_by=(
+                "Feedbax training resume loaders",
+                "cloud-backed training workers",
+                "downstream checkpoint adoption lanes",
+            ),
+            description=(
+                "Published latest pointer for an atomic training checkpoint transaction."
+            ),
+            stance="migrate",
+            supported_old_versions=(TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
@@ -3102,6 +3152,19 @@ default_spec_registry.register_migration(
         migration_id="training-checkpoint-transaction-v1-to-v2-fork-provenance",
         migrate=_migrate_checkpoint_transaction_manifest_v1_to_v2_payload,
         description="Add explicit fork provenance to training checkpoint manifests.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointLatestPointer",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
+        target_version=TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
+        migration_id="training-checkpoint-latest-pointer-v2-to-v3-program-coordinate",
+        migrate=_migrate_checkpoint_latest_pointer_v2_to_v3_payload,
+        description=(
+            "Rename global_step to cumulative program_step without inferring "
+            "completed training batches from the coordinate."
+        ),
     ),
 )
 default_spec_registry.register_migration(
