@@ -204,6 +204,7 @@ from feedbax.orchestration.events import (
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
+    RUN_BUNDLE_SCHEMA_VERSION_V1,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -862,8 +863,7 @@ def _migrate_checkpoint_lineage_v6_to_v7_payload(
         completed = 0
     if not isinstance(completed, int) or isinstance(completed, bool) or completed < 0:
         raise ValueError(
-            "v6 checkpoint lineage migration requires non-negative "
-            "/completed_training_batches"
+            "v6 checkpoint lineage migration requires non-negative /completed_training_batches"
         )
     migrated["segment_lineage"] = {
         "start_batch": 0,
@@ -2161,9 +2161,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "cloud-backed training workers",
                 "downstream checkpoint adoption lanes",
             ),
-            description=(
-                "Published latest pointer for an atomic training checkpoint transaction."
-            ),
+            description=("Published latest pointer for an atomic training checkpoint transaction."),
             stance="migrate",
             supported_old_versions=(TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,),
             required_tests=(
@@ -2182,6 +2180,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Durable run-set orchestration request bundle.",
+            stance="migrate",
+            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V1,),
             rejected_old_versions=("feedbax.orchestration.run_bundle.v0",),
             required_tests=("tests/test_orchestration_core.py",),
         ),
@@ -3294,8 +3294,27 @@ def _migrate_analysis_bundle_v2_to_v3_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_run_bundle_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add durable, driver-agnostic dead-man policy fields."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", RUN_BUNDLE_SCHEMA_ID)
+    migrated.setdefault("deadman_enabled", False)
+    migrated.setdefault("deadman_silence_seconds", 1800)
+    return migrated
+
+
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V1,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v1-to-v2-deadman-policy",
+        migrate=_migrate_run_bundle_v1_to_v2_payload,
+        description="Move dead-man policy into the durable run bundle.",
+    ),
+)
 default_spec_registry.register_migration(
     "AnalysisBundleSpec",
     SchemaMigration(

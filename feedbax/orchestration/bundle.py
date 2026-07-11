@@ -15,7 +15,8 @@ from feedbax.contracts.manifest import StrictModel
 
 
 RUN_BUNDLE_SCHEMA_ID = "feedbax.orchestration.run_bundle"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v1"
+RUN_BUNDLE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_bundle.v1"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v2"
 ROW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -102,7 +103,9 @@ class InputCustodyPin(StrictModel):
     @classmethod
     def _reject_mutable_latest(cls, value: str) -> str:
         if "latest.json" in value:
-            raise ValueError("input custody pins must name checkpoint transactions, not latest.json")
+            raise ValueError(
+                "input custody pins must name checkpoint transactions, not latest.json"
+            )
         return value
 
 
@@ -110,7 +113,7 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v1"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v2"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     driver: str = "local"
     rows: list[RunRowSpec] = Field(min_length=1)
@@ -120,6 +123,8 @@ class RunBundle(StrictModel):
     input_custody_pins: list[InputCustodyPin] = Field(default_factory=list)
     orchestration_root: str | None = None
     keep_alive: bool = False
+    deadman_enabled: bool = False
+    deadman_silence_seconds: int = Field(default=1800, ge=60)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

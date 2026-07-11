@@ -15,6 +15,7 @@ from feedbax.orchestration import conformance, schedule_eval, stages
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
+    RUN_BUNDLE_SCHEMA_VERSION_V1,
     BudgetPolicy,
     EnvironmentDeclaration,
     LaunchPolicy,
@@ -171,6 +172,14 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     assert (
         default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
+    v1_payload = _bundle(tmp_path).model_dump(mode="json")
+    v1_payload["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V1
+    v1_payload.pop("deadman_enabled")
+    v1_payload.pop("deadman_silence_seconds")
+    migrated = default_spec_registry.migrate("RunBundle", v1_payload)
+    assert migrated.payload["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION
+    assert migrated.payload["deadman_enabled"] is False
+    assert migrated.payload["deadman_silence_seconds"] == 1800
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
             "RunBundle",
