@@ -834,7 +834,7 @@ remote_cmd() {
     local command=$1
     local key_path
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
-    local cmd=(ssh
+    local cmd=(ssh -n
         -o BatchMode=yes
         -o StrictHostKeyChecking=accept-new
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
@@ -850,7 +850,7 @@ remote_capture() {
     local command=$1
     local key_path
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
-    local cmd=(ssh
+    local cmd=(ssh -n
         -o BatchMode=yes
         -o StrictHostKeyChecking=accept-new
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
