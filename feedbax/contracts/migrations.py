@@ -2015,7 +2015,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "feedbax.web.services.training_service",
             ),
             description="Canonical JSONL envelope for training-run row events.",
-            rejected_old_versions=("feedbax.run_event.v0",),
+            rejected_old_versions=("feedbax.run_event.v0", "feedbax.run_event.v1"),
             required_tests=(
                 "tests/test_run_events.py",
                 "tests/test_structured_spec_migrations.py",

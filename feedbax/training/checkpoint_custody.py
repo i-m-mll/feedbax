@@ -80,6 +80,32 @@ class CheckpointCustodyError(ValueError):
     """Base class for checkpoint custody failures."""
 
 
+def _validate_program_step_units(
+    coordinate: ProgressCoordinate,
+    metadata: Mapping[str, Any],
+    *,
+    context: str,
+) -> None:
+    """Reject coordinates that use a known barrier ordinal in different units."""
+    raw_ordinal = metadata.get("barrier_visit_ordinal")
+    if raw_ordinal is None:
+        return
+    if isinstance(raw_ordinal, bool) or not isinstance(raw_ordinal, int) or raw_ordinal < 0:
+        raise CheckpointConsistencyError(
+            f"{context} /metadata/barrier_visit_ordinal must be a non-negative integer"
+        )
+    # Executor checkpoints record the zero-based visit being completed, while
+    # chunk-oriented callers may record the one-based completed chunk ordinal.
+    # Those are the only two governed representations of the same granularity.
+    if coordinate.program_step not in {raw_ordinal, raw_ordinal + 1}:
+        raise CheckpointConsistencyError(
+            f"{context} /completed_coordinate/program_step={coordinate.program_step} "
+            "is inconsistent with the checkpoint/chunk ordinal "
+            f"/metadata/barrier_visit_ordinal={raw_ordinal}; program_step is a "
+            "phase-program coordinate, not a training-batch total"
+        )
+
+
 class CheckpointIntegrityError(CheckpointCustodyError):
     """Raised when checkpoint bytes or manifests fail integrity validation."""
 
@@ -521,6 +547,11 @@ def write_checkpoint_transaction(
         transaction_root = _transaction_root_sha256(slot_digests)
         manifest_metadata = {"phase": barrier.phase}
         manifest_metadata.update(dict(metadata or {}))
+        _validate_program_step_units(
+            coordinate,
+            manifest_metadata,
+            context="checkpoint write",
+        )
         completed_batches = _resolve_completed_training_batches(
             phase_program=phase_program,
             slots=slots,
@@ -807,6 +838,11 @@ def fork_checkpoint_transaction(
     Callers must not supply both forms.
     """
     source = _load_latest_checkpoint_transaction(source_root)
+    _validate_program_step_units(
+        source.manifest.completed_coordinate,
+        source.manifest.metadata,
+        context="checkpoint fork source",
+    )
     phase_program = target_phase_program or (
         target_run_spec.worker_execution.method_contract.phase_program
     )
@@ -1079,6 +1115,11 @@ def fork_checkpoint_transaction(
             )
             manifest_metadata["checkpoint_continuation_applied"] = True
         manifest_metadata.update(dict(metadata or {}))
+        _validate_program_step_units(
+            coordinate,
+            manifest_metadata,
+            context="checkpoint fork target",
+        )
         completed_batches = _resolve_completed_training_batches(
             phase_program=phase_program,
             slots=prepared_slots,

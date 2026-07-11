@@ -531,7 +531,7 @@ def _emit(job: _Job, event: dict) -> None:
     legacy_event["emitted_at_ms"] = emitted_at_ms
     if legacy_event.get("type") == "training_progress":
         with job._state_lock:
-            job.batch = int(legacy_event.get("batch", job.batch) or job.batch)
+            job.batch = int(legacy_event.get("program_step", job.batch) or job.batch)
             if "loss" in legacy_event:
                 job.last_loss = float(legacy_event["loss"])
     run_event = run_event_from_legacy_worker_event(

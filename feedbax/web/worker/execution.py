@@ -300,28 +300,29 @@ def run_training_graph(
             {
                 "type": "training_log",
                 "job_id": job_id,
-                "batch": progress_event["batch"],
+                "program_step": progress_event["program_step"],
                 "level": "info",
                 "message": (
-                    f"Step {progress_event['batch']} | loss={progress_event['loss']:.4f} | "
+                    f"Program step {progress_event['program_step']} | "
+                    f"loss={progress_event['loss']:.4f} | "
                     f"grad_norm={progress_event['grad_norm']:.3f} | "
                     f"{progress_event['step_time_ms']:.0f}ms"
                 ),
                 "execution": "contract_executor",
             }
         )
-        if progress_event["batch"] % snapshot_interval == 0 or (
-            progress_event["batch"] >= total_batches
+        if progress_event["program_step"] % snapshot_interval == 0 or (
+            progress_event["program_step"] >= total_batches
         ):
             emit(
                 {
                     "type": "training_trajectory",
                     "job_id": job_id,
-                    "batch": progress_event["batch"],
+                    "program_step": progress_event["program_step"],
                     "trajectory": _trajectory_snapshot(
                         compiled.graph,
                         compiled,
-                        key=jr.PRNGKey(progress_event["batch"]),
+                        key=jr.PRNGKey(progress_event["program_step"]),
                     ),
                     "execution": "contract_executor",
                 }
@@ -449,7 +450,7 @@ def _studio_progress_event(
     coordinate = coordinate if isinstance(coordinate, Mapping) else {}
     metrics = event.get("metrics", {})
     metrics = metrics if isinstance(metrics, Mapping) else {}
-    batch = int(coordinate.get("program_step") or 0)
+    program_step = int(coordinate.get("program_step") or 0)
     loss = _float_metric(metrics.get("train_loss", 0.0))
     loss_terms = _float_mapping(metrics.get("loss_terms", {}))
     scalar_metrics = {
@@ -459,7 +460,7 @@ def _studio_progress_event(
     return {
         "type": "training_progress",
         "job_id": job_id,
-        "batch": batch,
+        "program_step": program_step,
         "total_batches": total_batches,
         "loss": loss,
         "loss_terms": loss_terms,
