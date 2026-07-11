@@ -19,6 +19,7 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
+    SubprocessRunPodTransport,
     build_literal_path_patch_command,
     classify_pod_state,
     endpoint_classification,
@@ -122,6 +123,13 @@ def test_classifies_secure_endpoint_shapes_and_dead_states() -> None:
         ).status
         == "dead"
     )
+
+
+def test_subprocess_transport_detaches_ssh_stdin() -> None:
+    transport = SubprocessRunPodTransport(ssh_host="198.51.100.10", ssh_port=2222)
+
+    assert transport._ssh_base(detach_stdin=True)[:2] == ["ssh", "-n"]
+    assert transport._ssh_base()[0:2] != ["ssh", "-n"]
     assert (
         classify_pod_state({"desiredStatus": "RUNNING", "ssh": {"error": "pod not ready"}}).status
         == "not_ready"
@@ -260,6 +268,7 @@ def test_launch_row_exports_contract_env_and_starts_deadman(tmp_path: Path) -> N
     assert outputs["pid"] == 4321
     launch_command = transport.ssh_commands[0]
     assert "nohup bash -lc" in launch_command
+    assert "</dev/null" in launch_command
     assert "FEEDBAX_RUN_SET_ID=2026-01-02-deadbeef" in launch_command
     assert "FEEDBAX_ROW_ID=warm" in launch_command
     assert (
@@ -273,6 +282,7 @@ def test_launch_row_exports_contract_env_and_starts_deadman(tmp_path: Path) -> N
     assert "orphaned launch: started sentinel present, process dead, no terminal sentinel" in launch_command
     assert "rm -f" not in launch_command
     assert 'runpodctl remove pod "$pod_id"' in transport.ssh_commands[1]
+    assert "</dev/null" in transport.ssh_commands[1]
 
 
 def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:

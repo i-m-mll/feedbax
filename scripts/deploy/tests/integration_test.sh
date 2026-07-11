@@ -217,11 +217,11 @@ sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
 remote_cmd() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 remote_capture() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 H
   echo 'launch_training'
@@ -297,8 +297,8 @@ run_cmd() { "$@"; }
 rsync_rsh() { printf 'ssh\n'; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
-remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
   echo 'launch_training'
 } > "$WARM_HARNESS"
@@ -366,8 +366,8 @@ SSH_CONNECT_TIMEOUT=10
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
-remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
   cat <<'H'
 remote_nohup_sentinel "failing bootstrap" "$REMOTE_RLRMP_ROOT" "false" \
@@ -474,11 +474,11 @@ sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
 remote_cmd() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 remote_capture() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 H
   for fn in bootstrap_remote_env mark_bootstrap_branch clear_venv_probe_markers \
@@ -776,8 +776,8 @@ run_cmd() { "$@"; }
 rsync_rsh() { printf 'ssh\n'; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
-remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
     echo 'launch_training'
   } > "$HN"
@@ -1017,7 +1017,7 @@ SSH_CONNECT_TIMEOUT=10
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
   echo 'launch_row "row_term" "$REMOTE_RLRMP_ROOT" "sleep 20"'
 } > "$SIG_HARNESS"

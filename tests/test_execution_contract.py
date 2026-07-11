@@ -335,6 +335,7 @@ def test_runpod_plan_uses_ssh_worker_contract() -> None:
     assert "runtime.ports" in plan.cloud_payload["readiness"][1]
     assert plan.launch.command is not None
     assert "nohup bash -lc" in plan.launch.command
+    assert "</dev/null" in plan.launch.command
     assert "/workspace/feedbax_runs/runpod-smoke/done" in plan.launch.command
     assert plan.reproducibility["repo_refs"]["feedbax"]["git_ref"] == "abc123"
 
