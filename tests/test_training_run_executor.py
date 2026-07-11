@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -1004,6 +1005,10 @@ def test_execute_training_run_spec_manifest_root_injection_and_conflict(
 def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     spec_path = tmp_path / "training-run-spec.json"
     slots_path = tmp_path / "initial-slots.json"
+    events_dir = tmp_path / "events"
+    cache_dir = tmp_path / "jax-cache"
+    cache_dir.mkdir()
+    (cache_dir / "preexisting-cache-entry").write_bytes(b"cache")
     _write_json(spec_path, _run_spec().model_dump(mode="json"))
     _write_json(slots_path, _initial_slots())
 
@@ -1026,6 +1031,13 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
         stderr=subprocess.PIPE,
         text=True,
         timeout=20,
+        env={
+            **os.environ,
+            "FEEDBAX_RUN_SET_ID": "telemetry-set",
+            "FEEDBAX_ROW_ID": "telemetry-row",
+            "FEEDBAX_RUN_EVENTS_DIR": str(events_dir),
+            "JAX_COMPILATION_CACHE_DIR": str(cache_dir),
+        },
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -1037,6 +1049,25 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     assert "batch=1" in proc.stderr
     assert "loss=1" in proc.stderr
     assert "elapsed=" in proc.stderr
+    telemetry = payload["manifest_payload"]["summary_metrics"]["runtime_telemetry"]
+    assert telemetry["measurement_semantics"] == (
+        "measurement_start_to_first_progress_callback"
+    )
+    assert telemetry["measurement_start_semantics"] == "worker_command_entry"
+    assert telemetry["start_to_first_progress_seconds"] >= 0
+    assert telemetry["compile_time_estimate_seconds"] is None
+    assert telemetry["persistent_cache_effectiveness_proxy"] in {
+        "new_entries_observed",
+        "preexisting_entries_no_new_entries_observed",
+    }
+    events = [
+        json.loads(line)
+        for line in (events_dir / "telemetry-row.events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    ready = next(event for event in events if event["type"] == "ready")
+    assert ready["payload"]["runtime_telemetry"] == telemetry
 
 
 def test_preflight_training_run_manifest_cli_reports_normalized_payload(

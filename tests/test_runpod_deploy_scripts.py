@@ -725,6 +725,7 @@ def test_poll_run_dry_run_prints_status_before_sleep() -> None:
     assert "endpoint_classification=direct_endpoint_discovered" in status_lines[0]
     assert "ssh_error=none" in status_lines[0]
     assert "gpu=dry-run" in status_lines[0]
+    assert "row_telemetry=none" in status_lines[0]
     assert result.stdout.index(" pod=pod-123 ") < result.stdout.index("+ sleep 0")
 
 
@@ -754,11 +755,31 @@ def test_poll_run_reports_started_without_terminal_sentinel_as_stale(
     sentinel_dir = tmp_path / "sentinels"
     checkpoint_dir = tmp_path / "run"
     log_dir = checkpoint_dir / "logs"
+    events_dir = checkpoint_dir / "events"
     sentinel_dir.mkdir()
     log_dir.mkdir(parents=True)
+    events_dir.mkdir()
     (sentinel_dir / "row_a.started").touch()
     (sentinel_dir / "row_b.started").touch()
     (sentinel_dir / "row_b.done").touch()
+    (events_dir / "row_b.events.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "ready",
+                "payload": {
+                    "runtime_telemetry": {
+                        "start_to_first_progress_seconds": 12.5,
+                        "persistent_cache_effectiveness_proxy": (
+                            "preexisting_entries_no_new_entries_observed"
+                        ),
+                    }
+                },
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     function_source = subprocess.run(
         [
@@ -774,7 +795,8 @@ def test_poll_run_reports_started_without_terminal_sentinel_as_stale(
     script = (
         f"{function_source}\n"
         "cmd=$(build_remote_status_command "
-        f"{str(sentinel_dir)!r} {str(checkpoint_dir)!r} {str(log_dir)!r})\n"
+        f"{str(sentinel_dir)!r} {str(checkpoint_dir)!r} {str(log_dir)!r} "
+        f"{str(events_dir)!r})\n"
         'bash -c "$cmd"\n'
     )
     result = subprocess.run(
@@ -790,6 +812,8 @@ def test_poll_run_reports_started_without_terminal_sentinel_as_stale(
     assert "row_a:stale_started" in result.stdout
     assert "row_b:done" in result.stdout
     assert "train_process=" in result.stdout
+    assert "row_b:first_progress_s=12.5:cache_proxy=" in result.stdout
+    assert "preexisting_entries_no_new_entries_observed" in result.stdout
 
 
 def test_deploy_launch_wrapper_marks_failure_on_signals(tmp_path: Path) -> None:

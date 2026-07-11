@@ -168,6 +168,7 @@ def _dump_manifest_requests(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    command_started_at = time.perf_counter()
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
     execute_parser = subparsers.add_parser(
@@ -377,6 +378,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     run_event_emitter=emitter,
                     cancellation_probe=lambda _coordinate: interruption.poll(),
+                    execution_started_at_monotonic=command_started_at,
+                    execution_start_semantics="worker_command_entry",
                 )
             finally:
                 if emitter is not None:

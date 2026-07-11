@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -87,6 +88,75 @@ class _ImmediateCancellation(Exception):
     def __init__(self, coordinate: ProgressCoordinate, decision: CancellationDecision) -> None:
         self.coordinate = coordinate
         self.decision = decision
+
+
+def _compilation_cache_snapshot() -> dict[str, Any]:
+    """Return a precisely labelled filesystem snapshot of JAX's persistent cache."""
+
+    configured = os.environ.get("JAX_COMPILATION_CACHE_DIR")
+    if not configured:
+        return {"configured": False, "directory": None, "entry_count": None, "bytes": None}
+    root = Path(configured).expanduser()
+    entry_count = 0
+    total_bytes = 0
+    if root.exists():
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            entry_count += 1
+            try:
+                total_bytes += path.stat().st_size
+            except OSError:
+                pass
+    return {
+        "configured": True,
+        "directory": str(root),
+        "entry_count": entry_count,
+        "bytes": total_bytes,
+    }
+
+
+def _first_progress_telemetry(
+    *,
+    started_at: float,
+    start_semantics: str,
+    cache_before: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Measure first-progress latency and cache filesystem changes.
+
+    These are operational proxies. They are deliberately not labelled as JAX
+    compile duration or cache hits because the public JAX runtime does not
+    expose either quantity reliably at this boundary.
+    """
+
+    cache_at_first_progress = _compilation_cache_snapshot()
+    before_count = cache_before.get("entry_count")
+    after_count = cache_at_first_progress.get("entry_count")
+    if not cache_before.get("configured"):
+        cache_effect = "not_configured"
+        entry_delta = None
+    elif isinstance(before_count, int) and isinstance(after_count, int):
+        entry_delta = after_count - before_count
+        if entry_delta > 0:
+            cache_effect = "new_entries_observed"
+        elif before_count > 0:
+            cache_effect = "preexisting_entries_no_new_entries_observed"
+        else:
+            cache_effect = "empty_cache_no_new_entries_observed"
+    else:
+        entry_delta = None
+        cache_effect = "snapshot_unavailable"
+    return {
+        "measurement_semantics": "measurement_start_to_first_progress_callback",
+        "measurement_start_semantics": start_semantics,
+        "start_to_first_progress_seconds": time.perf_counter() - started_at,
+        "compile_time_estimate_seconds": None,
+        "compile_time_estimate_semantics": "unavailable_without_runtime_compile_instrumentation",
+        "persistent_cache_effectiveness_proxy": cache_effect,
+        "persistent_cache_entry_delta_to_first_progress": entry_delta,
+        "persistent_cache_before": dict(cache_before),
+        "persistent_cache_at_first_progress": cache_at_first_progress,
+    }
 
 
 @dataclass(frozen=True)
@@ -229,6 +299,8 @@ def execute_training_run_spec(
     progress_callback: ProgressCallback | None = None,
     run_event_emitter: RunEventEmitter | None = None,
     cancellation_probe: CancellationProbe | None = None,
+    execution_started_at_monotonic: float | None = None,
+    execution_start_semantics: str = "executor_entry",
 ) -> TrainingRunExecutionResult:
     """Validate, execute, checkpoint, and natively emit one training-run manifest.
 
@@ -348,7 +420,13 @@ def execute_training_run_spec(
     )
     live_history_events: list[dict[str, Any]] = []
     total_batches = int(run_spec.training_config.n_batches or 0)
-    started_at = time.perf_counter()
+    started_at = (
+        time.perf_counter()
+        if execution_started_at_monotonic is None
+        else execution_started_at_monotonic
+    )
+    cache_before = _compilation_cache_snapshot()
+    runtime_telemetry: dict[str, Any] = {}
     caller_kernel_context = dict(kernel_context or {})
     reserved_context_keys = sorted(
         set(caller_kernel_context).intersection(_RESERVED_KERNEL_CONTEXT_KEYS)
@@ -391,13 +469,10 @@ def execute_training_run_spec(
                     total_batches=total_batches,
                     started_at=started_at,
                     cancellation_observer=observe_cancellation,
+                    runtime_telemetry=runtime_telemetry,
+                    cache_before=cache_before,
+                    start_semantics=execution_start_semantics,
                 )
-                if (
-                    progress_callback is not None
-                    or run_event_emitter is not None
-                    or cancellation_probe is not None
-                )
-                else None
             ),
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
@@ -409,11 +484,7 @@ def execute_training_run_spec(
         )
         checkpoint_writes = checkpoint_store.writes
         barrier_artifacts = checkpoint_store.barrier_artifacts
-        history_events = (
-            live_history_events
-            if progress_callback is not None or run_event_emitter is not None
-            else _history_events(execution.progress)
-        )
+        history_events = live_history_events
         final_metrics = _final_metrics(execution.slots, execution.coordinate)
         manifest = _build_manifest(
             run_spec,
@@ -432,6 +503,7 @@ def execute_training_run_spec(
             issues=issues,
             status="cancelled" if cancellation is not None else "completed",
             cancellation=cancellation,
+            runtime_telemetry=runtime_telemetry,
         )
         manifest_path = _emit_manifest(
             manifest,
@@ -452,6 +524,7 @@ def execute_training_run_spec(
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
                     "metrics": final_metrics,
+                    "runtime_telemetry": runtime_telemetry,
                     **(
                         {"cancellation": cancellation.as_provenance()}
                         if cancellation is not None
@@ -481,6 +554,7 @@ def execute_training_run_spec(
             issues=issues,
             status="cancelled",
             cancellation=interrupted.decision,
+            runtime_telemetry=runtime_telemetry,
         )
         manifest_path = _emit_manifest(
             manifest,
@@ -499,6 +573,7 @@ def execute_training_run_spec(
                     "manifest_id": manifest.id,
                     "metrics": final_metrics,
                     "cancellation": interrupted.decision.as_provenance(),
+                    "runtime_telemetry": runtime_telemetry,
                 },
             )
         return TrainingRunExecutionResult(
@@ -711,10 +786,6 @@ def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:
     return value if isinstance(value, int) and value >= 0 else None
 
 
-def _history_events(progress: Sequence[ProgressCoordinate]) -> list[dict[str, Any]]:
-    return [_history_event(coordinate) for coordinate in progress]
-
-
 def _history_event(coordinate: ProgressCoordinate) -> dict[str, Any]:
     return {
         "type": "training_progress",
@@ -731,12 +802,24 @@ def _live_progress_callback(
     total_batches: int | None = None,
     started_at: float | None = None,
     cancellation_observer: Callable[[ProgressCoordinate], None] | None = None,
+    runtime_telemetry: dict[str, Any] | None = None,
+    cache_before: Mapping[str, Any] | None = None,
+    start_semantics: str = "executor_entry",
 ) -> Callable[[ProgressCoordinate], None]:
     ready_emitted = False
 
     def emit(coordinate: ProgressCoordinate) -> None:
         nonlocal ready_emitted
         event = _history_event(coordinate)
+        if runtime_telemetry is not None and not runtime_telemetry:
+            runtime_telemetry.update(
+                _first_progress_telemetry(
+                    started_at=started_at if started_at is not None else time.perf_counter(),
+                    start_semantics=start_semantics,
+                    cache_before=cache_before or {},
+                )
+            )
+            event["runtime_telemetry"] = deepcopy(runtime_telemetry)
         history_events.append(event)
         if run_event_emitter is not None:
             if not ready_emitted:
@@ -749,6 +832,7 @@ def _live_progress_callback(
                         "batch": coordinate.program_step,
                         "program_step": coordinate.program_step,
                         "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
+                        "runtime_telemetry": deepcopy(runtime_telemetry or {}),
                     },
                 )
             elapsed_seconds = time.perf_counter() - started_at if started_at is not None else None
@@ -924,6 +1008,7 @@ def _build_manifest(
     issues: Sequence[str] | None,
     status: ManifestStatus = "completed",
     cancellation: CancellationDecision | None = None,
+    runtime_telemetry: Mapping[str, Any] | None = None,
 ) -> TrainingRunManifest:
     artifacts = list(barrier_artifacts)
     if history_events:
@@ -965,7 +1050,14 @@ def _build_manifest(
         task_spec=payloads.task_spec,
         task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
-        summary_metrics=final_metrics,
+        summary_metrics={
+            **final_metrics,
+            **(
+                {"runtime_telemetry": dict(runtime_telemetry)}
+                if runtime_telemetry
+                else {}
+            ),
+        },
         provenance=Provenance(
             entrypoint=EntrypointRef(
                 kind="feedbax-training-executor",
@@ -982,7 +1074,10 @@ def _build_manifest(
             },
         ),
         artifacts=artifacts,
-        metadata={"training_run_spec_schema_version": spec.schema_version},
+        metadata={
+            "training_run_spec_schema_version": spec.schema_version,
+            **({"runtime_telemetry": dict(runtime_telemetry)} if runtime_telemetry else {}),
+        },
     )
 
 
