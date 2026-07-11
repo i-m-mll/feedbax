@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from feedbax.contracts.manifest import OverridePatch, TrainingSweepAxis
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
@@ -18,7 +18,7 @@ def _minimal_spec() -> dict[str, object]:
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         "name": "matrix",
-        "base": {"inline": {"schema_id": "feedbax.spec.training_run"}},
+        "base": {"kind": "inline", "inline": {"schema_id": "feedbax.spec.training_run"}},
         "rows": [{"row_id": "row_a", "overrides": []}],
     }
 
@@ -62,10 +62,17 @@ def test_run_matrix_spec_rejects_invalid_shapes(mutator, message: str) -> None:
 
 
 def test_base_ref_rejects_absolute_paths_and_requires_one_source() -> None:
-    with pytest.raises(ValidationError, match="exactly one"):
-        MatrixBaseSpec.model_validate({})
+    adapter = TypeAdapter(MatrixBaseSpec)
+    with pytest.raises(ValidationError, match="union_tag_not_found"):
+        adapter.validate_python({})
     with pytest.raises(ValidationError, match="repo-relative"):
-        MatrixBaseSpec.model_validate({"ref": "/tmp/base.json"})
+        adapter.validate_python(
+            {
+                "kind": "authored_intent",
+                "ref": "/tmp/base.json",
+                "content_hash": "0" * 64,
+            }
+        )
 
 
 def test_override_patch_remove_has_no_value_and_add_replace_require_value() -> None:
@@ -76,7 +83,7 @@ def test_override_patch_remove_has_no_value_and_add_replace_require_value() -> N
         OverridePatch.model_validate({"path": "a.b", "op": "replace"})
 
 
-def test_run_matrix_spec_old_version_rejection_policy_is_registered() -> None:
+def test_run_matrix_spec_v1_migration_and_old_version_rejection_are_registered() -> None:
     result = default_spec_registry.migrate(
         "TrainingRunMatrixSpec",
         {
@@ -85,6 +92,52 @@ def test_run_matrix_spec_old_version_rejection_policy_is_registered() -> None:
         },
     )
     assert not result.migrated
+
+    migrated = default_spec_registry.migrate(
+        "TrainingRunMatrixSpec",
+        {
+            "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            "schema_version": "feedbax.spec.training_run_matrix.v1",
+            "base": {"inline": {"value": 1}},
+        },
+    )
+    assert migrated.payload["base"] == {"kind": "inline", "inline": {"value": 1}}
+
+    pinned = default_spec_registry.migrate(
+        "TrainingRunMatrixSpec",
+        {
+            "schema_version": "feedbax.spec.training_run_matrix.v1",
+            "base": {"ref": "base.json", "sha256": "a" * 64},
+        },
+    )
+    assert pinned.payload["base"] == {
+        "kind": "authored_intent",
+        "ref": "base.json",
+        "content_hash": "a" * 64,
+        "pin_algorithm": "legacy_raw_sha256",
+    }
+
+    with pytest.raises(ValueError, match="unpinned"):
+        default_spec_registry.migrate(
+            "TrainingRunMatrixSpec",
+            {
+                "schema_version": "feedbax.spec.training_run_matrix.v1",
+                "base": {"ref": "base.json"},
+            },
+        )
+
+    for invalid_base in (
+        {"inline": {}, "ref": "base.json"},
+        {"inline": {}, "sha256": "a" * 64},
+    ):
+        with pytest.raises(ValueError, match="cannot carry"):
+            default_spec_registry.migrate(
+                "TrainingRunMatrixSpec",
+                {
+                    "schema_version": "feedbax.spec.training_run_matrix.v1",
+                    "base": invalid_base,
+                },
+            )
 
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(

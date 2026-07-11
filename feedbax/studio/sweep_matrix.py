@@ -17,6 +17,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     TrainingRunMatrixSpec,
 )
 from feedbax.training.run_matrix import (
@@ -163,6 +164,7 @@ def materialize_sweep_matrix(
             "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
             "name": str(matrix_spec.get("name") or matrix_spec.get("label") or default_name),
             "base": {
+                "kind": "inline",
                 "inline": {
                     "graph_spec": graph_spec,
                     "training_spec": training_spec,
@@ -172,7 +174,10 @@ def materialize_sweep_matrix(
             },
             "axes": [axis.model_dump(mode="json", exclude_none=True) for axis in axes],
             "combination": combination.model_dump(mode="json", exclude_none=True),
-            "metadata": {"studio_legacy_adapter": True},
+            "metadata": {
+                "matrix_schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+                "studio_legacy_adapter": True,
+            },
         }
     )
     try:

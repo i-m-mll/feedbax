@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -20,29 +20,62 @@ from feedbax.contracts.manifest import (
 
 
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix"
-TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v1"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run_matrix.v1"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v2"
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-class MatrixBaseSpec(StrictModel):
-    """Location of the base ``TrainingRunSpec`` payload for a matrix."""
+class InlineMatrixBaseSpec(StrictModel):
+    """Inline base reserved for tests, fixtures, and explicit emission opt-in."""
 
-    inline: dict[str, Any] | None = None
-    ref: str | None = None
+    kind: Literal["inline"] = "inline"
+    inline: dict[str, Any]
+
+
+class AuthoredIntentMatrixBaseSpec(StrictModel):
+    """Canonical-content-pinned reference to an authored matrix envelope."""
+
+    kind: Literal["authored_intent"] = "authored_intent"
+    ref: str
+    content_hash: str
+    pin_algorithm: Literal["canonical_json_v1", "legacy_raw_sha256"] = "canonical_json_v1"
     payload_path: str | None = None
-    sha256: str | None = None
+    symbolic_name: str | None = None
 
     @model_validator(mode="after")
-    def _validate_base(self) -> "MatrixBaseSpec":
-        if (self.inline is None) == (self.ref is None):
-            raise ValueError("/base exactly one of inline or ref is required")
-        if self.ref is not None and Path(self.ref).is_absolute():
-            raise ValueError("/base/ref must be repo-relative")
-        if self.payload_path is not None:
-            _validate_dotted_path(self.payload_path, "/base/payload_path")
-        if self.sha256 is not None and self.ref is None:
-            raise ValueError("/base/sha256 is only allowed with /base/ref")
+    def _validate_ref(self) -> "AuthoredIntentMatrixBaseSpec":
+        _validate_base_reference(self.ref, self.content_hash, self.payload_path)
         return self
+
+
+class ResolvedOutputMatrixBaseSpec(StrictModel):
+    """Resolved-root-pinned reference to immutable layer-2 semantics."""
+
+    kind: Literal["resolved_output"] = "resolved_output"
+    ref: str
+    resolved_root_hash: str
+    payload_path: str | None = None
+    symbolic_name: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_ref(self) -> "ResolvedOutputMatrixBaseSpec":
+        _validate_base_reference(self.ref, self.resolved_root_hash, self.payload_path)
+        return self
+
+
+MatrixBaseSpec: TypeAlias = Annotated[
+    InlineMatrixBaseSpec | AuthoredIntentMatrixBaseSpec | ResolvedOutputMatrixBaseSpec,
+    Field(discriminator="kind"),
+]
+
+
+def _validate_base_reference(ref: str, digest: str, payload_path: str | None) -> None:
+    if Path(ref).is_absolute():
+        raise ValueError("/base/ref must be repo-relative")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("/base content identity must be a lowercase sha256 digest")
+    if payload_path is not None:
+        _validate_dotted_path(payload_path, "/base/payload_path")
 
 
 class MatrixDerivation(StrictModel):
