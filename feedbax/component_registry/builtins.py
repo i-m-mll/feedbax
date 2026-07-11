@@ -14,6 +14,7 @@ from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
+from feedbax.mechanics.muscle_config import default_6muscle_2link_attachment_paths
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
     affine_value_composer_output_prototype,
@@ -292,7 +293,47 @@ def _two_link_arm_representation() -> RepresentationSpec:
     )
 
 
-def _two_link_muscle_representation(*, source: str, composite: bool) -> RepresentationSpec:
+def _analytical_muscle_path_geometry() -> dict[str, Any]:
+    """Resolve canonical analytical-plant attachments for Studio metadata."""
+    link_lengths, paths = default_6muscle_2link_attachment_paths()
+    return {
+        "frames": [
+            {"id": "world", "origin": [0.0, 0.0], "rotation_radians": 0.0},
+            {"id": "link0", "origin": [0.0, 0.0], "rotation_radians": 0.0},
+            {
+                "id": "link1",
+                "origin": [float(link_lengths[0]), 0.0],
+                "rotation_radians": 0.0,
+            },
+        ],
+        "paths": [
+            {
+                "id": f"muscle-{index}",
+                "points": [
+                    {
+                        "frame": path.origin.body,
+                        "position": [float(path.origin.pos[0]), float(path.origin.pos[1])],
+                    },
+                    {
+                        "frame": path.insertion.body,
+                        "position": [
+                            float(path.insertion.pos[0]),
+                            float(path.insertion.pos[1]),
+                        ],
+                    },
+                ],
+            }
+            for index, path in enumerate(paths)
+        ],
+    }
+
+
+def _two_link_muscle_representation(
+    *,
+    source: str,
+    composite: bool,
+    muscle_path_geometry: Mapping[str, Any] | None = None,
+) -> RepresentationSpec:
     metadata = {
         "geometry_source": source,
         "chain_source": "feedbax.mechanics.skeleton.arm.TwoLinkArm",
@@ -305,6 +346,11 @@ def _two_link_muscle_representation(*, source: str, composite: bool) -> Represen
             "units": "m",
             "dim": 2,
             "metadata": metadata,
+            **(
+                {"muscle_path_geometry": dict(muscle_path_geometry)}
+                if muscle_path_geometry is not None
+                else {}
+            ),
             "anchors": [
                 {
                     "id": "shoulder",
@@ -2287,6 +2333,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     "default_6muscle_2link_muscled_arm_parameters"
                 ),
                 composite=False,
+                muscle_path_geometry=_analytical_muscle_path_geometry(),
             ),
         )
     )

@@ -358,6 +358,140 @@ describe('resolved scene projection', () => {
     );
   });
 
+  it('resolves provider-declared body-local muscle paths through rotated frames', () => {
+    const muscleComponent: ComponentDefinition = {
+      ...components[0],
+      representation: {
+        ...components[0].representation!,
+        elements: [
+          ...components[0].representation!.elements!,
+          { id: 'muscles', archetype: 'muscle_path', metadata: {} },
+        ],
+        muscle_path_geometry: {
+          frames: [
+            { id: 'world', origin: [1, 2], rotation_radians: Math.PI / 2 },
+            { id: 'link1', origin: [0.5, 0.5], rotation_radians: Math.PI },
+          ],
+          paths: [
+            {
+              id: 'flexor',
+              points: [
+                { frame: 'world', position: [1, 0] },
+                { frame: 'link1', position: [1, 0] },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const sceneRegistry = buildScenarioEntityRegistry({ scenario, graph });
+    const scene = buildResolvedScene({
+      scenario,
+      graph,
+      registry: sceneRegistry,
+      components: [muscleComponent, components[1]],
+    });
+    const muscle = scene.elements.find((element) => element.local_id === 'muscles:flexor');
+
+    expect(muscle?.geometry.kind).toBe('polyline');
+    if (muscle?.geometry.kind !== 'polyline') throw new Error('expected muscle polyline');
+    expect(muscle.geometry.points[0][0]).toBeCloseTo(1);
+    expect(muscle.geometry.points[0][1]).toBeCloseTo(3);
+    expect(muscle.geometry.points[1][0]).toBeCloseTo(-0.5);
+    expect(muscle.geometry.points[1][1]).toBeCloseTo(0.5);
+    expect(scene.validation).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'workspace_muscle_path_unknown_frame' })])
+    );
+  });
+
+  it('reports missing and unknown provider muscle-path frames without synthesizing geometry', () => {
+    const muscleElement = { id: 'muscles', archetype: 'muscle_path' as const, metadata: {} };
+    const missingComponent: ComponentDefinition = {
+      ...components[0],
+      representation: {
+        ...components[0].representation!,
+        elements: [muscleElement],
+      },
+    };
+    const sceneRegistry = buildScenarioEntityRegistry({ scenario, graph });
+    const missing = buildResolvedScene({
+      scenario,
+      graph,
+      registry: sceneRegistry,
+      components: [missingComponent, components[1]],
+    });
+    expect(missing.validation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'workspace_muscle_path_geometry_missing', severity: 'error' }),
+      ])
+    );
+    expect(missing.elements.find((element) => element.local_id === 'muscles')?.geometry).toEqual({
+      kind: 'none',
+    });
+
+    const unknownComponent: ComponentDefinition = {
+      ...missingComponent,
+      representation: {
+        ...missingComponent.representation!,
+        muscle_path_geometry: {
+          frames: [{ id: 'world', origin: [0, 0] }],
+          paths: [
+            {
+              id: 'bad-path',
+              points: [
+                { frame: 'world', position: [0, 0] },
+                { frame: 'link9', position: [1, 0] },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const unknown = buildResolvedScene({
+      scenario,
+      graph,
+      registry: sceneRegistry,
+      components: [unknownComponent, components[1]],
+    });
+    expect(unknown.validation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'workspace_muscle_path_unknown_frame', severity: 'error' }),
+      ])
+    );
+    expect(unknown.elements.some((element) => element.local_id === 'muscles:bad-path')).toBe(false);
+
+    const invalidComponent: ComponentDefinition = {
+      ...missingComponent,
+      representation: {
+        ...missingComponent.representation!,
+        muscle_path_geometry: {
+          frames: [{ id: 'world', origin: [Number.NaN, 0] }],
+          paths: [
+            {
+              id: 'invalid-path',
+              points: [
+                { frame: 'world', position: [0, 0] },
+                { frame: 'world', position: [1, 0] },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const invalid = buildResolvedScene({
+      scenario,
+      graph,
+      registry: sceneRegistry,
+      components: [invalidComponent, components[1]],
+    });
+    expect(invalid.validation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'workspace_muscle_path_invalid_frame', severity: 'error' }),
+      ])
+    );
+    expect(invalid.elements.some((element) => element.local_id === 'muscles:invalid-path')).toBe(false);
+  });
+
   it('projects objective links from objective terms instead of representation elements', () => {
     const scenarioWithObjective: StudioScenarioSpec = {
       ...scenario,

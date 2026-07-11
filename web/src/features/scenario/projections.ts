@@ -7,6 +7,7 @@ import type {
   RepresentationElementSpec,
   RepresentationFrameProvider,
   RepresentationLiteralBinding,
+  RepresentationMusclePathGeometrySpec,
   RepresentationParamPathBinding,
   RepresentationSpec,
   RepresentationStateAnchorSelectorBinding,
@@ -510,6 +511,79 @@ function anchorPositionsForElement(
     .filter((point): point is [number, number] => point !== null);
 }
 
+function resolvedMusclePathPolylines(
+  geometry: RepresentationMusclePathGeometrySpec,
+  messages: ResolvedSceneValidationMessage[],
+  entityId: string,
+  elementId: string
+): Array<{ id: string; points: Array<[number, number]> }> {
+  const frames = new Map<string, { origin: [number, number]; rotation: number }>();
+  for (const frame of geometry.frames ?? []) {
+    const origin = numericPair(frame.origin);
+    const rotation = Number(frame.rotation_radians);
+    if (!origin || !Number.isFinite(rotation)) {
+      messages.push({
+        type: 'workspace_muscle_path_invalid_frame',
+        severity: 'error',
+        message: `Muscle path frame '${frame.id}' has an invalid planar transform.`,
+        entity_id: entityId,
+        path: `representation.muscle_path_geometry.frames.${frame.id}`,
+      });
+      continue;
+    }
+    frames.set(frame.id, { origin, rotation });
+  }
+
+  const resolved: Array<{ id: string; points: Array<[number, number]> }> = [];
+  for (const path of geometry.paths ?? []) {
+    const points: Array<[number, number]> = [];
+    let valid = true;
+    for (const [pointIndex, point] of path.points.entries()) {
+      const frame = frames.get(point.frame);
+      if (!frame) {
+        messages.push({
+          type: 'workspace_muscle_path_unknown_frame',
+          severity: 'error',
+          message: `Muscle path '${path.id}' references unknown frame '${point.frame}'.`,
+          entity_id: entityId,
+          path: `representation.muscle_path_geometry.paths.${path.id}.points.${pointIndex}`,
+        });
+        valid = false;
+        continue;
+      }
+      const local = numericPair(point.position);
+      if (!local) {
+        messages.push({
+          type: 'workspace_muscle_path_invalid_point',
+          severity: 'error',
+          message: `Muscle path '${path.id}' has an invalid local attachment point.`,
+          entity_id: entityId,
+          path: `representation.muscle_path_geometry.paths.${path.id}.points.${pointIndex}`,
+        });
+        valid = false;
+        continue;
+      }
+      const cos = Math.cos(frame.rotation);
+      const sin = Math.sin(frame.rotation);
+      points.push([
+        frame.origin[0] + cos * local[0] - sin * local[1],
+        frame.origin[1] + sin * local[0] + cos * local[1],
+      ]);
+    }
+    if (valid && points.length >= 2) resolved.push({ id: path.id, points });
+  }
+  if ((geometry.paths ?? []).length === 0) {
+    messages.push({
+      type: 'workspace_muscle_path_empty',
+      severity: 'warning',
+      message: `Muscle path element '${elementId}' declares no paths.`,
+      entity_id: entityId,
+      path: 'representation.muscle_path_geometry.paths',
+    });
+  }
+  return resolved;
+}
+
 function resolveComponentRepresentation({
   scene,
   registry,
@@ -615,6 +689,57 @@ function resolveComponentRepresentation({
       entity.id,
       `elements.${element.id}.frame_provider`
     );
+    if (element.archetype === 'muscle_path') {
+      const payload = representation.muscle_path_geometry;
+      if (!payload) {
+        scene.validation.push({
+          type: 'workspace_muscle_path_geometry_missing',
+          severity: 'error',
+          message: `Muscle path element '${element.id}' has no provider-resolved geometry.`,
+          entity_id: entity.id,
+          path: 'representation.muscle_path_geometry',
+        });
+        const id = elementGlobalId(entity.id, element.id);
+        entityElementIds.push(id);
+        scene.elements.push({
+          id,
+          entity_id: entity.id,
+          local_id: element.id,
+          archetype: element.archetype,
+          anchor_ids: (element.anchors ?? []).map((anchorId) => anchorGlobalId(entity.id, anchorId)),
+          frame: elementFrame,
+          scale_invariant: element.scale_invariant ?? representation.scale_invariant ?? false,
+          style: styleMap(element.style),
+          geometry: { kind: 'none' },
+          metadata: element.metadata ?? {},
+        });
+        continue;
+      }
+      const paths = resolvedMusclePathPolylines(
+        payload,
+        scene.validation,
+        entity.id,
+        element.id
+      );
+      for (const path of paths) {
+        const localId = `${element.id}:${path.id}`;
+        const id = elementGlobalId(entity.id, localId);
+        entityElementIds.push(id);
+        scene.elements.push({
+          id,
+          entity_id: entity.id,
+          local_id: localId,
+          archetype: element.archetype,
+          anchor_ids: (element.anchors ?? []).map((anchorId) => anchorGlobalId(entity.id, anchorId)),
+          frame: elementFrame,
+          scale_invariant: element.scale_invariant ?? representation.scale_invariant ?? false,
+          style: styleMap(element.style),
+          geometry: { kind: 'polyline', points: path.points },
+          metadata: { ...(element.metadata ?? {}), muscle_path_id: path.id },
+        });
+      }
+      continue;
+    }
     let geometry: ResolvedSceneGeometry = { kind: 'none' };
     if (element.archetype === 'planar_chain') {
       const points = twoLinkPoints ?? anchorPositionsForElement(component, nodeOrTask, element, localAnchorPositions);

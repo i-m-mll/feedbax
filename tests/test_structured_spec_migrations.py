@@ -64,6 +64,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V2,
     REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
     RepresentationSpec,
@@ -728,7 +729,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     representation_policy = default_spec_registry.resolve("RepresentationSpec").policy
     assert representation_policy is not None
     assert representation_policy.stance == "migrate"
-    assert representation_policy.supported_old_versions == (REPRESENTATION_SCHEMA_VERSION_V1,)
+    assert representation_policy.supported_old_versions == (
+        REPRESENTATION_SCHEMA_VERSION_V1,
+        REPRESENTATION_SCHEMA_VERSION_V2,
+    )
     assert representation_policy.rejected_old_versions == (REPRESENTATION_SCHEMA_VERSION_V0,)
     assert objective_policy is not None
     assert objective_policy.stance == "reject"
@@ -820,6 +824,24 @@ def test_representation_v1_migrates_to_capability_aware_v2() -> None:
     assert result.migrated
     representation = RepresentationSpec.model_validate(result.payload)
     assert representation.reachability is None
+    assert representation.muscle_path_geometry is None
+
+
+def test_representation_v2_migrates_to_muscle_path_aware_v3() -> None:
+    result = default_spec_registry.migrate(
+        "RepresentationSpec",
+        {
+            "schema_id": REPRESENTATION_SCHEMA_ID,
+            "schema_version": REPRESENTATION_SCHEMA_VERSION_V2,
+            "elements": [{"id": "paths", "archetype": "muscle_path"}],
+        },
+    )
+
+    assert result.source_version == REPRESENTATION_SCHEMA_VERSION_V2
+    assert result.target_version == REPRESENTATION_SCHEMA_VERSION
+    assert result.migrated
+    representation = RepresentationSpec.model_validate(result.payload)
+    assert representation.muscle_path_geometry is None
 
 
 def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:

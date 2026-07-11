@@ -30,7 +30,7 @@ describe('component registry fallback', () => {
             trainable_by_default: false,
             representation: {
               schema_id: 'feedbax.spec.studio.representation',
-              schema_version: 'feedbax.spec.studio.representation.v2',
+              schema_version: 'feedbax.spec.studio.representation.v3',
               anchors: [
                 {
                   id: 'endpoint',

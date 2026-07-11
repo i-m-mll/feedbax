@@ -10,9 +10,12 @@ from feedbax.contracts.graph import ParamSchema, ParamValue, StudioSelectorRef
 
 
 REPRESENTATION_SCHEMA_ID = "feedbax.spec.studio.representation"
-REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v2"
+REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v3"
+REPRESENTATION_SCHEMA_VERSION_V2 = "feedbax.spec.studio.representation.v2"
 REPRESENTATION_SCHEMA_VERSION_V1 = "feedbax.spec.studio.representation.v1"
 REPRESENTATION_SCHEMA_VERSION_V0 = "feedbax.spec.studio.representation.v0"
+MUSCLE_PATH_GEOMETRY_SCHEMA_ID = "feedbax.spec.studio.muscle_path_geometry"
+MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION = "feedbax.spec.studio.muscle_path_geometry.v1"
 
 RepresentationArchetype = Literal[
     "point_body",
@@ -221,6 +224,49 @@ class RepresentationReachabilitySpec(RepresentationContractModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RepresentationMusclePathFrameSpec(RepresentationContractModel):
+    """Resolved planar transform for one named muscle attachment frame."""
+
+    id: str
+    origin: List[float] = Field(min_length=2, max_length=2)
+    rotation_radians: float = 0.0
+
+
+class RepresentationMusclePathPointSpec(RepresentationContractModel):
+    """One body-local attachment point in a muscle path."""
+
+    frame: str
+    position: List[float] = Field(min_length=2, max_length=2)
+
+
+class RepresentationMusclePathSpec(RepresentationContractModel):
+    """Ordered attachment points for one rendered muscle path."""
+
+    id: str
+    points: List[RepresentationMusclePathPointSpec] = Field(min_length=2)
+
+
+class RepresentationMusclePathGeometrySpec(RepresentationContractModel):
+    """Provider-resolved local-frame geometry for muscle-path rendering."""
+
+    schema_id: Literal[MUSCLE_PATH_GEOMETRY_SCHEMA_ID] = MUSCLE_PATH_GEOMETRY_SCHEMA_ID
+    schema_version: Literal[MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION] = (
+        MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION
+    )
+    frames: List[RepresentationMusclePathFrameSpec] = Field(default_factory=list)
+    paths: List[RepresentationMusclePathSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "RepresentationMusclePathGeometrySpec":
+        duplicate_frames = sorted(_duplicates([frame.id for frame in self.frames]))
+        if duplicate_frames:
+            raise ValueError(f"Duplicate muscle path frame ids: {duplicate_frames!r}")
+        duplicate_paths = sorted(_duplicates([path.id for path in self.paths]))
+        if duplicate_paths:
+            raise ValueError(f"Duplicate muscle path ids: {duplicate_paths!r}")
+        return self
+
+
 class RepresentationSpec(RepresentationContractModel):
     """Versioned representation declaration served through component metadata."""
 
@@ -235,6 +281,7 @@ class RepresentationSpec(RepresentationContractModel):
     dim: Optional[int] = None
     scale_invariant: bool = False
     reachability: Optional[RepresentationReachabilitySpec] = None
+    muscle_path_geometry: Optional[RepresentationMusclePathGeometrySpec] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

@@ -63,6 +63,13 @@ class MuscleAttachmentFrame(NamedTuple):
     pos: Float[Array, "3"]
 
 
+class MuscleAttachmentPath(NamedTuple):
+    """Canonical origin and insertion frames for one muscle."""
+
+    origin: MuscleAttachmentFrame
+    insertion: MuscleAttachmentFrame
+
+
 # ---------------------------------------------------------------------------
 # MuscleTopology — static connectivity (shared across a vmap batch)
 # ---------------------------------------------------------------------------
@@ -330,49 +337,10 @@ def default_muscle_config(
     if topology is None:
         topology = chain_config.muscle_topology
 
-    n_joints = topology.n_joints
-    n_muscles = topology.n_muscles
-    lengths = preset.segment_lengths
-
-    origin_body: list[str] = []
-    insertion_body: list[str] = []
-    origin_pos = jnp.zeros((n_muscles, 3))
-    insertion_pos = jnp.zeros((n_muscles, 3))
-
-    y_offset = 0.02
-
-    # Build attachment sites for each muscle based on topology routing.
-    for i in range(n_muscles):
-        # Find the joints this muscle spans (tuple indexing).
-        spanned = [j for j in range(n_joints) if topology.routing[i][j]]
-        if not spanned:
-            # Defensive -- muscle spans no joint (should not happen).
-            origin_body.append("world")
-            insertion_body.append("link0")
-            continue
-
-        # Origin: parent of the first spanned joint.
-        first_joint = spanned[0]
-        parent_name = "world" if first_joint == 0 else f"link{first_joint - 1}"
-        parent_len = float(lengths[first_joint - 1]) if first_joint > 0 else 0.0
-
-        # Insertion: child of the last spanned joint.
-        last_joint = spanned[-1]
-        child_name = f"link{last_joint}"
-        child_len = float(lengths[last_joint])
-
-        # Sign for lateral offset: flexor -> +y, extensor -> -y.
-        sign_val = topology.sign[i][first_joint]
-        lateral = sign_val * y_offset if sign_val != 0 else y_offset
-
-        origin_body.append(parent_name)
-        insertion_body.append(child_name)
-        origin_pos = origin_pos.at[i].set(
-            jnp.array([0.1 * parent_len, lateral, 0.0])
-        )
-        insertion_pos = insertion_pos.at[i].set(
-            jnp.array([0.1 * child_len, lateral, 0.0])
-        )
+    origin_body, insertion_body, origin_pos, insertion_pos = _attachment_geometry(
+        preset.segment_lengths,
+        topology,
+    )
 
     if not hasattr(preset, "muscle_moment_arm_magnitudes"):
         raise ValueError(
@@ -392,3 +360,66 @@ def default_muscle_config(
         moment_arms=moment_arms,
         topology=topology,
     )
+
+
+def _attachment_geometry(
+    segment_lengths: Array,
+    topology: MuscleTopology,
+) -> tuple[tuple[str, ...], tuple[str, ...], Array, Array]:
+    """Build canonical local attachment frames for a planar muscle topology."""
+    n_joints = topology.n_joints
+    n_muscles = topology.n_muscles
+    origin_body: list[str] = []
+    insertion_body: list[str] = []
+    origin_pos = jnp.zeros((n_muscles, 3))
+    insertion_pos = jnp.zeros((n_muscles, 3))
+    y_offset = 0.02
+
+    for i in range(n_muscles):
+        spanned = [j for j in range(n_joints) if topology.routing[i][j]]
+        if not spanned:
+            origin_body.append("world")
+            insertion_body.append("link0")
+            continue
+        first_joint = spanned[0]
+        parent_name = "world" if first_joint == 0 else f"link{first_joint - 1}"
+        parent_len = float(segment_lengths[first_joint - 1]) if first_joint > 0 else 0.0
+        last_joint = spanned[-1]
+        child_name = f"link{last_joint}"
+        child_len = float(segment_lengths[last_joint])
+        sign_val = topology.sign[i][first_joint]
+        lateral = sign_val * y_offset if sign_val != 0 else y_offset
+
+        origin_body.append(parent_name)
+        insertion_body.append(child_name)
+        origin_pos = origin_pos.at[i].set(jnp.array([0.1 * parent_len, lateral, 0.0]))
+        insertion_pos = insertion_pos.at[i].set(jnp.array([0.1 * child_len, lateral, 0.0]))
+
+    return tuple(origin_body), tuple(insertion_body), origin_pos, insertion_pos
+
+
+def default_6muscle_2link_attachment_paths(
+) -> tuple[Float[Array, "2"], tuple[MuscleAttachmentPath, ...]]:
+    """Return canonical two-link rest lengths and body-local muscle paths.
+
+    This is the provider-facing accessor for the same attachment construction
+    used by :func:`default_muscle_config`; catalog metadata therefore cannot
+    drift from the analytical plant's default geometry.
+    """
+    from feedbax.mechanics.body import default_2link_bounds
+
+    bounds = default_2link_bounds()
+    lengths = (bounds.segment_lengths_min + bounds.segment_lengths_max) / 2.0
+    topology = default_6muscle_2link_topology()
+    origin_body, insertion_body, origin_pos, insertion_pos = _attachment_geometry(
+        lengths,
+        topology,
+    )
+    paths = tuple(
+        MuscleAttachmentPath(
+            origin=MuscleAttachmentFrame(origin_body[i], origin_pos[i]),
+            insertion=MuscleAttachmentFrame(insertion_body[i], insertion_pos[i]),
+        )
+        for i in range(topology.n_muscles)
+    )
+    return lengths, paths

@@ -82,6 +82,7 @@ from feedbax.contracts.acausal import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V2,
     REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
@@ -1042,6 +1043,13 @@ def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, 
 
 def _migrate_representation_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Promote v1 representations to the capability-aware v2 envelope."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
+    return migrated
+
+
+def _migrate_representation_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote v2 representations to the optional muscle-path geometry envelope."""
     migrated = dict(payload)
     migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
     return migrated
@@ -2559,7 +2567,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("Studio frontend", "workspace renderer"),
             description="Component-owned workspace representation declaration.",
             stance="migrate",
-            supported_old_versions=(REPRESENTATION_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                REPRESENTATION_SCHEMA_VERSION_V1,
+                REPRESENTATION_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
             required_tests=(
                 "tests/test_component_registration.py",
@@ -2918,10 +2929,20 @@ default_spec_registry.register_migration(
     "RepresentationSpec",
     SchemaMigration(
         source_version=REPRESENTATION_SCHEMA_VERSION_V1,
-        target_version=REPRESENTATION_SCHEMA_VERSION,
+        target_version=REPRESENTATION_SCHEMA_VERSION_V2,
         migration_id="representation-spec-v1-to-v2-reachability-capability",
         migrate=_migrate_representation_spec_v1_to_v2_payload,
         description="Add the optional provider-declared reachability capability envelope.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RepresentationSpec",
+    SchemaMigration(
+        source_version=REPRESENTATION_SCHEMA_VERSION_V2,
+        target_version=REPRESENTATION_SCHEMA_VERSION,
+        migration_id="representation-spec-v2-to-v3-muscle-path-geometry",
+        migrate=_migrate_representation_spec_v2_to_v3_payload,
+        description="Add the optional provider-resolved muscle-path geometry envelope.",
     ),
 )
 default_spec_registry.register_migration(
