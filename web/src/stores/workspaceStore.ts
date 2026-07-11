@@ -1,5 +1,9 @@
 import { create } from 'zustand';
 import {
+  frozenSnapshotProjectionFromWorkspace,
+  useSelectionContextStore,
+} from '@/stores/selectionContextStore';
+import {
   lossSpecFromObjectiveSpec,
   selectorWithSubpath,
 } from '@/features/scenario/objectives';
@@ -1001,7 +1005,13 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   lastTrainingLocalRunResult: null,
   lastPipelineMaterializationResult: null,
 
-  setWorkspace: (workspace) => set({ workspace: normalizeWorkspaceForStudioState(workspace) }),
+  setWorkspace: (workspace) => {
+    const normalizedWorkspace = normalizeWorkspaceForStudioState(workspace);
+    useSelectionContextStore
+      .getState()
+      .setFrozenSnapshot(frozenSnapshotProjectionFromWorkspace(normalizedWorkspace));
+    set({ workspace: normalizedWorkspace });
+  },
 
   setActiveStage: (stageId) =>
     set((state) => {
