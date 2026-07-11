@@ -214,6 +214,16 @@ def registered_figure_constructors(
     return tuple(registrations)
 
 
+def unregister_figure_constructor(key: str) -> None:
+    """Remove a registered constructor, if present.
+
+    This is primarily useful for plugin lifecycle management and for tests that
+    must restore the process-global registry after registering a downstream
+    figure recipe.
+    """
+    _CONSTRUCTORS.pop(key, None)
+
+
 def register_figure_template(template: Any, *, replace: bool = False) -> None:
     """Register a FigureTemplate-like object by name."""
     name = _validate_namespaced_type_key(template.name, field="figure template")
@@ -239,7 +249,13 @@ def get_figure_template(name: str) -> Any:
 
 
 def registered_figure_templates() -> tuple[Any, ...]:
+    """Return registered figure recipes sorted by their namespaced key."""
     return tuple(_TEMPLATES[name] for name in sorted(_TEMPLATES))
+
+
+def unregister_figure_template(name: str) -> None:
+    """Remove a registered figure recipe, if present."""
+    _TEMPLATES.pop(name, None)
 
 
 def register_figure_piece(piece: Any, *, replace: bool = False) -> None:
@@ -267,7 +283,13 @@ def get_figure_piece(name: str) -> Any:
 
 
 def registered_figure_pieces() -> tuple[Any, ...]:
+    """Return registered figure pieces sorted by their namespaced key."""
     return tuple(_PIECES[name] for name in sorted(_PIECES))
+
+
+def unregister_figure_piece(name: str) -> None:
+    """Remove a registered figure piece, if present."""
+    _PIECES.pop(name, None)
 
 
 def _resource_file(
@@ -338,9 +360,9 @@ def load_figure_template(key: str, *, registry: Any | None = None) -> Any:
     from feedbax.contracts.figures import FigureTemplate
 
     if registry is None:
-        from feedbax.plugins import EXPERIMENT_REGISTRY
+        from feedbax.plugins import _get_experiment_registry
 
-        registry = EXPERIMENT_REGISTRY
+        registry = _get_experiment_registry()
 
     return _load_figure_resource(
         key,
@@ -355,9 +377,9 @@ def load_figure_piece(key: str, *, registry: Any | None = None) -> Any:
     from feedbax.contracts.figures import FigurePiece
 
     if registry is None:
-        from feedbax.plugins import EXPERIMENT_REGISTRY
+        from feedbax.plugins import _get_experiment_registry
 
-        registry = EXPERIMENT_REGISTRY
+        registry = _get_experiment_registry()
 
     return _load_figure_resource(
         key,

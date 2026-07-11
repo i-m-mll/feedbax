@@ -186,6 +186,14 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
     apply_override_patches,
 )
+from feedbax.contracts.matrix_core import (
+    MaterializedMatrixRow,
+    MatrixRow as GenericMatrixRow,
+    RowDerivation,
+    RowMatrixSpec,
+    derive_row_path,
+    materialize_matrix_rows,
+)
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import (
     TrainingRunExecutionCapsule,
@@ -544,12 +552,18 @@ __all__ = [
     "MatrixDerivation",
     "MatrixForkSpec",
     "MatrixRow",
+    "MaterializedMatrixRow",
+    "GenericMatrixRow",
+    "RowDerivation",
+    "RowMatrixSpec",
     "TrainingMethodRegistration",
     "TrainingMethodRegistry",
     "TrainingRunSpec",
     "TrainingBatchProgressSpec",
     "TrainingSpec",
     "apply_override_patches",
+    "derive_row_path",
+    "materialize_matrix_rows",
     "build_resolved_semantics_snapshot",
     "decode_resolved_snapshot",
     "UpdateKernelSpec",

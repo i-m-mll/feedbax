@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from feedbax.analysis.specs import find_manifest_by_id
+from feedbax.analysis.rendering import render_markdown_note
 from feedbax.analysis.validation import (
     ReportRecipeProtocol,
     validate_namespaced_type_key,
@@ -373,14 +374,7 @@ def _markdown_report(
     narrative: str | None,
     rows: Sequence[tuple[str, str]],
 ) -> str:
-    lines = [f"# {title}", ""]
-    if narrative:
-        lines.extend([narrative, ""])
-    lines.extend(["| Field | Value |", "| --- | --- |"])
-    for label, value in rows:
-        lines.append(f"| {label} | {value} |")
-    lines.append("")
-    return "\n".join(lines)
+    return render_markdown_note(title=title, narrative=narrative, rows=rows)
 
 
 register_report_recipe(BUNDLE_SUMMARY_REPORT_TYPE, _bundle_summary_recipe, replace=True)

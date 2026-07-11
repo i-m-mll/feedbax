@@ -41,12 +41,14 @@ from feedbax.contracts.manifest import (
     ReportSpec,
     SpecPayload,
     StrictModel,
+    OverridePatch,
     collect_git_provenance,
     default_manifest_root,
     load_manifest,
     spec_payload,
     write_manifest,
 )
+from feedbax.contracts.run_matrix import apply_override_patches
 from feedbax.contracts.selection import (
     ManifestIndexRow,
     ManifestPredicate,
@@ -64,7 +66,8 @@ from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
 
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
-ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v2"
+ANALYSIS_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.spec.analysis_bundle.v2"
+ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v3"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v1"
 
@@ -104,6 +107,12 @@ class StageArtifactDependency(StrictModel):
     bind_as: str | None = None
 
 
+class BundleParamsBase(StrictModel):
+    """Shared, typed parameter envelope resolved by every staged bundle stage."""
+
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class BundleStageSpec(StrictModel):
     """One ordered stage in a schema-bearing analysis bundle plan.
 
@@ -122,7 +131,8 @@ class BundleStageSpec(StrictModel):
     analysis_type: str | None = None
     figure: FigureSpec | None = None
     report_type: str | None = None
-    params: dict[str, Any] = Field(default_factory=dict)
+    params_patches: list[OverridePatch] = Field(default_factory=list)
+    local_params: dict[str, Any] | None = None
     states_custody: Literal["cache", "durable"] | None = None
     requested_outputs: list[str] = Field(default_factory=list)
     input_requirements: list[Any] = Field(default_factory=list)
@@ -133,6 +143,10 @@ class BundleStageSpec(StrictModel):
 
     @model_validator(mode="after")
     def _validate_stage_payload(self) -> "BundleStageSpec":
+        if self.local_params is not None and self.params_patches:
+            raise ValueError(
+                f"bundle stage {self.name!r} cannot combine local_params with params_patches"
+            )
         no_static_status = self.skip_reason is None and self.not_applicable_reason is None
         if self.kind == "evaluation" and not self.evaluation_type and no_static_status:
             raise ValueError(f"evaluation bundle stage {self.name!r} requires evaluation_type")
@@ -169,6 +183,7 @@ class AnalysisBundleSpec(StrictModel):
         default_factory=lambda: ManifestPredicate(manifest_kind="EvaluationRunManifest")
     )
     templates: list[AnalysisSpecTemplate] = Field(default_factory=list)
+    params_base: BundleParamsBase = Field(default_factory=BundleParamsBase)
     stages: list[BundleStageSpec] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -389,7 +404,10 @@ def load_analysis_bundle(
         raise FileNotFoundError(
             f"Analysis bundle {bundle_name!r} not found under {resource_root}"
         ) from exc
-    return AnalysisBundleSpec.model_validate(data)
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+    migrated = migrate_structured_spec_payload("AnalysisBundleSpec", data)
+    return AnalysisBundleSpec.model_validate(migrated.payload)
 
 
 def iter_candidate_manifests(
@@ -515,8 +533,18 @@ def _params_for_template(template: AnalysisSpecTemplate) -> dict[str, Any]:
     return params
 
 
-def _params_for_stage(stage: BundleStageSpec) -> dict[str, Any]:
-    params = dict(stage.params)
+def _params_for_stage(
+    stage: BundleStageSpec,
+    params_base: BundleParamsBase | None = None,
+) -> dict[str, Any]:
+    """Resolve one stage's parameters from the shared base or explicit local escape."""
+    if stage.local_params is not None:
+        params = dict(stage.local_params)
+    else:
+        params = apply_override_patches(
+            (params_base or BundleParamsBase()).params,
+            stage.params_patches,
+        )
     if (
         stage.kind == "evaluation"
         and stage.states_custody is not None
@@ -663,9 +691,12 @@ def _stage_expression_context(
     stage: BundleStageSpec,
     matched_manifests: Sequence[AnyManifest],
     resolved_inputs: ResolvedStageInputs,
+    params_base: BundleParamsBase,
 ) -> ExpressionContext:
     items: dict[str, ContextItem] = {
-        "params": ContextItem(kind="params", payload=_params_for_stage(stage)),
+        "params": ContextItem(
+            kind="params", payload=_params_for_stage(stage, params_base)
+        ),
         "manifests": ContextItem(
             kind="manifests",
             payload=[_manifest_condition_payload(manifest) for manifest in matched_manifests],
@@ -705,10 +736,11 @@ def _run_condition_skip_reason(
     stage: BundleStageSpec,
     matched_manifests: Sequence[AnyManifest],
     resolved_inputs: ResolvedStageInputs,
+    params_base: BundleParamsBase,
 ) -> str | None:
     if stage.run_condition is None:
         return None
-    ctx = _stage_expression_context(stage, matched_manifests, resolved_inputs)
+    ctx = _stage_expression_context(stage, matched_manifests, resolved_inputs, params_base)
     result = evaluate_expr(stage.run_condition, ctx)
     if result:
         return None
@@ -830,7 +862,7 @@ def _execute_evaluation_stage(
         spec = EvaluationRunSpec(
             evaluation_type=str(stage.evaluation_type),
             inputs=list(inputs),
-            params=_params_for_stage(stage),
+            params=_params_for_stage(stage, bundle.params_base),
         )
         manifest, path = execute_evaluation_run_spec(
             spec,
@@ -870,7 +902,7 @@ def _execute_analysis_stage(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
-            params=_params_for_stage(stage),
+            params=_params_for_stage(stage, bundle.params_base),
         )
 
     def execute_spec(
@@ -945,7 +977,7 @@ def _execute_materialization_stage(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
-            params=_params_for_stage(stage),
+            params=_params_for_stage(stage, bundle.params_base),
         )
 
     def execute_spec(
@@ -1063,7 +1095,7 @@ def _execute_report_stage(
     bundle: AnalysisBundleSpec,
 ) -> list[StageMaterialization]:
     def build_spec(inputs: Sequence[ParentRef], index: int) -> ReportSpec:
-        stage_params = _params_for_stage(stage)
+        stage_params = _params_for_stage(stage, bundle.params_base)
         bundle_metadata = {
             "name": bundle.name,
             "stage": stage.name,
@@ -1078,7 +1110,7 @@ def _execute_report_stage(
                 "stage_params": stage_params,
                 "bundle": bundle_metadata,
             },
-            narrative=stage.params.get("narrative"),
+            narrative=stage_params.get("narrative"),
         )
 
     def execute_spec(
@@ -1472,6 +1504,7 @@ def dry_run_staged_analysis_bundle(
             stage,
             matched_manifests,
             resolved_inputs,
+            bundle.params_base,
         )
         if run_condition_skip_reason is not None:
             outputs = _dry_run_stage_outputs(
@@ -1583,6 +1616,7 @@ def execute_staged_analysis_bundle(
             stage,
             matched_manifests,
             resolved_inputs,
+            bundle.params_base,
         )
         if run_condition_skip_reason is not None:
             records = _output_records(
