@@ -100,7 +100,7 @@ class SubprocessRunPodTransport:
 
     def ssh(self, command: str) -> CommandResult:
         host = self._require_host()
-        return _run_command([*self._ssh_base(), host, command])
+        return _run_command([*self._ssh_base(detach_stdin=True), host, command])
 
     def rsync(
         self,
@@ -138,21 +138,26 @@ class SubprocessRunPodTransport:
             raise RunPodDriverError("ssh host and port are required")
         return f"{self.ssh_user}@{self.ssh_host}"
 
-    def _ssh_base(self) -> list[str]:
+    def _ssh_base(self, *, detach_stdin: bool = False) -> list[str]:
         key = str(Path(self.ssh_key_path).expanduser())
         if self.ssh_port is None:
             raise RunPodDriverError("ssh port is required")
-        return [
-            "ssh",
-            "-i",
-            key,
-            "-p",
-            str(self.ssh_port),
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-        ]
+        args = ["ssh"]
+        if detach_stdin:
+            args.append("-n")
+        args.extend(
+            [
+                "-i",
+                key,
+                "-p",
+                str(self.ssh_port),
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+            ]
+        )
+        return args
 
 
 @dataclass(frozen=True)
@@ -875,7 +880,7 @@ def build_remote_nohup_sentinel_command(
     return (
         f"mkdir -p {_sq(str(Path(done_file).parent))} {_sq(str(Path(log_file).parent))} && "
         f"rm -f {_sq(done_file)} {_sq(failed_file)} && "
-        f"nohup bash -lc {_sq(sentinel_command)} >{_sq(log_file)} 2>&1 &"
+        f"nohup bash -lc {_sq(sentinel_command)} </dev/null >{_sq(log_file)} 2>&1 &"
     )
 
 
@@ -932,7 +937,7 @@ def build_launch_row_command(
         f"echo 'orphaned launch: started sentinel present, process dead, "
         f"no terminal sentinel' > {_sq(failed_file)}; exit 0; fi && "
         f"touch {_sq(started_file)} && "
-        f"nohup bash -lc {_sq(inner)} >{_sq(log_file)} 2>&1 &"
+        f"nohup bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 &"
     )
 
 
@@ -997,7 +1002,10 @@ def build_deadman_watchdog_command(
         'runpodctl remove pod "$pod_id"; exit $?; fi; '
         "sleep 30; done"
     )
-    return f"nohup bash -lc {_sq(script)} >{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1 &"
+    return (
+        f"nohup bash -lc {_sq(script)} </dev/null "
+        f">{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1 &"
+    )
 
 
 def verify_collected_payload(dest_dir: Path, expected_sha256: str) -> None:

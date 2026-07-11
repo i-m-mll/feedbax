@@ -217,11 +217,11 @@ sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
 remote_cmd() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 remote_capture() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 H
   echo 'launch_training'
@@ -276,7 +276,7 @@ for tool in rsync curl runpodctl; do
 done
 
 jq -n \
-  --arg cmd_a "sleep 0.5; if [ -f '$WARM/guard/row_b_started' ]; then touch '$WARM/guard/fanout_before_ready'; fi; echo WARM_READY; sleep 0.1" \
+  --arg cmd_a "sleep 0.5; if [ -f '$WARM/guard/row_b_started' ]; then touch '$WARM/guard/fanout_before_ready'; fi; echo WARM_READY; sleep 2" \
   --arg cmd_b "touch '$WARM/guard/row_b_started'; sleep 0.1" \
   '{schema_version: 1, rows: [{id: "row_a", command: $cmd_a}, {id: "row_b", command: $cmd_b}]}' \
   > "$WARM/rows.json"
@@ -297,8 +297,8 @@ run_cmd() { "$@"; }
 rsync_rsh() { printf 'ssh\n'; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
-remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
   echo 'launch_training'
 } > "$WARM_HARNESS"
@@ -366,8 +366,8 @@ SSH_CONNECT_TIMEOUT=10
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
-remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
   cat <<'H'
 remote_nohup_sentinel "failing bootstrap" "$REMOTE_RLRMP_ROOT" "false" \
@@ -474,11 +474,11 @@ sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
 remote_cmd() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 remote_capture() {
   local command=$1
-  ssh -i /dev/null -p 22 root@localhost "$command"
+  ssh -n -i /dev/null -p 22 root@localhost "$command"
 }
 H
   for fn in bootstrap_remote_env mark_bootstrap_branch clear_venv_probe_markers \
@@ -776,8 +776,8 @@ run_cmd() { "$@"; }
 rsync_rsh() { printf 'ssh\n'; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
 expand_path() { printf '%s\n' "$1"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
-remote_capture() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
+remote_capture() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
     echo 'launch_training'
   } > "$HN"
@@ -910,7 +910,7 @@ fi
 
 mkdir -p "$W8/rlrmp/_artifacts/run/checkpoints"
 cat > "$W8/rlrmp/_artifacts/run/checkpoints/latest.json" <<JSON
-{"completed_coordinate":{"program_step":42}}
+{"completed_training_batches":42,"completed_coordinate":{"program_step":42}}
 JSON
 cat > "$W8/spec_ok.json" <<JSON
 {"user_confirmed":true,"resume":{"baseline_checkpoint":"_artifacts/run/checkpoints","completed_batches":42}}
@@ -1017,7 +1017,7 @@ SSH_CONNECT_TIMEOUT=10
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 sq() { local v=${1-}; v=${v//\'/\'\\\'\'}; printf "'%s'" "$v"; }
-remote_cmd() { ssh -i /dev/null -p 22 root@localhost "$1"; }
+remote_cmd() { ssh -n -i /dev/null -p 22 root@localhost "$1"; }
 H
   echo 'launch_row "row_term" "$REMOTE_RLRMP_ROOT" "sleep 20"'
 } > "$SIG_HARNESS"

@@ -208,7 +208,7 @@ class SshBackendConfig(ExecutionModel):
     use_nohup: bool = True
 
     def ssh_prefix(self) -> str:
-        parts = ["ssh"]
+        parts = ["ssh", "-n"]
         if self.key_path:
             key_path = str(Path(os.path.expandvars(self.key_path)).expanduser())
             parts.extend(["-i", key_path])

@@ -930,6 +930,8 @@ wait_for_ssh_ready() {
 rsync_rsh() {
     local key_path quoted_key rsh
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
+    # rsync carries its protocol over SSH stdin, so unlike command-only SSH
+    # calls this transport must not use ``-n``.
     rsh="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=$SSH_CONNECT_TIMEOUT -p $SSH_PORT"
     if [ -n "$key_path" ]; then
         printf -v quoted_key '%q' "$key_path"
