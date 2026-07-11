@@ -14,6 +14,11 @@ import {
 import { graphNodeEntityId } from '@/features/scenario/entities';
 import { addObjectiveTerm, createObjectiveTerm } from '@/features/scenario/objectives';
 import { WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
+import {
+  frozenSnapshotProvenanceMetadata,
+  useSelectionContextStore,
+  type FrozenSnapshotProjection,
+} from '@/stores/selectionContextStore';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
 import type { AnalysisSnapshot } from '@/types/analysis';
@@ -56,11 +61,126 @@ const taskSpec: TaskSpec = {
 };
 
 beforeEach(() => {
+  useSelectionContextStore.getState().reset();
   useWorkspaceStore.setState({
     workspace: null,
     lastTrainingExecutionPreparation: null,
     lastTrainingLocalRunResult: null,
     lastPipelineMaterializationResult: null,
+  });
+});
+
+describe('workspace snapshot provenance hydration', () => {
+  it('restores the frozen projection when persisted workspace metadata is loaded', () => {
+    const projection: FrozenSnapshotProjection = {
+      source: 'training_run',
+      runId: 'run:42',
+      runLabel: 'Frozen run 42',
+      runStatus: 'completed',
+      manifestId: 'manifest:42',
+      manifestHash: 'sha256:42',
+      specHashes: { graph_spec: 'sha256:graph' },
+      snapshot: { graph_spec: graph as unknown as Record<string, unknown> },
+    };
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+    });
+    workspace.ui_state.top_pane = {
+      active_projection: 'model',
+      selected_entity_id: null,
+      hovered_entity_id: null,
+      pinned_inspector_entity_id: null,
+      metadata: {
+        run_snapshot_provenance: frozenSnapshotProvenanceMetadata(projection),
+      },
+    };
+
+    useWorkspaceStore.getState().setWorkspace(JSON.parse(JSON.stringify(workspace)));
+
+    expect(useSelectionContextStore.getState().frozenSnapshot).toEqual(projection);
+
+    useWorkspaceStore.getState().setWorkspace({
+      ...workspace,
+      ui_state: {
+        ...workspace.ui_state,
+        top_pane: {
+          active_projection: 'model',
+          selected_entity_id: null,
+          hovered_entity_id: null,
+          pinned_inspector_entity_id: null,
+          metadata: {},
+        },
+      },
+    });
+    expect(useSelectionContextStore.getState().frozenSnapshot).toBeNull();
+  });
+
+  it('migrates unversioned provenance metadata and clearly rejects unknown versions', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+    });
+    const legacyProvenance = {
+      source: 'training_run',
+      run_id: 'run:legacy',
+      run_label: 'Legacy frozen run',
+      run_status: 'completed',
+      manifest_id: 'manifest:legacy',
+      manifest_hash: 'sha256:legacy',
+      spec_hashes: { graph_spec: 'sha256:legacy-graph' },
+      mode: 'frozen_snapshot',
+      read_only: true,
+    };
+    const legacyTopPane: StudioTopPaneState = {
+      active_projection: 'model',
+      selected_entity_id: null,
+      hovered_entity_id: null,
+      pinned_inspector_entity_id: null,
+      metadata: { run_snapshot_provenance: legacyProvenance },
+    };
+    workspace.ui_state.top_pane = legacyTopPane;
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+
+    expect(useSelectionContextStore.getState().frozenSnapshot).toMatchObject({
+      runId: 'run:legacy',
+      runLabel: 'Legacy frozen run',
+      snapshot: {},
+    });
+
+    const loadedWorkspace = useWorkspaceStore.getState().workspace;
+    const loadedProjection = useSelectionContextStore.getState().frozenSnapshot;
+    const unknownVersionWorkspace = {
+      ...workspace,
+      ui_state: {
+        ...workspace.ui_state,
+        top_pane: {
+          ...legacyTopPane,
+          metadata: {
+            ...legacyTopPane.metadata,
+            run_snapshot_provenance: {
+              ...legacyProvenance,
+              schema_version: 'feedbax.studio.run_snapshot_provenance.v999',
+            },
+          },
+        },
+      },
+    };
+
+    expect(() => useWorkspaceStore.getState().setWorkspace(unknownVersionWorkspace)).toThrow(
+      'Unsupported run snapshot provenance schema version: feedbax.studio.run_snapshot_provenance.v999'
+    );
+    expect(useWorkspaceStore.getState().workspace).toBe(loadedWorkspace);
+    expect(useSelectionContextStore.getState().frozenSnapshot).toBe(loadedProjection);
   });
 });
 
