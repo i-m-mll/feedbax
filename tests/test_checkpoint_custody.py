@@ -14,6 +14,11 @@ import pytest
 
 import feedbax.training.checkpoint_custody as custody_module
 from feedbax.contracts.checkpoints import (
+    BatchIndexedCheckpointLeafSpec,
+    CheckpointContinuationRequest,
+    CheckpointForkBarrierMapping,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
@@ -54,6 +59,9 @@ from feedbax.training.checkpoint_custody import (
     detect_known_legacy_checkpoint_layout,
     fork_checkpoint_transaction,
     load_latest_checkpoint,
+    load_checkpoint_custody_documents,
+    load_checkpoint_latest_pointer_json,
+    load_checkpoint_transaction_manifest_file,
     write_checkpoint_transaction,
 )
 
@@ -586,6 +594,104 @@ def test_legacy_latest_pointer_migrates_global_step_without_creating_batches(
     assert loaded.manifest.completed_training_batches == 12000
 
 
+def test_public_checkpoint_document_loaders_migrate_and_preserve_provenance(
+    tmp_path: Path,
+) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="public-loader", phase="train_batch", program_step=24
+        ),
+        slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": jnp.array(12000, dtype=jnp.int32),
+        },
+    )
+    pointer = json.loads(result.latest_pointer_path.read_text())
+    pointer["schema_version"] = TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2
+    pointer["completed_coordinate"]["global_step"] = pointer["completed_coordinate"].pop(
+        "program_step"
+    )
+
+    migrated_pointer = load_checkpoint_latest_pointer_json(json.dumps(pointer).encode())
+    current_manifest = load_checkpoint_transaction_manifest_file(result.manifest_path)
+    documents = load_checkpoint_custody_documents(tmp_path)
+
+    assert migrated_pointer.migrated
+    assert migrated_pointer.source_version == TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2
+    assert migrated_pointer.target_version == TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION
+    assert migrated_pointer.document.completed_coordinate.program_step == 24
+    assert migrated_pointer.document.completed_training_batches == 12000
+    assert not current_manifest.migrated
+    assert current_manifest.source_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert current_manifest.document.transaction_id == result.manifest.transaction_id
+    assert documents.latest_pointer.document.transaction_id == result.manifest.transaction_id
+    assert documents.manifest.document.transaction_id == result.manifest.transaction_id
+
+
+def test_public_custody_document_loader_rejects_escaped_manifest_path(tmp_path: Path) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="escaped-manifest", phase="train_batch", program_step=1
+        ),
+        slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": jnp.array(1, dtype=jnp.int32),
+        },
+    )
+    pointer = json.loads(result.latest_pointer_path.read_text())
+    pointer["manifest_relative_path"] = "../outside/manifest.json"
+    _write_json(result.latest_pointer_path, pointer)
+
+    with pytest.raises(CheckpointIntegrityError, match="escapes custody root"):
+        load_checkpoint_custody_documents(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"{not-json", "not valid JSON"),
+        (
+            json.dumps(
+                {
+                    "schema_id": "wrong.pointer.schema",
+                    "schema_version": TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
+                }
+            ).encode(),
+            "schema_id",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_id": "feedbax.manifest.training_checkpoint_latest_pointer",
+                    "schema_version": "feedbax.manifest.training_checkpoint_latest_pointer.v99",
+                }
+            ).encode(),
+            "source_version",
+        ),
+    ],
+)
+def test_public_latest_pointer_loader_fails_closed_on_invalid_documents(
+    payload: bytes,
+    message: str,
+) -> None:
+    with pytest.raises(CheckpointIntegrityError, match=message):
+        load_checkpoint_latest_pointer_json(payload)
+
+
 def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path) -> None:
     run_spec = _run_spec(minimax=True)
     program = run_spec.worker_execution.method_contract.phase_program
@@ -1105,6 +1211,312 @@ def test_resume_slot_transform_runs_before_structural_abi_validation(
     assert loaded.slots["controller"].tolist() == [1.0, 2.0, 0.0]
 
 
+def test_declared_continuation_extends_batch_indexed_leaf_to_requested_total(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    source["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source,
+        completed_training_batches=12000,
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
+    )
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+        continuation_request=request,
+    )
+
+    controller = loaded.slots["controller"]
+    assert controller.shape == (5, 12200)
+    assert jnp.array_equal(controller[..., :12000], source["controller"])
+    assert jnp.array_equal(controller[..., 12000:], expected["controller"][..., 12000:])
+    assert jnp.array_equal(
+        loaded.slots["controller_optimizer"]["count"],
+        source["controller_optimizer"]["count"],
+    )
+    assert jnp.array_equal(loaded.slots["rng"], source["rng"])
+
+
+def test_declared_continuation_rejects_undeclared_batch_indexed_leaf(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    source["controller"] = jnp.zeros((5, 12000), dtype=jnp.float32)
+    source["controller_optimizer"] = {"count": jnp.zeros((5, 12000), dtype=jnp.float32)}
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source,
+        completed_training_batches=12000,
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.zeros((5, 12200), dtype=jnp.float32)
+    expected["controller_optimizer"] = {"count": jnp.zeros((5, 12200), dtype=jnp.float32)}
+
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="unsupported batch-indexed continuation leaf; slot='controller_optimizer' path='/count'",
+    ):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=expected,
+            continuation_request=CheckpointContinuationRequest(
+                source_completed_batches=12000,
+                additional_batches=200,
+                batch_indexed_leaves=[
+                    BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
+                ],
+            ),
+        )
+
+
+def test_declared_continuation_at_source_total_preserves_fork_blob_parity(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=source,
+        completed_training_batches=4,
+    )
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "source",
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=source,
+        continuation_request=CheckpointContinuationRequest(
+            source_completed_batches=4,
+            target_total_batches=4,
+            batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
+        ),
+    )
+
+    assert set(forked.slot_transfer_modes.values()) <= {"hardlink", "copy"}
+    assert all(
+        slot.target_sha256 == slot.source_sha256 for slot in forked.manifest.fork_provenance.slots
+    )
+
+
+def test_declared_continuation_fork_extends_then_validates_target_resume(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    source["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source,
+        completed_training_batches=12000,
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
+    )
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "source",
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=expected,
+        continuation_request=request,
+    )
+
+    assert forked.slot_transfer_modes["controller"] == "serialized"
+    resumed = load_latest_checkpoint(
+        tmp_path / "target",
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+        continuation_request=request,
+    )
+    assert resumed.slots["controller"].shape == (5, 12200)
+    assert jnp.array_equal(resumed.slots["controller"][..., :12000], source["controller"])
+
+
+def test_continuation_fork_uses_target_total_for_declared_batch_progress(
+    tmp_path: Path,
+) -> None:
+    source_spec, program = _batch_counter_program_and_spec()
+    target_spec = source_spec.model_copy(
+        update={
+            "training_config": source_spec.training_config.model_copy(
+                update={"n_batches": 12200}
+            )
+        }
+    )
+    source_slots = {
+        "model": jnp.arange(12000, dtype=jnp.float32),
+        "optimizer": {"count": 0},
+        "prng": [0, 1],
+        "batch_counter": jnp.array(12000, dtype=jnp.int32),
+    }
+    target_slots = {
+        **source_slots,
+        "model": jnp.full((12200,), -1.0, dtype=jnp.float32),
+        "batch_counter": jnp.array(12200, dtype=jnp.int32),
+    }
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="model", tree_path="/")],
+    )
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="continuation", phase="train_batch", program_step=24
+        ),
+        slots=source_slots,
+    )
+
+    def set_target_batch_progress(slots):
+        transformed = dict(slots)
+        transformed["batch_counter"] = jnp.array(12200, dtype=jnp.int32)
+        return transformed
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "source",
+        tmp_path / "target",
+        target_run_spec=target_spec,
+        target_phase_program=program,
+        expected_slots=target_slots,
+        target_slot_transform=set_target_batch_progress,
+        target_transform_metadata={"identity": "test:set_target_batch_progress", "parameters": {}},
+        target_transformed_slots=["batch_counter"],
+        continuation_request=request,
+    )
+
+    assert forked.manifest.completed_coordinate.program_step == 24
+    assert forked.manifest.completed_training_batches == 12200
+    assert forked.latest_pointer.completed_training_batches == 12200
+    resumed = load_latest_checkpoint(
+        tmp_path / "target",
+        expected_run_spec=target_spec,
+        expected_phase_program=program,
+        expected_slots=target_slots,
+        continuation_request=request,
+    )
+    assert int(resumed.slots["batch_counter"]) == 12200
+
+
+def test_continuation_fork_rejects_target_batch_progress_that_differs_from_request(
+    tmp_path: Path,
+) -> None:
+    source_spec, program = _batch_counter_program_and_spec()
+    target_spec = source_spec.model_copy(
+        update={
+            "training_config": source_spec.training_config.model_copy(
+                update={"n_batches": 12200}
+            )
+        }
+    )
+    source_slots = {
+        "model": jnp.arange(12000, dtype=jnp.float32),
+        "optimizer": {"count": 0},
+        "prng": [0, 1],
+        "batch_counter": jnp.array(12000, dtype=jnp.int32),
+    }
+    target_slots = {
+        **source_slots,
+        "model": jnp.full((12200,), -1.0, dtype=jnp.float32),
+        "batch_counter": jnp.array(12199, dtype=jnp.int32),
+    }
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="model", tree_path="/")],
+    )
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="continuation", phase="train_batch", program_step=24
+        ),
+        slots=source_slots,
+    )
+
+    def set_wrong_target_batch_progress(slots):
+        transformed = dict(slots)
+        transformed["batch_counter"] = jnp.array(12199, dtype=jnp.int32)
+        return transformed
+
+    with pytest.raises(CheckpointConsistencyError) as excinfo:
+        fork_checkpoint_transaction(
+            tmp_path / "source",
+            tmp_path / "target",
+            target_run_spec=target_spec,
+            target_phase_program=program,
+            expected_slots=target_slots,
+            target_slot_transform=set_wrong_target_batch_progress,
+            target_transform_metadata={
+                "identity": "test:set_wrong_target_batch_progress",
+                "parameters": {},
+            },
+            target_transformed_slots=["batch_counter"],
+            continuation_request=request,
+        )
+
+    assert "/completed_training_batches=12200" in str(excinfo.value)
+    assert "/phase_program/batch_progress=12199" in str(excinfo.value)
+
+
+def test_checkpoint_continuation_rejects_unknown_schema_version() -> None:
+    with pytest.raises(ValueError, match="migration_intentionally_absent=yes"):
+        CheckpointContinuationRequest.model_validate(
+            {
+                "schema_version": "feedbax.spec.training_checkpoint_continuation.v0",
+                "source_completed_batches": 12000,
+                "additional_batches": 200,
+                "batch_indexed_leaves": [{"slot": "controller", "tree_path": "/"}],
+            }
+        )
+
+
 def test_resume_slot_transform_that_drops_required_slot_fails_closed(
     tmp_path: Path,
 ) -> None:
@@ -1490,4 +1902,48 @@ def test_legacy_task_trainer_checkpoint_files_reject_with_clear_error(
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
+        )
+
+
+def test_distinct_barrier_mapping_requires_explicit_coordinate_provenance() -> None:
+    with pytest.raises(
+        ValueError, match="require explicit target_coordinate and coordinate_mapping"
+    ):
+        CheckpointForkBarrierMapping(
+            source_barrier="after_train_chunk",
+            target_barrier="after_adaptive_epsilon_train_chunk",
+        )
+
+
+def test_checkpoint_fork_rejects_mapping_for_wrong_actual_source_barrier(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    mapping = CheckpointForkBarrierMapping(
+        source_barrier="after_adversarial",
+        target_barrier="after_warmup",
+        target_coordinate=_coordinate(),
+        coordinate_mapping={"identity": "tests.invalid_source_barrier.v1", "parameters": {}},
+    )
+
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="source barrier mapping does not match source manifest",
+    ):
+        fork_checkpoint_transaction(
+            tmp_path / "source",
+            tmp_path / "target",
+            target_run_spec=run_spec,
+            target_phase_program=program,
+            expected_slots=_minimax_slots(),
+            barrier_mapping=mapping,
         )
