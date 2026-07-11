@@ -279,6 +279,10 @@ def _two_link_arm_representation() -> RepresentationSpec:
                         "kinematics": "feedbax.mechanics.skeleton.arm.TwoLinkArm.forward_kinematics",
                         "link_length_param": "link_lengths",
                     },
+                    "planar_chain": {
+                        "frame_ids": ["world", "link0", "link1"],
+                        "pose_fallback": "zero",
+                    },
                 }
             ],
             "reachability": {
@@ -293,19 +297,10 @@ def _two_link_arm_representation() -> RepresentationSpec:
     )
 
 
-def _analytical_muscle_path_geometry() -> dict[str, Any]:
-    """Resolve canonical analytical-plant attachments for Studio metadata."""
-    link_lengths, paths = default_6muscle_2link_attachment_paths()
+def _default_two_link_muscle_path_geometry() -> dict[str, Any]:
+    """Expose canonical provider-owned body-local attachment topology."""
+    paths = default_6muscle_2link_attachment_paths()
     return {
-        "frames": [
-            {"id": "world", "origin": [0.0, 0.0], "rotation_radians": 0.0},
-            {"id": "link0", "origin": [0.0, 0.0], "rotation_radians": 0.0},
-            {
-                "id": "link1",
-                "origin": [float(link_lengths[0]), 0.0],
-                "rotation_radians": 0.0,
-            },
-        ],
         "paths": [
             {
                 "id": f"muscle-{index}",
@@ -333,6 +328,7 @@ def _two_link_muscle_representation(
     source: str,
     composite: bool,
     muscle_path_geometry: Mapping[str, Any] | None = None,
+    frame_input_port: str | None = None,
 ) -> RepresentationSpec:
     metadata = {
         "geometry_source": source,
@@ -439,6 +435,16 @@ def _two_link_muscle_representation(
                         },
                         {"channel": "stroke", "value": "var(--workspace-muscle-stroke)"},
                     ],
+                    **(
+                        {
+                            "frame_provider": {
+                                "kind": "from_input_port",
+                                "input_port": frame_input_port,
+                            }
+                        }
+                        if frame_input_port is not None
+                        else {}
+                    ),
                     "metadata": {
                         "geometry_source": source,
                         "runtime_frame_paths": "resolver_required",
@@ -2245,6 +2251,8 @@ def register_builtin_components(registry: _Registry) -> None:
             representation=_two_link_muscle_representation(
                 source="feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle",
                 composite=True,
+                muscle_path_geometry=_default_two_link_muscle_path_geometry(),
+                frame_input_port="angles",
             ),
         )
     )
@@ -2333,7 +2341,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     "default_6muscle_2link_muscled_arm_parameters"
                 ),
                 composite=False,
-                muscle_path_geometry=_analytical_muscle_path_geometry(),
+                muscle_path_geometry=_default_two_link_muscle_path_geometry(),
             ),
         )
     )

@@ -1049,9 +1049,14 @@ def _migrate_representation_spec_v1_to_v2_payload(payload: dict[str, Any]) -> di
 
 
 def _migrate_representation_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Promote v2 representations to the optional muscle-path geometry envelope."""
+    """Promote v2 representations to graph-bound muscle-path topology."""
     migrated = dict(payload)
     migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
+    geometry = migrated.get("muscle_path_geometry")
+    if isinstance(geometry, Mapping):
+        migrated["muscle_path_geometry"] = {
+            key: value for key, value in geometry.items() if key != "frames"
+        }
     return migrated
 
 
@@ -2942,7 +2947,10 @@ default_spec_registry.register_migration(
         target_version=REPRESENTATION_SCHEMA_VERSION,
         migration_id="representation-spec-v2-to-v3-muscle-path-geometry",
         migrate=_migrate_representation_spec_v2_to_v3_payload,
-        description="Add the optional provider-resolved muscle-path geometry envelope.",
+        description=(
+            "Add provider-owned muscle-path topology; frame transforms are resolved from graph "
+            "wiring and are never persisted in the geometry payload."
+        ),
     ),
 )
 default_spec_registry.register_migration(

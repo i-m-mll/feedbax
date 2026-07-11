@@ -398,9 +398,8 @@ def _attachment_geometry(
     return tuple(origin_body), tuple(insertion_body), origin_pos, insertion_pos
 
 
-def default_6muscle_2link_attachment_paths(
-) -> tuple[Float[Array, "2"], tuple[MuscleAttachmentPath, ...]]:
-    """Return canonical two-link rest lengths and body-local muscle paths.
+def default_6muscle_2link_attachment_paths() -> tuple[MuscleAttachmentPath, ...]:
+    """Return canonical body-local paths for the two-link muscle layout.
 
     This is the provider-facing accessor for the same attachment construction
     used by :func:`default_muscle_config`; catalog metadata therefore cannot
@@ -422,4 +421,4 @@ def default_6muscle_2link_attachment_paths(
         )
         for i in range(topology.n_muscles)
     )
-    return lengths, paths
+    return paths

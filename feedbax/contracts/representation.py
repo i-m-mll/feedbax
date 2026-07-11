@@ -160,6 +160,22 @@ class RepresentationFrameProvider(RepresentationContractModel):
         return self
 
 
+class RepresentationPlanarChainSpec(RepresentationContractModel):
+    """Typed kinematics capability exposed by a planar-chain element."""
+
+    frame_ids: List[str] = Field(min_length=2)
+    pose_fallback: Optional[Literal["zero"]] = None
+
+    @model_validator(mode="after")
+    def validate_frame_ids(self) -> "RepresentationPlanarChainSpec":
+        duplicate_frames = sorted(_duplicates(self.frame_ids))
+        if duplicate_frames:
+            raise ValueError(f"Duplicate planar-chain frame ids: {duplicate_frames!r}")
+        if self.frame_ids[0] != "world":
+            raise ValueError("planar-chain frame_ids must start with 'world'")
+        return self
+
+
 class RepresentationAnchorSpec(RepresentationContractModel):
     """Named semantic anchor exposed by a component representation."""
 
@@ -203,12 +219,15 @@ class RepresentationElementSpec(RepresentationContractModel):
     dim: Optional[int] = None
     scale_invariant: bool = False
     renderer_id: Optional[str] = None
+    planar_chain: Optional[RepresentationPlanarChainSpec] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_registered_renderer(self) -> "RepresentationElementSpec":
         if self.archetype == "registered_renderer" and not self.renderer_id:
             raise ValueError("registered_renderer representation elements require renderer_id")
+        if self.planar_chain is not None and self.archetype != "planar_chain":
+            raise ValueError("planar_chain capability is only valid on planar_chain elements")
         return self
 
 
@@ -222,14 +241,6 @@ class RepresentationReachabilitySpec(RepresentationContractModel):
     label: Optional[str] = None
     units: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class RepresentationMusclePathFrameSpec(RepresentationContractModel):
-    """Resolved planar transform for one named muscle attachment frame."""
-
-    id: str
-    origin: List[float] = Field(min_length=2, max_length=2)
-    rotation_radians: float = 0.0
 
 
 class RepresentationMusclePathPointSpec(RepresentationContractModel):
@@ -247,20 +258,16 @@ class RepresentationMusclePathSpec(RepresentationContractModel):
 
 
 class RepresentationMusclePathGeometrySpec(RepresentationContractModel):
-    """Provider-resolved local-frame geometry for muscle-path rendering."""
+    """Provider-owned body-local attachment topology for muscle paths."""
 
     schema_id: Literal[MUSCLE_PATH_GEOMETRY_SCHEMA_ID] = MUSCLE_PATH_GEOMETRY_SCHEMA_ID
     schema_version: Literal[MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION] = (
         MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION
     )
-    frames: List[RepresentationMusclePathFrameSpec] = Field(default_factory=list)
     paths: List[RepresentationMusclePathSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_unique_ids(self) -> "RepresentationMusclePathGeometrySpec":
-        duplicate_frames = sorted(_duplicates([frame.id for frame in self.frames]))
-        if duplicate_frames:
-            raise ValueError(f"Duplicate muscle path frame ids: {duplicate_frames!r}")
         duplicate_paths = sorted(_duplicates([path.id for path in self.paths]))
         if duplicate_paths:
             raise ValueError(f"Duplicate muscle path ids: {duplicate_paths!r}")

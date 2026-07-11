@@ -105,6 +105,12 @@ export interface ResolvedScene {
   validation: ResolvedSceneValidationMessage[];
 }
 
+export type ResolvedScenePoseValues = Readonly<Record<string, readonly number[]>>;
+
+export function resolvedScenePoseKey(nodeId: string, selectorCompact: string): string {
+  return `${nodeId}::${selectorCompact}`;
+}
+
 type RepresentationBinding =
   | RepresentationParamPathBinding
   | RepresentationStateAnchorSelectorBinding
@@ -199,7 +205,14 @@ function entityRelations(entity: StudioScenarioEntity): string[] {
 }
 
 function addUniqueSelector(selectors: StudioSelectorRef[], selector: StudioSelectorRef) {
-  if (selectors.some((candidate) => candidate.compact === selector.compact)) return;
+  const nodeId = selector.metadata?.graph_port_node_id;
+  if (
+    selectors.some(
+      (candidate) =>
+        candidate.compact === selector.compact &&
+        candidate.metadata?.graph_port_node_id === nodeId
+    )
+  ) return;
   selectors.push(selector);
 }
 
@@ -210,10 +223,16 @@ function bindingSelector(binding: RepresentationBinding): StudioSelectorRef | nu
 
 function collectRequiredSelectors(
   selectors: StudioSelectorRef[],
-  binding: RepresentationBinding
+  binding: RepresentationBinding,
+  entity?: StudioScenarioEntity
 ) {
   const selector = bindingSelector(binding);
-  if (selector) addUniqueSelector(selectors, selector);
+  if (selector) {
+    addUniqueSelector(
+      selectors,
+      entity ? selectorWithRepresentationMetadata(selector, null, entity) : selector
+    );
+  }
 }
 
 function valueAtPath(source: unknown, path: string): unknown {
@@ -511,29 +530,145 @@ function anchorPositionsForElement(
     .filter((point): point is [number, number] => point !== null);
 }
 
+function planarChainFrames({
+  graph,
+  componentsByName,
+  muscleNodeId,
+  provider,
+  poseValues,
+  requirePoseValues,
+  messages,
+  entityId,
+  elementId,
+}: {
+  graph: GraphSpec | null | undefined;
+  componentsByName: Map<string, ComponentDefinition>;
+  muscleNodeId: string | null;
+  provider: RepresentationFrameProvider | null | undefined;
+  poseValues: ResolvedScenePoseValues | undefined;
+  requirePoseValues: boolean;
+  messages: ResolvedSceneValidationMessage[];
+  entityId: string;
+  elementId: string;
+}): Map<string, { origin: [number, number]; rotation: number }> | null {
+  const fail = (type: string, message: string, path: string) => {
+    messages.push({ type, severity: 'error', message, entity_id: entityId, path });
+    return null;
+  };
+  if (!provider || provider.kind !== 'from_input_port' || !provider.input_port) {
+    return fail(
+      'workspace_muscle_path_frame_provider_missing',
+      `Muscle path element '${elementId}' requires a graph input frame-provider binding.`,
+      `elements.${elementId}.frame_provider`
+    );
+  }
+  if (!muscleNodeId) {
+    return fail(
+      'workspace_muscle_path_frame_provider_unresolved',
+      `Muscle path element '${elementId}' is not graph-bound to a planar-chain host.`,
+      `elements.${elementId}.frame_provider`
+    );
+  }
+  const wires = (graph?.wires ?? []).filter(
+    (wire) => wire.target_node === muscleNodeId && wire.target_port === provider.input_port
+  );
+  if (wires.length !== 1) {
+    return fail(
+      'workspace_muscle_path_host_wire_unresolved',
+      `Muscle path input '${provider.input_port}' requires exactly one host wire; found ${wires.length}.`,
+      `graph.wires.${muscleNodeId}.${provider.input_port}`
+    );
+  }
+  const wire = wires[0];
+  const hostNode = graph?.nodes?.[wire.source_node];
+  const hostComponent = hostNode ? componentsByName.get(hostNode.type) : undefined;
+  const chainElement = hostComponent?.representation?.elements?.find(
+    (element) => element.archetype === 'planar_chain' && element.planar_chain
+  );
+  if (!hostNode || !hostComponent || !chainElement?.planar_chain) {
+    return fail(
+      'workspace_muscle_path_host_planar_chain_missing',
+      `Wire source '${wire.source_node}' does not declare a typed planar-chain representation.`,
+      `graph.nodes.${wire.source_node}.representation`
+    );
+  }
+  const lengthBinding = chainElement.bindings?.link_lengths;
+  const angleBinding = chainElement.bindings?.joint_angles;
+  if (lengthBinding?.kind !== 'param_path' || angleBinding?.kind !== 'selector') {
+    return fail(
+      'workspace_muscle_path_host_binding_invalid',
+      `Planar-chain host '${wire.source_node}' must bind link_lengths and joint_angles.`,
+      `graph.nodes.${wire.source_node}.representation.elements.${chainElement.id}.bindings`
+    );
+  }
+  const selectorPort = angleBinding.selector.compact.startsWith('output:')
+    ? angleBinding.selector.compact.replace(/^output:/, '')
+    : null;
+  if (selectorPort !== wire.source_port) {
+    return fail(
+      'workspace_muscle_path_host_pose_port_mismatch',
+      `Host pose selector '${angleBinding.selector.compact}' does not match wired source port '${wire.source_port}'.`,
+      `graph.wires.${muscleNodeId}.${provider.input_port}`
+    );
+  }
+  const lengths = numericArray(paramValue(hostComponent, hostNode, lengthBinding.path));
+  if (!lengths || lengths.length === 0 || lengths.some((value) => !Number.isFinite(value))) {
+    return fail(
+      'workspace_muscle_path_host_lengths_invalid',
+      `Planar-chain host '${wire.source_node}' has invalid link lengths.`,
+      `graph.nodes.${wire.source_node}.params.${lengthBinding.path}`
+    );
+  }
+  const poseKey = resolvedScenePoseKey(wire.source_node, angleBinding.selector.compact);
+  const dynamicPose = poseValues?.[poseKey];
+  let angles = dynamicPose ? numericArray(dynamicPose) : null;
+  if (!angles && !requirePoseValues) {
+    angles = numericArray(
+      valueAtPath(hostNode.params ?? {}, 'joint_angles') ??
+        valueAtPath(hostNode.params ?? {}, 'rest_joint_angles') ??
+        valueAtPath(hostNode.params ?? {}, 'initial_angles')
+    );
+  }
+  if (!angles && !requirePoseValues && chainElement.planar_chain.pose_fallback === 'zero') {
+    angles = lengths.map(() => 0);
+  }
+  if (!angles || angles.length < lengths.length) {
+    return fail(
+      'workspace_muscle_path_host_pose_missing',
+      `No correlated pose value is available for '${wire.source_node}' selector '${angleBinding.selector.compact}'.`,
+      `pose_values.${poseKey}`
+    );
+  }
+  const frameIds = chainElement.planar_chain.frame_ids;
+  if (frameIds.length !== lengths.length + 1) {
+    return fail(
+      'workspace_muscle_path_host_frames_invalid',
+      `Planar-chain host '${wire.source_node}' declares ${frameIds.length} frames for ${lengths.length} links.`,
+      `graph.nodes.${wire.source_node}.representation.elements.${chainElement.id}.planar_chain`
+    );
+  }
+  const frames = new Map<string, { origin: [number, number]; rotation: number }>();
+  frames.set(frameIds[0], { origin: [0, 0], rotation: 0 });
+  let origin: [number, number] = [0, 0];
+  let rotation = 0;
+  for (let index = 0; index < lengths.length; index += 1) {
+    rotation += angles[index] ?? 0;
+    frames.set(frameIds[index + 1], { origin, rotation });
+    origin = [
+      origin[0] + Math.cos(rotation) * lengths[index],
+      origin[1] + Math.sin(rotation) * lengths[index],
+    ];
+  }
+  return frames;
+}
+
 function resolvedMusclePathPolylines(
   geometry: RepresentationMusclePathGeometrySpec,
+  frames: Map<string, { origin: [number, number]; rotation: number }>,
   messages: ResolvedSceneValidationMessage[],
   entityId: string,
   elementId: string
 ): Array<{ id: string; points: Array<[number, number]> }> {
-  const frames = new Map<string, { origin: [number, number]; rotation: number }>();
-  for (const frame of geometry.frames ?? []) {
-    const origin = numericPair(frame.origin);
-    const rotation = Number(frame.rotation_radians);
-    if (!origin || !Number.isFinite(rotation)) {
-      messages.push({
-        type: 'workspace_muscle_path_invalid_frame',
-        severity: 'error',
-        message: `Muscle path frame '${frame.id}' has an invalid planar transform.`,
-        entity_id: entityId,
-        path: `representation.muscle_path_geometry.frames.${frame.id}`,
-      });
-      continue;
-    }
-    frames.set(frame.id, { origin, rotation });
-  }
-
   const resolved: Array<{ id: string; points: Array<[number, number]> }> = [];
   for (const path of geometry.paths ?? []) {
     const points: Array<[number, number]> = [];
@@ -588,6 +723,9 @@ function resolveComponentRepresentation({
   scene,
   registry,
   graph,
+  componentsByName,
+  poseValues,
+  requirePoseValues,
   component,
   nodeOrTask,
   representation,
@@ -597,6 +735,9 @@ function resolveComponentRepresentation({
   scene: ResolvedScene;
   registry: StudioScenarioEntityRegistry;
   graph: GraphSpec | null | undefined;
+  componentsByName: Map<string, ComponentDefinition>;
+  poseValues: ResolvedScenePoseValues | undefined;
+  requirePoseValues: boolean;
   component: ComponentDefinition;
   nodeOrTask: ComponentSpec | { params?: Record<string, unknown> | null };
   representation: RepresentationSpec;
@@ -629,7 +770,7 @@ function resolveComponentRepresentation({
       : null;
 
   for (const anchor of representation.anchors ?? []) {
-    collectRequiredSelectors(scene.required_selectors, anchor.binding);
+    collectRequiredSelectors(scene.required_selectors, anchor.binding, entity);
     let position = numericPair(bindingValue(component, nodeOrTask, anchor.binding));
     if (!position && twoLinkPoints) {
       const jointIndex = Number(anchor.metadata?.joint_index);
@@ -675,10 +816,10 @@ function resolveComponentRepresentation({
 
   for (const element of representation.elements ?? []) {
     for (const binding of Object.values(element.bindings ?? {})) {
-      collectRequiredSelectors(scene.required_selectors, binding);
+      collectRequiredSelectors(scene.required_selectors, binding, entity);
     }
     for (const style of element.style ?? []) {
-      collectRequiredSelectors(scene.required_selectors, style.binding);
+      collectRequiredSelectors(scene.required_selectors, style.binding, entity);
     }
     const elementFrame = frameFromProvider(
       element.frame_provider,
@@ -715,8 +856,37 @@ function resolveComponentRepresentation({
         });
         continue;
       }
+      const frames = planarChainFrames({
+        graph,
+        componentsByName,
+        muscleNodeId: nodeId,
+        provider: element.frame_provider,
+        poseValues,
+        requirePoseValues,
+        messages: scene.validation,
+        entityId: entity.id,
+        elementId: element.id,
+      });
+      if (!frames) {
+        const id = elementGlobalId(entity.id, element.id);
+        entityElementIds.push(id);
+        scene.elements.push({
+          id,
+          entity_id: entity.id,
+          local_id: element.id,
+          archetype: element.archetype,
+          anchor_ids: (element.anchors ?? []).map((anchorId) => anchorGlobalId(entity.id, anchorId)),
+          frame: elementFrame,
+          scale_invariant: element.scale_invariant ?? representation.scale_invariant ?? false,
+          style: styleMap(element.style),
+          geometry: { kind: 'none' },
+          metadata: element.metadata ?? {},
+        });
+        continue;
+      }
       const paths = resolvedMusclePathPolylines(
         payload,
+        frames,
         scene.validation,
         entity.id,
         element.id
@@ -1016,11 +1186,15 @@ export function buildResolvedScene({
   graph,
   registry,
   components,
+  poseValues,
+  requirePoseValues = false,
 }: {
   scenario: StudioScenarioSpec | null | undefined;
   graph?: GraphSpec | null;
   registry: StudioScenarioEntityRegistry;
   components: ComponentDefinition[];
+  poseValues?: ResolvedScenePoseValues;
+  requirePoseValues?: boolean;
 }): ResolvedScene {
   const resolvedGraph = graph ?? scenario?.graph ?? null;
   const componentsByName = componentByName(components);
@@ -1055,6 +1229,9 @@ export function buildResolvedScene({
       scene,
       registry,
       graph: resolvedGraph,
+      componentsByName,
+      poseValues,
+      requirePoseValues,
       component,
       nodeOrTask: node,
       representation,
@@ -1071,6 +1248,9 @@ export function buildResolvedScene({
         scene,
         registry,
         graph: resolvedGraph,
+        componentsByName,
+        poseValues,
+        requirePoseValues,
         component,
         nodeOrTask: scenario.task_spec,
         representation: component.representation,

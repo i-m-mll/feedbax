@@ -600,6 +600,10 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
     arm_elements = {element.id: element for element in arm_template.representation.elements}
     assert arm_elements["links"].archetype == "planar_chain"
     assert arm_elements["muscle-paths"].archetype == "muscle_path"
+    assert arm_elements["muscle-paths"].frame_provider is not None
+    assert arm_elements["muscle-paths"].frame_provider.kind == "from_input_port"
+    assert arm_elements["muscle-paths"].frame_provider.input_port == "angles"
+    assert arm_template.representation.muscle_path_geometry is not None
     assert (
         arm_template.representation.metadata["geometry_source"]
         == "feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle"
@@ -624,7 +628,6 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
     assert muscle_geometry is not None
     assert muscle_geometry.schema_id == "feedbax.spec.studio.muscle_path_geometry"
     assert muscle_geometry.schema_version == "feedbax.spec.studio.muscle_path_geometry.v1"
-    assert [frame.id for frame in muscle_geometry.frames] == ["world", "link0", "link1"]
     assert len(muscle_geometry.paths) == 6
     assert all(len(path.points) == 2 for path in muscle_geometry.paths)
     assert {point.frame for path in muscle_geometry.paths for point in path.points} <= {
@@ -632,9 +635,12 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
         "link0",
         "link1",
     }
+    analytical_elements = {element.id: element for element in analytical.representation.elements}
+    assert analytical_elements["muscle-paths"].frame_provider is None
 
     serialized = analytical.representation.model_dump(mode="json", exclude_none=True)
     assert serialized["schema_version"] == REPRESENTATION_SCHEMA_VERSION
+    assert "frames" not in serialized["muscle_path_geometry"]
     assert serialized["muscle_path_geometry"]["paths"][0]["id"] == "muscle-0"
 
     point_mass_template = definitions["PointMass8MuscleRelu"]

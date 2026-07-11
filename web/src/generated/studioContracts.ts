@@ -647,10 +647,9 @@ export interface RepresentationLiteralBinding {
   dim?: number | null;
 }
 
-export interface RepresentationMusclePathFrameSpec {
-  id: string;
-  origin: number[];
-  rotation_radians?: number;
+export interface RepresentationPlanarChainSpec {
+  frame_ids: string[];
+  pose_fallback?: "zero" | null;
 }
 
 export interface RepresentationMusclePathPointSpec {
@@ -666,7 +665,6 @@ export interface RepresentationMusclePathSpec {
 export interface RepresentationMusclePathGeometrySpec {
   schema_id?: "feedbax.spec.studio.muscle_path_geometry";
   schema_version?: "feedbax.spec.studio.muscle_path_geometry.v1";
-  frames?: RepresentationMusclePathFrameSpec[];
   paths?: RepresentationMusclePathSpec[];
 }
 
@@ -709,6 +707,7 @@ export interface RepresentationElementSpec {
   dim?: number | null;
   scale_invariant?: boolean;
   renderer_id?: string | null;
+  planar_chain?: RepresentationPlanarChainSpec | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -2713,15 +2712,14 @@ export const RepresentationLiteralBindingSchema: z.ZodType<RepresentationLiteral
     .strict()
 ) as unknown as z.ZodType<RepresentationLiteralBinding>;
 
-export const RepresentationMusclePathFrameSpecSchema: z.ZodType<RepresentationMusclePathFrameSpec> = z.lazy(() =>
+export const RepresentationPlanarChainSpecSchema: z.ZodType<RepresentationPlanarChainSpec> = z.lazy(() =>
   z
     .object({
-      "id": z.string(),
-      "origin": z.array(z.number()),
-      "rotation_radians": z.number().optional(),
+      "frame_ids": z.array(z.string()),
+      "pose_fallback": z.literal("zero").nullable().optional(),
     })
     .strict()
-) as unknown as z.ZodType<RepresentationMusclePathFrameSpec>;
+) as unknown as z.ZodType<RepresentationPlanarChainSpec>;
 
 export const RepresentationMusclePathPointSpecSchema: z.ZodType<RepresentationMusclePathPointSpec> = z.lazy(() =>
   z
@@ -2746,7 +2744,6 @@ export const RepresentationMusclePathGeometrySpecSchema: z.ZodType<Representatio
     .object({
       "schema_id": z.literal("feedbax.spec.studio.muscle_path_geometry").optional(),
       "schema_version": z.literal("feedbax.spec.studio.muscle_path_geometry.v1").optional(),
-      "frames": z.array(RepresentationMusclePathFrameSpecSchema).optional(),
       "paths": z.array(RepresentationMusclePathSpecSchema).optional(),
     })
     .strict()
@@ -2805,6 +2802,7 @@ export const RepresentationElementSpecSchema: z.ZodType<RepresentationElementSpe
       "dim": z.number().int().nullable().optional(),
       "scale_invariant": z.boolean().optional(),
       "renderer_id": z.string().nullable().optional(),
+      "planar_chain": RepresentationPlanarChainSpecSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()

@@ -834,6 +834,18 @@ def test_representation_v2_migrates_to_muscle_path_aware_v3() -> None:
             "schema_id": REPRESENTATION_SCHEMA_ID,
             "schema_version": REPRESENTATION_SCHEMA_VERSION_V2,
             "elements": [{"id": "paths", "archetype": "muscle_path"}],
+            "muscle_path_geometry": {
+                "frames": [{"id": "world", "origin": [0.0, 0.0]}],
+                "paths": [
+                    {
+                        "id": "path",
+                        "points": [
+                            {"frame": "world", "position": [0.0, 0.0]},
+                            {"frame": "link0", "position": [0.1, 0.0]},
+                        ],
+                    }
+                ],
+            },
         },
     )
 
@@ -841,7 +853,9 @@ def test_representation_v2_migrates_to_muscle_path_aware_v3() -> None:
     assert result.target_version == REPRESENTATION_SCHEMA_VERSION
     assert result.migrated
     representation = RepresentationSpec.model_validate(result.payload)
-    assert representation.muscle_path_geometry is None
+    assert representation.muscle_path_geometry is not None
+    assert len(representation.muscle_path_geometry.paths) == 1
+    assert "frames" not in result.payload["muscle_path_geometry"]
 
 
 def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:
