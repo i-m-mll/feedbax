@@ -1271,6 +1271,137 @@ def test_declared_continuation_fork_extends_then_validates_target_resume(
     assert jnp.array_equal(resumed.slots["controller"][..., :12000], source["controller"])
 
 
+def test_continuation_fork_uses_target_total_for_declared_batch_progress(
+    tmp_path: Path,
+) -> None:
+    source_spec, program = _batch_counter_program_and_spec()
+    target_spec = source_spec.model_copy(
+        update={
+            "training_config": source_spec.training_config.model_copy(
+                update={"n_batches": 12200}
+            )
+        }
+    )
+    source_slots = {
+        "model": jnp.arange(12000, dtype=jnp.float32),
+        "optimizer": {"count": 0},
+        "prng": [0, 1],
+        "batch_counter": jnp.array(12000, dtype=jnp.int32),
+    }
+    target_slots = {
+        **source_slots,
+        "model": jnp.full((12200,), -1.0, dtype=jnp.float32),
+        "batch_counter": jnp.array(12200, dtype=jnp.int32),
+    }
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="model", tree_path="/")],
+    )
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="continuation", phase="train_batch", program_step=24
+        ),
+        slots=source_slots,
+    )
+
+    def set_target_batch_progress(slots):
+        transformed = dict(slots)
+        transformed["batch_counter"] = jnp.array(12200, dtype=jnp.int32)
+        return transformed
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "source",
+        tmp_path / "target",
+        target_run_spec=target_spec,
+        target_phase_program=program,
+        expected_slots=target_slots,
+        target_slot_transform=set_target_batch_progress,
+        target_transform_metadata={"identity": "test:set_target_batch_progress", "parameters": {}},
+        target_transformed_slots=["batch_counter"],
+        continuation_request=request,
+    )
+
+    assert forked.manifest.completed_coordinate.program_step == 24
+    assert forked.manifest.completed_training_batches == 12200
+    assert forked.latest_pointer.completed_training_batches == 12200
+    resumed = load_latest_checkpoint(
+        tmp_path / "target",
+        expected_run_spec=target_spec,
+        expected_phase_program=program,
+        expected_slots=target_slots,
+        continuation_request=request,
+    )
+    assert int(resumed.slots["batch_counter"]) == 12200
+
+
+def test_continuation_fork_rejects_target_batch_progress_that_differs_from_request(
+    tmp_path: Path,
+) -> None:
+    source_spec, program = _batch_counter_program_and_spec()
+    target_spec = source_spec.model_copy(
+        update={
+            "training_config": source_spec.training_config.model_copy(
+                update={"n_batches": 12200}
+            )
+        }
+    )
+    source_slots = {
+        "model": jnp.arange(12000, dtype=jnp.float32),
+        "optimizer": {"count": 0},
+        "prng": [0, 1],
+        "batch_counter": jnp.array(12000, dtype=jnp.int32),
+    }
+    target_slots = {
+        **source_slots,
+        "model": jnp.full((12200,), -1.0, dtype=jnp.float32),
+        "batch_counter": jnp.array(12199, dtype=jnp.int32),
+    }
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="model", tree_path="/")],
+    )
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="continuation", phase="train_batch", program_step=24
+        ),
+        slots=source_slots,
+    )
+
+    def set_wrong_target_batch_progress(slots):
+        transformed = dict(slots)
+        transformed["batch_counter"] = jnp.array(12199, dtype=jnp.int32)
+        return transformed
+
+    with pytest.raises(CheckpointConsistencyError) as excinfo:
+        fork_checkpoint_transaction(
+            tmp_path / "source",
+            tmp_path / "target",
+            target_run_spec=target_spec,
+            target_phase_program=program,
+            expected_slots=target_slots,
+            target_slot_transform=set_wrong_target_batch_progress,
+            target_transform_metadata={
+                "identity": "test:set_wrong_target_batch_progress",
+                "parameters": {},
+            },
+            target_transformed_slots=["batch_counter"],
+            continuation_request=request,
+        )
+
+    assert "/completed_training_batches=12200" in str(excinfo.value)
+    assert "/phase_program/batch_progress=12199" in str(excinfo.value)
+
+
 def test_checkpoint_continuation_rejects_unknown_schema_version() -> None:
     with pytest.raises(ValueError, match="migration_intentionally_absent=yes"):
         CheckpointContinuationRequest.model_validate(

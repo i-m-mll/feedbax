@@ -934,9 +934,13 @@ def fork_checkpoint_transaction(
         completed_batches = _resolve_completed_training_batches(
             phase_program=phase_program,
             slots=prepared_slots,
-            explicit=None,
+            # A declared continuation creates a new target horizon.  The source
+            # manifest records the completed source prefix and must never be
+            # reused as the target custody total.  The target's declared
+            # bookkeeping slot remains an equality assertion below.
+            explicit=request.target_total if request is not None else None,
             metadata=manifest_metadata,
-            default=source.manifest.completed_training_batches,
+            default=None if request is not None else source.manifest.completed_training_batches,
         )
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
