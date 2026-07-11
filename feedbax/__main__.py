@@ -11,12 +11,20 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY, TrainingRunSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.executor import execute_training_run_spec
 from feedbax.training.interruption import RunInterruptionController
-from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
+from feedbax.training.preparation import (
+    DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+    ExecutionPreparationRequest,
+    require_execution_preparation_provider,
+)
+from feedbax.training.manifest_preflight import (
+    preflight_training_run_manifest_payloads,
+    validate_training_run_spec,
+)
 from feedbax.training.checkpoint_custody import fork_checkpoint_transaction
 from feedbax.training.legacy_checkpoint_adoption import (
     ManifestDumpRequest,
@@ -354,16 +362,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "execute-training-run-spec":
         _load_training_method_plugins(args.plugin)
+        run_spec = validate_training_run_spec(_read_json(args.spec))
+        method_registration = DEFAULT_TRAINING_METHOD_REGISTRY.resolve(
+            run_spec.method_ref,
+            path="/method_ref",
+        )
+        preparation_registration = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.get(
+            run_spec.method_ref.key
+        )
+        if method_registration.requires_execution_preparation:
+            require_execution_preparation_provider(
+                method_ref=run_spec.method_ref.key,
+                preparation_registry=DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+            )
+        if preparation_registration is not None and args.initial_slots:
+            raise ValueError(
+                "--initial-slots cannot be combined with an execution-preparation provider for "
+                f"method_ref {run_spec.method_ref.key!r}"
+            )
         initial_slots = _read_json(args.initial_slots) if args.initial_slots else None
+        kernel_context = None
+        loss_service = None
+        resume_slot_transform = None
+        if preparation_registration is not None:
+            prepared = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.prepare(
+                ExecutionPreparationRequest(
+                    run_spec=run_spec,
+                    run_id=args.run_id,
+                    resume=args.resume,
+                )
+            )
+            initial_slots = prepared.initial_slots
+            kernel_context = prepared.kernel_context
+            loss_service = prepared.loss_service
+            resume_slot_transform = prepared.resume_slot_transform
         training_payload = _read_json(args.training_payload) if args.training_payload else None
         started_at = time.perf_counter()
         emitter = RunEventEmitter.from_env(render_batch_lines=False)
         with RunInterruptionController() as interruption:
             try:
                 result = execute_training_run_spec(
-                    _read_json(args.spec),
+                    run_spec,
                     run_id=args.run_id,
                     initial_slots=initial_slots,
+                    kernel_context=kernel_context,
+                    loss_service=loss_service,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
                     training_spec_payload=training_payload,
@@ -372,6 +415,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     training_spec_payload_schema_version=args.training_payload_schema_version,
                     training_spec_payload_ref=args.training_payload_ref,
                     resume=args.resume,
+                    resume_slot_transform=resume_slot_transform,
                     stop_after_barrier=args.stop_after_barrier,
                     progress_callback=(
                         None if args.no_progress else _console_progress_printer(started_at)
