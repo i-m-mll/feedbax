@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.graph import GraphSpec, ParamValue, RetentionPolicySpec
+from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.worker import (
     AxisSpec,
@@ -364,6 +365,7 @@ class CheckpointProgressPolicySpec(TrainingRunContractModel):
     progress_interval: int | None = None
     resume_from: ResumeCoordinateSpec | None = None
     checkpoint_slots: CheckpointSlotManifest | None = None
+    continuation: CheckpointContinuationRequest | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

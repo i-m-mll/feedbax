@@ -24,6 +24,8 @@ import numpy as np
 from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.checkpoints import (
+    BatchIndexedCheckpointLeafSpec,
+    CheckpointContinuationRequest,
     CheckpointLatestPointer,
     CheckpointLineageRef,
     CheckpointForkProvenance,
@@ -367,6 +369,7 @@ def load_latest_checkpoint(
     expected_slots: Mapping[str, Any],
     expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
     resume_slot_transform: ResumeSlotTransform | None = None,
+    continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     allow_new_lineage_override: bool = False,
 ) -> CheckpointResumeResult:
     """Load and validate the latest published transaction before resume."""
@@ -380,6 +383,7 @@ def load_latest_checkpoint(
         expected_slots=expected_slots,
         expected_population_member_ids=expected_population_member_ids,
         resume_slot_transform=resume_slot_transform,
+        continuation_request=continuation_request,
         allow_new_lineage_override=allow_new_lineage_override,
     )
 
@@ -409,6 +413,7 @@ def _load_checkpoint_from_pointer(
     expected_slots: Mapping[str, Any],
     expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
     resume_slot_transform: ResumeSlotTransform | None = None,
+    continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     allow_new_lineage_override: bool = False,
 ) -> CheckpointResumeResult:
     """Load and validate a transaction through the same gates as latest resume."""
@@ -467,6 +472,19 @@ def _load_checkpoint_from_pointer(
             tuple(barrier.slots),
             loaded_slots,
             error_cls=CheckpointCompatibilityError,
+        )
+        loaded_fingerprints = {
+            slot: fingerprint
+            for slot, fingerprint in loaded_fingerprints.items()
+            if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
+        }
+    request = _coerce_continuation_request(continuation_request)
+    if request is not None:
+        loaded_slots = _apply_declared_continuation_request(
+            loaded_slots,
+            expected_slots=expected_slots,
+            manifest=manifest,
+            request=request,
         )
         loaded_fingerprints = {
             slot: fingerprint
@@ -534,6 +552,7 @@ def fork_checkpoint_transaction(
     expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
     slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
     transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     link_strategy: CheckpointBlobLinkStrategy | None = None,
     tool_version: str | None = None,
     metadata: Mapping[str, Any] | None = None,
@@ -559,6 +578,21 @@ def fork_checkpoint_transaction(
         transforms=transforms,
     )
     validation_slots = dict(expected_slots or prepared_slots)
+    request = _coerce_continuation_request(continuation_request)
+    continuation_transformed_slots: set[str] = set()
+    if request is not None:
+        before_continuation = dict(prepared_slots)
+        prepared_slots = _apply_declared_continuation_request(
+            prepared_slots,
+            expected_slots=validation_slots,
+            manifest=source.manifest,
+            request=request,
+        )
+        continuation_transformed_slots = {
+            slot
+            for slot in prepared_slots
+            if prepared_slots[slot] is not before_continuation.get(slot)
+        }
     _validate_required_slots(
         tuple(barrier.slots),
         prepared_slots,
@@ -591,6 +625,14 @@ def fork_checkpoint_transaction(
             slot: _transform_record(slot, transforms[slot], transform_meta.get(slot, {}))
             for slot in transforms
         }
+        for slot in continuation_transformed_slots:
+            transform_records[slot] = CheckpointForkTransformRecord(
+                slot=slot,
+                identity="feedbax.training_checkpoint.declared_continuation.v1",
+                parameters=request.model_dump(mode="json", exclude_none=True)
+                if request is not None
+                else {},
+            )
 
         for spec in barrier.slots:
             if spec.slot not in prepared_slots and not spec.required:
@@ -599,7 +641,7 @@ def fork_checkpoint_transaction(
                 raise CheckpointCompatibilityError(
                     f"target checkpoint slot {spec.slot!r} is missing after transforms"
                 )
-            if spec.slot in transforms:
+            if spec.slot in transforms or spec.slot in continuation_transformed_slots:
                 source_slot = source_slots_by_name.get(spec.slot)
                 slot_record, content_digest = _write_fresh_slot_blob(
                     spec,
@@ -682,6 +724,11 @@ def fork_checkpoint_transaction(
         manifest_metadata = dict(source.manifest.metadata)
         manifest_metadata["phase"] = barrier.phase
         manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
+        if request is not None:
+            manifest_metadata["checkpoint_continuation"] = request.model_dump(
+                mode="json",
+                exclude_none=True,
+            )
         manifest_metadata.update(dict(metadata or {}))
         completed_batches = _completed_training_batches(
             None,
@@ -752,6 +799,7 @@ def fork_checkpoint_transaction(
             expected_phase_program=phase_program,
             expected_slots=validation_slots,
             expected_population_member_ids=expected_population_member_ids,
+            continuation_request=request,
             allow_new_lineage_override=False,
         )
         latest_path = target_root_path / LATEST_POINTER_NAME
@@ -825,6 +873,183 @@ def _apply_slot_transforms(
             )
         transformed_slots[slot] = transformed_mapping[slot]
     return transformed_slots
+
+
+def _coerce_continuation_request(
+    value: CheckpointContinuationRequest | Mapping[str, Any] | None,
+) -> CheckpointContinuationRequest | None:
+    if value is None:
+        return None
+    if isinstance(value, CheckpointContinuationRequest):
+        return value
+    try:
+        return CheckpointContinuationRequest.model_validate(value)
+    except ValidationError as exc:
+        raise CheckpointCompatibilityError(
+            f"checkpoint continuation request is invalid: {exc}"
+        ) from exc
+
+
+def _apply_declared_continuation_request(
+    loaded_slots: Mapping[str, Any],
+    *,
+    expected_slots: Mapping[str, Any],
+    manifest: CheckpointTransactionManifest,
+    request: CheckpointContinuationRequest,
+) -> dict[str, Any]:
+    """Extend declared final-axis leaves while preserving checkpoint prefixes.
+
+    The target template supplies only the new tail.  This keeps the loaded
+    checkpoint's completed-history prefix byte-for-byte in value while avoiding
+    any inference about arbitrary PyTree leaves.
+    """
+    completed = manifest.completed_training_batches
+    if completed is None:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation requires manifest.completed_training_batches; "
+            f"contract_source_completed={request.source_completed_batches}"
+        )
+    if int(completed) != request.source_completed_batches:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation source completed batches mismatch; "
+            f"manifest={completed} contract={request.source_completed_batches}"
+        )
+    target_total = request.target_total
+    if target_total < int(completed):
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation target total precedes source; "
+            f"source_completed={completed} target_total={target_total}"
+        )
+    if target_total == int(completed):
+        return dict(loaded_slots)
+
+    declarations = {(leaf.slot, leaf.tree_path): leaf for leaf in request.batch_indexed_leaves}
+    extended: dict[str, Any] = dict(loaded_slots)
+    for slot, source_value in loaded_slots.items():
+        target_value = expected_slots.get(slot)
+        if target_value is None:
+            continue
+        source_pairs, source_treedef = jt.flatten_with_path(source_value)
+        target_pairs, _target_treedef = jt.flatten_with_path(target_value)
+        target_by_path = {
+            _key_path_to_text(path): leaf for path, leaf in target_pairs
+        }
+        source_paths = {_key_path_to_text(path) for path, _leaf in source_pairs}
+        leaves = [leaf for _path, leaf in source_pairs]
+        changed = False
+        for index, (path, source_leaf) in enumerate(source_pairs):
+            tree_path = _key_path_to_text(path)
+            target_leaf = target_by_path.get(tree_path)
+            declaration = declarations.get((slot, tree_path))
+            if declaration is not None:
+                leaves[index] = _extend_declared_batch_leaf(
+                    source_leaf,
+                    target_leaf,
+                    slot=slot,
+                    tree_path=tree_path,
+                    source_completed=int(completed),
+                    target_total=target_total,
+                    declaration=declaration,
+                )
+                changed = True
+                continue
+            if _is_undeclared_batch_horizon_mismatch(
+                source_leaf,
+                target_leaf,
+                source_completed=int(completed),
+                target_total=target_total,
+            ):
+                raise CheckpointCompatibilityError(
+                    "unsupported batch-indexed continuation leaf; "
+                    f"slot={slot!r} path={tree_path!r} "
+                    f"source_shape={tuple(jnp.asarray(source_leaf).shape)!r} "
+                    f"target_shape={tuple(jnp.asarray(target_leaf).shape)!r} "
+                    "contract=batch_indexed_leaves"
+                )
+        missing = [
+            leaf
+            for leaf in request.batch_indexed_leaves
+            if leaf.slot == slot and leaf.tree_path not in source_paths
+        ]
+        if missing:
+            raise CheckpointCompatibilityError(
+                "declared batch-indexed continuation leaf is missing from source slot; "
+                f"slot={slot!r} paths={[leaf.tree_path for leaf in missing]!r} "
+                "contract=batch_indexed_leaves"
+            )
+        if changed:
+            extended[slot] = jt.unflatten(source_treedef, leaves)
+
+    undeclared_slots = sorted({leaf.slot for leaf in request.batch_indexed_leaves} - set(loaded_slots))
+    if undeclared_slots:
+        raise CheckpointCompatibilityError(
+            "declared batch-indexed continuation slots are missing; "
+            f"slots={undeclared_slots!r} contract=batch_indexed_leaves"
+        )
+    return extended
+
+
+def _extend_declared_batch_leaf(
+    source_leaf: Any,
+    target_leaf: Any,
+    *,
+    slot: str,
+    tree_path: str,
+    source_completed: int,
+    target_total: int,
+    declaration: BatchIndexedCheckpointLeafSpec,
+) -> Any:
+    if target_leaf is None or not eqx.is_array(source_leaf) or not eqx.is_array(target_leaf):
+        raise CheckpointCompatibilityError(
+            "declared batch-indexed continuation leaf must be arrays in source and target; "
+            f"slot={slot!r} path={tree_path!r} contract={declaration.model_dump()!r}"
+        )
+    source = jnp.asarray(source_leaf)
+    target = jnp.asarray(target_leaf)
+    if source.ndim < 1 or target.ndim < 1:
+        raise CheckpointCompatibilityError(
+            "declared batch-indexed continuation leaf must have a final axis; "
+            f"slot={slot!r} path={tree_path!r} source_shape={source.shape!r} "
+            f"target_shape={target.shape!r}"
+        )
+    if source.shape[:-1] != target.shape[:-1] or source.dtype != target.dtype:
+        raise CheckpointCompatibilityError(
+            "declared batch-indexed continuation leaf prefix shape or dtype mismatch; "
+            f"slot={slot!r} path={tree_path!r} source_shape={source.shape!r} "
+            f"target_shape={target.shape!r} source_dtype={source.dtype} "
+            f"target_dtype={target.dtype} contract={declaration.model_dump()!r}"
+        )
+    if source.shape[-1] == target_total and target.shape[-1] == target_total:
+        return source_leaf
+    if source.shape[-1] != source_completed or target.shape[-1] != target_total:
+        raise CheckpointCompatibilityError(
+            "declared batch-indexed continuation leaf does not match declared horizons; "
+            f"slot={slot!r} path={tree_path!r} source_shape={source.shape!r} "
+            f"target_shape={target.shape!r} source_completed={source_completed} "
+            f"target_total={target_total} contract={declaration.model_dump()!r}"
+        )
+    return jnp.concatenate((source, target[..., source_completed:]), axis=-1)
+
+
+def _is_undeclared_batch_horizon_mismatch(
+    source_leaf: Any,
+    target_leaf: Any,
+    *,
+    source_completed: int,
+    target_total: int,
+) -> bool:
+    if target_leaf is None or not eqx.is_array(source_leaf) or not eqx.is_array(target_leaf):
+        return False
+    source = jnp.asarray(source_leaf)
+    target = jnp.asarray(target_leaf)
+    return (
+        source.ndim >= 1
+        and target.ndim >= 1
+        and source.shape[:-1] == target.shape[:-1]
+        and source.shape[-1] == source_completed
+        and target.shape[-1] == target_total
+        and source.shape != target.shape
+    )
 
 
 def _write_fresh_slot_blob(

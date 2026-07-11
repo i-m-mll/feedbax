@@ -14,6 +14,8 @@ import pytest
 
 import feedbax.training.checkpoint_custody as custody_module
 from feedbax.contracts.checkpoints import (
+    BatchIndexedCheckpointLeafSpec,
+    CheckpointContinuationRequest,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
@@ -976,6 +978,185 @@ def test_resume_slot_transform_runs_before_structural_abi_validation(
     )
 
     assert loaded.slots["controller"].tolist() == [1.0, 2.0, 0.0]
+
+
+def test_declared_continuation_extends_batch_indexed_leaf_to_requested_total(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    source["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source,
+        completed_training_batches=12000,
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[
+            BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
+        ],
+    )
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+        continuation_request=request,
+    )
+
+    controller = loaded.slots["controller"]
+    assert controller.shape == (5, 12200)
+    assert jnp.array_equal(controller[..., :12000], source["controller"])
+    assert jnp.array_equal(controller[..., 12000:], expected["controller"][..., 12000:])
+    assert jnp.array_equal(
+        loaded.slots["controller_optimizer"]["count"],
+        source["controller_optimizer"]["count"],
+    )
+    assert jnp.array_equal(loaded.slots["rng"], source["rng"])
+
+
+def test_declared_continuation_rejects_undeclared_batch_indexed_leaf(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    source["controller"] = jnp.zeros((5, 12000), dtype=jnp.float32)
+    source["controller_optimizer"] = {"count": jnp.zeros((5, 12000), dtype=jnp.float32)}
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source,
+        completed_training_batches=12000,
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.zeros((5, 12200), dtype=jnp.float32)
+    expected["controller_optimizer"] = {"count": jnp.zeros((5, 12200), dtype=jnp.float32)}
+
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="unsupported batch-indexed continuation leaf; slot='controller_optimizer' path='/count'",
+    ):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=expected,
+            continuation_request=CheckpointContinuationRequest(
+                source_completed_batches=12000,
+                additional_batches=200,
+                batch_indexed_leaves=[
+                    BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
+                ],
+            ),
+        )
+
+
+def test_declared_continuation_at_source_total_preserves_fork_blob_parity(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=source,
+        completed_training_batches=4,
+    )
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "source",
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=source,
+        continuation_request=CheckpointContinuationRequest(
+            source_completed_batches=4,
+            target_total_batches=4,
+            batch_indexed_leaves=[
+                BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
+            ],
+        ),
+    )
+
+    assert set(forked.slot_transfer_modes.values()) <= {"hardlink", "copy"}
+    assert all(slot.target_sha256 == slot.source_sha256 for slot in forked.manifest.fork_provenance.slots)
+
+
+def test_declared_continuation_fork_extends_then_validates_target_resume(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    source["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(5, 12000)
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source,
+        completed_training_batches=12000,
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[
+            BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
+        ],
+    )
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "source",
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=expected,
+        continuation_request=request,
+    )
+
+    assert forked.slot_transfer_modes["controller"] == "serialized"
+    resumed = load_latest_checkpoint(
+        tmp_path / "target",
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+        continuation_request=request,
+    )
+    assert resumed.slots["controller"].shape == (5, 12200)
+    assert jnp.array_equal(resumed.slots["controller"][..., :12000], source["controller"])
+
+
+def test_checkpoint_continuation_rejects_unknown_schema_version() -> None:
+    with pytest.raises(ValueError, match="migration_intentionally_absent=yes"):
+        CheckpointContinuationRequest.model_validate(
+            {
+                "schema_version": "feedbax.spec.training_checkpoint_continuation.v0",
+                "source_completed_batches": 12000,
+                "additional_batches": 200,
+                "batch_indexed_leaves": [{"slot": "controller", "tree_path": "/"}],
+            }
+        )
 
 
 def test_resume_slot_transform_that_drops_required_slot_fails_closed(
