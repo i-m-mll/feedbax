@@ -146,12 +146,26 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
     target_slots = _minimax_slots()
     target_slots["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
 
+    def offset_controller(slots):
+        transformed = dict(slots)
+        transformed["controller"] = transformed["controller"] + 10.0
+        return transformed
+
     table = fork_matrix_checkpoints(
         matrix,
         materialized,
         source_checkpoint_root=tmp_path / "source",
         target_checkpoint_roots={"continuation": tmp_path / "target"},
         target_slot_templates={"continuation": target_slots},
+        row_slot_transforms={"continuation": {"controller": offset_controller}},
+        row_transform_metadata={
+            "continuation": {
+                "controller": {
+                    "identity": "tests.offset_controller.v1",
+                    "parameters": {"offset": 10.0},
+                }
+            }
+        },
         parity_output_path=tmp_path / "parity.json",
     )
 
@@ -166,7 +180,10 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
         continuation_request=continuation,
     )
     assert resumed.slots["controller"].shape == (5, 12200)
-    assert jnp.array_equal(resumed.slots["controller"][..., :12000], source_slots["controller"])
+    assert jnp.array_equal(
+        resumed.slots["controller"][..., :12000], source_slots["controller"] + 10.0
+    )
+    assert jnp.all(resumed.slots["controller"][..., 12000:] == -1.0)
 
 
 def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -> None:

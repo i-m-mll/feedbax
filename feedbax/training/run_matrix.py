@@ -42,7 +42,10 @@ from feedbax.contracts.training import (
     TrainingMethodRegistry,
     TrainingRunSpec,
 )
-from feedbax.training.checkpoint_custody import fork_checkpoint_transaction
+from feedbax.training.checkpoint_custody import (
+    ResumeSlotTransform,
+    fork_checkpoint_transaction,
+)
 from feedbax.training.optimizers import learning_rate_at_step
 
 
@@ -331,6 +334,8 @@ def fork_matrix_checkpoints(
     target_checkpoint_roots: Mapping[str, Path],
     parity_output_path: Path,
     target_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
+    row_slot_transforms: Mapping[str, Mapping[str, ResumeSlotTransform]] | None = None,
+    row_transform_metadata: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
     tool_version: str = "feedbax.run_matrix_fork.v1",
@@ -340,7 +345,8 @@ def fork_matrix_checkpoints(
     ``target_slot_templates`` is required for rows with a declared checkpoint
     continuation because Feedbax must take any new batch-axis tail from the
     target runtime template rather than infer it from arbitrary checkpoint
-    PyTrees.
+    PyTrees. ``row_slot_transforms`` are caller-owned, per-row transforms
+    applied before any declared continuation extension.
     """
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
@@ -355,6 +361,18 @@ def fork_matrix_checkpoints(
         raise RunMatrixError(
             "target slot templates contain unknown rows "
             f"{unexpected_templates!r}"
+        )
+    unexpected_transforms = sorted(set(row_slot_transforms or {}) - row_ids)
+    if unexpected_transforms:
+        raise RunMatrixError(
+            "row slot transforms contain unknown rows "
+            f"{unexpected_transforms!r}"
+        )
+    unexpected_transform_metadata = sorted(set(row_transform_metadata or {}) - row_ids)
+    if unexpected_transform_metadata:
+        raise RunMatrixError(
+            "row transform metadata contains unknown rows "
+            f"{unexpected_transform_metadata!r}"
         )
     reporter = lr_reporter or StandardLrContinuationReporter()
     parity_rows: list[dict[str, Any]] = []
@@ -387,6 +405,8 @@ def fork_matrix_checkpoints(
                 target_run_spec=row.spec,
                 target_phase_program=row.spec.worker_execution.method_contract.phase_program,
                 expected_slots=expected_slots,
+                slot_transforms=(row_slot_transforms or {}).get(row.row_id),
+                transform_metadata=(row_transform_metadata or {}).get(row.row_id),
                 continuation_request=continuation,
                 tool_version=tool_version,
                 metadata={
