@@ -593,15 +593,18 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
         emit=events.append,
     )
 
-    progress_batches = [event["batch"] for event in events if event["type"] == "training_progress"]
-    log_batches = [event["batch"] for event in events if event["type"] == "training_log"]
-    trajectory_batches = [
-        event["batch"] for event in events if event["type"] == "training_trajectory"
+    progress_steps = [
+        event["program_step"] for event in events if event["type"] == "training_progress"
+    ]
+    log_steps = [event["program_step"] for event in events if event["type"] == "training_log"]
+    trajectory_steps = [
+        event["program_step"] for event in events if event["type"] == "training_trajectory"
     ]
 
-    assert progress_batches == [1, 2, 3, 4, 5]
-    assert log_batches == [1, 2, 3, 4, 5]
-    assert trajectory_batches == [3, 5]
+    assert progress_steps == [1, 2, 3, 4, 5]
+    assert log_steps == [1, 2, 3, 4, 5]
+    assert trajectory_steps == [3, 5]
+    assert all("batch" not in event for event in events)
 
 
 def test_run_training_graph_emits_selector_keyed_live_trajectory_tracks(

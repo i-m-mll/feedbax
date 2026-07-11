@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 RUN_EVENT_SCHEMA_ID = "feedbax.run_event"
-RUN_EVENT_SCHEMA_VERSION = "feedbax.run_event.v1"
+RUN_EVENT_SCHEMA_VERSION = "feedbax.run_event.v2"
 RUN_EVENT_TERMINAL_TYPES = frozenset({"complete", "failed"})
 RUN_EVENT_EXTENSION_TYPES = frozenset({"log", "trajectory"})
 RUN_EVENT_CORE_TYPES = frozenset(

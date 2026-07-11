@@ -76,7 +76,7 @@ def test_run_event_rejects_unknown_schema_and_extra_fields() -> None:
     }
 
     with pytest.raises(RunEventProtocolError, match="schema_version"):
-        RunEvent.model_validate({**base, "schema_version": "feedbax.run_event.v0"})
+        RunEvent.model_validate({**base, "schema_version": "feedbax.run_event.v1"})
     with pytest.raises(Exception, match="Extra inputs"):
         RunEvent.model_validate({**base, "unexpected": True})
 
@@ -90,7 +90,7 @@ def test_run_event_registry_declares_reject_policy() -> None:
     assert family.policy.stance == "reject"
 
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
-        default_spec_registry.migrate("RunEvent", {"schema_version": "feedbax.run_event.v0"})
+        default_spec_registry.migrate("RunEvent", {"schema_version": "feedbax.run_event.v1"})
 
 
 def test_reader_rejects_non_monotonic_seq(tmp_path: Path) -> None:

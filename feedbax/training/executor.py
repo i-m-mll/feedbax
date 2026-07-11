@@ -177,7 +177,6 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                     "barrier_visit_ordinal": saved.visit_ordinal,
                     "transaction_id": write.manifest.transaction_id,
                     "coordinate": saved.coordinate.model_dump(mode="json", exclude_none=True),
-                    "batch": saved.coordinate.program_step,
                     "program_step": saved.coordinate.program_step,
                 },
             )
@@ -448,7 +447,7 @@ def execute_training_run_spec(
                         mode="json",
                         exclude_none=True,
                     ),
-                    "batch": execution.coordinate.program_step,
+                    "program_step": execution.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
                     "metrics": final_metrics,
@@ -494,7 +493,7 @@ def execute_training_run_spec(
                     "run_id": resolved_run_id,
                     "status": "cancelled",
                     "coordinate": interrupted.coordinate.model_dump(mode="json", exclude_none=True),
-                    "batch": interrupted.coordinate.program_step,
+                    "program_step": interrupted.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
                     "metrics": final_metrics,
@@ -746,7 +745,6 @@ def _live_progress_callback(
                     {
                         "run_id": coordinate.run_id,
                         "phase": coordinate.phase,
-                        "batch": coordinate.program_step,
                         "program_step": coordinate.program_step,
                         "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
                     },
@@ -783,7 +781,6 @@ def _run_progress_event_payload(
     payload: dict[str, Any] = {
         "run_id": coordinate.run_id,
         "phase": coordinate.phase,
-        "batch": coordinate.program_step,
         "program_step": coordinate.program_step,
         "total_batches": total_batches,
         "coordinate": coordinate.model_dump(mode="json", exclude_none=True),

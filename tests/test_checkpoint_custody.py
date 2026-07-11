@@ -526,6 +526,56 @@ def test_chunked_custody_records_program_and_batch_progress_independently(
     assert latest["completed_training_batches"] == 12000
 
 
+def test_custody_rejects_batch_total_seeded_as_program_step(tmp_path: Path) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    with pytest.raises(CheckpointConsistencyError, match="not a training-batch total"):
+        write_checkpoint_transaction(
+            tmp_path,
+            run_spec=spec,
+            phase_program=program,
+            barrier_name="after_train_batch",
+            coordinate=ProgressCoordinate(
+                run_id="poisoned-units",
+                phase="train_batch",
+                program_step=12000,
+                completed_barrier="after_train_batch",
+            ),
+            slots={
+                "model": 0,
+                "optimizer": {"count": 0},
+                "prng": [0, 1],
+                "batch_counter": 12000,
+            },
+            metadata={"barrier_visit_ordinal": 24},
+        )
+
+
+def test_custody_accepts_one_based_program_step_for_zero_based_barrier_visit(
+    tmp_path: Path,
+) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="correct-units",
+            phase="train_batch",
+            program_step=24,
+            completed_barrier="after_train_batch",
+        ),
+        slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": 12000,
+        },
+        metadata={"barrier_visit_ordinal": 23},
+    )
+    assert result.manifest.completed_coordinate.program_step == 24
+
+
 def test_custody_rejects_declared_batches_that_disagree_with_bookkeeping_slot(
     tmp_path: Path,
 ) -> None:

@@ -487,13 +487,14 @@ def test_execute_training_run_spec_emits_run_events_without_changing_manifest(
     assert event_types[0] == "ready"
     assert event_types.count("complete") == 1
     assert event_types[-1] == "complete"
-    assert [event.payload["batch"] for event in events if event.type == "progress"] == [
+    assert [event.payload["program_step"] for event in events if event.type == "progress"] == [
         1,
         2,
         3,
     ]
     checkpoint_events = [event for event in events if event.type == "checkpoint_written"]
-    assert [event.payload["batch"] for event in checkpoint_events] == [1, 2, 3]
+    assert [event.payload["program_step"] for event in checkpoint_events] == [1, 2, 3]
+    assert all("batch" not in event.payload for event in events)
     assert all("coordinate" in event.payload for event in checkpoint_events)
     assert all("transaction_id" in event.payload for event in checkpoint_events)
     assert result.manifest_path.exists()
