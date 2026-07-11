@@ -62,6 +62,88 @@ def write_training_run_spec(path: Path) -> None:
     )
 
 
+def init_repo(path: Path, branch: str) -> str:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-b", branch], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=path, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=path, check=True, capture_output=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_deploy_starts_log_with_checkout_provenance_and_warns_on_pin_skew(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path)
+    feedbax = tmp_path / "feedbax"
+    rlrmp = tmp_path / "rlrmp"
+    feedbax_sha = init_repo(feedbax, "feedbax-test")
+    consumer_sha = init_repo(rlrmp, "consumer-test")
+    (feedbax / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    (rlrmp / "ci").mkdir()
+    (rlrmp / "ci" / "feedbax-ref.toml").write_text(
+        f'rev = "{"1" * 40}"\n', encoding="utf-8"
+    )
+
+    result = run_script(
+        "--config",
+        str(config),
+        "--help",
+    )
+
+    lines = result.stderr.splitlines()
+    assert result.returncode == 0
+    assert lines[0].startswith("provenance ")
+    assert f"feedbax_sha={feedbax_sha}" in lines[0]
+    assert "feedbax_branch=feedbax-test" in lines[0]
+    assert "feedbax_dirty=true" in lines[0]
+    assert f"consumer_sha={consumer_sha}" in lines[0]
+    assert "consumer_branch=consumer-test" in lines[0]
+    assert f"script={RUNPOD_DEPLOY}" in lines[0]
+    assert lines[1].startswith("WARNING: feedbax checkout/pin skew")
+
+
+def test_poll_starts_log_with_checkout_provenance(tmp_path: Path) -> None:
+    feedbax = tmp_path / "feedbax"
+    rlrmp = tmp_path / "rlrmp"
+    feedbax_sha = init_repo(feedbax, "feedbax-poll")
+    consumer_sha = init_repo(rlrmp, "consumer-poll")
+    (rlrmp / "ci").mkdir()
+    (rlrmp / "ci" / "feedbax-ref.toml").write_text(
+        f'rev = "{feedbax_sha}"\n', encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [str(POLL_RUN), "--help"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "FEEDBAX_ROOT": str(feedbax),
+            "RLRMP_ROOT": str(rlrmp),
+        },
+    )
+
+    lines = result.stderr.splitlines()
+    assert result.returncode == 0
+    assert len(lines) == 1
+    assert lines[0].startswith("provenance ")
+    assert f"feedbax_sha={feedbax_sha}" in lines[0]
+    assert "feedbax_branch=feedbax-poll" in lines[0]
+    assert "feedbax_dirty=false" in lines[0]
+    assert f"consumer_sha={consumer_sha}" in lines[0]
+    assert "consumer_branch=consumer-poll" in lines[0]
+    assert f"script={POLL_RUN}" in lines[0]
+
+
 def test_training_launch_requires_confirmed_spec(tmp_path: Path) -> None:
     config = write_config(tmp_path)
 
