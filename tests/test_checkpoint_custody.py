@@ -1374,6 +1374,116 @@ def test_declared_continuation_fork_extends_then_validates_target_resume(
     assert jnp.array_equal(resumed.slots["controller"][..., :12000], source["controller"])
 
 
+def test_target_declared_continuation_precedes_target_serialization_and_resume(
+    tmp_path: Path,
+) -> None:
+    source_spec = _run_spec(minimax=True)
+    program = source_spec.worker_execution.method_contract.phase_program
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[
+            BatchIndexedCheckpointLeafSpec(
+                slot="controller_optimizer",
+                tree_path="/history",
+            )
+        ],
+    )
+    target_spec = source_spec.model_copy(deep=True)
+    target_spec.checkpoint_progress.continuation = request
+    source = _minimax_slots()
+    source["controller_optimizer"] = {
+        "count": jnp.array(12000, dtype=jnp.int32),
+        "history": jnp.arange(12000, dtype=jnp.float32),
+    }
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source,
+        completed_training_batches=12000,
+    )
+    raw_target_optimizer = {
+        "count": jnp.array(12000, dtype=jnp.int32),
+        "history": jnp.full((12200,), -1.0, dtype=jnp.float32),
+    }
+    expected = _minimax_slots()
+    expected["controller_optimizer"] = {"serialized_payload": raw_target_optimizer["history"]}
+
+    def serialize_target_optimizer(slots):
+        transformed = dict(slots)
+        transformed["controller_optimizer"] = {
+            "serialized_payload": slots["controller_optimizer"]["history"]
+        }
+        return transformed
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "source",
+        tmp_path / "target",
+        target_run_spec=target_spec,
+        target_phase_program=program,
+        expected_slots=expected,
+        continuation_slot_templates={"controller_optimizer": raw_target_optimizer},
+        target_slot_transform=serialize_target_optimizer,
+        target_transform_metadata={
+            "identity": "test:serialize_target_optimizer",
+            "parameters": {},
+        },
+        target_transformed_slots=["controller_optimizer"],
+    )
+
+    assert forked.manifest.metadata["checkpoint_continuation_applied"] is True
+    resumed = load_latest_checkpoint(
+        tmp_path / "target",
+        expected_run_spec=target_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+        continuation_request=request,
+    )
+    history = resumed.slots["controller_optimizer"]["serialized_payload"]
+    assert history.shape == (12200,)
+    assert jnp.array_equal(history[:12000], source["controller_optimizer"]["history"])
+    assert jnp.array_equal(history[12000:], raw_target_optimizer["history"][12000:])
+
+
+def test_fork_rejects_continuation_that_differs_from_target_declaration(
+    tmp_path: Path,
+) -> None:
+    target_spec = _run_spec(minimax=True).model_copy(deep=True)
+    declared = CheckpointContinuationRequest(
+        source_completed_batches=4,
+        additional_batches=2,
+        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")],
+    )
+    target_spec.checkpoint_progress.continuation = declared
+    program = target_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=_run_spec(minimax=True),
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=source,
+        completed_training_batches=4,
+    )
+
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="continuation request differs from target run spec",
+    ):
+        fork_checkpoint_transaction(
+            tmp_path / "source",
+            tmp_path / "target",
+            target_run_spec=target_spec,
+            target_phase_program=program,
+            expected_slots=source,
+            continuation_request=declared.model_copy(update={"additional_batches": 3}),
+        )
+
+
 def test_continuation_fork_uses_target_total_for_declared_batch_progress(
     tmp_path: Path,
 ) -> None:
