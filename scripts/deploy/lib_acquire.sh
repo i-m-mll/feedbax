@@ -274,8 +274,7 @@ rows_manifest_field() {
 
 # latest_pointer_completed_batches <latest.json>
 # Supports current Feedbax checkpoint custody pointers and older RLRMP indexes.
-# Coordinate fields are custody/barrier positions; use them only as a legacy
-# fallback when no explicit training-batch field exists.
+# Coordinates are custody/barrier positions, never training-batch fallbacks.
 latest_pointer_completed_batches() {
     local latest_json=$1
     [ -f "$latest_json" ] || return 1
@@ -284,13 +283,10 @@ latest_pointer_completed_batches() {
         // .completed_batches
         // .completed_batch
         // .completedBatch
-        // .n_batches
-        // .batch
         // .metadata.completed_training_batches
         // .metadata.completed_batches
         // .metadata.completed_batch
         // .metadata.completedBatch
-        // .completed_coordinate.global_step
         // empty
     ' "$latest_json" 2>/dev/null
 }

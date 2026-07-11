@@ -93,6 +93,26 @@ def validate_worker_identifier(value: str, *, path: str = "identifier") -> str:
     return value
 
 
+def _migrate_legacy_global_step(value: Any, *, model_name: str) -> Any:
+    """Map an old coordinate field to the explicit cumulative program field.
+
+    This intentionally only migrates coordinate naming. It never supplies a
+    training-batch total from a legacy coordinate.
+    """
+    if not isinstance(value, dict) or "global_step" not in value:
+        return value
+    migrated = dict(value)
+    legacy = migrated.pop("global_step")
+    current = migrated.get("program_step")
+    if current is not None and current != legacy:
+        raise ValueError(
+            f"{model_name} has conflicting legacy global_step={legacy!r} and "
+            f"program_step={current!r}"
+        )
+    migrated["program_step"] = legacy
+    return migrated
+
+
 class AxisReducerSpec(StrictModel):
     """Declares that the worker owns reduction over an intra-run axis."""
 
@@ -272,11 +292,45 @@ class MetricGuardSpec(StrictModel):
 
 
 class ResumeCoordinateSpec(StrictModel):
-    """Coordinate at which a phase program can resume."""
+    """Cumulative program coordinate at which a phase program can resume."""
 
     phase: str
     completed_barrier: str | None = None
-    global_step: int = 0
+    program_step: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_global_step(cls, value: Any) -> Any:
+        return _migrate_legacy_global_step(value, model_name=cls.__name__)
+
+
+class TrainingBatchProgressSpec(StrictModel):
+    """Declared authority for completed training batches at a custody barrier.
+
+    ``slot`` names a declared persistent state slot. ``field_path`` is traversed
+    through mapping keys (or sequence indices) to obtain a non-negative integer
+    total. This is deliberately separate from ``ProgressCoordinate.program_step``:
+    a program may take one orchestration step for many training batches.
+    """
+
+    slot: str
+    field_path: tuple[str | int, ...] = ()
+
+    @field_validator("slot")
+    @classmethod
+    def _validate_slot(cls, value: str) -> str:
+        return validate_worker_identifier(value, path="batch_progress.slot")
+
+    @field_validator("field_path")
+    @classmethod
+    def _validate_field_path(cls, value: tuple[str | int, ...]) -> tuple[str | int, ...]:
+        for index, segment in enumerate(value):
+            if isinstance(segment, int) and segment >= 0:
+                continue
+            if isinstance(segment, str) and segment:
+                continue
+            raise ValueError(f"batch_progress.field_path[{index}] must be a non-empty key or index")
+        return value
 
 
 class CheckpointSlotSpec(StrictModel):
@@ -345,6 +399,7 @@ class PhaseProgramSpec(StrictModel):
     update_steps: list[UpdateStepSpec] = Field(default_factory=list)
     optimizer_bindings: list[OptimizerTargetBinding] = Field(default_factory=list)
     checkpoint_barriers: list[CheckpointBarrierSpec] = Field(default_factory=list)
+    batch_progress: TrainingBatchProgressSpec | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -407,11 +462,16 @@ class MethodContractSpec(StrictModel):
 
 
 class ProgressCoordinate(StrictModel):
-    """Generic nested-loop coordinate for worker progress streams."""
+    """Cumulative program coordinate for worker progress streams.
+
+    ``program_step`` counts executed phase-program steps across phase
+    transitions and resumes. It is neither a training-batch total nor a
+    checkpoint count; custody records those values separately.
+    """
 
     run_id: str
     phase: str
-    global_step: int = 0
+    program_step: int = 0
     outer_step: int | None = None
     inner_step: int | None = None
     adversary_member: int | None = None
@@ -422,6 +482,11 @@ class ProgressCoordinate(StrictModel):
     completed_barrier: str | None = None
     schedule_origin_step: int | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_global_step(cls, value: Any) -> Any:
+        return _migrate_legacy_global_step(value, model_name=cls.__name__)
 
 
 class ConsistencyPredicateRule(StrictModel):
@@ -460,9 +525,14 @@ class CheckpointSlotRecord(StrictModel):
 
     slot: str
     barrier: str
-    global_step: int
+    program_step: int
     axis_index: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_global_step(cls, value: Any) -> Any:
+        return _migrate_legacy_global_step(value, model_name=cls.__name__)
 
 
 class CheckpointSlotManifest(StrictModel):
@@ -560,7 +630,7 @@ def supervised_executor_mapping() -> tuple[WorkerMappingRow, ...]:
             axes=["batch"],
             state_slots=["model", "optimizer", "prng", "trial_specs", "auxiliary_losses"],
             optimizer_bindings=["task_optimizer_to_model"],
-            progress_coordinate="run_id/phase/global_step",
+            progress_coordinate="run_id/phase/program_step",
             checkpoint_transaction="manifested multi-slot checkpoint transaction",
             notes="Executor-owned phase step using declared kernels and checkpoint custody.",
         ),
@@ -573,7 +643,7 @@ PPO_MAPPING_TABLE: tuple[WorkerMappingRow, ...] = (
         phase="collect_rollout",
         axes=["environment", "rollout"],
         state_slots=["policy", "environment_state", "prng", "rollout", "observation_norm"],
-        progress_coordinate="run_id/phase/global_step/outer_step",
+        progress_coordinate="run_id/phase/program_step/outer_step",
         checkpoint_transaction="policy+optimizer+environment_state+prng",
         notes="Rollout collection scans over time and vmaps over environments.",
     ),
@@ -701,7 +771,7 @@ def toy_minimax_method_contract() -> MethodContractSpec:
                 resume_coordinate=ResumeCoordinateSpec(
                     phase="adversarial",
                     completed_barrier="after_warmup",
-                    global_step=1,
+                    program_step=1,
                 ),
             ),
             CheckpointBarrierSpec(
@@ -804,7 +874,7 @@ def toy_adaptive_curriculum_method_contract() -> MethodContractSpec:
                 resume_coordinate=ResumeCoordinateSpec(
                     phase="adaptive",
                     completed_barrier="after_adaptive_measurement",
-                    global_step=1,
+                    program_step=1,
                 ),
             ),
         ],

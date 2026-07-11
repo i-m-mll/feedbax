@@ -910,7 +910,7 @@ fi
 
 mkdir -p "$W8/rlrmp/_artifacts/run/checkpoints"
 cat > "$W8/rlrmp/_artifacts/run/checkpoints/latest.json" <<JSON
-{"completed_coordinate":{"global_step":42}}
+{"completed_coordinate":{"program_step":42}}
 JSON
 cat > "$W8/spec_ok.json" <<JSON
 {"user_confirmed":true,"resume":{"baseline_checkpoint":"_artifacts/run/checkpoints","completed_batches":42}}

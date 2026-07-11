@@ -36,8 +36,6 @@ LATEST_BATCH_KEYS = (
     "completed_batches",
     "completed_batch",
     "completedBatch",
-    "n_batches",
-    "batch",
 )
 METADATA_BATCH_KEYS = (
     "completed_training_batches",
@@ -834,9 +832,6 @@ def latest_pointer_completed_batches(payload: Mapping[str, Any]) -> str | None:
             value = metadata.get(key)
             if value is not None:
                 return str(value)
-    coordinate = payload.get("completed_coordinate")
-    if isinstance(coordinate, Mapping) and coordinate.get("global_step") is not None:
-        return str(coordinate["global_step"])
     return None
 
 
@@ -845,9 +840,9 @@ def remote_baseline_verification_command(target: str, expected_batch: str) -> st
     latest = f"{target.rstrip('/')}/latest.json"
     jq_filter = (
         ".completed_training_batches // .completed_batches // .completed_batch // "
-        ".completedBatch // .n_batches // .batch // .metadata.completed_training_batches // "
+        ".completedBatch // .metadata.completed_training_batches // "
         ".metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // "
-        ".completed_coordinate.global_step // empty"
+        "empty"
     )
     return (
         f"test -e {_sq(target)} && test -f {_sq(latest)} && "

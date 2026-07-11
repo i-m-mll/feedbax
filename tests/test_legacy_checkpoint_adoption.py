@@ -107,7 +107,7 @@ def _coordinate(step: int = 12) -> ProgressCoordinate:
     return ProgressCoordinate(
         run_id="legacy-adopt-test",
         phase="warmup",
-        global_step=step,
+        program_step=step,
         completed_barrier="after_warmup",
     )
 

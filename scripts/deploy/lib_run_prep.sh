@@ -382,7 +382,7 @@ validate_remote_declared_baselines() {
         label=$(printf '%s\n' "$baselines" | jq -r ".[$i].label")
         expected=$(printf '%s\n' "$baselines" | jq -r ".[$i].completed_batch")
         latest="$target/latest.json"
-        provider_exec "test -e $(sq "$target") && test -f $(sq "$latest") && actual=\$(jq -r '.completed_training_batches // .completed_batches // .completed_batch // .completedBatch // .n_batches // .batch // .metadata.completed_training_batches // .metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // .completed_coordinate.global_step // empty' $(sq "$latest")) && test -n \"\$actual\" && test \"\$actual\" = $(sq "$expected")" ||
+        provider_exec "test -e $(sq "$target") && test -f $(sq "$latest") && actual=\$(jq -r '.completed_training_batches // .completed_batches // .completed_batch // .completedBatch // .metadata.completed_training_batches // .metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // empty' $(sq "$latest")) && test -n \"\$actual\" && test \"\$actual\" = $(sq "$expected")" ||
             die "baseline preflight failed: remote staged baseline mismatch for $label at $latest (expected completed batch $expected)"
         i=$((i + 1))
     done

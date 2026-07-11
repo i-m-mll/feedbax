@@ -23,6 +23,7 @@ from feedbax.contracts.worker import (
     ProgressCoordinate,
     ResumeCoordinateSpec,
     StateSlotSpec,
+    TrainingBatchProgressSpec,
     UpdateKernelSpec,
     UpdateStepSpec,
     derive_consistency_predicate,
@@ -101,17 +102,11 @@ class LrScheduleSpec(BaseModel):
             raise ValueError(f"/total_steps is required when lr_schedule.kind={self.kind!r}")
         if self.kind == "warmup_cosine":
             if self.constant_lr_iterations < 1:
-                raise ValueError(
-                    "/constant_lr_iterations must be >= 1 for warmup_cosine schedules"
-                )
+                raise ValueError("/constant_lr_iterations must be >= 1 for warmup_cosine schedules")
             if self.constant_lr_iterations >= self.total_steps:
-                raise ValueError(
-                    "/constant_lr_iterations must be < /total_steps for warmup_cosine"
-                )
+                raise ValueError("/constant_lr_iterations must be < /total_steps for warmup_cosine")
         if self.kind == "delayed_cosine" and self.constant_lr_iterations >= self.total_steps:
-            raise ValueError(
-                "/constant_lr_iterations must be < /total_steps for delayed_cosine"
-            )
+            raise ValueError("/constant_lr_iterations must be < /total_steps for delayed_cosine")
         return self
 
 
@@ -377,9 +372,9 @@ class TrainingMethodRegistration:
     payload_model: type[BaseModel]
     contract_factory: Callable[[], MethodContractSpec]
     update_kernels_factory: Callable[[BaseModel], Mapping[str, Callable[..., Mapping[str, Any]]]]
-    guard_predicates_factory: Callable[[BaseModel], Mapping[str, Callable[..., Mapping[str, Any]]]] = (
-        lambda _payload: {}
-    )
+    guard_predicates_factory: Callable[
+        [BaseModel], Mapping[str, Callable[..., Mapping[str, Any]]]
+    ] = lambda _payload: {}
     rejected_payload_versions: tuple[str, ...] = ()
     owner: str = "feedbax"
     package: str | None = None
@@ -468,8 +463,8 @@ def standard_supervised_method_contract() -> MethodContractSpec:
             PhaseSpec(
                 name="train_batch",
                 kind="outer_loop",
-                reads=["model", "optimizer", "prng", "objective"],
-                writes=["model", "optimizer", "prng", "train_loss"],
+                reads=["model", "optimizer", "prng", "objective", "batch_counter"],
+                writes=["model", "optimizer", "prng", "train_loss", "batch_counter"],
                 update_steps=["supervised_gradient_update"],
                 checkpoint_barrier="after_train_batch",
             )
@@ -482,8 +477,8 @@ def standard_supervised_method_contract() -> MethodContractSpec:
                 kernel=UpdateKernelSpec(
                     kernel_ref="feedbax.training.standard_supervised.gradient_update"
                 ),
-                reads=["model", "optimizer", "prng", "objective"],
-                writes=["model", "optimizer", "prng", "train_loss"],
+                reads=["model", "optimizer", "prng", "objective", "batch_counter"],
+                writes=["model", "optimizer", "prng", "train_loss", "batch_counter"],
                 axes=["batch"],
                 optimizer_binding="optimizer_to_model",
             )
@@ -506,9 +501,11 @@ def standard_supervised_method_contract() -> MethodContractSpec:
                     CheckpointSlotSpec(slot="model"),
                     CheckpointSlotSpec(slot="optimizer"),
                     CheckpointSlotSpec(slot="prng"),
+                    CheckpointSlotSpec(slot="batch_counter"),
                 ],
             )
         ],
+        batch_progress=TrainingBatchProgressSpec(slot="batch_counter"),
     )
     return MethodContractSpec(
         method_ref=STANDARD_SUPERVISED_METHOD_REF,
@@ -520,6 +517,7 @@ def standard_supervised_method_contract() -> MethodContractSpec:
             StateSlotSpec(name="prng", role="prng"),
             StateSlotSpec(name="objective", role="objective"),
             StateSlotSpec(name="train_loss", role="metric", required=False),
+            StateSlotSpec(name="batch_counter", role="auxiliary"),
         ],
         phase_program=program,
     )
@@ -556,7 +554,8 @@ def standard_supervised_update_kernels(
             "model": slots["model"],
             "optimizer": slots["optimizer"],
             "prng": slots["prng"],
-            "train_loss": float(coordinate.global_step + 1),
+            "train_loss": float(coordinate.program_step + 1),
+            "batch_counter": slots["batch_counter"] + 1,
         }
         model = slots["model"]
         optimizer = slots["optimizer"]

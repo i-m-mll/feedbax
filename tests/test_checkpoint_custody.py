@@ -18,6 +18,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -38,6 +39,7 @@ from feedbax.contracts.training import (
 from feedbax.contracts.worker import (
     EffectivePhaseSpec,
     ProgressCoordinate,
+    TrainingBatchProgressSpec,
     derive_consistency_predicate,
     toy_minimax_method_contract,
 )
@@ -119,7 +121,7 @@ def _coordinate(step: int = 1) -> ProgressCoordinate:
     return ProgressCoordinate(
         run_id="run-1",
         phase="warmup",
-        global_step=step,
+        program_step=step,
         completed_barrier="after_warmup",
     )
 
@@ -275,10 +277,7 @@ def test_slot_integrity_records_preserve_leaf_digest_and_fingerprint_values() ->
     integrity = custody_module._slot_integrity_records(value)
 
     assert integrity.leaf_digests == legacy_leaf_digests
-    assert (
-        integrity.structural_abi_fingerprint
-        == custody_module.structural_abi_fingerprint(value)
-    )
+    assert integrity.structural_abi_fingerprint == custody_module.structural_abi_fingerprint(value)
 
 
 def test_training_run_manifest_links_checkpoint_custody_ref() -> None:
@@ -309,6 +308,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     )
 
 
@@ -342,6 +342,7 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v1-to-v2-fork-provenance",
         "training-checkpoint-transaction-v2-to-v3-portable-custody",
         "training-checkpoint-transaction-v3-to-v4-batch-progress",
+        "training-checkpoint-transaction-v4-to-v5-program-coordinate",
     ]
 
 
@@ -369,9 +370,9 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
     binding = payload["run_contract_binding"]
     binding["schema_version"] = "feedbax.manifest.training_checkpoint.run_contract_binding.v1"
     binding.pop("algorithm_version")
-    binding["canonical_projection"]["training_run_spec"][
-        "schema_version"
-    ] = "feedbax.spec.training_run.v1"
+    binding["canonical_projection"]["training_run_spec"]["schema_version"] = (
+        "feedbax.spec.training_run.v1"
+    )
     binding["canonical_projection"]["training_run_spec"].pop("on_nan")
     binding["canonical_projection_sha256"] = "legacy-projection-hash"
 
@@ -391,9 +392,10 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
     assert migrated_fingerprint["fingerprint_sha256"] != "legacy-mixed-serializer-hash"
     migrated_binding = migrated.payload["run_contract_binding"]
     assert migrated_binding["algorithm_version"].endswith(".run_contract_binding.v2")
-    assert migrated_binding["canonical_projection"]["training_run_spec"][
-        "schema_version"
-    ] == run_spec.schema_version
+    assert (
+        migrated_binding["canonical_projection"]["training_run_spec"]["schema_version"]
+        == run_spec.schema_version
+    )
     assert migrated_binding["canonical_projection"]["training_run_spec"]["on_nan"] == "raise"
 
 
@@ -425,9 +427,7 @@ def test_checkpoint_transaction_manifest_v3_migrates_batch_progress_metadata(
     assert migrated.source_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3
     assert migrated.target_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert migrated.payload["completed_training_batches"] == 16500
-    assert "not the primary training-batch" in migrated.payload[
-        "completed_coordinate_semantics"
-    ]
+    assert "not the primary training-batch" in migrated.payload["completed_coordinate_semantics"]
 
 
 def test_checkpoint_latest_pointer_prefers_explicit_batches_over_coordinate(
@@ -447,12 +447,143 @@ def test_checkpoint_latest_pointer_prefers_explicit_batches_over_coordinate(
 
     latest = json.loads(result.latest_pointer_path.read_text())
 
-    assert result.manifest.completed_coordinate.global_step == 12009
+    assert result.manifest.completed_coordinate.program_step == 12009
     assert result.manifest.completed_training_batches == 16500
     assert result.latest_pointer.completed_training_batches == 16500
     assert latest["completed_training_batches"] == 16500
-    assert latest["completed_coordinate"]["global_step"] == 12009
+    assert latest["completed_coordinate"]["program_step"] == 12009
     assert "not the primary training-batch" in latest["completed_coordinate_semantics"]
+
+
+def _batch_counter_program_and_spec() -> tuple[TrainingRunSpec, object]:
+    """Build a method declaration whose chunks each cover 500 batches."""
+    spec = _run_spec()
+    contract = spec.worker_execution.method_contract.model_copy(deep=True)
+    program = contract.phase_program.model_copy(
+        update={
+            "batch_progress": TrainingBatchProgressSpec(slot="batch_counter"),
+        }
+    )
+    contract = contract.model_copy(
+        update={
+            "phase_program": program,
+            "state_slots": contract.state_slots,
+        }
+    )
+    effective = spec.worker_execution.effective_phase.model_copy(
+        update={"phase_program": program, "state_slots": contract.state_slots}
+    )
+    return (
+        spec.model_copy(
+            update={
+                "training_config": spec.training_config.model_copy(update={"n_batches": 12000}),
+                "worker_execution": spec.worker_execution.model_copy(
+                    update={"method_contract": contract, "effective_phase": effective}
+                ),
+            }
+        ),
+        program,
+    )
+
+
+def test_chunked_custody_records_program_and_batch_progress_independently(
+    tmp_path: Path,
+) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    slots = {"model": 0, "optimizer": {"count": 0}, "prng": [0, 1], "batch_counter": 0}
+    result = None
+    for chunk in range(1, 25):
+        slots["batch_counter"] = chunk * 500
+        result = write_checkpoint_transaction(
+            tmp_path,
+            run_spec=spec,
+            phase_program=program,
+            barrier_name="after_train_batch",
+            coordinate=ProgressCoordinate(
+                run_id="chunked",
+                phase="train_batch",
+                program_step=chunk,
+                completed_barrier="after_train_batch",
+            ),
+            slots=slots,
+            metadata={"barrier_visit_ordinal": chunk},
+        )
+
+    assert result is not None
+    assert result.manifest.completed_coordinate.program_step == 24
+    assert result.manifest.metadata["barrier_visit_ordinal"] == 24
+    assert result.manifest.completed_training_batches == 12000
+    latest = json.loads(result.latest_pointer_path.read_text())
+    assert latest["completed_coordinate"]["program_step"] == 24
+    assert latest["completed_training_batches"] == 12000
+
+
+def test_custody_rejects_declared_batches_that_disagree_with_bookkeeping_slot(
+    tmp_path: Path,
+) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    with pytest.raises(CheckpointConsistencyError) as excinfo:
+        write_checkpoint_transaction(
+            tmp_path,
+            run_spec=spec,
+            phase_program=program,
+            barrier_name="after_train_batch",
+            coordinate=ProgressCoordinate(run_id="mismatch", phase="train_batch", program_step=24),
+            slots={"model": 0, "optimizer": {"count": 0}, "prng": [0, 1], "batch_counter": 12000},
+            completed_training_batches=24,
+        )
+    message = str(excinfo.value)
+    assert "/completed_training_batches=24" in message
+    assert "/phase_program/batch_progress=12000" in message
+
+
+def test_legacy_global_step_is_migrated_only_as_a_program_coordinate() -> None:
+    coordinate = ProgressCoordinate.model_validate(
+        {"run_id": "legacy", "phase": "train", "global_step": 24}
+    )
+    assert coordinate.program_step == 24
+    assert "global_step" not in coordinate.model_dump(mode="json")
+
+
+def test_legacy_latest_pointer_migrates_global_step_without_creating_batches(
+    tmp_path: Path,
+) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="legacy-pointer", phase="train_batch", program_step=24
+        ),
+        slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": jnp.array(12000, dtype=jnp.int32),
+        },
+    )
+    pointer = json.loads(result.latest_pointer_path.read_text())
+    pointer["schema_version"] = "feedbax.manifest.training_checkpoint_latest_pointer.v2"
+    pointer["completed_coordinate"]["global_step"] = pointer["completed_coordinate"].pop(
+        "program_step"
+    )
+    _write_json(result.latest_pointer_path, pointer)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=spec,
+        expected_phase_program=program,
+        expected_slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
+        },
+    )
+    assert loaded.manifest.completed_coordinate.program_step == 24
+    assert loaded.manifest.completed_training_batches == 12000
 
 
 def test_manifest_loader_accepts_training_checkpoint_transaction(tmp_path: Path) -> None:
@@ -596,9 +727,9 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     )
 
     assert forked.slot_transfer_modes["controller"] == "serialized"
-    assert {
-        mode for slot, mode in forked.slot_transfer_modes.items() if slot != "controller"
-    } == {"hardlink"}
+    assert {mode for slot, mode in forked.slot_transfer_modes.items() if slot != "controller"} == {
+        "hardlink"
+    }
     source_controller = _slot_blob_path(source.manifest_path, "controller")
     target_controller = _slot_blob_path(forked.manifest_path, "controller")
     assert source_controller.stat().st_ino != target_controller.stat().st_ino
@@ -614,12 +745,10 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     )
     assert loaded.slots["controller"].tolist() == [1.0, 2.0, 0.0]
     assert forked.manifest.fork_provenance is not None
-    controller_provenance = {
-        slot.slot: slot for slot in forked.manifest.fork_provenance.slots
-    }["controller"]
-    source_controller_slot = {
-        slot.slot: slot for slot in source.manifest.slots
-    }["controller"]
+    controller_provenance = {slot.slot: slot for slot in forked.manifest.fork_provenance.slots}[
+        "controller"
+    ]
+    source_controller_slot = {slot.slot: slot for slot in source.manifest.slots}["controller"]
     assert controller_provenance.source_sha256 == source_controller_slot.sha256
     assert controller_provenance.target_sha256 != source_controller_slot.sha256
     assert controller_provenance.transform is not None
@@ -764,9 +893,9 @@ def test_defaulted_legacy_projection_migrates_and_resumes(
     payload = json.loads(result.manifest_path.read_text())
     payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
     binding = payload["run_contract_binding"]
-    binding["canonical_projection"]["training_run_spec"][
-        "schema_version"
-    ] = "feedbax.spec.training_run.v1"
+    binding["canonical_projection"]["training_run_spec"]["schema_version"] = (
+        "feedbax.spec.training_run.v1"
+    )
     binding["canonical_projection"]["training_run_spec"].pop("on_nan")
     binding["canonical_projection_sha256"] = "legacy-v1-projection"
     _rewrite_manifest_and_latest(result, payload)
@@ -780,9 +909,10 @@ def test_defaulted_legacy_projection_migrates_and_resumes(
 
     assert loaded.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert loaded.manifest.run_contract_binding.canonical_projection is not None
-    assert loaded.manifest.run_contract_binding.canonical_projection["training_run_spec"][
-        "on_nan"
-    ] == "raise"
+    assert (
+        loaded.manifest.run_contract_binding.canonical_projection["training_run_spec"]["on_nan"]
+        == "raise"
+    )
 
 
 def test_checkpoint_fork_cli_batch_smoke_partial_failure(tmp_path: Path) -> None:
@@ -936,10 +1066,7 @@ def test_manifest_structural_abi_x64_mismatch_reports_leaf_diff_and_hint(
 
     message = str(exc_info.value)
     assert "checkpoint slot 'controller'" in message
-    assert (
-        "path=/ field=dtype recorded=\"float64\" actual=\"float32\""
-        in message
-    )
+    assert 'path=/ field=dtype recorded="float64" actual="float32"' in message
     assert "recorded_x64_enabled=True" in message
     assert "actual_x64_enabled=False" in message
     assert "x64_side=recorded" in message
@@ -1080,7 +1207,7 @@ def test_population_coordinate_mismatch_under_population_predicate_rejects_on_re
     manifest_payload = json.loads(result.manifest_path.read_text())
     for slot in manifest_payload["slots"]:
         if slot["slot"] == "adversary_population":
-            slot["coordinate"]["global_step"] = 1
+            slot["coordinate"]["program_step"] = 1
     _write_json(result.manifest_path, manifest_payload)
     latest_payload = json.loads(result.latest_pointer_path.read_text())
     latest_payload["manifest_sha256"] = _sha256_file(result.manifest_path)
@@ -1116,9 +1243,7 @@ def test_population_length_and_member_identity_mismatch_rejects_resume(
             expected_run_spec=run_spec,
             expected_phase_program=program,
             expected_slots=_minimax_slots(),
-            expected_population_member_ids={
-                "adversary_population": ["adv-a", "adv-b", "adv-c"]
-            },
+            expected_population_member_ids={"adversary_population": ["adv-a", "adv-b", "adv-c"]},
         )
 
 
@@ -1178,9 +1303,7 @@ def test_latest_pointer_missing_corrupt_and_stale_cases_fail_closed(
             lambda root: (
                 (root / "checkpoint_000001").mkdir(),
                 (root / "checkpoint_000001" / "model.eqx").write_bytes(b"model"),
-                (root / "checkpoint_000001" / "optimizer_state.eqx").write_bytes(
-                    b"optimizer"
-                ),
+                (root / "checkpoint_000001" / "optimizer_state.eqx").write_bytes(b"optimizer"),
                 (root / "checkpoint_000001" / "metadata.json").write_text("{}"),
             ),
         ),
@@ -1279,9 +1402,7 @@ def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
     )
 
     assert loaded.manifest.run_contract_binding.canonical_projection is None
-    assert loaded.manifest.run_contract_binding.metadata["projection_status"] == (
-        "legacy_absent"
-    )
+    assert loaded.manifest.run_contract_binding.metadata["projection_status"] == ("legacy_absent")
 
     changed = run_spec.model_copy(deep=True)
     changed.training_config.learning_rate = 0.5
@@ -1311,12 +1432,14 @@ def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
             "model": state["model"] + state["optimizer"]["count"],
             "optimizer": {"count": state["optimizer"]["count"] + 1},
             "prng": state["prng"] + 17,
+            "batch_counter": state["batch_counter"] + 1,
         }
 
     continuous = {
         "model": jnp.array([0.0]),
         "optimizer": {"count": jnp.array(1.0)},
         "prng": jnp.array([0, 1], dtype=jnp.uint32),
+        "batch_counter": jnp.array(0, dtype=jnp.int32),
     }
     interrupted = dict(continuous)
     for _ in range(4):
@@ -1327,7 +1450,7 @@ def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
     coordinate = ProgressCoordinate(
         run_id="run-2",
         phase="train_batch",
-        global_step=2,
+        program_step=2,
         completed_barrier="after_train_batch",
     )
     write_checkpoint_transaction(

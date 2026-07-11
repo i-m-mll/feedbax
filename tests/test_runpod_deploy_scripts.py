@@ -468,14 +468,14 @@ def test_resume_baseline_completed_batch_mismatch_fails_preflight(tmp_path: Path
     assert "runpodctl pod create" not in result.stdout + result.stderr
 
 
-def test_latest_pointer_completed_batches_prefers_batch_over_coordinate(
+def test_latest_pointer_completed_batches_prefers_explicit_total_over_coordinate(
     tmp_path: Path,
 ) -> None:
     latest = tmp_path / "latest.json"
     latest.write_text(
         json.dumps(
             {
-                "completed_coordinate": {"global_step": 12009},
+                "completed_coordinate": {"program_step": 12009},
                 "completed_training_batches": 16500,
             }
         ),
@@ -496,6 +496,31 @@ def test_latest_pointer_completed_batches_prefers_batch_over_coordinate(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "16500"
+
+
+def test_latest_pointer_completed_batches_rejects_coordinate_as_batch_fallback(
+    tmp_path: Path,
+) -> None:
+    latest = tmp_path / "latest.json"
+    latest.write_text(
+        json.dumps({"completed_coordinate": {"program_step": 24}}),
+        encoding="utf-8",
+    )
+    script = (
+        f"source {str(REPO_ROOT / 'scripts' / 'deploy' / 'lib_acquire.sh')!r}\n"
+        f"latest_pointer_completed_batches {str(latest)!r}\n"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
 
 
 def test_resume_baseline_is_preflighted_and_staged_despite_artifact_exclude(
@@ -630,7 +655,7 @@ def test_acquire_only_classifies_missing_direct_endpoint_quickly(tmp_path: Path)
     fake_runpodctl.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' "
-        "'{\"desiredStatus\":\"RUNNING\",\"ssh\":{\"error\":\"no direct endpoint\"}}'\n",
+        '\'{"desiredStatus":"RUNNING","ssh":{"error":"no direct endpoint"}}\'\n',
         encoding="utf-8",
     )
     fake_runpodctl.chmod(0o755)
