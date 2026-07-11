@@ -508,8 +508,9 @@ def _validate_batch_histories(
                 f"actual={shape[axis]} expected={expected} "
                 f"segment_batches={segment_batch_count} "
                 f"interval={history.granularity.interval}. Histories must be segment-local; "
-                "whole-training statistics belong in fixed-size streaming state "
-                "(for example an EMA, ring buffer, reservoir sample, or scalar accumulator)."
+                "methods needing statistics over the whole training past must express them "
+                "as fixed-size streaming state in dynamical state (for example an EMA, "
+                "ring buffer, reservoir sample, or scalar accumulator)."
             )
 
 
