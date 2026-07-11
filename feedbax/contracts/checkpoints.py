@@ -7,11 +7,12 @@ state, slot integrity, and run-contract binding for training writers.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import ArtifactRef, ParentRef, StrictModel
+from feedbax.contracts.manifest import ArtifactMigrationRecord, ArtifactRef, ParentRef, StrictModel
 from feedbax.contracts.worker import ConsistencyPredicateSpec, ProgressCoordinate
 
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = "feedbax.manifest.training_checkpoint_transaction"
@@ -31,6 +32,9 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
     "feedbax.manifest.training_checkpoint_transaction.v5"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = "feedbax.manifest.training_checkpoint_latest_pointer"
+TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2 = (
+    "feedbax.manifest.training_checkpoint_latest_pointer.v2"
+)
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION = (
     "feedbax.manifest.training_checkpoint_latest_pointer.v3"
 )
@@ -57,6 +61,30 @@ CheckpointSlotRole = Literal[
 
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_continuation"
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v1"
+
+
+CheckpointDocumentT = TypeVar("CheckpointDocumentT")
+
+
+@dataclass(frozen=True)
+class CheckpointDocumentLoadResult(Generic[CheckpointDocumentT]):
+    """One public custody document after registered migration and strict validation.
+
+    ``source_version`` and ``migration_records`` retain the durable provenance
+    needed to distinguish an already-current document from a migrated legacy
+    document. The loader never alters the input file or byte payload.
+    """
+
+    document: CheckpointDocumentT
+    schema_id: str
+    source_version: str
+    target_version: str
+    migration_records: tuple[ArtifactMigrationRecord, ...]
+
+    @property
+    def migrated(self) -> bool:
+        """Whether one or more registered migrations were applied."""
+        return bool(self.migration_records)
 
 
 class BatchIndexedCheckpointLeafSpec(StrictModel):
