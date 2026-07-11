@@ -102,6 +102,17 @@ def test_run_matrix_spec_v1_migration_and_old_version_rejection_are_registered()
         },
     )
     assert migrated.payload["base"] == {"kind": "inline", "inline": {"value": 1}}
+    assert migrated.payload["deltas"] == []
+    assert migrated.payload["execution_dependencies"] == []
+
+    migrated_v2 = default_spec_registry.migrate(
+        "TrainingRunMatrixSpec",
+        {
+            "schema_version": "feedbax.spec.training_run_matrix.v2",
+            "base": {"kind": "inline", "inline": {"value": 1}},
+        },
+    )
+    assert migrated_v2.target_version == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
 
     pinned = default_spec_registry.migrate(
         "TrainingRunMatrixSpec",

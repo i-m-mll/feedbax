@@ -161,6 +161,40 @@ def training_run_intent_hash(authored: Mapping[str, Any]) -> str:
     return training_spec_sha256(training_run_intent_envelope(authored))
 
 
+def training_run_authored_envelope(authored: Mapping[str, Any]) -> dict[str, Any]:
+    """Return identity-bearing authored composition, excluding symbolic locators."""
+    envelope = training_run_intent_envelope(authored)
+    envelope["deltas"] = [
+        {
+            key: delta[key]
+            for key in (
+                "layer_id",
+                "patches",
+                "acknowledges_ancestor_paths",
+                "schema_id",
+                "schema_version",
+            )
+            if key in delta
+        }
+        for delta in authored.get("deltas", [])
+        if isinstance(delta, Mapping)
+    ]
+    envelope["execution_dependencies"] = list(
+        authored.get("execution_dependencies", [])
+    )
+    return envelope
+
+
+def training_run_authored_envelope_hash(authored: Mapping[str, Any]) -> str:
+    """Hash ordered pinned parents, local deltas, selectors, seeds, and sources."""
+    return training_spec_sha256(training_run_authored_envelope(authored))
+
+
+def training_run_composed_intent_hash(flattened: Mapping[str, Any]) -> str:
+    """Hash canonical effective intent before execution evidence is attached."""
+    return training_spec_sha256(flattened)
+
+
 def training_run_execution_hash(
     resolved_root_hash: str,
     input_data_identities: list[dict[str, Any]],

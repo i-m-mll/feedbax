@@ -21,7 +21,8 @@ from feedbax.contracts.manifest import (
 
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run_matrix.v1"
-TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v2"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run_matrix.v2"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v3"
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -107,6 +108,110 @@ class MatrixRow(StrictModel):
         return self
 
 
+class MatrixCompositionDelta(StrictModel):
+    """One ordered authored layer with explicit ancestor-override acknowledgement."""
+
+    layer_id: str
+    patches: list[OverridePatch] = Field(default_factory=list)
+    acknowledges_ancestor_paths: list[str] = Field(default_factory=list)
+    schema_id: str | None = None
+    schema_version: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_delta(self) -> "MatrixCompositionDelta":
+        if not _PATH_SAFE_RE.match(self.layer_id):
+            raise ValueError(f"/deltas/layer_id is not path-safe: {self.layer_id!r}")
+        if (self.schema_id is None) != (self.schema_version is None):
+            raise ValueError(
+                "/deltas schema_id and schema_version must be declared together at a boundary"
+            )
+        for path in self.acknowledges_ancestor_paths:
+            _validate_dotted_path(path, "/deltas/acknowledges_ancestor_paths")
+        return self
+
+
+class DurableSlotTransform(StrictModel):
+    transform_id: str
+    version: str
+    slot: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ForkFromSelectedCheckpoint(StrictModel):
+    kind: Literal["fork_from_selected_checkpoint"] = "fork_from_selected_checkpoint"
+    source_execution_hash: str
+    source_row_id: str
+    checkpoint_transaction_id: str
+    checkpoint_root_hash: str
+    slot_transforms: list[DurableSlotTransform] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _hashes(self) -> "ForkFromSelectedCheckpoint":
+        _validate_digest(self.source_execution_hash, "/dependencies/source_execution_hash")
+        _validate_digest(self.checkpoint_root_hash, "/dependencies/checkpoint_root_hash")
+        return self
+
+
+class ContinuationReconciliation(StrictModel):
+    kind: Literal["continuation_reconciliation"] = "continuation_reconciliation"
+    source_completed_batches: int = Field(ge=0)
+    additional_batches: int = Field(gt=0)
+    expected_target_total: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _total(self) -> "ContinuationReconciliation":
+        total = self.source_completed_batches + self.additional_batches
+        if total != self.expected_target_total:
+            raise ValueError(f"/dependencies target total drift: computed={total}")
+        return self
+
+
+class LineageGraftDependency(StrictModel):
+    kind: Literal["lineage_graft"] = "lineage_graft"
+    lineage_event_hash: str
+    interpretation: Literal["supersedes_for_interpretation", "new_execution"]
+
+    @model_validator(mode="after")
+    def _hash(self) -> "LineageGraftDependency":
+        _validate_digest(self.lineage_event_hash, "/dependencies/lineage_event_hash")
+        return self
+
+
+class StoppedRowStatus(StrictModel):
+    kind: Literal["stopped_row"] = "stopped_row"
+    row_id: str
+    completed_batches: int = Field(ge=0)
+    reason: str
+    checkpoint_root_hash: str | None = None
+
+    @model_validator(mode="after")
+    def _hash(self) -> "StoppedRowStatus":
+        if self.checkpoint_root_hash is not None:
+            _validate_digest(self.checkpoint_root_hash, "/dependencies/checkpoint_root_hash")
+        return self
+
+
+class TaskIdentityGate(StrictModel):
+    kind: Literal["task_identity_gate"] = "task_identity_gate"
+    identity_kind: Literal["training_run_spec", "method_payload", "task", "dataset"]
+    expected_identity_hash: str
+
+    @model_validator(mode="after")
+    def _hash(self) -> "TaskIdentityGate":
+        _validate_digest(self.expected_identity_hash, "/dependencies/expected_identity_hash")
+        return self
+
+
+ExecutionDependency: TypeAlias = Annotated[
+    ForkFromSelectedCheckpoint
+    | ContinuationReconciliation
+    | LineageGraftDependency
+    | StoppedRowStatus
+    | TaskIdentityGate,
+    Field(discriminator="kind"),
+]
+
+
 class MatrixForkSpec(StrictModel):
     """Fork-from-source-checkpoint launch semantics for a matrix."""
 
@@ -124,6 +229,8 @@ class TrainingRunMatrixSpec(StrictModel):
     name: str
     issue: str | None = None
     base: MatrixBaseSpec
+    deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
+    execution_dependencies: list[ExecutionDependency] = Field(default_factory=list)
     sources: list[SourceBinding] = Field(default_factory=list)
     derivations: list[MatrixDerivation] = Field(default_factory=list)
     rows: list[MatrixRow] = Field(default_factory=list)
@@ -185,6 +292,80 @@ def apply_override_patches(
         )
         _apply_patch(result, patch)
     return result
+
+
+def apply_composition_deltas(
+    payload: dict[str, Any],
+    deltas: list[MatrixCompositionDelta],
+    *,
+    ancestor_written_paths: set[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, str], set[str]]:
+    """Apply ordered layers and fail closed on unacknowledged ancestor overrides."""
+    result = deepcopy(payload)
+    written = set(ancestor_written_paths or ())
+    attribution: dict[str, str] = {}
+    current_schema = _payload_schema_identity(result)
+    for delta in deltas:
+        acknowledged = set(delta.acknowledges_ancestor_paths)
+        declared_boundary = (delta.schema_id, delta.schema_version)
+        prior_identities = _schema_identities(result)
+        for patch in delta.patches:
+            if patch.path in written and patch.path not in acknowledged:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id}/{patch.path} overrides an ancestor-written "
+                    "path without explicit acknowledgement"
+                )
+            try:
+                _apply_patch(result, patch)
+            except ValueError as error:
+                raise ValueError(f"/deltas/{delta.layer_id}: {error}") from error
+            written.add(patch.path)
+            attribution[patch.path] = delta.layer_id
+        resulting_schema = _payload_schema_identity(result)
+        resulting_identities = _schema_identities(result)
+        if declared_boundary != (None, None):
+            if declared_boundary == current_schema:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} declares schema boundary "
+                    f"{declared_boundary!r} but does not change the active identity"
+                )
+            if resulting_schema != declared_boundary:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} declares schema boundary {declared_boundary!r} "
+                    f"but flattened payload has identity {resulting_schema!r}"
+                )
+        elif resulting_identities != prior_identities:
+            raise ValueError(
+                f"/deltas/{delta.layer_id} changes schema identity from "
+                f"{prior_identities!r} to {resulting_identities!r} without a declared "
+                "schema_id/schema_version boundary"
+            )
+        current_schema = resulting_schema
+    return result, attribution, written
+
+
+def _payload_schema_identity(payload: dict[str, Any]) -> tuple[Any, Any]:
+    return payload.get("schema_id"), payload.get("schema_version")
+
+
+def _schema_identities(value: Any, path: str = "") -> dict[str, tuple[Any, Any]]:
+    identities: dict[str, tuple[Any, Any]] = {}
+    if isinstance(value, dict):
+        if "schema_id" in value or "schema_version" in value:
+            identities[path or "/"] = (value.get("schema_id"), value.get("schema_version"))
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            identities.update(_schema_identities(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            child_path = f"{path}.{index}" if path else str(index)
+            identities.update(_schema_identities(child, child_path))
+    return identities
+
+
+def _validate_digest(value: str, path: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError(f"{path} must be a lowercase sha256 digest")
 
 
 def _apply_patch(root: dict[str, Any], patch: OverridePatch) -> None:

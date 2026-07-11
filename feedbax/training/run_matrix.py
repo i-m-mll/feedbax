@@ -37,6 +37,7 @@ from feedbax.contracts.run_matrix import (
     ResolvedOutputMatrixBaseSpec,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRunMatrixSpec,
+    apply_composition_deltas,
     apply_override_patches,
 )
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
@@ -599,11 +600,41 @@ def variation_values(variation: TrainingSweepAxisVariation) -> list[Any]:
 
 
 def _resolve_base_payload(spec: TrainingRunMatrixSpec, *, repo_root: Path) -> dict[str, Any]:
+    resolved, _ = resolve_base_payload_with_attribution(spec, repo_root=repo_root)
+    return resolved
+
+
+def resolve_base_payload_with_attribution(
+    spec: TrainingRunMatrixSpec, *, repo_root: Path
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Resolve composed intent and retain the last-writing layer for each patched path."""
+    resolved, attribution, _ = _resolve_composed_base(
+        spec, repo_root=repo_root, resolving=set()
+    )
+    graph_source = resolved.get("graph")
+    if isinstance(graph_source, Mapping) and isinstance(graph_source.get("inline"), Mapping):
+        migrated_graph = migrate_graph_spec(graph_source["inline"], path="graph.inline")
+        resolved["graph"] = {**graph_source, "inline": migrated_graph.payload}
+    graph_spec = resolved.get("graph_spec")
+    if isinstance(graph_spec, Mapping):
+        resolved["graph_spec"] = migrate_graph_spec(graph_spec, path="graph_spec").payload
+    return resolved, attribution
+
+
+def _resolve_composed_base(
+    spec: TrainingRunMatrixSpec,
+    *,
+    repo_root: Path,
+    resolving: set[Path],
+) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     if isinstance(spec.base, InlineMatrixBaseSpec):
         document = copy.deepcopy(spec.base.inline)
         payload_path = None
     elif isinstance(spec.base, AuthoredIntentMatrixBaseSpec):
         path = repo_root / spec.base.ref
+        canonical_path = path.resolve()
+        if canonical_path in resolving:
+            raise RunMatrixError(f"/base/ref authored composition cycle: {spec.base.ref}")
         data = path.read_bytes()
         document = json.loads(data.decode("utf-8"))
         if spec.base.pin_algorithm == "legacy_raw_sha256":
@@ -617,12 +648,20 @@ def _resolve_base_payload(spec: TrainingRunMatrixSpec, *, repo_root: Path) -> di
         if isinstance(document, Mapping) and _is_authored_matrix_document(document):
             migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", document).payload
             parent = TrainingRunMatrixSpec.model_validate(migrated)
-            if not isinstance(parent.base, InlineMatrixBaseSpec):
-                raise RunMatrixError(
-                    "recursive authored matrix base is out of scope; see follow-on issue de01170"
+            resolving.add(canonical_path)
+            try:
+                parent_payload, attribution, written = _resolve_composed_base(
+                    parent, repo_root=repo_root, resolving=resolving
                 )
-            document = parent.base.inline
-            payload_path = None
+            finally:
+                resolving.remove(canonical_path)
+            resolved, local_attribution, written = apply_composition_deltas(
+                parent_payload,
+                spec.deltas,
+                ancestor_written_paths=written,
+            )
+            attribution.update(local_attribution)
+            return resolved, attribution, written
         else:
             payload_path = spec.base.payload_path
     else:
@@ -637,14 +676,8 @@ def _resolve_base_payload(spec: TrainingRunMatrixSpec, *, repo_root: Path) -> di
     if not isinstance(payload, dict):
         raise RunMatrixError("/base payload must resolve to an object")
     resolved = copy.deepcopy(payload)
-    graph_source = resolved.get("graph")
-    if isinstance(graph_source, Mapping) and isinstance(graph_source.get("inline"), Mapping):
-        migrated_graph = migrate_graph_spec(graph_source["inline"], path="graph.inline")
-        resolved["graph"] = {**graph_source, "inline": migrated_graph.payload}
-    graph_spec = resolved.get("graph_spec")
-    if isinstance(graph_spec, Mapping):
-        resolved["graph_spec"] = migrate_graph_spec(graph_spec, path="graph_spec").payload
-    return resolved
+    resolved, attribution, written = apply_composition_deltas(resolved, spec.deltas)
+    return resolved, attribution, written
 
 
 def _is_authored_matrix_document(document: Mapping[str, Any]) -> bool:

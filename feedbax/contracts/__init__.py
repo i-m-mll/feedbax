@@ -191,9 +191,21 @@ from feedbax.contracts.spec_storage import (
     TrainingRunExecutionCapsule,
     build_resolved_semantics_snapshot,
     training_run_execution_hash,
+    training_run_authored_envelope_hash,
+    training_run_composed_intent_hash,
     training_run_intent_hash,
     training_spec_canonical_bytes,
 )
+from feedbax.contracts.run_composition import (
+    CompositionNode,
+    ExecutionDependencyLayer,
+    NamedCompositionLane,
+    authored_envelope_hash,
+    composed_intent_hash,
+    flatten_composition,
+)
+from feedbax.contracts.lineage import LineageDag, LineageEvent, store_lineage_event
+from feedbax.contracts.intent_diff import detect_near_duplicate_lanes, layered_semantic_diff
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
@@ -617,8 +629,21 @@ __all__ = [
     "toy_adaptive_curriculum_method_contract",
     "toy_minimax_method_contract",
     "training_run_execution_hash",
+    "training_run_authored_envelope_hash",
+    "training_run_composed_intent_hash",
     "training_run_intent_hash",
     "training_spec_canonical_bytes",
+    "CompositionNode",
+    "ExecutionDependencyLayer",
+    "NamedCompositionLane",
+    "LineageDag",
+    "LineageEvent",
+    "authored_envelope_hash",
+    "composed_intent_hash",
+    "flatten_composition",
+    "store_lineage_event",
+    "detect_near_duplicate_lanes",
+    "layered_semantic_diff",
     "verify_extraction_product",
     "workspace_replay_metadata",
 ]
