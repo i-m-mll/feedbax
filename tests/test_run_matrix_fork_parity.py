@@ -139,7 +139,6 @@ def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None
         )
 
 
-
 def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     tmp_path: Path,
 ) -> None:
@@ -182,7 +181,10 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     matrix = TrainingRunMatrixSpec.model_validate(
         {
             "name": "distinct barrier continuation row",
-            "base": {"inline": target_spec.model_dump(mode="json", exclude_none=True)},
+            "base": {
+                "kind": "inline",
+                "inline": target_spec.model_dump(mode="json", exclude_none=True),
+            },
             "fork": {
                 "source_run_id": "feedbax-training-run:source",
                 "lr_continuation": "continue",

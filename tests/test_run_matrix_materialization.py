@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from feedbax.contracts.expressions import Coalesce, ValueQuery
-from feedbax.contracts.manifest import sha256_bytes
+from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.checkpoints import CheckpointSegmentLineage
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -78,7 +79,7 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
             "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
             "name": "lr rows",
             "issue": "60c12f1",
-            "base": {"inline": base},
+            "base": {"kind": "inline", "inline": base},
             "fork": {"source_run_id": "feedbax-training-run:source", "lr_continuation": "continue"},
             "rows": [
                 {
@@ -144,7 +145,7 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path)
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         "name": "sweep",
-        "base": {"inline": _training_run_payload()},
+        "base": {"kind": "inline", "inline": _training_run_payload()},
         "axes": [
             {
                 "id": "lr",
@@ -178,9 +179,10 @@ def test_derivations_and_base_ref_sha_pin_are_fail_closed(tmp_path: Path) -> Non
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         "name": "derived",
         "base": {
+            "kind": "authored_intent",
             "ref": "base.json",
             "payload_path": "envelope.feedbax_training_run_spec",
-            "sha256": sha256_bytes(base_bytes),
+            "content_hash": training_spec_sha256(base_payload),
         },
         "sources": [{"alias": "src", "kind": "manifest", "uri": "source.json"}],
         "derivations": [
@@ -195,9 +197,29 @@ def test_derivations_and_base_ref_sha_pin_are_fail_closed(tmp_path: Path) -> Non
     materialized = materialize_run_matrix(payload, repo_root=tmp_path)
     assert materialized.rows[0].payload["training_config"]["learning_rate"] == 0.04
 
-    payload["base"]["sha256"] = "bad"
-    with pytest.raises(RunMatrixError, match="sha256 mismatch"):
+    payload["base"]["content_hash"] = "0" * 64
+    with pytest.raises(RunMatrixError, match="canonical content hash mismatch"):
         materialize_run_matrix(payload, repo_root=tmp_path)
+
+
+def test_v1_pretty_json_ref_verifies_legacy_raw_pin_then_materializes(tmp_path: Path) -> None:
+    base_payload = _training_run_payload()
+    pretty_bytes = (json.dumps(base_payload, indent=2, sort_keys=False) + "\n").encode()
+    (tmp_path / "pretty-base.json").write_bytes(pretty_bytes)
+    legacy = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": "feedbax.spec.training_run_matrix.v1",
+        "name": "legacy pretty ref",
+        "base": {
+            "ref": "pretty-base.json",
+            "sha256": hashlib.sha256(pretty_bytes).hexdigest(),
+        },
+        "rows": [{"row_id": "row", "overrides": []}],
+    }
+
+    materialized = materialize_run_matrix(legacy, repo_root=tmp_path)
+
+    assert materialized.rows[0].payload["training_config"]["n_batches"] == 2
 
 
 def test_spec_lock_render_includes_legacy_lr_phrase(tmp_path: Path) -> None:

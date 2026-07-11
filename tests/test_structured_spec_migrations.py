@@ -690,6 +690,8 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
                 payload = {"schema_version": old_version}
                 if family.kind == "StudioValueSpec":
                     payload.update({"mode": "constant", "value": 1, "metadata": {}})
+                if family.kind == "TrainingRunMatrixSpec":
+                    payload["base"] = {"inline": {}}
                 migrated = default_spec_registry.migrate(
                     family.kind,
                     payload,

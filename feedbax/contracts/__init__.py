@@ -186,6 +186,14 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
     apply_override_patches,
 )
+from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
+from feedbax.contracts.spec_storage import (
+    TrainingRunExecutionCapsule,
+    build_resolved_semantics_snapshot,
+    training_run_execution_hash,
+    training_run_intent_hash,
+    training_spec_canonical_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
@@ -531,6 +539,7 @@ __all__ = [
     "TrainingStatusResponse",
     "TrainingConfig",
     "TrainingRunMatrixSpec",
+    "TrainingRunExecutionCapsule",
     "MatrixBaseSpec",
     "MatrixDerivation",
     "MatrixForkSpec",
@@ -541,6 +550,8 @@ __all__ = [
     "TrainingBatchProgressSpec",
     "TrainingSpec",
     "apply_override_patches",
+    "build_resolved_semantics_snapshot",
+    "decode_resolved_snapshot",
     "UpdateKernelSpec",
     "UpdateStepSpec",
     "UserPortSpec",
@@ -605,6 +616,9 @@ __all__ = [
     "SelectorRoleIdentity",
     "toy_adaptive_curriculum_method_contract",
     "toy_minimax_method_contract",
+    "training_run_execution_hash",
+    "training_run_intent_hash",
+    "training_spec_canonical_bytes",
     "verify_extraction_product",
     "workspace_replay_metadata",
 ]

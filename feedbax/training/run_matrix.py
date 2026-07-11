@@ -32,10 +32,16 @@ from feedbax.contracts.manifest import (
     spec_payload,
 )
 from feedbax.contracts.run_matrix import (
+    AuthoredIntentMatrixBaseSpec,
+    InlineMatrixBaseSpec,
+    ResolvedOutputMatrixBaseSpec,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRunMatrixSpec,
     apply_override_patches,
 )
+from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
+from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
+from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.checkpoints import CheckpointForkBarrierMapping, CheckpointSegmentLineage
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
@@ -198,11 +204,11 @@ def _materialize_run_matrix(
     repo_root: Path,
     row_validator: RowPayloadValidator,
 ) -> MaterializedRunMatrix:
-    matrix = (
-        spec
-        if isinstance(spec, TrainingRunMatrixSpec)
-        else TrainingRunMatrixSpec.model_validate(spec)
-    )
+    if isinstance(spec, TrainingRunMatrixSpec):
+        matrix = spec
+    else:
+        migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", spec)
+        matrix = TrainingRunMatrixSpec.model_validate(migrated.payload)
     base_payload = _resolve_base_payload(matrix, repo_root=repo_root)
     if matrix.derivations:
         ctx = load_expression_context(matrix.sources, repo_root)
@@ -317,8 +323,12 @@ def render_spec_lock_table(
     header = [
         f"Matrix: {spec.name}",
         f"Issue: {spec.issue or ''}",
-        f"Base ref: {spec.base.ref or '<inline>'}",
-        f"Base sha256: {spec.base.sha256 or ''}",
+        f"Base ref: {getattr(spec.base, 'ref', None) or '<inline>'}",
+        "Base content hash: "
+        + str(
+            getattr(spec.base, "content_hash", None)
+            or getattr(spec.base, "resolved_root_hash", "")
+        ),
         f"Fork source: {spec.fork.source_run_id if spec.fork else ''}",
         (f"LR continuation schedule: {spec.fork.lr_continuation if spec.fork else ''}"),
         f"Row count: {len(materialized.rows)}",
@@ -589,19 +599,61 @@ def variation_values(variation: TrainingSweepAxisVariation) -> list[Any]:
 
 
 def _resolve_base_payload(spec: TrainingRunMatrixSpec, *, repo_root: Path) -> dict[str, Any]:
-    if spec.base.inline is not None:
+    if isinstance(spec.base, InlineMatrixBaseSpec):
         document = copy.deepcopy(spec.base.inline)
-    else:
-        assert spec.base.ref is not None
+        payload_path = None
+    elif isinstance(spec.base, AuthoredIntentMatrixBaseSpec):
         path = repo_root / spec.base.ref
         data = path.read_bytes()
-        if spec.base.sha256 is not None and sha256_bytes(data) != spec.base.sha256:
-            raise RunMatrixError(f"/base/ref sha256 mismatch: {spec.base.ref}")
         document = json.loads(data.decode("utf-8"))
-    payload = _get_dotted(document, spec.base.payload_path)
+        if spec.base.pin_algorithm == "legacy_raw_sha256":
+            actual_hash = sha256_bytes(data)
+            mismatch_name = "legacy raw sha256"
+        else:
+            actual_hash = training_spec_sha256(document)
+            mismatch_name = "canonical content hash"
+        if actual_hash != spec.base.content_hash:
+            raise RunMatrixError(f"/base/ref {mismatch_name} mismatch: {spec.base.ref}")
+        if isinstance(document, Mapping) and _is_authored_matrix_document(document):
+            migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", document).payload
+            parent = TrainingRunMatrixSpec.model_validate(migrated)
+            if not isinstance(parent.base, InlineMatrixBaseSpec):
+                raise RunMatrixError(
+                    "recursive authored matrix base is out of scope; see follow-on issue de01170"
+                )
+            document = parent.base.inline
+            payload_path = None
+        else:
+            payload_path = spec.base.payload_path
+    else:
+        assert isinstance(spec.base, ResolvedOutputMatrixBaseSpec)
+        path = repo_root / spec.base.ref
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        if snapshot.get("root_hash") != spec.base.resolved_root_hash:
+            raise RunMatrixError(f"/base/ref resolved root hash mismatch: {spec.base.ref}")
+        document = decode_resolved_snapshot(snapshot)
+        payload_path = spec.base.payload_path
+    payload = _get_dotted(document, payload_path)
     if not isinstance(payload, dict):
         raise RunMatrixError("/base payload must resolve to an object")
-    return copy.deepcopy(payload)
+    resolved = copy.deepcopy(payload)
+    graph_source = resolved.get("graph")
+    if isinstance(graph_source, Mapping) and isinstance(graph_source.get("inline"), Mapping):
+        migrated_graph = migrate_graph_spec(graph_source["inline"], path="graph.inline")
+        resolved["graph"] = {**graph_source, "inline": migrated_graph.payload}
+    graph_spec = resolved.get("graph_spec")
+    if isinstance(graph_spec, Mapping):
+        resolved["graph_spec"] = migrate_graph_spec(graph_spec, path="graph_spec").payload
+    return resolved
+
+
+def _is_authored_matrix_document(document: Mapping[str, Any]) -> bool:
+    schema_id = document.get("schema_id")
+    schema_version = document.get("schema_version")
+    return schema_id == "feedbax.spec.training_run_matrix" or (
+        isinstance(schema_version, str)
+        and schema_version.startswith("feedbax.spec.training_run_matrix.v")
+    )
 
 
 def _materialize_explicit_rows(
@@ -1044,7 +1096,10 @@ def _source_completed_step(source_manifest: Mapping[str, Any]) -> int:
 
 
 def _load_spec(path: Path) -> TrainingRunMatrixSpec:
-    return TrainingRunMatrixSpec.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return TrainingRunMatrixSpec.model_validate(
+        default_spec_registry.migrate("TrainingRunMatrixSpec", payload).payload
+    )
 
 
 def _parse_fork_target(value: str) -> tuple[str, Path]:

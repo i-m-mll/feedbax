@@ -61,6 +61,15 @@ from feedbax.contracts.extraction import (
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+)
+from feedbax.contracts.resolved_snapshot_decoder import (
+    SNAPSHOT_SCHEMA_ID,
+    SNAPSHOT_SCHEMA_VERSION,
+)
+from feedbax.contracts.spec_storage import (
+    TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID,
+    TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
 )
 from feedbax.contracts.figures import (
     FIGURE_PIECE_SCHEMA_ID,
@@ -1705,6 +1714,46 @@ def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str
     return migrated
 
 
+def _migrate_training_run_matrix_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote the untyped v1 base locator to the fail-closed v2 union."""
+    migrated = dict(payload)
+    base = migrated.get("base")
+    if not isinstance(base, Mapping):
+        raise ValueError("TrainingRunMatrixSpec v1 /base must be an object")
+    has_inline = base.get("inline") is not None
+    has_ref = base.get("ref") is not None
+    has_sha = base.get("sha256") is not None
+    if has_inline and has_ref:
+        raise ValueError("TrainingRunMatrixSpec v1 /base cannot carry both inline and ref")
+    if has_inline and has_sha:
+        raise ValueError("TrainingRunMatrixSpec v1 inline /base cannot carry sha256")
+    if has_inline:
+        migrated["base"] = {"kind": "inline", "inline": base["inline"]}
+    elif base.get("ref") is not None:
+        digest = base.get("sha256")
+        if not isinstance(digest, str) or not digest:
+            raise ValueError(
+                "TrainingRunMatrixSpec v1 unpinned /base/ref cannot migrate to v2; "
+                "a canonical content sha256 pin is required"
+            )
+        migrated["base"] = {
+            "kind": "authored_intent",
+            "ref": base["ref"],
+            "content_hash": digest,
+            "pin_algorithm": "legacy_raw_sha256",
+            **(
+                {"payload_path": base["payload_path"]}
+                if base.get("payload_path") is not None
+                else {}
+            ),
+        }
+    else:
+        raise ValueError("TrainingRunMatrixSpec v1 /base requires inline or ref")
+    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    return migrated
+
+
 def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     """Populate schema identities for emitted Feedbax spec families."""
 
@@ -1781,6 +1830,28 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     execution_emitters = ("feedbax.execution.models", "feedbax.integrations.provider")
 
     families = [
+        _family(
+            "TrainingRunResolvedSemanticsSnapshot",
+            SNAPSHOT_SCHEMA_ID,
+            SNAPSHOT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.spec_storage",
+            emitted_by=("feedbax.training.spec_storage.emit_training_run_spec_storage",),
+            consumed_by=("feedbax.contracts.resolved_snapshot_decoder",),
+            description="Structurally shared immutable resolved training semantics.",
+            rejected_old_versions=(f"{SNAPSHOT_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_training_spec_storage.py",),
+        ),
+        _family(
+            "TrainingRunExecutionCapsule",
+            TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID,
+            TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.spec_storage",
+            emitted_by=("feedbax.training.spec_storage.emit_training_run_spec_storage",),
+            consumed_by=("training replay and provenance verification",),
+            description="Execution provenance joining authored intent to resolved semantics.",
+            rejected_old_versions=(f"{TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_training_spec_storage.py",),
+        ),
         _family(
             "GraphSpec",
             GRAPH_SPEC_SCHEMA_ID,
@@ -1970,6 +2041,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Governed multi-row training launch document with explicit rows, "
                 "sweep axes, base-spec resolution, derivations, and fork semantics."
             ),
+            stance="migrate",
+            supported_old_versions=(TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,),
             rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
             required_tests=(
                 "tests/test_run_matrix_spec.py",
@@ -3130,6 +3203,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "TrainingRunMatrixSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-matrix-v1-to-v2-typed-base",
+        migrate=_migrate_training_run_matrix_v1_to_v2_payload,
+        description="Replace the untyped base locator with the content-pinned base union.",
+    ),
+)
 default_spec_registry.register_migration(
     "RepresentationSpec",
     SchemaMigration(

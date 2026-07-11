@@ -400,6 +400,7 @@ class TrainingSweepAxis(StrictModel):
     variation: TrainingSweepAxisVariation
     role: Literal["authored_sweep"] = "authored_sweep"
     label: Optional[str] = None
+    authored_parameter: dict[str, Any] | None = None
     values: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -502,7 +503,47 @@ class TrainingRunManifest(BaseManifest):
     overrides: list[OverridePatch] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    completed_batches: Optional[int] = Field(default=None, ge=0)
+    stopped: bool = False
+    stop_reason: Optional[str] = None
+    intent_hash: Optional[str] = None
+    execution_hash: Optional[str] = None
+    resolved_semantics_root_hash: Optional[str] = None
+    input_data_identities: list[dict[str, Any]] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_execution_identity(self) -> "TrainingRunManifest":
+        from feedbax.contracts.spec_storage import validate_sha256
+
+        if self.stopped and self.completed_at is None:
+            raise ValueError("stopped training runs require completed_at")
+        if self.intent_hash is not None:
+            validate_sha256(self.intent_hash, field_name="intent_hash")
+        if self.resolved_semantics_root_hash is not None:
+            validate_sha256(
+                self.resolved_semantics_root_hash,
+                field_name="resolved_semantics_root_hash",
+            )
+        if self.execution_hash is not None:
+            validate_sha256(self.execution_hash, field_name="execution_hash")
+        if self.execution_hash is not None and self.resolved_semantics_root_hash is None:
+            raise ValueError("execution_hash requires resolved_semantics_root_hash")
+        if self.resolved_semantics_root_hash is not None:
+            from feedbax.contracts.spec_storage import training_run_execution_hash
+
+            expected = training_run_execution_hash(
+                self.resolved_semantics_root_hash,
+                self.input_data_identities,
+            )
+            if self.execution_hash is not None and self.execution_hash != expected:
+                raise ValueError(
+                    "materializer drift: archived TrainingRunManifest execution_hash must "
+                    f"never be overwritten; archived={self.execution_hash!r}, "
+                    f"computed={expected!r}"
+                )
+            self.execution_hash = expected
+        return self
 
 
 class EvaluationRunSpec(StrictModel):

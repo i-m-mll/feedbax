@@ -42,6 +42,11 @@ try:
         learning_rate_schedule,
         validate_optimizer_state_for_spec,
     )
+    from .spec_storage import (
+        TrainingSpecStorageResult,
+        emit_training_run_spec_storage,
+        stamp_training_run_manifest_identities,
+    )
 except ImportError:
     pass
 
@@ -59,11 +64,13 @@ __all__ = [
     "ManifestEmissionConflictError",
     "OptimizerStateCompatibilityError",
     "TrainingRunExecutionResult",
+    "TrainingSpecStorageResult",
     "TrainingRunExecutorError",
     "build_optimizer",
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
     "execute_training_run_spec",
+    "emit_training_run_spec_storage",
     "grad_wrap_simple_loss_func",
     "load_hps",
     "load_latest_checkpoint",
@@ -77,6 +84,7 @@ __all__ = [
     "learning_rate_schedule",
     "run_contract_binding",
     "structural_abi_fingerprint",
+    "stamp_training_run_manifest_identities",
     "training_step_for_abstract_loss",
     "validate_optimizer_state_for_spec",
     "write_checkpoint_transaction",
