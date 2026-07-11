@@ -334,6 +334,7 @@ def run_training_graph(
             "model": compiled.graph,
             "optimizer": opt_state,
             "prng": jr.PRNGKey(0),
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
         },
         registry=registry,
         loss_service=_StudioWorkerLossService(compiled),
@@ -362,7 +363,7 @@ def run_training_graph(
         checkpoint_path=checkpoint_path,
         final_loss=final_loss,
         final_loss_terms=final_terms,
-        final_batch=result.final_coordinate.global_step,
+        final_batch=result.final_coordinate.program_step,
         manifest_path=str(result.manifest_path),
         manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
         execution_metadata=dict(compiled.metadata),
@@ -448,13 +449,11 @@ def _studio_progress_event(
     coordinate = coordinate if isinstance(coordinate, Mapping) else {}
     metrics = event.get("metrics", {})
     metrics = metrics if isinstance(metrics, Mapping) else {}
-    batch = int(coordinate.get("global_step") or 0)
+    batch = int(coordinate.get("program_step") or 0)
     loss = _float_metric(metrics.get("train_loss", 0.0))
     loss_terms = _float_mapping(metrics.get("loss_terms", {}))
     scalar_metrics = {
-        key: value
-        for key, value in _float_mapping(metrics).items()
-        if key not in {"loss_terms"}
+        key: value for key, value in _float_mapping(metrics).items() if key not in {"loss_terms"}
     }
     scalar_metrics["elapsed_seconds"] = float(elapsed_seconds)
     return {

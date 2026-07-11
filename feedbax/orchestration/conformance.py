@@ -601,9 +601,9 @@ def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
         return [
             int(
                 _first_present(
-                    _path(item, "coordinate", "global_step"),
+                    _path(item, "coordinate", "program_step"),
                     _path(item, "coordinate", "step"),
-                    _path(item, "global_step"),
+                    _path(item, "program_step"),
                     _path(item, "step"),
                 )
             )
@@ -621,9 +621,9 @@ def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
         except json.JSONDecodeError:
             continue
         coordinate = _first_present(
-            _path(payload, "coordinate", "global_step"),
+            _path(payload, "coordinate", "program_step"),
             _path(payload, "coordinate", "step"),
-            _path(payload, "global_step"),
+            _path(payload, "program_step"),
             _path(payload, "step"),
         )
         if coordinate is not _MISSING:

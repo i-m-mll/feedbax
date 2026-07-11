@@ -16,6 +16,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -742,8 +743,6 @@ def _migrate_checkpoint_transaction_manifest_v3_to_v4_payload(
             "completed_training_batches",
             "completed_batches",
             "completed_batch",
-            "n_batches",
-            "batch",
         ):
             if key in metadata and metadata[key] is not None:
                 try:
@@ -760,6 +759,53 @@ def _migrate_checkpoint_transaction_manifest_v3_to_v4_payload(
             "training-batch progress field."
         ),
     )
+    return migrated
+
+
+def _migrate_checkpoint_coordinate_v4_to_v5_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rename the cumulative coordinate without deriving batch progress from it."""
+    migrated = dict(payload)
+
+    def migrate_coordinate(raw: Any, *, path: str) -> Any:
+        if not isinstance(raw, Mapping):
+            return raw
+        coordinate = dict(raw)
+        legacy = coordinate.pop("global_step", None)
+        program_step = coordinate.get("program_step")
+        if legacy is not None and program_step is not None and legacy != program_step:
+            raise ValueError(
+                f"{path} conflicts: global_step={legacy!r}, program_step={program_step!r}"
+            )
+        if legacy is not None:
+            coordinate["program_step"] = legacy
+        return coordinate
+
+    migrated["completed_coordinate"] = migrate_coordinate(
+        migrated.get("completed_coordinate"), path="/completed_coordinate"
+    )
+    slots = migrated.get("slots")
+    if isinstance(slots, list):
+        migrated_slots: list[Any] = []
+        for index, slot in enumerate(slots):
+            if not isinstance(slot, Mapping):
+                migrated_slots.append(slot)
+                continue
+            migrated_slot = dict(slot)
+            migrated_slot["coordinate"] = migrate_coordinate(
+                migrated_slot.get("coordinate"), path=f"/slots/{index}/coordinate"
+            )
+            migrated_slots.append(migrated_slot)
+        migrated["slots"] = migrated_slots
+    metadata = dict(migrated.get("metadata") or {})
+    metadata.setdefault("coordinate_migration", "global_step_to_program_step.v1")
+    migrated["metadata"] = metadata
+    migrated["completed_coordinate_semantics"] = (
+        "Cumulative phase-program coordinate for custody ordering; not the primary "
+        "training-batch progress field or checkpoint count."
+    )
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     return migrated
 
 
@@ -1851,6 +1897,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -3001,11 +3048,24 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
         migration_id="training-checkpoint-transaction-v3-to-v4-batch-progress",
         migrate=_migrate_checkpoint_transaction_manifest_v3_to_v4_payload,
         description=(
             "Add explicit completed training batches separate from checkpoint coordinate progress."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v4-to-v5-program-coordinate",
+        migrate=_migrate_checkpoint_coordinate_v4_to_v5_payload,
+        description=(
+            "Rename global_step to cumulative program_step without inferring "
+            "completed training batches from the coordinate."
         ),
     ),
 )

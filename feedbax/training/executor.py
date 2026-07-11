@@ -166,7 +166,6 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             status="partial",
             parent_lineage=self.parent_lineage,
             history_availability={"progress": True},
-            completed_training_batches=saved.coordinate.global_step,
             metadata={"barrier_visit_ordinal": saved.visit_ordinal},
         )
         self._writes.append(write)
@@ -178,8 +177,8 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                     "barrier_visit_ordinal": saved.visit_ordinal,
                     "transaction_id": write.manifest.transaction_id,
                     "coordinate": saved.coordinate.model_dump(mode="json", exclude_none=True),
-                    "batch": saved.coordinate.global_step,
-                    "global_step": saved.coordinate.global_step,
+                    "batch": saved.coordinate.program_step,
+                    "program_step": saved.coordinate.program_step,
                 },
             )
         for prepared in prepared_artifacts:
@@ -197,7 +196,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                         "barrier": saved.barrier,
                         "barrier_phase": barrier_spec.phase,
                         "barrier_visit_ordinal": saved.visit_ordinal,
-                        "global_step": saved.coordinate.global_step,
+                        "program_step": saved.coordinate.program_step,
                         "checkpoint_transaction_id": write.manifest.transaction_id,
                     },
                 )
@@ -293,6 +292,7 @@ def execute_training_run_spec(
     )
     program = effective_phase.phase_program
     slots = _initial_slots(initial_slots, lowered_objective=lowered.loss)
+    slots = _normalize_batch_progress_slot(slots, program=program)
     custody_root = _checkpoint_root(
         root_path=root_path,
         configured_root=checkpoint_root or run_spec.artifacts.artifact_root,
@@ -354,8 +354,7 @@ def execute_training_run_spec(
     )
     if reserved_context_keys:
         raise TrainingRunExecutorError(
-            "kernel_context contains executor-reserved keys: "
-            f"{reserved_context_keys!r}"
+            f"kernel_context contains executor-reserved keys: {reserved_context_keys!r}"
         )
     executor_context = {
         **caller_kernel_context,
@@ -448,7 +447,7 @@ def execute_training_run_spec(
                         mode="json",
                         exclude_none=True,
                     ),
-                    "batch": execution.coordinate.global_step,
+                    "batch": execution.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
                     "metrics": final_metrics,
@@ -494,7 +493,7 @@ def execute_training_run_spec(
                     "run_id": resolved_run_id,
                     "status": "cancelled",
                     "coordinate": interrupted.coordinate.model_dump(mode="json", exclude_none=True),
-                    "batch": interrupted.coordinate.global_step,
+                    "batch": interrupted.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
                     "metrics": final_metrics,
@@ -597,6 +596,26 @@ def _initial_slots(
     return slots
 
 
+def _normalize_batch_progress_slot(
+    slots: Mapping[str, Any],
+    *,
+    program: Any,
+) -> dict[str, Any]:
+    """Give a declared scalar batch authority a value-independent checkpoint ABI."""
+    authority = program.batch_progress
+    if authority is None or authority.field_path or authority.slot not in slots:
+        return dict(slots)
+    normalized = dict(slots)
+    try:
+        normalized[authority.slot] = jnp.asarray(normalized[authority.slot], dtype=jnp.int32)
+    except (TypeError, ValueError) as exc:
+        raise TrainingRunExecutorError(
+            "/phase_program/batch_progress/slot "
+            f"{authority.slot!r} must initialize to one integer scalar"
+        ) from exc
+    return normalized
+
+
 def _executor_nan_guard(
     *,
     run_spec: TrainingRunSpec,
@@ -614,10 +633,10 @@ def _executor_nan_guard(
         if not nan_metrics:
             return None
 
-        batch = coordinate.global_step
+        program_step = coordinate.program_step
         step = coordinate.inner_step
         message = (
-            f"NaN detected after batch {batch} step {step}; "
+            f"NaN detected after program_step {program_step} inner_step {step}; "
             f"metrics={nan_metrics!r}; on_nan={run_spec.on_nan!r}"
         )
         if run_spec.on_nan == "raise":
@@ -726,13 +745,12 @@ def _live_progress_callback(
                     {
                         "run_id": coordinate.run_id,
                         "phase": coordinate.phase,
-                        "batch": coordinate.global_step,
+                        "batch": coordinate.program_step,
+                        "program_step": coordinate.program_step,
                         "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
                     },
                 )
-            elapsed_seconds = (
-                time.perf_counter() - started_at if started_at is not None else None
-            )
+            elapsed_seconds = time.perf_counter() - started_at if started_at is not None else None
             payload = _run_progress_event_payload(
                 event,
                 coordinate=coordinate,
@@ -741,7 +759,7 @@ def _live_progress_callback(
             )
             run_event_emitter.emit_progress(
                 payload,
-                batch=coordinate.global_step,
+                batch=coordinate.program_step,
                 total_batches=total_batches,
             )
         if progress_callback is not None:
@@ -764,7 +782,8 @@ def _run_progress_event_payload(
     payload: dict[str, Any] = {
         "run_id": coordinate.run_id,
         "phase": coordinate.phase,
-        "batch": coordinate.global_step,
+        "batch": coordinate.program_step,
+        "program_step": coordinate.program_step,
         "total_batches": total_batches,
         "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
         "metrics": dict(metrics),
@@ -882,7 +901,7 @@ def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> 
                 metrics[key] = float(value)
             except (TypeError, ValueError):
                 metrics[key] = value
-    metrics.setdefault("global_step", coordinate.global_step)
+    metrics.setdefault("program_step", coordinate.program_step)
     return metrics
 
 

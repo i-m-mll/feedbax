@@ -907,14 +907,13 @@ def _find_optimizer_spec(row_payload: Mapping[str, Any]) -> Mapping[str, Any] | 
 
 def _source_completed_step(source_manifest: Mapping[str, Any]) -> int:
     value = source_manifest.get("completed_training_batches")
-    if isinstance(value, int):
+    if isinstance(value, int) and value >= 0:
         return value
-    coordinate = source_manifest.get("completed_coordinate")
-    if isinstance(coordinate, Mapping):
-        batch = coordinate.get("batch") or coordinate.get("step")
-        if isinstance(batch, int):
-            return batch
-    return 0
+    raise ForkParityError(
+        "source checkpoint manifest is missing a non-negative "
+        "/completed_training_batches authority; a program coordinate cannot be "
+        "used for LR-continuation arithmetic"
+    )
 
 
 def _load_spec(path: Path) -> TrainingRunMatrixSpec:

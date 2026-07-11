@@ -42,6 +42,7 @@ from feedbax.contracts.checkpoints import (
     SlotLeafContentDigest,
     SlotLeafFingerprint,
     StructuralAbiFingerprint,
+    TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
 )
 from feedbax.contracts.manifest import canonical_json_bytes, feedbax_version, sha256_bytes
 from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_VERSION_V1, TrainingRunSpec
@@ -198,8 +199,6 @@ def _completed_training_batches(
         "completed_training_batches",
         "completed_batches",
         "completed_batch",
-        "n_batches",
-        "batch",
     ):
         value = metadata.get(key)
         if value is None:
@@ -209,6 +208,77 @@ def _completed_training_batches(
         except (TypeError, ValueError):
             continue
     return default
+
+
+def _declared_batch_progress(
+    phase_program: PhaseProgramSpec,
+    slots: Mapping[str, Any],
+) -> int | None:
+    """Read completed batches from the method-declared bookkeeping authority."""
+    authority = phase_program.batch_progress
+    if authority is None:
+        return None
+    path = "/phase_program/batch_progress"
+    if authority.slot not in slots:
+        raise CheckpointConsistencyError(
+            f"{path}/slot={authority.slot!r} is missing from checkpoint slots"
+        )
+    value = slots[authority.slot]
+    for index, segment in enumerate(authority.field_path):
+        segment_path = f"{path}/field_path/{index}"
+        if isinstance(value, Mapping):
+            if segment not in value:
+                raise CheckpointConsistencyError(
+                    f"{segment_path}={segment!r} is missing in slot {authority.slot!r}"
+                )
+            value = value[segment]
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            if not isinstance(segment, int) or segment >= len(value):
+                raise CheckpointConsistencyError(
+                    f"{segment_path}={segment!r} is not a valid index in slot {authority.slot!r}"
+                )
+            value = value[segment]
+        else:
+            raise CheckpointConsistencyError(
+                f"{segment_path} cannot traverse non-container in slot {authority.slot!r}"
+            )
+    try:
+        scalar = jax.device_get(value)
+        scalar_array = np.asarray(scalar)
+        if scalar_array.size != 1:
+            raise ValueError(f"expected one scalar, got shape={scalar_array.shape!r}")
+        batches = int(scalar_array.item())
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise CheckpointConsistencyError(
+            f"{path} resolved slot {authority.slot!r} to non-integer {value!r}"
+        ) from exc
+    if batches < 0:
+        raise CheckpointConsistencyError(
+            f"{path} resolved slot {authority.slot!r} to negative batches={batches}"
+        )
+    return batches
+
+
+def _resolve_completed_training_batches(
+    *,
+    phase_program: PhaseProgramSpec,
+    slots: Mapping[str, Any],
+    explicit: int | None,
+    metadata: Mapping[str, Any],
+    default: int | None = None,
+) -> int | None:
+    """Resolve custody batch total and fail closed on authority disagreement."""
+    declared = _completed_training_batches(explicit, metadata, default=default)
+    authoritative = _declared_batch_progress(phase_program, slots)
+    if authoritative is None:
+        return declared
+    if declared is not None and declared != authoritative:
+        raise CheckpointConsistencyError(
+            "completed-training-batches disagreement: "
+            f"/completed_training_batches={declared} differs from "
+            f"/phase_program/batch_progress={authoritative}"
+        )
+    return authoritative
 
 
 def write_checkpoint_transaction(
@@ -303,9 +373,11 @@ def write_checkpoint_transaction(
         transaction_root = _transaction_root_sha256(slot_digests)
         manifest_metadata = {"phase": barrier.phase}
         manifest_metadata.update(dict(metadata or {}))
-        completed_batches = _completed_training_batches(
-            completed_training_batches,
-            manifest_metadata,
+        completed_batches = _resolve_completed_training_batches(
+            phase_program=phase_program,
+            slots=slots,
+            explicit=completed_training_batches,
+            metadata=manifest_metadata,
         )
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
@@ -494,9 +566,7 @@ def _load_checkpoint_from_pointer(
             expected_run_spec,
             expected_phase_program,
         ),
-        previous_transaction_id=(
-            manifest.transaction_id if allow_new_lineage_override else None
-        ),
+        previous_transaction_id=(manifest.transaction_id if allow_new_lineage_override else None),
     )
 
 
@@ -683,9 +753,11 @@ def fork_checkpoint_transaction(
         manifest_metadata["phase"] = barrier.phase
         manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
         manifest_metadata.update(dict(metadata or {}))
-        completed_batches = _completed_training_batches(
-            None,
-            manifest_metadata,
+        completed_batches = _resolve_completed_training_batches(
+            phase_program=phase_program,
+            slots=prepared_slots,
+            explicit=None,
+            metadata=manifest_metadata,
             default=source.manifest.completed_training_batches,
         )
         manifest = CheckpointTransactionManifest(
@@ -721,9 +793,7 @@ def fork_checkpoint_transaction(
                         source.manifest.content_integrity_digest.transaction_root_sha256
                     ),
                     manifest_relative_path=source.latest_pointer.manifest_relative_path,
-                    slot_content_digests=list(
-                        source.manifest.content_integrity_digest.slots
-                    ),
+                    slot_content_digests=list(source.manifest.content_integrity_digest.slots),
                 ),
                 slots=slot_provenance,
                 tool_version=tool_version or feedbax_version(),
@@ -808,9 +878,7 @@ def _apply_slot_transforms(
     transformed_slots = dict(loaded_slots)
     for slot, transform in transforms.items():
         if slot not in transformed_slots:
-            raise CheckpointCompatibilityError(
-                f"cannot transform missing checkpoint slot {slot!r}"
-            )
+            raise CheckpointCompatibilityError(f"cannot transform missing checkpoint slot {slot!r}")
         try:
             transformed_mapping = dict(transform(transformed_slots))
         except CheckpointCustodyError:
@@ -820,9 +888,7 @@ def _apply_slot_transforms(
                 f"checkpoint fork transform failed for slot {slot!r}"
             ) from exc
         if slot not in transformed_mapping:
-            raise CheckpointCompatibilityError(
-                f"checkpoint fork transform dropped slot {slot!r}"
-            )
+            raise CheckpointCompatibilityError(f"checkpoint fork transform dropped slot {slot!r}")
         transformed_slots[slot] = transformed_mapping[slot]
     return transformed_slots
 
@@ -1005,9 +1071,7 @@ def _format_structural_abi_diff(
 ) -> str:
     diffs = _structural_abi_leaf_diffs(recorded, actual)
     displayed_diffs = diffs[:10]
-    leaf_diff_text = "; ".join(
-        _format_structural_abi_leaf_diff(diff) for diff in displayed_diffs
-    )
+    leaf_diff_text = "; ".join(_format_structural_abi_leaf_diff(diff) for diff in displayed_diffs)
     if not leaf_diff_text:
         leaf_diff_text = "<none in comparable leaves>"
     elif len(diffs) > len(displayed_diffs):
@@ -1201,8 +1265,7 @@ def _validate_structural_abi(
         if loaded_fingerprint.fingerprint_sha256 != expected.fingerprint_sha256:
             diff_suffix = _format_structural_abi_diff(expected, loaded_fingerprint)
             raise CheckpointCompatibilityError(
-                f"checkpoint slot {slot.slot!r} structural ABI mismatch"
-                f"{diff_suffix}"
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch{diff_suffix}"
             )
 
 
@@ -1226,8 +1289,7 @@ def _validate_manifest_structural_abi(
                 loaded_fingerprint,
             )
             raise CheckpointIntegrityError(
-                f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale"
-                f"{diff_suffix}"
+                f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale{diff_suffix}"
             )
         notice = _environment_provenance_notice(slot.slot, slot.structural_abi_fingerprint)
         if notice is not None:
@@ -1339,9 +1401,7 @@ def _format_binding_hash_field_summary(
 
     mismatches = _binding_hash_field_mismatches(recorded_hashes, comparison_hashes)
     matches = [
-        field
-        for field in recorded_hashes
-        if recorded_hashes[field] == comparison_hashes.get(field)
+        field for field in recorded_hashes if recorded_hashes[field] == comparison_hashes.get(field)
     ]
     return (
         f"; hash_comparison={comparison_label}"
@@ -1445,10 +1505,7 @@ def _value_diffs(
 
 def _format_binding_diff(diff: tuple[str, Any, Any]) -> str:
     path, recorded, expected = diff
-    return (
-        f"{path}: recorded={_short_json(recorded)}, "
-        f"expected={_short_json(expected)}"
-    )
+    return f"{path}: recorded={_short_json(recorded)}, expected={_short_json(expected)}"
 
 
 def _short_json(value: Any, *, limit: int = 160) -> str:
@@ -1545,7 +1602,7 @@ def _same_barrier_coordinate(left: ProgressCoordinate, right: ProgressCoordinate
     return (
         left.run_id == right.run_id
         and left.phase == right.phase
-        and left.global_step == right.global_step
+        and left.program_step == right.program_step
         and left.outer_step == right.outer_step
         and left.inner_step == right.inner_step
         and left.completed_barrier == right.completed_barrier
@@ -1588,17 +1645,52 @@ def _load_latest_pointer(root: Path) -> CheckpointLatestPointer:
         raise CheckpointIntegrityError("checkpoint latest pointer is missing")
     try:
         payload = json.loads(path.read_text())
+        payload = _migrate_latest_pointer_payload(payload)
         return CheckpointLatestPointer.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValidationError) as exc:
         raise CheckpointIntegrityError("checkpoint latest pointer is corrupt") from exc
 
 
+def _migrate_latest_pointer_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Upgrade the latest pointer's coordinate name with explicit compatibility."""
+    migrated = dict(payload)
+    version = migrated.get("schema_version")
+    if version == TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION:
+        return migrated
+    if version != "feedbax.manifest.training_checkpoint_latest_pointer.v2":
+        raise CheckpointIntegrityError(
+            "unsupported checkpoint latest schema_version "
+            f"{version!r}; expected current {TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION!r} "
+            "or migratable legacy v2"
+        )
+    coordinate = migrated.get("completed_coordinate")
+    if not isinstance(coordinate, Mapping):
+        raise CheckpointIntegrityError(
+            "legacy checkpoint latest pointer missing /completed_coordinate"
+        )
+    updated_coordinate = dict(coordinate)
+    legacy = updated_coordinate.pop("global_step", None)
+    current = updated_coordinate.get("program_step")
+    if legacy is not None and current is not None and legacy != current:
+        raise CheckpointIntegrityError(
+            "legacy checkpoint latest pointer conflicts at /completed_coordinate: "
+            f"global_step={legacy!r}, program_step={current!r}"
+        )
+    if legacy is not None:
+        updated_coordinate["program_step"] = legacy
+    migrated["completed_coordinate"] = updated_coordinate
+    migrated["completed_coordinate_semantics"] = (
+        "Cumulative phase-program coordinate for custody ordering; not the primary "
+        "training-batch progress field or checkpoint count."
+    )
+    migrated["schema_version"] = TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION
+    return migrated
+
+
 def _reject_legacy_checkpoint(root: Path) -> None:
     layout = detect_known_legacy_checkpoint_layout(root)
     if layout is not None:
-        raise CheckpointCompatibilityError(
-            _legacy_checkpoint_adoption_message(layout)
-        )
+        raise CheckpointCompatibilityError(_legacy_checkpoint_adoption_message(layout))
 
 
 def _legacy_checkpoint_adoption_message(layout: DetectedLegacyCheckpointLayout) -> str:
@@ -1673,10 +1765,7 @@ def _load_transaction_manifest(path: Path) -> CheckpointTransactionManifest:
 
 
 def _slot_roles(run_spec: TrainingRunSpec) -> dict[str, str]:
-    return {
-        slot.name: slot.role
-        for slot in run_spec.worker_execution.method_contract.state_slots
-    }
+    return {slot.name: slot.role for slot in run_spec.worker_execution.method_contract.state_slots}
 
 
 def _population_slot_names(run_spec: TrainingRunSpec) -> set[str]:
@@ -1736,9 +1825,7 @@ def _structural_abi_content_payload(
     leaves: Sequence[SlotLeafFingerprint],
 ) -> dict[str, Any]:
     return {
-        "fingerprint_algorithm_version": (
-            "feedbax.training_checkpoint.structural_abi.content.v2"
-        ),
+        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
         "treedef": treedef,
         "leaf_count": len(leaves),
         "leaves": [_leaf_structural_content_payload(leaf) for leaf in leaves],

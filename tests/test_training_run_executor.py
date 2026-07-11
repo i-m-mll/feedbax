@@ -94,18 +94,20 @@ def _initial_slots(*, arrays: bool = False) -> dict[str, object]:
             "model": jnp.array([0.0]),
             "optimizer": {"count": jnp.array([1.0])},
             "prng": jnp.array([0, 1], dtype=jnp.uint32),
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
         }
     return {
         "model": 0,
         "optimizer": {"count": 1},
         "prng": [0, 1],
+        "batch_counter": 0,
     }
 
 
 def _chunked_registry(
     *,
-    stop_after_global_step: int = 3,
-    fail_on_global_step: int | None = None,
+    stop_after_program_step: int = 3,
+    fail_on_program_step: int | None = None,
     barrier_artifact_sink: bool = False,
 ) -> tuple[TrainingMethodRegistry, object]:
     contract = standard_supervised_method_contract()
@@ -157,16 +159,16 @@ def _chunked_registry(
     ]
 
     def gradient_update(slots, coordinate, context):
-        if fail_on_global_step is not None and coordinate.global_step >= fail_on_global_step:
+        if fail_on_program_step is not None and coordinate.program_step >= fail_on_program_step:
             raise RuntimeError("simulated preemption after durable checkpoint")
         updates = dict(base_kernel(slots, coordinate, context))
         if barrier_artifact_sink:
-            updates["history_chunk"] = bytes([0, 255, coordinate.global_step])
+            updates["history_chunk"] = bytes([0, 255, coordinate.program_step])
         return updates
 
     def continue_train_chunk(slots, coordinate, context):
         del slots, context
-        return coordinate.global_step < stop_after_global_step
+        return coordinate.program_step < stop_after_program_step
 
     registry = TrainingMethodRegistry()
     registry.register(
@@ -191,10 +193,10 @@ def _chunked_registry(
 
 def _nan_registry(
     *,
-    nan_on_global_step: int,
-    stop_after_global_step: int = 3,
+    nan_on_program_step: int,
+    stop_after_program_step: int = 3,
 ) -> tuple[TrainingMethodRegistry, object]:
-    registry, program = _chunked_registry(stop_after_global_step=stop_after_global_step)
+    registry, program = _chunked_registry(stop_after_program_step=stop_after_program_step)
     base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
     base_kernel = standard_supervised_update_kernels()[
         "feedbax.training.standard_supervised.gradient_update"
@@ -202,7 +204,7 @@ def _nan_registry(
 
     def gradient_update(slots, coordinate, context):
         updates = dict(base_kernel(slots, coordinate, context))
-        if coordinate.global_step >= nan_on_global_step:
+        if coordinate.program_step >= nan_on_program_step:
             updates["train_loss"] = jnp.array(float("nan"))
             updates["model"] = updates["model"] + jnp.array(float("nan"))
             updates["optimizer"] = {
@@ -355,7 +357,7 @@ def test_manifest_writer_and_preflight_share_payload_builder() -> None:
 def test_execute_training_run_spec_kernel_context_reaches_kernels_and_guards(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _chunked_registry(stop_after_global_step=99)
+    registry, _program = _chunked_registry(stop_after_program_step=99)
     events: list[tuple[str, object]] = []
 
     base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
@@ -372,7 +374,7 @@ def test_execute_training_run_spec_kernel_context_reaches_kernels_and_guards(
     def continue_train_chunk(slots, coordinate, context):
         del slots
         events.append(("guard", context["runtime_token"]))
-        return coordinate.global_step < context["stop_after_global_step"]
+        return coordinate.program_step < context["stop_after_program_step"]
 
     registration = TrainingMethodRegistration(
         method_ref="feedbax/standard_supervised/v1",
@@ -401,7 +403,7 @@ def test_execute_training_run_spec_kernel_context_reaches_kernels_and_guards(
         kernel_context={
             "runtime_token": "injected",
             "model_increment": jnp.array([10.0]),
-            "stop_after_global_step": 1,
+            "stop_after_program_step": 1,
         },
     )
 
@@ -428,7 +430,7 @@ def test_execute_training_run_spec_rejects_reserved_kernel_context_keys(
 def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _chunked_registry(stop_after_global_step=3)
+    registry, _program = _chunked_registry(stop_after_program_step=3)
     callback_events: list[dict[str, object]] = []
 
     result = execute_training_run_spec(
@@ -440,7 +442,7 @@ def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
         progress_callback=callback_events.append,
     )
 
-    assert [event["coordinate"]["global_step"] for event in callback_events] == [1, 2, 3]
+    assert [event["coordinate"]["program_step"] for event in callback_events] == [1, 2, 3]
     assert [event["coordinate"]["phase"] for event in callback_events] == [
         "train_batch",
         "train_batch",
@@ -454,7 +456,7 @@ def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
 def test_execute_training_run_spec_emits_run_events_without_changing_manifest(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _chunked_registry(stop_after_global_step=3)
+    registry, _program = _chunked_registry(stop_after_program_step=3)
     events_path = tmp_path / "events" / "row-1.events.jsonl"
     emitter = RunEventEmitter(
         run_set_id="set-1",
@@ -497,7 +499,7 @@ def test_execute_training_run_spec_emits_run_events_without_changing_manifest(
 def test_execute_training_run_spec_stops_at_checkpoint_with_cancelled_provenance(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _chunked_registry(stop_after_global_step=3)
+    registry, _program = _chunked_registry(stop_after_program_step=3)
     events_path = tmp_path / "events" / "row-1.events.jsonl"
     decision = CancellationDecision(
         action="stop",
@@ -519,13 +521,15 @@ def test_execute_training_run_spec_stops_at_checkpoint_with_cancelled_provenance
             checkpoint_root=tmp_path / "checkpoint-custody",
             registry=registry,
             run_event_emitter=emitter,
-            cancellation_probe=lambda coordinate: decision if coordinate.global_step == 1 else None,
+            cancellation_probe=lambda coordinate: decision
+            if coordinate.program_step == 1
+            else None,
         )
     finally:
         emitter.close()
 
     assert result.status == "cancelled"
-    assert result.final_coordinate.global_step == 1
+    assert result.final_coordinate.program_step == 1
     assert result.manifest.status == "cancelled"
     assert result.manifest.provenance.metadata["cancellation"] == decision.as_provenance()
     assert len(result.checkpoint_writes) == 1
@@ -535,13 +539,13 @@ def test_execute_training_run_spec_stops_at_checkpoint_with_cancelled_provenance
 def test_execute_training_run_spec_can_continue_after_an_interruption_decision(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _chunked_registry(stop_after_global_step=3)
+    registry, _program = _chunked_registry(stop_after_program_step=3)
     decision = CancellationDecision("continue", "test", 123.0)
     seen = False
 
     def cancellation_probe(coordinate):
         nonlocal seen
-        if coordinate.global_step == 1 and not seen:
+        if coordinate.program_step == 1 and not seen:
             seen = True
             return decision
         return None
@@ -557,13 +561,13 @@ def test_execute_training_run_spec_can_continue_after_an_interruption_decision(
 
     assert seen
     assert result.status == "completed"
-    assert result.final_coordinate.global_step == 3
+    assert result.final_coordinate.program_step == 3
 
 
 def test_execute_training_run_spec_can_terminate_with_cancelled_manifest(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _chunked_registry(stop_after_global_step=3)
+    registry, _program = _chunked_registry(stop_after_program_step=3)
     decision = CancellationDecision("terminate", "test", 123.0)
 
     result = execute_training_run_spec(
@@ -572,11 +576,11 @@ def test_execute_training_run_spec_can_terminate_with_cancelled_manifest(
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path,
         registry=registry,
-        cancellation_probe=lambda coordinate: decision if coordinate.global_step == 1 else None,
+        cancellation_probe=lambda coordinate: decision if coordinate.program_step == 1 else None,
     )
 
     assert result.status == "cancelled"
-    assert result.final_coordinate.global_step == 1
+    assert result.final_coordinate.program_step == 1
     assert not result.checkpoint_writes
     assert result.manifest.provenance.metadata["cancellation"] == decision.as_provenance()
 
@@ -602,7 +606,7 @@ def test_execute_training_run_spec_propagates_progress_callback_errors(
             progress_callback=fail_on_progress,
         )
 
-    assert [event["coordinate"]["global_step"] for event in callback_events] == [1]
+    assert [event["coordinate"]["program_step"] for event in callback_events] == [1]
     assert not list(checkpoint_root.glob("transactions/tx-*"))
     assert not list((tmp_path / "manifests" / "training_runs").glob("*.json"))
 
@@ -631,14 +635,14 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
 
     assert resumed.final_slots["model"].tolist() == [3.0]
     assert resumed.final_slots["optimizer"]["count"].tolist() == [3.0]
-    assert resumed.final_coordinate.global_step == 2
+    assert resumed.final_coordinate.program_step == 2
     assert resumed.checkpoint_writes[0].manifest.parent_lineage
 
 
 def test_execute_training_run_spec_applies_resume_slot_transform(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _chunked_registry(stop_after_global_step=2)
+    registry, _program = _chunked_registry(stop_after_program_step=2)
     checkpoint_root = tmp_path / "checkpoint-custody"
     execute_training_run_spec(
         _run_spec(),
@@ -670,13 +674,13 @@ def test_execute_training_run_spec_applies_resume_slot_transform(
 
     assert resumed.final_slots["model"].shape == (2,)
     assert resumed.final_slots["model"].tolist() == [3.0, 2.0]
-    assert resumed.final_coordinate.global_step == 2
+    assert resumed.final_coordinate.program_step == 2
 
 
 def test_execute_training_run_spec_writes_checkpoint_before_later_failure(
     tmp_path: Path,
 ) -> None:
-    registry, program = _chunked_registry(stop_after_global_step=3, fail_on_global_step=1)
+    registry, program = _chunked_registry(stop_after_program_step=3, fail_on_program_step=1)
     checkpoint_root = tmp_path / "checkpoint-custody"
 
     with pytest.raises(RuntimeError, match="simulated preemption"):
@@ -698,16 +702,16 @@ def test_execute_training_run_spec_writes_checkpoint_before_later_failure(
         expected_slots=_initial_slots(arrays=True),
     )
     assert loaded.manifest.barrier == "after_train_batch"
-    assert loaded.manifest.completed_coordinate.global_step == 1
+    assert loaded.manifest.completed_coordinate.program_step == 1
     assert loaded.manifest.metadata["barrier_visit_ordinal"] == 0
     assert loaded.slots["model"].tolist() == [1.0]
 
 
 @pytest.mark.no_silent_substitution_contract
-def test_execute_training_run_spec_raises_on_nan_with_batch_and_step(
+def test_execute_training_run_spec_raises_on_nan_with_program_coordinate(
     tmp_path: Path,
 ) -> None:
-    registry, _program = _nan_registry(nan_on_global_step=1)
+    registry, _program = _nan_registry(nan_on_program_step=1)
 
     with pytest.raises(FloatingPointError) as excinfo:
         execute_training_run_spec(
@@ -721,8 +725,8 @@ def test_execute_training_run_spec_raises_on_nan_with_batch_and_step(
 
     message = str(excinfo.value)
     assert "NaN detected" in message
-    assert "batch 2" in message
-    assert "step 0" in message
+    assert "program_step 2" in message
+    assert "inner_step 0" in message
     assert "train_loss" in message
     assert "on_nan='raise'" in message
 
@@ -731,7 +735,7 @@ def test_execute_training_run_spec_raises_on_nan_with_batch_and_step(
 def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_nan(
     tmp_path: Path,
 ) -> None:
-    registry, program = _nan_registry(nan_on_global_step=1)
+    registry, program = _nan_registry(nan_on_program_step=1)
     spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
     checkpoint_root = tmp_path / "checkpoints"
 
@@ -744,7 +748,7 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
         registry=registry,
     )
 
-    assert result.final_coordinate.global_step == 1
+    assert result.final_coordinate.program_step == 1
     assert result.final_slots["model"].tolist() == [1.0]
     assert result.final_slots["optimizer"]["count"].tolist() == [2.0]
     assert result.final_slots["prng"].tolist() == [0, 1]
@@ -758,7 +762,12 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
         expected_phase_program=program,
         expected_slots=_initial_slots(arrays=True),
     )
-    assert {slot.slot for slot in loaded.manifest.slots} == {"model", "optimizer", "prng"}
+    assert {slot.slot for slot in loaded.manifest.slots} == {
+        "model",
+        "optimizer",
+        "prng",
+        "batch_counter",
+    }
     assert loaded.manifest.transaction_id == result.checkpoint_writes[0].manifest.transaction_id
     assert loaded.slots["model"].tolist() == result.final_slots["model"].tolist()
     assert loaded.slots["optimizer"]["count"].tolist() == (
@@ -770,7 +779,7 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
 def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
     tmp_path: Path,
 ) -> None:
-    registry, program = _chunked_registry(stop_after_global_step=3)
+    registry, program = _chunked_registry(stop_after_program_step=3)
     checkpoint_root = tmp_path / "checkpoint-custody"
 
     result = execute_training_run_spec(
@@ -799,7 +808,7 @@ def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
         expected_slots=_initial_slots(arrays=True),
     )
     assert loaded.manifest.transaction_id == result.checkpoint_writes[-1].manifest.transaction_id
-    assert loaded.manifest.completed_coordinate.global_step == 3
+    assert loaded.manifest.completed_coordinate.program_step == 3
     assert loaded.slots["model"].tolist() == result.final_slots["model"].tolist()
 
 
@@ -807,7 +816,7 @@ def test_repeated_barrier_visits_capture_binary_artifact_sinks(
     tmp_path: Path,
 ) -> None:
     registry, _program = _chunked_registry(
-        stop_after_global_step=3,
+        stop_after_program_step=3,
         barrier_artifact_sink=True,
     )
 
@@ -827,7 +836,7 @@ def test_repeated_barrier_visits_capture_binary_artifact_sinks(
     ]
     assert len(artifacts) == 3
     assert [artifact.metadata["barrier_visit_ordinal"] for artifact in artifacts] == [0, 1, 2]
-    assert [artifact.metadata["global_step"] for artifact in artifacts] == [1, 2, 3]
+    assert [artifact.metadata["program_step"] for artifact in artifacts] == [1, 2, 3]
     assert all(artifact.metadata["barrier"] == "after_train_batch" for artifact in artifacts)
     assert all(artifact.metadata["slot"] == "history_chunk" for artifact in artifacts)
     assert all(artifact.metadata["checkpoint_transaction_id"] for artifact in artifacts)
@@ -864,7 +873,7 @@ def test_repeated_barrier_visits_capture_binary_artifact_sinks(
 def test_partial_run_resume_matches_uninterrupted_chunked_execution(
     tmp_path: Path,
 ) -> None:
-    full_registry, _program = _chunked_registry(stop_after_global_step=3)
+    full_registry, _program = _chunked_registry(stop_after_program_step=3)
     full = execute_training_run_spec(
         _run_spec(),
         run_id="chunked-full",
@@ -874,7 +883,7 @@ def test_partial_run_resume_matches_uninterrupted_chunked_execution(
         registry=full_registry,
     )
 
-    partial_registry, _program = _chunked_registry(stop_after_global_step=3)
+    partial_registry, _program = _chunked_registry(stop_after_program_step=3)
     checkpoint_root = tmp_path / "partial-checkpoints"
     execute_training_run_spec(
         _run_spec(),
@@ -886,7 +895,7 @@ def test_partial_run_resume_matches_uninterrupted_chunked_execution(
         stop_after_barrier="after_train_batch",
     )
 
-    resume_registry, _program = _chunked_registry(stop_after_global_step=3)
+    resume_registry, _program = _chunked_registry(stop_after_program_step=3)
     resumed = execute_training_run_spec(
         _run_spec(),
         run_id="chunked-resumed",
@@ -902,7 +911,7 @@ def test_partial_run_resume_matches_uninterrupted_chunked_execution(
         full.final_slots["optimizer"]["count"].tolist()
     )
     assert resumed.final_slots["prng"].tolist() == full.final_slots["prng"].tolist()
-    assert resumed.final_coordinate.global_step == full.final_coordinate.global_step
+    assert resumed.final_coordinate.program_step == full.final_coordinate.program_step
     assert resumed.checkpoint_writes[0].manifest.metadata["barrier_visit_ordinal"] == 1
     assert resumed.checkpoint_writes[0].manifest.parent_lineage
 
