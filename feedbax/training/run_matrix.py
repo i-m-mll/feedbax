@@ -330,11 +330,18 @@ def fork_matrix_checkpoints(
     source_checkpoint_root: Path,
     target_checkpoint_roots: Mapping[str, Path],
     parity_output_path: Path,
+    target_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
     tool_version: str = "feedbax.run_matrix_fork.v1",
 ) -> dict[str, Any]:
-    """Fork a source checkpoint to all matrix rows and write a parity table."""
+    """Fork a source checkpoint to all matrix rows and write a parity table.
+
+    ``target_slot_templates`` is required for rows with a declared checkpoint
+    continuation because Feedbax must take any new batch-axis tail from the
+    target runtime template rather than infer it from arbitrary checkpoint
+    PyTrees.
+    """
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
     row_ids = {row.row_id for row in materialized.rows}
@@ -342,6 +349,12 @@ def fork_matrix_checkpoints(
     if unexpected_targets:
         raise RunMatrixError(
             f"target checkpoint roots contain unknown rows {unexpected_targets!r}"
+        )
+    unexpected_templates = sorted(set(target_slot_templates or {}) - row_ids)
+    if unexpected_templates:
+        raise RunMatrixError(
+            "target slot templates contain unknown rows "
+            f"{unexpected_templates!r}"
         )
     reporter = lr_reporter or StandardLrContinuationReporter()
     parity_rows: list[dict[str, Any]] = []
@@ -361,11 +374,20 @@ def fork_matrix_checkpoints(
             )
             transaction_id = target_manifest.get("transaction_id")
         else:
+            continuation = row.spec.checkpoint_progress.continuation
+            expected_slots = (target_slot_templates or {}).get(row.row_id)
+            if continuation is not None and expected_slots is None:
+                raise RunMatrixError(
+                    "row declares checkpoint continuation but has no target slot template; "
+                    f"row={row.row_id!r} contract=checkpoint_progress.continuation"
+                )
             result = fork_checkpoint_transaction(
                 source_checkpoint_root,
                 target_root,
                 target_run_spec=row.spec,
                 target_phase_program=row.spec.worker_execution.method_contract.phase_program,
+                expected_slots=expected_slots,
+                continuation_request=continuation,
                 tool_version=tool_version,
                 metadata={
                     "matrix_spec_sha256": materialized.matrix_spec_sha256,

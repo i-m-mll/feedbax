@@ -3,8 +3,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import jax.numpy as jnp
 import pytest
 
+from feedbax.contracts.checkpoints import (
+    BatchIndexedCheckpointLeafSpec,
+    CheckpointContinuationRequest,
+)
+from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
+from feedbax.training.checkpoint_custody import (
+    load_latest_checkpoint,
+    write_checkpoint_transaction,
+)
 from feedbax.training.run_matrix import (
     ForkParityError,
     MaterializedRunMatrix,
@@ -13,6 +23,7 @@ from feedbax.training.run_matrix import (
 )
 
 from tests.test_run_matrix_materialization import _matrix, _training_run_payload
+from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 from feedbax.training.run_matrix import materialize_run_matrix
 
 
@@ -86,6 +97,76 @@ def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None
             parity_output_path=tmp_path / "parity.json",
             skip_fork=True,
         )
+
+
+def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
+    tmp_path: Path,
+) -> None:
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=12000,
+        additional_batches=200,
+        batch_indexed_leaves=[
+            BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/")
+        ],
+    )
+    source_spec = _run_spec(minimax=True).model_copy(deep=True)
+    source_spec = source_spec.model_copy(
+        update={
+            "checkpoint_progress": source_spec.checkpoint_progress.model_copy(
+                update={"continuation": continuation}
+            )
+        }
+    )
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "continuation row",
+            "base": {"inline": source_spec.model_dump(mode="json", exclude_none=True)},
+            "fork": {
+                "source_run_id": "feedbax-training-run:source",
+                "lr_continuation": "continue",
+                "parity": "skip",
+            },
+            "rows": [{"row_id": "continuation", "overrides": []}],
+        }
+    )
+    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    source_slots = _minimax_slots()
+    source_slots["controller"] = jnp.arange(5 * 12000, dtype=jnp.float32).reshape(
+        5, 12000
+    )
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=source_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=12000),
+        slots=source_slots,
+        completed_training_batches=12000,
+    )
+    target_slots = _minimax_slots()
+    target_slots["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
+
+    table = fork_matrix_checkpoints(
+        matrix,
+        materialized,
+        source_checkpoint_root=tmp_path / "source",
+        target_checkpoint_roots={"continuation": tmp_path / "target"},
+        target_slot_templates={"continuation": target_slots},
+        parity_output_path=tmp_path / "parity.json",
+    )
+
+    assert table["ok"] is False
+    resumed = load_latest_checkpoint(
+        tmp_path / "target",
+        expected_run_spec=materialized.rows[0].spec,
+        expected_phase_program=(
+            materialized.rows[0].spec.worker_execution.method_contract.phase_program
+        ),
+        expected_slots=target_slots,
+        continuation_request=continuation,
+    )
+    assert resumed.slots["controller"].shape == (5, 12200)
+    assert jnp.array_equal(resumed.slots["controller"][..., :12000], source_slots["controller"])
 
 
 def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -> None:
