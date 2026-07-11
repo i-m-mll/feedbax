@@ -265,7 +265,12 @@ class PhaseTransitionSpec(StrictModel):
 
 
 class ScheduleOriginSpec(StrictModel):
-    """Schedule-origin coordinate recorded when entering a phase."""
+    """Phase-program step-clock origin recorded when entering a phase.
+
+    This origin applies to phase execution and resume coordinates. For
+    training-batch-parameterized schedules, use
+    :class:`feedbax.contracts.training.BatchScheduleOriginSpec` instead.
+    """
 
     mode: Literal["run_start", "phase_entry", "resume_barrier"] = "phase_entry"
     step_offset: int = 0

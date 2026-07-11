@@ -1398,7 +1398,13 @@ def migrate_structured_spec_payload(
     path: str = "spec",
     registry: SpecSchemaRegistry | None = None,
 ) -> SpecMigrationResult:
-    """Migrate or explicitly reject one registered structured spec payload."""
+    """Migrate or explicitly reject one registered structured spec payload.
+
+    The checkpoint v5-to-v6 registry transform only marks legacy BatchHistory
+    declarations. Their array wrapping completes during checkpoint load in
+    ``_wrap_migrated_v5_batch_histories``; this function alone does not produce
+    the fully loaded v6 slot tree.
+    """
     registry = registry or default_spec_registry
     if kind == "GraphSpec":
         return migrate_graph_spec(
