@@ -82,6 +82,9 @@ from feedbax.contracts.acausal import (
 from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_ID,
     REPRESENTATION_SCHEMA_VERSION,
+    REPRESENTATION_SCHEMA_VERSION_V3,
+    REPRESENTATION_SCHEMA_VERSION_V2,
+    REPRESENTATION_SCHEMA_VERSION_V1,
     REPRESENTATION_SCHEMA_VERSION_V0,
 )
 from feedbax.contracts.manifest import (
@@ -1037,6 +1040,32 @@ def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, 
     from feedbax.contracts.graph import StudioValueSpec
 
     return StudioValueSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
+
+
+def _migrate_representation_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote v1 representations to the capability-aware v2 envelope."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
+    return migrated
+
+
+def _migrate_representation_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote v2 representations to graph-bound muscle-path topology."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
+    geometry = migrated.get("muscle_path_geometry")
+    if isinstance(geometry, Mapping):
+        migrated["muscle_path_geometry"] = {
+            key: value for key, value in geometry.items() if key != "frames"
+        }
+    return migrated
+
+
+def _migrate_representation_spec_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Promote v3 representations to same-entity frame-provider support."""
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", REPRESENTATION_SCHEMA_ID)
+    return migrated
 
 
 def migrate_graph_spec(
@@ -2550,6 +2579,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             consumed_by=("Studio frontend", "workspace renderer"),
             description="Component-owned workspace representation declaration.",
+            stance="migrate",
+            supported_old_versions=(
+                REPRESENTATION_SCHEMA_VERSION_V1,
+                REPRESENTATION_SCHEMA_VERSION_V2,
+                REPRESENTATION_SCHEMA_VERSION_V3,
+            ),
             rejected_old_versions=(REPRESENTATION_SCHEMA_VERSION_V0,),
             required_tests=(
                 "tests/test_component_registration.py",
@@ -2904,6 +2939,41 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "RepresentationSpec",
+    SchemaMigration(
+        source_version=REPRESENTATION_SCHEMA_VERSION_V1,
+        target_version=REPRESENTATION_SCHEMA_VERSION_V2,
+        migration_id="representation-spec-v1-to-v2-reachability-capability",
+        migrate=_migrate_representation_spec_v1_to_v2_payload,
+        description="Add the optional provider-declared reachability capability envelope.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RepresentationSpec",
+    SchemaMigration(
+        source_version=REPRESENTATION_SCHEMA_VERSION_V2,
+        target_version=REPRESENTATION_SCHEMA_VERSION_V3,
+        migration_id="representation-spec-v2-to-v3-muscle-path-geometry",
+        migrate=_migrate_representation_spec_v2_to_v3_payload,
+        description=(
+            "Add provider-owned muscle-path topology; frame transforms are resolved from graph "
+            "wiring and are never persisted in the geometry payload."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RepresentationSpec",
+    SchemaMigration(
+        source_version=REPRESENTATION_SCHEMA_VERSION_V3,
+        target_version=REPRESENTATION_SCHEMA_VERSION,
+        migration_id="representation-spec-v3-to-v4-same-entity-frame-provider",
+        migrate=_migrate_representation_spec_v3_to_v4_payload,
+        description=(
+            "Add typed same-entity planar-chain frame providers for self-contained components."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(

@@ -32,6 +32,7 @@ import {
 } from '@/features/scenario/entities';
 import {
   buildResolvedScene,
+  resolvedScenePoseKey,
   objectiveProjectionItems,
   relatedProjectionItems,
   type ResolvedScene,
@@ -39,6 +40,7 @@ import {
   type ResolvedSceneElement,
   type ResolvedSceneEntity,
 } from '@/features/scenario/projections';
+import type { WorkspaceReplayTrack } from '@/generated/studioContracts';
 import {
   addObjectiveTerm,
   createObjectiveTermFromAnchors,
@@ -128,6 +130,20 @@ import type {
   WorkspaceViewState,
 } from '@/types/workspace';
 import type { TimeAggregationSpec } from '@/types/training';
+
+function poseValuesFromTracks(
+  tracks: WorkspaceReplayTrack[] | null | undefined,
+  frameIndex: number
+): Record<string, number[]> {
+  const values: Record<string, number[]> = {};
+  for (const track of tracks ?? []) {
+    const nodeId = track.selector.metadata?.graph_port_node_id;
+    const sample = track.samples[Math.max(0, Math.min(track.samples.length - 1, frameIndex))];
+    if (typeof nodeId !== 'string' || !sample || !sample.every(Number.isFinite)) continue;
+    values[resolvedScenePoseKey(nodeId, track.selector.compact)] = sample;
+  }
+  return values;
+}
 
 const PROJECTIONS: Array<{
   id: StudioTopPaneProjection;
@@ -2053,6 +2069,55 @@ export function ScenarioProjectionWorkspace() {
     () => buildScenarioEntityRegistry({ scenario: projectedScenario, graph: graphForProjection }),
     [graphForProjection, projectedScenario]
   );
+  const [previewMode, setPreviewMode] = useState<'authoring' | 'sampled' | 'playback'>('sampled');
+  const poseReplaySources = useMemo(
+    () => resolveWorkspaceReplaySources(workspace, activeStage),
+    [activeStage, workspace]
+  );
+  const poseReplayModel = useMemo(
+    () => poseReplaySources[0] ?? resolveWorkspaceReplayModel(workspace, activeStage),
+    [activeStage, poseReplaySources, workspace]
+  );
+  const poseSelectedTrial = selectWorkspaceReplayTrial(
+    poseReplayModel.product,
+    workspaceViewState.selected_trial_ref
+  );
+  const poseComparison = useMemo(
+    () =>
+      resolveWorkspaceReplayComparison(
+        poseReplaySources,
+        workspaceViewState.comparison_selection,
+        workspaceViewState.selected_trial_ref
+      ),
+    [poseReplaySources, workspaceViewState.comparison_selection, workspaceViewState.selected_trial_ref]
+  );
+  const poseReplayTrial =
+    workspaceViewState.overlay_visibility.comparisons !== false &&
+    poseComparison.members.length >= 2
+      ? poseComparison.primaryTrial
+      : poseSelectedTrial;
+  const poseReplayIndex = poseReplayTrial
+    ? workspaceReplayFrameIndex(poseReplayTrial, workspaceViewState.playback.position)
+    : 0;
+  const poseLiveFrame = useTrainingStore((state) => state.latestTrajectory);
+  const poseLiveStatus = useTrainingStore((state) => state.status);
+  const poseLiveWorkerMode = useTrainingStore((state) => state.workerMode);
+  const poseLiveActive =
+    poseLiveWorkerMode === 'local' &&
+    poseLiveStatus === 'running' &&
+    poseLiveFrame !== null &&
+    poseLiveFrame.tracks.length > 0;
+  const poseValues = useMemo(() => {
+    if (poseLiveActive && poseLiveFrame) {
+      const lastIndex = Math.max(0, poseLiveFrame.time.length - 1);
+      return poseValuesFromTracks(poseLiveFrame.tracks, lastIndex);
+    }
+    if (previewMode === 'playback' && poseReplayTrial) {
+      return poseValuesFromTracks(poseReplayTrial.tracks, poseReplayIndex);
+    }
+    return undefined;
+  }, [poseLiveActive, poseLiveFrame, poseReplayIndex, poseReplayTrial, previewMode]);
+  const requirePoseValues = poseLiveActive || (previewMode === 'playback' && poseReplayTrial !== null);
   const scene = useMemo(
     () =>
       buildResolvedScene({
@@ -2060,10 +2125,11 @@ export function ScenarioProjectionWorkspace() {
         graph: graphForProjection,
         registry,
         components,
+        poseValues,
+        requirePoseValues,
       }),
-    [components, graphForProjection, projectedScenario, registry]
+    [components, graphForProjection, poseValues, projectedScenario, registry, requirePoseValues]
   );
-  const [previewMode, setPreviewMode] = useState<'authoring' | 'sampled' | 'playback'>('sampled');
   const [previewSeed, setPreviewSeed] = useState(0);
   const [previewCount, setPreviewCount] = useState(6);
   const [sampledTrials, setSampledTrials] = useState<SampledTaskTrial[]>([]);

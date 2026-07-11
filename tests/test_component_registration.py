@@ -24,7 +24,7 @@ from feedbax.contracts.graphs.builders import build_component
 from feedbax.models.cde import CDENetwork
 from feedbax.runtime.graph import Component
 from feedbax.contracts.graphs.serialization import spec_to_graph
-from feedbax.contracts.representation import RepresentationSpec
+from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION, RepresentationSpec
 
 
 class _PrototypeSource(Component):
@@ -543,7 +543,7 @@ def test_component_registry_round_trips_representation_contract() -> None:
     definition = next(item for item in registry.list_all() if item.name == "RepresentedGain")
     assert definition.representation is not None
     assert definition.representation.schema_id == "feedbax.spec.studio.representation"
-    assert definition.representation.schema_version == "feedbax.spec.studio.representation.v1"
+    assert definition.representation.schema_version == REPRESENTATION_SCHEMA_VERSION
     assert [anchor.id for anchor in definition.representation.anchors] == ["endpoint", "origin"]
     assert definition.representation.elements[0].archetype == "vector"
     assert definition.representation.elements[0].frame_provider is not None
@@ -565,6 +565,9 @@ def test_builtin_mechanics_expose_workspace_representations() -> None:
     two_link = definitions["TwoLinkArm"]
     assert two_link.default_params["link_lengths"] == [0.30, 0.33]
     assert two_link.representation is not None
+    assert two_link.representation.reachability is not None
+    assert two_link.representation.reachability.origin_anchor == "shoulder"
+    assert two_link.representation.reachability.radius_transform == "sum_abs"
     links = next(
         element
         for element in two_link.representation.elements
@@ -597,6 +600,10 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
     arm_elements = {element.id: element for element in arm_template.representation.elements}
     assert arm_elements["links"].archetype == "planar_chain"
     assert arm_elements["muscle-paths"].archetype == "muscle_path"
+    assert arm_elements["muscle-paths"].frame_provider is not None
+    assert arm_elements["muscle-paths"].frame_provider.kind == "from_input_port"
+    assert arm_elements["muscle-paths"].frame_provider.input_port == "angles"
+    assert arm_template.representation.muscle_path_geometry is not None
     assert (
         arm_template.representation.metadata["geometry_source"]
         == "feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle"
@@ -617,6 +624,32 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
         analytical.representation.metadata["geometry_source"]
         == "feedbax.mechanics.muscle_config.default_6muscle_2link_muscled_arm_parameters"
     )
+    muscle_geometry = analytical.representation.muscle_path_geometry
+    assert muscle_geometry is not None
+    assert muscle_geometry.schema_id == "feedbax.spec.studio.muscle_path_geometry"
+    assert muscle_geometry.schema_version == "feedbax.spec.studio.muscle_path_geometry.v1"
+    assert len(muscle_geometry.paths) == 6
+    assert all(len(path.points) == 2 for path in muscle_geometry.paths)
+    assert {point.frame for path in muscle_geometry.paths for point in path.points} <= {
+        "world",
+        "link0",
+        "link1",
+    }
+    analytical_elements = {element.id: element for element in analytical.representation.elements}
+    assert analytical_elements["muscle-paths"].frame_provider is not None
+    assert (
+        analytical_elements["muscle-paths"].frame_provider.kind
+        == "from_representation_element"
+    )
+    assert analytical_elements["muscle-paths"].frame_provider.element_id == "links"
+    assert analytical_elements["links"].planar_chain is not None
+    assert analytical_elements["links"].planar_chain.pose_fallback == "zero"
+    assert analytical_elements["links"].bindings["link_lengths"].kind == "literal"
+
+    serialized = analytical.representation.model_dump(mode="json", exclude_none=True)
+    assert serialized["schema_version"] == REPRESENTATION_SCHEMA_VERSION
+    assert "frames" not in serialized["muscle_path_geometry"]
+    assert serialized["muscle_path_geometry"]["paths"][0]["id"] == "muscle-0"
 
     point_mass_template = definitions["PointMass8MuscleRelu"]
     assert point_mass_template.representation is not None
@@ -628,6 +661,7 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
         point_mass_template.representation.metadata["geometry_source"]
         == "feedbax.mechanics.geometry.PointMassRadialGeometry"
     )
+    assert point_mass_template.representation.muscle_path_geometry is None
 
 
 def test_builtin_reach_tasks_expose_schematic_objective_representations() -> None:
@@ -683,12 +717,24 @@ def test_component_registry_rejects_representation_unknown_param_path() -> None:
         )
 
 
-def test_representation_contract_rejects_old_schema_version() -> None:
+def test_representation_contract_rejects_non_current_schema_version() -> None:
     with pytest.raises(ValueError, match="literal_error"):
         RepresentationSpec.model_validate(
             {
                 "schema_id": "feedbax.spec.studio.representation",
                 "schema_version": "feedbax.spec.studio.representation.v0",
+            }
+        )
+
+
+def test_representation_reachability_requires_known_origin_anchor() -> None:
+    with pytest.raises(ValueError, match="unknown anchor"):
+        RepresentationSpec.model_validate(
+            {
+                "reachability": {
+                    "origin_anchor": "missing",
+                    "radius_binding": {"kind": "literal", "value": 1.0},
+                }
             }
         )
 

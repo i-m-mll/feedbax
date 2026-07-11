@@ -10,8 +10,13 @@ from feedbax.contracts.graph import ParamSchema, ParamValue, StudioSelectorRef
 
 
 REPRESENTATION_SCHEMA_ID = "feedbax.spec.studio.representation"
-REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v1"
+REPRESENTATION_SCHEMA_VERSION = "feedbax.spec.studio.representation.v4"
+REPRESENTATION_SCHEMA_VERSION_V3 = "feedbax.spec.studio.representation.v3"
+REPRESENTATION_SCHEMA_VERSION_V2 = "feedbax.spec.studio.representation.v2"
+REPRESENTATION_SCHEMA_VERSION_V1 = "feedbax.spec.studio.representation.v1"
 REPRESENTATION_SCHEMA_VERSION_V0 = "feedbax.spec.studio.representation.v0"
+MUSCLE_PATH_GEOMETRY_SCHEMA_ID = "feedbax.spec.studio.muscle_path_geometry"
+MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION = "feedbax.spec.studio.muscle_path_geometry.v1"
 
 RepresentationArchetype = Literal[
     "point_body",
@@ -139,9 +144,15 @@ RepresentationBinding = Union[
 class RepresentationFrameProvider(RepresentationContractModel):
     """Declare how a representation frame is resolved."""
 
-    kind: Literal["fixed", "from_input_port", "registered_renderer"]
+    kind: Literal[
+        "fixed",
+        "from_input_port",
+        "from_representation_element",
+        "registered_renderer",
+    ]
     frame: Optional[str] = None
     input_port: Optional[str] = None
+    element_id: Optional[str] = None
     renderer_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -151,8 +162,26 @@ class RepresentationFrameProvider(RepresentationContractModel):
             raise ValueError("fixed frame providers require frame")
         if self.kind == "from_input_port" and not self.input_port:
             raise ValueError("from_input_port frame providers require input_port")
+        if self.kind == "from_representation_element" and not self.element_id:
+            raise ValueError("from_representation_element frame providers require element_id")
         if self.kind == "registered_renderer" and not self.renderer_id:
             raise ValueError("registered_renderer frame providers require renderer_id")
+        return self
+
+
+class RepresentationPlanarChainSpec(RepresentationContractModel):
+    """Typed kinematics capability exposed by a planar-chain element."""
+
+    frame_ids: List[str] = Field(min_length=2)
+    pose_fallback: Optional[Literal["zero"]] = None
+
+    @model_validator(mode="after")
+    def validate_frame_ids(self) -> "RepresentationPlanarChainSpec":
+        duplicate_frames = sorted(_duplicates(self.frame_ids))
+        if duplicate_frames:
+            raise ValueError(f"Duplicate planar-chain frame ids: {duplicate_frames!r}")
+        if self.frame_ids[0] != "world":
+            raise ValueError("planar-chain frame_ids must start with 'world'")
         return self
 
 
@@ -199,12 +228,58 @@ class RepresentationElementSpec(RepresentationContractModel):
     dim: Optional[int] = None
     scale_invariant: bool = False
     renderer_id: Optional[str] = None
+    planar_chain: Optional[RepresentationPlanarChainSpec] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_registered_renderer(self) -> "RepresentationElementSpec":
         if self.archetype == "registered_renderer" and not self.renderer_id:
             raise ValueError("registered_renderer representation elements require renderer_id")
+        if self.planar_chain is not None and self.archetype != "planar_chain":
+            raise ValueError("planar_chain capability is only valid on planar_chain elements")
+        return self
+
+
+class RepresentationReachabilitySpec(RepresentationContractModel):
+    """Declare a component-owned radial reach envelope for workspace validation."""
+
+    kind: Literal["radial"] = "radial"
+    origin_anchor: str
+    radius_binding: Union[RepresentationParamPathBinding, RepresentationLiteralBinding]
+    radius_transform: Literal["identity", "sum_abs"] = "identity"
+    label: Optional[str] = None
+    units: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RepresentationMusclePathPointSpec(RepresentationContractModel):
+    """One body-local attachment point in a muscle path."""
+
+    frame: str
+    position: List[float] = Field(min_length=2, max_length=2)
+
+
+class RepresentationMusclePathSpec(RepresentationContractModel):
+    """Ordered attachment points for one rendered muscle path."""
+
+    id: str
+    points: List[RepresentationMusclePathPointSpec] = Field(min_length=2)
+
+
+class RepresentationMusclePathGeometrySpec(RepresentationContractModel):
+    """Provider-owned body-local attachment topology for muscle paths."""
+
+    schema_id: Literal[MUSCLE_PATH_GEOMETRY_SCHEMA_ID] = MUSCLE_PATH_GEOMETRY_SCHEMA_ID
+    schema_version: Literal[MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION] = (
+        MUSCLE_PATH_GEOMETRY_SCHEMA_VERSION
+    )
+    paths: List[RepresentationMusclePathSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "RepresentationMusclePathGeometrySpec":
+        duplicate_paths = sorted(_duplicates([path.id for path in self.paths]))
+        if duplicate_paths:
+            raise ValueError(f"Duplicate muscle path ids: {duplicate_paths!r}")
         return self
 
 
@@ -221,6 +296,8 @@ class RepresentationSpec(RepresentationContractModel):
     units: Optional[str] = None
     dim: Optional[int] = None
     scale_invariant: bool = False
+    reachability: Optional[RepresentationReachabilitySpec] = None
+    muscle_path_geometry: Optional[RepresentationMusclePathGeometrySpec] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -236,6 +313,11 @@ class RepresentationSpec(RepresentationContractModel):
             raise ValueError(f"Duplicate representation element ids: {duplicate_element_ids!r}")
 
         known_anchors = set(anchor_ids)
+        if self.reachability is not None and self.reachability.origin_anchor not in known_anchors:
+            raise ValueError(
+                "Representation reachability origin_anchor references an unknown anchor: "
+                f"{self.reachability.origin_anchor!r}"
+            )
         for element in self.elements:
             missing = sorted(anchor for anchor in element.anchors if anchor not in known_anchors)
             if missing:
@@ -316,6 +398,8 @@ def _duplicates(values: list[str]) -> set[str]:
 
 def _iter_bindings(spec: RepresentationSpec) -> list[tuple[str, RepresentationBinding]]:
     bindings: list[tuple[str, RepresentationBinding]] = []
+    if spec.reachability is not None:
+        bindings.append(("/reachability/radius_binding", spec.reachability.radius_binding))
     for index, anchor in enumerate(spec.anchors):
         if anchor.binding is not None:
             bindings.append((f"/anchors/{index}/binding", anchor.binding))

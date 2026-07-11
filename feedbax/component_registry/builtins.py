@@ -14,6 +14,10 @@ from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control.affine import affine_feedback_output_prototype
+from feedbax.mechanics.muscle_config import (
+    default_6muscle_2link_attachment_paths,
+    default_6muscle_2link_segment_lengths,
+)
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
     affine_value_composer_output_prototype,
@@ -278,13 +282,61 @@ def _two_link_arm_representation() -> RepresentationSpec:
                         "kinematics": "feedbax.mechanics.skeleton.arm.TwoLinkArm.forward_kinematics",
                         "link_length_param": "link_lengths",
                     },
+                    "planar_chain": {
+                        "frame_ids": ["world", "link0", "link1"],
+                        "pose_fallback": "zero",
+                    },
                 }
             ],
+            "reachability": {
+                "kind": "radial",
+                "origin_anchor": "shoulder",
+                "radius_binding": link_lengths,
+                "radius_transform": "sum_abs",
+                "label": "arm reach",
+                "units": "m",
+            },
         }
     )
 
 
-def _two_link_muscle_representation(*, source: str, composite: bool) -> RepresentationSpec:
+def _default_two_link_muscle_path_geometry() -> dict[str, Any]:
+    """Expose canonical provider-owned body-local attachment topology."""
+    paths = default_6muscle_2link_attachment_paths()
+    return {
+        "paths": [
+            {
+                "id": f"muscle-{index}",
+                "points": [
+                    {
+                        "frame": path.origin.body,
+                        "position": [float(path.origin.pos[0]), float(path.origin.pos[1])],
+                    },
+                    {
+                        "frame": path.insertion.body,
+                        "position": [
+                            float(path.insertion.pos[0]),
+                            float(path.insertion.pos[1]),
+                        ],
+                    },
+                ],
+            }
+            for index, path in enumerate(paths)
+        ],
+    }
+
+
+def _two_link_muscle_representation(
+    *,
+    source: str,
+    composite: bool,
+    muscle_path_geometry: Mapping[str, Any] | None = None,
+    frame_input_port: str | None = None,
+    frame_element_id: str | None = None,
+    self_link_lengths: list[float] | None = None,
+) -> RepresentationSpec:
+    if frame_input_port is not None and frame_element_id is not None:
+        raise ValueError("muscle path representation accepts only one frame provider")
     metadata = {
         "geometry_source": source,
         "chain_source": "feedbax.mechanics.skeleton.arm.TwoLinkArm",
@@ -297,6 +349,11 @@ def _two_link_muscle_representation(*, source: str, composite: bool) -> Represen
             "units": "m",
             "dim": 2,
             "metadata": metadata,
+            **(
+                {"muscle_path_geometry": dict(muscle_path_geometry)}
+                if muscle_path_geometry is not None
+                else {}
+            ),
             "anchors": [
                 {
                     "id": "shoulder",
@@ -360,9 +417,24 @@ def _two_link_muscle_representation(*, source: str, composite: bool) -> Represen
                             path="skeleton.angle",
                             anchor_subpath="orientation",
                             dim=2,
-                        )
+                        ),
+                        **(
+                            {"link_lengths": _literal_binding(self_link_lengths, dim=2)}
+                            if self_link_lengths is not None
+                            else {}
+                        ),
                     },
                     "metadata": {"chain_kind": "two_link_arm"},
+                    **(
+                        {
+                            "planar_chain": {
+                                "frame_ids": ["world", "link0", "link1"],
+                                "pose_fallback": "zero",
+                            }
+                        }
+                        if self_link_lengths is not None
+                        else {}
+                    ),
                 },
                 {
                     "id": "muscle-paths",
@@ -385,6 +457,25 @@ def _two_link_muscle_representation(*, source: str, composite: bool) -> Represen
                         },
                         {"channel": "stroke", "value": "var(--workspace-muscle-stroke)"},
                     ],
+                    **(
+                        {
+                            "frame_provider": {
+                                "kind": "from_input_port",
+                                "input_port": frame_input_port,
+                            }
+                        }
+                        if frame_input_port is not None
+                        else (
+                            {
+                                "frame_provider": {
+                                    "kind": "from_representation_element",
+                                    "element_id": frame_element_id,
+                                }
+                            }
+                            if frame_element_id is not None
+                            else {}
+                        )
+                    ),
                     "metadata": {
                         "geometry_source": source,
                         "runtime_frame_paths": "resolver_required",
@@ -2191,6 +2282,8 @@ def register_builtin_components(registry: _Registry) -> None:
             representation=_two_link_muscle_representation(
                 source="feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle",
                 composite=True,
+                muscle_path_geometry=_default_two_link_muscle_path_geometry(),
+                frame_input_port="angles",
             ),
         )
     )
@@ -2279,6 +2372,11 @@ def register_builtin_components(registry: _Registry) -> None:
                     "default_6muscle_2link_muscled_arm_parameters"
                 ),
                 composite=False,
+                muscle_path_geometry=_default_two_link_muscle_path_geometry(),
+                frame_element_id="links",
+                self_link_lengths=[
+                    float(value) for value in default_6muscle_2link_segment_lengths()
+                ],
             ),
         )
     )

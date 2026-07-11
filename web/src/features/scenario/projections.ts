@@ -7,6 +7,7 @@ import type {
   RepresentationElementSpec,
   RepresentationFrameProvider,
   RepresentationLiteralBinding,
+  RepresentationMusclePathGeometrySpec,
   RepresentationParamPathBinding,
   RepresentationSpec,
   RepresentationStateAnchorSelectorBinding,
@@ -104,6 +105,12 @@ export interface ResolvedScene {
   validation: ResolvedSceneValidationMessage[];
 }
 
+export type ResolvedScenePoseValues = Readonly<Record<string, readonly number[]>>;
+
+export function resolvedScenePoseKey(nodeId: string, selectorCompact: string): string {
+  return `${nodeId}::${selectorCompact}`;
+}
+
 type RepresentationBinding =
   | RepresentationParamPathBinding
   | RepresentationStateAnchorSelectorBinding
@@ -198,7 +205,14 @@ function entityRelations(entity: StudioScenarioEntity): string[] {
 }
 
 function addUniqueSelector(selectors: StudioSelectorRef[], selector: StudioSelectorRef) {
-  if (selectors.some((candidate) => candidate.compact === selector.compact)) return;
+  const nodeId = selector.metadata?.graph_port_node_id;
+  if (
+    selectors.some(
+      (candidate) =>
+        candidate.compact === selector.compact &&
+        candidate.metadata?.graph_port_node_id === nodeId
+    )
+  ) return;
   selectors.push(selector);
 }
 
@@ -209,10 +223,16 @@ function bindingSelector(binding: RepresentationBinding): StudioSelectorRef | nu
 
 function collectRequiredSelectors(
   selectors: StudioSelectorRef[],
-  binding: RepresentationBinding
+  binding: RepresentationBinding,
+  entity?: StudioScenarioEntity
 ) {
   const selector = bindingSelector(binding);
-  if (selector) addUniqueSelector(selectors, selector);
+  if (selector) {
+    addUniqueSelector(
+      selectors,
+      entity ? selectorWithRepresentationMetadata(selector, null, entity) : selector
+    );
+  }
 }
 
 function valueAtPath(source: unknown, path: string): unknown {
@@ -324,6 +344,9 @@ function frameFromProvider(
     }
     return provider.frame ?? fallbackFrame;
   }
+  if (provider.kind === 'from_representation_element') {
+    return provider.frame ?? fallbackFrame;
+  }
   messages.push({
     type: 'workspace_unresolved_frame_provider',
     severity: 'warning',
@@ -353,11 +376,9 @@ function elementGlobalId(entityId: string, elementId: string): string {
 function twoLinkRestPoints(
   component: ComponentDefinition,
   node: ComponentSpec,
-  linkLengthPath: string | null
+  linkLengthsBinding: RepresentationBinding
 ): Array<[number, number]> {
-  const lengths = numericArray(
-    linkLengthPath ? paramValue(component, node, linkLengthPath) : undefined
-  ) ?? [0.3, 0.33];
+  const lengths = numericArray(bindingValue(component, node, linkLengthsBinding)) ?? [0.3, 0.33];
   const angles =
     numericArray(
       valueAtPath(node.params ?? {}, 'joint_angles') ??
@@ -510,10 +531,226 @@ function anchorPositionsForElement(
     .filter((point): point is [number, number] => point !== null);
 }
 
+function planarChainFrames({
+  graph,
+  componentsByName,
+  muscleNodeId,
+  provider,
+  poseValues,
+  requirePoseValues,
+  messages,
+  entityId,
+  elementId,
+}: {
+  graph: GraphSpec | null | undefined;
+  componentsByName: Map<string, ComponentDefinition>;
+  muscleNodeId: string | null;
+  provider: RepresentationFrameProvider | null | undefined;
+  poseValues: ResolvedScenePoseValues | undefined;
+  requirePoseValues: boolean;
+  messages: ResolvedSceneValidationMessage[];
+  entityId: string;
+  elementId: string;
+}): Map<string, { origin: [number, number]; rotation: number }> | null {
+  const fail = (type: string, message: string, path: string) => {
+    messages.push({ type, severity: 'error', message, entity_id: entityId, path });
+    return null;
+  };
+  if (
+    !provider ||
+    (provider.kind !== 'from_input_port' && provider.kind !== 'from_representation_element')
+  ) {
+    return fail(
+      'workspace_muscle_path_frame_provider_missing',
+      `Muscle path element '${elementId}' requires a graph or same-entity frame-provider binding.`,
+      `elements.${elementId}.frame_provider`
+    );
+  }
+  if (!muscleNodeId) {
+    return fail(
+      'workspace_muscle_path_frame_provider_unresolved',
+      `Muscle path element '${elementId}' is not graph-bound to a planar-chain host.`,
+      `elements.${elementId}.frame_provider`
+    );
+  }
+  let hostNodeId: string;
+  let wiredSourcePort: string | null = null;
+  let requestedElementId: string | null = null;
+  if (provider.kind === 'from_input_port') {
+    const wires = (graph?.wires ?? []).filter(
+      (wire) => wire.target_node === muscleNodeId && wire.target_port === provider.input_port
+    );
+    if (wires.length !== 1) {
+      return fail(
+        'workspace_muscle_path_host_wire_unresolved',
+        `Muscle path input '${provider.input_port ?? 'unknown'}' requires exactly one host wire; found ${wires.length}.`,
+        `graph.wires.${muscleNodeId}.${provider.input_port ?? 'unknown'}`
+      );
+    }
+    hostNodeId = wires[0].source_node;
+    wiredSourcePort = wires[0].source_port;
+  } else {
+    if (!provider.element_id) {
+      return fail(
+        'workspace_muscle_path_host_element_missing',
+        `Muscle path element '${elementId}' does not name a same-entity planar-chain element.`,
+        `elements.${elementId}.frame_provider.element_id`
+      );
+    }
+    hostNodeId = muscleNodeId;
+    requestedElementId = provider.element_id;
+  }
+  const hostNode = graph?.nodes?.[hostNodeId];
+  const hostComponent = hostNode ? componentsByName.get(hostNode.type) : undefined;
+  const chainElement = hostComponent?.representation?.elements?.find(
+    (element) =>
+      element.archetype === 'planar_chain' &&
+      element.planar_chain &&
+      (requestedElementId === null || element.id === requestedElementId)
+  );
+  if (!hostNode || !hostComponent || !chainElement?.planar_chain) {
+    return fail(
+      requestedElementId === null
+        ? 'workspace_muscle_path_host_planar_chain_missing'
+        : 'workspace_muscle_path_host_element_missing',
+      `Host '${hostNodeId}' does not declare the required typed planar-chain element${requestedElementId ? ` '${requestedElementId}'` : ''}.`,
+      `graph.nodes.${hostNodeId}.representation`
+    );
+  }
+  const lengthBinding = chainElement.bindings?.link_lengths;
+  const angleBinding = chainElement.bindings?.joint_angles;
+  if (!lengthBinding || angleBinding?.kind !== 'selector') {
+    return fail(
+      'workspace_muscle_path_host_binding_invalid',
+      `Planar-chain host '${hostNodeId}' must bind link_lengths and joint_angles.`,
+      `graph.nodes.${hostNodeId}.representation.elements.${chainElement.id}.bindings`
+    );
+  }
+  const selectorPort = angleBinding.selector.compact.startsWith('output:')
+    ? angleBinding.selector.compact.replace(/^output:/, '')
+    : null;
+  if (wiredSourcePort !== null && selectorPort !== wiredSourcePort) {
+    return fail(
+      'workspace_muscle_path_host_pose_port_mismatch',
+      `Host pose selector '${angleBinding.selector.compact}' does not match wired source port '${wiredSourcePort}'.`,
+      `graph.wires.${muscleNodeId}.${provider.input_port ?? 'unknown'}`
+    );
+  }
+  const lengths = numericArray(bindingValue(hostComponent, hostNode, lengthBinding));
+  if (!lengths || lengths.length === 0 || lengths.some((value) => !Number.isFinite(value))) {
+    return fail(
+      'workspace_muscle_path_host_lengths_invalid',
+      `Planar-chain host '${hostNodeId}' has invalid link lengths.`,
+      `graph.nodes.${hostNodeId}.representation.elements.${chainElement.id}.bindings.link_lengths`
+    );
+  }
+  const poseKey = resolvedScenePoseKey(hostNodeId, angleBinding.selector.compact);
+  const dynamicPose = poseValues?.[poseKey];
+  let angles = dynamicPose ? numericArray(dynamicPose) : null;
+  if (!angles && !requirePoseValues) {
+    angles = numericArray(
+      valueAtPath(hostNode.params ?? {}, 'joint_angles') ??
+        valueAtPath(hostNode.params ?? {}, 'rest_joint_angles') ??
+        valueAtPath(hostNode.params ?? {}, 'initial_angles')
+    );
+  }
+  if (!angles && !requirePoseValues && chainElement.planar_chain.pose_fallback === 'zero') {
+    angles = lengths.map(() => 0);
+  }
+  if (!angles || angles.length < lengths.length) {
+    return fail(
+      'workspace_muscle_path_host_pose_missing',
+      `No correlated pose value is available for '${hostNodeId}' selector '${angleBinding.selector.compact}'.`,
+      `pose_values.${poseKey}`
+    );
+  }
+  const frameIds = chainElement.planar_chain.frame_ids;
+  if (frameIds.length !== lengths.length + 1) {
+    return fail(
+      'workspace_muscle_path_host_frames_invalid',
+      `Planar-chain host '${hostNodeId}' declares ${frameIds.length} frames for ${lengths.length} links.`,
+      `graph.nodes.${hostNodeId}.representation.elements.${chainElement.id}.planar_chain`
+    );
+  }
+  const frames = new Map<string, { origin: [number, number]; rotation: number }>();
+  frames.set(frameIds[0], { origin: [0, 0], rotation: 0 });
+  let origin: [number, number] = [0, 0];
+  let rotation = 0;
+  for (let index = 0; index < lengths.length; index += 1) {
+    rotation += angles[index] ?? 0;
+    frames.set(frameIds[index + 1], { origin, rotation });
+    origin = [
+      origin[0] + Math.cos(rotation) * lengths[index],
+      origin[1] + Math.sin(rotation) * lengths[index],
+    ];
+  }
+  return frames;
+}
+
+function resolvedMusclePathPolylines(
+  geometry: RepresentationMusclePathGeometrySpec,
+  frames: Map<string, { origin: [number, number]; rotation: number }>,
+  messages: ResolvedSceneValidationMessage[],
+  entityId: string,
+  elementId: string
+): Array<{ id: string; points: Array<[number, number]> }> {
+  const resolved: Array<{ id: string; points: Array<[number, number]> }> = [];
+  for (const path of geometry.paths ?? []) {
+    const points: Array<[number, number]> = [];
+    let valid = true;
+    for (const [pointIndex, point] of path.points.entries()) {
+      const frame = frames.get(point.frame);
+      if (!frame) {
+        messages.push({
+          type: 'workspace_muscle_path_unknown_frame',
+          severity: 'error',
+          message: `Muscle path '${path.id}' references unknown frame '${point.frame}'.`,
+          entity_id: entityId,
+          path: `representation.muscle_path_geometry.paths.${path.id}.points.${pointIndex}`,
+        });
+        valid = false;
+        continue;
+      }
+      const local = numericPair(point.position);
+      if (!local) {
+        messages.push({
+          type: 'workspace_muscle_path_invalid_point',
+          severity: 'error',
+          message: `Muscle path '${path.id}' has an invalid local attachment point.`,
+          entity_id: entityId,
+          path: `representation.muscle_path_geometry.paths.${path.id}.points.${pointIndex}`,
+        });
+        valid = false;
+        continue;
+      }
+      const cos = Math.cos(frame.rotation);
+      const sin = Math.sin(frame.rotation);
+      points.push([
+        frame.origin[0] + cos * local[0] - sin * local[1],
+        frame.origin[1] + sin * local[0] + cos * local[1],
+      ]);
+    }
+    if (valid && points.length >= 2) resolved.push({ id: path.id, points });
+  }
+  if ((geometry.paths ?? []).length === 0) {
+    messages.push({
+      type: 'workspace_muscle_path_empty',
+      severity: 'warning',
+      message: `Muscle path element '${elementId}' declares no paths.`,
+      entity_id: entityId,
+      path: 'representation.muscle_path_geometry.paths',
+    });
+  }
+  return resolved;
+}
+
 function resolveComponentRepresentation({
   scene,
   registry,
   graph,
+  componentsByName,
+  poseValues,
+  requirePoseValues,
   component,
   nodeOrTask,
   representation,
@@ -523,6 +760,9 @@ function resolveComponentRepresentation({
   scene: ResolvedScene;
   registry: StudioScenarioEntityRegistry;
   graph: GraphSpec | null | undefined;
+  componentsByName: Map<string, ComponentDefinition>;
+  poseValues: ResolvedScenePoseValues | undefined;
+  requirePoseValues: boolean;
   component: ComponentDefinition;
   nodeOrTask: ComponentSpec | { params?: Record<string, unknown> | null };
   representation: RepresentationSpec;
@@ -545,17 +785,14 @@ function resolveComponentRepresentation({
   const planarChain = representation.elements?.find(
     (element) => element.archetype === 'planar_chain'
   );
-  const linkLengthPath =
-    planarChain?.bindings?.link_lengths?.kind === 'param_path'
-      ? planarChain.bindings.link_lengths.path
-      : null;
+  const linkLengthsBinding = planarChain?.bindings?.link_lengths;
   const twoLinkPoints =
-    planarChain?.metadata?.chain_kind === 'two_link_arm' || component.name === 'TwoLinkArm'
-      ? twoLinkRestPoints(component, nodeOrTask as ComponentSpec, linkLengthPath)
+    planarChain?.metadata?.chain_kind === 'two_link_arm'
+      ? twoLinkRestPoints(component, nodeOrTask as ComponentSpec, linkLengthsBinding)
       : null;
 
   for (const anchor of representation.anchors ?? []) {
-    collectRequiredSelectors(scene.required_selectors, anchor.binding);
+    collectRequiredSelectors(scene.required_selectors, anchor.binding, entity);
     let position = numericPair(bindingValue(component, nodeOrTask, anchor.binding));
     if (!position && twoLinkPoints) {
       const jointIndex = Number(anchor.metadata?.joint_index);
@@ -601,10 +838,10 @@ function resolveComponentRepresentation({
 
   for (const element of representation.elements ?? []) {
     for (const binding of Object.values(element.bindings ?? {})) {
-      collectRequiredSelectors(scene.required_selectors, binding);
+      collectRequiredSelectors(scene.required_selectors, binding, entity);
     }
     for (const style of element.style ?? []) {
-      collectRequiredSelectors(scene.required_selectors, style.binding);
+      collectRequiredSelectors(scene.required_selectors, style.binding, entity);
     }
     const elementFrame = frameFromProvider(
       element.frame_provider,
@@ -615,6 +852,86 @@ function resolveComponentRepresentation({
       entity.id,
       `elements.${element.id}.frame_provider`
     );
+    if (element.archetype === 'muscle_path') {
+      const payload = representation.muscle_path_geometry;
+      if (!payload) {
+        scene.validation.push({
+          type: 'workspace_muscle_path_geometry_missing',
+          severity: 'error',
+          message: `Muscle path element '${element.id}' has no provider-resolved geometry.`,
+          entity_id: entity.id,
+          path: 'representation.muscle_path_geometry',
+        });
+        const id = elementGlobalId(entity.id, element.id);
+        entityElementIds.push(id);
+        scene.elements.push({
+          id,
+          entity_id: entity.id,
+          local_id: element.id,
+          archetype: element.archetype,
+          anchor_ids: (element.anchors ?? []).map((anchorId) => anchorGlobalId(entity.id, anchorId)),
+          frame: elementFrame,
+          scale_invariant: element.scale_invariant ?? representation.scale_invariant ?? false,
+          style: styleMap(element.style),
+          geometry: { kind: 'none' },
+          metadata: element.metadata ?? {},
+        });
+        continue;
+      }
+      const frames = planarChainFrames({
+        graph,
+        componentsByName,
+        muscleNodeId: nodeId,
+        provider: element.frame_provider,
+        poseValues,
+        requirePoseValues,
+        messages: scene.validation,
+        entityId: entity.id,
+        elementId: element.id,
+      });
+      if (!frames) {
+        const id = elementGlobalId(entity.id, element.id);
+        entityElementIds.push(id);
+        scene.elements.push({
+          id,
+          entity_id: entity.id,
+          local_id: element.id,
+          archetype: element.archetype,
+          anchor_ids: (element.anchors ?? []).map((anchorId) => anchorGlobalId(entity.id, anchorId)),
+          frame: elementFrame,
+          scale_invariant: element.scale_invariant ?? representation.scale_invariant ?? false,
+          style: styleMap(element.style),
+          geometry: { kind: 'none' },
+          metadata: element.metadata ?? {},
+        });
+        continue;
+      }
+      const paths = resolvedMusclePathPolylines(
+        payload,
+        frames,
+        scene.validation,
+        entity.id,
+        element.id
+      );
+      for (const path of paths) {
+        const localId = `${element.id}:${path.id}`;
+        const id = elementGlobalId(entity.id, localId);
+        entityElementIds.push(id);
+        scene.elements.push({
+          id,
+          entity_id: entity.id,
+          local_id: localId,
+          archetype: element.archetype,
+          anchor_ids: (element.anchors ?? []).map((anchorId) => anchorGlobalId(entity.id, anchorId)),
+          frame: elementFrame,
+          scale_invariant: element.scale_invariant ?? representation.scale_invariant ?? false,
+          style: styleMap(element.style),
+          geometry: { kind: 'polyline', points: path.points },
+          metadata: { ...(element.metadata ?? {}), muscle_path_id: path.id },
+        });
+      }
+      continue;
+    }
     let geometry: ResolvedSceneGeometry = { kind: 'none' };
     if (element.archetype === 'planar_chain') {
       const points = twoLinkPoints ?? anchorPositionsForElement(component, nodeOrTask, element, localAnchorPositions);
@@ -829,43 +1146,59 @@ function reachabilityMessages(
   componentsByName: Map<string, ComponentDefinition>,
   task: StudioScenarioSpec['task_spec']
 ) {
-  const armEntry = Object.entries(graph?.nodes ?? {}).find(
-    ([, node]) => node.type === 'TwoLinkArm'
-  );
-  const armComponent = componentsByName.get('TwoLinkArm');
   const taskComponent = task ? componentForTask(task.type, componentsByName) : null;
-  if (!armEntry || !armComponent || !taskComponent || !task) return;
-  const [nodeId, armNode] = armEntry;
-  const lengths = numericArray(paramValue(armComponent, armNode, 'link_lengths')) ?? [0.3, 0.33];
-  const reach = lengths.reduce((total, length) => total + Math.abs(length), 0);
+  if (!taskComponent || !task) return;
   const taskEntity = registry.entities[taskEntityId(registry.scenario_id)];
   const radius = numberParamValue(taskComponent, task, 'eval_reach_length', 0.5);
   const workspace = boundsParam(taskComponent, task, 'workspace');
-  if (radius > reach) {
-    scene.validation.push({
-      type: 'workspace_goal_out_of_reach',
-      severity: 'warning',
-      message: `Reach target radius ${radius.toFixed(3)} m exceeds TwoLinkArm reach ${reach.toFixed(3)} m.`,
-      entity_id: taskEntity?.id ?? null,
-      path: 'task_spec.params.eval_reach_length',
-    });
-  }
-  if (workspace) {
-    const corners: Array<[number, number]> = [
-      workspace.min,
-      [workspace.min[0], workspace.max[1]],
-      [workspace.max[0], workspace.min[1]],
-      workspace.max,
-    ];
-    const farthest = Math.max(...corners.map(([x, y]) => Math.hypot(x, y)));
-    if (farthest > reach) {
+  for (const [nodeId, node] of Object.entries(graph?.nodes ?? {})) {
+    const component = componentsByName.get(node.type);
+    const representation = component?.representation;
+    const capability = representation?.reachability;
+    if (!component || !representation || !capability) continue;
+
+    const rawRadius = bindingValue(component, node, capability.radius_binding);
+    const reach =
+      capability.radius_transform === 'sum_abs'
+        ? numericArray(rawRadius)?.reduce((total, value) => total + Math.abs(value), 0)
+        : Number(rawRadius);
+    if (reach == null || !Number.isFinite(reach) || reach < 0) continue;
+
+    const originAnchor = representation.anchors?.find(
+      (anchor) => anchor.id === capability.origin_anchor
+    );
+    const origin = numericPair(bindingValue(component, node, originAnchor?.binding)) ?? [0, 0];
+    const label = capability.label ?? `${component.name} reach`;
+    const units = capability.units ?? representation.units ?? scene.units;
+
+    if (radius > reach) {
       scene.validation.push({
-        type: 'workspace_region_partially_out_of_reach',
+        type: 'workspace_goal_out_of_reach',
         severity: 'warning',
-        message: `Workspace bounds extend to ${farthest.toFixed(3)} m from the shoulder, beyond TwoLinkArm reach ${reach.toFixed(3)} m.`,
-        entity_id: taskEntity?.id ?? mechanicsEntityId(registry.scenario_id, nodeId),
-        path: 'task_spec.params.workspace',
+        message: `Reach target radius ${radius.toFixed(3)} ${units} exceeds ${label} ${reach.toFixed(3)} ${units}.`,
+        entity_id: taskEntity?.id ?? null,
+        path: 'task_spec.params.eval_reach_length',
       });
+    }
+    if (workspace) {
+      const corners: Array<[number, number]> = [
+        workspace.min,
+        [workspace.min[0], workspace.max[1]],
+        [workspace.max[0], workspace.min[1]],
+        workspace.max,
+      ];
+      const farthest = Math.max(
+        ...corners.map(([x, y]) => Math.hypot(x - origin[0], y - origin[1]))
+      );
+      if (farthest > reach) {
+        scene.validation.push({
+          type: 'workspace_region_partially_out_of_reach',
+          severity: 'warning',
+          message: `Workspace bounds extend to ${farthest.toFixed(3)} ${units} from ${capability.origin_anchor}, beyond ${label} ${reach.toFixed(3)} ${units}.`,
+          entity_id: taskEntity?.id ?? mechanicsEntityId(registry.scenario_id, nodeId),
+          path: 'task_spec.params.workspace',
+        });
+      }
     }
   }
 }
@@ -875,11 +1208,15 @@ export function buildResolvedScene({
   graph,
   registry,
   components,
+  poseValues,
+  requirePoseValues = false,
 }: {
   scenario: StudioScenarioSpec | null | undefined;
   graph?: GraphSpec | null;
   registry: StudioScenarioEntityRegistry;
   components: ComponentDefinition[];
+  poseValues?: ResolvedScenePoseValues;
+  requirePoseValues?: boolean;
 }): ResolvedScene {
   const resolvedGraph = graph ?? scenario?.graph ?? null;
   const componentsByName = componentByName(components);
@@ -914,6 +1251,9 @@ export function buildResolvedScene({
       scene,
       registry,
       graph: resolvedGraph,
+      componentsByName,
+      poseValues,
+      requirePoseValues,
       component,
       nodeOrTask: node,
       representation,
@@ -930,6 +1270,9 @@ export function buildResolvedScene({
         scene,
         registry,
         graph: resolvedGraph,
+        componentsByName,
+        poseValues,
+        requirePoseValues,
         component,
         nodeOrTask: scenario.task_spec,
         representation: component.representation,

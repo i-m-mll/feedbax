@@ -647,10 +647,32 @@ export interface RepresentationLiteralBinding {
   dim?: number | null;
 }
 
+export interface RepresentationPlanarChainSpec {
+  frame_ids: string[];
+  pose_fallback?: "zero" | null;
+}
+
+export interface RepresentationMusclePathPointSpec {
+  frame: string;
+  position: number[];
+}
+
+export interface RepresentationMusclePathSpec {
+  id: string;
+  points: RepresentationMusclePathPointSpec[];
+}
+
+export interface RepresentationMusclePathGeometrySpec {
+  schema_id?: "feedbax.spec.studio.muscle_path_geometry";
+  schema_version?: "feedbax.spec.studio.muscle_path_geometry.v1";
+  paths?: RepresentationMusclePathSpec[];
+}
+
 export interface RepresentationFrameProvider {
-  kind: "fixed" | "from_input_port" | "registered_renderer";
+  kind: "fixed" | "from_input_port" | "from_representation_element" | "registered_renderer";
   frame?: string | null;
   input_port?: string | null;
+  element_id?: string | null;
   renderer_id?: string | null;
   metadata?: Record<string, unknown>;
 }
@@ -686,12 +708,23 @@ export interface RepresentationElementSpec {
   dim?: number | null;
   scale_invariant?: boolean;
   renderer_id?: string | null;
+  planar_chain?: RepresentationPlanarChainSpec | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RepresentationReachabilitySpec {
+  kind?: "radial";
+  origin_anchor: string;
+  radius_binding: RepresentationParamPathBinding | RepresentationLiteralBinding;
+  radius_transform?: "identity" | "sum_abs";
+  label?: string | null;
+  units?: string | null;
   metadata?: Record<string, unknown>;
 }
 
 export interface RepresentationSpec {
   schema_id?: "feedbax.spec.studio.representation";
-  schema_version?: "feedbax.spec.studio.representation.v1";
+  schema_version?: "feedbax.spec.studio.representation.v4";
   anchors?: RepresentationAnchorSpec[];
   elements?: RepresentationElementSpec[];
   style?: RepresentationStyleSpec[];
@@ -700,6 +733,8 @@ export interface RepresentationSpec {
   units?: string | null;
   dim?: number | null;
   scale_invariant?: boolean;
+  reachability?: RepresentationReachabilitySpec | null;
+  muscle_path_geometry?: RepresentationMusclePathGeometrySpec | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -2678,12 +2713,50 @@ export const RepresentationLiteralBindingSchema: z.ZodType<RepresentationLiteral
     .strict()
 ) as unknown as z.ZodType<RepresentationLiteralBinding>;
 
+export const RepresentationPlanarChainSpecSchema: z.ZodType<RepresentationPlanarChainSpec> = z.lazy(() =>
+  z
+    .object({
+      "frame_ids": z.array(z.string()),
+      "pose_fallback": z.literal("zero").nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationPlanarChainSpec>;
+
+export const RepresentationMusclePathPointSpecSchema: z.ZodType<RepresentationMusclePathPointSpec> = z.lazy(() =>
+  z
+    .object({
+      "frame": z.string(),
+      "position": z.array(z.number()),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationMusclePathPointSpec>;
+
+export const RepresentationMusclePathSpecSchema: z.ZodType<RepresentationMusclePathSpec> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "points": z.array(RepresentationMusclePathPointSpecSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationMusclePathSpec>;
+
+export const RepresentationMusclePathGeometrySpecSchema: z.ZodType<RepresentationMusclePathGeometrySpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.muscle_path_geometry").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.muscle_path_geometry.v1").optional(),
+      "paths": z.array(RepresentationMusclePathSpecSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationMusclePathGeometrySpec>;
+
 export const RepresentationFrameProviderSchema: z.ZodType<RepresentationFrameProvider> = z.lazy(() =>
   z
     .object({
-      "kind": z.union([z.literal("fixed"), z.literal("from_input_port"), z.literal("registered_renderer")]),
+      "kind": z.union([z.literal("fixed"), z.literal("from_input_port"), z.literal("from_representation_element"), z.literal("registered_renderer")]),
       "frame": z.string().nullable().optional(),
       "input_port": z.string().nullable().optional(),
+      "element_id": z.string().nullable().optional(),
       "renderer_id": z.string().nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
@@ -2731,16 +2804,31 @@ export const RepresentationElementSpecSchema: z.ZodType<RepresentationElementSpe
       "dim": z.number().int().nullable().optional(),
       "scale_invariant": z.boolean().optional(),
       "renderer_id": z.string().nullable().optional(),
+      "planar_chain": RepresentationPlanarChainSpecSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationElementSpec>;
 
+export const RepresentationReachabilitySpecSchema: z.ZodType<RepresentationReachabilitySpec> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("radial").optional(),
+      "origin_anchor": z.string(),
+      "radius_binding": z.union([RepresentationParamPathBindingSchema, RepresentationLiteralBindingSchema]),
+      "radius_transform": z.union([z.literal("identity"), z.literal("sum_abs")]).optional(),
+      "label": z.string().nullable().optional(),
+      "units": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<RepresentationReachabilitySpec>;
+
 export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.studio.representation").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.representation.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.representation.v4").optional(),
       "anchors": z.array(RepresentationAnchorSpecSchema).optional(),
       "elements": z.array(RepresentationElementSpecSchema).optional(),
       "style": z.array(RepresentationStyleSpecSchema).optional(),
@@ -2749,6 +2837,8 @@ export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(()
       "units": z.string().nullable().optional(),
       "dim": z.number().int().nullable().optional(),
       "scale_invariant": z.boolean().optional(),
+      "reachability": RepresentationReachabilitySpecSchema.nullable().optional(),
+      "muscle_path_geometry": RepresentationMusclePathGeometrySpecSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
