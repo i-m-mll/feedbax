@@ -14,9 +14,11 @@ import pytest
 
 import feedbax.training.checkpoint_custody as custody_module
 from feedbax.contracts.checkpoints import (
+    BatchHistory,
     BatchIndexedCheckpointLeafSpec,
     CheckpointContinuationRequest,
     CheckpointForkBarrierMapping,
+    Granularity,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
@@ -24,6 +26,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -317,6 +320,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     )
 
 
@@ -351,7 +355,11 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v2-to-v3-portable-custody",
         "training-checkpoint-transaction-v3-to-v4-batch-progress",
         "training-checkpoint-transaction-v4-to-v5-program-coordinate",
+        "training-checkpoint-transaction-v5-to-v6-batch-history",
     ]
+    assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
+        "declared_paths_v5_to_v6"
+    )
 
 
 def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_contracts(
@@ -1302,6 +1310,99 @@ def test_declared_continuation_extends_batch_indexed_leaf_to_requested_total(
         source["controller_optimizer"]["count"],
     )
     assert jnp.array_equal(loaded.slots["rng"], source["rng"])
+
+
+def test_batch_history_validates_per_batch_and_interval_without_declarations(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = {
+        "loss": BatchHistory(jnp.arange(4, dtype=jnp.float32), batch_axis=0),
+        "chunks": BatchHistory(
+            jnp.arange(6, dtype=jnp.float32).reshape(3, 2),
+            batch_axis=1,
+            granularity=Granularity.per_interval(2),
+        ),
+    }
+
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=slots,
+        completed_training_batches=4,
+    )
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=slots,
+    )
+
+    assert isinstance(loaded.slots["controller"]["loss"], BatchHistory)
+    assert loaded.slots["controller"]["chunks"].granularity.interval == 2
+
+
+def test_batch_history_rejects_cumulative_length_at_segment_write(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = BatchHistory(jnp.zeros((6,), dtype=jnp.float32), batch_axis=0)
+
+    with pytest.raises(CheckpointConsistencyError, match="owning segment"):
+        write_checkpoint_transaction(
+            tmp_path,
+            run_spec=run_spec,
+            phase_program=program,
+            barrier_name="after_warmup",
+            coordinate=_coordinate(step=4),
+            slots=slots,
+            completed_training_batches=4,
+        )
+
+
+def test_v5_checkpoint_declared_path_migrates_to_batch_history(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source = _minimax_slots()
+    source["controller"] = {"loss": jnp.arange(4, dtype=jnp.float32)}
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(step=4),
+        slots=source,
+        completed_training_batches=4,
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    _rewrite_manifest_and_latest(result, payload)
+    expected = _minimax_slots()
+    expected["controller"] = {
+        "loss": BatchHistory(jnp.arange(4, dtype=jnp.float32), batch_axis=-1)
+    }
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=expected,
+        continuation_request=CheckpointContinuationRequest(
+            source_completed_batches=4,
+            target_total_batches=4,
+            batch_indexed_leaves=[
+                BatchIndexedCheckpointLeafSpec(slot="controller", tree_path="/loss")
+            ],
+        ),
+    )
+
+    assert isinstance(loaded.slots["controller"]["loss"], BatchHistory)
+    assert jnp.array_equal(loaded.slots["controller"]["loss"].value, source["controller"]["loss"])
 
 
 def test_declared_continuation_rejects_undeclared_batch_indexed_leaf(
