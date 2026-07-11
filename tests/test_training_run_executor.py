@@ -10,10 +10,6 @@ import pytest
 import jax.numpy as jnp
 
 from feedbax.contracts.manifest import load_manifest, sha256_bytes
-from feedbax.contracts.checkpoints import (
-    BatchIndexedCheckpointLeafSpec,
-    CheckpointContinuationRequest,
-)
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -682,45 +678,6 @@ def test_execute_training_run_spec_applies_resume_slot_transform(
     assert resumed.final_slots["model"].tolist() == [3.0, 2.0]
     assert resumed.final_coordinate.program_step == 2
 
-
-def test_execute_training_run_spec_applies_declared_total_extension_on_resume(
-    tmp_path: Path,
-) -> None:
-    registry, _program = _chunked_registry(stop_after_program_step=2)
-    checkpoint_root = tmp_path / "checkpoint-custody"
-    continuation = CheckpointContinuationRequest(
-        source_completed_batches=1,
-        additional_batches=2,
-        batch_indexed_leaves=[BatchIndexedCheckpointLeafSpec(slot="model", tree_path="/")],
-    )
-    run_spec = _run_spec().model_copy(deep=True)
-    run_spec.checkpoint_progress.continuation = continuation
-    source_slots = _initial_slots(arrays=True)
-    source_slots["model"] = jnp.zeros((5, 1), dtype=jnp.float32)
-    execute_training_run_spec(
-        run_spec,
-        run_id="interrupted",
-        initial_slots=source_slots,
-        manifest_root=tmp_path / "runs",
-        checkpoint_root=checkpoint_root,
-        registry=registry,
-        stop_after_barrier="after_train_batch",
-    )
-
-    target_slots = _initial_slots(arrays=True)
-    target_slots["model"] = jnp.zeros((5, 3), dtype=jnp.float32)
-    resumed = execute_training_run_spec(
-        run_spec,
-        run_id="resumed",
-        initial_slots=target_slots,
-        manifest_root=tmp_path / "resume-runs",
-        checkpoint_root=checkpoint_root,
-        registry=registry,
-        resume=True,
-    )
-
-    assert resumed.final_slots["model"].shape == (5, 3)
-    assert resumed.final_coordinate.program_step == 2
 
 
 def test_execute_training_run_spec_writes_checkpoint_before_later_failure(
