@@ -35,7 +35,8 @@ TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run.v1"
 TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v2"
 LR_SCHEDULE_SPEC_SCHEMA_ID = "feedbax.spec.training.lr_schedule"
-LR_SCHEDULE_SPEC_SCHEMA_VERSION = "feedbax.spec.training.lr_schedule.v1"
+LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training.lr_schedule.v1"
+LR_SCHEDULE_SPEC_SCHEMA_VERSION = "feedbax.spec.training.lr_schedule.v2"
 LOSS_TERM_SPEC_SCHEMA_ID = "feedbax.spec.training.loss_term"
 LOSS_TERM_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training.loss_term.v1"
 LOSS_TERM_SPEC_SCHEMA_VERSION = "feedbax.spec.training.loss_term.v2"
@@ -46,6 +47,23 @@ STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID = (
 STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION = (
     "feedbax.spec.training_method.standard_supervised_payload.v1"
 )
+
+
+class BatchScheduleOriginSpec(BaseModel):
+    """Typed clock origin for a batch-parameterized schedule."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["segment_start", "run_start", "absolute"]
+    batch: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_origin(self) -> "BatchScheduleOriginSpec":
+        if self.kind == "absolute" and self.batch is None:
+            raise ValueError("/batch is required when schedule origin kind='absolute'")
+        if self.kind != "absolute" and self.batch is not None:
+            raise ValueError("/batch is only allowed when schedule origin kind='absolute'")
+        return self
 
 
 class LrScheduleSpec(BaseModel):
@@ -78,12 +96,30 @@ class LrScheduleSpec(BaseModel):
 
     schema_id: Literal["feedbax.spec.training.lr_schedule"] = LR_SCHEDULE_SPEC_SCHEMA_ID
     schema_version: str = LR_SCHEDULE_SPEC_SCHEMA_VERSION
+    origin: BatchScheduleOriginSpec
+    allow_inert: bool = False
     kind: Literal["constant", "warmup_cosine", "delayed_cosine"] = "constant"
     learning_rate_0: float = Field(gt=0.0)
     total_steps: int | None = Field(default=None, gt=0)
     constant_lr_iterations: int = Field(default=0, ge=0)
     warmup_init_fraction: float = Field(default=0.0, ge=0.0)
     cosine_annealing_alpha: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_v1_origin(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        payload = dict(value)
+        if payload.get("schema_version") == LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1:
+            payload["schema_version"] = LR_SCHEDULE_SPEC_SCHEMA_VERSION
+            payload.setdefault("origin", {"kind": "run_start"})
+        elif "schema_version" not in payload and "origin" not in payload:
+            # Python construction predates durable serialization. Preserve its
+            # historical run-global clock while ensuring emitted v2 payloads
+            # always contain the mandatory origin field.
+            payload["origin"] = {"kind": "run_start"}
+        return payload
 
     @model_validator(mode="after")
     def _validate_schedule_shape(self) -> "LrScheduleSpec":

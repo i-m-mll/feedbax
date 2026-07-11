@@ -148,6 +148,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.training import (
     LR_SCHEDULE_SPEC_SCHEMA_ID,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
+    LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1,
     LOSS_TERM_SPEC_SCHEMA_ID,
     LOSS_TERM_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
@@ -1101,6 +1102,15 @@ def _migrate_loss_term_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[st
     migrated = loss_term.model_dump(mode="json", exclude_none=True)
     migrated["schema_id"] = LOSS_TERM_SPEC_SCHEMA_ID
     migrated["schema_version"] = LOSS_TERM_SPEC_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_lr_schedule_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_id"] = LR_SCHEDULE_SPEC_SCHEMA_ID
+    migrated["schema_version"] = LR_SCHEDULE_SPEC_SCHEMA_VERSION
+    migrated.setdefault("origin", {"kind": "run_start"})
+    migrated.setdefault("allow_inert", False)
     return migrated
 
 
@@ -2106,6 +2116,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("OptimizerSpec.lr_schedule", "provider_manifest.schemas"),
             consumed_by=("feedbax.training.optimizers", "downstream optimizer builders"),
             description=("Declarative learning-rate schedule contract for OptimizerSpec."),
+            stance="migrate",
+            supported_old_versions=("feedbax.spec.training.lr_schedule.v1",),
             rejected_old_versions=("feedbax.spec.training.lr_schedule.v0",),
             required_tests=(
                 "tests/test_optimizer_contract.py",
@@ -3291,6 +3303,16 @@ default_spec_registry.register_migration(
         migration_id="training-run-set-manifest-v1-to-v2-axes",
         migrate=_migrate_training_run_set_manifest_v1_to_v2_payload,
         description="Add explicit axes metadata to training run-set manifests.",
+    ),
+)
+default_spec_registry.register_migration(
+    "LrScheduleSpec",
+    SchemaMigration(
+        source_version=LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1,
+        target_version=LR_SCHEDULE_SPEC_SCHEMA_VERSION,
+        migration_id="lr-schedule-spec-v1-to-v2-typed-origin",
+        migrate=_migrate_lr_schedule_spec_v1_to_v2_payload,
+        description="Preserve legacy global-zero clocks as explicit run_start origins.",
     ),
 )
 default_spec_registry.register_migration(

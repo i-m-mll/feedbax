@@ -767,7 +767,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert training_run_policy.stance == "migrate"
     assert training_run_policy.supported_old_versions == (TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,)
     assert lr_schedule_policy is not None
-    assert lr_schedule_policy.stance == "reject"
+    assert lr_schedule_policy.stance == "migrate"
+    assert lr_schedule_policy.supported_old_versions == (
+        "feedbax.spec.training.lr_schedule.v1",
+    )
     assert lr_schedule_policy.rejected_old_versions == ("feedbax.spec.training.lr_schedule.v0",)
     assert checkpoint_policy is not None
     assert checkpoint_policy.stance == "migrate"
