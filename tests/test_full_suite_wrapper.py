@@ -8,6 +8,8 @@ import signal
 import subprocess
 import sys
 
+import pytest
+
 
 def load_full_suite_module():
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"
@@ -65,13 +67,18 @@ from pathlib import Path
 import sys
 import time
 
-script_path, lock_path, worktree, release_path = sys.argv[1:]
+script_path, lock_path, worktree, release_path, repository = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("feedbax_full_suite_helper", script_path)
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-with module.FullSuiteLock(Path(lock_path), repo_root=Path(worktree)):
+with module.FullSuiteLock(
+    Path(lock_path),
+    repo_root=Path(worktree),
+    repository=repository,
+    command=[repository, "scripts/full_suite.sh"],
+):
     print("acquired " + str(os.getpid()), flush=True)
     release = Path(release_path)
     while not release.exists():
@@ -84,6 +91,8 @@ def start_lock_helper(
     lock_path: Path,
     worktree: Path,
     release_path: Path,
+    *,
+    repository: str = "feedbax",
 ) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
@@ -94,6 +103,7 @@ def start_lock_helper(
             str(lock_path),
             str(worktree),
             str(release_path),
+            repository,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -235,9 +245,7 @@ def test_untracked_docs_file_does_not_block_memo_recording(monkeypatch, tmp_path
     assert full_suite.has_green_memo(memo_dir, fingerprint)
 
 
-def test_untracked_relevant_test_file_disables_memo_recording(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_untracked_relevant_test_file_disables_memo_recording(monkeypatch, tmp_path: Path) -> None:
     full_suite = load_full_suite_module()
     repo = make_full_suite_repo(tmp_path / "repo")
     monkeypatch.setattr(full_suite, "distribution_version", lambda name: "0.0.0")
@@ -259,13 +267,33 @@ def test_shared_cache_root_is_common_across_worktrees(tmp_path: Path) -> None:
     assert full_suite.shared_cache_root(repo) == full_suite.shared_cache_root(worktree)
 
 
-def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path) -> None:
+def test_lock_directory_default_and_override(tmp_path: Path) -> None:
+    full_suite = load_full_suite_module()
+    default = full_suite.full_suite_lock_dir({})
+
+    assert default.parent == Path(full_suite.tempfile.gettempdir())
+    assert default.name == f"full-suite-lock-{os.getuid()}"
+    assert full_suite.full_suite_lock_path({}) == default / "full-suite.lock"
+
+    override = tmp_path / "shared"
+    environ = {"FULL_SUITE_LOCK_DIR": str(override)}
+    assert full_suite.full_suite_lock_dir(environ) == override
+    assert full_suite.full_suite_lock_path(environ) == override / "full-suite.lock"
+
+
+@pytest.mark.parametrize("holder_repository", ["feedbax", "rlrmp"])
+def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path, holder_repository: str) -> None:
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"
-    lock_path = tmp_path / "common.git" / "feedbax_test_cache" / "full_suite.lock"
+    lock_path = tmp_path / "shared-lock" / "full-suite.lock"
     holder_release = tmp_path / "release-holder"
     contender_release = tmp_path / "release-contender"
+    holder_worktree = Path(f"/worktrees/{holder_repository}-holder")
     holder = start_lock_helper(
-        script_path, lock_path, Path("/worktrees/holder"), holder_release
+        script_path,
+        lock_path,
+        holder_worktree,
+        holder_release,
+        repository=holder_repository,
     )
     assert holder.stdout is not None
     assert holder.stdout.readline().startswith("acquired ")
@@ -277,14 +305,22 @@ def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path) -> None:
     assert contender.returncode != 0
     assert contender_stdout == ""
     assert "Full suite already running; active holder:" in contender_stderr
-    assert "worktree=/worktrees/holder" in contender_stderr
+    assert f"repository={holder_repository}" in contender_stderr
+    assert f"worktree={holder_worktree}" in contender_stderr
+    assert f"command=['{holder_repository}', 'scripts/full_suite.sh']" in contender_stderr
+    assert "pid=" in contender_stderr
+    assert "started_at=" in contender_stderr
 
     holder_release.touch()
     holder_stdout, holder_stderr = holder.communicate(timeout=5)
     assert holder.returncode == 0, holder_stderr
     assert holder_stdout == ""
     released_metadata = json.loads(lock_path.read_text(encoding="utf-8"))
-    assert released_metadata["worktree"] == "/worktrees/holder"
+    assert released_metadata["schema_version"] == 1
+    assert released_metadata["protocol_version"] == 1
+    assert released_metadata["repository"] == holder_repository
+    assert released_metadata["worktree"] == str(holder_worktree)
+    assert released_metadata["command"] == [holder_repository, "scripts/full_suite.sh"]
 
 
 def test_main_returns_temporary_failure_when_lock_is_held(
@@ -292,19 +328,25 @@ def test_main_returns_temporary_failure_when_lock_is_held(
 ) -> None:
     full_suite = load_full_suite_module()
     repo_root = Path(__file__).resolve().parents[1]
-    cache_root = tmp_path / "common.git" / "feedbax_test_cache"
-    monkeypatch.setattr(full_suite, "shared_cache_root", lambda unused: cache_root)
+    lock_dir = tmp_path / "shared-lock"
+    monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(lock_dir))
 
-    with full_suite.FullSuiteLock(cache_root / "full_suite.lock", repo_root=repo_root):
+    with full_suite.FullSuiteLock(
+        lock_dir / "full-suite.lock",
+        repo_root=repo_root,
+        repository="rlrmp",
+    ):
         result = full_suite.main(["--force", "--no-memo"])
 
-    assert result == 75
-    assert "Full suite already running; active holder:" in capsys.readouterr().err
+    assert result == full_suite.LOCK_BUSY_EXIT
+    stderr = capsys.readouterr().err
+    assert "Full suite already running; active holder:" in stderr
+    assert "repository=rlrmp" in stderr
 
 
 def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> None:
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"
-    lock_path = tmp_path / "common.git" / "feedbax_test_cache" / "full_suite.lock"
+    lock_path = tmp_path / "shared-lock" / "full-suite.lock"
     holder_release = tmp_path / "release-holder"
     contender_release = tmp_path / "release-contender"
     holder = start_lock_helper(
@@ -312,6 +354,7 @@ def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> 
         lock_path,
         Path("/worktrees/interrupted-holder"),
         holder_release,
+        repository="rlrmp",
     )
     assert holder.stdout is not None
     assert holder.stdout.readline().startswith("acquired ")
@@ -331,4 +374,7 @@ def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> 
     # safely replaces stale metadata before running; release retains that last
     # complete record so contenders never observe an intentional empty window.
     metadata = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == 1
+    assert metadata["protocol_version"] == 1
+    assert metadata["repository"] == "feedbax"
     assert metadata["worktree"] == "/worktrees/after-interrupt"
