@@ -480,17 +480,23 @@ def _load_checkpoint_from_pointer(
         }
     request = _coerce_continuation_request(continuation_request)
     if request is not None:
-        loaded_slots = _apply_declared_continuation_request(
-            loaded_slots,
-            expected_slots=expected_slots,
-            manifest=manifest,
-            request=request,
-        )
-        loaded_fingerprints = {
-            slot: fingerprint
-            for slot, fingerprint in loaded_fingerprints.items()
-            if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
-        }
+        if _continuation_was_applied(manifest, request):
+            # Fork custody already extended the source/raw topology before any
+            # target/post transform. Reapplying it at resume would incorrectly
+            # traverse the final topology.
+            pass
+        else:
+            loaded_slots = _apply_declared_continuation_request(
+                loaded_slots,
+                expected_slots=expected_slots,
+                manifest=manifest,
+                request=request,
+            )
+            loaded_fingerprints = {
+                slot: fingerprint
+                for slot, fingerprint in loaded_fingerprints.items()
+                if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
+            }
     _validate_structural_abi(
         manifest,
         expected_slots,
@@ -552,6 +558,13 @@ def fork_checkpoint_transaction(
     expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
     slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
     transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    source_slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
+    source_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    continuation_slot_templates: Mapping[str, Any] | None = None,
+    target_slot_transform: ResumeSlotTransform | None = None,
+    target_transform_metadata: Mapping[str, Any] | None = None,
+    target_transformed_slots: Sequence[str] | None = None,
+    target_only_slots: Mapping[str, Mapping[str, Any]] | None = None,
     continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
     link_strategy: CheckpointBlobLinkStrategy | None = None,
     tool_version: str | None = None,
@@ -559,10 +572,17 @@ def fork_checkpoint_transaction(
 ) -> CheckpointForkResult:
     """Fork one valid custody checkpoint into a target run contract/root.
 
-    Untransformed slots are hardlinked into the target transaction when possible
-    and copied when hardlinking is unavailable. Transformed slots are serialized
-    fresh. ``latest.json`` is written only after strict target-bound resume
-    validation succeeds.
+    The pipeline is deliberately topology-aware: source/pre transforms run on
+    the source topology, declared continuation extends that raw topology from a
+    dedicated continuation template, then an optional target/post transform
+    produces the target topology. ``target_only_slots`` declares root slots
+    introduced only by that post transform. Untransformed slots are hardlinked
+    when possible; changed slots are serialized fresh. ``latest.json`` is
+    written only after strict target-bound resume validation succeeds.
+
+    ``slot_transforms`` and ``transform_metadata`` are retained as legacy
+    aliases for ``source_slot_transforms`` and ``source_transform_metadata``.
+    Callers must not supply both forms.
     """
     source = _load_latest_checkpoint_transaction(source_root)
     phase_program = target_phase_program or (
@@ -570,8 +590,44 @@ def fork_checkpoint_transaction(
     )
     barrier = checkpoint_barrier(phase_program, source.manifest.barrier)
     coordinate = target_coordinate or source.manifest.completed_coordinate
-    transforms = dict(slot_transforms or {})
-    transform_meta = dict(transform_metadata or {})
+    if slot_transforms is not None and source_slot_transforms is not None:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork received both slot_transforms and source_slot_transforms; "
+            "use source_slot_transforms"
+        )
+    if transform_metadata is not None and source_transform_metadata is not None:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork received both transform_metadata and "
+            "source_transform_metadata; use source_transform_metadata"
+        )
+    transforms = dict(source_slot_transforms or slot_transforms or {})
+    transform_meta = dict(source_transform_metadata or transform_metadata or {})
+    target_only_metadata = dict(target_only_slots or {})
+    declared_target_slots = set(target_transformed_slots or ())
+    if target_slot_transform is None and (
+        target_transform_metadata is not None
+        or target_transformed_slots is not None
+        or target_only_slots is not None
+    ):
+        raise CheckpointCompatibilityError(
+            "target transform declarations require target_slot_transform"
+        )
+    if target_slot_transform is not None and target_transform_metadata is None:
+        raise CheckpointCompatibilityError(
+            "target_slot_transform requires target_transform_metadata with identity"
+        )
+    if target_slot_transform is not None:
+        _validate_target_transform_metadata(target_transform_metadata)
+    if len(declared_target_slots) != len(tuple(target_transformed_slots or ())):
+        raise CheckpointCompatibilityError(
+            "target_transformed_slots must not contain duplicates"
+        )
+    overlap = declared_target_slots & set(target_only_metadata)
+    if overlap:
+        raise CheckpointCompatibilityError(
+            "target slots cannot be both transformed source slots and target-only; "
+            f"slots={sorted(overlap)!r}"
+        )
     loaded_slots = dict(source.slots)
     prepared_slots = _apply_slot_transforms(
         loaded_slots,
@@ -584,7 +640,7 @@ def fork_checkpoint_transaction(
         before_continuation = dict(prepared_slots)
         prepared_slots = _apply_declared_continuation_request(
             prepared_slots,
-            expected_slots=validation_slots,
+            expected_slots=dict(continuation_slot_templates or validation_slots),
             manifest=source.manifest,
             request=request,
         )
@@ -593,6 +649,14 @@ def fork_checkpoint_transaction(
             for slot in prepared_slots
             if prepared_slots[slot] is not before_continuation.get(slot)
         }
+    target_post_transformed_slots: set[str] = set()
+    if target_slot_transform is not None:
+        prepared_slots, target_post_transformed_slots = _apply_target_slot_transform(
+            prepared_slots,
+            transform=target_slot_transform,
+            declared_transformed_slots=declared_target_slots,
+            declared_target_only_slots=set(target_only_metadata),
+        )
     _validate_required_slots(
         tuple(barrier.slots),
         prepared_slots,
@@ -621,18 +685,48 @@ def fork_checkpoint_transaction(
         slot_digests: list[SlotContentDigest] = []
         slot_provenance: list[CheckpointForkSlotProvenance] = []
         transfer_modes: dict[str, str] = {}
-        transform_records = {
-            slot: _transform_record(slot, transforms[slot], transform_meta.get(slot, {}))
+        transform_stages: dict[str, list[CheckpointForkTransformRecord]] = {
+            slot: [
+                _transform_record(
+                    slot,
+                    transforms[slot],
+                    transform_meta.get(slot, {}),
+                    stage="source_pre",
+                )
+            ]
             for slot in transforms
         }
         for slot in continuation_transformed_slots:
-            transform_records[slot] = CheckpointForkTransformRecord(
-                slot=slot,
-                identity="feedbax.training_checkpoint.declared_continuation.v1",
-                parameters=request.model_dump(mode="json", exclude_none=True)
-                if request is not None
-                else {},
+            transform_stages.setdefault(slot, []).append(
+                CheckpointForkTransformRecord(
+                    slot=slot,
+                    identity="feedbax.training_checkpoint.declared_continuation.v1",
+                    parameters=request.model_dump(mode="json", exclude_none=True)
+                    if request is not None
+                    else {},
+                    metadata={"stage": "continuation_extension"},
+                )
             )
+        if target_slot_transform is not None:
+            for slot in target_post_transformed_slots:
+                target_metadata = dict(target_transform_metadata or {})
+                if slot in target_only_metadata:
+                    target_metadata["target_only_declaration"] = dict(
+                        target_only_metadata[slot]
+                    )
+                transform_stages.setdefault(slot, []).append(
+                    _transform_record(
+                        slot,
+                        target_slot_transform,
+                        target_metadata,
+                        stage="target_post",
+                    )
+                )
+        transformed_slots = (
+            set(transforms)
+            | continuation_transformed_slots
+            | target_post_transformed_slots
+        )
 
         for spec in barrier.slots:
             if spec.slot not in prepared_slots and not spec.required:
@@ -641,7 +735,7 @@ def fork_checkpoint_transaction(
                 raise CheckpointCompatibilityError(
                     f"target checkpoint slot {spec.slot!r} is missing after transforms"
                 )
-            if spec.slot in transforms or spec.slot in continuation_transformed_slots:
+            if spec.slot in transformed_slots:
                 source_slot = source_slots_by_name.get(spec.slot)
                 slot_record, content_digest = _write_fresh_slot_blob(
                     spec,
@@ -662,7 +756,10 @@ def fork_checkpoint_transaction(
                     ),
                     target_relative_path=slot_record.relative_path,
                     transfer_mode="serialized",
-                    transform=transform_records[spec.slot],
+                    transform=_combine_transform_stages(
+                        spec.slot,
+                        transform_stages[spec.slot],
+                    ),
                 )
             else:
                 source_slot = source_slots_by_name.get(spec.slot)
@@ -729,6 +826,7 @@ def fork_checkpoint_transaction(
                 mode="json",
                 exclude_none=True,
             )
+            manifest_metadata["checkpoint_continuation_applied"] = True
         manifest_metadata.update(dict(metadata or {}))
         completed_batches = _completed_training_batches(
             None,
@@ -799,7 +897,7 @@ def fork_checkpoint_transaction(
             expected_phase_program=phase_program,
             expected_slots=validation_slots,
             expected_population_member_ids=expected_population_member_ids,
-            continuation_request=request,
+            continuation_request=None,
             allow_new_lineage_override=False,
         )
         latest_path = target_root_path / LATEST_POINTER_NAME
@@ -875,6 +973,88 @@ def _apply_slot_transforms(
     return transformed_slots
 
 
+def _validate_target_transform_metadata(metadata: Mapping[str, Any] | None) -> None:
+    """Require durable provenance for a topology-changing target transform."""
+    assert metadata is not None
+    identity = metadata.get("identity")
+    if not isinstance(identity, str) or not identity:
+        raise CheckpointCompatibilityError(
+            "target_transform_metadata.identity must be a non-empty string"
+        )
+    parameters = metadata.get("parameters", {})
+    if not isinstance(parameters, Mapping):
+        raise CheckpointCompatibilityError(
+            "target_transform_metadata.parameters must be a mapping"
+        )
+
+
+def _apply_target_slot_transform(
+    slots: Mapping[str, Any],
+    *,
+    transform: ResumeSlotTransform,
+    declared_transformed_slots: set[str],
+    declared_target_only_slots: set[str],
+) -> tuple[dict[str, Any], set[str]]:
+    """Apply the target/post stage and fail closed on topology drift.
+
+    Source slots may only be changed when listed in
+    ``declared_transformed_slots``. New root slots may only be introduced when
+    declared target-only; every declared target-only slot must be initialized
+    by this caller-owned transform. Source slots cannot be dropped.
+    """
+    source_slots = dict(slots)
+    unknown_declared = declared_transformed_slots - set(source_slots)
+    if unknown_declared:
+        raise CheckpointCompatibilityError(
+            "target_transformed_slots names missing source slots; "
+            f"slots={sorted(unknown_declared)!r}"
+        )
+    overlap = declared_target_only_slots & set(source_slots)
+    if overlap:
+        raise CheckpointCompatibilityError(
+            "target-only slots already exist in source topology; "
+            f"slots={sorted(overlap)!r}"
+        )
+    try:
+        transformed = dict(transform(source_slots))
+    except CheckpointCustodyError:
+        raise
+    except Exception as exc:
+        raise CheckpointCompatibilityError("checkpoint fork target transform failed") from exc
+
+    dropped = set(source_slots) - set(transformed)
+    if dropped:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork target transform dropped source slots; "
+            f"slots={sorted(dropped)!r}"
+        )
+    added = set(transformed) - set(source_slots)
+    undeclared_added = added - declared_target_only_slots
+    if undeclared_added:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork target transform introduced undeclared target-only slots; "
+            f"slots={sorted(undeclared_added)!r}"
+        )
+    missing_target_only = declared_target_only_slots - added
+    if missing_target_only:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork target transform did not initialize declared target-only slots; "
+            f"slots={sorted(missing_target_only)!r}"
+        )
+    changed_source_slots = {
+        slot
+        for slot, source_value in source_slots.items()
+        if transformed[slot] is not source_value
+    }
+    undeclared_changes = changed_source_slots - declared_transformed_slots
+    if undeclared_changes:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork target transform changed undeclared source slots; "
+            f"slots={sorted(undeclared_changes)!r} contract=target_transformed_slots"
+        )
+    return transformed, changed_source_slots | added
+
+
 def _coerce_continuation_request(
     value: CheckpointContinuationRequest | Mapping[str, Any] | None,
 ) -> CheckpointContinuationRequest | None:
@@ -888,6 +1068,46 @@ def _coerce_continuation_request(
         raise CheckpointCompatibilityError(
             f"checkpoint continuation request is invalid: {exc}"
         ) from exc
+
+
+def _continuation_was_applied(
+    manifest: CheckpointTransactionManifest,
+    request: CheckpointContinuationRequest,
+) -> bool:
+    """Return whether this fork already applied exactly ``request``.
+
+    A continuation fork writes the raw continuation before an optional target
+    topology transform. The target manifest therefore records the request as
+    applied; resuming it must validate that contract but must not traverse the
+    final topology a second time.
+    """
+    marker = manifest.metadata.get("checkpoint_continuation_applied")
+    if marker is None or marker is False:
+        return False
+    if marker is not True:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation applied marker must be boolean true; "
+            f"value={marker!r}"
+        )
+    recorded_payload = manifest.metadata.get("checkpoint_continuation")
+    if not isinstance(recorded_payload, Mapping):
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation is marked applied but recorded request is missing"
+        )
+    try:
+        recorded = CheckpointContinuationRequest.model_validate(recorded_payload)
+    except ValidationError as exc:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation is marked applied but recorded request is invalid"
+        ) from exc
+    if recorded != request:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation request does not match the already-applied "
+            "fork contract; "
+            f"recorded={recorded.model_dump(mode='json', exclude_none=True)!r} "
+            f"requested={request.model_dump(mode='json', exclude_none=True)!r}"
+        )
+    return True
 
 
 def _apply_declared_continuation_request(
@@ -1125,6 +1345,8 @@ def _transform_record(
     slot: str,
     transform: ResumeSlotTransform,
     metadata: Mapping[str, Any],
+    *,
+    stage: str | None = None,
 ) -> CheckpointForkTransformRecord:
     parameters = metadata.get("parameters", {})
     if not isinstance(parameters, Mapping):
@@ -1137,11 +1359,48 @@ def _transform_record(
     record_metadata = {
         key: value for key, value in metadata.items() if key not in {"identity", "parameters"}
     }
+    if stage is not None:
+        record_metadata["stage"] = stage
     return CheckpointForkTransformRecord(
         slot=slot,
         identity=identity,
         parameters=dict(parameters),
         metadata=record_metadata,
+    )
+
+
+def _combine_transform_stages(
+    slot: str,
+    stages: Sequence[CheckpointForkTransformRecord],
+) -> CheckpointForkTransformRecord:
+    """Keep ordered stage provenance without widening the manifest schema.
+
+    ``CheckpointForkSlotProvenance`` historically has one transform field. The
+    final record remains its compatibility projection while the existing
+    metadata surface carries every stage in order.
+    """
+    if not stages:
+        raise CheckpointCompatibilityError(
+            f"checkpoint fork transformed slot {slot!r} has no provenance stages"
+        )
+    final = stages[-1]
+    metadata = dict(final.metadata)
+    metadata["stages"] = [
+        {
+            "stage": record.metadata.get("stage"),
+            "identity": record.identity,
+            "parameters": record.parameters,
+            "metadata": {
+                key: value for key, value in record.metadata.items() if key != "stage"
+            },
+        }
+        for record in stages
+    ]
+    return CheckpointForkTransformRecord(
+        slot=slot,
+        identity=final.identity,
+        parameters=final.parameters,
+        metadata=metadata,
     )
 
 

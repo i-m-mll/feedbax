@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import copy
 from dataclasses import dataclass
 import json
@@ -336,17 +336,23 @@ def fork_matrix_checkpoints(
     target_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
     row_slot_transforms: Mapping[str, Mapping[str, ResumeSlotTransform]] | None = None,
     row_transform_metadata: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+    row_continuation_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
+    row_target_slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
+    row_target_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    row_target_transformed_slots: Mapping[str, Sequence[str]] | None = None,
+    row_target_only_slots: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
     tool_version: str = "feedbax.run_matrix_fork.v1",
 ) -> dict[str, Any]:
     """Fork a source checkpoint to all matrix rows and write a parity table.
 
-    ``target_slot_templates`` is required for rows with a declared checkpoint
-    continuation because Feedbax must take any new batch-axis tail from the
-    target runtime template rather than infer it from arbitrary checkpoint
-    PyTrees. ``row_slot_transforms`` are caller-owned, per-row transforms
-    applied before any declared continuation extension.
+    ``target_slot_templates`` describes the final target topology. Rows that
+    both extend a continuation and change topology must also provide
+    ``row_continuation_slot_templates`` for the raw pre-topology target tail.
+    ``row_slot_transforms`` run before continuation; the explicit target/post
+    transform family runs after it and must declare changed source slots and
+    newly initialized target-only slots.
     """
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
@@ -374,6 +380,16 @@ def fork_matrix_checkpoints(
             "row transform metadata contains unknown rows "
             f"{unexpected_transform_metadata!r}"
         )
+    for label, values in (
+        ("row continuation slot templates", row_continuation_slot_templates),
+        ("row target slot transforms", row_target_slot_transforms),
+        ("row target transform metadata", row_target_transform_metadata),
+        ("row target transformed slots", row_target_transformed_slots),
+        ("row target-only slots", row_target_only_slots),
+    ):
+        unexpected = sorted(set(values or {}) - row_ids)
+        if unexpected:
+            raise RunMatrixError(f"{label} contain unknown rows {unexpected!r}")
     reporter = lr_reporter or StandardLrContinuationReporter()
     parity_rows: list[dict[str, Any]] = []
     mismatches: list[str] = []
@@ -399,6 +415,16 @@ def fork_matrix_checkpoints(
                     "row declares checkpoint continuation but has no target slot template; "
                     f"row={row.row_id!r} contract=checkpoint_progress.continuation"
                 )
+            target_transform = (row_target_slot_transforms or {}).get(row.row_id)
+            continuation_templates = (row_continuation_slot_templates or {}).get(
+                row.row_id
+            )
+            if continuation is not None and target_transform is not None and continuation_templates is None:
+                raise RunMatrixError(
+                    "topology-changing continuation row has no raw continuation slot "
+                    f"template; row={row.row_id!r} "
+                    "contract=row_continuation_slot_templates"
+                )
             result = fork_checkpoint_transaction(
                 source_checkpoint_root,
                 target_root,
@@ -407,6 +433,15 @@ def fork_matrix_checkpoints(
                 expected_slots=expected_slots,
                 slot_transforms=(row_slot_transforms or {}).get(row.row_id),
                 transform_metadata=(row_transform_metadata or {}).get(row.row_id),
+                continuation_slot_templates=continuation_templates,
+                target_slot_transform=target_transform,
+                target_transform_metadata=(row_target_transform_metadata or {}).get(
+                    row.row_id
+                ),
+                target_transformed_slots=(row_target_transformed_slots or {}).get(
+                    row.row_id
+                ),
+                target_only_slots=(row_target_only_slots or {}).get(row.row_id),
                 continuation_request=continuation,
                 tool_version=tool_version,
                 metadata={

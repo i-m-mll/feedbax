@@ -11,6 +11,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointContinuationRequest,
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
+from feedbax.contracts.worker import CheckpointSlotSpec
 from feedbax.training.checkpoint_custody import (
     load_latest_checkpoint,
     write_checkpoint_transaction,
@@ -117,10 +118,32 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
             )
         }
     )
+    target_program = source_spec.worker_execution.method_contract.phase_program.model_copy(
+        deep=True
+    )
+    target_program.checkpoint_barriers[0].slots.append(
+        CheckpointSlotSpec(slot="target_diagnostics")
+    )
+    target_method_contract = source_spec.worker_execution.method_contract.model_copy(
+        update={"phase_program": target_program}
+    )
+    target_effective_phase = source_spec.worker_execution.effective_phase.model_copy(
+        update={"phase_program": target_program}
+    )
+    target_spec = source_spec.model_copy(
+        update={
+            "worker_execution": source_spec.worker_execution.model_copy(
+                update={
+                    "method_contract": target_method_contract,
+                    "effective_phase": target_effective_phase,
+                }
+            )
+        }
+    )
     matrix = TrainingRunMatrixSpec.model_validate(
         {
             "name": "continuation row",
-            "base": {"inline": source_spec.model_dump(mode="json", exclude_none=True)},
+            "base": {"inline": target_spec.model_dump(mode="json", exclude_none=True)},
             "fork": {
                 "source_run_id": "feedbax-training-run:source",
                 "lr_continuation": "continue",
@@ -143,12 +166,22 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
         slots=source_slots,
         completed_training_batches=12000,
     )
+    raw_target_slots = _minimax_slots()
+    raw_target_slots["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
     target_slots = _minimax_slots()
-    target_slots["controller"] = jnp.full((5, 12200), -1.0, dtype=jnp.float32)
+    target_slots["controller"] = {
+        "history": jnp.full((5, 12200), -1.0, dtype=jnp.float32),
+        "target_topology": jnp.array([7], dtype=jnp.int32),
+    }
+    target_slots["target_diagnostics"] = jnp.zeros((2,), dtype=jnp.float32)
 
-    def offset_controller(slots):
+    def make_target_topology(slots):
         transformed = dict(slots)
-        transformed["controller"] = transformed["controller"] + 10.0
+        transformed["controller"] = {
+            "history": transformed["controller"],
+            "target_topology": jnp.array([7], dtype=jnp.int32),
+        }
+        transformed["target_diagnostics"] = jnp.zeros((2,), dtype=jnp.float32)
         return transformed
 
     table = fork_matrix_checkpoints(
@@ -157,14 +190,17 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
         source_checkpoint_root=tmp_path / "source",
         target_checkpoint_roots={"continuation": tmp_path / "target"},
         target_slot_templates={"continuation": target_slots},
-        row_slot_transforms={"continuation": {"controller": offset_controller}},
-        row_transform_metadata={
+        row_continuation_slot_templates={"continuation": raw_target_slots},
+        row_target_slot_transforms={"continuation": make_target_topology},
+        row_target_transform_metadata={
             "continuation": {
-                "controller": {
-                    "identity": "tests.offset_controller.v1",
-                    "parameters": {"offset": 10.0},
-                }
+                "identity": "tests.make_target_topology.v1",
+                "parameters": {"target_topology": 7},
             }
+        },
+        row_target_transformed_slots={"continuation": ["controller"]},
+        row_target_only_slots={
+            "continuation": {"target_diagnostics": {"role": "diagnostic"}}
         },
         parity_output_path=tmp_path / "parity.json",
     )
@@ -179,11 +215,26 @@ def test_matrix_fork_forwards_declared_continuation_to_custody_extension(
         expected_slots=target_slots,
         continuation_request=continuation,
     )
-    assert resumed.slots["controller"].shape == (5, 12200)
+    controller = resumed.slots["controller"]
+    assert controller["history"].shape == (5, 12200)
     assert jnp.array_equal(
-        resumed.slots["controller"][..., :12000], source_slots["controller"] + 10.0
+        controller["history"][..., :12000], source_slots["controller"]
     )
-    assert jnp.all(resumed.slots["controller"][..., 12000:] == -1.0)
+    assert jnp.all(controller["history"][..., 12000:] == -1.0)
+    assert jnp.array_equal(controller["target_topology"], jnp.array([7], dtype=jnp.int32))
+    assert jnp.array_equal(resumed.slots["target_diagnostics"], jnp.zeros((2,)))
+    provenance = {
+        slot.slot: slot for slot in resumed.manifest.fork_provenance.slots
+    }
+    assert provenance["controller"].transform is not None
+    assert [
+        stage["stage"] for stage in provenance["controller"].transform.metadata["stages"]
+    ] == ["continuation_extension", "target_post"]
+    assert provenance["target_diagnostics"].source_sha256 is None
+    assert provenance["target_diagnostics"].transform is not None
+    assert provenance["target_diagnostics"].transform.metadata[
+        "target_only_declaration"
+    ] == {"role": "diagnostic"}
 
 
 def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -> None:
