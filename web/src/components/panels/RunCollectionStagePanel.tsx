@@ -30,7 +30,10 @@ import {
 } from 'lucide-react';
 import { getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
-import { useSelectionContextStore } from '@/stores/selectionContextStore';
+import {
+  frozenSnapshotProvenanceMetadata,
+  useSelectionContextStore,
+} from '@/stores/selectionContextStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useRunStore } from '@/stores/runStore';
 import type { FrozenSnapshotProjection } from '@/stores/selectionContextStore';
@@ -1596,17 +1599,7 @@ function workspaceWithTopPaneProvenance(
   const topPane = workspace.ui_state.top_pane as StudioTopPaneState | undefined;
   const metadata = { ...(topPane?.metadata ?? {}) };
   if (projection) {
-    metadata.run_snapshot_provenance = {
-      source: projection.source,
-      run_id: projection.runId,
-      run_label: projection.runLabel,
-      run_status: projection.runStatus,
-      manifest_id: projection.manifestId,
-      manifest_hash: projection.manifestHash,
-      spec_hashes: projection.specHashes,
-      mode: 'frozen_snapshot',
-      read_only: true,
-    };
+    metadata.run_snapshot_provenance = frozenSnapshotProvenanceMetadata(projection);
   } else {
     delete metadata.run_snapshot_provenance;
   }

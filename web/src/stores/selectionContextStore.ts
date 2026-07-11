@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { StudioWorkspaceSpec } from '@/types/workspace';
 
 export type SelectionSyncMode = 'linked' | 'decoupled';
 export type SnapshotSpecKey =
@@ -25,6 +26,108 @@ export interface FrozenSnapshotProjection {
   manifestHash: string | null;
   specHashes: Partial<Record<SnapshotSpecKey, string | null>>;
   snapshot: SnapshotSpecPayload;
+}
+
+const RUN_SNAPSHOT_PROVENANCE_SCHEMA_VERSION =
+  'feedbax.studio.run_snapshot_provenance.v1';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function snapshotSpecPayload(value: unknown): SnapshotSpecPayload {
+  if (!isRecord(value)) return {};
+  const snapshot: SnapshotSpecPayload = {};
+  const keys: SnapshotSpecKey[] = [
+    'graph_spec',
+    'training_spec',
+    'task_spec',
+    'task_binding_spec',
+    'evaluation_spec',
+  ];
+  for (const key of keys) {
+    const payload = value[key];
+    if (payload === null) snapshot[key] = null;
+    else if (isRecord(payload)) snapshot[key] = payload;
+  }
+  return snapshot;
+}
+
+function snapshotSpecHashes(value: unknown): FrozenSnapshotProjection['specHashes'] {
+  if (!isRecord(value)) return {};
+  const hashes: FrozenSnapshotProjection['specHashes'] = {};
+  const keys: SnapshotSpecKey[] = [
+    'graph_spec',
+    'training_spec',
+    'task_spec',
+    'task_binding_spec',
+    'evaluation_spec',
+  ];
+  for (const key of keys) {
+    const hash = value[key];
+    if (hash === null) hashes[key] = null;
+    else if (typeof hash === 'string') hashes[key] = hash;
+  }
+  return hashes;
+}
+
+export function frozenSnapshotProvenanceMetadata(
+  projection: FrozenSnapshotProjection
+): Record<string, unknown> {
+  return {
+    schema_version: RUN_SNAPSHOT_PROVENANCE_SCHEMA_VERSION,
+    source: projection.source,
+    run_id: projection.runId,
+    run_label: projection.runLabel,
+    run_status: projection.runStatus,
+    manifest_id: projection.manifestId,
+    manifest_hash: projection.manifestHash,
+    spec_hashes: projection.specHashes,
+    snapshot: projection.snapshot,
+    mode: 'frozen_snapshot',
+    read_only: true,
+  };
+}
+
+export function frozenSnapshotProjectionFromWorkspace(
+  workspace: StudioWorkspaceSpec | null
+): FrozenSnapshotProjection | null {
+  const topPane = workspace?.ui_state.top_pane;
+  const metadata = isRecord(topPane) && isRecord(topPane.metadata) ? topPane.metadata : {};
+  const provenance = metadata.run_snapshot_provenance;
+  if (!isRecord(provenance) || provenance.mode !== 'frozen_snapshot') return null;
+  if (
+    provenance.schema_version !== undefined &&
+    provenance.schema_version !== RUN_SNAPSHOT_PROVENANCE_SCHEMA_VERSION
+  ) {
+    throw new Error(
+      `Unsupported run snapshot provenance schema version: ${String(provenance.schema_version)}`
+    );
+  }
+  if (provenance.source !== 'training_run' && provenance.source !== 'evaluation_run') {
+    return null;
+  }
+  if (
+    typeof provenance.run_id !== 'string' ||
+    typeof provenance.run_label !== 'string' ||
+    typeof provenance.run_status !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    source: provenance.source,
+    runId: provenance.run_id,
+    runLabel: provenance.run_label,
+    runStatus: provenance.run_status,
+    manifestId: nullableString(provenance.manifest_id),
+    manifestHash: nullableString(provenance.manifest_hash),
+    specHashes: snapshotSpecHashes(provenance.spec_hashes),
+    snapshot: snapshotSpecPayload(provenance.snapshot),
+  };
 }
 
 interface SelectionContextState {

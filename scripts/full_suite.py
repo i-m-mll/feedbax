@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import fcntl
 import hashlib
 from importlib import metadata
 import json
 import os
 from pathlib import Path
 import platform
+import socket
 import subprocess
 import sys
-from typing import Any, Sequence
+from types import TracebackType
+from typing import Any, Self, Sequence
 
 
 SCHEMA_VERSION = 1
@@ -33,6 +37,83 @@ EXECUTION_RELEVANT_UNTRACKED_PATHS = (
     "tox.ini",
     "uv.lock",
 )
+
+
+class FullSuiteLockBusy(RuntimeError):
+    """Raised when another repository-wide full-suite run owns the lock."""
+
+
+class FullSuiteLock(AbstractContextManager["FullSuiteLock"]):
+    """Serialize full-suite runs through an advisory lock shared by worktrees."""
+
+    def __init__(self, path: Path, *, repo_root: Path) -> None:
+        self.path = path
+        self.repo_root = repo_root
+        self._handle: Any | None = None
+
+    def _read_holder(self) -> str:
+        assert self._handle is not None
+        self._handle.seek(0)
+        raw = self._handle.read().strip()
+        if not raw:
+            return "holder metadata unavailable"
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return f"unreadable holder metadata: {raw!r}"
+        return ", ".join(
+            f"{key}={data[key]}"
+            for key in ("pid", "host", "started_at", "worktree")
+            if data.get(key) is not None
+        )
+
+    def _write_holder(self) -> None:
+        assert self._handle is not None
+        holder = {
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "started_at": datetime.now(UTC).isoformat(),
+            "worktree": str(self.repo_root),
+            "command": sys.argv,
+        }
+        self._handle.seek(0)
+        self._handle.truncate()
+        json.dump(holder, self._handle, sort_keys=True)
+        self._handle.write("\n")
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+
+    def __enter__(self) -> Self:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("a+", encoding="utf-8")
+        try:
+            try:
+                fcntl.flock(self._handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise FullSuiteLockBusy(
+                    f"Full suite already running; active holder: {self._read_holder()}"
+                )
+            self._write_holder()
+            print(f"Acquired full-suite lock: {self.path}", file=sys.stderr, flush=True)
+            return self
+        except BaseException:
+            self._handle.close()
+            self._handle = None
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._handle is None:
+            return
+        try:
+            fcntl.flock(self._handle, fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
+            self._handle = None
 
 
 @dataclass(frozen=True)
@@ -280,20 +361,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    if fingerprint.refusal_reasons:
-        reasons = "; ".join(fingerprint.refusal_reasons)
-        print(f"Full-suite memo disabled: {reasons}", file=sys.stderr)
+    lock_path = cache_root / "full_suite.lock"
+    try:
+        with FullSuiteLock(lock_path, repo_root=repo_root):
+            fingerprint = build_fingerprint(repo_root)
+            would_skip = not args.force and not args.no_memo and has_green_memo(
+                memo_dir, fingerprint
+            )
 
-    if would_skip:
-        print(f"Skipping full suite: green memo {memo_file(memo_dir, fingerprint)}")
-        return 0
+            if fingerprint.refusal_reasons:
+                reasons = "; ".join(fingerprint.refusal_reasons)
+                print(f"Full-suite memo disabled: {reasons}", file=sys.stderr)
 
-    print("Running:", " ".join(command))
-    result = subprocess.run(command, cwd=repo_root, check=False)
-    if result.returncode == 0 and not args.no_memo and fingerprint.memo_allowed:
-        path = write_green_memo(memo_dir, fingerprint, command)
-        print(f"Recorded full-suite green memo: {path}")
-    return result.returncode
+            if would_skip:
+                print(f"Skipping full suite: green memo {memo_file(memo_dir, fingerprint)}")
+                return 0
+
+            print("Running:", " ".join(command))
+            result = subprocess.run(
+                command,
+                cwd=repo_root,
+                check=False,
+            )
+            if result.returncode == 0 and not args.no_memo and fingerprint.memo_allowed:
+                path = write_green_memo(memo_dir, fingerprint, command)
+                print(f"Recorded full-suite green memo: {path}")
+            return result.returncode
+    except FullSuiteLockBusy as error:
+        print(error, file=sys.stderr, flush=True)
+        return 75
 
 
 if __name__ == "__main__":

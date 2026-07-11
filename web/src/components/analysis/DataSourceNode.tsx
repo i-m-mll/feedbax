@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { type NodeProps, useUpdateNodeInternals } from '@xyflow/react';
+import { useShallow } from 'zustand/react/shallow';
 import type { DataSourceNodeData } from '@/stores/analysisStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { STATE_FIELD_TREE, type StateFieldNode } from '@/types/analysis';
@@ -221,7 +222,9 @@ export function selectorTreeFromScenarioOptions(
 export function DataSourceNode({ id, data, selected }: NodeProps) {
   const nodeData = data as DataSourceNodeData;
   void nodeData;
-  const workspace = useWorkspaceStore((s) => s.workspace);
+  const workspace = useWorkspaceStore(
+    useShallow((state) => (state.workspace ? { ...state.workspace } : null))
+  );
   const graph = useGraphStore((s) => s.graph);
   const trainingStage = getStageByKind(workspace, 'train');
   const trainingScenario = getTrainingScenario(workspace);
