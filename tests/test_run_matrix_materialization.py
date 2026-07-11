@@ -7,6 +7,7 @@ import pytest
 
 from feedbax.contracts.expressions import Coalesce, ValueQuery
 from feedbax.contracts.manifest import sha256_bytes
+from feedbax.contracts.checkpoints import CheckpointSegmentLineage
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -208,3 +209,29 @@ def test_spec_lock_render_includes_legacy_lr_phrase(tmp_path: Path) -> None:
     assert "LR continuation schedule: continue" in rendered
     assert "training_config.learning_rate" in rendered
     assert "lr_hi" in rendered
+
+
+def test_spec_lock_renders_resolved_windows_for_every_active_schedule(tmp_path: Path) -> None:
+    payload = _training_run_payload()
+    payload["method_payload"]["payload"]["optimizer"]["lr_schedule"] = {
+        "kind": "warmup_cosine",
+        "learning_rate_0": 0.01,
+        "total_steps": 1_000,
+        "constant_lr_iterations": 500,
+        "origin": {"kind": "segment_start"},
+    }
+    matrix = _matrix(payload)
+    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    lineages = {
+        row.row_id: CheckpointSegmentLineage(
+            start_batch=12_000,
+            segment_batch_count=1_000,
+            parent_transaction_id="parent",
+        )
+        for row in materialized.rows
+    }
+
+    rendered = render_spec_lock_table(matrix, materialized, segment_lineages=lineages)
+
+    assert "lr_hi LR schedule: batches 12,000 -> 13,000" in rendered
+    assert "lr_lo LR schedule: batches 12,000 -> 13,000" in rendered

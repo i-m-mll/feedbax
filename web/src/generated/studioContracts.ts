@@ -950,9 +950,16 @@ export interface ComponentDefinition {
   representation?: RepresentationSpec | null;
 }
 
+export interface BatchScheduleOriginSpec {
+  kind: "segment_start" | "run_start" | "absolute";
+  batch?: number | null;
+}
+
 export interface LrScheduleSpec {
   schema_id?: "feedbax.spec.training.lr_schedule";
   schema_version?: string;
+  origin: BatchScheduleOriginSpec;
+  allow_inert?: boolean;
   kind?: "constant" | "warmup_cosine" | "delayed_cosine";
   learning_rate_0: number;
   total_steps?: number | null;
@@ -3167,11 +3174,22 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;
 
+export const BatchScheduleOriginSpecSchema: z.ZodType<BatchScheduleOriginSpec> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("segment_start"), z.literal("run_start"), z.literal("absolute")]),
+      "batch": z.number().int().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<BatchScheduleOriginSpec>;
+
 export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.training.lr_schedule").optional(),
       "schema_version": z.string().optional(),
+      "origin": BatchScheduleOriginSpecSchema,
+      "allow_inert": z.boolean().optional(),
       "kind": z.union([z.literal("constant"), z.literal("warmup_cosine"), z.literal("delayed_cosine")]).optional(),
       "learning_rate_0": z.number(),
       "total_steps": z.number().int().nullable().optional(),

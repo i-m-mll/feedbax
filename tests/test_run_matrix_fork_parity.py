@@ -27,6 +27,7 @@ from feedbax.training.run_matrix import (
 from tests.test_run_matrix_materialization import _matrix, _training_run_payload
 from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 from feedbax.training.run_matrix import materialize_run_matrix
+from feedbax.contracts.manifest import canonical_json_bytes
 
 
 def _write_latest(root: Path, *, transaction_id: str, digest: str) -> None:
@@ -74,6 +75,43 @@ def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -
     assert table["matrix_spec_sha256"] == materialized.matrix_spec_sha256
     assert any(row["kind"] == "slot_parity" and row["ok"] for row in table["rows"])
     assert any(row["kind"] == "lr_continuation" for row in table["rows"])
+
+
+def test_fork_path_leaves_typed_schedule_payload_byte_identical(tmp_path: Path) -> None:
+    payload = _training_run_payload()
+    payload["method_payload"]["payload"]["optimizer"]["lr_schedule"] = {
+        "kind": "warmup_cosine",
+        "learning_rate_0": 0.01,
+        "total_steps": 1_000,
+        "constant_lr_iterations": 500,
+        "origin": {"kind": "segment_start"},
+    }
+    spec = _matrix(payload)
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    row = materialized.rows[0]
+    before = canonical_json_bytes(row.payload["method_payload"]["payload"]["optimizer"]["lr_schedule"])
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _write_latest(source, transaction_id="tx-source", digest="same")
+    _write_latest(target, transaction_id="tx-target", digest="same")
+
+    fork_matrix_checkpoints(
+        spec,
+        MaterializedRunMatrix(
+            matrix_spec_sha256=materialized.matrix_spec_sha256,
+            run_set_id=materialized.run_set_id,
+            base_payload=materialized.base_payload,
+            rows=[row],
+            run_set_manifest=materialized.run_set_manifest,
+        ),
+        source_checkpoint_root=source,
+        target_checkpoint_roots={"lr_hi": target},
+        parity_output_path=tmp_path / "parity.json",
+        skip_fork=True,
+    )
+
+    after = canonical_json_bytes(row.payload["method_payload"]["payload"]["optimizer"]["lr_schedule"])
+    assert after == before
 
 
 def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None:
