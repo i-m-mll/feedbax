@@ -133,3 +133,66 @@ assert callable(load_checkpoint_custody_documents)
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_public_execution_preparation_survives_downstream_plugin_import_order(
+    tmp_path: Path,
+):
+    """Reentrant plugin loading must retain the public preparation API."""
+
+    package_root = tmp_path / "rlrmp"
+    train_root = package_root / "train"
+    train_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (train_root / "__init__.py").write_text("", encoding="utf-8")
+    (train_root / "execution_preparation.py").write_text(
+        "from feedbax.training import (\n"
+        "    ExecutionPreparationRegistration,\n"
+        "    ExecutionPreparationRequest,\n"
+        "    ExecutionPreparationResult,\n"
+        ")\n"
+        "assert ExecutionPreparationRegistration is not None\n"
+        "assert ExecutionPreparationRequest is not None\n"
+        "assert ExecutionPreparationResult is not None\n",
+        encoding="utf-8",
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    script = f"""
+import sys
+
+sys.path.insert(0, {str(tmp_path)!r})
+from feedbax.plugins import discovery
+
+
+class RlrmpEntryPoint:
+    name = "rlrmp"
+
+    def load(self):
+        import rlrmp.train.execution_preparation
+        return lambda registry: None
+
+
+discovery.feedbax_plugin_entry_points = lambda _group: [RlrmpEntryPoint()]
+import feedbax.config
+from feedbax.training import (
+    ExecutionPreparationRegistration,
+    ExecutionPreparationRequest,
+    ExecutionPreparationResult,
+)
+
+assert ExecutionPreparationRegistration is not None
+assert ExecutionPreparationRequest is not None
+assert ExecutionPreparationResult is not None
+"""
+    env = dict(os.environ)
+    previous = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(repo_root) + (os.pathsep + previous if previous else "")
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

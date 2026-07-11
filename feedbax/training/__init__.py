@@ -19,6 +19,16 @@ from .checkpoint_custody import (
     structural_abi_fingerprint,
     write_checkpoint_transaction,
 )
+from .preparation import (
+    DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+    ExecutionPreparationError,
+    ExecutionPreparationProvider,
+    ExecutionPreparationProviderRegistry,
+    ExecutionPreparationRegistration,
+    ExecutionPreparationRequest,
+    ExecutionPreparationResult,
+    require_execution_preparation_provider,
+)
 
 try:
     from ..config.hyperparams import load_hps
@@ -34,16 +44,6 @@ try:
         TrainingRunExecutorError,
         execute_training_run_spec,
         load_training_run_spec,
-    )
-    from .preparation import (
-        DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
-        ExecutionPreparationError,
-        ExecutionPreparationProvider,
-        ExecutionPreparationProviderRegistry,
-        ExecutionPreparationRegistration,
-        ExecutionPreparationRequest,
-        ExecutionPreparationResult,
-        require_execution_preparation_provider,
     )
     from .optimizers import (
         OptimizerStateCompatibilityError,
