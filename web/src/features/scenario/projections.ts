@@ -376,9 +376,22 @@ function elementGlobalId(entityId: string, elementId: string): string {
 function twoLinkRestPoints(
   component: ComponentDefinition,
   node: ComponentSpec,
-  linkLengthsBinding: RepresentationBinding
-): Array<[number, number]> {
-  const lengths = numericArray(bindingValue(component, node, linkLengthsBinding)) ?? [0.3, 0.33];
+  linkLengthsBinding: RepresentationBinding,
+  messages: ResolvedSceneValidationMessage[],
+  entityId: string,
+  elementId: string
+): Array<[number, number]> | null {
+  const lengths = numericArray(bindingValue(component, node, linkLengthsBinding));
+  if (!lengths || lengths.length !== 2 || lengths.some((length) => length <= 0)) {
+    messages.push({
+      type: 'workspace_planar_chain_lengths_invalid',
+      severity: 'error',
+      message: `Planar-chain element '${elementId}' requires two positive provider-bound link lengths.`,
+      entity_id: entityId,
+      path: `representation.elements.${elementId}.bindings.link_lengths`,
+    });
+    return null;
+  }
   const angles =
     numericArray(
       valueAtPath(node.params ?? {}, 'joint_angles') ??
@@ -389,12 +402,12 @@ function twoLinkRestPoints(
   const theta0 = angles[0] ?? 0;
   const theta1 = theta0 + (angles[1] ?? 0);
   const elbow: [number, number] = [
-    Math.cos(theta0) * (lengths[0] ?? 0.3),
-    Math.sin(theta0) * (lengths[0] ?? 0.3),
+    Math.cos(theta0) * lengths[0],
+    Math.sin(theta0) * lengths[0],
   ];
   const effector: [number, number] = [
-    elbow[0] + Math.cos(theta1) * (lengths[1] ?? 0.33),
-    elbow[1] + Math.sin(theta1) * (lengths[1] ?? 0.33),
+    elbow[0] + Math.cos(theta1) * lengths[1],
+    elbow[1] + Math.sin(theta1) * lengths[1],
   ];
   return [shoulder, elbow, effector];
 }
@@ -786,9 +799,17 @@ function resolveComponentRepresentation({
     (element) => element.archetype === 'planar_chain'
   );
   const linkLengthsBinding = planarChain?.bindings?.link_lengths;
+  const isTwoLinkChain = planarChain?.metadata?.chain_kind === 'two_link_arm';
   const twoLinkPoints =
-    planarChain?.metadata?.chain_kind === 'two_link_arm'
-      ? twoLinkRestPoints(component, nodeOrTask as ComponentSpec, linkLengthsBinding)
+    isTwoLinkChain && planarChain
+      ? twoLinkRestPoints(
+          component,
+          nodeOrTask as ComponentSpec,
+          linkLengthsBinding,
+          scene.validation,
+          entity.id,
+          planarChain.id
+        )
       : null;
 
   for (const anchor of representation.anchors ?? []) {
@@ -934,7 +955,9 @@ function resolveComponentRepresentation({
     }
     let geometry: ResolvedSceneGeometry = { kind: 'none' };
     if (element.archetype === 'planar_chain') {
-      const points = twoLinkPoints ?? anchorPositionsForElement(component, nodeOrTask, element, localAnchorPositions);
+      const points = isTwoLinkChain
+        ? (twoLinkPoints ?? [])
+        : anchorPositionsForElement(component, nodeOrTask, element, localAnchorPositions);
       geometry = points.length >= 2 ? { kind: 'polyline', points } : { kind: 'none' };
     } else if (element.archetype === 'region') {
       const binding = element.bindings?.bounds;
