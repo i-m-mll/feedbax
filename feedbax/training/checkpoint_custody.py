@@ -886,7 +886,10 @@ def fork_checkpoint_transaction(
         transforms=transforms,
     )
     validation_slots = dict(expected_slots or prepared_slots)
-    request = _coerce_continuation_request(continuation_request)
+    request = _resolve_fork_continuation_request(
+        target_run_spec=target_run_spec,
+        continuation_request=continuation_request,
+    )
     continuation_transformed_slots: set[str] = set()
     if request is not None:
         before_continuation = dict(prepared_slots)
@@ -1465,6 +1468,30 @@ def _apply_declared_continuation_request(
             f"slots={undeclared_slots!r} contract=batch_indexed_leaves"
         )
     return extended
+
+
+def _resolve_fork_continuation_request(
+    *,
+    target_run_spec: TrainingRunSpec,
+    continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None,
+) -> CheckpointContinuationRequest | None:
+    """Resolve the target-bound continuation contract for a checkpoint fork.
+
+    A fork is published under ``target_run_spec`` and therefore must not omit or
+    replace that spec's continuation declaration.  Applying it implicitly here
+    also guarantees that batch-indexed source leaves are extended before an
+    optional target topology transform serializes them.
+    """
+    declared = target_run_spec.checkpoint_progress.continuation
+    supplied = _coerce_continuation_request(continuation_request)
+    if declared is None:
+        return supplied
+    if supplied is not None and supplied != declared:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork continuation request differs from target run spec; "
+            "contract=checkpoint_progress.continuation"
+        )
+    return declared
 
 
 def _extend_declared_batch_leaf(
