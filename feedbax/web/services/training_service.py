@@ -27,6 +27,7 @@ from feedbax.orchestration.bundle import (
     RunRowSpec,
     mint_run_set_id,
 )
+from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
     RUN_EVENT_TERMINAL_TYPES,
@@ -278,7 +279,12 @@ class TrainingService:
         job_id = bundle.rows[0].row_id
         driver = WorkerHttpDriver(base_url=base_url, auth_token=self._auth_token)
         store = RunSetStateStore(bundle.run_set_dir / "state.json")
-        StageEngine(bundle=bundle, driver=driver, store=store).run(stop_after_stage="ASSEMBLE")
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=build_default_check_registry(),
+        ).run(stop_after_stage="ASSEMBLE")
         self._remember_job_ref(bundle)
         thread = threading.Thread(
             target=self._run_stage_engine,
@@ -653,7 +659,12 @@ class TrainingService:
         store: RunSetStateStore,
     ) -> None:
         try:
-            StageEngine(bundle=bundle, driver=driver, store=store).run(break_stale_lock=True)
+            StageEngine(
+                bundle=bundle,
+                driver=driver,
+                store=store,
+                conformance_registry=build_default_check_registry(),
+            ).run(break_stale_lock=True)
         except Exception:
             # The durable state document carries the failed stage/row details.
             return
