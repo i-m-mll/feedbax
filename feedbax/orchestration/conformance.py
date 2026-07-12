@@ -342,9 +342,7 @@ def check_execution_identity(row: ConformanceRowArtifacts) -> CheckEntry:
         "intent_hash": envelope.authored_intent.intent_hash,
         "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
         "execution_hash": envelope.execution_capsule.execution_hash,
-        "input_data_identities": canonicalize_immutable_input_identities(
-            envelope.immutable_inputs
-        ),
+        "input_data_identities": canonicalize_immutable_input_identities(envelope.immutable_inputs),
     }
     try:
         _validate_envelope_artifacts(
@@ -405,9 +403,7 @@ def _validate_envelope_artifacts(
     snapshot = _load_schema_artifact(envelope.resolved_snapshot, registry=schema_registry)
     capsule = _load_schema_artifact(envelope.execution_capsule, registry=schema_registry)
 
-    adapter = identity_adapter or _builtin_identity_adapter(
-        envelope.authored_intent.schema_id
-    )
+    adapter = identity_adapter or _builtin_identity_adapter(envelope.authored_intent.schema_id)
     intent_hash = adapter.intent_hash(authored)
     if intent_hash != envelope.authored_intent.intent_hash:
         raise ValueError(
@@ -817,6 +813,21 @@ def _optimizer_spec_payload(row: ConformanceRowArtifacts) -> Any:
         _path(row.bundle_row_spec, "training_spec", "method_payload", "payload", "optimizer"),
         _path(
             _training_spec_payload(_manifest_payload(row)), "method_payload", "payload", "optimizer"
+        ),
+        _path(row.bundle_row_spec, "method_payload", "payload", "optimizer"),
+        _path(row.bundle_row_spec, "method_payload", "payload", "controller_optimizer"),
+        _path(
+            row.bundle_row_spec,
+            "training_spec",
+            "method_payload",
+            "payload",
+            "controller_optimizer",
+        ),
+        _path(
+            _training_spec_payload(_manifest_payload(row)),
+            "method_payload",
+            "payload",
+            "controller_optimizer",
         ),
     )
 

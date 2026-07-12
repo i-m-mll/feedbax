@@ -267,9 +267,7 @@ def test_core_checks_pass_fail_and_missing_inputs() -> None:
 def test_execution_identity_explicit_empty_inputs_passes(tmp_path: Path) -> None:
     envelope, manifest = _identity_fixture(tmp_path)
 
-    result = check_execution_identity(
-        _row(execution=envelope, manifest_payload=manifest)
-    )
+    result = check_execution_identity(_row(execution=envelope, manifest_payload=manifest))
 
     assert result.status == "pass"
     assert result.expected == result.observed
@@ -299,9 +297,7 @@ def test_execution_identity_reports_authored_intent_mismatch(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("drift", ["root", "inputs"])
-def test_execution_identity_reports_semantic_or_input_drift(
-    tmp_path: Path, drift: str
-) -> None:
+def test_execution_identity_reports_semantic_or_input_drift(tmp_path: Path, drift: str) -> None:
     input_identity = {
         "role": "dataset",
         "kind": "artifact",
@@ -501,6 +497,122 @@ def test_lr_trace_uses_optimizer_builder_resume_context_and_rejects_flat_termina
     failed = check_lr_trace(failing_row)
     assert failed.status == "fail"
     assert failed.observed[100] == pytest.approx(0.02)
+
+
+def test_lr_trace_discovers_controller_optimizer_and_compares_realized_samples() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.1,
+            total_steps=10,
+            constant_lr_iterations=4,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.2,
+        ),
+    ).model_dump(mode="json")
+    bundle_row_spec = {
+        "method_payload": {"payload": {"controller_optimizer": optimizer}},
+        "resume_context": {
+            "schedule_origin_step": 100,
+            "current_step": 100,
+            "optimizer_count_at_current_step": 12_000,
+        },
+    }
+    passing = check_lr_trace(
+        _row(
+            bundle_row_spec=bundle_row_spec,
+            training_diagnostics={"lr_trace": {100: 0.01, 104: 0.1, 110: 0.02}},
+        )
+    )
+    mismatched = check_lr_trace(
+        _row(
+            bundle_row_spec=bundle_row_spec,
+            training_diagnostics={"lr_trace": {100: 0.01, 104: 0.05, 110: 0.02}},
+        )
+    )
+
+    assert passing.status == "pass"
+    assert passing.expected == pytest.approx({100: 0.01, 104: 0.1, 110: 0.02})
+    assert passing.observed == pytest.approx({100: 0.01, 104: 0.1, 110: 0.02})
+    assert mismatched.status == "fail"
+    assert mismatched.expected[104] == pytest.approx(0.1)
+    assert mismatched.observed[104] == pytest.approx(0.05)
+
+
+@pytest.mark.parametrize(
+    "optimizer_location",
+    [
+        "optimizer",
+        "optimizer_spec",
+        "training.optimizer",
+        "training_spec.method_payload.payload.optimizer",
+        "manifest.training_spec.method_payload.payload.optimizer",
+    ],
+)
+def test_lr_trace_legacy_optimizer_locations_remain_supported(optimizer_location: str) -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.1,
+            total_steps=10,
+            constant_lr_iterations=4,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.2,
+        ),
+    ).model_dump(mode="json")
+    resume_context = {
+        "schedule_origin_step": 100,
+        "current_step": 100,
+        "optimizer_count_at_current_step": 12_000,
+    }
+    bundle_row_spec: dict[str, object] = {"resume_context": resume_context}
+    manifest_payload = None
+    if optimizer_location == "optimizer":
+        bundle_row_spec["optimizer"] = optimizer
+    elif optimizer_location == "optimizer_spec":
+        bundle_row_spec["optimizer_spec"] = optimizer
+    elif optimizer_location == "training.optimizer":
+        bundle_row_spec["training"] = {"optimizer": optimizer}
+    elif optimizer_location == "training_spec.method_payload.payload.optimizer":
+        bundle_row_spec["training_spec"] = {"method_payload": {"payload": {"optimizer": optimizer}}}
+    else:
+        manifest_payload = {
+            "training_spec": {"inline": {"method_payload": {"payload": {"optimizer": optimizer}}}}
+        }
+
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec=bundle_row_spec,
+            manifest_payload=manifest_payload,
+            training_diagnostics={"lr_trace": {100: 0.01, 104: 0.1, 110: 0.02}},
+        )
+    )
+
+    assert result.status == "pass"
+
+
+def test_lr_trace_without_optimizer_fails_closed_as_missing_input() -> None:
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={
+                "resume_context": {
+                    "schedule_origin_step": 100,
+                    "current_step": 100,
+                    "optimizer_count_at_current_step": 12_000,
+                }
+            },
+            training_diagnostics={"lr_trace": {100: 0.01, 104: 0.1, 110: 0.02}},
+        )
+    )
+
+    assert result.status == "fail"
+    assert result.expected == {"required": ["bundle_row_spec optimizer spec"]}
+    assert result.observed is None
+    assert result.detail == "missing required input: bundle_row_spec optimizer spec"
 
 
 def test_plugin_check_discovery_and_failure_propagation() -> None:
