@@ -585,6 +585,15 @@ class StageEngine:
         stage = state.stage(STAGE_TEARDOWN)
         if stage.status == "completed":
             return state
+        if abort:
+            collect_failure_logs = getattr(self.driver, "collect_failure_logs", None)
+            if collect_failure_logs is not None:
+                try:
+                    collect_failure_logs(self.bundle, state)
+                except Exception:
+                    # Failure diagnostics are best-effort and must never mask
+                    # the error that caused abort teardown.
+                    pass
         try:
             outputs = dict(self.driver.teardown(self.bundle, state))
             status = "completed"
