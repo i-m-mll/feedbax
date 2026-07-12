@@ -135,7 +135,7 @@ class SubprocessRunPodTransport:
         rsync_source = source
         if not source_is_local and _looks_remote_path(source):
             rsync_source = f"{host}:{source}"
-        args = ["rsync", "-az", "--no-owner", "--no-group", "--stats"]
+        args = ["rsync", "-az", "--no-owner", "--no-group", "--progress", "--stats"]
         if delete:
             args.append("--delete")
         for exclude in excludes:
@@ -804,12 +804,14 @@ def rank_datacenters_for_gpu(
         dc_id = _string_or_none(dc.get("id"))
         if not dc_id:
             continue
+        score: int | None = None
         for availability in dc.get("gpuAvailability") or ():
             if not isinstance(availability, Mapping) or availability.get("gpuId") != gpu_id:
                 continue
-            score = rank.get(str(availability.get("stockStatus")), 0)
-            if score > 0:
-                candidates.append((-score, dc_id))
+            availability_score = rank.get(str(availability.get("stockStatus")), 0)
+            score = availability_score if score is None else max(score, availability_score)
+        if score is not None:
+            candidates.append((-score, dc_id))
     return [dc_id for _, dc_id in sorted(candidates)]
 
 

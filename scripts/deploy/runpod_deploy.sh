@@ -947,7 +947,7 @@ rsync_repo() {
     local rsh
     [ -d "$source" ] || die "$name source directory not found: $source"
     rsh=$(rsync_rsh)
-    run_cmd rsync -az --delete --no-owner --no-group --stats \
+    run_cmd rsync -az --delete --no-owner --no-group --progress --stats \
         --exclude .git \
         --exclude .venv \
         --exclude /_artifacts \
