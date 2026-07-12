@@ -1129,6 +1129,7 @@ main() {
     apply_path_patches
     bootstrap_remote_env_for_pod
     verify_remote_device
+    verify_remote_resumes
     write_run_config
     sync_run_config
     sync_train_spec

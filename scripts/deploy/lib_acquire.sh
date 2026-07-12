@@ -110,8 +110,9 @@ classify_pod_state() {
 
 # rank_datacenters_for_gpu <gpu_id>  (datacenter-list JSON on stdin)
 # Prints candidate DC ids, best stock first, one per line. stockStatus order is
-# High > Medium > Low; "" / missing is excluded (no stock). Null gpuAvailability
-# entries are skipped safely.
+# High > Medium > Low > unknown/empty. Unknown stock remains a last-choice
+# candidate because RunPod's inventory response can lag actual capacity. Null
+# gpuAvailability entries are skipped safely.
 rank_datacenters_for_gpu() {
     local gpu_id=$1
     jq -r --arg gpu "$gpu_id" '
@@ -126,7 +127,6 @@ rank_datacenters_for_gpu() {
              | select(.gpuId == $gpu)
              | { id: $dc.id, stock: .stockStatus, rank: (.stockStatus | rank) })
         ]
-        | map(select(.rank > 0))
         | sort_by(-.rank)
         | .[].id
     '
@@ -257,6 +257,25 @@ validate_rows_manifest() {
     fi
     printf 'ok %s\n' "$(printf '%s' "$manifest" | jq -r '.rows | length')"
     return 0
+}
+
+# validate_train_spec_rows  (train-spec JSON on stdin)
+# Train-spec row summaries may be row-id strings or row objects. Reject other
+# shapes with a stable schema name before downstream jq filters inspect fields.
+validate_train_spec_rows() {
+    jq -er '
+        if (has("rows") | not) then "ok"
+        elif (.rows | type) != "array" then
+          error("train_spec_rows_schema: rows must be an array")
+        elif any(.rows[]; type != "string" and type != "object") then
+          error("train_spec_rows_schema: each row must be a string id or object")
+        elif any(.rows[]; type == "string" and length == 0) then
+          error("train_spec_rows_schema: string row ids must not be empty")
+        elif any(.rows[]; type == "object" and ((.id // "") | tostring | length) == 0) then
+          error("train_spec_rows_schema: object rows require id")
+        else "ok"
+        end
+    ' >/dev/null
 }
 
 # rows_manifest_ids  (manifest JSON on stdin) -> one id per line, in order.
