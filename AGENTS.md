@@ -175,28 +175,25 @@ Both must be running for full functionality.
 
 ### Cloud/Remote Training Practices
 
-- For Feedbax/RLRMP RunPod work, use the repository scripts first:
-  `scripts/deploy/runpod_deploy.sh` for deployment/training launch and
-  `scripts/deploy/poll_run.sh` for status polling. These scripts encode the
-  expected pod creation/reuse, Docker tag checks, train-spec confirmation gate,
-  SSH and GPU readiness checks, rsync paths, local editable path patching,
-  CUDA JAX bootstrapping, remote GPU/JAX verification, train-spec sync, and
-  sentinel/nohup launch behavior.
-- Normal RunPod workflow is acquire first, deploy second. Use
-  `scripts/deploy/runpod_deploy.sh --acquire-only` to create or attach to a pod,
-  prove the direct `.ssh` endpoint with `~/.runpod/ssh/RunPod-Key-Go`, and
-  verify `nvidia-smi` before any rsync, bootstrap, or training launch. If a
-  direct endpoint is already known, pass `--ssh-host` and `--ssh-port` so the
-  script skips endpoint discovery while still proving GPU readiness.
+- For Feedbax RunPod training, use the orchestration core as the primary paved
+  road: run `feedbax-orchestrate preflight --assembly-request <path>` as the
+  non-billable gate, then `feedbax-orchestrate launch --assembly-request <path>
+  --driver runpod`. Monitor through `feedbax-orchestrate status` or
+  `feedbax-orchestrate watch`. Downstream RLRMP launches route through RLRMP's
+  `scripts/launch_training.py execute`, not the Feedbax deploy scripts.
+- Normal RunPod workflow remains acquire first, deploy second. The RunPod
+  driver enforces this discipline by completing preflight checks before pod
+  creation, then proving endpoint and GPU readiness before deployment and
+  training launch.
+- Keep `scripts/deploy/runpod_deploy.sh` and `scripts/deploy/poll_run.sh` as
+  legacy/parity references for debugging and script-refactor work; they are no
+  longer the primary launch or monitoring interface.
 - Treat hand-rolled `runpodctl` calls, custom SSH readiness loops, ad hoc
   rsync/path patching, manual CUDA JAX install steps, direct nohup/sentinel
   launch snippets, and bespoke polling cadence instructions as fallback,
-  debugging, or script-refactor context. If the scripts miss a required
-  Feedbax/RLRMP RunPod case, improve the script rather than bypassing it
-  long-term.
-- Use `scripts/deploy/poll_run.sh` wherever possible for RunPod monitoring; it
-  owns the default early/steady polling cadence and deterministic status-line
-  output expected by agents.
+  debugging, or script-refactor context. If the orchestration core misses a
+  required Feedbax/RLRMP RunPod case, improve the orchestration path rather than
+  bypassing it long-term.
 - Never kill processes on TPU VMs via SSH; `kill`, `pkill`, or signals sent
   during SSH commands can disrupt the SSH session itself. If a process has
   crashed, clear `/tmp/libtpu_lockfile` and launch a new one.
