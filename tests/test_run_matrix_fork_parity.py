@@ -352,7 +352,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     """A continuation can cross barriers only through a declared mapping."""
     continuation = CheckpointContinuationRequest(
         source_completed_batches=12000,
-        additional_batches=200,
+        additional_batches=4500,
     )
     source_spec = _run_spec(minimax=True).model_copy(
         update={
@@ -416,7 +416,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     )
     target_slots = _minimax_slots()
     target_slots["controller"] = BatchHistory(
-        jnp.full((5, 200), -1.0, dtype=jnp.float32)
+        jnp.full((5, 4500), -1.0, dtype=jnp.float32)
     )
     target_coordinate = ProgressCoordinate(
         run_id="run-1",
@@ -457,7 +457,13 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     assert resumed.manifest.fork_provenance is not None
     assert resumed.manifest.fork_provenance.barrier_mapping == barrier_mapping
     assert resumed.manifest.segment_lineage.start_batch == 12000
-    assert resumed.manifest.segment_lineage.segment_batch_count == 200
+    assert resumed.manifest.segment_lineage.segment_batch_count == 4500
+    assert resumed.manifest.completed_training_batches == 16500
+    assert resumed.manifest.metadata["checkpoint_continuation"] == continuation.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    assert resumed.manifest.metadata["checkpoint_continuation_applied"] is True
     assert jnp.all(resumed.slots["controller"].value == -1.0)
 
 

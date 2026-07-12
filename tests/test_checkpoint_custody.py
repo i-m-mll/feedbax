@@ -897,6 +897,7 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
                 "parameters": {"from": 2, "to": 3},
             }
         },
+        metadata={"checkpoint_continuation_applied": True},
     )
 
     assert forked.slot_transfer_modes["controller"] == "serialized"
@@ -927,6 +928,7 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     assert controller_provenance.transform is not None
     assert controller_provenance.transform.identity == "test:resize_controller"
     assert controller_provenance.transform.parameters == {"from": 2, "to": 3}
+    assert "checkpoint_continuation_applied" not in forked.manifest.metadata
 
 
 def test_checkpoint_fork_fails_closed_on_source_blob_hash_mismatch(
