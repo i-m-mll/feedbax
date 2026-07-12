@@ -96,9 +96,9 @@ def extract_optimizer_build_context(
 ) -> dict[str, Any]:
     """Extract the explicit context the run path declares for optimizer construction.
 
-    If no separate build context is declared, the row's resume context is the
-    construction context. Tests can expose dropped or mis-wired context by
-    supplying one of these explicit build-context payloads with different values.
+    The executor's construction context must be recorded separately from the
+    declared resume context. Falling back to the declaration would turn this
+    check into a self-comparison and conceal dropped or mis-wired context.
     """
     raw = _first_present(
         _path(bundle_row_spec, "optimizer_build_context"),
@@ -110,7 +110,11 @@ def extract_optimizer_build_context(
         _MISSING,
     )
     if raw is _MISSING:
-        return extract_resume_context(bundle_row_spec, training_diagnostics)
+        return {
+            "schedule_origin_step": _MISSING,
+            "current_step": _MISSING,
+            "optimizer_count_at_current_step": _MISSING,
+        }
     return {
         "schedule_origin_step": _path(raw, "schedule_origin_step"),
         "current_step": _path(raw, "current_step"),

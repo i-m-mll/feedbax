@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from feedbax.contracts.migrations import default_spec_registry
 from feedbax.orchestration import (
     STAGE_ORDER,
     LocalOrchestrationDriver,
@@ -30,6 +31,8 @@ from feedbax.orchestration import (
     StateLockError,
 )
 from feedbax.orchestration.bundle import default_orchestration_root
+from feedbax.orchestration.conformance import build_default_check_registry
+from feedbax.orchestration.drivers.runpod import RunPodDriverConfig, RunPodOrchestrationDriver
 from feedbax.orchestration.stages import (
     BudgetExceeded,
     PreflightFailed,
@@ -85,6 +88,17 @@ def build_parser() -> argparse.ArgumentParser:
     launch = subparsers.add_parser("launch", help="Launch or resume a run bundle")
     launch.add_argument("--bundle", required=True, help="RunBundle JSON path")
     launch.add_argument("--driver", choices=["local", "runpod"], help="Driver override")
+    launch.add_argument(
+        "--deadman",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override the bundle dead-man switch policy",
+    )
+    launch.add_argument(
+        "--deadman-silence-seconds",
+        type=int,
+        help="Override the bundle dead-man silence threshold",
+    )
     launch.add_argument("--resume-run-set", help="Resume an existing run-set id")
     launch.set_defaults(func=cmd_launch)
 
@@ -114,9 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_preflight(args: argparse.Namespace) -> int:
     bundle = _load_bundle(args.bundle)
     try:
-        state = StageEngine(bundle=bundle, driver=_driver_for_bundle(bundle)).run(
-            stop_after_stage="PREFLIGHT"
-        )
+        state = StageEngine(
+            bundle=bundle,
+            driver=_driver_for_bundle(bundle),
+            conformance_registry=build_default_check_registry(),
+        ).run(stop_after_stage="PREFLIGHT")
     except PreflightFailed:
         state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
     checks = state.stage("PREFLIGHT").checks or run_preflight_checks(bundle)
@@ -130,6 +146,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
     bundle = _load_launch_bundle(args.bundle, args.resume_run_set)
     if args.driver:
         bundle = bundle.model_copy(update={"driver": args.driver})
+    overrides: dict[str, Any] = {}
+    if args.deadman is not None:
+        overrides["deadman_enabled"] = args.deadman
+    if args.deadman_silence_seconds is not None:
+        overrides["deadman_silence_seconds"] = args.deadman_silence_seconds
+    if overrides:
+        bundle = RunBundle.model_validate({**bundle.model_dump(mode="json"), **overrides})
     with RunInterruptionController() as interruption:
         state = _run_engine(bundle, interruption_probe=interruption.poll)
     return _state_exit_code(state)
@@ -223,7 +246,12 @@ def _run_engine(
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
 ) -> RunSetState:
     driver = _driver_for_bundle(bundle)
-    state = StageEngine(bundle=bundle, driver=driver, interruption_probe=interruption_probe).run(
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=build_default_check_registry(),
+        interruption_probe=interruption_probe,
+    ).run(
         break_stale_lock=break_stale_lock,
         stop_after_stage=stop_after_stage,
     )
@@ -248,19 +276,46 @@ def _run_existing(
     )
 
 
-def _driver_for_bundle(bundle: RunBundle) -> LocalOrchestrationDriver:
+def _driver_for_bundle(bundle: RunBundle) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
     if bundle.driver == "local":
         return LocalOrchestrationDriver()
     if bundle.driver == "runpod":
-        raise RuntimeError(
-            "RunPod orchestration is gated on issue 0ab7d01 driver parity; "
-            "use --driver local on this branch."
-        )
+        return RunPodOrchestrationDriver(config=_runpod_config_for_bundle(bundle))
     raise RuntimeError(f"Unsupported orchestration driver: {bundle.driver!r}")
 
 
 def _load_bundle(path: str | Path) -> RunBundle:
-    return RunBundle.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    migrated = default_spec_registry.migrate("RunBundle", payload)
+    return RunBundle.model_validate(migrated.payload)
+
+
+def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
+    metadata = bundle.environment.metadata
+    raw_patches = metadata.get("runpod_path_patches", ())
+    path_patches = tuple(
+        (str(item["remote_file"]), str(item["from"]), str(item["to"])) for item in raw_patches
+    )
+    return RunPodDriverConfig(
+        pod_id=_optional_string(metadata.get("runpod_pod_id")),
+        ssh_host=_optional_string(metadata.get("runpod_ssh_host")),
+        ssh_port=(int(metadata["runpod_ssh_port"]) if metadata.get("runpod_ssh_port") else None),
+        gpu_id=_optional_string(metadata.get("runpod_gpu_id")),
+        datacenters=tuple(str(item) for item in metadata.get("runpod_datacenters", ())),
+        min_balance_usd=float(metadata.get("runpod_min_balance_usd", 5.0)),
+        image=bundle.environment.image_id or "runpod/pytorch:latest",
+        local_repos={
+            str(name): str(path) for name, path in metadata.get("runpod_local_repos", {}).items()
+        },
+        remote_repos={
+            str(name): str(path) for name, path in metadata.get("runpod_remote_repos", {}).items()
+        },
+        path_patches=path_patches,
+    )
+
+
+def _optional_string(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None
 
 
 def _load_launch_bundle(path: str | Path, resume_run_set: str | None) -> RunBundle:

@@ -897,6 +897,7 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
                 "parameters": {"from": 2, "to": 3},
             }
         },
+        metadata={"checkpoint_continuation_applied": True},
     )
 
     assert forked.slot_transfer_modes["controller"] == "serialized"
@@ -927,6 +928,7 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     assert controller_provenance.transform is not None
     assert controller_provenance.transform.identity == "test:resize_controller"
     assert controller_provenance.transform.parameters == {"from": 2, "to": 3}
+    assert "checkpoint_continuation_applied" not in forked.manifest.metadata
 
 
 def test_checkpoint_fork_fails_closed_on_source_blob_hash_mismatch(
@@ -1535,6 +1537,73 @@ def test_checkpoint_continuation_v1_is_explicitly_rejected() -> None:
                 "additional_batches": 200,
             }
         )
+
+
+def test_continuation_applied_marker_absent_or_false_requires_allocation() -> None:
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12_000,
+        additional_batches=4_500,
+    )
+
+    for marker in (None, False):
+        metadata = {} if marker is None else {"checkpoint_continuation_applied": marker}
+        manifest = type("Manifest", (), {"metadata": metadata})()
+        assert custody_module._continuation_was_applied(manifest, request) is False
+
+
+@pytest.mark.parametrize("marker", ["true", 1, 0])
+def test_continuation_applied_marker_rejects_non_boolean_true(marker: object) -> None:
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12_000,
+        additional_batches=4_500,
+    )
+    manifest = type(
+        "Manifest",
+        (),
+        {
+            "metadata": {
+                "checkpoint_continuation_applied": marker,
+                "checkpoint_continuation": request.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                ),
+            }
+        },
+    )()
+
+    with pytest.raises(CheckpointCompatibilityError, match="must be boolean true"):
+        custody_module._continuation_was_applied(manifest, request)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "error"),
+    [
+        (None, "recorded request is missing"),
+        ({"schema_version": "invalid"}, "recorded request is invalid"),
+        (
+            CheckpointContinuationRequest(
+                source_completed_batches=12_000,
+                additional_batches=4_499,
+            ).model_dump(mode="json", exclude_none=True),
+            "does not match the already-applied fork contract",
+        ),
+    ],
+)
+def test_continuation_applied_marker_rejects_missing_invalid_or_mismatched_request(
+    recorded: object,
+    error: str,
+) -> None:
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12_000,
+        additional_batches=4_500,
+    )
+    metadata = {"checkpoint_continuation_applied": True}
+    if recorded is not None:
+        metadata["checkpoint_continuation"] = recorded
+    manifest = type("Manifest", (), {"metadata": metadata})()
+
+    with pytest.raises(CheckpointCompatibilityError, match=error):
+        custody_module._continuation_was_applied(manifest, request)
 
 
 def test_resume_slot_transform_that_drops_required_slot_fails_closed(

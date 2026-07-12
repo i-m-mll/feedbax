@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import subprocess
@@ -15,6 +16,7 @@ from feedbax.orchestration import conformance, schedule_eval, stages
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
+    RUN_BUNDLE_SCHEMA_VERSION_V1,
     BudgetPolicy,
     EnvironmentDeclaration,
     LaunchPolicy,
@@ -22,7 +24,11 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
 )
-from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
+from feedbax.orchestration.conformance import (
+    CheckEntry,
+    CheckRegistry,
+    build_default_check_registry,
+)
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.local import (
     LocalDriverError,
@@ -140,6 +146,12 @@ def _schedule_context(
     }
 
 
+def _fixture_pass_registry() -> CheckRegistry:
+    return CheckRegistry(
+        {"fixture_pass": lambda _row: CheckEntry(check_id="fixture_pass", status="pass")}
+    )
+
+
 def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     old = RunSetState(run_set_id="set", rows={"row": RowState(status="pending")})
@@ -171,6 +183,14 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     assert (
         default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
+    v1_payload = _bundle(tmp_path).model_dump(mode="json")
+    v1_payload["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V1
+    v1_payload.pop("deadman_enabled")
+    v1_payload.pop("deadman_silence_seconds")
+    migrated = default_spec_registry.migrate("RunBundle", v1_payload)
+    assert migrated.payload["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION
+    assert migrated.payload["deadman_enabled"] is False
+    assert migrated.payload["deadman_silence_seconds"] == 1800
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
             "RunBundle",
@@ -186,10 +206,20 @@ def test_stage_engine_resumes_from_every_stage_boundary(
     bundle = _bundle(tmp_path)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     first_driver = FakeDriver()
-    StageEngine(bundle=bundle, driver=first_driver, store=store).run(stop_after_stage=stop_after)
+    StageEngine(
+        bundle=bundle,
+        driver=first_driver,
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    ).run(stop_after_stage=stop_after)
 
     resumed_driver = FakeDriver()
-    state = StageEngine(bundle=bundle, driver=resumed_driver, store=store).run()
+    state = StageEngine(
+        bundle=bundle,
+        driver=resumed_driver,
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    ).run()
 
     assert state.stage("REGISTER").status == "completed"
     if stop_after in (
@@ -210,7 +240,12 @@ def test_stage_retry_accounting_and_abort_teardown(tmp_path: Path) -> None:
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     retry_driver = FakeDriver(fail={"provision": 2})
 
-    state = StageEngine(bundle=bundle, driver=retry_driver, store=store).run()
+    state = StageEngine(
+        bundle=bundle,
+        driver=retry_driver,
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    ).run()
 
     assert state.stage("PROVISION").attempts == 3
     assert retry_driver.calls.count("provision") == 3
@@ -356,6 +391,7 @@ def test_preflight_schedule_realization_passes_correct_resume_context(tmp_path: 
                 run_spec={
                     "optimizer": _scheduled_optimizer_payload(),
                     "resume_context": resume_context,
+                    "optimizer_build_context": resume_context,
                 },
             )
         ],
@@ -408,6 +444,121 @@ def test_schedule_preflight_and_conformance_share_schedule_eval_helper() -> None
     assert stages.schedule_eval is schedule_eval
 
 
+def test_production_stage_engine_call_sites_supply_nonempty_registry() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    for relative in (
+        "feedbax/bin/orchestrate.py",
+        "feedbax/web/services/training_service.py",
+    ):
+        tree = ast.parse((repo_root / relative).read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "StageEngine"
+        ]
+        assert calls, relative
+        for call in calls:
+            registry = next(
+                (
+                    keyword.value
+                    for keyword in call.keywords
+                    if keyword.arg == "conformance_registry"
+                ),
+                None,
+            )
+            assert isinstance(registry, ast.Call), f"{relative}:{call.lineno}"
+            assert isinstance(registry.func, ast.Name), f"{relative}:{call.lineno}"
+            assert registry.func.id == "build_default_check_registry", f"{relative}:{call.lineno}"
+
+
+def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
+    tmp_path: Path,
+) -> None:
+    run_spec = {
+        "optimizer": _scheduled_optimizer_payload(),
+        "resume_context": _schedule_context(
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
+        ),
+        "optimizer_build_context": _schedule_context(
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
+        ),
+        "n_batches": 3500,
+        "checkpoint_interval": 500,
+        "seeds": {"controller": 7},
+    }
+    row = RunRowSpec(row_id="rewarm", command=[sys.executable, "-c", "pass"], run_spec=run_spec)
+    bundle = _bundle(tmp_path, rows=[row], run_set_id="negative-canary")
+    collected = bundle.run_set_dir / "collected" / row.row_id
+    collected.mkdir(parents=True)
+    manifest = collected / "training_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "kind": "TrainingRunManifest",
+                "metadata": {
+                    "environment_fingerprint": "fake-fingerprint",
+                    "seeds": {"controller": 7},
+                },
+                "training_spec": {"inline": run_spec},
+                "summary_metrics": {"completed_batches": 3500},
+            }
+        ),
+        encoding="utf-8",
+    )
+    diagnostics = collected / "training_diagnostics.json"
+    diagnostics.write_text(
+        json.dumps(
+            {
+                "completed_batches": 3500,
+                "checkpoint_coordinates": list(range(500, 3501, 500)),
+                "lr_trace": {"0": 3e-5, "500": 3e-5, "3500": 3e-5},
+                "optimizer_build_context": run_spec["optimizer_build_context"],
+                "resume_context": run_spec["resume_context"],
+                "seeds": {"controller": 7},
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = bundle.run_set_dir / "events"
+    events.mkdir(parents=True)
+    (events / "rewarm.events.jsonl").write_text('{"type":"complete"}\n', encoding="utf-8")
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="fake-fingerprint",
+        rows={
+            row.row_id: RowState(
+                status="completed",
+                collected_outputs={
+                    manifest.name: str(manifest),
+                    diagnostics.name: str(diagnostics),
+                },
+            )
+        },
+    )
+
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=build_default_check_registry(include_plugins=False),
+    )
+    _state, outputs = engine._stage_certify(state)
+    certificate = json.loads((bundle.run_set_dir / "conformance.json").read_text())
+    checks = {entry["check_id"]: entry for entry in certificate["rows"]["rewarm"]["checks"]}
+
+    assert outputs["overall"] == "fail"
+    assert set(checks) == {
+        check_id for check_id, _check in build_default_check_registry(include_plugins=False).items()
+    }
+    assert all(entry["status"] in {"pass", "fail"} for entry in checks.values())
+    assert checks["lr_trace"]["status"] == "fail"
+
+
 def test_local_driver_warm_first_max_parallel_budget_and_demo(tmp_path: Path) -> None:
     script = tmp_path / "row_script.py"
     script.write_text(
@@ -446,6 +597,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     state = StageEngine(
         bundle=bundle,
         driver=LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",)),
+        conformance_registry=_fixture_pass_registry(),
         poll_interval_seconds=0.01,
     ).run()
 
@@ -473,6 +625,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     budget_state = StageEngine(
         bundle=budget_bundle,
         driver=LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",)),
+        conformance_registry=_fixture_pass_registry(),
         poll_interval_seconds=0.01,
     ).run()
 
@@ -758,6 +911,7 @@ def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> 
         bundle=bundle,
         driver=driver,
         store=store,
+        conformance_registry=_fixture_pass_registry(),
         poll_interval_seconds=0.01,
     ).run()
 

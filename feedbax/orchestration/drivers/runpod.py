@@ -11,14 +11,16 @@ import json
 import shlex
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.state import RunSetState
+from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 
 
 RUNPOD_CODE_EXCLUDES = (
@@ -71,6 +73,9 @@ class RunPodTransport(Protocol):
     def runpodctl(self, *args: str) -> CommandResult:
         """Run a ``runpodctl`` command."""
 
+    def image_exists(self, image: str) -> bool:
+        """Return whether a declared container image tag exists."""
+
     def ssh(self, command: str) -> CommandResult:
         """Run one command over SSH on the pod."""
 
@@ -98,6 +103,18 @@ class SubprocessRunPodTransport:
     def runpodctl(self, *args: str) -> CommandResult:
         return _run_command([self.runpodctl_executable, *args])
 
+    def image_exists(self, image: str) -> bool:
+        repository, separator, tag = image.rpartition(":")
+        if not separator or not repository or not tag or "/" not in repository:
+            return False
+        namespace, name = repository.split("/", 1)
+        url = f"https://hub.docker.com/v2/repositories/{namespace}/{name}/tags/{tag}"
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                return 200 <= response.status < 300
+        except (urllib.error.URLError, TimeoutError):
+            return False
+
     def ssh(self, command: str) -> CommandResult:
         host = self._require_host()
         return _run_command([*self._ssh_base(detach_stdin=True), host, command])
@@ -118,7 +135,7 @@ class SubprocessRunPodTransport:
         rsync_source = source
         if not source_is_local and _looks_remote_path(source):
             rsync_source = f"{host}:{source}"
-        args = ["rsync", "-az", "--no-owner", "--no-group", "--stats"]
+        args = ["rsync", "-az", "--no-owner", "--no-group", "--progress", "--stats"]
         if delete:
             args.append("--delete")
         for exclude in excludes:
@@ -209,15 +226,15 @@ class RunPodDriverConfig:
     remote_artifacts_dir: str = "/workspace/_artifacts"
     local_repos: Mapping[str, Path | str] = field(default_factory=dict)
     remote_repos: Mapping[str, str] = field(default_factory=dict)
-    path_patches: tuple[tuple[str, str], ...] = ()
+    path_patches: tuple[tuple[str, str, str], ...] = ()
     overlay_steps: tuple[str, ...] = ("uv pip install -U 'jax[cuda12]'",)
     auto_teardown: bool = True
-    deadman_enabled: bool = False
-    deadman_silence_seconds: int = 1800
 
 
 class RunPodOrchestrationDriver:
     """Synchronous RunPod implementation of the orchestration driver protocol."""
+
+    poll_interval_seconds = 5.0
 
     def __init__(
         self,
@@ -234,6 +251,7 @@ class RunPodOrchestrationDriver:
         )
         self._sleep = sleep
         self._monotonic = monotonic
+        self._preflight_passed = False
         self._pod_id = self.config.pod_id
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
         self._endpoint: EndpointClassification | None = (
@@ -258,16 +276,88 @@ class RunPodOrchestrationDriver:
             pod = self._pod_get(self._pod_id)
             endpoint = self._wait_for_endpoint(self._pod_id, pod)
             self._endpoint = endpoint
+            self._configure_subprocess_endpoint(endpoint)
             self._require_gpu_ready()
             return self._provision_record(pod, provided_pod=True)
 
-        self._check_balance_floor()
+        if not self._preflight_passed:
+            raise RunPodDriverError(
+                "RunPod creation requires passing named driver PREFLIGHT checks first"
+            )
         pod_id = self._create_pod(bundle)
         self._pod_id = pod_id
         pod = self._pod_get(pod_id)
         self._endpoint = self._wait_for_endpoint(pod_id, pod)
+        self._configure_subprocess_endpoint(self._endpoint)
         self._require_gpu_ready()
         return self._provision_record(pod, provided_pod=False)
+
+    def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
+        """Run named, non-mutating RunPod checks before any billable action."""
+        checks: list[PreflightCheckEntry] = []
+        image = bundle.environment.image_id or self.config.image
+        image_exists = self.transport.image_exists(image)
+        checks.append(_preflight_check("runpod-image-tag-exists", image_exists, observed=image))
+
+        gpu_policy = bool(self._provided_endpoint or self._pod_id or self.config.gpu_id)
+        checks.append(
+            _preflight_check(
+                "runpod-gpu-policy-declared",
+                gpu_policy,
+                observed={
+                    "gpu_id": self.config.gpu_id,
+                    "datacenter_fallbacks": list(self.config.datacenters),
+                    "provided_target": bool(self._provided_endpoint or self._pod_id),
+                },
+            )
+        )
+
+        credentials_required = not self._provided_endpoint or bundle.deadman_enabled
+        user_result = (
+            self.transport.runpodctl("user", "--output", "json")
+            if credentials_required
+            else CommandResult(0, '{"provided_endpoint": true}')
+        )
+        credentials_ok = user_result.returncode == 0
+        checks.append(
+            _preflight_check(
+                "runpod-credentials",
+                credentials_ok,
+                detail=None if credentials_ok else (user_result.stderr or user_result.stdout),
+                observed="verified" if credentials_required else "not-required-provided-endpoint",
+            )
+        )
+
+        balance_required = not self._provided_endpoint and not self._pod_id
+        try:
+            user_payload = _json_object(user_result.stdout) if credentials_ok else {}
+        except RunPodDriverError:
+            user_payload = {}
+            credentials_ok = False
+            checks[-1] = _preflight_check(
+                "runpod-credentials",
+                False,
+                detail="runpodctl user returned invalid JSON",
+                observed="invalid-response",
+            )
+        balance = user_balance(user_payload)
+        balance_ok = not balance_required or (
+            balance is not None and balance >= self.config.min_balance_usd
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-balance-floor",
+                balance_ok,
+                detail=(
+                    None
+                    if balance_ok
+                    else f"RunPod balance must be at least {self.config.min_balance_usd:g}"
+                ),
+                observed=balance if balance_required else "not-required-existing-target",
+            )
+        )
+        self._preflight_passed = all(check.status == "pass" for check in checks)
+        return checks
 
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
@@ -276,6 +366,7 @@ class RunPodOrchestrationDriver:
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} {_sq(remote_run_dir + '/logs')}"
         )
+        self._ensure_deadman(bundle)
         if self._should_reuse_remote_environment(bundle, fingerprint):
             return fingerprint
 
@@ -284,12 +375,8 @@ class RunPodOrchestrationDriver:
             self._ssh(f"mkdir -p {_sq(remote_root)}")
             self._rsync_repo(str(Path(local_root)), remote_root)
 
-        for patch_from, patch_to in self.config.path_patches:
-            self._ssh(
-                build_literal_path_patch_command(
-                    patch_from, patch_to, self._remote_repos().values()
-                )
-            )
+        for remote_file, patch_from, patch_to in self.config.path_patches:
+            self._ssh(build_literal_path_patch_command(remote_file, patch_from, patch_to))
 
         sentinel_dir = self._remote_sentinel_dir(bundle)
         logs_dir = f"{remote_run_dir}/logs"
@@ -366,16 +453,6 @@ class RunPodOrchestrationDriver:
             jax_cache_dir=f"{self.config.volume_mount}/jax_cache",
         )
         self._ssh(command)
-        if self.config.deadman_enabled and not bundle.keep_alive:
-            self._ssh(
-                build_deadman_watchdog_command(
-                    pod_id=self._pod_id or "",
-                    remote_run_dir=self._remote_run_dir(bundle),
-                    remote_sentinel_dir=self._remote_sentinel_dir(bundle),
-                    events_dir=self._remote_events_dir(bundle),
-                    silence_seconds=self.config.deadman_silence_seconds,
-                )
-            )
         pid = self._read_remote_pid(bundle, row.row_id)
         return {"row_id": row.row_id, "pid": pid, "command": command}
 
@@ -398,6 +475,29 @@ class RunPodOrchestrationDriver:
             detail=row_report.get("detail"),
             metadata=report,
         )
+
+    def probe_rows(
+        self,
+        bundle: RunBundle,
+        rows: Sequence[RunRowSpec],
+        state: RunSetState,
+    ) -> Mapping[str, DriverRowProbe]:
+        """Probe every unfinished row in one SSH round trip."""
+        row_ids = [row.row_id for row in rows]
+        report = parse_probe_report(
+            self._ssh(build_probe_command(self._remote_sentinel_dir(bundle), row_ids)).stdout
+        )
+        result: dict[str, DriverRowProbe] = {}
+        for row_id in row_ids:
+            row_report = report.get("rows", {}).get(row_id, {})
+            pid = row_report.get("pid")
+            result[row_id] = DriverRowProbe(
+                status=str(row_report.get("status", "pending")),
+                pid=pid if isinstance(pid, int) else None,
+                detail=row_report.get("detail"),
+                metadata=report,
+            )
+        return result
 
     def stop_row(
         self,
@@ -517,15 +617,31 @@ class RunPodOrchestrationDriver:
     def _require_gpu_ready(self) -> None:
         self._ssh("nvidia-smi >/dev/null").check("nvidia-smi readiness")
 
-    def _check_balance_floor(self) -> None:
-        result = self.transport.runpodctl("user", "--output", "json").check("runpodctl user")
-        balance = user_balance(_json_object(result.stdout))
-        if balance is None:
-            raise RunPodDriverError("could not determine RunPod balance")
-        if balance < self.config.min_balance_usd:
-            raise RunPodDriverError(
-                f"RunPod balance {balance:g} below minimum {self.config.min_balance_usd:g}"
+    def _configure_subprocess_endpoint(self, endpoint: EndpointClassification) -> None:
+        if isinstance(self.transport, SubprocessRunPodTransport):
+            self.transport = replace(
+                self.transport,
+                ssh_host=endpoint.ip,
+                ssh_port=endpoint.port,
             )
+
+    def _ensure_deadman(self, bundle: RunBundle) -> None:
+        if not bundle.deadman_enabled or bundle.keep_alive:
+            return
+        if not self._pod_id:
+            raise RunPodDriverError("dead-man switch requires a RunPod pod id")
+        self._ssh(
+            "command -v runpodctl >/dev/null && runpodctl user --output json >/dev/null"
+        ).check("in-pod runpodctl presence and authentication")
+        self._ssh(
+            build_deadman_watchdog_command(
+                pod_id=self._pod_id,
+                remote_run_dir=self._remote_run_dir(bundle),
+                remote_sentinel_dir=self._remote_sentinel_dir(bundle),
+                events_dir=self._remote_events_dir(bundle),
+                silence_seconds=bundle.deadman_silence_seconds,
+            )
+        )
 
     def _provision_record(self, pod: Mapping[str, Any], *, provided_pod: bool) -> dict[str, Any]:
         endpoint = self._endpoint or endpoint_classification(pod)
@@ -688,12 +804,14 @@ def rank_datacenters_for_gpu(
         dc_id = _string_or_none(dc.get("id"))
         if not dc_id:
             continue
+        score: int | None = None
         for availability in dc.get("gpuAvailability") or ():
             if not isinstance(availability, Mapping) or availability.get("gpuId") != gpu_id:
                 continue
-            score = rank.get(str(availability.get("stockStatus")), 0)
-            if score > 0:
-                candidates.append((-score, dc_id))
+            availability_score = rank.get(str(availability.get("stockStatus")), 0)
+            score = availability_score if score is None else max(score, availability_score)
+        if score is not None:
+            candidates.append((-score, dc_id))
     return [dc_id for _, dc_id in sorted(candidates)]
 
 
@@ -704,6 +822,21 @@ def user_balance(user_payload: Mapping[str, Any]) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _preflight_check(
+    name: str,
+    passed: bool,
+    *,
+    detail: str | None = None,
+    observed: Any = None,
+) -> PreflightCheckEntry:
+    return PreflightCheckEntry(
+        name=name,
+        status="pass" if passed else "fail",
+        detail=detail,
+        observed=observed,
+    )
 
 
 def compute_runpod_environment_fingerprint(bundle: RunBundle) -> str:
@@ -723,17 +856,15 @@ def compute_runpod_environment_fingerprint(bundle: RunBundle) -> str:
 
 
 def build_literal_path_patch_command(
+    remote_file: str,
     patch_from: str,
     patch_to: str,
-    remote_roots: Sequence[str],
 ) -> str:
-    """Build the literal ``perl -0pi`` path-patch command used by deploy scripts."""
-    roots = " ".join(_sq(root) for root in remote_roots)
+    """Build one literal, explicitly file-scoped path-patch command."""
     expression = "s/\\Q$ENV{PATCH_FROM}\\E/$ENV{PATCH_TO}/g"
     return (
         f"PATCH_FROM={_sq(patch_from)} PATCH_TO={_sq(patch_to)} "
-        f"find {roots} -type f -name '*.py' -o -name '*.toml' -o -name '*.json' "
-        f"| xargs perl -0pi -e {_sq(expression)}"
+        f"perl -0pi -e {_sq(expression)} {_sq(remote_file)}"
     )
 
 
@@ -941,31 +1072,35 @@ def build_launch_row_command(
     )
 
 
-def build_probe_command(remote_sentinel_dir: str, row_id: str) -> str:
-    """Build a compact remote probe command for one row."""
+def build_probe_command(remote_sentinel_dir: str, row_ids: str | Sequence[str]) -> str:
+    """Build a compact remote probe command for one or more rows."""
+    rows = [row_ids] if isinstance(row_ids, str) else list(row_ids)
     return (
         "python - <<'PY'\n"
         "import json, os, subprocess\n"
         f"sdir={remote_sentinel_dir!r}\n"
-        f"row={row_id!r}\n"
+        f"rows={rows!r}\n"
         "gpu=subprocess.run(['bash','-lc','nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true'],capture_output=True,text=True).stdout.strip()\n"
-        "base=os.path.join(sdir,row)\n"
-        "pid=None\n"
-        "pid_path=base+'.pid'\n"
-        "if os.path.exists(pid_path):\n"
-        "    try: pid=int(open(pid_path).read().strip())\n"
-        "    except Exception: pid=None\n"
-        "status='pending'\n"
-        "detail=None\n"
-        "if os.path.exists(base+'.done'): status='completed'\n"
-        "elif os.path.exists(base+'.failed'): status='failed'\n"
-        "elif os.path.exists(base+'.started'):\n"
-        "    if pid:\n"
-        "        alive=subprocess.run(['bash','-lc',f'kill -0 {pid} 2>/dev/null']).returncode==0\n"
-        "        status='running' if alive else 'failed'\n"
-        "        if not alive: detail='pid exited without sentinel'\n"
-        "    else: status='running'\n"
-        "print(json.dumps({'gpu':gpu,'rows':{row:{'status':status,'pid':pid,'detail':detail}}}, sort_keys=True))\n"
+        "reports={}\n"
+        "for row in rows:\n"
+        "    base=os.path.join(sdir,row)\n"
+        "    pid=None\n"
+        "    pid_path=base+'.pid'\n"
+        "    if os.path.exists(pid_path):\n"
+        "        try: pid=int(open(pid_path).read().strip())\n"
+        "        except Exception: pid=None\n"
+        "    status='pending'\n"
+        "    detail=None\n"
+        "    if os.path.exists(base+'.done'): status='completed'\n"
+        "    elif os.path.exists(base+'.failed'): status='failed'\n"
+        "    elif os.path.exists(base+'.started'):\n"
+        "        if pid:\n"
+        "            alive=subprocess.run(['bash','-lc',f'kill -0 {pid} 2>/dev/null']).returncode==0\n"
+        "            status='running' if alive else 'failed'\n"
+        "            if not alive: detail='pid exited without sentinel'\n"
+        "        else: status='running'\n"
+        "    reports[row]={'status':status,'pid':pid,'detail':detail}\n"
+        "print(json.dumps({'gpu':gpu,'rows':reports}, sort_keys=True))\n"
         "PY"
     )
 
@@ -985,6 +1120,7 @@ def build_deadman_watchdog_command(
 ) -> str:
     """Build the optional in-pod dead-man watchdog command."""
     warning = f"{remote_run_dir}/deadman-warning.txt"
+    pid_file = f"{remote_run_dir}/deadman.pid"
     script = (
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
         f"sdir={_sq(remote_sentinel_dir)}; edir={_sq(events_dir)}; "
@@ -1003,8 +1139,10 @@ def build_deadman_watchdog_command(
         "sleep 30; done"
     )
     return (
+        f"pid_file={_sq(pid_file)}; "
+        'if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then exit 0; fi; '
         f"nohup bash -lc {_sq(script)} </dev/null "
-        f">{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1 &"
+        f'>>{_sq(remote_run_dir + "/logs/deadman.log")} 2>&1 & echo $! > "$pid_file"'
     )
 
 
@@ -1017,7 +1155,10 @@ def verify_collected_payload(dest_dir: Path, expected_sha256: str) -> None:
 
 
 def _run_command(args: Sequence[str]) -> CommandResult:
-    result = subprocess.run(args, check=False, capture_output=True, text=True)
+    try:
+        result = subprocess.run(args, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        return CommandResult(127, "", str(exc))
     return CommandResult(result.returncode, result.stdout, result.stderr)
 
 

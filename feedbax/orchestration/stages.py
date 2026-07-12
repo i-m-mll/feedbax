@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import RUN_BUNDLE_SCHEMA_VERSION, RunBundle, RunRowSpec
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
@@ -89,7 +89,7 @@ class StageEngine:
         driver: OrchestrationDriver,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
-        poll_interval_seconds: float = 0.05,
+        poll_interval_seconds: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
@@ -99,7 +99,11 @@ class StageEngine:
         self.driver = driver
         self.store = store or RunSetStateStore(bundle.run_set_dir / "state.json")
         self.conformance_registry = conformance_registry or CheckRegistry()
-        self.poll_interval_seconds = poll_interval_seconds
+        self.poll_interval_seconds = (
+            float(getattr(driver, "poll_interval_seconds", 0.05))
+            if poll_interval_seconds is None
+            else poll_interval_seconds
+        )
         self._sleep = sleep
         self._monotonic = monotonic
         self._wall_time = wall_time
@@ -192,6 +196,9 @@ class StageEngine:
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)
+        driver_preflight = getattr(self.driver, "preflight_checks", None)
+        if callable(driver_preflight):
+            checks.extend(driver_preflight(self.bundle))
         stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
         state = state.with_stage(STAGE_PREFLIGHT, stage)
         self.store.save(state)
@@ -277,15 +284,11 @@ class StageEngine:
         return state, {"rows": collected}
 
     def _stage_certify(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        rows = [
-            ConformanceRowArtifacts(
-                row_id=row.row_id,
-                event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
-                bundle_row_spec=row.model_dump(mode="json", exclude_none=True),
-                recorded_environment_fingerprint=state.environment_fingerprint,
+        if len(self.conformance_registry) == 0:
+            raise OrchestrationStageError(
+                "CERTIFY requires at least one registered conformance check"
             )
-            for row in self.bundle.rows
-        ]
+        rows = [self._conformance_artifacts(row, state) for row in self.bundle.rows]
         certificate = write_conformance_certificate(
             run_set_dir=self.bundle.run_set_dir,
             run_set_id=self.bundle.run_set_id,
@@ -298,10 +301,51 @@ class StageEngine:
         )
         return state, {"certificate_ref": str(certificate_path), "overall": certificate.overall}
 
+    def _conformance_artifacts(
+        self,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> ConformanceRowArtifacts:
+        """Assemble all check inputs from one row's collected bundle outputs."""
+        outputs = state.rows[row.row_id].collected_outputs
+        discovered = _discover_conformance_artifacts(outputs)
+        run_spec = row.run_spec if isinstance(row.run_spec, Mapping) else None
+        preflight_payload = None
+        if run_spec is not None:
+            try:
+                normalized = preflight_training_run_manifest_payloads(
+                    run_spec,
+                    row_id=row.row_id,
+                ).model_dump()
+                training_spec = normalized.get("training_spec")
+                if isinstance(training_spec, Mapping):
+                    inline = training_spec.get("inline")
+                    if isinstance(inline, Mapping):
+                        preflight_payload = inline
+            except Exception:
+                # PREFLIGHT owns normalization diagnostics. CERTIFY records the
+                # absent normalized input as a failed manifest-valid verdict.
+                pass
+        return ConformanceRowArtifacts(
+            row_id=row.row_id,
+            event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
+            bundle_row_spec=run_spec,
+            recorded_environment_fingerprint=state.environment_fingerprint,
+            manifest_path=discovered.get("manifest_path"),
+            manifest_payload=discovered.get("manifest_payload"),
+            training_diagnostics=discovered.get("training_diagnostics"),
+            checkpoint_custody_root=discovered.get("checkpoint_custody_root"),
+            preflight_normalized_payload=preflight_payload,
+        )
+
     def _stage_teardown(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         return self._run_teardown(state, abort=False), {}
 
     def _stage_register(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        if len(self.conformance_registry) == 0:
+            raise OrchestrationStageError(
+                "REGISTER requires at least one registered conformance check"
+            )
         certificate_path = Path(state.certificate_ref or "")
         certificate_bytes = certificate_path.read_bytes()
         certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
@@ -446,11 +490,24 @@ class StageEngine:
         return state
 
     def _refresh_rows(self, state: RunSetState) -> RunSetState:
+        unfinished = [
+            row
+            for row in self.bundle.rows
+            if state.rows[row.row_id].status not in ("completed", "failed", "stopped")
+        ]
+        if not unfinished:
+            self.store.save(state)
+            return state
+        probe_rows = getattr(self.driver, "probe_rows", None)
+        if callable(probe_rows):
+            probes = dict(probe_rows(self.bundle, unfinished, state))
+        else:
+            probes = {row.row_id: self.driver.probe(self.bundle, row, state) for row in unfinished}
         for row in self.bundle.rows:
             row_state = state.rows[row.row_id]
             if row_state.status in ("completed", "failed", "stopped"):
                 continue
-            probe = self.driver.probe(self.bundle, row, state)
+            probe = probes[row.row_id]
             event_path = self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl"
             done = self.bundle.run_set_dir / "sentinels" / f"{row.row_id}.done"
             failed = self.bundle.run_set_dir / "sentinels" / f"{row.row_id}.failed"
@@ -570,15 +627,13 @@ class StageEngine:
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     checks: list[PreflightCheckEntry] = []
-    checks.append(
-        _check("schema-current", bundle.schema_version == "feedbax.orchestration.run_bundle.v1")
-    )
+    checks.append(_check("schema-current", bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION))
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
     checks.append(_check("budget-presence", bundle.budget.max_wall_clock_seconds > 0))
     checks.append(
         _check(
             "driver-preconditions",
-            bundle.driver in {"local", "worker-http"},
+            bundle.driver in {"local", "worker-http", "runpod"},
             observed=bundle.driver,
         )
     )
@@ -631,6 +686,10 @@ def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[
             continue
         optimizer_payloads = _optimizer_payloads(row.run_spec)
         if not optimizer_payloads:
+            failures.append(
+                f"{row.row_id}: inline run_spec contains no optimizer at a supported typed path"
+            )
+            observed[row.row_id] = []
             continue
         row_observed: list[dict[str, Any]] = []
         for index, payload in enumerate(optimizer_payloads):
@@ -715,6 +774,66 @@ def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if isinstance(value, Mapping):
             payloads.append(value)
     return payloads
+
+
+def _discover_conformance_artifacts(outputs: Mapping[str, str]) -> dict[str, Any]:
+    """Discover typed conformance inputs from driver-collected output paths.
+
+    Discovery is deterministic and never decides conformance itself. Missing
+    roles remain absent so the registered checks emit explicit failed verdicts.
+    """
+    result: dict[str, Any] = {}
+    candidates: list[Path] = []
+    for output_path in sorted(outputs.values()):
+        path = Path(output_path)
+        if path.is_dir():
+            candidates.extend(sorted(path.rglob("*.json")))
+        elif path.suffix == ".json":
+            candidates.append(path)
+
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        if _is_training_manifest(payload) and "manifest_path" not in result:
+            result["manifest_path"] = path
+            result["manifest_payload"] = payload
+        if _is_training_diagnostics(payload) and "training_diagnostics" not in result:
+            result["training_diagnostics"] = payload
+
+    for output_path in sorted(outputs.values()):
+        path = Path(output_path)
+        roots = [path] if path.is_dir() else [path.parent]
+        if path.is_dir():
+            roots.extend(latest.parent for latest in sorted(path.rglob("latest.json")))
+        for root in roots:
+            if (root / "latest.json").is_file() and (root / "manifest.json").is_file():
+                result.setdefault("checkpoint_custody_root", root)
+                break
+    return result
+
+
+def _is_training_manifest(payload: Mapping[str, Any]) -> bool:
+    return payload.get("kind") == "TrainingRunManifest" or (
+        "training_spec" in payload and ("summary_metrics" in payload or "provenance" in payload)
+    )
+
+
+def _is_training_diagnostics(payload: Mapping[str, Any]) -> bool:
+    diagnostic_keys = {
+        "completed_batches",
+        "checkpoint_coordinates",
+        "checkpoint_transactions",
+        "learning_rate_trace",
+        "lr_trace",
+        "optimizer_build_context",
+        "resume_context",
+        "seeds",
+    }
+    return bool(diagnostic_keys.intersection(payload))
 
 
 def _check(

@@ -14,6 +14,7 @@ from feedbax.contracts.checkpoints import (
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.training.checkpoint_custody import (
+    CheckpointCompatibilityError,
     load_latest_checkpoint,
     write_checkpoint_transaction,
 )
@@ -45,6 +46,113 @@ def _write_latest(root: Path, *, transaction_id: str, digest: str) -> None:
         json.dumps({"manifest_relative_path": f"transactions/{transaction_id}/manifest.json"}),
         encoding="utf-8",
     )
+
+
+def _write_topology_latest(
+    root: Path,
+    *,
+    transaction_id: str,
+    digests: dict[str, str],
+    blob_digests: dict[str, str],
+    provenance: list[dict[str, object]] | None = None,
+) -> None:
+    tx_dir = root / "transactions" / transaction_id
+    tx_dir.mkdir(parents=True)
+    manifest: dict[str, object] = {
+        "transaction_id": transaction_id,
+        "completed_training_batches": 5,
+        "slots": [{"slot": slot, "sha256": blob_digests[slot]} for slot in sorted(blob_digests)],
+        "content_integrity_digest": {
+            "slots": [
+                {"slot": slot, "slot_root_sha256": digest}
+                for slot, digest in sorted(digests.items())
+            ],
+        },
+    }
+    if provenance is not None:
+        manifest["fork_provenance"] = {"slots": provenance}
+    (tx_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "latest.json").write_text(
+        json.dumps({"manifest_relative_path": f"transactions/{transaction_id}/manifest.json"}),
+        encoding="utf-8",
+    )
+
+
+def _target_transform_provenance(
+    slot: str,
+    *,
+    source_sha256: str | None,
+    target_sha256: str,
+    target_only_declaration: dict[str, str] | None = None,
+) -> dict[str, object]:
+    transform_metadata: dict[str, object] = {
+        "stage": "target_post",
+        "stages": [
+            {
+                "stage": "target_post",
+                "identity": "tests.target_topology.v1",
+                "parameters": {"mode": "adaptive"},
+                "metadata": {},
+            }
+        ],
+    }
+    if target_only_declaration is not None:
+        transform_metadata["target_only_declaration"] = target_only_declaration
+    return {
+        "slot": slot,
+        "source_sha256": source_sha256,
+        "target_sha256": target_sha256,
+        "transfer_mode": "serialized",
+        "transform": {
+            "slot": slot,
+            "identity": "tests.target_topology.v1",
+            "parameters": {"mode": "adaptive"},
+            "metadata": transform_metadata,
+        },
+    }
+
+
+def _topology_parity_inputs(
+    tmp_path: Path,
+) -> tuple[TrainingRunMatrixSpec, MaterializedRunMatrix, Path, Path, dict[str, str]]:
+    spec = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    one_row = MaterializedRunMatrix(
+        matrix_spec_sha256=materialized.matrix_spec_sha256,
+        run_set_id=materialized.run_set_id,
+        base_payload=materialized.base_payload,
+        rows=[materialized.rows[0]],
+        run_set_manifest=materialized.run_set_manifest,
+    )
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    declaration = {"identity": "tests.target_only.v1"}
+    _write_topology_latest(
+        source,
+        transaction_id="tx-source",
+        digests={"model": "source-content"},
+        blob_digests={"model": "source-blob"},
+    )
+    _write_topology_latest(
+        target,
+        transaction_id="tx-target",
+        digests={"model": "transformed-content", "adaptive_state": "new-content"},
+        blob_digests={"model": "target-model-blob", "adaptive_state": "target-new-blob"},
+        provenance=[
+            _target_transform_provenance(
+                "model",
+                source_sha256="source-blob",
+                target_sha256="target-model-blob",
+            ),
+            _target_transform_provenance(
+                "adaptive_state",
+                source_sha256=None,
+                target_sha256="target-new-blob",
+                target_only_declaration=declaration,
+            ),
+        ],
+    )
+    return spec, one_row, source, target, declaration
 
 
 def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -> None:
@@ -139,13 +247,113 @@ def test_fork_matrix_checkpoints_reports_mismatched_slot(tmp_path: Path) -> None
         )
 
 
+def test_fork_matrix_parity_accepts_declared_topology_change(tmp_path: Path) -> None:
+    spec, materialized, source, target, declaration = _topology_parity_inputs(tmp_path)
+
+    table = fork_matrix_checkpoints(
+        spec,
+        materialized,
+        source_checkpoint_root=source,
+        target_checkpoint_roots={"lr_hi": target},
+        parity_output_path=tmp_path / "parity.json",
+        row_target_transform_metadata={
+            "lr_hi": {
+                "identity": "tests.target_topology.v1",
+                "parameters": {"mode": "adaptive"},
+            }
+        },
+        row_target_transformed_slots={"lr_hi": ["model"]},
+        row_target_only_slots={"lr_hi": {"adaptive_state": declaration}},
+        skip_fork=True,
+    )
+
+    assert table["ok"] is True
+    assert {
+        (row["kind"], row["slot"], row["ok"])
+        for row in table["rows"]
+        if row["kind"] != "lr_continuation"
+    } == {
+        ("slot_parity", "model", True),
+        ("target_only_provenance", "adaptive_state", True),
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("missing_comparable", "missing comparable digest"),
+        ("undeclared_extra", "expected_topology"),
+        ("preserved_drift", "row=lr_hi slot=model"),
+        ("missing_target_only_provenance", "missing fork provenance"),
+        ("incorrect_target_only_provenance", "target-only declaration mismatch"),
+    ],
+)
+def test_fork_matrix_parity_rejects_topology_contract_drift(
+    tmp_path: Path,
+    mutation: str,
+    error: str,
+) -> None:
+    spec, materialized, source, target, declaration = _topology_parity_inputs(tmp_path)
+    target_manifest_path = next((target / "transactions").glob("*/manifest.json"))
+    target_manifest = json.loads(target_manifest_path.read_text(encoding="utf-8"))
+    transformed_slots: list[str] = ["model"]
+    if mutation == "missing_comparable":
+        target_manifest["slots"] = [
+            slot for slot in target_manifest["slots"] if slot["slot"] != "model"
+        ]
+        target_manifest["content_integrity_digest"]["slots"] = [
+            slot
+            for slot in target_manifest["content_integrity_digest"]["slots"]
+            if slot["slot"] != "model"
+        ]
+    elif mutation == "undeclared_extra":
+        target_manifest["slots"].append({"slot": "rogue", "sha256": "rogue-blob"})
+        target_manifest["content_integrity_digest"]["slots"].append(
+            {"slot": "rogue", "slot_root_sha256": "rogue-content"}
+        )
+    elif mutation == "preserved_drift":
+        transformed_slots = []
+    elif mutation == "missing_target_only_provenance":
+        target_manifest["fork_provenance"]["slots"] = [
+            slot
+            for slot in target_manifest["fork_provenance"]["slots"]
+            if slot["slot"] != "adaptive_state"
+        ]
+    elif mutation == "incorrect_target_only_provenance":
+        target_only = next(
+            slot
+            for slot in target_manifest["fork_provenance"]["slots"]
+            if slot["slot"] == "adaptive_state"
+        )
+        target_only["transform"]["metadata"]["target_only_declaration"] = {"identity": "wrong"}
+    target_manifest_path.write_text(json.dumps(target_manifest), encoding="utf-8")
+
+    with pytest.raises(ForkParityError, match=error):
+        fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=source,
+            target_checkpoint_roots={"lr_hi": target},
+            parity_output_path=tmp_path / "parity.json",
+            row_target_transform_metadata={
+                "lr_hi": {
+                    "identity": "tests.target_topology.v1",
+                    "parameters": {"mode": "adaptive"},
+                }
+            },
+            row_target_transformed_slots={"lr_hi": transformed_slots},
+            row_target_only_slots={"lr_hi": {"adaptive_state": declaration}},
+            skip_fork=True,
+        )
+
+
 def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     tmp_path: Path,
 ) -> None:
     """A continuation can cross barriers only through a declared mapping."""
     continuation = CheckpointContinuationRequest(
         source_completed_batches=12000,
-        additional_batches=200,
+        additional_batches=4500,
     )
     source_spec = _run_spec(minimax=True).model_copy(
         update={
@@ -209,7 +417,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     )
     target_slots = _minimax_slots()
     target_slots["controller"] = BatchHistory(
-        jnp.full((5, 200), -1.0, dtype=jnp.float32)
+        jnp.full((5, 4500), -1.0, dtype=jnp.float32)
     )
     target_coordinate = ProgressCoordinate(
         run_id="run-1",
@@ -244,14 +452,37 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
             materialized.rows[0].spec.worker_execution.method_contract.phase_program
         ),
         expected_slots=target_slots,
+        continuation_request=continuation,
     )
     assert resumed.manifest.barrier == target_barrier
     assert resumed.manifest.completed_coordinate == target_coordinate
     assert resumed.manifest.fork_provenance is not None
     assert resumed.manifest.fork_provenance.barrier_mapping == barrier_mapping
     assert resumed.manifest.segment_lineage.start_batch == 12000
-    assert resumed.manifest.segment_lineage.segment_batch_count == 200
+    assert resumed.manifest.segment_lineage.segment_batch_count == 4500
+    assert resumed.manifest.completed_training_batches == 16500
+    assert resumed.manifest.metadata["checkpoint_continuation"] == continuation.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    assert resumed.manifest.metadata["checkpoint_continuation_applied"] is True
     assert jnp.all(resumed.slots["controller"].value == -1.0)
+
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="does not match the already-applied fork contract",
+    ):
+        load_latest_checkpoint(
+            tmp_path / "target",
+            expected_run_spec=materialized.rows[0].spec,
+            expected_phase_program=(
+                materialized.rows[0].spec.worker_execution.method_contract.phase_program
+            ),
+            expected_slots=target_slots,
+            continuation_request=continuation.model_copy(
+                update={"additional_batches": 4499}
+            ),
+        )
 
 
 def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -> None:

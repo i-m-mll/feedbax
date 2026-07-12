@@ -72,7 +72,8 @@ eq "publicIp is NOT a fallback" "not_ready" "$out"
 section "W1 rank_datacenters_for_gpu"
 out=$(rank_datacenters_for_gpu "NVIDIA GeForce RTX 5090" < "$FIX/datacenter_list.json" | tr '\n' ',')
 # EU-RO-1 High, US-KS-2 Medium, AP-IN-1 Low; EU-SE-1 "" excluded; CA-MTL-1 null skipped.
-eq "5090 ranked best-first" "EU-RO-1,US-KS-2,AP-IN-1," "$out"
+eq "5090 ranked best-first with unknown stock last" \
+    "EU-RO-1,US-KS-2,AP-IN-1,EU-SE-1," "$out"
 
 out=$(rank_datacenters_for_gpu "NVIDIA GeForce RTX 4090" < "$FIX/datacenter_list.json" | tr '\n' ',')
 eq "4090 ranked best-first" "US-TX-3,EU-RO-1," "$out"
@@ -122,6 +123,27 @@ eq "bad version -> error" "error schema_version_expected_1_got_99" "$out"
 
 out=$(printf '%s' '{"rows":[{"id":"a"}]}' | validate_rows_manifest)
 eq "missing command -> error" "error schema_version_expected_1_got_0" "$out"
+
+printf '%s' '{"user_confirmed":true,"rows":["a",{"id":"b"}]}' \
+    | validate_train_spec_rows
+eq "train spec accepts string and object rows" "0" "$?"
+out=$(printf '%s' '{"user_confirmed":true,"rows":[7]}' \
+    | validate_train_spec_rows 2>&1); rc=$?
+case "$out" in
+    *train_spec_rows_schema*) ok "train spec names malformed row schema" ;;
+    *) no "train spec names malformed row schema" "*train_spec_rows_schema*" "$out" ;;
+esac
+if [ "$rc" -ne 0 ]; then
+    ok "malformed train spec row -> nonzero"
+else
+    no "malformed train spec row -> nonzero" "nonzero" "$rc"
+fi
+
+out=$(resume_verification_command \
+    'uv run python scripts/train_cs_nominal_gru.py --resume >train.log 2>&1')
+eq "resume verification flag precedes shell redirection" \
+    'uv run python scripts/train_cs_nominal_gru.py --resume --verify-resume-only >train.log 2>&1' \
+    "$out"
 
 # ---------------------------------------------------------------------------
 section "W7 _artifacts symlink repair"

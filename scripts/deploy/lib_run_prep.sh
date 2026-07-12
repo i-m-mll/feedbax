@@ -60,10 +60,10 @@ provider_copy() {
         runpod)
             rsh=$(rsync_rsh)
             if [ "$delete" -eq 1 ]; then
-                run_cmd rsync -az --delete --no-owner --no-group --stats -e "$rsh" \
+                run_cmd rsync -az --delete --no-owner --no-group --progress --stats -e "$rsh" \
                     "$source" "root@$SSH_HOST:$target"
             else
-                run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
+                run_cmd rsync -az --no-owner --no-group --progress --stats -e "$rsh" \
                     "$source" "root@$SSH_HOST:$target"
             fi
             ;;
@@ -129,6 +129,8 @@ validate_train_spec_gate() {
         print_spec_table "$TRAIN_SPEC"
         exit 2
     fi
+    validate_train_spec_rows <"$TRAIN_SPEC" ||
+        die "invalid train spec: train_spec_rows_schema requires string ids or row objects"
 }
 
 manifest_preflight_entry_filter() {
@@ -153,9 +155,15 @@ def entry($row_id):
       task_binding_spec_path: (.task_binding_spec_path // null)
     };
 
+def normalize_row:
+  if type == "string" then {id: .}
+  elif type == "object" then .
+  else error("train_spec_rows_schema: row must be string or object")
+  end;
+
 if type != "object" then []
 elif has("rows") then
-  [ .rows[] | entry(.id) ]
+  [ .rows[] | normalize_row | entry(.id) ]
 else
   [ entry(.id // "training") ]
 end
@@ -269,9 +277,15 @@ def baseline_entries($label):
     | {path: ($path | tostring), completed_batch: ($batch | tostring), label: $label}
   ];
 
+def normalize_row:
+  if type == "string" then {id: .}
+  elif type == "object" then .
+  else error("train_spec_rows_schema: row must be string or object")
+  end;
+
 if type != "object" then []
 elif has("rows") then
-  [ .rows[]
+  [ .rows[] | normalize_row
     | baseline_entries("row:" + ((.id // "unknown") | tostring))[]
   ]
 else
@@ -386,6 +400,46 @@ validate_remote_declared_baselines() {
             die "baseline preflight failed: remote staged baseline mismatch for $label at $latest (expected completed batch $expected)"
         i=$((i + 1))
     done
+}
+
+resume_verification_command() {
+    local command=$1 prefix suffix
+    case "$command" in
+        *train_cs_nominal_gru.py*|*train_minimax.py*)
+            if [[ $command =~ ^([^\;\&\|\<\>]*)([\;\&\|\<\>].*)$ ]]; then
+                prefix=${BASH_REMATCH[1]}
+                suffix=${BASH_REMATCH[2]}
+                printf '%s --verify-resume-only %s\n' "${prefix% }" "$suffix"
+            else
+                printf '%s --verify-resume-only\n' "$command"
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+verify_remote_resumes() {
+    local ids row_id workdir command verify_command default_wd
+    default_wd=$(provider_workdir)
+    if [ -n "$ROWS_MANIFEST" ]; then
+        read_lines_into ids < <(rows_manifest_ids <"$ROWS_MANIFEST")
+        for row_id in "${ids[@]}"; do
+            command=$(rows_manifest_field "$row_id" command <"$ROWS_MANIFEST")
+            [[ $command == *--resume* ]] || continue
+            verify_command=$(resume_verification_command "$command") || continue
+            workdir=$(rows_manifest_field "$row_id" workdir <"$ROWS_MANIFEST")
+            [ -n "$workdir" ] || workdir=$default_wd
+            log "verifying staged resume checkpoint for row $row_id"
+            provider_exec "cd $(sq "$workdir") && $verify_command"
+        done
+        return 0
+    fi
+    [[ ${TRAIN_COMMAND:-} == *--resume* ]] || return 0
+    verify_command=$(resume_verification_command "$TRAIN_COMMAND") || return 0
+    log "verifying staged resume checkpoint for training"
+    provider_exec "cd $(sq "$default_wd") && $verify_command"
 }
 
 write_run_config() {

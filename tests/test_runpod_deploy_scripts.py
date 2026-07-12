@@ -195,7 +195,7 @@ def test_dry_run_prints_deterministic_deploy_commands(tmp_path: Path) -> None:
     assert "--ports 22/tcp\\,8080/http" in output or "--ports 22/tcp,8080/http" in output
     assert "acquire_status=endpoint_assigned pod=dry-run-pod" in output
     assert "nvidia-smi" in output
-    assert "rsync -az --delete --no-owner --no-group --stats" in output
+    assert "rsync -az --delete --no-owner --no-group --progress --stats" in output
     assert "--exclude /_artifacts" in output
     assert "feedbax/" in output
     assert "web/node_modules" in output
@@ -944,10 +944,68 @@ def test_resume_baseline_is_preflighted_and_staged_despite_artifact_exclude(
     assert "staging declared baseline" in output
     assert str(baseline) in output
     assert "/workspace/rlrmp/_artifacts/run-a/checkpoint_100/" in output
+    assert "mkdir -p" in output
+    assert "--no-owner --no-group --progress --stats" in output
     run_config = tmp_path / "feedbax" / ".runpod" / "run-config.json"
     payload = json.loads(run_config.read_text(encoding="utf-8"))
     assert payload["remote_run_dir"] == "/workspace/feedbax_runs/test-runpod-deploy"
     assert payload["baselines"][0]["completed_batch"] == "100"
+
+
+def test_string_train_spec_rows_and_resume_only_preflight_are_fail_closed(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path)
+    baseline = tmp_path / "rlrmp" / "_artifacts" / "run-a" / "checkpoint_100"
+    baseline.mkdir(parents=True)
+    (baseline / "latest.json").write_text(
+        json.dumps({"completed_batch": 100}), encoding="utf-8"
+    )
+    train_spec = tmp_path / "train-spec.json"
+    train_spec.write_text(
+        json.dumps({"user_confirmed": True, "rows": ["resume_row"]}),
+        encoding="utf-8",
+    )
+    rows = tmp_path / "rows.json"
+    rows.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": [
+                    {
+                        "id": "resume_row",
+                        "command": (
+                            "uv run --no-sync python scripts/train_cs_nominal_gru.py "
+                            "--run-spec results/run.json --full-train --resume"
+                        ),
+                        "workdir": "/workspace/rlrmp",
+                        "resume": {
+                            "baseline_checkpoint_path": str(baseline),
+                            "baseline_completed_batch": 100,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--train-spec",
+        str(train_spec),
+        "--rows-manifest",
+        str(rows),
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "Cannot index string with string" not in output
+    assert "verifying staged resume checkpoint for row resume_row" in output
+    assert "--verify-resume-only" in output
+    assert output.index("--verify-resume-only") < output.index("launched 1 row(s)")
 
 
 def test_reused_pod_dry_run_probes_before_install_and_skips_on_success(tmp_path: Path) -> None:

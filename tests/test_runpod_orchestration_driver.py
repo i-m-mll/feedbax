@@ -25,7 +25,8 @@ from feedbax.orchestration.drivers.runpod import (
     endpoint_classification,
     rank_datacenters_for_gpu,
 )
-from feedbax.orchestration.state import RowState, RunSetState
+from feedbax.orchestration.stages import StageEngine
+from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 
 
 class FakeRunPodTransport:
@@ -49,6 +50,9 @@ class FakeRunPodTransport:
             return queued.pop(0)
         return CommandResult(0, "{}")
 
+    def image_exists(self, image: str) -> bool:
+        return image == "runpod/pytorch:1.0.3"
+
     def ssh(self, command: str) -> CommandResult:
         self.ssh_commands.append(command)
         if command.startswith("cat ") and not self.ssh_results:
@@ -69,7 +73,12 @@ class FakeRunPodTransport:
         return CommandResult(0, "")
 
 
-def _bundle(tmp_path: Path, *, keep_alive: bool = False) -> RunBundle:
+def _bundle(
+    tmp_path: Path,
+    *,
+    keep_alive: bool = False,
+    deadman_enabled: bool = False,
+) -> RunBundle:
     return RunBundle(
         run_set_id="2026-01-02-deadbeef",
         driver="runpod",
@@ -87,11 +96,15 @@ def _bundle(tmp_path: Path, *, keep_alive: bool = False) -> RunBundle:
             )
         ],
         environment=EnvironmentDeclaration(
-            python_version="3.12", overlay_steps=["uv pip install extra"]
+            python_version="3.12",
+            image_id="runpod/pytorch:1.0.3",
+            overlay_steps=["uv pip install extra"],
         ),
         budget=BudgetPolicy(max_wall_clock_seconds=30),
         orchestration_root=str(tmp_path),
         keep_alive=keep_alive,
+        deadman_enabled=deadman_enabled,
+        deadman_silence_seconds=60,
     )
 
 
@@ -145,7 +158,35 @@ def test_ranks_datacenters_for_gpu_by_stock() -> None:
         {"id": "medium", "gpuAvailability": [{"gpuId": "RTX_5090", "stockStatus": "Medium"}]},
     ]
 
-    assert rank_datacenters_for_gpu(datacenters, "RTX_5090") == ["high", "medium", "low"]
+    assert rank_datacenters_for_gpu(datacenters, "RTX_5090") == [
+        "high",
+        "medium",
+        "low",
+        "none",
+    ]
+
+
+def test_subprocess_rsync_uses_portable_progress_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run_command(args: list[str]) -> CommandResult:
+        calls.append(args)
+        return CommandResult(0, "")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    source = tmp_path / "checkpoint"
+    source.mkdir()
+    transport = SubprocessRunPodTransport(ssh_host="198.51.100.10", ssh_port=2222)
+
+    transport.rsync(str(source) + "/", "/workspace/checkpoint/", delete=True)
+
+    assert len(calls) == 1
+    assert "--progress" in calls[0]
+    assert "--stats" in calls[0]
+    assert all(not arg.startswith("--info=") for arg in calls[0])
 
 
 def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path) -> None:
@@ -178,7 +219,13 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
             ssh_port=2222,
             local_repos={"feedbax": local_repo},
             remote_repos={"feedbax": "/workspace/feedbax"},
-            path_patches=(("/Users/mll/local feedbax", "/workspace/feedbax"),),
+            path_patches=(
+                (
+                    "/workspace/feedbax/pyproject.toml",
+                    "/Users/mll/local feedbax",
+                    "/workspace/feedbax",
+                ),
+            ),
         ),
         transport=transport,
     )
@@ -215,12 +262,23 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
 
 def test_literal_patch_command_uses_perl_quotemeta_not_regex_globs() -> None:
     command = build_literal_path_patch_command(
-        "/a/path+[x]", "/remote/path", ["/workspace/feedbax"]
+        "/workspace/feedbax/pyproject.toml", "/a/path+[x]", "/remote/path"
     )
 
     assert "perl -0pi" in command
     assert "\\Q$ENV{PATCH_FROM}\\E" in command
     assert "/a/path+[x]" in command
+    assert "/workspace/feedbax/pyproject.toml" in command
+    assert "find " not in command
+
+
+def test_literal_patch_command_cannot_rewrite_out_of_scope_file() -> None:
+    command = build_literal_path_patch_command(
+        "/workspace/feedbax/pyproject.toml", "/local/feedbax", "/workspace/feedbax"
+    )
+
+    assert "/workspace/feedbax/other.py" not in command
+    assert command.count("/workspace/feedbax/pyproject.toml") == 1
 
 
 def test_stage_inputs_stages_and_verifies_declared_baseline(
@@ -249,7 +307,7 @@ def test_stage_inputs_stages_and_verifies_declared_baseline(
     assert "completed_training_batches" in transport.ssh_commands[-1]
 
 
-def test_launch_row_exports_contract_env_and_starts_deadman(tmp_path: Path) -> None:
+def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
@@ -257,8 +315,6 @@ def test_launch_row_exports_contract_env_and_starts_deadman(tmp_path: Path) -> N
             pod_id="pod-123",
             ssh_host="198.51.100.10",
             ssh_port=2222,
-            deadman_enabled=True,
-            deadman_silence_seconds=60,
         ),
         transport=transport,
     )
@@ -278,15 +334,17 @@ def test_launch_row_exports_contract_env_and_starts_deadman(tmp_path: Path) -> N
     assert "FEEDBAX_ENV_FINGERPRINT=fingerprint-123" in launch_command
     assert "JAX_COMPILATION_CACHE_DIR=/workspace/jax_cache" in launch_command
     assert "XLA_PYTHON_CLIENT_PREALLOCATE=false" in launch_command
-    assert "kill -0 \"$pid\"" in launch_command
-    assert "orphaned launch: started sentinel present, process dead, no terminal sentinel" in launch_command
+    assert 'kill -0 "$pid"' in launch_command
+    assert (
+        "orphaned launch: started sentinel present, process dead, no terminal sentinel"
+        in launch_command
+    )
     assert "rm -f" not in launch_command
-    assert 'runpodctl remove pod "$pod_id"' in transport.ssh_commands[1]
-    assert "</dev/null" in transport.ssh_commands[1]
+    assert all("deadman" not in command for command in transport.ssh_commands)
 
 
 def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, keep_alive=True)
+    bundle = _bundle(tmp_path, keep_alive=True, deadman_enabled=True)
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, "4321\n"))
     driver = RunPodOrchestrationDriver(
@@ -294,7 +352,6 @@ def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:
             pod_id="pod-123",
             ssh_host="198.51.100.10",
             ssh_port=2222,
-            deadman_enabled=True,
         ),
         transport=transport,
     )
@@ -303,6 +360,77 @@ def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:
 
     assert len(transport.ssh_commands) == 2  # launch + pid read, no watchdog
     assert all("deadman" not in command for command in transport.ssh_commands)
+
+
+def test_deadman_is_verified_and_started_once_during_environment_realization(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, deadman_enabled=True)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-123",
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+        ),
+        transport=transport,
+    )
+
+    driver.realize_env(bundle, _state(bundle))
+
+    joined = "\n".join(transport.ssh_commands)
+    assert "command -v runpodctl" in joined
+    assert "runpodctl user --output json" in joined
+    watchdog = next(command for command in transport.ssh_commands if "deadman.pid" in command)
+    assert 'kill -0 "$(cat "$pid_file")"' in watchdog
+    assert 'runpodctl remove pod "$pod_id"' in watchdog
+    assert ">>" in watchdog
+    assert "/logs/deadman.log" in watchdog
+
+
+def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(gpu_id="NVIDIA GeForce RTX 4090"),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+
+    assert [check.name for check in checks] == [
+        "runpod-image-tag-exists",
+        "runpod-gpu-policy-declared",
+        "runpod-credentials",
+        "runpod-balance-floor",
+    ]
+    assert all(check.status == "pass" for check in checks)
+    assert transport.runpodctl_calls == [("user", "--output", "json")]
+
+
+def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path).model_copy(
+        update={"rows": [_bundle(tmp_path).rows[0].model_copy(update={"run_spec": None})]}
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+
+    state = StageEngine(bundle=bundle, driver=driver, store=store).run(stop_after_stage="PREFLIGHT")
+
+    names = [check.name for check in state.stage("PREFLIGHT").checks]
+    assert "runpod-image-tag-exists" in names
+    assert "runpod-balance-floor" in names
+    assert state.stage("PROVISION").status == "pending"
+    assert transport.ssh_commands == []
+    assert transport.runpodctl_calls == []
 
 
 def test_probe_parses_one_round_trip_report(tmp_path: Path) -> None:
@@ -329,6 +457,38 @@ def test_probe_parses_one_round_trip_report(tmp_path: Path) -> None:
     assert probe.status == "running"
     assert probe.pid == 111
     assert probe.metadata and probe.metadata["gpu"].startswith("RTX 5090")
+
+
+def test_probe_rows_batches_all_rows_into_one_ssh_round_trip(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    second = bundle.rows[0].model_copy(update={"row_id": "second"})
+    bundle = bundle.model_copy(update={"rows": [*bundle.rows, second]})
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(
+        CommandResult(
+            0,
+            json.dumps(
+                {
+                    "gpu": "RTX 5090",
+                    "rows": {
+                        "warm": {"status": "running", "pid": 111, "detail": None},
+                        "second": {"status": "completed", "pid": 222, "detail": None},
+                    },
+                }
+            ),
+        )
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+
+    probes = driver.probe_rows(bundle, bundle.rows, _state(bundle))
+
+    assert probes["warm"].status == "running"
+    assert probes["second"].status == "completed"
+    assert len(transport.ssh_commands) == 1
+    assert "'warm', 'second'" in transport.ssh_commands[0]
 
 
 def test_collect_rsyncs_requested_outputs_and_verifies_payload(tmp_path: Path) -> None:
