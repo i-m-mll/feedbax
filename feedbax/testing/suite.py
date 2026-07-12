@@ -8,9 +8,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tomllib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import pytest
+if TYPE_CHECKING:
+    import pytest
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,8 @@ class ContractSuiteHooks:
                         f"{item.nodeid}: {self.marker} xfail marks must set strict=True"
                     )
         if violations:
+            import pytest
+
             raise pytest.UsageError("\n".join(violations))
 
 
