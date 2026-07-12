@@ -14,6 +14,7 @@ from feedbax.contracts.checkpoints import (
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.training.checkpoint_custody import (
+    CheckpointCompatibilityError,
     load_latest_checkpoint,
     write_checkpoint_transaction,
 )
@@ -451,6 +452,7 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
             materialized.rows[0].spec.worker_execution.method_contract.phase_program
         ),
         expected_slots=target_slots,
+        continuation_request=continuation,
     )
     assert resumed.manifest.barrier == target_barrier
     assert resumed.manifest.completed_coordinate == target_coordinate
@@ -465,6 +467,22 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
     )
     assert resumed.manifest.metadata["checkpoint_continuation_applied"] is True
     assert jnp.all(resumed.slots["controller"].value == -1.0)
+
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="does not match the already-applied fork contract",
+    ):
+        load_latest_checkpoint(
+            tmp_path / "target",
+            expected_run_spec=materialized.rows[0].spec,
+            expected_phase_program=(
+                materialized.rows[0].spec.worker_execution.method_contract.phase_program
+            ),
+            expected_slots=target_slots,
+            continuation_request=continuation.model_copy(
+                update={"additional_batches": 4499}
+            ),
+        )
 
 
 def test_fork_cli_materializes_targets_and_writes_parity_table(tmp_path: Path) -> None:

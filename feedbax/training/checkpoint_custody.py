@@ -919,15 +919,17 @@ def _load_checkpoint_from_pointer(
             for slot, fingerprint in loaded_fingerprints.items()
             if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
         }
-    if request is not None and request.source_completed_batches != (
-        manifest.segment_lineage.start_batch + manifest.segment_lineage.segment_batch_count
-    ):
-        raise CheckpointCompatibilityError(
-            "checkpoint continuation source offset mismatch; "
-            f"lineage_total={manifest.segment_lineage.start_batch + manifest.segment_lineage.segment_batch_count} "
-            f"requested={request.source_completed_batches}"
+    if request is not None and not _continuation_was_applied(manifest, request):
+        lineage_total = (
+            manifest.segment_lineage.start_batch
+            + manifest.segment_lineage.segment_batch_count
         )
-    if request is not None:
+        if request.source_completed_batches != lineage_total:
+            raise CheckpointCompatibilityError(
+                "checkpoint continuation source offset mismatch; "
+                f"lineage_total={lineage_total} "
+                f"requested={request.source_completed_batches}"
+            )
         loaded_slots, _ = _allocate_segment_histories(loaded_slots, expected_slots)
         loaded_fingerprints = {}
     _validate_structural_abi(
@@ -1705,6 +1707,40 @@ def _coerce_continuation_request(
         raise CheckpointCompatibilityError(
             f"checkpoint continuation request is invalid: {exc}"
         ) from exc
+
+
+def _continuation_was_applied(
+    manifest: CheckpointTransactionManifest,
+    request: CheckpointContinuationRequest,
+) -> bool:
+    """Return whether this fork already applied exactly ``request``."""
+    marker = manifest.metadata.get("checkpoint_continuation_applied")
+    if marker is None or marker is False:
+        return False
+    if marker is not True:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation applied marker must be boolean true; "
+            f"value={marker!r}"
+        )
+    recorded_payload = manifest.metadata.get("checkpoint_continuation")
+    if not isinstance(recorded_payload, Mapping):
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation is marked applied but recorded request is missing"
+        )
+    try:
+        recorded = CheckpointContinuationRequest.model_validate(recorded_payload)
+    except ValidationError as exc:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation is marked applied but recorded request is invalid"
+        ) from exc
+    if recorded != request:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation request does not match the already-applied "
+            "fork contract; "
+            f"recorded={recorded.model_dump(mode='json', exclude_none=True)!r} "
+            f"requested={request.model_dump(mode='json', exclude_none=True)!r}"
+        )
+    return True
 
 
 def _coerce_barrier_mapping(
