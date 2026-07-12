@@ -158,7 +158,35 @@ def test_ranks_datacenters_for_gpu_by_stock() -> None:
         {"id": "medium", "gpuAvailability": [{"gpuId": "RTX_5090", "stockStatus": "Medium"}]},
     ]
 
-    assert rank_datacenters_for_gpu(datacenters, "RTX_5090") == ["high", "medium", "low"]
+    assert rank_datacenters_for_gpu(datacenters, "RTX_5090") == [
+        "high",
+        "medium",
+        "low",
+        "none",
+    ]
+
+
+def test_subprocess_rsync_uses_portable_progress_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run_command(args: list[str]) -> CommandResult:
+        calls.append(args)
+        return CommandResult(0, "")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    source = tmp_path / "checkpoint"
+    source.mkdir()
+    transport = SubprocessRunPodTransport(ssh_host="198.51.100.10", ssh_port=2222)
+
+    transport.rsync(str(source) + "/", "/workspace/checkpoint/", delete=True)
+
+    assert len(calls) == 1
+    assert "--progress" in calls[0]
+    assert "--stats" in calls[0]
+    assert all(not arg.startswith("--info=") for arg in calls[0])
 
 
 def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path) -> None:

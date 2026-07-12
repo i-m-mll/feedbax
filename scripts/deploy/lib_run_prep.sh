@@ -60,10 +60,10 @@ provider_copy() {
         runpod)
             rsh=$(rsync_rsh)
             if [ "$delete" -eq 1 ]; then
-                run_cmd rsync -az --delete --no-owner --no-group --stats -e "$rsh" \
+                run_cmd rsync -az --delete --no-owner --no-group --progress --stats -e "$rsh" \
                     "$source" "root@$SSH_HOST:$target"
             else
-                run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
+                run_cmd rsync -az --no-owner --no-group --progress --stats -e "$rsh" \
                     "$source" "root@$SSH_HOST:$target"
             fi
             ;;
