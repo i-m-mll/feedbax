@@ -11,6 +11,7 @@ Project plugins may publish additional checks through the existing
 from __future__ import annotations
 
 import json
+import hashlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,8 +20,14 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel, load_manifest
+from feedbax.contracts.manifest import StrictModel, TrainingRunManifest, load_manifest
+from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
+from feedbax.contracts.spec_storage import (
+    canonicalize_immutable_input_identities,
+    training_run_execution_hash,
+)
 from feedbax.contracts.training import OptimizerSpec
+from feedbax.orchestration.bundle import ExecutionIdentityEnvelope, SchemaArtifactRef
 from feedbax.orchestration.schedule_eval import (
     _MISSING as _SCHEDULE_MISSING,
     extract_resume_context,
@@ -95,6 +102,9 @@ class ConformanceRowArtifacts:
     """
 
     row_id: str
+    execution: ExecutionIdentityEnvelope | None = None
+    execution_identity_adapter: Any = None
+    schema_registry: Any = None
     manifest_path: Path | str | None = None
     training_diagnostics: Mapping[str, Any] | None = None
     checkpoint_custody_root: Path | str | None = None
@@ -289,12 +299,239 @@ def build_core_check_registry() -> CheckRegistry:
             "checkpoint_cadence": check_checkpoint_cadence,
             "completed_batches": check_completed_batches,
             "environment_fingerprint": check_environment_fingerprint,
+            "execution_identity": check_execution_identity,
             "events_terminal": check_events_terminal,
             "lr_trace": check_lr_trace,
             "manifest_valid": check_manifest_valid,
             "seeds": check_seeds,
         }
     )
+
+
+def check_execution_identity(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Verify ASSEMBLE identity evidence against independently emitted identity."""
+    check_id = "execution_identity"
+    if row.execution is None:
+        return missing_input_check(check_id, "execution")
+
+    try:
+        envelope = ExecutionIdentityEnvelope.model_validate(row.execution)
+        raw_manifest = _raw_manifest_payload(row)
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="typed execution envelope and final TrainingRunManifest",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
+
+    identity_keys = (
+        "intent_hash",
+        "resolved_semantics_root_hash",
+        "execution_hash",
+        "input_data_identities",
+    )
+    missing = [key for key in identity_keys if key not in raw_manifest]
+    if missing:
+        return missing_input_check(
+            check_id,
+            *(f"manifest.{key}" for key in missing),
+        )
+
+    expected = {
+        "intent_hash": envelope.authored_intent.intent_hash,
+        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
+        "execution_hash": envelope.execution_capsule.execution_hash,
+        "input_data_identities": canonicalize_immutable_input_identities(
+            envelope.immutable_inputs
+        ),
+    }
+    try:
+        _validate_envelope_artifacts(
+            envelope,
+            identity_adapter=row.execution_identity_adapter,
+            schema_registry=row.schema_registry,
+        )
+        computed_execution_hash = training_run_execution_hash(
+            envelope.resolved_snapshot.root_hash,
+            expected["input_data_identities"],
+        )
+        if computed_execution_hash != envelope.execution_capsule.execution_hash:
+            raise ValueError(
+                "envelope execution_hash mismatch: "
+                f"expected {computed_execution_hash}, "
+                f"observed {envelope.execution_capsule.execution_hash}"
+            )
+        manifest = TrainingRunManifest.model_validate(raw_manifest)
+        observed = {
+            "intent_hash": manifest.intent_hash,
+            "resolved_semantics_root_hash": manifest.resolved_semantics_root_hash,
+            "execution_hash": manifest.execution_hash,
+            "input_data_identities": canonicalize_immutable_input_identities(
+                manifest.input_data_identities
+            ),
+        }
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected=expected,
+            observed={key: raw_manifest.get(key) for key in identity_keys},
+            detail=str(exc),
+        )
+
+    mismatches = {
+        field: {"expected": expected[field], "observed": observed[field]}
+        for field in expected
+        if expected[field] != observed[field]
+    }
+    if mismatches:
+        return fail_check(
+            check_id,
+            expected=expected,
+            observed=observed,
+            detail=json.dumps(mismatches, sort_keys=True),
+        )
+    return pass_check(check_id, expected=expected, observed=observed)
+
+
+def _validate_envelope_artifacts(
+    envelope: ExecutionIdentityEnvelope,
+    *,
+    identity_adapter: Any = None,
+    schema_registry: Any = None,
+) -> None:
+    payload = _load_schema_artifact(envelope.payload, registry=schema_registry)
+    authored = _load_schema_artifact(envelope.authored_intent, registry=schema_registry)
+    snapshot = _load_schema_artifact(envelope.resolved_snapshot, registry=schema_registry)
+    capsule = _load_schema_artifact(envelope.execution_capsule, registry=schema_registry)
+
+    adapter = identity_adapter or _builtin_identity_adapter(
+        envelope.authored_intent.schema_id
+    )
+    intent_hash = adapter.intent_hash(authored)
+    if intent_hash != envelope.authored_intent.intent_hash:
+        raise ValueError(
+            "authored_intent.intent_hash mismatch: "
+            f"expected {intent_hash}, observed {envelope.authored_intent.intent_hash}"
+        )
+
+    decode_resolved_snapshot(snapshot)
+    if snapshot.get("root_hash") != envelope.resolved_snapshot.root_hash:
+        raise ValueError("resolved_snapshot.root_hash does not bind the decoded snapshot")
+
+    canonical_inputs = canonicalize_immutable_input_identities(envelope.immutable_inputs)
+    bindings = {
+        "intent_hash": envelope.authored_intent.intent_hash,
+        "resolved_root_hash": envelope.resolved_snapshot.root_hash,
+        "input_data_identities": canonical_inputs,
+        "execution_hash": envelope.execution_capsule.execution_hash,
+    }
+    observed_identities = adapter.capsule_identities(capsule)
+    observed_bindings = {
+        "intent_hash": observed_identities.intent_hash,
+        "resolved_root_hash": observed_identities.resolved_root_hash,
+        "input_data_identities": observed_identities.immutable_inputs,
+        "execution_hash": observed_identities.execution_hash,
+    }
+    mismatches = {
+        key: {"expected": expected, "observed": observed_bindings.get(key)}
+        for key, expected in bindings.items()
+        if observed_bindings.get(key) != expected
+    }
+    if mismatches:
+        raise ValueError(
+            "execution capsule binding mismatch: " + json.dumps(mismatches, sort_keys=True)
+        )
+    # Payload validation above is itself required evidence; keep a live reference so
+    # a future refactor cannot accidentally omit its dereference.
+    if not isinstance(payload, Mapping):  # pragma: no cover - registry validation guards this
+        raise TypeError("registered executable payload must be an object")
+
+
+def _builtin_identity_adapter(schema_id: str) -> Any:
+    """Resolve adapters for standalone checks outside a request-based engine."""
+    if schema_id == "feedbax.spec.training_run_matrix":
+        from feedbax.training.spec_storage import TrainingRunIdentityAdapter
+
+        return TrainingRunIdentityAdapter()
+    if schema_id == "feedbax.spec.studio.training_assembly":
+        from feedbax.contracts.studio_training import StudioTrainingIdentityAdapter
+
+        return StudioTrainingIdentityAdapter()
+    raise ValueError(f"no execution-identity adapter for authored schema {schema_id!r}")
+
+
+def _load_schema_artifact(
+    ref: SchemaArtifactRef,
+    *,
+    registry: Any = None,
+) -> dict[str, Any]:
+    if registry is None:
+        from feedbax.contracts.migrations import default_spec_registry
+
+        registry = default_spec_registry
+
+    if not ref.uri:
+        raise ValueError(f"artifact {ref.artifact_id!r} has no materialization URI")
+    path = Path(ref.uri).expanduser()
+    if not path.is_file():
+        raise ValueError(f"artifact {ref.artifact_id!r} is unavailable at {path}")
+    data = path.read_bytes()
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != ref.sha256:
+        raise ValueError(
+            f"artifact byte sha256 mismatch for {ref.artifact_id!r}: "
+            f"expected {ref.sha256}, observed {actual}"
+        )
+    payload = json.loads(data)
+    if not isinstance(payload, Mapping):
+        raise TypeError(f"artifact {ref.artifact_id!r} payload must be an object")
+    family = next(
+        (family for family in registry.families() if family.identity == ref.schema_id),
+        None,
+    )
+    if family is None:
+        raise ValueError(f"unknown registered artifact schema {ref.schema_id!r}")
+    if payload.get("schema_id") != ref.schema_id:
+        raise ValueError(f"artifact {ref.artifact_id!r} schema_id mismatch")
+    if payload.get("schema_version") != ref.schema_version:
+        raise ValueError(f"artifact {ref.artifact_id!r} schema_version mismatch")
+    migrated = registry.migrate(
+        family.kind,
+        payload,
+        source_version=ref.schema_version,
+    )
+    validated = migrated.payload
+    if ref.schema_id == "feedbax.spec.training_run_matrix":
+        from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
+
+        validated = TrainingRunMatrixSpec.model_validate(validated).model_dump(
+            mode="json", exclude_none=True
+        )
+    elif ref.schema_id == "feedbax.spec.studio.training_assembly":
+        from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
+
+        validated = StudioTrainingAssemblySpec.model_validate(validated).model_dump(
+            mode="json", exclude_none=True
+        )
+    elif ref.schema_id == "feedbax.manifest.training_run_execution_capsule":
+        from feedbax.contracts.spec_storage import TrainingRunExecutionCapsule
+
+        validated = TrainingRunExecutionCapsule.model_validate(validated).model_dump(
+            mode="json", exclude_none=True
+        )
+    return validated
+
+
+def _raw_manifest_payload(row: ConformanceRowArtifacts) -> dict[str, Any]:
+    if row.manifest_payload is not None:
+        return dict(row.manifest_payload)
+    if row.manifest_path is None:
+        raise ValueError("missing final manifest")
+    payload = json.loads(Path(row.manifest_path).read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise TypeError("final manifest payload must be an object")
+    return dict(payload)
 
 
 def build_default_check_registry(*, include_plugins: bool = True) -> CheckRegistry:
@@ -351,6 +588,8 @@ def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "seeds"),
         _path(row.bundle_row_spec, "seed"),
         _path(row.bundle_row_spec, "training", "seeds"),
+        _path(row.bundle_row_spec, "metadata", "seeds"),
+        _path(row.bundle_row_spec, "metadata", "seed"),
     )
     observed = _first_present(
         _path(row.training_diagnostics, "seeds"),
@@ -416,6 +655,7 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "checkpoint_interval"),
         _path(row.bundle_row_spec, "checkpoint_cadence", "interval"),
         _path(row.bundle_row_spec, "training", "checkpoint_interval"),
+        _path(row.bundle_row_spec, "checkpoint_progress", "checkpoint_interval"),
     )
     completed = _first_present(
         _path(row.training_diagnostics, "completed_batches"),

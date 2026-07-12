@@ -98,6 +98,13 @@ from feedbax.execution.models import (
 )
 from feedbax.objectives.spec import validate_objective_spec
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RUN_EVENT_SCHEMA_VERSION
+from feedbax.orchestration.bundle import (
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
+    RUN_BUNDLE_SCHEMA_VERSION,
+    RUN_BUNDLE_SCHEMA_VERSION_V1,
+    RUN_BUNDLE_SCHEMA_VERSION_V2,
+)
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
 
@@ -215,6 +222,65 @@ def test_structured_spec_registry_rejects_explicit_unsupported_old_version() -> 
     assert "current_version='feedbax.spec.demo.v2'" in message
     assert "migration_intentionally_absent=yes" in message
     assert "pre-release payloads were never durable" in message
+
+
+@pytest.mark.parametrize(
+    ("kind", "schema_id", "current_version"),
+    [
+        (
+            "RunAssemblyRequest",
+            "feedbax.spec.run_assembly_request",
+            "feedbax.spec.run_assembly_request.v1",
+        ),
+        (
+            "ExecutionIdentityEnvelope",
+            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
+            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
+        ),
+        (
+            "StudioTrainingAssemblySpec",
+            "feedbax.spec.studio.training_assembly",
+            "feedbax.spec.studio.training_assembly.v1",
+        ),
+    ],
+)
+def test_default_registry_registers_assemble_contract_families(
+    kind: str,
+    schema_id: str,
+    current_version: str,
+) -> None:
+    family = default_spec_registry.resolve(kind)
+
+    assert family.identity == schema_id
+    assert family.current_version == current_version
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+    accepted = default_spec_registry.migrate(
+        kind,
+        {"schema_id": schema_id, "schema_version": current_version},
+    )
+    assert accepted.target_version == current_version
+
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            kind,
+            {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
+        )
+
+
+@pytest.mark.parametrize("old_version", [RUN_BUNDLE_SCHEMA_VERSION_V1, RUN_BUNDLE_SCHEMA_VERSION_V2])
+def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
+    family = default_spec_registry.resolve("RunBundle")
+    assert family.current_version == RUN_BUNDLE_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+
+    with pytest.raises(UnsupportedSpecVersion) as excinfo:
+        default_spec_registry.migrate("RunBundle", {"schema_version": old_version})
+
+    message = str(excinfo.value)
+    assert old_version in message
+    assert "migration_intentionally_absent=yes" in message
 
 
 def test_structured_spec_registry_reports_unknown_family() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import subprocess
@@ -19,13 +20,25 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
+from feedbax.contracts.spec_storage import store_canonical_json_artifact
+from feedbax.contracts.studio_training import (
+    STUDIO_TRAINING_COMPILER_ID,
+    STUDIO_TRAINING_COMPILER_VERSION,
+    StudioTrainingAssemblySpec,
+    register_studio_training_compiler,
+)
+from feedbax.orchestration.assembly import (
+    AssemblyCompilerRegistry,
+    AssemblyContext,
+    CompilerIdentity,
+    RunAssemblyRequest,
+)
 from feedbax.orchestration.bundle import (
     BudgetPolicy,
     EnvironmentDeclaration,
     LaunchPolicy,
     RunBundle,
-    RunRowSpec,
-    mint_run_set_id,
+    SchemaArtifactRef,
 )
 from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.events import (
@@ -44,7 +57,7 @@ from feedbax.orchestration.stages import (
 )
 from feedbax.orchestration.state import RunSetState, RunSetStateStore, utc_now
 import feedbax.web.worker.client as worker_client
-from feedbax.web.services.worker_driver import WorkerHttpDriver
+from feedbax.web.services.worker_driver import WorkerHttpDriver, load_worker_execution_payload
 
 
 # ---------------------------------------------------------------------------
@@ -275,20 +288,26 @@ class TrainingService:
             "graph_spec": graph_spec,
         }
         body = {key: value for key, value in body.items() if value is not None}
-        bundle = self._build_worker_bundle(total_batches=total_batches, worker_start=body)
-        job_id = bundle.rows[0].row_id
-        driver = WorkerHttpDriver(base_url=base_url, auth_token=self._auth_token)
-        store = RunSetStateStore(bundle.run_set_dir / "state.json")
-        StageEngine(
-            bundle=bundle,
-            driver=driver,
-            store=store,
+        request, context, registry = self._build_worker_assembly_request(worker_start=body)
+        engine = StageEngine.from_request(
+            request,
+            context=context,
+            registry=registry,
+            driver_factory=lambda _bundle: WorkerHttpDriver(
+                base_url=base_url,
+                auth_token=self._auth_token,
+            ),
             conformance_registry=build_default_check_registry(),
-        ).run(stop_after_stage="ASSEMBLE")
+        )
+        engine.run(stop_after_stage="ASSEMBLE")
+        bundle = engine.bundle
+        if bundle is None:
+            raise RuntimeError("Studio ASSEMBLE completed without producing a RunBundle")
+        job_id = bundle.rows[0].row_id
         self._remember_job_ref(bundle)
         thread = threading.Thread(
             target=self._run_stage_engine,
-            args=(bundle, driver, store),
+            args=(engine,),
             name=f"feedbax-training-stage-engine-{bundle.run_set_id}",
             daemon=True,
         )
@@ -530,6 +549,7 @@ class TrainingService:
             try:
                 bundle = RunBundle.model_validate_json(bundle_path.read_text(encoding="utf-8"))
             except Exception:
+                self._index_legacy_v2_bundle(refs, state_path, bundle_path)
                 continue
             for row in bundle.rows:
                 refs[row.row_id] = _JobRef(
@@ -626,45 +646,53 @@ class TrainingService:
             )
         return rows
 
-    def _build_worker_bundle(
+    def _build_worker_assembly_request(
         self,
         *,
-        total_batches: int,
         worker_start: dict[str, Any],
-    ) -> RunBundle:
-        del total_batches
-        run_set_id = mint_run_set_id()
-        job_id = f"{run_set_id}-studio"
-        return RunBundle(
-            run_set_id=run_set_id,
+    ) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
+        authored = StudioTrainingAssemblySpec.model_validate(worker_start)
+        custody_root = _orchestration_parent_root() / "custody"
+        artifact = store_canonical_json_artifact(
+            authored,
+            root=custody_root,
+            role="studio_training_assembly",
+            logical_name="studio-training-assembly.json",
+        )
+        authored_ref = SchemaArtifactRef(
+            schema_id=authored.schema_id,
+            schema_version=authored.schema_version,
+            artifact_id=str(artifact.artifact_id),
+            sha256=str(artifact.sha256),
+            uri=artifact.uri,
+        )
+        request = RunAssemblyRequest(
+            authored=authored_ref,
+            compiler=CompilerIdentity(
+                compiler_id=STUDIO_TRAINING_COMPILER_ID,
+                compiler_version=STUDIO_TRAINING_COMPILER_VERSION,
+            ),
             driver="worker-http",
-            rows=[
-                RunRowSpec(
-                    row_id=job_id,
-                    command=["worker-http"],
-                    collect=[f"../events/{job_id}.events.jsonl"],
-                    metadata={"worker_start": worker_start},
-                )
-            ],
             environment=EnvironmentDeclaration(python_version=sys.version.split()[0]),
             launch_policy=LaunchPolicy(max_parallel_rows=1),
             budget=BudgetPolicy(max_wall_clock_seconds=24 * 60 * 60),
+            orchestration_root=str(_orchestration_parent_root()),
             metadata={"source": "studio-training-service"},
         )
+        registry = AssemblyCompilerRegistry()
+        register_studio_training_compiler(registry)
+        context = AssemblyContext(
+            custody_root=custody_root,
+            repo_root=Path(__file__).resolve().parents[3],
+        )
+        return request, context, registry
 
     def _run_stage_engine(
         self,
-        bundle: RunBundle,
-        driver: WorkerHttpDriver,
-        store: RunSetStateStore,
+        engine: StageEngine,
     ) -> None:
         try:
-            StageEngine(
-                bundle=bundle,
-                driver=driver,
-                store=store,
-                conformance_registry=build_default_check_registry(),
-            ).run(break_stale_lock=True)
+            engine.run(break_stale_lock=True)
         except Exception:
             # The durable state document carries the failed stage/row details.
             return
@@ -690,22 +718,65 @@ class TrainingService:
     def _load_bundle(self, ref: _JobRef) -> RunBundle:
         return RunBundle.model_validate_json(ref.bundle_path.read_text(encoding="utf-8"))
 
+    def _index_legacy_v2_bundle(
+        self,
+        refs: dict[str, _JobRef],
+        state_path: Path,
+        bundle_path: Path,
+    ) -> None:
+        """Index historical v2 rows for read-only status visibility only."""
+        try:
+            raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if raw.get("schema_version") != "feedbax.orchestration.run_bundle.v2":
+            return
+        run_set_id = raw.get("run_set_id")
+        if not isinstance(run_set_id, str):
+            return
+        for row in raw.get("rows", []):
+            job_id = row.get("row_id") if isinstance(row, dict) else None
+            if isinstance(job_id, str):
+                refs[job_id] = _JobRef(job_id, run_set_id, state_path, bundle_path)
+
     def _status_from_state(self, job_id: str) -> dict[str, Any] | None:
         ref = self._job_ref_for(job_id)
         if ref is None or not ref.state_path.exists():
             return None
         try:
             state = RunSetStateStore(ref.state_path).load()
-            bundle = self._load_bundle(ref)
         except Exception:
             return None
         row = state.rows.get(job_id)
         if row is None:
             return None
-        events = self._read_job_events(bundle, job_id)
+        bundle: RunBundle | None
+        legacy_worker_start: dict[str, Any] = {}
+        try:
+            bundle = self._load_bundle(ref)
+            total_batches = load_worker_execution_payload(bundle.row(job_id)).get(
+                "total_batches", 0
+            )
+        except Exception:
+            bundle = None
+            try:
+                raw = json.loads(ref.bundle_path.read_text(encoding="utf-8"))
+                legacy_row = next(
+                    item for item in raw.get("rows", []) if item.get("row_id") == job_id
+                )
+                legacy_worker_start = dict(
+                    (legacy_row.get("metadata") or {}).get("worker_start") or {}
+                )
+                total_batches = legacy_worker_start.get("total_batches", 0)
+            except Exception:
+                return None
+        events = (
+            self._read_job_events(bundle, job_id)
+            if bundle is not None
+            else RunEventReader(ref.state_path.parent / "events" / f"{job_id}.events.jsonl").read_all()
+        )
         latest = events[-1] if events else None
         payload = dict(latest.payload) if latest is not None else {}
-        worker_start = dict(bundle.row(job_id).metadata.get("worker_start") or {})
         status = row.status
         if status == "failed":
             status = "error"
@@ -715,7 +786,7 @@ class TrainingService:
             "status": status,
             "batch": int(payload.get("batch", 0) or 0),
             "total_batches": int(
-                payload.get("total_batches", worker_start.get("total_batches", 0)) or 0
+                payload.get("total_batches", total_batches) or 0
             ),
             "last_loss": float(payload.get("loss", 0.0) or 0.0),
             "job_id": job_id,

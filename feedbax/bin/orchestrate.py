@@ -23,12 +23,15 @@ from feedbax.contracts.migrations import default_spec_registry
 from feedbax.orchestration import (
     STAGE_ORDER,
     LocalOrchestrationDriver,
+    AssemblyContext,
+    RunAssemblyRequest,
     RunBundle,
     RunEvent,
     RunEventReader,
     RunSetState,
     RunSetStateStore,
     StateLockError,
+    build_default_assembly_registry,
 )
 from feedbax.orchestration.bundle import default_orchestration_root
 from feedbax.orchestration.conformance import build_default_check_registry
@@ -37,7 +40,6 @@ from feedbax.orchestration.stages import (
     BudgetExceeded,
     PreflightFailed,
     StageEngine,
-    run_preflight_checks,
 )
 from feedbax.training.interruption import CancellationDecision, RunInterruptionController
 
@@ -82,11 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     preflight = subparsers.add_parser("preflight", help="Run ASSEMBLE and PREFLIGHT only")
-    preflight.add_argument("--bundle", required=True, help="RunBundle JSON path")
+    preflight.add_argument(
+        "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
+    )
     preflight.set_defaults(func=cmd_preflight)
 
     launch = subparsers.add_parser("launch", help="Launch or resume a run bundle")
-    launch.add_argument("--bundle", required=True, help="RunBundle JSON path")
+    launch.add_argument(
+        "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
+    )
     launch.add_argument("--driver", choices=["local", "runpod"], help="Driver override")
     launch.add_argument(
         "--deadman",
@@ -126,16 +132,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    bundle = _load_bundle(args.bundle)
+    request_path = Path(args.assembly_request)
+    request = _load_assembly_request(request_path)
+    engine = _request_engine(request, request_path=request_path)
     try:
-        state = StageEngine(
-            bundle=bundle,
-            driver=_driver_for_bundle(bundle),
-            conformance_registry=build_default_check_registry(),
-        ).run(stop_after_stage="PREFLIGHT")
+        state = engine.run(stop_after_stage="PREFLIGHT")
     except PreflightFailed:
-        state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
-    checks = state.stage("PREFLIGHT").checks or run_preflight_checks(bundle)
+        state = engine.store.load()
+    checks = state.stage("PREFLIGHT").checks
     for check in checks:
         detail = f" detail={check.detail}" if check.detail else ""
         print(f"{check.name} {check.status}{detail}")
@@ -143,18 +147,27 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
-    bundle = _load_launch_bundle(args.bundle, args.resume_run_set)
+    request_path = Path(args.assembly_request)
+    request = _load_assembly_request(request_path)
     if args.driver:
-        bundle = bundle.model_copy(update={"driver": args.driver})
+        request = request.model_copy(update={"driver": args.driver})
     overrides: dict[str, Any] = {}
     if args.deadman is not None:
         overrides["deadman_enabled"] = args.deadman
     if args.deadman_silence_seconds is not None:
         overrides["deadman_silence_seconds"] = args.deadman_silence_seconds
     if overrides:
-        bundle = RunBundle.model_validate({**bundle.model_dump(mode="json"), **overrides})
+        request = RunAssemblyRequest.model_validate(
+            {**request.model_dump(mode="json"), **overrides}
+        )
     with RunInterruptionController() as interruption:
-        state = _run_engine(bundle, interruption_probe=interruption.poll)
+        engine = _request_engine(
+            request,
+            request_path=request_path,
+            run_set_id=args.resume_run_set,
+            interruption_probe=interruption.poll,
+        )
+        state = engine.run()
     return _state_exit_code(state)
 
 
@@ -288,6 +301,35 @@ def _load_bundle(path: str | Path) -> RunBundle:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     migrated = default_spec_registry.migrate("RunBundle", payload)
     return RunBundle.model_validate(migrated.payload)
+
+
+def _load_assembly_request(path: str | Path) -> RunAssemblyRequest:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    migrated = default_spec_registry.migrate("RunAssemblyRequest", payload)
+    return RunAssemblyRequest.model_validate(migrated.payload)
+
+
+def _request_engine(
+    request: RunAssemblyRequest,
+    *,
+    request_path: Path,
+    run_set_id: str | None = None,
+    interruption_probe: Callable[[], CancellationDecision | None] | None = None,
+) -> StageEngine:
+    root = Path(request.orchestration_root).expanduser() if request.orchestration_root else request_path.parent
+    context = AssemblyContext(
+        custody_root=root / "custody",
+        repo_root=Path.cwd(),
+    )
+    return StageEngine.from_request(
+        request,
+        context=context,
+        registry=build_default_assembly_registry(),
+        driver_factory=_driver_for_bundle,
+        run_set_id=run_set_id,
+        conformance_registry=build_default_check_registry(),
+        interruption_probe=interruption_probe,
+    )
 
 
 def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
