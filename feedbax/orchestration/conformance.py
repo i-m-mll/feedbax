@@ -342,9 +342,7 @@ def check_execution_identity(row: ConformanceRowArtifacts) -> CheckEntry:
         "intent_hash": envelope.authored_intent.intent_hash,
         "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
         "execution_hash": envelope.execution_capsule.execution_hash,
-        "input_data_identities": canonicalize_immutable_input_identities(
-            envelope.immutable_inputs
-        ),
+        "input_data_identities": canonicalize_immutable_input_identities(envelope.immutable_inputs),
     }
     try:
         _validate_envelope_artifacts(
@@ -405,9 +403,7 @@ def _validate_envelope_artifacts(
     snapshot = _load_schema_artifact(envelope.resolved_snapshot, registry=schema_registry)
     capsule = _load_schema_artifact(envelope.execution_capsule, registry=schema_registry)
 
-    adapter = identity_adapter or _builtin_identity_adapter(
-        envelope.authored_intent.schema_id
-    )
+    adapter = identity_adapter or _builtin_identity_adapter(envelope.authored_intent.schema_id)
     intent_hash = adapter.intent_hash(authored)
     if intent_hash != envelope.authored_intent.intent_hash:
         raise ValueError(
@@ -657,12 +653,30 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "training", "checkpoint_interval"),
         _path(row.bundle_row_spec, "checkpoint_progress", "checkpoint_interval"),
     )
-    completed = _first_present(
-        _path(row.training_diagnostics, "completed_batches"),
-        _path(row.training_diagnostics, "summary", "completed_batches"),
-        _path(row.bundle_row_spec, "expected_batches"),
-        _path(row.bundle_row_spec, "n_batches"),
-    )
+    segment_completed = _path(row.training_diagnostics, "segment_completed_batches")
+    if segment_completed is not _MISSING:
+        completed = segment_completed
+        completed_source = "training_diagnostics.segment_completed_batches"
+    else:
+        completed_candidates = (
+            (
+                _path(row.training_diagnostics, "completed_batches"),
+                "training_diagnostics.completed_batches",
+            ),
+            (
+                _path(row.training_diagnostics, "summary", "completed_batches"),
+                "training_diagnostics.summary.completed_batches",
+            ),
+            (_path(row.bundle_row_spec, "expected_batches"), "bundle_row_spec.expected_batches"),
+            (_path(row.bundle_row_spec, "n_batches"), "bundle_row_spec.n_batches"),
+        )
+        completed = _MISSING
+        completed_source = "completed batch count"
+        for candidate, source in completed_candidates:
+            if candidate is not _MISSING:
+                completed = candidate
+                completed_source = source
+                break
     coordinates = _checkpoint_coordinates(row)
     if interval is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec.checkpoint_interval")
@@ -685,6 +699,7 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         check_id,
         expected={"coordinate_interval": interval_int, "coordinates": expected},
         observed={"coordinates": observed, "realized_batches": completed_int},
+        detail=f"cadence length read from {completed_source}",
     )
 
 
@@ -817,6 +832,21 @@ def _optimizer_spec_payload(row: ConformanceRowArtifacts) -> Any:
         _path(row.bundle_row_spec, "training_spec", "method_payload", "payload", "optimizer"),
         _path(
             _training_spec_payload(_manifest_payload(row)), "method_payload", "payload", "optimizer"
+        ),
+        _path(row.bundle_row_spec, "method_payload", "payload", "optimizer"),
+        _path(row.bundle_row_spec, "method_payload", "payload", "controller_optimizer"),
+        _path(
+            row.bundle_row_spec,
+            "training_spec",
+            "method_payload",
+            "payload",
+            "controller_optimizer",
+        ),
+        _path(
+            _training_spec_payload(_manifest_payload(row)),
+            "method_payload",
+            "payload",
+            "controller_optimizer",
         ),
     )
 

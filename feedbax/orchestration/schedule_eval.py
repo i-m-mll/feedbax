@@ -70,27 +70,38 @@ def extract_resume_context(
     bundle_row_spec: Mapping[str, Any] | None,
     training_diagnostics: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Extract declared resume/fork schedule context from row artifacts."""
+    """Extract declared resume/fork schedule context from row artifacts.
+
+    Top-level row declarations take precedence, followed by diagnostics and
+    finally governed row metadata.
+    """
     raw = _first_present(
         _path(bundle_row_spec, "resume_context"),
         _path(training_diagnostics, "resume_context"),
         {},
     )
+    metadata_raw = _path(bundle_row_spec, "metadata", "resume_context")
     return {
         "schedule_origin_step": _first_present(
             _path(raw, "schedule_origin_step"),
             _path(bundle_row_spec, "schedule_origin_step"),
             _path(training_diagnostics, "schedule_origin_step"),
+            _path(metadata_raw, "schedule_origin_step"),
+            _path(bundle_row_spec, "metadata", "schedule_origin_step"),
         ),
         "current_step": _first_present(
             _path(raw, "current_step"),
             _path(bundle_row_spec, "current_step"),
             _path(training_diagnostics, "current_step"),
+            _path(metadata_raw, "current_step"),
+            _path(bundle_row_spec, "metadata", "current_step"),
         ),
         "optimizer_count_at_current_step": _first_present(
             _path(raw, "optimizer_count_at_current_step"),
             _path(bundle_row_spec, "optimizer_count_at_current_step"),
             _path(training_diagnostics, "optimizer_count_at_current_step"),
+            _path(metadata_raw, "optimizer_count_at_current_step"),
+            _path(bundle_row_spec, "metadata", "optimizer_count_at_current_step"),
         ),
     }
 
@@ -104,6 +115,8 @@ def extract_optimizer_build_context(
     The executor's construction context must be recorded separately from the
     declared resume context. Falling back to the declaration would turn this
     check into a self-comparison and conceal dropped or mis-wired context.
+    Existing row and diagnostics declarations take precedence over governed
+    row metadata.
     """
     raw = _first_present(
         _path(bundle_row_spec, "optimizer_build_context"),
@@ -112,6 +125,7 @@ def extract_optimizer_build_context(
         _path(bundle_row_spec, "training", "optimizer_build_context"),
         _path(bundle_row_spec, "method_payload", "payload", "optimizer_build_context"),
         _path(training_diagnostics, "optimizer_build_context"),
+        _path(bundle_row_spec, "metadata", "optimizer_build_context"),
         _MISSING,
     )
     if raw is _MISSING:

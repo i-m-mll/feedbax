@@ -86,6 +86,7 @@ class RunPodTransport(Protocol):
         *,
         delete: bool = False,
         excludes: Sequence[str] = (),
+        timeout_seconds: float | None = None,
     ) -> CommandResult:
         """Synchronize files between local and remote paths."""
 
@@ -126,6 +127,7 @@ class SubprocessRunPodTransport:
         *,
         delete: bool = False,
         excludes: Sequence[str] = (),
+        timeout_seconds: float | None = None,
     ) -> CommandResult:
         host = self._require_host()
         rsync_target = target
@@ -148,7 +150,7 @@ class SubprocessRunPodTransport:
                 rsync_target,
             ]
         )
-        return _run_command(args)
+        return _run_command(args, timeout_seconds=timeout_seconds)
 
     def _require_host(self) -> str:
         if not self.ssh_host or self.ssh_port is None:
@@ -220,6 +222,8 @@ class RunPodDriverConfig:
     pod_name_prefix: str = "feedbax-orchestration"
     max_acquire_seconds: float = 900.0
     poll_seconds: float = 5.0
+    env_step_timeout_seconds: float = 1800.0
+    failure_log_pull_timeout_seconds: float = 60.0
     volume_mount: str = "/workspace"
     remote_repo_root: str = "/workspace"
     remote_run_root: str = "/workspace/feedbax_runs"
@@ -389,6 +393,12 @@ class RunPodOrchestrationDriver:
             failed_file=f"{sentinel_dir}/uv-sync.failed",
             log_file=f"{logs_dir}/uv-sync.log",
         )
+        self._wait_for_remote_sentinel(
+            label="uv sync",
+            done_file=f"{sentinel_dir}/uv-sync.done",
+            failed_file=f"{sentinel_dir}/uv-sync.failed",
+            log_file=f"{logs_dir}/uv-sync.log",
+        )
         for index, step in enumerate(
             (*bundle.environment.overlay_steps, *self.config.overlay_steps)
         ):
@@ -396,6 +406,12 @@ class RunPodOrchestrationDriver:
                 label=f"overlay {index}",
                 workdir=workdir,
                 command=step,
+                done_file=f"{sentinel_dir}/overlay-{index}.done",
+                failed_file=f"{sentinel_dir}/overlay-{index}.failed",
+                log_file=f"{logs_dir}/overlay-{index}.log",
+            )
+            self._wait_for_remote_sentinel(
+                label=f"overlay {index}",
                 done_file=f"{sentinel_dir}/overlay-{index}.done",
                 failed_file=f"{sentinel_dir}/overlay-{index}.failed",
                 log_file=f"{logs_dir}/overlay-{index}.log",
@@ -580,9 +596,9 @@ class RunPodOrchestrationDriver:
                 "22/tcp,8080/http",
             ]
             if self.config.gpu_id:
-                args.extend(["--gpuType", self.config.gpu_id])
+                args.extend(["--gpu-id", self.config.gpu_id])
             if dc:
-                args.extend(["--dataCenterId", dc])
+                args.extend(["--data-center-ids", dc])
             result = self.transport.runpodctl(*args)
             if result.returncode == 0:
                 payload = _json_object(result.stdout)
@@ -735,6 +751,54 @@ class RunPodOrchestrationDriver:
                 log_file=log_file,
             )
         ).check(label)
+
+    def _wait_for_remote_sentinel(
+        self,
+        *,
+        label: str,
+        done_file: str,
+        failed_file: str,
+        log_file: str,
+    ) -> None:
+        deadline = self._monotonic() + self.config.env_step_timeout_seconds
+        probe = (
+            f"if [ -f {_sq(failed_file)} ]; then printf failed; "
+            f"elif [ -f {_sq(done_file)} ]; then printf done; "
+            "else printf pending; fi"
+        )
+        while True:
+            result = self.transport.ssh(probe)
+            status = result.stdout.strip()
+            if result.returncode == 0 and status == "done":
+                return
+            if result.returncode == 0 and status == "failed":
+                raise RunPodDriverError(
+                    f"{label} failed; remote log tail:\n{self._remote_log_tail(log_file)}"
+                )
+            if self._monotonic() >= deadline:
+                raise RunPodDriverError(
+                    f"{label} timed out after {self.config.env_step_timeout_seconds:g}s; "
+                    f"remote log tail:\n{self._remote_log_tail(log_file)}"
+                )
+            self._sleep(self.config.poll_seconds)
+
+    def _remote_log_tail(self, log_file: str) -> str:
+        result = self.transport.ssh(f"tail -n 50 -- {_sq(log_file)}")
+        detail = result.stdout.strip() or result.stderr.strip()
+        return detail or "<remote log unavailable>"
+
+    def collect_failure_logs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, str]:
+        """Pull remote logs before failure teardown destroys the pod."""
+        del state
+        destination = bundle.run_set_dir / "failure-logs"
+        destination.mkdir(parents=True, exist_ok=True)
+        self.transport.rsync(
+            f"{self._remote_run_dir(bundle)}/logs/",
+            str(destination) + "/",
+            delete=False,
+            timeout_seconds=self.config.failure_log_pull_timeout_seconds,
+        ).check("collect failure logs")
+        return {"failure_logs": str(destination)}
 
 
 def classify_pod_state(pod: Mapping[str, Any] | None) -> PodStateClassification:
@@ -1165,9 +1229,7 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
         return None
     path = Path(ref.uri)
     if _sha256_file(path) != ref.sha256:
-        raise RunPodDriverError(
-            f"registered payload digest mismatch for row {row.row_id!r}"
-        )
+        raise RunPodDriverError(f"registered payload digest mismatch for row {row.row_id!r}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise RunPodDriverError("registered row payload must be a JSON object")
@@ -1176,9 +1238,17 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     return dict(payload)
 
 
-def _run_command(args: Sequence[str]) -> CommandResult:
+def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:
     try:
-        result = subprocess.run(args, check=False, capture_output=True, text=True)
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(124, exc.stdout or "", f"timed out after {timeout_seconds:g}s")
     except OSError as exc:
         return CommandResult(127, "", str(exc))
     return CommandResult(result.returncode, result.stdout, result.stderr)

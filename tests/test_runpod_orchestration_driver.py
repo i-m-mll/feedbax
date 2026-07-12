@@ -38,6 +38,7 @@ from feedbax.orchestration.drivers.runpod import (
     SubprocessRunPodTransport,
     build_literal_path_patch_command,
     classify_pod_state,
+    compute_runpod_environment_fingerprint,
     endpoint_classification,
     rank_datacenters_for_gpu,
 )
@@ -52,6 +53,11 @@ class FakeRunPodTransport:
         self.rsync_calls: list[tuple[str, str, bool, tuple[str, ...]]] = []
         self.runpodctl_results: dict[tuple[str, ...], list[CommandResult]] = {}
         self.ssh_results: list[CommandResult] = []
+        self.sentinel_results: list[CommandResult] = []
+        self.log_tail_result = CommandResult(0, "")
+        self.operations: list[str] = []
+        self.rsync_timeouts: list[float | None] = []
+        self.rsync_result = CommandResult(0, "")
 
     def queue_runpodctl(self, args: tuple[str, ...], result: CommandResult) -> None:
         self.runpodctl_results.setdefault(args, []).append(result)
@@ -61,6 +67,7 @@ class FakeRunPodTransport:
 
     def runpodctl(self, *args: str) -> CommandResult:
         self.runpodctl_calls.append(args)
+        self.operations.append(f"runpodctl:{' '.join(args)}")
         queued = self.runpodctl_results.get(args)
         if queued:
             return queued.pop(0)
@@ -71,6 +78,13 @@ class FakeRunPodTransport:
 
     def ssh(self, command: str) -> CommandResult:
         self.ssh_commands.append(command)
+        self.operations.append(f"ssh:{command}")
+        if command.startswith("if [ -f ") and "printf pending" in command:
+            if self.sentinel_results:
+                return self.sentinel_results.pop(0)
+            return CommandResult(0, "done")
+        if command.startswith("tail -n 50 -- "):
+            return self.log_tail_result
         if command.startswith("cat ") and not self.ssh_results:
             return CommandResult(0, "4321\n")
         if self.ssh_results:
@@ -84,9 +98,25 @@ class FakeRunPodTransport:
         *,
         delete: bool = False,
         excludes: tuple[str, ...] = (),
+        timeout_seconds: float | None = None,
     ) -> CommandResult:
         self.rsync_calls.append((source, target, delete, tuple(excludes)))
-        return CommandResult(0, "")
+        self.rsync_timeouts.append(timeout_seconds)
+        self.operations.append(f"rsync:{source}->{target}")
+        return self.rsync_result
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
 class _RunPodFixtureCompiler:
@@ -245,7 +275,8 @@ def test_subprocess_rsync_uses_portable_progress_flags(
 ) -> None:
     calls: list[list[str]] = []
 
-    def run_command(args: list[str]) -> CommandResult:
+    def run_command(args: list[str], *, timeout_seconds: float | None = None) -> CommandResult:
+        assert timeout_seconds is None
         calls.append(args)
         return CommandResult(0, "")
 
@@ -277,6 +308,39 @@ def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path
     assert "nvidia-smi >/dev/null" in transport.ssh_commands
     assert teardown["teardown"] == "skipped"
     assert transport.runpodctl_calls == []
+
+
+def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    expected_call = (
+        "pod",
+        "create",
+        "--name",
+        "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image",
+        "runpod/pytorch:1.0.3",
+        "--ports",
+        "22/tcp,8080/http",
+        "--gpu-id",
+        "NVIDIA GeForce RTX 4090",
+        "--data-center-ids",
+        "CA-MTL-1",
+    )
+    transport.queue_runpodctl(expected_call, CommandResult(0, json.dumps({"id": "pod-123"})))
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            datacenters=("CA-MTL-1",),
+            image="runpod/pytorch:1.0.3",
+        ),
+        transport=transport,
+    )
+
+    assert driver._create_pod(bundle) == "pod-123"
+    assert transport.runpodctl_calls == [expected_call]
+    assert "--gpuType" not in expected_call
+    assert "--dataCenterId" not in expected_call
 
 
 def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) -> None:
@@ -331,6 +395,107 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "uv pip install extra" in joined
     assert "uv pip install -U" in joined
     assert "jax[cuda12]" in joined
+
+
+def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={"environment": bundle.environment.model_copy(update={"overlay_steps": []})}
+    )
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, ""))
+    transport.queue_ssh(CommandResult(1, ""))
+    transport.sentinel_results = [
+        CommandResult(0, "pending"),
+        CommandResult(0, "pending"),
+        CommandResult(0, "done"),
+    ]
+    clock = FakeClock()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            overlay_steps=(),
+            poll_seconds=2,
+            env_step_timeout_seconds=10,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    driver.realize_env(bundle, _state(bundle))
+
+    assert clock.sleeps == [2, 2]
+    fingerprint_write = next(
+        index
+        for index, command in enumerate(transport.ssh_commands)
+        if "env-fingerprint.txt" in command and "printf %s" in command
+    )
+    sentinel_probe = max(
+        index
+        for index, command in enumerate(transport.ssh_commands)
+        if "uv-sync.done" in command and "printf pending" in command
+    )
+    assert sentinel_probe < fingerprint_write
+
+
+def test_realize_env_failed_sentinel_raises_with_remote_log_tail(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={"environment": bundle.environment.model_copy(update={"overlay_steps": []})}
+    )
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, ""))
+    transport.queue_ssh(CommandResult(1, ""))
+    transport.sentinel_results = [CommandResult(0, "failed")]
+    transport.log_tail_result = CommandResult(0, "line 49\nimportant failure detail\n")
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(overlay_steps=()),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodDriverError, match="important failure detail"):
+        driver.realize_env(bundle, _state(bundle))
+
+
+def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={"environment": bundle.environment.model_copy(update={"overlay_steps": []})}
+    )
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, ""))
+    transport.queue_ssh(CommandResult(1, ""))
+    transport.sentinel_results = [CommandResult(0, "pending")] * 4
+    clock = FakeClock()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            overlay_steps=(),
+            poll_seconds=1,
+            env_step_timeout_seconds=3,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    with pytest.raises(RunPodDriverError, match="uv sync timed out after 3s"):
+        driver.realize_env(bundle, _state(bundle))
+
+    assert clock.now == 3
+
+
+def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    fingerprint = compute_runpod_environment_fingerprint(bundle)
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, ""))
+    transport.queue_ssh(CommandResult(0, fingerprint))
+    driver = RunPodOrchestrationDriver(transport=transport)
+
+    assert driver.realize_env(bundle, _state(bundle)) == fingerprint
+    assert transport.rsync_calls == []
+    assert all("uv sync --frozen" not in command for command in transport.ssh_commands)
+    assert all("overlay-" not in command for command in transport.ssh_commands)
 
 
 def test_literal_patch_command_uses_perl_quotemeta_not_regex_globs() -> None:
@@ -608,6 +773,38 @@ def test_teardown_removes_acquired_pod_and_falls_back_to_stop(tmp_path: Path) ->
     assert result["teardown"] == "stopped"
     assert ("remove", "pod", "pod-123") in transport.runpodctl_calls
     assert ("stop", "pod", "pod-123") in transport.runpodctl_calls
+
+
+def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.rsync_result = CommandResult(1, "", "diagnostic pull failed")
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-123",
+            failure_log_pull_timeout_seconds=17,
+        ),
+        transport=transport,
+    )
+    engine = StageEngine(bundle=bundle, driver=driver)
+
+    state = engine._run_teardown(_state(bundle), abort=True)
+
+    assert state.stage("TEARDOWN").status == "completed"
+    pull_index = next(
+        index
+        for index, operation in enumerate(transport.operations)
+        if operation.startswith("rsync:")
+    )
+    remove_index = transport.operations.index("runpodctl:remove pod pod-123")
+    assert pull_index < remove_index
+    assert transport.rsync_calls[-1] == (
+        "/workspace/feedbax_runs/2026-01-02-deadbeef/logs/",
+        str(bundle.run_set_dir / "failure-logs") + "/",
+        False,
+        (),
+    )
+    assert transport.rsync_timeouts[-1] == 17
 
 
 def test_local_baseline_mismatch_raises_before_rsync(
