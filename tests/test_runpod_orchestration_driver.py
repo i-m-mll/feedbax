@@ -279,6 +279,39 @@ def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path
     assert transport.runpodctl_calls == []
 
 
+def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    expected_call = (
+        "pod",
+        "create",
+        "--name",
+        "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image",
+        "runpod/pytorch:1.0.3",
+        "--ports",
+        "22/tcp,8080/http",
+        "--gpu-id",
+        "NVIDIA GeForce RTX 4090",
+        "--data-center-ids",
+        "CA-MTL-1",
+    )
+    transport.queue_runpodctl(expected_call, CommandResult(0, json.dumps({"id": "pod-123"})))
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            datacenters=("CA-MTL-1",),
+            image="runpod/pytorch:1.0.3",
+        ),
+        transport=transport,
+    )
+
+    assert driver._create_pod(bundle) == "pod-123"
+    assert transport.runpodctl_calls == [expected_call]
+    assert "--gpuType" not in expected_call
+    assert "--dataCenterId" not in expected_call
+
+
 def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()

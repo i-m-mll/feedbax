@@ -580,9 +580,9 @@ class RunPodOrchestrationDriver:
                 "22/tcp,8080/http",
             ]
             if self.config.gpu_id:
-                args.extend(["--gpuType", self.config.gpu_id])
+                args.extend(["--gpu-id", self.config.gpu_id])
             if dc:
-                args.extend(["--dataCenterId", dc])
+                args.extend(["--data-center-ids", dc])
             result = self.transport.runpodctl(*args)
             if result.returncode == 0:
                 payload = _json_object(result.stdout)
