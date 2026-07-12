@@ -153,7 +153,9 @@ class StageEngine:
         self.assembly_context = assembly_context
         self.assembly_registry = assembly_registry
         self.driver_factory = driver_factory
-        self.run_set_id = bundle.run_set_id if bundle is not None else (run_set_id or mint_run_set_id())
+        self.run_set_id = (
+            bundle.run_set_id if bundle is not None else (run_set_id or mint_run_set_id())
+        )
         self.driver = driver
         run_set_dir = (
             bundle.run_set_dir
@@ -335,9 +337,9 @@ class StageEngine:
         bundle_path = self.store.path.parent / "bundle.json"
         data = bundle_path.read_bytes()
         expected = state.stage(STAGE_ASSEMBLE).outputs.get("bundle_sha256")
-        canonical = json.dumps(
-            json.loads(data), sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        canonical = json.dumps(json.loads(data), sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
         actual = hashlib.sha256(canonical).hexdigest()
         if expected != actual:
             raise OrchestrationStageError(
@@ -485,9 +487,7 @@ class StageEngine:
             execution=row.execution,
             execution_identity_adapter=self._execution_identity_adapter(),
             schema_registry=(
-                self.assembly_context.schema_registry
-                if self.assembly_context is not None
-                else None
+                self.assembly_context.schema_registry if self.assembly_context is not None else None
             ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
             bundle_row_spec=run_spec,
@@ -860,7 +860,10 @@ def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     payload = json.loads(data)
     if not isinstance(payload, dict):
         raise ValueError(f"row {row.row_id!r} executable payload must be a JSON object")
-    if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
         raise ValueError(
             f"row {row.row_id!r} executable payload schema does not match its artifact ref"
         )
@@ -869,10 +872,7 @@ def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
 
 def _is_training_run_payload(payload: Any) -> bool:
     """Return whether generic payload checks apply to a TrainingRunSpec row."""
-    return (
-        isinstance(payload, Mapping)
-        and payload.get("schema_id") == "feedbax.spec.training_run"
-    )
+    return isinstance(payload, Mapping) and payload.get("schema_id") == "feedbax.spec.training_run"
 
 
 def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[str, Any]]:
@@ -892,9 +892,7 @@ def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[
         row_observed: list[dict[str, Any]] = []
         for index, payload in enumerate(optimizer_payloads):
             try:
-                result = _evaluate_optimizer_schedule_at_preflight(
-                    row, run_spec, index, payload
-                )
+                result = _evaluate_optimizer_schedule_at_preflight(row, run_spec, index, payload)
             except Exception as exc:
                 failures.append(f"{row.row_id}[{index}]: {exc}")
             else:
@@ -968,7 +966,9 @@ def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         _path(run_spec, "training", "optimizer"),
         _path(run_spec, "training_config", "optimizer"),
         _path(run_spec, "method_payload", "payload", "optimizer"),
+        _path(run_spec, "method_payload", "payload", "controller_optimizer"),
         _path(run_spec, "method_payload", "inline", "payload", "optimizer"),
+        _path(run_spec, "method_payload", "inline", "payload", "controller_optimizer"),
     ):
         if isinstance(value, Mapping):
             payloads.append(value)

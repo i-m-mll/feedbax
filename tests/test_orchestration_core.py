@@ -394,6 +394,19 @@ def _identity_training_payload() -> dict[str, Any]:
     ).model_dump(mode="json", exclude_none=True)
 
 
+def _third_party_controller_training_payload(
+    *,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a strict TrainingRunSpec-shaped row with a third-party optimizer slot."""
+    payload = _identity_training_payload()
+    method_payload = payload["method_payload"]["payload"]
+    method_payload["controller_optimizer"] = _scheduled_optimizer_payload()
+    method_payload.pop("optimizer")
+    payload["metadata"] = dict(metadata or {})
+    return payload
+
+
 def _schedule_context(
     *,
     schedule_origin_step: int,
@@ -553,9 +566,7 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "capsule": "cc26ba45b954643009fb4a9498b68a6512993c588a543d3cd34192e072bb17bf",
     }
     assert (
-        training_spec_sha256(
-            StudioTrainingAssemblySpec.model_validate(authored).worker_payload()
-        )
+        training_spec_sha256(StudioTrainingAssemblySpec.model_validate(authored).worker_payload())
         == expected_intent_hash
     )
     assert build_resolved_semantics_snapshot(resolved_semantics)["root_hash"] == expected_root_hash
@@ -658,14 +669,9 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
             encoding="utf-8"
         )
     )
-    checks = {
-        check["check_id"]: check
-        for check in certificate["rows"]["identity-row"]["checks"]
-    }
+    checks = {check["check_id"]: check for check in certificate["rows"]["identity-row"]["checks"]}
     assembled_bundle = json.loads(
-        (passing_root / "independent-identity-pass" / "bundle.json").read_text(
-            encoding="utf-8"
-        )
+        (passing_root / "independent-identity-pass" / "bundle.json").read_text(encoding="utf-8")
     )
     execution = assembled_bundle["rows"][0]["execution"]
     assert {
@@ -690,10 +696,7 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
     assert all(check["status"] == "pass" for check in checks.values())
     assert checks["execution_identity"]["expected"]
     assert checks["execution_identity"]["observed"]
-    assert (
-        checks["execution_identity"]["expected"]
-        == checks["execution_identity"]["observed"]
-    )
+    assert checks["execution_identity"]["expected"] == checks["execution_identity"]["observed"]
     assert checks["execution_identity"]["expected"] == {
         "intent_hash": expected_intent_hash,
         "resolved_semantics_root_hash": expected_root_hash,
@@ -712,15 +715,12 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         tampered_root / "independent-identity-tampered" / "state.json"
     ).load()
     tampered_certificate = json.loads(
-        (
-            tampered_root
-            / "independent-identity-tampered"
-            / "conformance.json"
-        ).read_text(encoding="utf-8")
+        (tampered_root / "independent-identity-tampered" / "conformance.json").read_text(
+            encoding="utf-8"
+        )
     )
     tampered_checks = {
-        check["check_id"]: check
-        for check in tampered_certificate["rows"]["identity-row"]["checks"]
+        check["check_id"]: check for check in tampered_certificate["rows"]["identity-row"]["checks"]
     }
     assert tampered_certificate["overall"] == "fail"
     assert tampered_checks["execution_identity"]["status"] == "fail"
@@ -789,6 +789,57 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
     assert "/params/learning_rate is required" in (
         invalid_checks["schedule-realization"].detail or ""
     )
+
+
+def test_preflight_schedule_realization_discovers_controller_optimizer_metadata_contexts(
+    tmp_path: Path,
+) -> None:
+    context = _schedule_context(
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    run_spec = _third_party_controller_training_payload(
+        metadata={
+            "resume_context": context,
+            "optimizer_build_context": context,
+        }
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a", run_spec=run_spec)],
+    )
+
+    checks = {check.name: check for check in run_preflight_checks(bundle)}
+
+    schedule_check = checks["schedule-realization"]
+    assert schedule_check.status == "pass"
+    row_observed = schedule_check.observed["row-a"][0]
+    assert row_observed["scheduled"] is True
+    assert row_observed["expected_context"] == context
+    assert row_observed["observed_context"] == context
+    assert len(row_observed["samples"]) >= 4
+
+
+def test_preflight_schedule_realization_requires_controller_optimizer_metadata_contexts(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                run_spec=_third_party_controller_training_payload(),
+            )
+        ],
+    )
+
+    checks = {check.name: check for check in run_preflight_checks(bundle)}
+
+    schedule_check = checks["schedule-realization"]
+    assert schedule_check.status == "fail"
+    assert "resume_context missing" in (schedule_check.detail or "")
+    assert schedule_check.observed == {"row-a": []}
 
 
 def test_preflight_schedule_realization_fails_miswired_resume_before_driver(
@@ -902,6 +953,45 @@ def test_schedule_preflight_and_conformance_share_schedule_eval_helper() -> None
     )
     assert conformance.extract_resume_context is schedule_eval.extract_resume_context
     assert stages.schedule_eval is schedule_eval
+
+
+def test_schedule_context_metadata_is_last_fallback_and_build_stays_independent() -> None:
+    row_context = _schedule_context(
+        schedule_origin_step=1,
+        current_step=1,
+        optimizer_count_at_current_step=1,
+    )
+    diagnostics_context = _schedule_context(
+        schedule_origin_step=2,
+        current_step=2,
+        optimizer_count_at_current_step=2,
+    )
+    metadata_context = _schedule_context(
+        schedule_origin_step=3,
+        current_step=3,
+        optimizer_count_at_current_step=3,
+    )
+    row = {
+        "resume_context": row_context,
+        "metadata": {
+            "resume_context": metadata_context,
+            "optimizer_build_context": metadata_context,
+        },
+    }
+    diagnostics = {
+        "resume_context": diagnostics_context,
+        "optimizer_build_context": diagnostics_context,
+    }
+
+    assert schedule_eval.extract_resume_context(row, diagnostics) == row_context
+    assert schedule_eval.extract_optimizer_build_context(row, diagnostics) == diagnostics_context
+    with pytest.raises(schedule_eval.MissingScheduleContext, match="optimizer_build_context"):
+        schedule_eval.require_schedule_context(
+            schedule_eval.extract_optimizer_build_context(
+                {"metadata": {"resume_context": metadata_context}}
+            ),
+            label="optimizer_build_context",
+        )
 
 
 def test_production_stage_engine_call_sites_supply_nonempty_registry() -> None:
@@ -1054,9 +1144,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     )
     rows = [
         _compiled_row("warm", command=[sys.executable, str(script)], collect=["payload.json"]),
-        _compiled_row(
-            "second", command=[sys.executable, str(script)], collect=["payload.json"]
-        ),
+        _compiled_row("second", command=[sys.executable, str(script)], collect=["payload.json"]),
     ]
     bundle = _bundle(
         tmp_path,
