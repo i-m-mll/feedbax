@@ -46,6 +46,11 @@ def learning_rate_from_build_optimizer(
 
     if sample_step < current_step:
         raise ValueError(f"lr_trace sample_step={sample_step} precedes current_step={current_step}")
+    if optimizer_spec.lr_schedule is None:
+        learning_rate = optimizer_spec.params.get("learning_rate")
+        if learning_rate is None:
+            raise ValueError("/params/learning_rate is required when lr_schedule is absent")
+        return float(learning_rate)
     optimizer = build_optimizer(
         optimizer_spec,
         schedule_origin_step=schedule_origin_step,

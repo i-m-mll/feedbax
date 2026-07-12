@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Generic, Literal, TypeVar
 
-import equinox as eqx
-
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import ArtifactMigrationRecord, ArtifactRef, ParentRef, StrictModel
@@ -72,55 +70,17 @@ CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoi
 
 
 CheckpointDocumentT = TypeVar("CheckpointDocumentT")
-BatchHistoryValueT = TypeVar("BatchHistoryValueT")
 
 
-class Granularity(eqx.Module):
-    """Static sampling granularity for a batch-indexed history."""
+def __getattr__(name: str) -> Any:
+    if name not in {"BatchHistory", "Granularity"}:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    interval: int = eqx.field(static=True)
+    from feedbax.contracts import checkpoint_history
 
-    def __init__(self, interval: int = 1):
-        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
-            raise ValueError("BatchHistory granularity interval must be a positive integer")
-        object.__setattr__(self, "interval", interval)
-
-    @classmethod
-    def per_batch(cls) -> "Granularity":
-        """Return one history entry per training batch."""
-        return cls(1)
-
-    @classmethod
-    def per_interval(cls, interval: int) -> "Granularity":
-        """Return one history entry per ``interval`` training batches."""
-        return cls(interval)
-
-    def expected_entries(self, batch_count: int) -> int:
-        """Return the segment-local entry count for ``batch_count`` batches."""
-        if batch_count < 0:
-            raise ValueError("BatchHistory segment batch count must be non-negative")
-        return (batch_count + self.interval - 1) // self.interval
-
-
-class BatchHistory(eqx.Module, Generic[BatchHistoryValueT]):
-    """Mark an array as a segment-local batch-indexed checkpoint history."""
-
-    value: BatchHistoryValueT
-    batch_axis: int = eqx.field(static=True)
-    granularity: Granularity = eqx.field(static=True)
-
-    def __init__(
-        self,
-        value: BatchHistoryValueT,
-        *,
-        batch_axis: int = -1,
-        granularity: Granularity | None = None,
-    ):
-        if isinstance(batch_axis, bool) or not isinstance(batch_axis, int):
-            raise ValueError("BatchHistory batch_axis must be an integer")
-        object.__setattr__(self, "value", value)
-        object.__setattr__(self, "batch_axis", batch_axis)
-        object.__setattr__(self, "granularity", granularity or Granularity.per_batch())
+    value = getattr(checkpoint_history, name)
+    globals()[name] = value
+    return value
 
 
 @dataclass(frozen=True)

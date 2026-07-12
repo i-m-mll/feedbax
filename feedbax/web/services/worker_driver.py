@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from collections.abc import Mapping
@@ -11,6 +13,8 @@ from typing import Any
 import httpx
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
 from feedbax.orchestration.state import RunSetState
@@ -213,10 +217,36 @@ class WorkerHttpDriver:
 
 
 def _worker_start_body(bundle: RunBundle, row: RunRowSpec) -> dict[str, Any]:
-    body = dict(row.metadata.get("worker_start") or {})
+    body = load_worker_execution_payload(row)
     body["job_id"] = row.row_id
     body["run_set_id"] = bundle.run_set_id
     return body
+
+
+def load_worker_execution_payload(row: RunRowSpec) -> dict[str, Any]:
+    """Resolve and validate a row's registered Studio worker payload."""
+    payload_ref = row.execution.payload
+    family = default_spec_registry.resolve("StudioTrainingAssemblySpec")
+    if family.identity != payload_ref.schema_id:
+        raise ValueError(
+            "WorkerHttpDriver execution payload schema does not match its registered family: "
+            f"expected={family.identity!r}, actual={payload_ref.schema_id!r}"
+        )
+    if payload_ref.uri is None:
+        raise ValueError("WorkerHttpDriver execution payload requires a materialization URI")
+    payload_path = Path(payload_ref.uri).expanduser()
+    data = payload_path.read_bytes()
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if actual_sha256 != payload_ref.sha256:
+        raise ValueError(
+            "WorkerHttpDriver execution payload byte digest mismatch: "
+            f"expected={payload_ref.sha256!r}, actual={actual_sha256!r}"
+        )
+    raw = json.loads(data)
+    if not isinstance(raw, dict):
+        raise ValueError("WorkerHttpDriver execution payload must decode to a JSON object")
+    migrated = default_spec_registry.migrate("StudioTrainingAssemblySpec", raw)
+    return StudioTrainingAssemblySpec.model_validate(migrated.payload).worker_payload()
 
 
 def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:

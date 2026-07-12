@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,29 @@ import pytest
 from feedbax.contracts.manifest import TrainingRunManifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry, migrate_structured_spec_payload
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
+from feedbax.contracts.resolved_snapshot_decoder import SNAPSHOT_SCHEMA_ID, SNAPSHOT_SCHEMA_VERSION
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TrainingRunMatrixSpec,
+)
+from feedbax.contracts.spec_storage import (
+    TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID,
+    TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
+    TrainingRunExecutionCapsule,
+    build_resolved_semantics_snapshot,
+    training_run_execution_hash,
+    training_run_intent_hash,
+    training_spec_canonical_bytes,
+)
+from feedbax.orchestration.bundle import (
+    AuthoredIntentRef,
+    ExecutionCapsuleRef,
+    ExecutionIdentityEnvelope,
+    ImmutableInputIdentity,
+    ResolvedSnapshotRef,
+    SchemaArtifactRef,
+)
 from feedbax.orchestration.conformance import (
     RUN_CONFORMANCE_SCHEMA_ID,
     RUN_CONFORMANCE_SCHEMA_VERSION,
@@ -21,6 +45,7 @@ from feedbax.orchestration.conformance import (
     build_core_check_registry,
     check_completed_batches,
     check_events_terminal,
+    check_execution_identity,
     check_lr_trace,
     check_manifest_valid,
     missing_input_check,
@@ -64,6 +89,80 @@ def _row(**updates: object) -> ConformanceRowArtifacts:
     }
     base.update(updates)
     return ConformanceRowArtifacts(**base)
+
+
+def _identity_fixture(tmp_path: Path, *, inputs: list[dict[str, object]] | None = None):
+    authored = TrainingRunMatrixSpec(
+        name="fixture",
+        base={"kind": "inline", "inline": {"training": "fixture"}},
+        rows=[{"row_id": "row-a"}],
+    ).model_dump(mode="json", exclude_none=True)
+    snapshot = build_resolved_semantics_snapshot({"training": "resolved"})
+    canonical_inputs = list(inputs or [])
+    intent_hash = training_run_intent_hash(authored)
+    execution_hash = training_run_execution_hash(snapshot["root_hash"], canonical_inputs)
+    capsule = TrainingRunExecutionCapsule(
+        materializer_commit="fixture",
+        relevant_schema_versions={"fixture": "v1"},
+        dependency_lock_digest="1" * 64,
+        input_data_identities=canonical_inputs,
+        intent_hash=intent_hash,
+        resolved_root_hash=snapshot["root_hash"],
+        execution_hash=execution_hash,
+    ).model_dump(mode="json", exclude_none=True)
+
+    def store(name: str, payload: dict[str, object]) -> tuple[Path, str]:
+        data = training_spec_canonical_bytes(payload)
+        path = tmp_path / f"{name}.json"
+        path.write_bytes(data)
+        return path, hashlib.sha256(data).hexdigest()
+
+    authored_path, authored_sha = store("authored", authored)
+    payload_path, payload_sha = store("payload", authored)
+    snapshot_path, snapshot_sha = store("snapshot", snapshot)
+    capsule_path, capsule_sha = store("capsule", capsule)
+    envelope = ExecutionIdentityEnvelope(
+        payload=SchemaArtifactRef(
+            schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            artifact_id="artifact://fixture/payload",
+            sha256=payload_sha,
+            uri=str(payload_path),
+        ),
+        authored_intent=AuthoredIntentRef(
+            schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            artifact_id="artifact://fixture/authored",
+            sha256=authored_sha,
+            uri=str(authored_path),
+            intent_hash=intent_hash,
+        ),
+        resolved_snapshot=ResolvedSnapshotRef(
+            schema_id=SNAPSHOT_SCHEMA_ID,
+            schema_version=SNAPSHOT_SCHEMA_VERSION,
+            artifact_id="artifact://fixture/snapshot",
+            sha256=snapshot_sha,
+            uri=str(snapshot_path),
+            root_hash=snapshot["root_hash"],
+        ),
+        execution_capsule=ExecutionCapsuleRef(
+            schema_id=TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID,
+            schema_version=TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
+            artifact_id="artifact://fixture/capsule",
+            sha256=capsule_sha,
+            uri=str(capsule_path),
+            execution_hash=execution_hash,
+        ),
+        immutable_inputs=[ImmutableInputIdentity.model_validate(item) for item in canonical_inputs],
+    )
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:row-a",
+        intent_hash=intent_hash,
+        resolved_semantics_root_hash=snapshot["root_hash"],
+        execution_hash=execution_hash,
+        input_data_identities=canonical_inputs,
+    ).model_dump(mode="json", exclude_none=True)
+    return envelope, manifest
 
 
 def test_certificate_assembly_rules_and_deterministic_write(tmp_path: Path) -> None:
@@ -163,6 +262,105 @@ def test_core_checks_pass_fail_and_missing_inputs() -> None:
     assert checks["seeds"].status == "pass"
     assert checks["events_terminal"].status == "fail"
     assert "did not produce a verdict" in str(checks["events_terminal"].detail)
+
+
+def test_execution_identity_explicit_empty_inputs_passes(tmp_path: Path) -> None:
+    envelope, manifest = _identity_fixture(tmp_path)
+
+    result = check_execution_identity(
+        _row(execution=envelope, manifest_payload=manifest)
+    )
+
+    assert result.status == "pass"
+    assert result.expected == result.observed
+    assert result.expected["input_data_identities"] == []
+    assert "execution_identity" in dict(build_core_check_registry().items())
+
+
+def test_execution_identity_requires_envelope_and_raw_manifest_fields(tmp_path: Path) -> None:
+    assert check_execution_identity(_row()).status == "fail"
+    envelope, manifest = _identity_fixture(tmp_path)
+    manifest.pop("intent_hash")
+
+    result = check_execution_identity(_row(execution=envelope, manifest_payload=manifest))
+
+    assert result.status == "fail"
+    assert "manifest.intent_hash" in str(result.detail)
+
+
+def test_execution_identity_reports_authored_intent_mismatch(tmp_path: Path) -> None:
+    envelope, manifest = _identity_fixture(tmp_path)
+    manifest["intent_hash"] = "2" * 64
+
+    result = check_execution_identity(_row(execution=envelope, manifest_payload=manifest))
+
+    assert result.status == "fail"
+    assert "intent_hash" in str(result.detail)
+
+
+@pytest.mark.parametrize("drift", ["root", "inputs"])
+def test_execution_identity_reports_semantic_or_input_drift(
+    tmp_path: Path, drift: str
+) -> None:
+    input_identity = {
+        "role": "dataset",
+        "kind": "artifact",
+        "identifier": "dataset-v1",
+        "digest": {"algorithm": "sha256", "value": "3" * 64},
+    }
+    envelope, manifest = _identity_fixture(tmp_path, inputs=[input_identity])
+    if drift == "root":
+        manifest["resolved_semantics_root_hash"] = "4" * 64
+    else:
+        changed = dict(input_identity)
+        changed["identifier"] = "dataset-v2"
+        manifest["input_data_identities"] = [changed]
+    manifest["execution_hash"] = training_run_execution_hash(
+        manifest["resolved_semantics_root_hash"], manifest["input_data_identities"]
+    )
+
+    result = check_execution_identity(_row(execution=envelope, manifest_payload=manifest))
+
+    assert result.status == "fail"
+    expected_field = "resolved_semantics_root_hash" if drift == "root" else "input_data_identities"
+    assert expected_field in str(result.detail)
+
+
+def test_execution_identity_rejects_execution_hash_inconsistency(tmp_path: Path) -> None:
+    envelope, manifest = _identity_fixture(tmp_path)
+    manifest["execution_hash"] = "5" * 64
+
+    result = check_execution_identity(_row(execution=envelope, manifest_payload=manifest))
+
+    assert result.status == "fail"
+    assert "execution_hash" in str(result.detail)
+
+
+@pytest.mark.parametrize("failure", ["bytes", "schema"])
+def test_execution_identity_rejects_artifact_digest_or_schema_failure(
+    tmp_path: Path, failure: str
+) -> None:
+    envelope, manifest = _identity_fixture(tmp_path)
+    if failure == "bytes":
+        Path(envelope.payload.uri).write_text("{}", encoding="utf-8")
+    else:
+        payload = json.loads(Path(envelope.payload.uri).read_text(encoding="utf-8"))
+        payload["schema_version"] = "feedbax.spec.training_run_matrix.v0"
+        data = training_spec_canonical_bytes(payload)
+        Path(envelope.payload.uri).write_bytes(data)
+        envelope = envelope.model_copy(
+            update={
+                "payload": envelope.payload.model_copy(
+                    update={"sha256": hashlib.sha256(data).hexdigest()}
+                )
+            }
+        )
+
+    result = check_execution_identity(_row(execution=envelope, manifest_payload=manifest))
+
+    assert result.status == "fail"
+    expected_detail = "sha256 mismatch" if failure == "bytes" else "schema_version mismatch"
+    assert expected_detail in str(result.detail)
 
 
 def test_manifest_valid_loads_manifest_and_compares_preflight_payload(tmp_path: Path) -> None:

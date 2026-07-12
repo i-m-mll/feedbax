@@ -8,18 +8,15 @@ import importlib.metadata
 import logging
 import os
 
-from feedbax.runtime.selectors import Selection, select
-from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
-from feedbax.contracts.graphs.templates import (
-    BUILTIN_GRAPH_TEMPLATES,
-    GraphTemplateMetadata,
-    network_template_graph,
-    recurrent_controller_template_graph,
-    simple_feedback_template_graph,
-)
-from feedbax.models.cde import CDENetwork, CDENetworkState
-
 _LAZY_EXPORTS = {
+    "BUILTIN_GRAPH_TEMPLATES": ("feedbax.contracts.graphs.templates", "BUILTIN_GRAPH_TEMPLATES"),
+    "CDENetwork": ("feedbax.models.cde", "CDENetwork"),
+    "CDENetworkState": ("feedbax.models.cde", "CDENetworkState"),
+    "Component": ("feedbax.runtime.graph", "Component"),
+    "Graph": ("feedbax.runtime.graph", "Graph"),
+    "GraphTemplateMetadata": ("feedbax.contracts.graphs.templates", "GraphTemplateMetadata"),
+    "Selection": ("feedbax.runtime.selectors", "Selection"),
+    "Wire": ("feedbax.runtime.graph", "Wire"),
     "AbstractTask": ("feedbax.tasks", "AbstractTask"),
     "DELAYED_CENTER_OUT_PRESET": ("feedbax.tasks.presets", "DELAYED_CENTER_OUT_PRESET"),
     "DelayedReaches": ("feedbax.tasks", "DelayedReaches"),
@@ -41,8 +38,19 @@ _LAZY_EXPORTS = {
     "get_scalar_epoch_seq": ("feedbax.tasks", "get_scalar_epoch_seq"),
     "is_intervenor": ("feedbax.intervene", "is_intervenor"),
     "is_termtree": ("feedbax.objectives.loss", "is_termtree"),
+    "init_state_from_component": ("feedbax.runtime.graph", "init_state_from_component"),
+    "network_template_graph": ("feedbax.contracts.graphs.templates", "network_template_graph"),
     "pos_only_states": ("feedbax.tasks", "_pos_only_states"),
     "prepare_trial": ("feedbax.tasks", "prepare_trial"),
+    "recurrent_controller_template_graph": (
+        "feedbax.contracts.graphs.templates",
+        "recurrent_controller_template_graph",
+    ),
+    "select": ("feedbax.runtime.selectors", "select"),
+    "simple_feedback_template_graph": (
+        "feedbax.contracts.graphs.templates",
+        "simple_feedback_template_graph",
+    ),
 }
 
 # from feedbax.config.logging import enable_logging_handlers

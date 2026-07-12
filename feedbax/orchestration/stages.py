@@ -11,7 +11,20 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from feedbax.orchestration.bundle import RUN_BUNDLE_SCHEMA_VERSION, RunBundle, RunRowSpec
+from feedbax.orchestration.assembly import (
+    AssemblyCompilerRegistry,
+    AssemblyContext,
+    RunAssemblyRequest,
+    assemble_run_bundle,
+    persist_assembly_request,
+)
+from feedbax.orchestration.bundle import (
+    RUN_BUNDLE_SCHEMA_VERSION,
+    RunBundle,
+    RunRowSpec,
+    default_orchestration_root,
+    mint_run_set_id,
+)
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
@@ -67,6 +80,30 @@ RETRY_LIMITS = {
 }
 
 
+def _request_run_set_dir(request: RunAssemblyRequest | None, run_set_id: str) -> Path:
+    if request is not None and request.orchestration_root:
+        root = Path(request.orchestration_root).expanduser()
+        return root if root.name == run_set_id else root / run_set_id
+    return default_orchestration_root(run_set_id)
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent), text=True
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 class OrchestrationStageError(RuntimeError):
     """Raised when a run-set stage fails."""
 
@@ -85,8 +122,13 @@ class StageEngine:
     def __init__(
         self,
         *,
-        bundle: RunBundle,
-        driver: OrchestrationDriver,
+        bundle: RunBundle | None = None,
+        driver: OrchestrationDriver | None = None,
+        request: RunAssemblyRequest | None = None,
+        assembly_context: AssemblyContext | None = None,
+        assembly_registry: AssemblyCompilerRegistry | None = None,
+        driver_factory: Callable[[RunBundle], OrchestrationDriver] | None = None,
+        run_set_id: str | None = None,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
         poll_interval_seconds: float | None = None,
@@ -95,9 +137,30 @@ class StageEngine:
         wall_time: Callable[[], float] = time.time,
         interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     ) -> None:
+        if (bundle is None) == (request is None):
+            raise ValueError("StageEngine requires exactly one of bundle or request")
+        if bundle is not None and driver is None:
+            raise ValueError("bundle-based StageEngine construction requires driver")
+        if request is not None and (
+            assembly_context is None or assembly_registry is None or driver_factory is None
+        ):
+            raise ValueError(
+                "request-based StageEngine construction requires assembly_context, "
+                "assembly_registry, and driver_factory"
+            )
         self.bundle = bundle
+        self.request = request
+        self.assembly_context = assembly_context
+        self.assembly_registry = assembly_registry
+        self.driver_factory = driver_factory
+        self.run_set_id = bundle.run_set_id if bundle is not None else (run_set_id or mint_run_set_id())
         self.driver = driver
-        self.store = store or RunSetStateStore(bundle.run_set_dir / "state.json")
+        run_set_dir = (
+            bundle.run_set_dir
+            if bundle is not None
+            else _request_run_set_dir(request, self.run_set_id)
+        )
+        self.store = store or RunSetStateStore(run_set_dir / "state.json")
         self.conformance_registry = conformance_registry or CheckRegistry()
         self.poll_interval_seconds = (
             float(getattr(driver, "poll_interval_seconds", 0.05))
@@ -109,6 +172,27 @@ class StageEngine:
         self._wall_time = wall_time
         self._interruption_probe = interruption_probe
 
+    @classmethod
+    def from_request(
+        cls,
+        request: RunAssemblyRequest,
+        *,
+        context: AssemblyContext,
+        registry: AssemblyCompilerRegistry,
+        driver_factory: Callable[[RunBundle], OrchestrationDriver],
+        run_set_id: str | None = None,
+        **kwargs: Any,
+    ) -> "StageEngine":
+        """Construct a new or resumed engine whose ASSEMBLE stage compiles the request."""
+        return cls(
+            request=request,
+            assembly_context=context,
+            assembly_registry=registry,
+            driver_factory=driver_factory,
+            run_set_id=run_set_id,
+            **kwargs,
+        )
+
     def run(
         self,
         *,
@@ -119,6 +203,7 @@ class StageEngine:
         initial = self._initial_state()
         with self.store.lock(break_stale=break_stale_lock):
             state = self.store.initialize(initial)
+            state = self._hydrate_completed_assembly(state)
             try:
                 for stage_id in STAGE_ORDER:
                     if state.stage(stage_id).status == "completed":
@@ -129,14 +214,23 @@ class StageEngine:
                 return state
             except Exception:
                 latest = self.store.load() if self.store.path.exists() else state
-                if self._provision_completed(latest) and not self.bundle.keep_alive:
+                if (
+                    self.bundle is not None
+                    and self.driver is not None
+                    and self._provision_completed(latest)
+                    and not self.bundle.keep_alive
+                ):
                     latest = self._run_teardown(latest, abort=True)
                 raise
 
     def _initial_state(self) -> RunSetState:
         return RunSetState(
-            run_set_id=self.bundle.run_set_id,
-            rows={row.row_id: RowState() for row in self.bundle.rows},
+            run_set_id=self.run_set_id,
+            rows=(
+                {row.row_id: RowState() for row in self.bundle.rows}
+                if self.bundle is not None
+                else {}
+            ),
             stages={stage_id: StageState() for stage_id in STAGE_ORDER},
         )
 
@@ -181,18 +275,78 @@ class StageEngine:
             return state
 
     def _stage_assemble(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        run_set_dir = self.bundle.run_set_dir
+        if self.request is not None:
+            assert self.assembly_context is not None
+            assert self.assembly_registry is not None
+            run_set_dir = _request_run_set_dir(self.request, self.run_set_id)
+            request_path = run_set_dir / "assembly-request.json"
+            request_sha256 = persist_assembly_request(self.request, request_path)
+            self.bundle = assemble_run_bundle(
+                self.request,
+                run_set_id=self.run_set_id,
+                context=self.assembly_context,
+                registry=self.assembly_registry,
+            )
+            assert self.driver_factory is not None
+            self.driver = self.driver_factory(self.bundle)
+            state = state.model_copy(
+                update={
+                    "rows": {row.row_id: RowState() for row in self.bundle.rows},
+                    "updated_at": utc_now(),
+                }
+            )
+        else:
+            assert self.bundle is not None
+            run_set_dir = self.bundle.run_set_dir
+            request_path = None
+            request_sha256 = None
         run_set_dir.mkdir(parents=True, exist_ok=True)
         payload = self.bundle.model_dump(mode="json", exclude_none=True)
-        encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         bundle_path = run_set_dir / "bundle.json"
-        bundle_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        return state, {
+        _atomic_write_json(bundle_path, payload)
+        outputs = {
             "bundle_path": str(bundle_path),
             "bundle_sha256": hashlib.sha256(encoded).hexdigest(),
         }
+        if request_path is not None:
+            outputs.update(
+                {
+                    "request_path": str(request_path),
+                    "request_sha256": request_sha256,
+                    "artifacts": [
+                        ref.model_dump(mode="json")
+                        for row in self.bundle.rows
+                        for ref in (
+                            row.execution.payload,
+                            row.execution.authored_intent,
+                            row.execution.resolved_snapshot,
+                            row.execution.execution_capsule,
+                        )
+                    ],
+                }
+            )
+        return state, outputs
+
+    def _hydrate_completed_assembly(self, state: RunSetState) -> RunSetState:
+        """Load and verify the persisted v3 bundle when resuming after ASSEMBLE."""
+        if self.bundle is not None or state.stage(STAGE_ASSEMBLE).status != "completed":
+            return state
+        bundle_path = self.store.path.parent / "bundle.json"
+        data = bundle_path.read_bytes()
+        expected = state.stage(STAGE_ASSEMBLE).outputs.get("bundle_sha256")
+        canonical = json.dumps(
+            json.loads(data), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        actual = hashlib.sha256(canonical).hexdigest()
+        if expected != actual:
+            raise OrchestrationStageError(
+                f"persisted ASSEMBLE bundle hash mismatch: expected={expected!r} actual={actual!r}"
+            )
+        self.bundle = RunBundle.model_validate_json(data)
+        assert self.driver_factory is not None
+        self.driver = self.driver_factory(self.bundle)
+        return state
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)
@@ -309,7 +463,7 @@ class StageEngine:
         """Assemble all check inputs from one row's collected bundle outputs."""
         outputs = state.rows[row.row_id].collected_outputs
         discovered = _discover_conformance_artifacts(outputs)
-        run_spec = row.run_spec if isinstance(row.run_spec, Mapping) else None
+        run_spec = _row_payload(row)
         preflight_payload = None
         if run_spec is not None:
             try:
@@ -328,6 +482,13 @@ class StageEngine:
                 pass
         return ConformanceRowArtifacts(
             row_id=row.row_id,
+            execution=row.execution,
+            execution_identity_adapter=self._execution_identity_adapter(),
+            schema_registry=(
+                self.assembly_context.schema_registry
+                if self.assembly_context is not None
+                else None
+            ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
             bundle_row_spec=run_spec,
             recorded_environment_fingerprint=state.environment_fingerprint,
@@ -337,6 +498,11 @@ class StageEngine:
             checkpoint_custody_root=discovered.get("checkpoint_custody_root"),
             preflight_normalized_payload=preflight_payload,
         )
+
+    def _execution_identity_adapter(self) -> Any:
+        if self.request is None or self.assembly_registry is None:
+            return None
+        return self.assembly_registry.resolve(self.request).identity_adapter
 
     def _stage_teardown(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         return self._run_teardown(state, abort=False), {}
@@ -649,10 +815,11 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     manifest_failures: list[str] = []
     normalized: dict[str, Any] = {}
     for row in bundle.rows:
-        if isinstance(row.run_spec, Mapping):
+        run_spec = _row_payload(row)
+        if _is_training_run_payload(run_spec):
             try:
                 payloads = preflight_training_run_manifest_payloads(
-                    row.run_spec,
+                    run_spec,
                     row_id=row.row_id,
                 )
                 normalized[row.row_id] = payloads.model_dump()
@@ -678,13 +845,44 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     return checks
 
 
+def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
+    """Load the registered executable payload without consulting launch metadata."""
+    ref = row.execution.payload
+    if ref.uri is None:
+        return None
+    data = Path(ref.uri).read_bytes()
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != ref.sha256:
+        raise ValueError(
+            f"row {row.row_id!r} executable payload digest mismatch: "
+            f"expected={ref.sha256} actual={actual}"
+        )
+    payload = json.loads(data)
+    if not isinstance(payload, dict):
+        raise ValueError(f"row {row.row_id!r} executable payload must be a JSON object")
+    if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
+        raise ValueError(
+            f"row {row.row_id!r} executable payload schema does not match its artifact ref"
+        )
+    return payload
+
+
+def _is_training_run_payload(payload: Any) -> bool:
+    """Return whether generic payload checks apply to a TrainingRunSpec row."""
+    return (
+        isinstance(payload, Mapping)
+        and payload.get("schema_id") == "feedbax.spec.training_run"
+    )
+
+
 def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
     observed: dict[str, Any] = {}
     for row in bundle.rows:
-        if not isinstance(row.run_spec, Mapping):
+        run_spec = _row_payload(row)
+        if not _is_training_run_payload(run_spec):
             continue
-        optimizer_payloads = _optimizer_payloads(row.run_spec)
+        optimizer_payloads = _optimizer_payloads(run_spec)
         if not optimizer_payloads:
             failures.append(
                 f"{row.row_id}: inline run_spec contains no optimizer at a supported typed path"
@@ -694,7 +892,9 @@ def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[
         row_observed: list[dict[str, Any]] = []
         for index, payload in enumerate(optimizer_payloads):
             try:
-                result = _evaluate_optimizer_schedule_at_preflight(row, index, payload)
+                result = _evaluate_optimizer_schedule_at_preflight(
+                    row, run_spec, index, payload
+                )
             except Exception as exc:
                 failures.append(f"{row.row_id}[{index}]: {exc}")
             else:
@@ -710,6 +910,7 @@ def _preflight_schedule_realization(bundle: RunBundle) -> tuple[list[str], dict[
 
 def _evaluate_optimizer_schedule_at_preflight(
     row: RunRowSpec,
+    run_spec: Mapping[str, Any],
     optimizer_index: int,
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -727,14 +928,12 @@ def _evaluate_optimizer_schedule_at_preflight(
         optimizer.init({"preflight": 0.0})
         return {"optimizer_index": optimizer_index, "scheduled": False, "points": 0}
 
-    if not isinstance(row.run_spec, Mapping):
-        raise ValueError("row run_spec must be an inline mapping for schedule preflight")
     expected_context = schedule_eval.require_schedule_context(
-        schedule_eval.extract_resume_context(row.run_spec),
+        schedule_eval.extract_resume_context(run_spec),
         label="resume_context",
     )
     observed_context = schedule_eval.require_schedule_context(
-        schedule_eval.extract_optimizer_build_context(row.run_spec),
+        schedule_eval.extract_optimizer_build_context(run_spec),
         label="optimizer_build_context",
     )
     samples, mismatches = schedule_eval.compare_schedule_samples(

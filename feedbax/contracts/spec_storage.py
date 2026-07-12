@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from pydantic import Field, model_validator
 
@@ -23,6 +23,71 @@ TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION = (
     f"{TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID}.v1"
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def canonicalize_immutable_input_identities(
+    identities: Sequence[Any],
+) -> list[dict[str, Any]]:
+    """Return the canonical JSON projection of immutable execution inputs.
+
+    Inputs may be mappings or Pydantic models. Records are sorted by their
+    complete v1 identity tuple. Repeating an input identity is rejected rather
+    than silently changing the scientific identity through deduplication.
+    """
+    projected: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, identity in enumerate(identities):
+        if hasattr(identity, "model_dump"):
+            raw = identity.model_dump(mode="json", exclude_none=True)
+        elif isinstance(identity, Mapping):
+            raw = dict(identity)
+        else:
+            raise TypeError(
+                f"immutable input identity {index} must be a mapping or Pydantic model"
+            )
+        normalized = _normalize_json(raw)
+        if not isinstance(normalized, dict):  # pragma: no cover - defensive
+            raise TypeError(f"immutable input identity {index} must project to an object")
+        try:
+            role = normalized["role"]
+            kind = normalized["kind"]
+            identifier = normalized["identifier"]
+            digest = normalized["digest"]
+        except KeyError as exc:
+            raise ValueError(
+                f"immutable input identity {index} is missing {exc.args[0]!r}"
+            ) from exc
+        if not all(isinstance(value, str) and value for value in (role, kind, identifier)):
+            raise ValueError(
+                f"immutable input identity {index} requires non-empty role, kind, identifier"
+            )
+        if not isinstance(digest, dict):
+            raise ValueError(f"immutable input identity {index} digest must be an object")
+        algorithm = digest.get("algorithm")
+        value = digest.get("value")
+        if algorithm != "sha256" or not isinstance(value, str):
+            raise ValueError(
+                f"immutable input identity {index} digest must use sha256 with a string value"
+            )
+        validate_sha256(value, field_name=f"immutable_inputs[{index}].digest.value")
+        key = (role, kind, identifier)
+        if key in seen:
+            raise ValueError(
+                "duplicate immutable input identity for "
+                f"role={role!r}, kind={kind!r}, identifier={identifier!r}"
+            )
+        seen.add(key)
+        projected.append(normalized)
+    return sorted(
+        projected,
+        key=lambda item: (
+            item["role"],
+            item["kind"],
+            item["identifier"],
+            item["digest"]["algorithm"],
+            item["digest"]["value"],
+        ),
+    )
 
 
 class TrainingRunExecutionCapsule(StrictModel):

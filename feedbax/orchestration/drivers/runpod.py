@@ -527,7 +527,7 @@ class RunPodOrchestrationDriver:
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         remote_run_dir = self._remote_run_dir(bundle)
-        sources = row.collect or [
+        sources = row.launch.collect or [
             f"rows/{row.row_id}",
             f"events/{row.row_id}.events.jsonl",
             "run-config.json",
@@ -541,8 +541,9 @@ class RunPodOrchestrationDriver:
                 f"collect {row.row_id}:{source}"
             )
             collected[Path(source).name] = str(target)
-        if row.payload_sha256:
-            verify_collected_payload(dest_dir, row.payload_sha256)
+        payload_sha256 = row.launch.metadata.get("payload_sha256")
+        if payload_sha256:
+            verify_collected_payload(dest_dir, str(payload_sha256))
         return collected
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
@@ -700,7 +701,7 @@ class RunPodOrchestrationDriver:
         )
 
     def _row_workdir(self, row: RunRowSpec) -> str:
-        workdir = row.metadata.get("workdir")
+        workdir = row.launch.metadata.get("workdir")
         return str(workdir) if workdir else self._primary_workdir()
 
     def _remote_run_dir(self, bundle: RunBundle) -> str:
@@ -872,8 +873,9 @@ def declared_baselines(bundle: RunBundle) -> list[BaselineEntry]:
     """Extract baseline declarations from inline row specs."""
     entries: list[BaselineEntry] = []
     for row in bundle.rows:
-        if isinstance(row.run_spec, Mapping):
-            entries.extend(_baseline_entries(row.run_spec, f"row:{row.row_id}"))
+        payload = _registered_row_payload(row)
+        if isinstance(payload, Mapping):
+            entries.extend(_baseline_entries(payload, f"row:{row.row_id}"))
     return entries
 
 
@@ -912,6 +914,9 @@ def _baseline_entries(payload: Mapping[str, Any], label: str) -> list[BaselineEn
         )
         if path:
             entries.append(BaselineEntry(path=path, completed_batch=str(batch or ""), label=label))
+    training_config = payload.get("training_config")
+    if isinstance(training_config, Mapping):
+        entries.extend(_baseline_entries(training_config, f"{label}:training_config"))
     return entries
 
 
@@ -1034,9 +1039,9 @@ def build_launch_row_command(
     events_dir = f"{remote_run_dir}/events"
     row_dir = f"{remote_run_dir}/rows/{row.row_id}"
     command = (
-        " ".join(shlex.quote(str(part)) for part in row.command)
-        if row.command
-        else f"uv run --no-sync python {_sq(row.entry or '')}"
+        " ".join(shlex.quote(str(part)) for part in row.launch.command)
+        if row.launch.command
+        else f"uv run --no-sync python {_sq(row.launch.entry or '')}"
     )
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "
@@ -1152,6 +1157,23 @@ def verify_collected_payload(dest_dir: Path, expected_sha256: str) -> None:
         if path.is_file() and _sha256_file(path) == expected_sha256:
             return
     raise RunPodDriverError(f"payload sha256 mismatch under {dest_dir}")
+
+
+def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
+    ref = row.execution.payload
+    if ref.uri is None:
+        return None
+    path = Path(ref.uri)
+    if _sha256_file(path) != ref.sha256:
+        raise RunPodDriverError(
+            f"registered payload digest mismatch for row {row.row_id!r}"
+        )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise RunPodDriverError("registered row payload must be a JSON object")
+    if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
+        raise RunPodDriverError("registered row payload schema does not match its reference")
+    return dict(payload)
 
 
 def _run_command(args: Sequence[str]) -> CommandResult:

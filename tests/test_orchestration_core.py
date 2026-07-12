@@ -5,24 +5,66 @@ import hashlib
 import json
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
+from feedbax.contracts.manifest import TrainingRunManifest
+from feedbax.contracts.spec_storage import (
+    build_resolved_semantics_snapshot,
+    training_run_execution_hash,
+    training_spec_canonical_bytes,
+    training_spec_sha256,
+)
+from feedbax.contracts.studio_training import (
+    STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+    STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+    StudioTrainingAssemblySpec,
+    StudioTrainingIdentityAdapter,
+)
+from feedbax.contracts.training import (
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    LrScheduleSpec,
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    OptimizerSpec,
+    StandardSupervisedMethodPayload,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
+)
 from feedbax.orchestration import conformance, schedule_eval, stages
+from feedbax.orchestration.assembly import (
+    AssemblyCompilerRegistry,
+    AssemblyContext,
+    CompiledExecutionRow,
+    CompiledRunSet,
+    CompilerIdentity,
+    RunAssemblyRequest,
+    assemble_run_bundle,
+)
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
+    RUN_BUNDLE_SCHEMA_VERSION_V2,
     BudgetPolicy,
     EnvironmentDeclaration,
     LaunchPolicy,
     RepoRevision,
     RunBundle,
     RunRowSpec,
+    RowLaunchSpec,
+    SchemaArtifactRef,
 )
 from feedbax.orchestration.conformance import (
     CheckEntry,
@@ -52,6 +94,7 @@ from feedbax.orchestration.state import (
     StateLockError,
 )
 from feedbax.training.interruption import CancellationAction, CancellationDecision
+from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 
 
 class FakeDriver:
@@ -99,22 +142,198 @@ class FakeDriver:
         return {"torn_down": True}
 
 
+class _IdentityFakeDriver(FakeDriver):
+    """Executor fixture whose emitted identity is supplied independently of ASSEMBLE."""
+
+    def __init__(
+        self,
+        *,
+        manifest: Mapping[str, Any],
+        diagnostics: Mapping[str, Any],
+    ) -> None:
+        super().__init__()
+        self.manifest = dict(manifest)
+        self.diagnostics = dict(diagnostics)
+
+    def launch_row(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> dict[str, Any]:
+        outputs = super().launch_row(bundle, row, state)
+        events = bundle.run_set_dir / "events"
+        events.mkdir(parents=True, exist_ok=True)
+        (events / f"{row.row_id}.events.jsonl").write_text(
+            json.dumps(
+                {
+                    "run_set_id": bundle.run_set_id,
+                    "row_id": row.row_id,
+                    "seq": 0,
+                    "emitted_at_ms": 1,
+                    "type": "complete",
+                    "payload": {"status": "completed"},
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return outputs
+
+    def collect(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> dict[str, str]:
+        self._call(f"collect:{row.row_id}")
+        collected = bundle.run_set_dir / "collected" / row.row_id
+        collected.mkdir(parents=True, exist_ok=True)
+        manifest_path = collected / "training_manifest.json"
+        diagnostics_path = collected / "training_diagnostics.json"
+        manifest_path.write_text(
+            json.dumps(self.manifest, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        diagnostics_path.write_text(
+            json.dumps(self.diagnostics, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        checkpoint_root = collected / "checkpoints"
+        checkpoint_root.mkdir()
+        (checkpoint_root / "latest.json").write_text(
+            '{"transaction_id":"fixture-checkpoint"}\n', encoding="utf-8"
+        )
+        (checkpoint_root / "manifest.json").write_text(
+            '{"coordinate":{"program_step":10}}\n', encoding="utf-8"
+        )
+        return {
+            "manifest": str(manifest_path),
+            "diagnostics": str(diagnostics_path),
+            "checkpoint_custody": str(checkpoint_root),
+        }
+
+
+@dataclass(frozen=True)
+class _FixtureCompiler:
+    rows: tuple[CompiledExecutionRow, ...]
+
+    def compile(
+        self,
+        request: RunAssemblyRequest,
+        *,
+        authored: Mapping[str, Any],
+        run_set_id: str,
+        context: AssemblyContext,
+    ) -> CompiledRunSet:
+        del request, authored, run_set_id, context
+        return CompiledRunSet(rows=list(self.rows))
+
+
+def _compiled_row(
+    row_id: str,
+    *,
+    command: list[str] | None = None,
+    collect: list[str] | None = None,
+    run_spec: dict[str, Any] | None = None,
+) -> CompiledExecutionRow:
+    payload = (
+        {
+            "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+            "schema_version": STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+            "total_batches": 1,
+            "training_config": {},
+        }
+        if run_spec is None
+        else {
+            "schema_id": TRAINING_RUN_SPEC_SCHEMA_ID,
+            "schema_version": TRAINING_RUN_SPEC_SCHEMA_VERSION,
+            **run_spec,
+        }
+    )
+    return CompiledExecutionRow(
+        row_id=row_id,
+        payload=payload,
+        resolved_semantics=payload,
+        launch=RowLaunchSpec(
+            command=command or [sys.executable, "-c", "pass"],
+            collect=collect or [],
+        ),
+    )
+
+
+def _assembly_parts(
+    tmp_path: Path,
+    *,
+    rows: list[CompiledExecutionRow] | None = None,
+    launch_policy: LaunchPolicy | None = None,
+    max_wall_clock_seconds: float = 10.0,
+    run_set_id: str = "2026-01-02-deadbeef",
+    python_version: str | None = "3.12",
+) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
+    authored = {
+        "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+        "schema_version": STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+        "total_batches": 1,
+    }
+    authored_bytes = training_spec_canonical_bytes(authored)
+    authored_path = tmp_path / "fixture-inputs" / run_set_id / "authored.json"
+    authored_path.parent.mkdir(parents=True, exist_ok=True)
+    authored_path.write_bytes(authored_bytes)
+    compiler_id = "feedbax.tests.orchestration-fixture"
+    compiler_version = "feedbax.tests.orchestration-fixture.v1"
+    request = RunAssemblyRequest(
+        authored=SchemaArtifactRef(
+            schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+            schema_version=STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+            artifact_id=f"fixture:{run_set_id}:authored",
+            sha256=hashlib.sha256(authored_bytes).hexdigest(),
+            uri=str(authored_path),
+        ),
+        compiler=CompilerIdentity(
+            compiler_id=compiler_id,
+            compiler_version=compiler_version,
+        ),
+        environment=EnvironmentDeclaration(python_version=python_version),
+        launch_policy=launch_policy or LaunchPolicy(max_parallel_rows=2),
+        budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
+        orchestration_root=str(tmp_path),
+    )
+    registry = AssemblyCompilerRegistry()
+    registry.register(
+        schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+        compiler_id=compiler_id,
+        compiler_version=compiler_version,
+        compiler=_FixtureCompiler(tuple(rows or [_compiled_row("row-a")])),
+        identity_adapter=StudioTrainingIdentityAdapter(),
+    )
+    context = AssemblyContext(custody_root=tmp_path / "fixture-custody" / run_set_id)
+    return request, context, registry
+
+
 def _bundle(
     tmp_path: Path,
     *,
-    rows: list[RunRowSpec] | None = None,
+    rows: list[CompiledExecutionRow] | None = None,
     launch_policy: LaunchPolicy | None = None,
     max_wall_clock_seconds: float = 10.0,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
 ) -> RunBundle:
-    return RunBundle(
+    request, context, registry = _assembly_parts(
+        tmp_path,
+        rows=rows,
+        launch_policy=launch_policy,
+        max_wall_clock_seconds=max_wall_clock_seconds,
         run_set_id=run_set_id,
-        rows=rows or [RunRowSpec(row_id="row-a", command=[sys.executable, "-c", "pass"])],
-        environment=EnvironmentDeclaration(python_version=python_version),
-        launch_policy=launch_policy or LaunchPolicy(max_parallel_rows=2),
-        budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
-        orchestration_root=str(tmp_path),
+        python_version=python_version,
+    )
+    return assemble_run_bundle(
+        request,
+        run_set_id=run_set_id,
+        context=context,
+        registry=registry,
     )
 
 
@@ -131,6 +350,48 @@ def _scheduled_optimizer_payload() -> dict[str, Any]:
             cosine_annealing_alpha=0.2,
         ),
     ).model_dump(mode="json")
+
+
+def _identity_training_payload() -> dict[str, Any]:
+    method_payload = standard_supervised_method_payload()
+    method_payload.payload = StandardSupervisedMethodPayload(
+        optimizer=OptimizerSpec(
+            type="adamw",
+            params={"learning_rate": 0.001, "weight_decay": 0.0},
+        )
+    ).model_dump(mode="json")
+    return TrainingRunSpec(
+        graph={
+            "inline": {
+                "nodes": {
+                    "gain": {
+                        "type": "Gain",
+                        "params": {"gain": 1.0},
+                        "input_ports": ["input"],
+                        "output_ports": ["output"],
+                    }
+                },
+                "wires": [],
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+                "input_bindings": {"input": ("gain", "input")},
+                "output_bindings": {"output": ("gain", "output")},
+            }
+        },
+        task=TaskSpec(type="ReachingTask", params={"n_steps": 4}),
+        training_config=TrainingConfig(n_batches=10, batch_size=1),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(type="target_state", label="target", selector="output")
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=method_payload,
+        worker_execution=WorkerExecutionSpec(
+            method_contract=standard_supervised_method_contract(),
+            effective_phase=standard_supervised_effective_phase_spec(),
+        ),
+        checkpoint_progress={"checkpoint_interval": 5},
+        metadata={"seeds": {"controller": 17}},
+    ).model_dump(mode="json", exclude_none=True)
 
 
 def _schedule_context(
@@ -183,14 +444,11 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     assert (
         default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
-    v1_payload = _bundle(tmp_path).model_dump(mode="json")
-    v1_payload["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V1
-    v1_payload.pop("deadman_enabled")
-    v1_payload.pop("deadman_silence_seconds")
-    migrated = default_spec_registry.migrate("RunBundle", v1_payload)
-    assert migrated.payload["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION
-    assert migrated.payload["deadman_enabled"] is False
-    assert migrated.payload["deadman_silence_seconds"] == 1800
+    old_payload = _bundle(tmp_path).model_dump(mode="json")
+    for old_version in (RUN_BUNDLE_SCHEMA_VERSION_V1, RUN_BUNDLE_SCHEMA_VERSION_V2):
+        old_payload["schema_version"] = old_version
+        with pytest.raises(UnsupportedSpecVersion, match="reassemble from the authored"):
+            default_spec_registry.migrate("RunBundle", old_payload)
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
             "RunBundle",
@@ -203,20 +461,27 @@ def test_stage_engine_resumes_from_every_stage_boundary(
     tmp_path: Path,
     stop_after: str,
 ) -> None:
-    bundle = _bundle(tmp_path)
-    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    run_set_id = "2026-01-02-deadbeef"
+    request, context, registry = _assembly_parts(tmp_path, run_set_id=run_set_id)
+    store = RunSetStateStore(tmp_path / run_set_id / "state.json")
     first_driver = FakeDriver()
-    StageEngine(
-        bundle=bundle,
-        driver=first_driver,
+    StageEngine.from_request(
+        request,
+        context=context,
+        registry=registry,
+        driver_factory=lambda _bundle: first_driver,
+        run_set_id=run_set_id,
         store=store,
         conformance_registry=_fixture_pass_registry(),
     ).run(stop_after_stage=stop_after)
 
     resumed_driver = FakeDriver()
-    state = StageEngine(
-        bundle=bundle,
-        driver=resumed_driver,
+    state = StageEngine.from_request(
+        request,
+        context=context,
+        registry=registry,
+        driver_factory=lambda _bundle: resumed_driver,
+        run_set_id=run_set_id,
         store=store,
         conformance_registry=_fixture_pass_registry(),
     ).run()
@@ -263,13 +528,213 @@ def test_stage_retry_accounting_and_abort_teardown(tmp_path: Path) -> None:
     assert "teardown" in failing_driver.calls
 
 
+def test_request_assembly_certifies_all_eight_core_checks_with_independent_identity(
+    tmp_path: Path,
+) -> None:
+    """Prove executor identity independently agrees with ASSEMBLE, then tamper it."""
+    authored = {
+        "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+        "schema_version": STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+        "total_batches": 10,
+        "training_config": {"fixture": "authored-intent-v1"},
+    }
+    executable_payload = _identity_training_payload()
+    resolved_semantics = {
+        "fixture": "resolved-semantics-v1",
+        "training": executable_payload,
+    }
+    expected_intent_hash = "da602d442a5356281bf648ca49032739ba6255cdb427bb0da09cfa65bb4d332f"
+    expected_root_hash = "0d41d0f6fed921a7092f9a2a6d1ed349fc890f6c1c3f7074d32b4d8d806a9b96"
+    expected_execution_hash = "fb332b40b7e18210f18e15172fdf86137a750e8f076da8f68122c77a90cd4f73"
+    expected_artifact_hashes = {
+        "authored": "e1aeb77d847c6b24011becca0db24da2f25e68f3cf542fdb4639615a266f8dc9",
+        "payload": "c479f4c01118bcb1c5b2d72ae190cde4bd594fe1b8a80df592c126042e922e94",
+        "snapshot": "aeb7acfcdde86b680403131d81367e38d0742369a92411096ba068f3f799c5d7",
+        "capsule": "cc26ba45b954643009fb4a9498b68a6512993c588a543d3cd34192e072bb17bf",
+    }
+    assert (
+        training_spec_sha256(
+            StudioTrainingAssemblySpec.model_validate(authored).worker_payload()
+        )
+        == expected_intent_hash
+    )
+    assert build_resolved_semantics_snapshot(resolved_semantics)["root_hash"] == expected_root_hash
+    assert training_run_execution_hash(expected_root_hash, []) == expected_execution_hash
+    normalized = preflight_training_run_manifest_payloads(executable_payload)
+
+    diagnostics = {
+        "completed_batches": 10,
+        "checkpoint_coordinates": [5, 10],
+        "lr_trace": {str(step): 0.001 for step in (0, 5, 10)},
+        "optimizer_build_context": _schedule_context(
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
+        ),
+        "resume_context": _schedule_context(
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
+        ),
+        "seeds": {"controller": 17},
+        "terminal_status": "completed",
+    }
+
+    def run_fixture(*, root: Path, run_set_id: str, manifest_intent_hash: str) -> RunSetState:
+        authored_bytes = training_spec_canonical_bytes(authored)
+        authored_path = root / "independent-authored.json"
+        root.mkdir(parents=True, exist_ok=True)
+        authored_path.write_bytes(authored_bytes)
+        compiler_id = "feedbax.tests.identity-proof"
+        compiler_version = "feedbax.tests.identity-proof.v1"
+        request = RunAssemblyRequest(
+            authored=SchemaArtifactRef(
+                schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+                schema_version=STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+                artifact_id=f"fixture:{run_set_id}:independent-authored",
+                sha256=hashlib.sha256(authored_bytes).hexdigest(),
+                uri=str(authored_path),
+            ),
+            compiler=CompilerIdentity(
+                compiler_id=compiler_id,
+                compiler_version=compiler_version,
+            ),
+            environment=EnvironmentDeclaration(python_version="3.13"),
+            budget=BudgetPolicy(max_wall_clock_seconds=10),
+            orchestration_root=str(root),
+        )
+        registry = AssemblyCompilerRegistry()
+        registry.register(
+            schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+            compiler_id=compiler_id,
+            compiler_version=compiler_version,
+            compiler=_FixtureCompiler(
+                (
+                    CompiledExecutionRow(
+                        row_id="identity-row",
+                        payload=executable_payload,
+                        resolved_semantics=resolved_semantics,
+                        immutable_inputs=[],
+                        launch=RowLaunchSpec(command=["identity-fake"]),
+                    ),
+                )
+            ),
+            identity_adapter=StudioTrainingIdentityAdapter(),
+        )
+        manifest = TrainingRunManifest(
+            id=f"feedbax-training-run:{run_set_id}",
+            metadata={
+                "environment_fingerprint": "fake-fingerprint",
+                "seeds": {"controller": 17},
+            },
+            training_spec=normalized.training_spec,
+            task_spec=normalized.task_spec,
+            graph_spec=normalized.graph_spec,
+            summary_metrics={"completed_batches": 10},
+            intent_hash=manifest_intent_hash,
+            resolved_semantics_root_hash=expected_root_hash,
+            execution_hash=expected_execution_hash,
+            input_data_identities=[],
+        ).model_dump(mode="json", exclude_none=True)
+        driver = _IdentityFakeDriver(manifest=manifest, diagnostics=diagnostics)
+        engine = StageEngine.from_request(
+            request,
+            context=AssemblyContext(custody_root=root / "assembly-custody"),
+            registry=registry,
+            driver_factory=lambda _bundle: driver,
+            run_set_id=run_set_id,
+            conformance_registry=build_default_check_registry(include_plugins=False),
+        )
+        return engine.run()
+
+    passing_root = tmp_path / "passing"
+    passing = run_fixture(
+        root=passing_root,
+        run_set_id="independent-identity-pass",
+        manifest_intent_hash=expected_intent_hash,
+    )
+    certificate = json.loads(
+        (passing_root / "independent-identity-pass" / "conformance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    checks = {
+        check["check_id"]: check
+        for check in certificate["rows"]["identity-row"]["checks"]
+    }
+    assembled_bundle = json.loads(
+        (passing_root / "independent-identity-pass" / "bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    execution = assembled_bundle["rows"][0]["execution"]
+    assert {
+        "authored": execution["authored_intent"]["sha256"],
+        "payload": execution["payload"]["sha256"],
+        "snapshot": execution["resolved_snapshot"]["sha256"],
+        "capsule": execution["execution_capsule"]["sha256"],
+    } == expected_artifact_hashes
+    assert passing.stage("CERTIFY").status == "completed"
+    assert passing.stage("REGISTER").status == "completed"
+    assert certificate["overall"] == "pass"
+    assert set(checks) == {
+        "checkpoint_cadence",
+        "completed_batches",
+        "environment_fingerprint",
+        "events_terminal",
+        "execution_identity",
+        "lr_trace",
+        "manifest_valid",
+        "seeds",
+    }
+    assert all(check["status"] == "pass" for check in checks.values())
+    assert checks["execution_identity"]["expected"]
+    assert checks["execution_identity"]["observed"]
+    assert (
+        checks["execution_identity"]["expected"]
+        == checks["execution_identity"]["observed"]
+    )
+    assert checks["execution_identity"]["expected"] == {
+        "intent_hash": expected_intent_hash,
+        "resolved_semantics_root_hash": expected_root_hash,
+        "execution_hash": expected_execution_hash,
+        "input_data_identities": [],
+    }
+
+    tampered_root = tmp_path / "tampered"
+    with pytest.raises(ValueError, match="phase=completed"):
+        run_fixture(
+            root=tampered_root,
+            run_set_id="independent-identity-tampered",
+            manifest_intent_hash="f" * 64,
+        )
+    tampered_state = RunSetStateStore(
+        tampered_root / "independent-identity-tampered" / "state.json"
+    ).load()
+    tampered_certificate = json.loads(
+        (
+            tampered_root
+            / "independent-identity-tampered"
+            / "conformance.json"
+        ).read_text(encoding="utf-8")
+    )
+    tampered_checks = {
+        check["check_id"]: check
+        for check in tampered_certificate["rows"]["identity-row"]["checks"]
+    }
+    assert tampered_certificate["overall"] == "fail"
+    assert tampered_checks["execution_identity"]["status"] == "fail"
+    assert "intent_hash" in tampered_checks["execution_identity"]["detail"]
+    assert tampered_state.stage("CERTIFY").status == "completed"
+    assert tampered_state.stage("REGISTER").status == "failed"
+
+
 def test_preflight_failures_record_named_checks_and_do_not_call_driver(tmp_path: Path) -> None:
     invalid = _bundle(
         tmp_path,
         rows=[
-            RunRowSpec(
-                row_id="row-a",
-                command=[sys.executable, "-c", "pass"],
+            _compiled_row(
+                "row-a",
                 run_spec={"schema_version": "feedbax.spec.training_run.v0"},
             )
         ],
@@ -291,9 +756,8 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
     bundle = _bundle(
         tmp_path,
         rows=[
-            RunRowSpec(
-                row_id="row-a",
-                command=[sys.executable, "-c", "pass"],
+            _compiled_row(
+                "row-a",
                 run_spec={
                     "optimizer": {
                         "type": "adamw",
@@ -310,16 +774,15 @@ def test_preflight_schedule_realization_uses_optimizer_builder(tmp_path: Path) -
         "row-a": [{"optimizer_index": 0, "scheduled": False, "points": 0}]
     }
 
-    invalid = bundle.model_copy(
-        update={
-            "rows": [
-                RunRowSpec(
-                    row_id="row-a",
-                    command=[sys.executable, "-c", "pass"],
-                    run_spec={"optimizer": {"type": "adamw", "params": {}}},
-                )
-            ]
-        }
+    invalid = _bundle(
+        tmp_path / "invalid",
+        rows=[
+            _compiled_row(
+                "row-a",
+                run_spec={"optimizer": {"type": "adamw", "params": {}}},
+            )
+        ],
+        run_set_id="invalid-optimizer",
     )
     invalid_checks = {check.name: check for check in run_preflight_checks(invalid)}
     assert invalid_checks["schedule-realization"].status == "fail"
@@ -339,9 +802,8 @@ def test_preflight_schedule_realization_fails_miswired_resume_before_driver(
     bundle = _bundle(
         tmp_path,
         rows=[
-            RunRowSpec(
-                row_id="row-a",
-                command=[sys.executable, "-c", "pass"],
+            _compiled_row(
+                "row-a",
                 run_spec={
                     "optimizer": _scheduled_optimizer_payload(),
                     "resume_context": declared_restart_context,
@@ -385,9 +847,8 @@ def test_preflight_schedule_realization_passes_correct_resume_context(tmp_path: 
     bundle = _bundle(
         tmp_path,
         rows=[
-            RunRowSpec(
-                row_id="row-a",
-                command=[sys.executable, "-c", "pass"],
+            _compiled_row(
+                "row-a",
                 run_spec={
                     "optimizer": _scheduled_optimizer_payload(),
                     "resume_context": resume_context,
@@ -414,9 +875,8 @@ def test_preflight_schedule_realization_fails_when_resume_context_is_dropped(
     bundle = _bundle(
         tmp_path,
         rows=[
-            RunRowSpec(
-                row_id="row-a",
-                command=[sys.executable, "-c", "pass"],
+            _compiled_row(
+                "row-a",
                 run_spec={
                     "optimizer": _scheduled_optimizer_payload(),
                     "optimizer_build_context": _schedule_context(
@@ -455,8 +915,15 @@ def test_production_stage_engine_call_sites_supply_nonempty_registry() -> None:
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "StageEngine"
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "StageEngine")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "StageEngine"
+                    and node.func.attr == "from_request"
+                )
+            )
         ]
         assert calls, relative
         for call in calls:
@@ -492,8 +959,12 @@ def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
         "checkpoint_interval": 500,
         "seeds": {"controller": 7},
     }
-    row = RunRowSpec(row_id="rewarm", command=[sys.executable, "-c", "pass"], run_spec=run_spec)
-    bundle = _bundle(tmp_path, rows=[row], run_set_id="negative-canary")
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("rewarm", run_spec=run_spec)],
+        run_set_id="negative-canary",
+    )
+    row = bundle.row("rewarm")
     collected = bundle.run_set_dir / "collected" / row.row_id
     collected.mkdir(parents=True)
     manifest = collected / "training_manifest.json"
@@ -582,9 +1053,9 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
         encoding="utf-8",
     )
     rows = [
-        RunRowSpec(row_id="warm", command=[sys.executable, str(script)], collect=["payload.json"]),
-        RunRowSpec(
-            row_id="second", command=[sys.executable, str(script)], collect=["payload.json"]
+        _compiled_row("warm", command=[sys.executable, str(script)], collect=["payload.json"]),
+        _compiled_row(
+            "second", command=[sys.executable, str(script)], collect=["payload.json"]
         ),
     ]
     bundle = _bundle(
@@ -618,7 +1089,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     slow.write_text("import time; time.sleep(2)\n", encoding="utf-8")
     budget_bundle = _bundle(
         tmp_path / "budget",
-        rows=[RunRowSpec(row_id="slow", command=[sys.executable, str(slow)])],
+        rows=[_compiled_row("slow", command=[sys.executable, str(slow)])],
         max_wall_clock_seconds=0.05,
         run_set_id="2026-01-02-badf00d",
     )
@@ -666,7 +1137,7 @@ while True:
     )
     bundle = _bundle(
         tmp_path,
-        rows=[RunRowSpec(row_id="row", command=[sys.executable, str(script)])],
+        rows=[_compiled_row("row", command=[sys.executable, str(script)])],
         run_set_id="checkpoint-stop",
     )
     event_path = bundle.run_set_dir / "events" / "row.events.jsonl"
@@ -728,7 +1199,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     )
     bundle = _bundle(
         tmp_path,
-        rows=[RunRowSpec(row_id="row", command=[sys.executable, str(script)])],
+        rows=[_compiled_row("row", command=[sys.executable, str(script)])],
         run_set_id=f"{action}-decision",
     )
     event_path = bundle.run_set_dir / "events" / "row.events.jsonl"
@@ -828,15 +1299,16 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
 
 def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
     marker = tmp_path / "spawned.txt"
-    row = RunRowSpec(
-        row_id="row-a",
+    compiled_row = _compiled_row(
+        "row-a",
         command=[
             sys.executable,
             "-c",
             f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
         ],
     )
-    bundle = _bundle(tmp_path, rows=[row])
+    bundle = _bundle(tmp_path, rows=[compiled_row])
+    row = bundle.row("row-a")
     driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
     driver.provision(bundle, RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}))
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
@@ -861,15 +1333,16 @@ def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -
 
 def test_local_driver_marks_dead_started_pid_failed_without_spawning(tmp_path: Path) -> None:
     marker = tmp_path / "spawned.txt"
-    row = RunRowSpec(
-        row_id="row-a",
+    compiled_row = _compiled_row(
+        "row-a",
         command=[
             sys.executable,
             "-c",
             f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
         ],
     )
-    bundle = _bundle(tmp_path, rows=[row])
+    bundle = _bundle(tmp_path, rows=[compiled_row])
+    row = bundle.row("row-a")
     driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
     driver.provision(bundle, RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()}))
     sentinels = bundle.run_set_dir / "sentinels"
@@ -890,15 +1363,15 @@ def test_local_driver_marks_dead_started_pid_failed_without_spawning(tmp_path: P
 
 def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> None:
     marker = tmp_path / "spawned.txt"
-    row = RunRowSpec(
-        row_id="row-a",
+    compiled_row = _compiled_row(
+        "row-a",
         command=[
             sys.executable,
             "-c",
             f"from pathlib import Path; Path({str(marker)!r}).write_text('spawned')",
         ],
     )
-    bundle = _bundle(tmp_path, rows=[row])
+    bundle = _bundle(tmp_path, rows=[compiled_row])
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
     state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
@@ -936,8 +1409,8 @@ def test_warm_first_gate_releases_ready_and_completed_first_rows(
     expected_call: str,
 ) -> None:
     rows = [
-        RunRowSpec(row_id="warm", command=[sys.executable, "-c", "pass"]),
-        RunRowSpec(row_id="second", command=[sys.executable, "-c", "pass"]),
+        _compiled_row("warm"),
+        _compiled_row("second"),
     ]
     bundle = _bundle(
         tmp_path,
@@ -967,7 +1440,7 @@ def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) 
     (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
     bundle = _bundle(
         tmp_path,
-        rows=[RunRowSpec(row_id="row", command=[sys.executable, "-c", "pass"])],
+        rows=[_compiled_row("row")],
     ).model_copy(
         update={
             "environment": EnvironmentDeclaration(

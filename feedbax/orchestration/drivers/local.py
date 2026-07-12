@@ -216,7 +216,7 @@ class LocalOrchestrationDriver:
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         collected: dict[str, str] = {}
-        sources = row.collect or [str(paths["event_log"])]
+        sources = row.launch.collect or [str(paths["event_log"])]
         for source in sources:
             source_path = Path(source)
             if not source_path.is_absolute():
@@ -231,9 +231,10 @@ class LocalOrchestrationDriver:
             else:
                 shutil.copy2(source_path, dest)
             collected[source_path.name] = str(dest)
-        if row.payload_sha256 and collected:
+        payload_sha256 = row.launch.metadata.get("payload_sha256")
+        if payload_sha256 and collected:
             first = Path(next(iter(collected.values())))
-            if first.is_file() and _sha256_file(first) != row.payload_sha256:
+            if first.is_file() and _sha256_file(first) != str(payload_sha256):
                 raise LocalDriverError(f"payload sha256 mismatch for row {row.row_id!r}")
         return collected
 
@@ -284,10 +285,10 @@ def compute_environment_fingerprint(
 
 
 def _row_command(row: RunRowSpec, python_executable: str) -> list[str]:
-    if row.command:
-        return [str(part) for part in row.command]
-    assert row.entry is not None
-    return [python_executable, row.entry]
+    if row.launch.command:
+        return [str(part) for part in row.launch.command]
+    assert row.launch.entry is not None
+    return [python_executable, row.launch.entry]
 
 
 def _prepend_feedbax_source_root(existing: str | None) -> str:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import FastAPI
@@ -19,12 +22,99 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
+from feedbax.contracts.studio_training import (
+    STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+    StudioTrainingAssemblySpec,
+)
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent
+from feedbax.orchestration.assembly import assemble_run_bundle
 from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.bundle import BudgetPolicy, EnvironmentDeclaration, RunBundle, RunRowSpec
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 from feedbax.web.services.training_service import TrainingService
+from feedbax.web.services.worker_driver import _worker_start_body, load_worker_execution_payload
 from feedbax.web.worker.app import WorkerStatus
+
+
+def test_studio_training_assembly_spec_governs_worker_payload() -> None:
+    spec = StudioTrainingAssemblySpec(
+        total_batches=3,
+        training_config={"learning_rate": 0.01},
+        graph_spec={"schema_id": "feedbax.graph", "schema_version": "feedbax.graph.v1"},
+    )
+
+    payload = spec.worker_payload()
+
+    assert payload["schema_version"] == STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION
+    assert payload["total_batches"] == 3
+    assert payload["snapshot_interval"] == 100
+    assert payload["training_config"] == {"learning_rate": 0.01}
+    assert "job_id" not in payload
+    assert "run_set_id" not in payload
+
+
+def test_studio_training_assembly_spec_rejects_launch_identity_fields() -> None:
+    try:
+        StudioTrainingAssemblySpec(
+            total_batches=3,
+            job_id="caller-job",
+            run_set_id="caller-set",
+        )
+    except ValueError as exc:
+        assert "extra" in str(exc).lower()
+    else:
+        raise AssertionError("Studio authored request accepted orchestrator-owned identities")
+
+
+def test_worker_driver_resolves_registered_typed_execution_payload(tmp_path) -> None:
+    spec = StudioTrainingAssemblySpec(total_batches=7, snapshot_interval=11)
+    payload_path = tmp_path / "studio-training.json"
+    payload_bytes = spec.model_dump_json(exclude_none=True).encode()
+    payload_path.write_bytes(payload_bytes)
+    payload_ref = SimpleNamespace(
+        schema_id=spec.schema_id,
+        schema_version=spec.schema_version,
+        sha256=hashlib.sha256(payload_bytes).hexdigest(),
+        uri=str(payload_path),
+    )
+    bundle = SimpleNamespace(run_set_id="set-typed")
+    row = SimpleNamespace(
+        row_id="job-typed",
+        execution=SimpleNamespace(payload=payload_ref),
+        metadata={"worker_start": {"total_batches": 999}},
+    )
+
+    assert _worker_start_body(bundle, row) == {
+        "schema_id": spec.schema_id,
+        "schema_version": spec.schema_version,
+        "total_batches": 7,
+        "snapshot_interval": 11,
+        "job_id": "job-typed",
+        "run_set_id": "set-typed",
+    }
+
+
+def test_training_service_builds_governed_request_and_compiled_worker_payload(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
+    service = TrainingService()
+    request, context, registry = service._build_worker_assembly_request(
+        worker_start={"total_batches": 5}
+    )
+
+    bundle = assemble_run_bundle(
+        request,
+        run_set_id="2026-07-12-a1b2c3d4",
+        context=context,
+        registry=registry,
+    )
+
+    row = bundle.rows[0]
+    assert row.row_id == "2026-07-12-a1b2c3d4-studio"
+    assert "metadata" not in row.model_dump(mode="json")
+    assert row.launch.metadata == {}
+    assert load_worker_execution_payload(row)["total_batches"] == 5
+    assert row.execution.immutable_inputs == []
 
 
 def _wait_for_worker_status(
@@ -215,7 +305,7 @@ def test_training_service_starts_state_backed_worker_run(monkeypatch, tmp_path) 
 
         def launch_row(self, bundle, row, state) -> Mapping[str, Any]:
             del state
-            body = dict(row.metadata["worker_start"])
+            body = load_worker_execution_payload(row)
             body["job_id"] = row.row_id
             body["run_set_id"] = bundle.run_set_id
             starts.append(body)
@@ -282,9 +372,12 @@ def test_training_service_starts_state_backed_worker_run(monkeypatch, tmp_path) 
         assert status["last_loss"] == 0.125
         assert starts == [
             {
+                "schema_id": "feedbax.spec.studio.training_assembly",
+                "schema_version": "feedbax.spec.studio.training_assembly.v1",
                 "job_id": job_id,
                 "run_set_id": status["run_set_id"],
                 "total_batches": 3,
+                "snapshot_interval": 100,
             }
         ]
         assert service.list_live_training_runs()[0]["id"] == job_id
@@ -292,18 +385,24 @@ def test_training_service_starts_state_backed_worker_run(monkeypatch, tmp_path) 
     asyncio.run(run())
 
 
-def test_training_service_reconciles_terminal_state_doc(monkeypatch, tmp_path) -> None:
+def test_training_service_reads_legacy_v2_terminal_status_without_mutating(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    bundle = RunBundle(
-        run_set_id="set-terminal",
-        driver="worker-http",
-        rows=[RunRowSpec(row_id="job-terminal", command=["worker-http"])],
-        environment=EnvironmentDeclaration(python_version="3.test"),
-        budget=BudgetPolicy(max_wall_clock_seconds=60),
-    )
+    bundle = SimpleNamespace(run_set_id="set-terminal", run_set_dir=tmp_path / "set-terminal")
     bundle.run_set_dir.mkdir(parents=True)
     (bundle.run_set_dir / "bundle.json").write_text(
-        bundle.model_dump_json(indent=2),
+        json.dumps(
+            {
+                "schema_id": "feedbax.orchestration.run_bundle",
+                "schema_version": "feedbax.orchestration.run_bundle.v2",
+                "run_set_id": bundle.run_set_id,
+                "rows": [
+                    {
+                        "row_id": "job-terminal",
+                        "metadata": {"worker_start": {"total_batches": 1}},
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     events_dir = bundle.run_set_dir / "events"
@@ -332,26 +431,32 @@ def test_training_service_reconciles_terminal_state_doc(monkeypatch, tmp_path) -
     )
 
     service = TrainingService()
-    asyncio.run(service.reconcile_from_state_docs())
+    status = service._status_from_state("job-terminal")
+    assert status is not None
+    assert status["status"] == "running"
+    assert status["total_batches"] == 1
+    assert status["last_loss"] == 0.5
+    assert store.load().rows["job-terminal"].status == "running"
 
-    state = store.load()
-    assert state.rows["job-terminal"].status == "completed"
-    assert state.stage("REGISTER").status == "completed"
-    assert service._status_from_state("job-terminal")["last_loss"] == 0.5
 
-
-def test_training_service_reconciles_orphan_state_doc(monkeypatch, tmp_path) -> None:
+def test_training_service_reads_legacy_v2_orphan_status_without_mutating(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
-    bundle = RunBundle(
-        run_set_id="set-orphan",
-        driver="worker-http",
-        rows=[RunRowSpec(row_id="job-orphan", command=["worker-http"])],
-        environment=EnvironmentDeclaration(python_version="3.test"),
-        budget=BudgetPolicy(max_wall_clock_seconds=60),
-    )
+    bundle = SimpleNamespace(run_set_id="set-orphan", run_set_dir=tmp_path / "set-orphan")
     bundle.run_set_dir.mkdir(parents=True)
     (bundle.run_set_dir / "bundle.json").write_text(
-        bundle.model_dump_json(indent=2),
+        json.dumps(
+            {
+                "schema_id": "feedbax.orchestration.run_bundle",
+                "schema_version": "feedbax.orchestration.run_bundle.v2",
+                "run_set_id": bundle.run_set_id,
+                "rows": [
+                    {
+                        "row_id": "job-orphan",
+                        "metadata": {"worker_start": {"total_batches": 1}},
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     (bundle.run_set_dir / "events").mkdir()
@@ -365,12 +470,11 @@ def test_training_service_reconciles_orphan_state_doc(monkeypatch, tmp_path) -> 
     )
 
     service = TrainingService()
-    asyncio.run(service.reconcile_from_state_docs())
-
-    row = store.load().rows["job-orphan"]
-    assert row.status == "failed"
-    assert row.error == "orphaned after backend restart"
-    assert row.event_discrepancies[-1]["code"] == "backend_restart_orphaned_row"
+    status = service._status_from_state("job-orphan")
+    assert status is not None
+    assert status["status"] == "running"
+    assert status["total_batches"] == 1
+    assert store.load().rows["job-orphan"].status == "running"
 
 
 def test_training_service_preserves_worker_seq_in_ws_envelope(monkeypatch) -> None:

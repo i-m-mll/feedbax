@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -8,17 +9,29 @@ from typing import Any
 import pytest
 
 from feedbax.bin import orchestrate
+from feedbax.contracts.studio_training import (
+    StudioTrainingAssemblySpec,
+    StudioTrainingIdentityAdapter,
+)
 from feedbax.orchestration import (
+    AssemblyCompilerRegistry,
+    AssemblyContext,
     BudgetPolicy,
+    CompiledExecutionRow,
+    CompiledRunSet,
+    CompilerIdentity,
     EnvironmentDeclaration,
     LaunchPolicy,
+    RowLaunchSpec,
+    RunAssemblyRequest,
     RunBundle,
     RunEventEmitter,
-    RunRowSpec,
     RunSetState,
     RunSetStateStore,
+    SchemaArtifactRef,
     StageState,
     StateLockError,
+    assemble_run_bundle,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.conformance import CheckRegistry, pass_check
@@ -27,21 +40,105 @@ from feedbax.orchestration.stages import PreflightFailed
 from feedbax.orchestration.state import RowState
 
 
-def _bundle(
+class _FixtureCompiler:
+    def __init__(self, launches: list[tuple[str, RowLaunchSpec]]) -> None:
+        self.launches = launches
+
+    def compile(
+        self,
+        request: RunAssemblyRequest,
+        *,
+        authored: dict[str, Any],
+        run_set_id: str,
+        context: AssemblyContext,
+    ) -> CompiledRunSet:
+        del request, run_set_id, context
+        return CompiledRunSet(
+            rows=[
+                CompiledExecutionRow(
+                    row_id=row_id,
+                    payload=authored,
+                    resolved_semantics={**authored, "fixture_row_id": row_id},
+                    immutable_inputs=[],
+                    launch=launch,
+                )
+                for row_id, launch in self.launches
+            ]
+        )
+
+
+def _assembly_request(
     tmp_path: Path,
     *,
-    run_set_id: str = "2026-01-02-cli",
-    rows: list[RunRowSpec] | None = None,
+    launches: list[tuple[str, RowLaunchSpec]] | None = None,
+    driver: str = "local",
+    environment: EnvironmentDeclaration | None = None,
     max_wall_clock_seconds: float = 10.0,
-) -> RunBundle:
-    return RunBundle(
-        run_set_id=run_set_id,
-        rows=rows or [RunRowSpec(row_id="row-a", command=[sys.executable, "-c", "pass"])],
-        environment=EnvironmentDeclaration(python_version="3.12"),
+) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    spec = StudioTrainingAssemblySpec(total_batches=1)
+    authored_path = tmp_path / "studio-training.json"
+    authored_bytes = spec.model_dump_json(exclude_none=True).encode("utf-8")
+    authored_path.parent.mkdir(parents=True, exist_ok=True)
+    authored_path.write_bytes(authored_bytes)
+    request = RunAssemblyRequest(
+        authored=SchemaArtifactRef(
+            schema_id=spec.schema_id,
+            schema_version=spec.schema_version,
+            artifact_id=f"fixture:{hashlib.sha256(authored_bytes).hexdigest()}",
+            sha256=hashlib.sha256(authored_bytes).hexdigest(),
+            uri=str(authored_path),
+        ),
+        compiler=CompilerIdentity(
+            compiler_id="feedbax.test.cli",
+            compiler_version="feedbax.test.cli.v1",
+        ),
+        driver=driver,
+        environment=environment or EnvironmentDeclaration(python_version="3.12"),
         launch_policy=LaunchPolicy(max_parallel_rows=2),
         budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
         orchestration_root=str(tmp_path),
     )
+    registry = AssemblyCompilerRegistry()
+    registry.register(
+        schema_id=spec.schema_id,
+        compiler_id=request.compiler.compiler_id,
+        compiler_version=request.compiler.compiler_version,
+        compiler=_FixtureCompiler(
+            launches
+            or [("row-a", RowLaunchSpec(command=[sys.executable, "-c", "pass"]))]
+        ),
+        identity_adapter=StudioTrainingIdentityAdapter(),
+    )
+    return request, registry
+
+
+def _bundle(
+    tmp_path: Path,
+    *,
+    run_set_id: str = "2026-01-02-cli",
+    launches: list[tuple[str, RowLaunchSpec]] | None = None,
+    driver: str = "local",
+    environment: EnvironmentDeclaration | None = None,
+    max_wall_clock_seconds: float = 10.0,
+) -> RunBundle:
+    request, registry = _assembly_request(
+        tmp_path,
+        launches=launches,
+        driver=driver,
+        environment=environment,
+        max_wall_clock_seconds=max_wall_clock_seconds,
+    )
+    return assemble_run_bundle(
+        request,
+        run_set_id=run_set_id,
+        context=AssemblyContext(custody_root=tmp_path / "custody"),
+        registry=registry,
+    )
+
+
+def _write_request(request: RunAssemblyRequest, path: Path) -> Path:
+    path.write_text(request.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _write_bundle(bundle: RunBundle, path: Path) -> Path:
@@ -140,17 +237,18 @@ def test_exit_code_classes(
     result: BaseException | RunSetState,
     expected: int,
 ) -> None:
-    bundle = _bundle(tmp_path)
-    bundle_path = _write_bundle(bundle, tmp_path / "bundle.json")
+    request, _ = _assembly_request(tmp_path)
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
 
-    def fake_run_engine(*_args: Any, **_kwargs: Any) -> RunSetState:
-        if isinstance(result, BaseException):
-            raise result
-        return result
+    class FakeEngine:
+        def run(self) -> RunSetState:
+            if isinstance(result, BaseException):
+                raise result
+            return result
 
-    monkeypatch.setattr(orchestrate, "_run_engine", fake_run_engine)
+    monkeypatch.setattr(orchestrate, "_request_engine", lambda *_args, **_kwargs: FakeEngine())
 
-    assert orchestrate.main(["launch", "--bundle", str(bundle_path)]) == expected
+    assert orchestrate.main(["launch", "--assembly-request", str(request_path)]) == expected
 
 
 def test_watch_exits_after_all_rows_terminal(
@@ -162,9 +260,9 @@ def test_watch_exits_after_all_rows_terminal(
     bundle = _bundle(
         tmp_path,
         run_set_id="watch-terminal",
-        rows=[
-            RunRowSpec(row_id="a", command=[sys.executable, "-c", "pass"]),
-            RunRowSpec(row_id="b", command=[sys.executable, "-c", "pass"]),
+        launches=[
+            ("a", RowLaunchSpec(command=[sys.executable, "-c", "pass"])),
+            ("b", RowLaunchSpec(command=[sys.executable, "-c", "pass"])),
         ],
     )
     events_dir = bundle.run_set_dir / "events"
@@ -243,37 +341,51 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
 """.strip(),
         encoding="utf-8",
     )
-    bundle = _bundle(
+    request, registry = _assembly_request(
         tmp_path / "orch",
-        run_set_id="local-demo",
-        rows=[
-            RunRowSpec(
-                row_id="row-a",
-                command=[sys.executable, str(script)],
-                collect=["payload.json"],
+        launches=[
+            (
+                "row-a",
+                RowLaunchSpec(
+                    command=[sys.executable, str(script)],
+                    collect=["payload.json"],
+                ),
             ),
-            RunRowSpec(
-                row_id="row-b",
-                command=[sys.executable, str(script)],
-                collect=["payload.json"],
+            (
+                "row-b",
+                RowLaunchSpec(
+                    command=[sys.executable, str(script)],
+                    collect=["payload.json"],
+                ),
             ),
         ],
     )
-    bundle_path = _write_bundle(bundle, tmp_path / "bundle.json")
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
 
     class FastLocalDriver(LocalOrchestrationDriver):
         def __init__(self) -> None:
             super().__init__(cwd=tmp_path, freeze_lines=("feedbax==test",))
 
     monkeypatch.setattr(orchestrate, "LocalOrchestrationDriver", FastLocalDriver)
+    monkeypatch.setattr(orchestrate, "build_default_assembly_registry", lambda: registry)
     monkeypatch.setattr(
         orchestrate,
         "build_default_check_registry",
         lambda: CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
     )
 
-    assert orchestrate.main(["preflight", "--bundle", str(bundle_path)]) == 0
-    assert orchestrate.main(["launch", "--bundle", str(bundle_path), "--driver", "local"]) == 0
+    assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
+    assert orchestrate.main(
+        [
+            "launch",
+            "--assembly-request",
+            str(request_path),
+            "--driver",
+            "local",
+            "--resume-run-set",
+            "local-demo",
+        ]
+    ) == 0
     assert orchestrate.main(["status", "--run-set", "local-demo"]) == 0
     assert orchestrate.main(["certify", "--run-set", "local-demo"]) == 0
     assert orchestrate.main(["teardown", "--run-set", "local-demo"]) == 0
@@ -297,27 +409,26 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
 
 
 def test_runpod_driver_is_constructed_from_durable_bundle_metadata(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path).model_copy(
-        update={
-            "driver": "runpod",
-            "environment": EnvironmentDeclaration(
-                python_version="3.12",
-                image_id="runpod/pytorch:1.0.3",
-                metadata={
-                    "runpod_pod_id": "pod-123",
-                    "runpod_ssh_host": "198.51.100.10",
-                    "runpod_ssh_port": 2222,
-                    "runpod_gpu_id": "NVIDIA GeForce RTX 4090",
-                    "runpod_path_patches": [
-                        {
-                            "remote_file": "/workspace/feedbax/pyproject.toml",
-                            "from": "/local/feedbax",
-                            "to": "/workspace/feedbax",
-                        }
-                    ],
-                },
-            ),
-        }
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        environment=EnvironmentDeclaration(
+            python_version="3.12",
+            image_id="runpod/pytorch:1.0.3",
+            metadata={
+                "runpod_pod_id": "pod-123",
+                "runpod_ssh_host": "198.51.100.10",
+                "runpod_ssh_port": 2222,
+                "runpod_gpu_id": "NVIDIA GeForce RTX 4090",
+                "runpod_path_patches": [
+                    {
+                        "remote_file": "/workspace/feedbax/pyproject.toml",
+                        "from": "/local/feedbax",
+                        "to": "/workspace/feedbax",
+                    }
+                ],
+            },
+        ),
     )
 
     driver = orchestrate._driver_for_bundle(bundle)
@@ -327,26 +438,23 @@ def test_runpod_driver_is_constructed_from_durable_bundle_metadata(tmp_path: Pat
     assert driver.config.path_patches[0][0] == "/workspace/feedbax/pyproject.toml"
 
 
-def test_load_bundle_migrates_v1_deadman_defaults(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
     path = tmp_path / "bundle-v1.json"
     payload = _bundle(tmp_path).model_dump(mode="json")
-    payload["schema_version"] = "feedbax.orchestration.run_bundle.v1"
-    payload.pop("deadman_enabled")
-    payload.pop("deadman_silence_seconds")
+    payload["schema_version"] = f"feedbax.orchestration.run_bundle.{version}"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    bundle = orchestrate._load_bundle(path)
-
-    assert bundle.deadman_enabled is False
-    assert bundle.deadman_silence_seconds == 1800
+    with pytest.raises(ValueError, match="reassemble from the authored RunAssemblyRequest"):
+        orchestrate._load_bundle(path)
 
 
-def test_launch_cli_exposes_deadman_bundle_overrides() -> None:
+def test_launch_cli_exposes_deadman_request_overrides() -> None:
     args = orchestrate.build_parser().parse_args(
         [
             "launch",
-            "--bundle",
-            "bundle.json",
+            "--assembly-request",
+            "assembly-request.json",
             "--deadman",
             "--deadman-silence-seconds",
             "900",

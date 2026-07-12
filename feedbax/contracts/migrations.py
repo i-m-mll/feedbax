@@ -202,9 +202,12 @@ from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_VERSION,
 )
 from feedbax.orchestration.bundle import (
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
+    RUN_BUNDLE_SCHEMA_VERSION_V2,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -213,6 +216,10 @@ from feedbax.orchestration.state import (
 
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
+RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v1"
+STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID = "feedbax.spec.studio.training_assembly"
+STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION = "feedbax.spec.studio.training_assembly.v1"
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -1851,6 +1858,46 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
     families = [
         _family(
+            "RunAssemblyRequest",
+            RUN_ASSEMBLY_REQUEST_SCHEMA_ID,
+            RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.assembly",
+            emitted_by=("feedbax.orchestration.assembly.RunAssemblyRequest",),
+            consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
+            description="Authored request resolved and compiled by persisted ASSEMBLE.",
+            rejected_old_versions=(f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "ExecutionIdentityEnvelope",
+            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
+            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.bundle",
+            emitted_by=("feedbax.orchestration.bundle.ExecutionIdentityEnvelope",),
+            consumed_by=(
+                "feedbax.orchestration.assembly",
+                "feedbax.orchestration.conformance.check_execution_identity",
+            ),
+            description="Per-row binding of authored intent to exact execution identity.",
+            rejected_old_versions=(f"{EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "StudioTrainingAssemblySpec",
+            STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+            STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.studio_training",
+            emitted_by=("feedbax.web.services.training_service.TrainingService",),
+            consumed_by=(
+                "feedbax.contracts.studio_training.StudioTrainingAssemblySpec",
+                "feedbax.web.services.worker_driver.WorkerHttpDriver",
+            ),
+            description="Governed authored request and executable payload for Studio training.",
+            rejected_old_versions=(f"{STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_structured_spec_migrations.py",
+                "tests/test_training_jobs.py",
+            ),
+        ),
+        _family(
             "TrainingRunResolvedSemanticsSnapshot",
             SNAPSHOT_SCHEMA_ID,
             SNAPSHOT_SCHEMA_VERSION,
@@ -2180,9 +2227,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Durable run-set orchestration request bundle.",
-            stance="migrate",
-            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V1,),
-            rejected_old_versions=("feedbax.orchestration.run_bundle.v0",),
+            stance="reject",
+            rejected_old_versions=(
+                "feedbax.orchestration.run_bundle.v0",
+                RUN_BUNDLE_SCHEMA_VERSION_V1,
+                RUN_BUNDLE_SCHEMA_VERSION_V2,
+            ),
             required_tests=("tests/test_orchestration_core.py",),
         ),
         _family(
@@ -3263,14 +3313,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         if family.policy is None:
             continue
         for old_version in family.policy.rejected_old_versions:
-            registry.reject_version(
-                family.kind,
-                old_version,
-                reason=(
+            remediation = (
+                "RunBundle v1/v2 lack the execution-identity evidence required by v3; "
+                "reassemble from the authored RunAssemblyRequest."
+                if family.kind == "RunBundle" and old_version in {
+                    RUN_BUNDLE_SCHEMA_VERSION_V1,
+                    RUN_BUNDLE_SCHEMA_VERSION_V2,
+                }
+                else (
                     f"{family.kind} has no registered migration from {old_version!r}; "
                     f"{family.policy.owner_module} owns this schema and current-version "
                     "recreation or an explicit new migration is required."
-                ),
+                )
+            )
+            registry.reject_version(
+                family.kind,
+                old_version,
+                reason=remediation,
             )
 
 
@@ -3294,27 +3353,8 @@ def _migrate_analysis_bundle_v2_to_v3_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
-def _migrate_run_bundle_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Add durable, driver-agnostic dead-man policy fields."""
-    migrated = dict(payload)
-    migrated.setdefault("schema_id", RUN_BUNDLE_SCHEMA_ID)
-    migrated.setdefault("deadman_enabled", False)
-    migrated.setdefault("deadman_silence_seconds", 1800)
-    return migrated
-
-
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
-default_spec_registry.register_migration(
-    "RunBundle",
-    SchemaMigration(
-        source_version=RUN_BUNDLE_SCHEMA_VERSION_V1,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION,
-        migration_id="run-bundle-v1-to-v2-deadman-policy",
-        migrate=_migrate_run_bundle_v1_to_v2_payload,
-        description="Move dead-man policy into the durable run bundle.",
-    ),
-)
 default_spec_registry.register_migration(
     "AnalysisBundleSpec",
     SchemaMigration(

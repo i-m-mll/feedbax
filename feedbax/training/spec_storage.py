@@ -11,7 +11,12 @@ from feedbax.contracts.manifest import (
     TrainingRunManifest,
     sha256_file,
 )
-from feedbax.contracts.run_matrix import InlineMatrixBaseSpec, TrainingRunMatrixSpec
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    InlineMatrixBaseSpec,
+    TrainingRunMatrixSpec,
+)
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
@@ -32,6 +37,10 @@ from feedbax.training.run_matrix import (
 )
 
 
+TRAINING_RUN_MATRIX_COMPILER_ID = "feedbax.training.run_matrix"
+TRAINING_RUN_MATRIX_COMPILER_VERSION = "feedbax.training.run_matrix.v1"
+
+
 class TrainingSpecStorageResult(StrictModel):
     """Identity and custody pointers returned by the registered emitter."""
 
@@ -44,6 +53,172 @@ class TrainingSpecStorageResult(StrictModel):
     snapshot_artifact: ArtifactRef
     capsule_artifact: ArtifactRef
     capsule: TrainingRunExecutionCapsule
+
+
+def compile_training_run_matrix(
+    authored: TrainingRunMatrixSpec | Mapping[str, Any],
+    *,
+    run_set_id: str,
+    context: Any,
+    allow_inline_base: bool = False,
+    row_validator: RowPayloadValidator | None = None,
+) -> Any:
+    """Purely lower an authored training matrix into generic compiled rows."""
+    from feedbax.orchestration.assembly import CompiledExecutionRow, CompiledRunSet
+    from feedbax.orchestration.bundle import RowLaunchSpec
+
+    matrix = (
+        authored
+        if isinstance(authored, TrainingRunMatrixSpec)
+        else TrainingRunMatrixSpec.model_validate(
+            default_spec_registry.migrate("TrainingRunMatrixSpec", authored).payload
+        )
+    )
+    if isinstance(matrix.base, InlineMatrixBaseSpec) and not allow_inline_base:
+        raise ValueError(
+            "inline matrix bases are tests/fixtures only; production assembly requires "
+            "a content-pinned authored_intent or resolved_output reference"
+        )
+    repo_root = context.repo_root
+    if repo_root is None:
+        raise ValueError("training matrix assembly requires AssemblyContext.repo_root")
+    if row_validator is None:
+        materialized = materialize_run_matrix(matrix, repo_root=repo_root)
+    else:
+        materialized = materialize_adapted_run_matrix(
+            matrix, repo_root=repo_root, row_validator=row_validator
+        )
+    rows = []
+    for row in materialized.rows:
+        coordinate = _row_coordinate(materialized, row)
+        resolved = {
+            "run_set_id": run_set_id,
+            "row_id": row.row_id,
+            "planned_run_id": row.planned_run_id,
+            "seed": row.seed,
+            "axis_coordinates": (
+                coordinate.model_dump(mode="json", exclude_none=True)
+                if coordinate is not None
+                else None
+            ),
+            "overrides": [
+                item.model_dump(mode="json", exclude_none=True)
+                if hasattr(item, "model_dump")
+                else item
+                for item in row.overrides
+            ],
+            "payload": row.payload,
+        }
+        rows.append(
+            CompiledExecutionRow(
+                row_id=row.row_id,
+                payload=row.payload,
+                resolved_semantics=resolved,
+                immutable_inputs=list(context.resolved_inputs),
+                launch=RowLaunchSpec(
+                    command=[
+                        "python",
+                        "-m",
+                        "feedbax",
+                        "execute-training-run-spec",
+                    ],
+                    collect=["manifest.json", "training-diagnostics.json"],
+                    payload_routing={"kind": "registered-execution-payload"},
+                ),
+            )
+        )
+    return CompiledRunSet(rows=rows)
+
+
+class TrainingRunMatrixCompiler:
+    """Default registered compiler for TrainingRunMatrixSpec."""
+
+    def __init__(
+        self,
+        *,
+        allow_inline_base: bool = False,
+        row_validator: RowPayloadValidator | None = None,
+    ) -> None:
+        self.allow_inline_base = allow_inline_base
+        self.row_validator = row_validator
+
+    def compile(
+        self,
+        request: Any,
+        *,
+        authored: Mapping[str, Any],
+        run_set_id: str,
+        context: Any,
+    ) -> Any:
+        del request
+        return compile_training_run_matrix(
+            authored,
+            run_set_id=run_set_id,
+            context=context,
+            allow_inline_base=self.allow_inline_base,
+            row_validator=self.row_validator,
+        )
+
+
+class TrainingRunIdentityAdapter:
+    """Training-family semantic adapter for generic execution envelopes."""
+
+    def intent_hash(self, authored: Mapping[str, Any]) -> str:
+        return training_run_intent_hash(authored)
+
+    def build_capsule(
+        self,
+        row: Any,
+        *,
+        identities: Any,
+        context: Any,
+    ) -> Mapping[str, Any]:
+        versions = {
+            "training_run_matrix": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            "resolved_semantics": "feedbax.spec.training_run_resolved_semantics.v1",
+            "execution_capsule": TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
+        }
+        _record_payload_schema_versions(row.payload, versions)
+        return TrainingRunExecutionCapsule(
+            materializer_commit=context.materializer_commit,
+            relevant_schema_versions=versions,
+            dependency_lock_digest=context.dependency_lock_digest,
+            environment_digest=context.environment_digest,
+            input_data_identities=identities.immutable_inputs,
+            intent_hash=identities.intent_hash,
+            resolved_root_hash=identities.resolved_root_hash,
+            execution_hash=identities.execution_hash,
+        ).model_dump(mode="json", exclude_none=True)
+
+    def capsule_identities(self, capsule: Mapping[str, Any]) -> Any:
+        from feedbax.orchestration.assembly import RowIdentities
+
+        value = TrainingRunExecutionCapsule.model_validate(capsule)
+        assert value.execution_hash is not None
+        return RowIdentities(
+            intent_hash=value.intent_hash,
+            resolved_root_hash=value.resolved_root_hash,
+            immutable_inputs=value.input_data_identities,
+            execution_hash=value.execution_hash,
+        )
+
+
+def register_training_run_matrix_compiler(
+    registry: Any,
+    *,
+    allow_inline_base: bool = False,
+    row_validator: RowPayloadValidator | None = None,
+) -> None:
+    """Register the default matrix compiler and identity adapter."""
+    registry.register(
+        schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+        compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        compiler=TrainingRunMatrixCompiler(
+            allow_inline_base=allow_inline_base, row_validator=row_validator
+        ),
+        identity_adapter=TrainingRunIdentityAdapter(),
+    )
 
 
 def stamp_training_run_manifest_identities(

@@ -2,17 +2,33 @@ from __future__ import annotations
 
 import json
 import hashlib
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from feedbax.contracts.spec_storage import training_spec_canonical_bytes
+from feedbax.contracts.studio_training import (
+    STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+    STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+    StudioTrainingAssemblySpec,
+    StudioTrainingIdentityAdapter,
+)
+from feedbax.orchestration.assembly import (
+    AssemblyCompilerRegistry,
+    AssemblyContext,
+    CompiledExecutionRow,
+    CompiledRunSet,
+    CompilerIdentity,
+    RunAssemblyRequest,
+    assemble_run_bundle,
+)
 from feedbax.orchestration.bundle import (
     BudgetPolicy,
     EnvironmentDeclaration,
     RunBundle,
-    RunRowSpec,
+    RowLaunchSpec,
+    SchemaArtifactRef,
 )
 from feedbax.orchestration.drivers.runpod import (
     CommandResult,
@@ -73,28 +89,71 @@ class FakeRunPodTransport:
         return CommandResult(0, "")
 
 
+class _RunPodFixtureCompiler:
+    """Compile a governed Studio document into one RunPod-focused v3 row."""
+
+    def compile(
+        self,
+        request: RunAssemblyRequest,
+        *,
+        authored: dict[str, Any],
+        run_set_id: str,
+        context: AssemblyContext,
+    ) -> CompiledRunSet:
+        del request, run_set_id, context
+        payload = StudioTrainingAssemblySpec.model_validate(authored).worker_payload()
+        return CompiledRunSet(
+            rows=[
+                CompiledExecutionRow(
+                    row_id="warm",
+                    payload=payload,
+                    resolved_semantics={"payload": payload},
+                    immutable_inputs=[],
+                    launch=RowLaunchSpec(
+                        command=["python", "-m", "feedbax.train", "--row", "warm"],
+                        collect=["events/warm.events.jsonl"],
+                        payload_routing={"kind": "registered-execution-payload"},
+                    ),
+                )
+            ]
+        )
+
+
 def _bundle(
     tmp_path: Path,
     *,
     keep_alive: bool = False,
     deadman_enabled: bool = False,
+    baseline: bool = True,
 ) -> RunBundle:
-    return RunBundle(
-        run_set_id="2026-01-02-deadbeef",
+    training_config = None
+    if baseline:
+        # The baseline extension lives inside a schema-valid authored field and
+        # is carried through to the registered executable payload by ASSEMBLE.
+        training_config = {
+            "resume": {
+                "baseline_checkpoint_path": "_artifacts/run-a/checkpoint_100",
+                "baseline_completed_batch": 100,
+            }
+        }
+    authored = StudioTrainingAssemblySpec(total_batches=1, training_config=training_config)
+    authored_bytes = training_spec_canonical_bytes(authored)
+    authored_path = tmp_path / "authored-studio-training.json"
+    authored_path.write_bytes(authored_bytes)
+    authored_sha = hashlib.sha256(authored_bytes).hexdigest()
+    request = RunAssemblyRequest(
+        authored=SchemaArtifactRef(
+            schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+            schema_version=STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
+            artifact_id=f"artifact://sha256/{authored_sha}",
+            sha256=authored_sha,
+            uri=str(authored_path),
+        ),
+        compiler=CompilerIdentity(
+            compiler_id="feedbax.tests.runpod-fixture",
+            compiler_version="feedbax.tests.runpod-fixture.v1",
+        ),
         driver="runpod",
-        rows=[
-            RunRowSpec(
-                row_id="warm",
-                command=[sys.executable, "-m", "feedbax.train", "--row", "warm"],
-                collect=["events/warm.events.jsonl"],
-                run_spec={
-                    "resume": {
-                        "baseline_checkpoint_path": "_artifacts/run-a/checkpoint_100",
-                        "baseline_completed_batch": 100,
-                    }
-                },
-            )
-        ],
         environment=EnvironmentDeclaration(
             python_version="3.12",
             image_id="runpod/pytorch:1.0.3",
@@ -105,6 +164,20 @@ def _bundle(
         keep_alive=keep_alive,
         deadman_enabled=deadman_enabled,
         deadman_silence_seconds=60,
+    )
+    registry = AssemblyCompilerRegistry()
+    registry.register(
+        schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
+        compiler_id=request.compiler.compiler_id,
+        compiler_version=request.compiler.compiler_version,
+        compiler=_RunPodFixtureCompiler(),
+        identity_adapter=StudioTrainingIdentityAdapter(),
+    )
+    return assemble_run_bundle(
+        request,
+        run_set_id="2026-01-02-deadbeef",
+        context=AssemblyContext(custody_root=tmp_path / "custody"),
+        registry=registry,
     )
 
 
@@ -413,9 +486,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
 
 
 def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path).model_copy(
-        update={"rows": [_bundle(tmp_path).rows[0].model_copy(update={"run_spec": None})]}
-    )
+    bundle = _bundle(tmp_path, baseline=False)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
@@ -497,7 +568,13 @@ def test_collect_rsyncs_requested_outputs_and_verifies_payload(tmp_path: Path) -
     payload.parent.mkdir(parents=True)
     payload.write_text("payload\n", encoding="utf-8")
     digest = hashlib.sha256(payload.read_bytes()).hexdigest()
-    row = bundle.rows[0].model_copy(update={"payload_sha256": digest})
+    row = bundle.rows[0].model_copy(
+        update={
+            "launch": bundle.rows[0].launch.model_copy(
+                update={"metadata": {"payload_sha256": digest}}
+            )
+        }
+    )
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),

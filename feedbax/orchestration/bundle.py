@@ -12,11 +12,21 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.spec_storage import (
+    canonicalize_immutable_input_identities,
+    training_run_execution_hash,
+    validate_sha256,
+)
 
 
 RUN_BUNDLE_SCHEMA_ID = "feedbax.orchestration.run_bundle"
 RUN_BUNDLE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_bundle.v1"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v2"
+RUN_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_bundle.v2"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v3"
+EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
+EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = (
+    "feedbax.spec.execution_identity_envelope.v1"
+)
 ROW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -34,16 +44,158 @@ def default_orchestration_root(run_set_id: str) -> Path:
     return Path.home() / ".cache" / "feedbax" / "orchestration" / run_set_id
 
 
-class RunRowSpec(StrictModel):
-    """One row in a run bundle."""
+class SchemaArtifactRef(StrictModel):
+    """Immutable registry reference to a governed structured payload."""
 
-    row_id: str = Field(min_length=1)
-    run_spec: dict[str, Any] | str | None = None
+    schema_id: str = Field(min_length=1)
+    schema_version: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    sha256: str
+    uri: str | None = None
+
+    @field_validator("sha256")
+    @classmethod
+    def _validate_sha256(cls, value: str) -> str:
+        validate_sha256(value, field_name="sha256")
+        return value
+
+    @field_validator("artifact_id")
+    @classmethod
+    def _reject_mutable_locator(cls, value: str) -> str:
+        if "latest.json" in value:
+            raise ValueError("artifact_id must be an immutable registry-resolvable locator")
+        return value
+
+
+class IdentityArtifactRef(SchemaArtifactRef):
+    """Base immutable artifact reference carrying a separate semantic hash."""
+
+
+class AuthoredIntentRef(IdentityArtifactRef):
+    """Authored document reference and its family-defined intent identity."""
+
+    intent_hash: str
+
+    @field_validator("intent_hash")
+    @classmethod
+    def _validate_intent_hash(cls, value: str) -> str:
+        validate_sha256(value, field_name="intent_hash")
+        return value
+
+
+class ResolvedSnapshotRef(IdentityArtifactRef):
+    """Resolved-semantics snapshot reference and decoded root identity."""
+
+    root_hash: str
+
+    @field_validator("root_hash")
+    @classmethod
+    def _validate_root_hash(cls, value: str) -> str:
+        validate_sha256(value, field_name="root_hash")
+        return value
+
+
+class ExecutionCapsuleRef(IdentityArtifactRef):
+    """Execution capsule reference and derived execution identity."""
+
+    execution_hash: str
+
+    @field_validator("execution_hash")
+    @classmethod
+    def _validate_execution_hash(cls, value: str) -> str:
+        validate_sha256(value, field_name="execution_hash")
+        return value
+
+
+class ImmutableInputDigest(StrictModel):
+    """Digest identifying immutable external input bytes."""
+
+    algorithm: Literal["sha256"] = "sha256"
+    value: str
+
+    @field_validator("value")
+    @classmethod
+    def _validate_value(cls, value: str) -> str:
+        validate_sha256(value, field_name="digest.value")
+        return value
+
+
+class ImmutableInputIdentity(StrictModel):
+    """Canonical identity for one external execution input."""
+
+    role: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    identifier: str = Field(min_length=1)
+    digest: ImmutableInputDigest
+    schema_id: str | None = None
+    schema_version: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_schema_pair(self) -> "ImmutableInputIdentity":
+        if (self.schema_id is None) != (self.schema_version is None):
+            raise ValueError("schema_id and schema_version must be supplied together")
+        if "latest.json" in self.identifier:
+            raise ValueError("immutable input identifier must not reference latest.json")
+        return self
+
+
+class ExecutionIdentityEnvelope(StrictModel):
+    """Immutable scientific identity committed by ASSEMBLE for one row."""
+
+    schema_id: Literal["feedbax.spec.execution_identity_envelope"] = (
+        EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.execution_identity_envelope.v1"] = (
+        EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
+    )
+    payload: SchemaArtifactRef
+    authored_intent: AuthoredIntentRef
+    resolved_snapshot: ResolvedSnapshotRef
+    execution_capsule: ExecutionCapsuleRef
+    immutable_inputs: list[ImmutableInputIdentity]
+
+    @model_validator(mode="after")
+    def _validate_execution_identity(self) -> "ExecutionIdentityEnvelope":
+        canonical = canonicalize_immutable_input_identities(self.immutable_inputs)
+        supplied = [
+            identity.model_dump(mode="json", exclude_none=True)
+            for identity in self.immutable_inputs
+        ]
+        if supplied != canonical:
+            raise ValueError(
+                "immutable_inputs must be in canonical (role, kind, identifier, digest) order"
+            )
+        expected = training_run_execution_hash(self.resolved_snapshot.root_hash, canonical)
+        if self.execution_capsule.execution_hash != expected:
+            raise ValueError(
+                "execution_hash does not match resolved root and canonical immutable inputs; "
+                f"envelope={self.execution_capsule.execution_hash!r}, computed={expected!r}"
+            )
+        return self
+
+
+class RowLaunchSpec(StrictModel):
+    """Operational launch instructions, excluded from scientific identity."""
+
     command: list[str] = Field(default_factory=list)
     entry: str | None = None
-    payload_sha256: str | None = None
     collect: list[str] = Field(default_factory=list)
+    payload_routing: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_launch_entry(self) -> "RowLaunchSpec":
+        if not self.command and not self.entry:
+            raise ValueError("row launch requires command or entry")
+        return self
+
+
+class RunRowSpec(StrictModel):
+    """One compiled row in a run bundle."""
+
+    row_id: str = Field(min_length=1)
+    execution: ExecutionIdentityEnvelope
+    launch: RowLaunchSpec
 
     @field_validator("row_id")
     @classmethod
@@ -51,13 +203,6 @@ class RunRowSpec(StrictModel):
         if not ROW_ID_RE.fullmatch(value):
             raise ValueError("row_id must match ^[A-Za-z0-9_.-]+$")
         return value
-
-    @model_validator(mode="after")
-    def _validate_launch_entry(self) -> "RunRowSpec":
-        if not self.command and not self.entry:
-            raise ValueError("row requires command or entry")
-        return self
-
 
 class RepoRevision(StrictModel):
     """Repository revision declaration used in environment fingerprints."""
@@ -113,7 +258,7 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v2"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v3"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     driver: str = "local"
     rows: list[RunRowSpec] = Field(min_length=1)
