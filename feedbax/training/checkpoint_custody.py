@@ -1293,12 +1293,15 @@ def fork_checkpoint_transaction(
         manifest_metadata = dict(source.manifest.metadata)
         manifest_metadata["phase"] = barrier.phase
         manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
+        manifest_metadata.update(dict(metadata or {}))
         if request is not None:
             manifest_metadata["checkpoint_continuation"] = request.model_dump(
                 mode="json",
                 exclude_none=True,
             )
-        manifest_metadata.update(dict(metadata or {}))
+            manifest_metadata["checkpoint_continuation_applied"] = True
+        else:
+            manifest_metadata.pop("checkpoint_continuation_applied", None)
         _validate_program_step_units(
             coordinate,
             manifest_metadata,
