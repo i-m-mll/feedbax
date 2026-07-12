@@ -43,6 +43,7 @@ from feedbax.orchestration.conformance import (
     RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
     build_core_check_registry,
+    check_checkpoint_cadence,
     check_completed_batches,
     check_events_terminal,
     check_execution_identity,
@@ -262,6 +263,62 @@ def test_core_checks_pass_fail_and_missing_inputs() -> None:
     assert checks["seeds"].status == "pass"
     assert checks["events_terminal"].status == "fail"
     assert "did not produce a verdict" in str(checks["events_terminal"].detail)
+
+
+def test_checkpoint_cadence_uses_segment_length_for_continuation() -> None:
+    row = _row(
+        bundle_row_spec={"expected_batches": 12_200, "checkpoint_interval": 100},
+        training_diagnostics={
+            "completed_batches": 12_200,
+            "segment_completed_batches": 200,
+            "checkpoint_coordinates": [100, 200],
+        },
+    )
+
+    cadence = check_checkpoint_cadence(row)
+
+    assert check_completed_batches(row).status == "pass"
+    assert cadence.status == "pass"
+    assert cadence.expected == {
+        "coordinate_interval": 100,
+        "coordinates": [100, 200],
+    }
+    assert cadence.observed == {"coordinates": [100, 200], "realized_batches": 200}
+
+
+def test_checkpoint_cadence_without_segment_length_is_unchanged() -> None:
+    passing = check_checkpoint_cadence(_row())
+    failing = check_checkpoint_cadence(
+        _row(training_diagnostics={"completed_batches": 10, "checkpoint_coordinates": [5]})
+    )
+
+    assert passing.status == "pass"
+    assert passing.expected == {"coordinate_interval": 5, "coordinates": [5, 10]}
+    assert passing.observed == {"coordinates": [5, 10], "realized_batches": 10}
+    assert failing.status == "fail"
+    assert failing.expected == {"coordinate_interval": 5, "coordinates": [5, 10]}
+    assert failing.observed == {"coordinates": [5], "realized_batches": 10}
+    assert failing.detail == "cadence length read from training_diagnostics.completed_batches"
+
+
+def test_checkpoint_cadence_rejects_wrong_segment_coordinates() -> None:
+    result = check_checkpoint_cadence(
+        _row(
+            bundle_row_spec={"expected_batches": 12_200, "checkpoint_interval": 100},
+            training_diagnostics={
+                "completed_batches": 12_200,
+                "segment_completed_batches": 200,
+                "checkpoint_coordinates": [100],
+            },
+        )
+    )
+
+    assert result.status == "fail"
+    assert result.expected == {"coordinate_interval": 100, "coordinates": [100, 200]}
+    assert result.observed == {"coordinates": [100], "realized_batches": 200}
+    assert result.detail == (
+        "cadence length read from training_diagnostics.segment_completed_batches"
+    )
 
 
 def test_execution_identity_explicit_empty_inputs_passes(tmp_path: Path) -> None:

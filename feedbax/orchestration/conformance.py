@@ -653,12 +653,30 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "training", "checkpoint_interval"),
         _path(row.bundle_row_spec, "checkpoint_progress", "checkpoint_interval"),
     )
-    completed = _first_present(
-        _path(row.training_diagnostics, "completed_batches"),
-        _path(row.training_diagnostics, "summary", "completed_batches"),
-        _path(row.bundle_row_spec, "expected_batches"),
-        _path(row.bundle_row_spec, "n_batches"),
-    )
+    segment_completed = _path(row.training_diagnostics, "segment_completed_batches")
+    if segment_completed is not _MISSING:
+        completed = segment_completed
+        completed_source = "training_diagnostics.segment_completed_batches"
+    else:
+        completed_candidates = (
+            (
+                _path(row.training_diagnostics, "completed_batches"),
+                "training_diagnostics.completed_batches",
+            ),
+            (
+                _path(row.training_diagnostics, "summary", "completed_batches"),
+                "training_diagnostics.summary.completed_batches",
+            ),
+            (_path(row.bundle_row_spec, "expected_batches"), "bundle_row_spec.expected_batches"),
+            (_path(row.bundle_row_spec, "n_batches"), "bundle_row_spec.n_batches"),
+        )
+        completed = _MISSING
+        completed_source = "completed batch count"
+        for candidate, source in completed_candidates:
+            if candidate is not _MISSING:
+                completed = candidate
+                completed_source = source
+                break
     coordinates = _checkpoint_coordinates(row)
     if interval is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec.checkpoint_interval")
@@ -681,6 +699,7 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         check_id,
         expected={"coordinate_interval": interval_int, "coordinates": expected},
         observed={"coordinates": observed, "realized_batches": completed_int},
+        detail=f"cadence length read from {completed_source}",
     )
 
 
