@@ -28,7 +28,11 @@ from feedbax.analysis.execution import (
     check_records_for_analysis,
     run_analysis_module,
 )
-from feedbax.analysis.bundles import execute_analysis_bundle, load_analysis_bundle
+from feedbax.analysis.bundles import (
+    execute_analysis_bundle,
+    execute_staged_analysis_bundle,
+    load_analysis_bundle,
+)
 from feedbax.config import (
     PATHS,
     PLOTLY_CONFIG,
@@ -162,32 +166,37 @@ def main(argv: list[str] | None = None) -> None:
             if args.runs is not None
             else None
         )
-        with _bundle_human_output_to_stderr():
-            outputs = execute_analysis_bundle(
-                bundle,
-                root=Path(args.manifest_root) if args.manifest_root else None,
-                run_ids=run_ids,
-                issues=list(args.issue),
-                fig_dump_path=Path(args.fig_dump_dir),
-                fig_dump_formats=fig_dump_formats,
+        execution_kwargs = {
+            "root": Path(args.manifest_root) if args.manifest_root else None,
+            "run_ids": run_ids,
+            "issues": list(args.issue),
+            "fig_dump_path": Path(args.fig_dump_dir),
+            "fig_dump_formats": fig_dump_formats,
+        }
+        if bundle.templates and not bundle.stages:
+            with _bundle_human_output_to_stderr():
+                outputs = execute_analysis_bundle(bundle, **execution_kwargs)
+            payload = [
+                {
+                    "bundle": expansion.bundle_name,
+                    "template": expansion.template_name,
+                    "mode": expansion.mode,
+                    "matched_run_ids": list(expansion.matched_run_ids),
+                    "manifest_id": manifest.id,
+                    "manifest_path": str(path),
+                }
+                for expansion, manifest, path in outputs
+            ]
+        elif bundle.stages and not bundle.templates:
+            with _bundle_human_output_to_stderr():
+                execution = execute_staged_analysis_bundle(bundle, **execution_kwargs)
+            payload = execution.model_dump(mode="json", exclude_none=True)
+        else:
+            raise ValueError(
+                f"Analysis bundle {bundle.name!r} must define exactly one non-empty "
+                "execution shape: templates or stages"
             )
-        print(
-            json.dumps(
-                [
-                    {
-                        "bundle": expansion.bundle_name,
-                        "template": expansion.template_name,
-                        "mode": expansion.mode,
-                        "matched_run_ids": list(expansion.matched_run_ids),
-                        "manifest_id": manifest.id,
-                        "manifest_path": str(path),
-                    }
-                    for expansion, manifest, path in outputs
-                ],
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     # Set states pickle directory
