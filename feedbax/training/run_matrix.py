@@ -32,10 +32,17 @@ from feedbax.contracts.manifest import (
     spec_payload,
 )
 from feedbax.contracts.run_matrix import (
+    AuthoredTrainingRow,
     AuthoredIntentMatrixBaseSpec,
     InlineMatrixBaseSpec,
+    RowLowererIdentity,
+    RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
+    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
     ResolvedOutputMatrixBaseSpec,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TrainingRowLoweringResult,
+    TrainingRowPlanningProvenance,
+    TrainingRowProvenance,
     TrainingRunMatrixSpec,
     apply_composition_deltas,
     apply_override_patches,
@@ -76,7 +83,9 @@ class MaterializedMatrixRow:
     row_id: str
     planned_run_id: str
     spec: TrainingRunSpec | None
+    authored_payload: dict[str, Any]
     payload: dict[str, Any]
+    provenance: TrainingRowProvenance
     coordinate: TrainingRunAxisCoordinate | None
     overrides: list[Any]
     seed: int | None = None
@@ -108,6 +117,13 @@ class LrContinuationReporter(Protocol):
 
 
 RowPayloadValidator = Callable[[dict[str, Any], str], TrainingRunSpec | None]
+
+
+class TrainingRowLowerer(Protocol):
+    """Public typed boundary from authored row intent to execution payload."""
+
+    def __call__(self, row: AuthoredTrainingRow) -> TrainingRowLoweringResult:
+        """Lower one axis-patched authored row without mutating the input."""
 
 
 class StandardLrContinuationReporter:
@@ -189,13 +205,23 @@ def materialize_adapted_run_matrix(
     spec: TrainingRunMatrixSpec | Mapping[str, Any],
     *,
     repo_root: Path,
-    row_validator: RowPayloadValidator,
+    row_validator: RowPayloadValidator | None = None,
+    row_lowerer: TrainingRowLowerer | None = None,
 ) -> MaterializedRunMatrix:
-    """Materialize an adapter payload after validating every expanded row."""
+    """Materialize rows through an optional lowerer and validation-only adapter.
+
+    When supplied, ``row_lowerer`` receives the axis-patched authored payload and
+    returns the authoritative execution payload plus its declared implementation
+    identity. ``row_validator`` always receives an isolated copy of the payload
+    that will execute, so legacy validation-only callbacks cannot mutate custody.
+    """
+    if row_validator is None and row_lowerer is None:
+        raise ValueError("adapted run-matrix materialization requires a validator or lowerer")
     return _materialize_run_matrix(
         spec,
         repo_root=repo_root,
         row_validator=row_validator,
+        row_lowerer=row_lowerer,
     )
 
 
@@ -203,7 +229,8 @@ def _materialize_run_matrix(
     spec: TrainingRunMatrixSpec | Mapping[str, Any],
     *,
     repo_root: Path,
-    row_validator: RowPayloadValidator,
+    row_validator: RowPayloadValidator | None,
+    row_lowerer: TrainingRowLowerer | None = None,
 ) -> MaterializedRunMatrix:
     if isinstance(spec, TrainingRunMatrixSpec):
         matrix = spec
@@ -225,6 +252,7 @@ def _materialize_run_matrix(
             matrix,
             base_payload=base_payload,
             row_validator=row_validator,
+            row_lowerer=row_lowerer,
         )
         axes_identity = {
             "mode": "explicit_rows",
@@ -235,6 +263,7 @@ def _materialize_run_matrix(
             matrix,
             base_payload=base_payload,
             row_validator=row_validator,
+            row_lowerer=row_lowerer,
         )
         axes_identity = axes_block.model_dump(mode="json", exclude_none=True)
 
@@ -293,10 +322,14 @@ def write_materialized_matrix(
                 "planned_run_id": row.planned_run_id,
                 "payload_path": row_path.name,
                 "payload_sha256": sha256_bytes(row_bytes),
+                "row_provenance": row.provenance.model_dump(
+                    mode="json", exclude_none=True
+                ),
             }
         )
     manifest = {
-        "schema_version": "feedbax.run_matrix_materialization.v1",
+        "schema_id": RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
+        "schema_version": RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
         "matrix_spec_sha256": materialized.matrix_spec_sha256,
         "run_set_id": materialized.run_set_id,
         "rows": row_records,
@@ -703,21 +736,44 @@ def _materialize_explicit_rows(
     matrix: TrainingRunMatrixSpec,
     *,
     base_payload: dict[str, Any],
-    row_validator: RowPayloadValidator,
+    row_validator: RowPayloadValidator | None,
+    row_lowerer: TrainingRowLowerer | None,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
     rows: list[MaterializedMatrixRow] = []
     explicit_records: list[dict[str, Any]] = []
     coordinates: list[TrainingRunAxisCoordinate] = []
     for index, row in enumerate(matrix.rows):
-        payload = apply_override_patches(base_payload, row.overrides)
-        spec = row_validator(payload, row.row_id)
+        authored_payload = apply_override_patches(base_payload, row.overrides)
         axis_coordinates = {
             "row_id": row.row_id,
             "overrides": [
                 patch.model_dump(mode="json", exclude_none=True) for patch in row.overrides
             ],
         }
-        run_id = _planned_run_id(payload, seed=row.seed, axis_coordinates=axis_coordinates)
+        (
+            payload,
+            spec,
+            lowerer_identities,
+            authored_payload_hash,
+            lowered_execution_payload_hash,
+        ) = _lower_authored_row(
+            row_id=row.row_id,
+            row_index=index,
+            authored_payload=authored_payload,
+            seed=row.seed,
+            axis_coordinates=axis_coordinates,
+            overrides=axis_coordinates["overrides"],
+            row_validator=row_validator,
+            row_lowerer=row_lowerer,
+        )
+        run_id = _planned_run_id(
+            payload,
+            seed=row.seed,
+            axis_coordinates=axis_coordinates,
+            authored_payload_hash=authored_payload_hash,
+            lowered_execution_payload_hash=lowered_execution_payload_hash,
+            lowerer_identities=lowerer_identities,
+        )
         coordinate = TrainingRunAxisCoordinate(
             run_id=run_id,
             index=index,
@@ -741,7 +797,19 @@ def _materialize_explicit_rows(
                 row_id=row.row_id,
                 planned_run_id=run_id,
                 spec=spec,
+                authored_payload=authored_payload,
                 payload=payload,
+                provenance=TrainingRowProvenance(
+                    row_id=row.row_id,
+                    row_index=index,
+                    planned_run_id=run_id,
+                    authored_payload_hash=authored_payload_hash,
+                    lowered_execution_payload_hash=lowered_execution_payload_hash,
+                    seed=row.seed,
+                    axis_coordinates=coordinate.model_dump(mode="json", exclude_none=True),
+                    overrides=axis_coordinates["overrides"],
+                    lowerer_identities=lowerer_identities,
+                ),
                 coordinate=None,
                 overrides=list(row.overrides),
                 seed=row.seed,
@@ -762,7 +830,8 @@ def _materialize_sweep_rows(
     matrix: TrainingRunMatrixSpec,
     *,
     base_payload: dict[str, Any],
-    row_validator: RowPayloadValidator,
+    row_validator: RowPayloadValidator | None,
+    row_lowerer: TrainingRowLowerer | None,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
     axes_with_values = [
         axis.model_copy(update={"values": variation_values(axis.variation)}) for axis in matrix.axes
@@ -780,22 +849,48 @@ def _materialize_sweep_rows(
             axis_id: axis_by_id[axis_id].values[value_index]
             for axis_id, value_index in value_indices.items()
         }
-        payload = copy.deepcopy(base_payload)
+        authored_payload = copy.deepcopy(base_payload)
         seed = None
         patches = []
         for axis_id, value in values.items():
             axis = axis_by_id[axis_id]
             if axis.path in {"seed", "master_prng_key", "prng_key"}:
                 seed = value
-                studio_training_spec = payload.get("training_spec")
+                studio_training_spec = authored_payload.get("training_spec")
                 if isinstance(studio_training_spec, dict):
                     studio_training_spec["seed"] = value
             else:
                 patch = _patch_object({"path": axis.path, "value": value, "op": "replace"})
                 patches.append(patch)
-                payload = apply_override_patches(payload, [patch])
-        spec = row_validator(payload, f"sweep-{index}")
-        run_id = _planned_run_id(payload, seed=seed, axis_coordinates=values)
+                authored_payload = apply_override_patches(authored_payload, [patch])
+        row_id = f"row-{index:04d}"
+        override_payloads = [
+            patch.model_dump(mode="json", exclude_none=True) for patch in patches
+        ]
+        (
+            payload,
+            spec,
+            lowerer_identities,
+            authored_payload_hash,
+            lowered_execution_payload_hash,
+        ) = _lower_authored_row(
+            row_id=row_id,
+            row_index=index,
+            authored_payload=authored_payload,
+            seed=seed if isinstance(seed, int) else None,
+            axis_coordinates=values,
+            overrides=override_payloads,
+            row_validator=row_validator,
+            row_lowerer=row_lowerer,
+        )
+        run_id = _planned_run_id(
+            payload,
+            seed=seed,
+            axis_coordinates=values,
+            authored_payload_hash=authored_payload_hash,
+            lowered_execution_payload_hash=lowered_execution_payload_hash,
+            lowerer_identities=lowerer_identities,
+        )
         coordinate = TrainingRunAxisCoordinate(
             run_id=run_id,
             index=index,
@@ -805,10 +900,22 @@ def _materialize_sweep_rows(
         )
         rows.append(
             MaterializedMatrixRow(
-                row_id=f"row-{index:04d}",
+                row_id=row_id,
                 planned_run_id=run_id,
                 spec=spec,
+                authored_payload=authored_payload,
                 payload=payload,
+                provenance=TrainingRowProvenance(
+                    row_id=row_id,
+                    row_index=index,
+                    planned_run_id=run_id,
+                    authored_payload_hash=authored_payload_hash,
+                    lowered_execution_payload_hash=lowered_execution_payload_hash,
+                    seed=seed if isinstance(seed, int) else None,
+                    axis_coordinates=coordinate.model_dump(mode="json", exclude_none=True),
+                    overrides=override_payloads,
+                    lowerer_identities=lowerer_identities,
+                ),
                 coordinate=coordinate,
                 overrides=patches,
                 seed=seed if isinstance(seed, int) else None,
@@ -816,6 +923,62 @@ def _materialize_sweep_rows(
         )
     run_set_axes.runs = [row.coordinate for row in rows if row.coordinate is not None]
     return rows, run_set_axes
+
+
+def _lower_authored_row(
+    *,
+    row_id: str,
+    row_index: int,
+    authored_payload: dict[str, Any],
+    seed: int | None,
+    axis_coordinates: dict[str, Any],
+    overrides: list[dict[str, Any]],
+    row_validator: RowPayloadValidator | None,
+    row_lowerer: TrainingRowLowerer | None,
+) -> tuple[
+    dict[str, Any],
+    TrainingRunSpec | None,
+    list[RowLowererIdentity],
+    str,
+    str,
+]:
+    """Lower and validate one row while isolating callback-owned mutations."""
+    authored_copy = copy.deepcopy(authored_payload)
+    authored_payload_hash = training_spec_sha256(authored_copy)
+    lowerer_identities: list[RowLowererIdentity] = []
+    if row_lowerer is None:
+        execution_payload = copy.deepcopy(authored_copy)
+    else:
+        authored_row = AuthoredTrainingRow(
+            row_id=row_id,
+            row_index=row_index,
+            payload=authored_copy,
+            payload_hash=authored_payload_hash,
+            seed=seed,
+            axis_coordinates=copy.deepcopy(axis_coordinates),
+            overrides=copy.deepcopy(overrides),
+        )
+        raw_result = row_lowerer(authored_row.model_copy(deep=True))
+        result = (
+            raw_result
+            if isinstance(raw_result, TrainingRowLoweringResult)
+            else TrainingRowLoweringResult.model_validate(raw_result)
+        )
+        execution_payload = copy.deepcopy(result.execution_payload)
+        lowerer_identities = list(result.lowerer_identities)
+    spec = (
+        None
+        if row_validator is None
+        else row_validator(copy.deepcopy(execution_payload), row_id)
+    )
+    lowered_execution_payload_hash = sha256_bytes(canonical_json_bytes(execution_payload))
+    return (
+        execution_payload,
+        spec,
+        lowerer_identities,
+        authored_payload_hash,
+        lowered_execution_payload_hash,
+    )
 
 
 def _validate_training_payload(
@@ -841,7 +1004,15 @@ def _planned_run_id(
     *,
     seed: Any | None,
     axis_coordinates: dict[str, Any],
+    authored_payload_hash: str,
+    lowered_execution_payload_hash: str,
+    lowerer_identities: list[RowLowererIdentity],
 ) -> str:
+    provenance_identity = TrainingRowPlanningProvenance(
+        authored_payload_hash=authored_payload_hash,
+        lowered_execution_payload_hash=lowered_execution_payload_hash,
+        lowerer_identities=lowerer_identities,
+    )
     return planned_training_run_manifest_id(
         graph_spec=_identity_graph_spec(payload),
         training_spec=_identity_training_spec(payload),
@@ -849,6 +1020,9 @@ def _planned_run_id(
         task_binding_spec=_identity_task_binding_spec(payload),
         seed=seed,
         axis_coordinates=axis_coordinates,
+        row_provenance_identity=provenance_identity.model_dump(
+            mode="json", exclude_none=True
+        ),
     )
 
 

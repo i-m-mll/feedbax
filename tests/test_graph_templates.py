@@ -154,6 +154,89 @@ def test_vanilla_rnn_network_subgraph_runs_and_serializes_roundtrip() -> None:
     assert runtime_roundtrip.nodes["cell"].params["activation"] == "tanh"
 
 
+@pytest.mark.parametrize(
+    ("cell_use_bias", "readout_use_bias"),
+    [(False, False), (True, True)],
+)
+def test_vanilla_rnn_bias_configuration_survives_runtime_roundtrip(
+    cell_use_bias: bool,
+    readout_use_bias: bool,
+) -> None:
+    authored = recurrent_controller_template_graph(
+        input_size=3,
+        hidden_size=4,
+        out_size=2,
+        cell_type="VanillaRNN",
+        out_nonlinearity="identity",
+    )
+    authored.nodes["cell"].params["use_bias"] = cell_use_bias
+    authored.nodes["readout"].params["use_bias"] = readout_use_bias
+
+    graph = spec_to_graph(authored, {})
+    serialized = graph_to_spec(graph)
+    restored_spec = GraphSpec.model_validate_json(serialized.model_dump_json())
+    restored_graph = spec_to_graph(restored_spec, {})
+    canonical = graph_to_spec(restored_graph)
+
+    assert serialized.nodes["cell"].params["use_bias"] is cell_use_bias
+    assert serialized.nodes["readout"].params["use_bias"] is readout_use_bias
+    assert restored_graph.nodes["cell"].cell.use_bias is cell_use_bias
+    assert restored_graph.nodes["readout"].use_bias is readout_use_bias
+    assert (restored_graph.nodes["cell"].cell.bias is not None) is cell_use_bias
+    assert (restored_graph.nodes["readout"].layer.bias is not None) is readout_use_bias
+    assert canonical.model_dump(mode="json") == serialized.model_dump(mode="json")
+
+
+def test_vanilla_rnn_without_bias_executes_as_homogeneous_linear_recurrence() -> None:
+    authored = recurrent_controller_template_graph(
+        input_size=3,
+        hidden_size=4,
+        out_size=2,
+        cell_type="VanillaRNN",
+        out_nonlinearity="identity",
+    )
+    authored.nodes["cell"].params.update({"activation": "identity", "use_bias": False})
+    authored.nodes["readout"].params["use_bias"] = False
+    graph = spec_to_graph(
+        GraphSpec.model_validate_json(graph_to_spec(spec_to_graph(authored, {})).model_dump_json()),
+        {},
+    )
+    state = init_state_from_component(graph)
+
+    outputs, _ = graph(
+        {
+            "input": jnp.zeros((3, 2)),
+            "feedback": jnp.zeros((3, 1)),
+        },
+        state,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert jnp.array_equal(outputs["hidden"], jnp.zeros((3, 4)))
+    assert jnp.array_equal(outputs["output"], jnp.zeros((3, 2)))
+
+
+def test_vanilla_rnn_omitted_bias_configuration_keeps_enabled_default() -> None:
+    authored = recurrent_controller_template_graph(
+        input_size=3,
+        hidden_size=4,
+        out_size=2,
+        cell_type="VanillaRNN",
+        out_nonlinearity="identity",
+    )
+    authored.nodes["cell"].params.pop("use_bias", None)
+    authored.nodes["readout"].params.pop("use_bias", None)
+
+    graph = spec_to_graph(authored, {})
+    serialized = graph_to_spec(graph)
+
+    assert graph.nodes["cell"].cell.use_bias is True
+    assert graph.nodes["readout"].use_bias is True
+    assert serialized.nodes["cell"].params["use_bias"] is True
+    assert serialized.nodes["readout"].params["use_bias"] is True
+
+
 def test_network_hidden_type_normalization_preserves_vanilla_and_rejects_unknown() -> None:
     subgraph = network_template_graph(
         {

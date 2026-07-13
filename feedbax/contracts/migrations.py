@@ -59,6 +59,20 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.run_matrix import (
+    AUTHORED_TRAINING_ROW_SCHEMA_ID,
+    AUTHORED_TRAINING_ROW_SCHEMA_VERSION,
+    RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
+    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
+    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V1,
+    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2,
+    TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID,
+    TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,
+    TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID,
+    TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
+    TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1,
+    TRAINING_ROW_PROVENANCE_SCHEMA_ID,
+    TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
+    TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
@@ -204,22 +218,30 @@ from feedbax.orchestration.events import (
 from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION_V2,
+    RUN_BUNDLE_SCHEMA_VERSION_V3,
+    RUN_BUNDLE_SCHEMA_VERSION_V4,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
 )
-
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v1"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID = "feedbax.spec.studio.training_assembly"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION = "feedbax.spec.studio.training_assembly.v1"
+NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID = "feedbax.spec.native_execution_context"
+NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
+    "feedbax.spec.native_execution_context.v1"
+)
+TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v1"
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -1858,6 +1880,79 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
     families = [
         _family(
+            "RunMatrixMaterialization",
+            RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
+            RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
+            owner_module="feedbax.training.run_matrix",
+            emitted_by=("feedbax.training.run_matrix.write_materialized_matrix",),
+            consumed_by=("training matrix launch and archival tooling",),
+            description="Execution payload files and typed row-provenance index.",
+            stance="reject",
+            rejected_old_versions=(
+                RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V1,
+                RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2,
+            ),
+            required_tests=("tests/test_run_matrix_materialization.py",),
+            notes=(
+                "v1 omitted authored-row/lowerer provenance and v2 omitted the complete "
+                "lowered-payload hash; rematerialize from source."
+            ),
+        ),
+        _family(
+            "AuthoredTrainingRow",
+            AUTHORED_TRAINING_ROW_SCHEMA_ID,
+            AUTHORED_TRAINING_ROW_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
+            consumed_by=("feedbax.training.run_matrix.TrainingRowLowerer",),
+            durable=False,
+            description="Typed axis-patched row input supplied to a declared lowerer.",
+            rejected_old_versions=(f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "TrainingRowLoweringResult",
+            TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID,
+            TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("feedbax.training.run_matrix.TrainingRowLowerer",),
+            consumed_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
+            durable=False,
+            description="Declared lowerer identity and authoritative row execution payload.",
+            rejected_old_versions=(f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "TrainingRowPlanningProvenance",
+            TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID,
+            TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
+            consumed_by=("feedbax.contracts.manifest.planned_training_run_manifest_id",),
+            durable=False,
+            description="Authored-row and ordered lowerer identity bound into planned IDs.",
+            rejected_old_versions=(
+                f"{TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID}.v0",
+                TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1,
+            ),
+            notes="v1 omitted the complete canonical lowered execution-payload hash.",
+        ),
+        _family(
+            "TrainingRowProvenance",
+            TRAINING_ROW_PROVENANCE_SCHEMA_ID,
+            TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("feedbax.training.run_matrix.materialize_adapted_run_matrix",),
+            consumed_by=(
+                "feedbax.training.spec_storage.compile_training_run_matrix",
+                "feedbax.orchestration.bundle.RunRowSpec",
+            ),
+            description="Canonical row coordinates and authored-to-execution lowering provenance.",
+            rejected_old_versions=(
+                f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v0",
+                TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+            ),
+            notes="v1 omitted the complete canonical lowered execution-payload hash.",
+        ),
+        _family(
             "RunAssemblyRequest",
             RUN_ASSEMBLY_REQUEST_SCHEMA_ID,
             RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
@@ -1876,9 +1971,61 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=(
                 "feedbax.orchestration.assembly",
                 "feedbax.orchestration.conformance.check_execution_identity",
+                "feedbax.training.executor.NativeExecutionProducerContext",
             ),
             description="Per-row binding of authored intent to exact execution identity.",
+            stance="migrate",
+            supported_old_versions=(EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID}.v0",),
+            notes=(
+                "v1 envelopes migrate with row_provenance explicitly unavailable; "
+                "training-matrix compiler v2 always emits populated provenance."
+            ),
+        ),
+        _family(
+            "NativeExecutionProducerContext",
+            NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
+            NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
+            owner_module="feedbax.training.diagnostics.NativeExecutionProducerContext",
+            emitted_by=(
+                "feedbax.orchestration.drivers.native_execution."
+                "inject_native_execution_context",
+            ),
+            consumed_by=(
+                "feedbax.__main__",
+                "feedbax.training.executor.execute_training_run_spec",
+            ),
+            description=(
+                "Envelope-only native execution input carrying assembly identity and "
+                "runtime diagnostic observations."
+            ),
+            rejected_old_versions=(
+                f"{NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID}.v0",
+            ),
+            required_tests=(
+                "tests/test_training_run_executor.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "TrainingDiagnostics",
+            TRAINING_DIAGNOSTICS_SCHEMA_ID,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+            owner_module="feedbax.training.diagnostics.TrainingDiagnostics",
+            emitted_by=("feedbax.training.executor.execute_training_run_spec",),
+            consumed_by=(
+                "feedbax.orchestration.conformance",
+                "feedbax.orchestration.stages",
+            ),
+            description=(
+                "Typed cumulative and segment-level observations emitted beside the sole "
+                "native training-run manifest."
+            ),
+            rejected_old_versions=(f"{TRAINING_DIAGNOSTICS_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_training_run_executor.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "StudioTrainingAssemblySpec",
@@ -2227,7 +2374,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Durable run-set orchestration request bundle.",
-            stance="reject",
+            stance="migrate",
+            supported_old_versions=(
+                RUN_BUNDLE_SCHEMA_VERSION_V3,
+                RUN_BUNDLE_SCHEMA_VERSION_V4,
+            ),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -3353,8 +3504,108 @@ def _migrate_analysis_bundle_v2_to_v3_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_run_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Mark provenance as unavailable on bundles emitted before row handoff v1."""
+    migrated = dict(payload)
+    rows = migrated.get("rows")
+    if isinstance(rows, list):
+        migrated["rows"] = [
+            {**row, "provenance": None} if isinstance(row, Mapping) else row
+            for row in rows
+        ]
+    return migrated
+
+
+def _migrate_execution_identity_envelope_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Record typed training-row provenance as unavailable for legacy producers."""
+    migrated = dict(payload)
+    migrated["row_provenance"] = None
+    return migrated
+
+
+def _migrate_run_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Move row provenance into the sole per-row execution identity envelope."""
+    migrated = dict(payload)
+    rows = migrated.get("rows")
+    if isinstance(rows, list):
+        migrated_rows: list[Any] = []
+        for raw_row in rows:
+            if not isinstance(raw_row, Mapping):
+                migrated_rows.append(raw_row)
+                continue
+            row = dict(raw_row)
+            provenance = row.pop("provenance", None)
+            raw_execution = row.get("execution")
+            if isinstance(raw_execution, Mapping):
+                execution = dict(raw_execution)
+                if isinstance(provenance, Mapping):
+                    provenance = dict(provenance)
+                    if (
+                        provenance.get("schema_version")
+                        == TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1
+                    ):
+                        raw_payload = execution.get("payload")
+                        payload_sha256 = (
+                            raw_payload.get("sha256")
+                            if isinstance(raw_payload, Mapping)
+                            else None
+                        )
+                        provenance["schema_id"] = TRAINING_ROW_PROVENANCE_SCHEMA_ID
+                        provenance["schema_version"] = (
+                            TRAINING_ROW_PROVENANCE_SCHEMA_VERSION
+                        )
+                        provenance["lowered_execution_payload_hash"] = payload_sha256
+                execution["schema_version"] = EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
+                execution["row_provenance"] = provenance
+                row["execution"] = execution
+            migrated_rows.append(row)
+        migrated["rows"] = migrated_rows
+    return migrated
+
+
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "ExecutionIdentityEnvelope",
+    SchemaMigration(
+        source_version=EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
+        target_version=EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
+        migration_id="execution-identity-envelope-v1-to-v2-row-provenance-unavailable",
+        migrate=_migrate_execution_identity_envelope_v1_to_v2_payload,
+        description=(
+            "Preserve envelopes from compiler families that predate typed training-row "
+            "provenance and mark that provenance explicitly unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V3,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION_V4,
+        migration_id="run-bundle-v3-to-v4-training-row-provenance",
+        migrate=_migrate_run_bundle_v3_to_v4_payload,
+        description=(
+            "Preserve v3 execution envelopes while explicitly recording that typed "
+            "training-row provenance was not emitted."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V4,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v4-to-v5-envelope-row-provenance",
+        migrate=_migrate_run_bundle_v4_to_v5_payload,
+        description=(
+            "Move optional training-row provenance from the RunRowSpec into the sole "
+            "ExecutionIdentityEnvelope authority."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "AnalysisBundleSpec",
     SchemaMigration(

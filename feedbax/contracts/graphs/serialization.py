@@ -484,6 +484,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     "input_size": component.input_size,
                     "hidden_size": component.hidden_size,
                     "activation": component.activation_name,
+                    "use_bias": component.cell.use_bias,
                 },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),

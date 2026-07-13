@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pickle
@@ -11,10 +12,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote, urlsplit
 
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+import numpy as np
 from pydantic import ValidationError
 
 from feedbax.contracts.checkpoints import CheckpointLineageRef
@@ -41,6 +44,7 @@ from feedbax.contracts.training import (
     TrainingMethodRegistry,
     TrainingRunSpec,
 )
+from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
 from feedbax.orchestration.events import RunEventEmitter
@@ -63,6 +67,12 @@ from feedbax.training.manifest_preflight import (
     validate_training_run_spec,
 )
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.diagnostics import (
+    CheckpointTransactionDiagnostic,
+    LearningRateDiagnostic,
+    NativeExecutionProducerContext,
+    TrainingDiagnostics,
+)
 from feedbax.training.worker_validation import (
     WorkerExecutabilityEnvironment,
     validate_worker_contract,
@@ -81,6 +91,10 @@ class TrainingRunExecutorError(ValueError):
 
 class ManifestEmissionConflictError(TrainingRunExecutorError):
     """Raised when a manifest id already exists with different content."""
+
+
+class DiagnosticsEmissionConflictError(TrainingRunExecutorError):
+    """Raised when native diagnostics already exist with different content."""
 
 
 class _ImmediateCancellation(Exception):
@@ -177,6 +191,8 @@ class TrainingRunExecutionResult:
     status: ManifestStatus
     manifest: TrainingRunManifest
     manifest_path: Path
+    diagnostics: TrainingDiagnostics
+    diagnostics_path: Path
     final_slots: dict[str, Any]
     final_coordinate: ProgressCoordinate
     checkpoint_writes: tuple[CheckpointWriteResult, ...]
@@ -310,6 +326,7 @@ def execute_training_run_spec(
     cancellation_probe: CancellationProbe | None = None,
     execution_started_at_monotonic: float | None = None,
     execution_start_semantics: str = "executor_entry",
+    execution_context: NativeExecutionProducerContext | Mapping[str, Any] | None = None,
 ) -> TrainingRunExecutionResult:
     """Validate, execute, checkpoint, and natively emit one training-run manifest.
 
@@ -327,6 +344,12 @@ def execute_training_run_spec(
     manifest; ``terminate`` emits a cancelled manifest immediately.
     """
     run_spec = _validate_spec(spec)
+    producer_context = _validate_execution_context(execution_context)
+    _validate_execution_payload_binding(
+        spec,
+        run_spec=run_spec,
+        execution_context=producer_context,
+    )
     preflight_training_run_manifest_payloads(
         run_spec,
         training_spec_payload=training_spec_payload,
@@ -345,7 +368,42 @@ def execute_training_run_spec(
             else default_manifest_root()
         )
     )
-    resolved_run_id = run_id or _default_run_id(run_spec)
+    collection_root = _collection_root(producer_context)
+    if producer_context is not None:
+        row_provenance = producer_context.execution.row_provenance
+        assert row_provenance is not None
+        planned_run_id = row_provenance.planned_run_id
+        if run_id is not None and run_id != planned_run_id:
+            raise TrainingRunExecutorError(
+                "run_id must equal execution.row_provenance.planned_run_id for native "
+                f"row execution; run_id={run_id!r}, planned_run_id={planned_run_id!r}"
+            )
+        resolved_run_id = planned_run_id
+        exact_manifest_id = planned_run_id
+    else:
+        resolved_run_id = run_id or _default_run_id(run_spec)
+        exact_manifest_id = training_run_manifest_id(resolved_run_id)
+    manifest_output_path = (
+        collection_root / "manifest.json"
+        if collection_root is not None
+        else root_path
+        / "manifests"
+        / "training_runs"
+        / f"{exact_manifest_id.replace(':', '_')}.json"
+    )
+    if (
+        manifest_conflict_policy == "error"
+        and manifest_output_path.exists()
+    ):
+        raise ManifestEmissionConflictError(
+            f"Training-run manifest already exists at {manifest_output_path}"
+        )
+    diagnostics_path = _diagnostics_output_path(
+        root_path=root_path,
+        run_id=resolved_run_id,
+        collection_root=collection_root,
+    )
+    _preflight_training_diagnostics_emission(diagnostics_path)
     method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
     registration = method_registry.resolve(run_spec.method_ref, path="/method_ref")
     method_payload = method_registry.validate_payload(
@@ -516,9 +574,28 @@ def execute_training_run_spec(
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
         final_metrics = _final_metrics(execution.slots, execution.coordinate)
+        diagnostics = _build_training_diagnostics(
+            manifest_id=exact_manifest_id,
+            run_id=resolved_run_id,
+            status="cancelled" if cancellation is not None else "completed",
+            final_coordinate=execution.coordinate,
+            final_slots=execution.slots,
+            program=program,
+            checkpoint_writes=checkpoint_writes,
+            segment_start_batch=segment_start_batch,
+            history_events=history_events,
+            execution_context=producer_context,
+        )
+        diagnostics_path = _diagnostics_output_path(
+            root_path=root_path,
+            run_id=resolved_run_id,
+            collection_root=collection_root,
+        )
+        diagnostics_ref = _training_diagnostics_ref(diagnostics, diagnostics_path)
         manifest = _build_manifest(
             run_spec,
             run_id=resolved_run_id,
+            manifest_id=exact_manifest_id,
             root_path=root_path,
             training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
             training_spec_payload_kind=training_spec_payload_kind,
@@ -534,11 +611,25 @@ def execute_training_run_spec(
             status="cancelled" if cancellation is not None else "completed",
             cancellation=cancellation,
             runtime_telemetry=runtime_telemetry,
+            execution_context=producer_context,
+            diagnostics_ref=diagnostics_ref,
+            completed_batches=diagnostics.completed_batches,
         )
+        manifest_output_path = (
+            collection_root / "manifest.json" if collection_root is not None else None
+        )
+        _preflight_manifest_emission(
+            manifest,
+            root=root_path,
+            conflict_policy=manifest_conflict_policy,
+            path=manifest_output_path,
+        )
+        _emit_training_diagnostics(diagnostics, path=diagnostics_path)
         manifest_path = _emit_manifest(
             manifest,
             root=root_path,
             conflict_policy=manifest_conflict_policy,
+            path=manifest_output_path,
         )
         if run_event_emitter is not None:
             run_event_emitter.emit_terminal(
@@ -567,9 +658,28 @@ def execute_training_run_spec(
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
         final_metrics = _final_metrics({}, interrupted.coordinate)
+        diagnostics = _build_training_diagnostics(
+            manifest_id=exact_manifest_id,
+            run_id=resolved_run_id,
+            status="cancelled",
+            final_coordinate=interrupted.coordinate,
+            final_slots={},
+            program=program,
+            checkpoint_writes=checkpoint_writes,
+            segment_start_batch=segment_start_batch,
+            history_events=history_events,
+            execution_context=producer_context,
+        )
+        diagnostics_path = _diagnostics_output_path(
+            root_path=root_path,
+            run_id=resolved_run_id,
+            collection_root=collection_root,
+        )
+        diagnostics_ref = _training_diagnostics_ref(diagnostics, diagnostics_path)
         manifest = _build_manifest(
             run_spec,
             run_id=resolved_run_id,
+            manifest_id=exact_manifest_id,
             root_path=root_path,
             training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
             training_spec_payload_kind=training_spec_payload_kind,
@@ -585,11 +695,25 @@ def execute_training_run_spec(
             status="cancelled",
             cancellation=interrupted.decision,
             runtime_telemetry=runtime_telemetry,
+            execution_context=producer_context,
+            diagnostics_ref=diagnostics_ref,
+            completed_batches=diagnostics.completed_batches,
         )
+        manifest_output_path = (
+            collection_root / "manifest.json" if collection_root is not None else None
+        )
+        _preflight_manifest_emission(
+            manifest,
+            root=root_path,
+            conflict_policy=manifest_conflict_policy,
+            path=manifest_output_path,
+        )
+        _emit_training_diagnostics(diagnostics, path=diagnostics_path)
         manifest_path = _emit_manifest(
             manifest,
             root=root_path,
             conflict_policy=manifest_conflict_policy,
+            path=manifest_output_path,
         )
         if run_event_emitter is not None:
             run_event_emitter.emit_terminal(
@@ -611,6 +735,8 @@ def execute_training_run_spec(
             status="cancelled",
             manifest=manifest,
             manifest_path=manifest_path,
+            diagnostics=diagnostics,
+            diagnostics_path=diagnostics_path,
             final_slots={},
             final_coordinate=interrupted.coordinate,
             checkpoint_writes=tuple(checkpoint_writes),
@@ -633,6 +759,8 @@ def execute_training_run_spec(
         status="cancelled" if cancellation is not None else "completed",
         manifest=manifest,
         manifest_path=manifest_path,
+        diagnostics=diagnostics,
+        diagnostics_path=diagnostics_path,
         final_slots=dict(execution.slots),
         final_coordinate=execution.coordinate,
         checkpoint_writes=tuple(checkpoint_writes),
@@ -645,6 +773,122 @@ def _validate_spec(spec: TrainingRunSpec | Mapping[str, Any]) -> TrainingRunSpec
         return validate_training_run_spec(spec)
     except ValidationError as exc:
         raise TrainingRunExecutorError(f"/training_run_spec validation failed: {exc}") from exc
+
+
+def _validate_execution_context(
+    context: NativeExecutionProducerContext | Mapping[str, Any] | None,
+) -> NativeExecutionProducerContext | None:
+    if context is None:
+        return None
+    try:
+        validated = NativeExecutionProducerContext.model_validate(context)
+    except ValidationError as exc:
+        raise TrainingRunExecutorError(f"/execution_context validation failed: {exc}") from exc
+    if validated.execution.row_provenance is None:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/row_provenance is required for native execution"
+        )
+    return validated
+
+
+def _validate_execution_payload_binding(
+    supplied_spec: TrainingRunSpec | Mapping[str, Any],
+    *,
+    run_spec: TrainingRunSpec,
+    execution_context: NativeExecutionProducerContext | None,
+) -> None:
+    """Fail closed when executed payload bytes drift from the assembly envelope."""
+
+    if execution_context is None:
+        return
+    payload = (
+        run_spec.model_dump(mode="json", exclude_none=True)
+        if isinstance(supplied_spec, TrainingRunSpec)
+        else dict(supplied_spec)
+    )
+    ref = execution_context.execution.payload
+    observed_schema_id = payload.get("schema_id")
+    observed_schema_version = payload.get("schema_version")
+    if observed_schema_id != ref.schema_id or observed_schema_version != ref.schema_version:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/payload schema identity does not match the "
+            "executed TrainingRunSpec; "
+            f"expected=({ref.schema_id!r}, {ref.schema_version!r}), "
+            f"observed=({observed_schema_id!r}, {observed_schema_version!r})"
+        )
+    canonical = training_spec_canonical_bytes(payload)
+    observed_sha256 = hashlib.sha256(canonical).hexdigest()
+    if observed_sha256 != ref.sha256:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/payload sha256 does not match the executed "
+            f"TrainingRunSpec; expected={ref.sha256}, observed={observed_sha256}"
+        )
+    digest_prefix = "artifact://sha256/"
+    if ref.artifact_id.startswith(digest_prefix):
+        artifact_digest = ref.artifact_id.removeprefix(digest_prefix)
+        if artifact_digest != ref.sha256:
+            raise TrainingRunExecutorError(
+                "/execution_context/execution/payload artifact_id digest disagrees with "
+                f"sha256; artifact_id={artifact_digest}, sha256={ref.sha256}"
+            )
+    if ref.uri is None:
+        return
+    custody_path = _local_custody_path(ref.uri)
+    if custody_path is None:
+        return
+    try:
+        if not custody_path.is_file():
+            raise TrainingRunExecutorError(
+                "/execution_context/execution/payload local custody URI does not "
+                f"resolve to a readable file: {ref.uri!r}"
+            )
+        custody_bytes = custody_path.read_bytes()
+    except TrainingRunExecutorError:
+        raise
+    except OSError as exc:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/payload local custody URI could not be read: "
+            f"{ref.uri!r}"
+        ) from exc
+    custody_sha256 = hashlib.sha256(custody_bytes).hexdigest()
+    if custody_sha256 != ref.sha256:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/payload custody bytes fail sha256 validation; "
+            f"expected={ref.sha256}, observed={custody_sha256}, uri={ref.uri!r}"
+        )
+    try:
+        custody_payload = json.loads(custody_bytes)
+    except json.JSONDecodeError as exc:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/payload custody bytes are not valid JSON"
+        ) from exc
+    if training_spec_canonical_bytes(custody_payload) != canonical:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/payload custody document differs from the "
+            "executed TrainingRunSpec"
+        )
+
+
+def _local_custody_path(uri: str) -> Path | None:
+    """Resolve locally addressable custody URIs and ignore remote registry schemes."""
+
+    parsed = urlsplit(uri)
+    if parsed.scheme == "":
+        return Path(uri)
+    if parsed.scheme != "file":
+        return None
+    if parsed.netloc not in {"", "localhost"}:
+        raise TrainingRunExecutorError(
+            "/execution_context/execution/payload file URI must address the local host; "
+            f"uri={uri!r}"
+        )
+    return Path(unquote(parsed.path))
+
+
+def _collection_root(context: NativeExecutionProducerContext | None) -> Path | None:
+    configured = context.collection_root if context is not None else None
+    configured = configured or os.environ.get("FEEDBAX_ROW_DIR")
+    return Path(configured) if configured else None
 
 
 def _default_run_id(spec: TrainingRunSpec) -> str:
@@ -1018,10 +1262,215 @@ def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> 
     return metrics
 
 
+def _build_training_diagnostics(
+    *,
+    manifest_id: str,
+    run_id: str,
+    status: Literal["completed", "cancelled"],
+    final_coordinate: ProgressCoordinate,
+    final_slots: Mapping[str, Any],
+    program: Any,
+    checkpoint_writes: Sequence[CheckpointWriteResult],
+    segment_start_batch: int,
+    history_events: Sequence[Mapping[str, Any]],
+    execution_context: NativeExecutionProducerContext | None,
+) -> TrainingDiagnostics:
+    transactions: list[CheckpointTransactionDiagnostic] = []
+    for write in checkpoint_writes:
+        cumulative_completed = write.manifest.completed_training_batches
+        if cumulative_completed is None:
+            cumulative_completed = write.manifest.completed_coordinate.program_step
+        transactions.append(
+            CheckpointTransactionDiagnostic(
+                transaction_id=write.manifest.transaction_id,
+                completed_batches=max(0, cumulative_completed - segment_start_batch),
+                cumulative_completed_batches=cumulative_completed,
+                coordinate=write.manifest.completed_coordinate,
+            )
+        )
+    checkpoint_completed_batches = (
+        transactions[-1].cumulative_completed_batches if transactions else None
+    )
+    cumulative_completed_batches = _terminal_completed_batches(
+        program=program,
+        final_slots=final_slots,
+        fallback=(
+            checkpoint_completed_batches
+            if checkpoint_completed_batches is not None
+            else final_coordinate.program_step
+        ),
+        require_authority=status == "completed",
+    )
+    segment_completed_batches = max(
+        0,
+        cumulative_completed_batches - segment_start_batch,
+    )
+    diagnostic_input = execution_context.diagnostics if execution_context is not None else None
+    seeds = list(diagnostic_input.seeds) if diagnostic_input is not None else []
+    if (
+        execution_context is not None
+        and execution_context.execution.row_provenance is not None
+        and execution_context.execution.row_provenance.seed is not None
+        and execution_context.execution.row_provenance.seed not in seeds
+    ):
+        seeds.append(execution_context.execution.row_provenance.seed)
+    lr_trace = _realized_lr_trace(
+        history_events,
+        declared=(diagnostic_input.lr_trace if diagnostic_input is not None else ()),
+    )
+    return TrainingDiagnostics(
+        manifest_id=manifest_id,
+        run_id=run_id,
+        terminal_status=status,
+        completed_batches=cumulative_completed_batches,
+        segment_completed_batches=segment_completed_batches,
+        cumulative_completed_batches=cumulative_completed_batches,
+        seeds=seeds,
+        lr_trace=lr_trace,
+        checkpoint_coordinates=[item.completed_batches for item in transactions],
+        checkpoint_transactions=transactions,
+        resume_context=(diagnostic_input.resume_context if diagnostic_input is not None else None),
+        optimizer_build_context=(
+            diagnostic_input.optimizer_build_context if diagnostic_input is not None else None
+        ),
+        metadata=(dict(diagnostic_input.metadata) if diagnostic_input is not None else {}),
+    )
+
+
+def _terminal_completed_batches(
+    *,
+    program: Any,
+    final_slots: Mapping[str, Any],
+    fallback: int,
+    require_authority: bool,
+) -> int:
+    """Read the terminal cumulative batch count from the declared authority."""
+
+    authority = program.batch_progress
+    if authority is None:
+        return fallback
+    path = "/phase_program/batch_progress"
+    if authority.slot not in final_slots:
+        if not require_authority:
+            return fallback
+        raise TrainingRunExecutorError(
+            f"{path}/slot={authority.slot!r} is missing from terminal slots"
+        )
+    value = final_slots[authority.slot]
+    for index, segment in enumerate(authority.field_path):
+        segment_path = f"{path}/field_path/{index}"
+        if isinstance(value, Mapping):
+            if segment not in value:
+                raise TrainingRunExecutorError(
+                    f"{segment_path}={segment!r} is missing in slot {authority.slot!r}"
+                )
+            value = value[segment]
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            if not isinstance(segment, int) or segment >= len(value):
+                raise TrainingRunExecutorError(
+                    f"{segment_path}={segment!r} is not a valid index in "
+                    f"slot {authority.slot!r}"
+                )
+            value = value[segment]
+        else:
+            raise TrainingRunExecutorError(
+                f"{segment_path} cannot traverse non-container in slot {authority.slot!r}"
+            )
+    try:
+        scalar_array = np.asarray(jax.device_get(value))
+        if scalar_array.size != 1:
+            raise ValueError(f"expected one scalar, got shape={scalar_array.shape!r}")
+        batches = int(scalar_array.item())
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TrainingRunExecutorError(
+            f"{path} resolved slot {authority.slot!r} to non-integer {value!r}"
+        ) from exc
+    if batches < 0:
+        raise TrainingRunExecutorError(
+            f"{path} resolved slot {authority.slot!r} to negative batches={batches}"
+        )
+    return batches
+
+
+def _realized_lr_trace(
+    history_events: Sequence[Mapping[str, Any]],
+    *,
+    declared: Sequence[LearningRateDiagnostic],
+) -> list[LearningRateDiagnostic]:
+    by_step = {sample.step: sample.learning_rate for sample in declared}
+    for event in history_events:
+        coordinate = event.get("coordinate")
+        metrics = event.get("metrics")
+        if not isinstance(coordinate, Mapping) or not isinstance(metrics, Mapping):
+            continue
+        step = coordinate.get("program_step")
+        learning_rate = metrics.get("learning_rate", metrics.get("lr"))
+        if step is None or learning_rate is None:
+            continue
+        by_step[int(step)] = float(jax.device_get(learning_rate))
+    return [
+        LearningRateDiagnostic(step=step, learning_rate=by_step[step])
+        for step in sorted(by_step)
+    ]
+
+
+def _diagnostics_output_path(
+    *,
+    root_path: Path,
+    run_id: str,
+    collection_root: Path | None,
+) -> Path:
+    if collection_root is not None:
+        return collection_root / "training-diagnostics.json"
+    return root_path / "diagnostics" / f"{safe_manifest_key(run_id)}.json"
+
+
+def _training_diagnostics_ref(
+    diagnostics: TrainingDiagnostics,
+    path: Path,
+) -> ArtifactRef:
+    payload = diagnostics.model_dump_json(indent=2, exclude_none=True).encode("utf-8") + b"\n"
+    return ArtifactRef(
+        role="training_diagnostics",
+        logical_name="training-diagnostics.json",
+        sha256=sha256_bytes(payload),
+        media_type="application/json",
+        size_bytes=len(payload),
+        uri=str(path),
+        metadata={
+            "schema_id": diagnostics.schema_id,
+            "schema_version": diagnostics.schema_version,
+        },
+    )
+
+
+def _preflight_training_diagnostics_emission(path: Path) -> None:
+    """Reject existing diagnostics before training because output is not yet knowable."""
+
+    if path.exists():
+        raise DiagnosticsEmissionConflictError(
+            f"training diagnostics output already exists before execution: {path}"
+        )
+
+
+def _emit_training_diagnostics(diagnostics: TrainingDiagnostics, *, path: Path) -> Path:
+    payload = diagnostics.model_dump_json(indent=2, exclude_none=True) + "\n"
+    if path.exists():
+        if path.read_text(encoding="utf-8") == payload:
+            return path
+        raise DiagnosticsEmissionConflictError(
+            f"training diagnostics already exist with different content: {path}"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return path
+
+
 def _build_manifest(
     spec: TrainingRunSpec,
     *,
     run_id: str,
+    manifest_id: str,
     root_path: Path,
     training_spec_payload: dict[str, Any],
     training_spec_payload_kind: str,
@@ -1037,8 +1486,11 @@ def _build_manifest(
     status: ManifestStatus = "completed",
     cancellation: CancellationDecision | None = None,
     runtime_telemetry: Mapping[str, Any] | None = None,
+    execution_context: NativeExecutionProducerContext | None = None,
+    diagnostics_ref: ArtifactRef,
+    completed_batches: int,
 ) -> TrainingRunManifest:
-    artifacts = list(barrier_artifacts)
+    artifacts = [*barrier_artifacts, diagnostics_ref]
     if history_events:
         artifacts.append(
             store_json_artifact(
@@ -1067,8 +1519,14 @@ def _build_manifest(
         training_spec_payload_ref=training_spec_payload_ref,
         task_binding_spec=task_binding_spec,
     )
+    execution_identity = execution_context.execution if execution_context is not None else None
+    row_provenance = (
+        execution_identity.row_provenance.model_dump(mode="json", exclude_none=True)
+        if execution_identity is not None and execution_identity.row_provenance is not None
+        else None
+    )
     return TrainingRunManifest(
-        id=training_run_manifest_id(run_id),
+        id=manifest_id,
         job_id=run_id,
         status=status,
         started_at=utc_now(),
@@ -1078,6 +1536,30 @@ def _build_manifest(
         task_spec=payloads.task_spec,
         task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
+        completed_batches=completed_batches,
+        intent_hash=(
+            execution_identity.authored_intent.intent_hash
+            if execution_identity is not None
+            else None
+        ),
+        resolved_semantics_root_hash=(
+            execution_identity.resolved_snapshot.root_hash
+            if execution_identity is not None
+            else None
+        ),
+        execution_hash=(
+            execution_identity.execution_capsule.execution_hash
+            if execution_identity is not None
+            else None
+        ),
+        input_data_identities=(
+            [
+                identity.model_dump(mode="json", exclude_none=True)
+                for identity in execution_identity.immutable_inputs
+            ]
+            if execution_identity is not None
+            else []
+        ),
         summary_metrics={
             **final_metrics,
             **(
@@ -1095,6 +1577,11 @@ def _build_manifest(
             metadata={
                 "training_executor": "native",
                 **(
+                    {"environment_fingerprint": execution_context.environment_fingerprint}
+                    if execution_context is not None
+                    else {}
+                ),
+                **(
                     {"cancellation": cancellation.as_provenance()}
                     if cancellation is not None
                     else {}
@@ -1104,6 +1591,14 @@ def _build_manifest(
         artifacts=artifacts,
         metadata={
             "training_run_spec_schema_version": spec.schema_version,
+            **(
+                {
+                    "environment_fingerprint": execution_context.environment_fingerprint,
+                    "training_row_provenance": row_provenance,
+                }
+                if execution_context is not None
+                else {}
+            ),
             **({"runtime_telemetry": dict(runtime_telemetry)} if runtime_telemetry else {}),
         },
     )
@@ -1114,19 +1609,47 @@ def _emit_manifest(
     *,
     root: Path,
     conflict_policy: ManifestConflictPolicy,
+    path: Path | None = None,
 ) -> Path:
-    path = root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json"
+    path = path or (
+        root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json"
+    )
+    _preflight_manifest_emission(
+        manifest,
+        root=root,
+        conflict_policy=conflict_policy,
+        path=path,
+    )
     payload = manifest.model_dump_json(indent=2, exclude_none=True) + "\n"
     if path.exists():
-        existing = path.read_text(encoding="utf-8")
-        if existing != payload:
-            raise ManifestEmissionConflictError(
-                f"manifest identity already exists with different content: {manifest.id!r}"
-            )
-        if conflict_policy == "reuse-identical":
-            return path
+        return path
+    if path == root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json":
+        return write_manifest(manifest, root=root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return path
+
+
+def _preflight_manifest_emission(
+    manifest: TrainingRunManifest,
+    *,
+    root: Path,
+    conflict_policy: ManifestConflictPolicy,
+    path: Path | None = None,
+) -> None:
+    path = path or (
+        root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json"
+    )
+    if not path.exists():
+        return
+    payload = manifest.model_dump_json(indent=2, exclude_none=True) + "\n"
+    existing = path.read_text(encoding="utf-8")
+    if existing != payload:
+        raise ManifestEmissionConflictError(
+            f"manifest identity already exists with different content: {manifest.id!r}"
+        )
+    if conflict_policy != "reuse-identical":
         raise ManifestEmissionConflictError(f"manifest identity already exists: {manifest.id!r}")
-    return write_manifest(manifest, root=root)
 
 
 def load_training_run_spec(path: Path | str) -> TrainingRunSpec:

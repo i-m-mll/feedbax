@@ -20,6 +20,7 @@ from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.native_execution import inject_native_execution_context
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 
 
@@ -1102,11 +1103,18 @@ def build_launch_row_command(
     log_file = f"{remote_run_dir}/logs/{row.row_id}.log"
     events_dir = f"{remote_run_dir}/events"
     row_dir = f"{remote_run_dir}/rows/{row.row_id}"
-    command = (
-        " ".join(shlex.quote(str(part)) for part in row.launch.command)
+    command_parts = (
+        [str(part) for part in row.launch.command]
         if row.launch.command
-        else f"uv run --no-sync python {_sq(row.launch.entry or '')}"
+        else ["uv", "run", "--no-sync", "python", row.launch.entry or ""]
     )
+    command_parts = inject_native_execution_context(
+        command_parts,
+        row=row,
+        environment_fingerprint=env_fingerprint,
+        collection_root=row_dir,
+    )
+    command = " ".join(shlex.quote(part) for part in command_parts)
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "
         'mark_failed() { rc=$?; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; '

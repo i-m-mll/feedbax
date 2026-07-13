@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.contracts.studio_training import (
     STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
@@ -579,6 +580,64 @@ def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path)
     )
     assert "rm -f" not in launch_command
     assert all("deadman" not in command for command in transport.ssh_commands)
+
+
+def test_launch_row_injects_native_execution_context_from_bundle_row(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    planned_run_id = "feedbax-training-run:planned-warm"
+    row = original.model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=[
+                    "python",
+                    "-m",
+                    "feedbax",
+                    "execute-training-run-spec",
+                    "specs/warm.json",
+                ]
+            ),
+            "execution": original.execution.model_copy(
+                update={
+                    "row_provenance": TrainingRowProvenance(
+                        row_id=original.row_id,
+                        row_index=0,
+                        planned_run_id=planned_run_id,
+                        authored_payload_hash="a" * 64,
+                        lowered_execution_payload_hash=original.execution.payload.sha256,
+                        axis_coordinates={"temperature": 1.0},
+                        lowerer_identities=[
+                            RowLowererIdentity(
+                                lowerer_id="feedbax.tests.runpod",
+                                lowerer_version="v1",
+                            )
+                        ],
+                    )
+                }
+            ),
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-123",
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+        ),
+        transport=transport,
+    )
+
+    driver.launch_row(bundle, row, _state(bundle))
+
+    launch_command = transport.ssh_commands[0]
+    assert "--execution-context-json" in launch_command
+    assert planned_run_id in launch_command
+    assert '"environment_fingerprint":"fingerprint-123"' in launch_command
+    assert '"row_id":"warm"' in launch_command
+    assert '"lowerer_id":"feedbax.tests.runpod"' in launch_command
+    assert "feedbax-training-run:feedbax-training-run:" not in launch_command
 
 
 def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:

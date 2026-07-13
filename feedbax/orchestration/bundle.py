@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     canonicalize_immutable_input_identities,
     training_run_execution_hash,
@@ -22,11 +23,12 @@ from feedbax.contracts.spec_storage import (
 RUN_BUNDLE_SCHEMA_ID = "feedbax.orchestration.run_bundle"
 RUN_BUNDLE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_bundle.v1"
 RUN_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_bundle.v2"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v3"
+RUN_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_bundle.v3"
+RUN_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_bundle.v4"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v5"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
-EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = (
-    "feedbax.spec.execution_identity_envelope.v1"
-)
+EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1 = "feedbax.spec.execution_identity_envelope.v1"
+EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = "feedbax.spec.execution_identity_envelope.v2"
 ROW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -145,7 +147,7 @@ class ExecutionIdentityEnvelope(StrictModel):
     schema_id: Literal["feedbax.spec.execution_identity_envelope"] = (
         EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.spec.execution_identity_envelope.v1"] = (
+    schema_version: Literal["feedbax.spec.execution_identity_envelope.v2"] = (
         EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
     )
     payload: SchemaArtifactRef
@@ -153,6 +155,7 @@ class ExecutionIdentityEnvelope(StrictModel):
     resolved_snapshot: ResolvedSnapshotRef
     execution_capsule: ExecutionCapsuleRef
     immutable_inputs: list[ImmutableInputIdentity]
+    row_provenance: TrainingRowProvenance | None = None
 
     @model_validator(mode="after")
     def _validate_execution_identity(self) -> "ExecutionIdentityEnvelope":
@@ -170,6 +173,14 @@ class ExecutionIdentityEnvelope(StrictModel):
             raise ValueError(
                 "execution_hash does not match resolved root and canonical immutable inputs; "
                 f"envelope={self.execution_capsule.execution_hash!r}, computed={expected!r}"
+            )
+        if (
+            self.row_provenance is not None
+            and self.row_provenance.lowered_execution_payload_hash != self.payload.sha256
+        ):
+            raise ValueError(
+                "row provenance lowered_execution_payload_hash does not match the "
+                "custodied execution payload"
             )
         return self
 
@@ -203,6 +214,14 @@ class RunRowSpec(StrictModel):
         if not ROW_ID_RE.fullmatch(value):
             raise ValueError("row_id must match ^[A-Za-z0-9_.-]+$")
         return value
+
+    @model_validator(mode="after")
+    def _validate_provenance_row(self) -> "RunRowSpec":
+        provenance = self.execution.row_provenance
+        if provenance is not None and provenance.row_id != self.row_id:
+            raise ValueError("run-row provenance row_id must match row_id")
+        return self
+
 
 class RepoRevision(StrictModel):
     """Repository revision declaration used in environment fingerprints."""
@@ -258,7 +277,7 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v3"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v5"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     driver: str = "local"
     rows: list[RunRowSpec] = Field(min_length=1)

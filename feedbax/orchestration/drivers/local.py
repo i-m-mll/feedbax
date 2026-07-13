@@ -16,6 +16,7 @@ from typing import Any
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.native_execution import inject_native_execution_context
 from feedbax.orchestration.state import RunSetState
 
 
@@ -122,7 +123,12 @@ class LocalOrchestrationDriver:
             }
         )
         env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
-        command = _row_command(row, self.python_executable)
+        command = inject_native_execution_context(
+            _row_command(row, self.python_executable),
+            row=row,
+            environment_fingerprint=state.environment_fingerprint or "",
+            collection_root=paths["row_dir"],
+        )
         stdout = (paths["row_dir"] / "stdout.log").open("ab")
         stderr = (paths["row_dir"] / "stderr.log").open("ab")
         process = subprocess.Popen(

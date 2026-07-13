@@ -29,6 +29,21 @@ from .preparation import (
     ExecutionPreparationResult,
     require_execution_preparation_provider,
 )
+from .diagnostics import (
+    CheckpointTransactionDiagnostic,
+    LearningRateDiagnostic,
+    NativeExecutionProducerContext,
+    NativeTrainingDiagnosticsInput,
+    ScheduleContextDiagnostic,
+    TrainingDiagnostics,
+)
+from feedbax.contracts.run_matrix import (
+    AuthoredTrainingRow,
+    RowLowererIdentity,
+    TrainingRowLoweringResult,
+    TrainingRowPlanningProvenance,
+    TrainingRowProvenance,
+)
 
 try:
     from ..config.hyperparams import load_hps
@@ -38,6 +53,7 @@ try:
         training_step_for_abstract_loss,
     )
     from .executor import (
+        DiagnosticsEmissionConflictError,
         ManifestEmissionConflictError,
         StreamingCheckpointStore,
         TrainingRunExecutionResult,
@@ -57,6 +73,10 @@ try:
         emit_training_run_spec_storage,
         stamp_training_run_manifest_identities,
     )
+    from .run_matrix import (
+        TrainingRowLowerer,
+        materialize_adapted_run_matrix,
+    )
 except ImportError:
     pass
 
@@ -68,13 +88,26 @@ __all__ = [
     "CheckpointIntegrityError",
     "CheckpointWriteResult",
     "CheckpointCustodyDocuments",
+    "CheckpointTransactionDiagnostic",
+    "DiagnosticsEmissionConflictError",
+    "LearningRateDiagnostic",
+    "NativeExecutionProducerContext",
+    "NativeTrainingDiagnosticsInput",
     "ResumeSlotTransform",
     "SimpleTrainer",
     "StreamingCheckpointStore",
+    "ScheduleContextDiagnostic",
+    "TrainingDiagnostics",
     "ManifestEmissionConflictError",
     "OptimizerStateCompatibilityError",
     "TrainingRunExecutionResult",
     "TrainingSpecStorageResult",
+    "AuthoredTrainingRow",
+    "RowLowererIdentity",
+    "TrainingRowLowerer",
+    "TrainingRowLoweringResult",
+    "TrainingRowPlanningProvenance",
+    "TrainingRowProvenance",
     "TrainingRunExecutorError",
     "DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY",
     "ExecutionPreparationError",
@@ -99,6 +132,7 @@ __all__ = [
     "load_training_run_spec",
     "learning_rate_at_step",
     "learning_rate_schedule",
+    "materialize_adapted_run_matrix",
     "run_contract_binding",
     "require_execution_preparation_provider",
     "structural_abi_fingerprint",
