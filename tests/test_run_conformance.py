@@ -453,7 +453,7 @@ def test_events_terminal_complete_event_matches_success_aliases(
         _row(
             event_log=[
                 {"type": "started"},
-                {"type": "complete"},
+                {"type": "complete", "payload": {"status": "completed"}},
             ],
             bundle_row_spec={"expected_terminal_status": expected_status},
         )
@@ -468,7 +468,7 @@ def test_events_terminal_legacy_skip_and_terminal_validation() -> None:
         _row(
             event_log=[
                 {"type": "started"},
-                {"type": "completed"},
+                {"type": "complete", "payload": {"status": "completed"}},
             ],
             bundle_row_spec={"expected_terminal_status": "completed"},
         )
@@ -476,8 +476,8 @@ def test_events_terminal_legacy_skip_and_terminal_validation() -> None:
     failed = check_events_terminal(
         _row(
             event_log=[
-                {"type": "completed"},
-                {"type": "failed"},
+                {"type": "complete", "payload": {"status": "completed"}},
+                {"type": "failed", "payload": {"status": "failed"}},
             ],
         )
     )
@@ -499,12 +499,115 @@ def test_events_terminal_fails_success_failure_disagreement(
 ) -> None:
     result = check_events_terminal(
         _row(
-            event_log=[{"type": event_status}],
+            event_log=[
+                {
+                    "type": "complete" if event_status == "complete" else "failed",
+                    "payload": {"status": event_status},
+                }
+            ],
             bundle_row_spec={"expected_terminal_status": expected_status},
         )
     )
 
     assert result.status == "fail"
+
+
+def test_events_terminal_cancelled_uses_payload_status_and_agrees_with_run_outputs() -> None:
+    result = check_events_terminal(
+        _row(
+            event_log=[{"type": "complete", "payload": {"status": "cancelled"}}],
+            row_status="stopped",
+            bundle_row_spec={"expected_terminal_status": "cancelled"},
+            training_diagnostics={"terminal_status": "cancelled"},
+        )
+    )
+
+    assert result.status == "pass"
+    assert result.observed["carrier_type"] == "complete"
+    assert result.observed["terminal_status"] == "cancelled"
+
+
+def test_events_terminal_failed_uses_failed_carrier_and_payload_status() -> None:
+    result = check_events_terminal(
+        _row(
+            event_log=[{"type": "failed", "payload": {"status": "failed"}}],
+            row_status="failed",
+            training_diagnostics={"terminal_status": "failed"},
+        )
+    )
+
+    assert result.status == "pass"
+    assert result.observed["carrier_type"] == "failed"
+    assert result.observed["terminal_status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("event", "detail"),
+    [
+        ({"type": "complete", "payload": {}}, "payload.status"),
+        ({"type": "complete", "payload": {"status": "done"}}, "payload.status"),
+        (
+            {"type": "complete", "payload": {"status": "failed"}},
+            "carrier type disagrees",
+        ),
+    ],
+)
+def test_events_terminal_rejects_malformed_terminal_events(
+    event: dict[str, object],
+    detail: str,
+) -> None:
+    result = check_events_terminal(_row(event_log=[event]))
+
+    assert result.status == "fail"
+    assert detail in str(result.detail)
+
+
+def test_events_terminal_rejects_illegal_cancelled_carrier() -> None:
+    result = check_events_terminal(
+        _row(event_log=[{"type": "cancelled", "payload": {"status": "cancelled"}}])
+    )
+
+    assert result.status == "fail"
+    assert result.observed["terminal_count"] == 0
+
+
+def test_events_terminal_rejects_disagreement_between_outputs() -> None:
+    result = check_events_terminal(
+        _row(
+            event_log=[{"type": "complete", "payload": {"status": "cancelled"}}],
+            row_status="stopped",
+            training_diagnostics={"terminal_status": "completed"},
+        )
+    )
+
+    assert result.status == "fail"
+    assert "statuses disagree" in str(result.detail)
+
+
+@pytest.mark.parametrize(
+    ("row_status", "event_type", "event_status"),
+    [
+        ("pending", "complete", "completed"),
+        ("launched", "complete", "cancelled"),
+        ("ready", "failed", "failed"),
+        ("running", "complete", "completed"),
+    ],
+)
+def test_events_terminal_rejects_nonterminal_durable_row_status(
+    row_status: str,
+    event_type: str,
+    event_status: str,
+) -> None:
+    result = check_events_terminal(
+        _row(
+            event_log=[{"type": event_type, "payload": {"status": event_status}}],
+            row_status=row_status,
+            training_diagnostics={"terminal_status": event_status},
+        )
+    )
+
+    assert result.status == "fail"
+    assert "statuses disagree" in str(result.detail)
 
 
 def test_lr_trace_uses_optimizer_builder_resume_context_and_rejects_flat_terminal_lr() -> None:

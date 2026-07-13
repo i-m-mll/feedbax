@@ -28,6 +28,7 @@ from feedbax.contracts.spec_storage import (
 )
 from feedbax.contracts.training import OptimizerSpec
 from feedbax.orchestration.bundle import ExecutionIdentityEnvelope, SchemaArtifactRef
+from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES
 from feedbax.orchestration.schedule_eval import (
     _MISSING as _SCHEDULE_MISSING,
     extract_resume_context,
@@ -106,6 +107,7 @@ class ConformanceRowArtifacts:
     execution_identity_adapter: Any = None
     schema_registry: Any = None
     manifest_path: Path | str | None = None
+    row_status: str | None = None
     training_diagnostics: Mapping[str, Any] | None = None
     checkpoint_custody_root: Path | str | None = None
     event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None
@@ -739,32 +741,90 @@ def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
         )
     terminal_events = [event for event in events if _is_terminal_event(event)]
     observed = {"terminal_count": len(terminal_events), "terminal_events": terminal_events}
-    expected_status = _first_present(
-        _path(row.bundle_row_spec, "expected_terminal_status"),
-        _path(row.bundle_row_spec, "sentinel_status"),
-        _path(row.training_diagnostics, "terminal_status"),
-    )
-    expected_status_value = None if expected_status is _MISSING else expected_status
+    expected_statuses = _expected_terminal_statuses(row)
+    canonical_expected_statuses = {
+        source: _canonical_terminal_status(status) for source, status in expected_statuses.items()
+    }
+    expected_status_value = next(iter(expected_statuses.values()), None)
     if len(terminal_events) != 1:
         return fail_check(
             check_id,
             expected={"terminal_count": 1, "terminal_status": expected_status_value},
             observed=observed,
         )
-    if expected_status is not _MISSING:
-        terminal_status = _event_status(terminal_events[0])
-        if _canonical_terminal_status(terminal_status) != _canonical_terminal_status(
-            expected_status
-        ):
-            return fail_check(
-                check_id,
-                expected={"terminal_count": 1, "terminal_status": expected_status},
-                observed={"terminal_count": 1, "terminal_status": terminal_status},
-            )
+    terminal_event = terminal_events[0]
+    carrier_type = _event_type(terminal_event)
+    terminal_status = _event_status(terminal_event)
+    canonical_terminal_status = _canonical_terminal_status(terminal_status)
+    governed_terminal_status = None if terminal_status is None else terminal_status.lower()
+    if governed_terminal_status not in {"completed", "failed", "cancelled"}:
+        return fail_check(
+            check_id,
+            expected={"terminal_count": 1, "terminal_status": expected_status_value},
+            observed={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": terminal_status,
+            },
+            detail="terminal event payload.status must name a governed terminal status",
+        )
+    allowed_statuses = {
+        "complete": {"completed", "cancelled"},
+        "failed": {"failed"},
+    }
+    if governed_terminal_status not in allowed_statuses[str(carrier_type)]:
+        return fail_check(
+            check_id,
+            expected={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": sorted(allowed_statuses[str(carrier_type)]),
+            },
+            observed={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": terminal_status,
+            },
+            detail="terminal carrier type disagrees with payload.status",
+        )
+    expected_canonical_values = set(canonical_expected_statuses.values())
+    if len(expected_canonical_values) > 1:
+        return fail_check(
+            check_id,
+            expected={"terminal_count": 1, "terminal_statuses_agree": True},
+            observed={
+                "terminal_count": 1,
+                "terminal_statuses": expected_statuses,
+                "event_payload_status": terminal_status,
+            },
+            detail="row and diagnostics terminal statuses disagree",
+        )
+    if expected_canonical_values and canonical_terminal_status not in expected_canonical_values:
+        return fail_check(
+            check_id,
+            expected={
+                "terminal_count": 1,
+                "terminal_status": expected_status_value,
+                "terminal_statuses": expected_statuses,
+            },
+            observed={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": terminal_status,
+            },
+        )
     return pass_check(
         check_id,
-        expected={"terminal_count": 1, "terminal_status": expected_status_value},
-        observed=observed,
+        expected={
+            "terminal_count": 1,
+            "terminal_status": expected_status_value,
+            "terminal_statuses": expected_statuses,
+        },
+        observed={
+            **observed,
+            "carrier_type": carrier_type,
+            "terminal_status": terminal_status,
+        },
     )
 
 
@@ -960,23 +1020,42 @@ def _load_events(
 
 
 def _is_terminal_event(event: Mapping[str, Any]) -> bool:
-    status = _event_status(event)
-    return _canonical_terminal_status(status) in {
-        "complete",
-        "failed",
-        "cancelled",
-        "error",
-    }
+    return _event_type(event) in RUN_EVENT_TERMINAL_TYPES
+
+
+def _event_type(event: Mapping[str, Any]) -> str | None:
+    value = _first_present(_path(event, "type"), _path(event, "event_type"))
+    return None if value is _MISSING else str(value)
 
 
 def _event_status(event: Mapping[str, Any]) -> str | None:
-    value = _first_present(
-        _path(event, "phase"),
-        _path(event, "status"),
-        _path(event, "event_type"),
-        _path(event, "type"),
-    )
+    value = _path(event, "payload", "status")
     return None if value is _MISSING else str(value)
+
+
+def _expected_terminal_statuses(row: ConformanceRowArtifacts) -> dict[str, Any]:
+    candidates = (
+        (
+            "bundle_row_spec.expected_terminal_status",
+            _path(row.bundle_row_spec, "expected_terminal_status"),
+        ),
+        ("bundle_row_spec.sentinel_status", _path(row.bundle_row_spec, "sentinel_status")),
+        ("row_status", _row_terminal_status(row.row_status)),
+        (
+            "training_diagnostics.terminal_status",
+            _path(row.training_diagnostics, "terminal_status"),
+        ),
+    )
+    return {source: status for source, status in candidates if status is not _MISSING}
+
+
+def _row_terminal_status(status: str | None) -> Any:
+    if status is None:
+        return _MISSING
+    canonical = str(status).lower()
+    if canonical == "stopped":
+        return "cancelled"
+    return canonical
 
 
 def _canonical_terminal_status(status: Any) -> str | None:
