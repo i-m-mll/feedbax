@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -380,16 +381,47 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         bundle_row_spec={
             "training_config": {"n_batches": 1},
             "checkpoint_progress": {"checkpoint_interval": 1},
-            "seeds": [7],
             "optimizer": {"type": "adamw", "params": {"learning_rate": 0.001}},
         },
     )
     assert check_execution_identity(conformance_row).status == "pass"
     assert check_environment_fingerprint(conformance_row).status == "pass"
     assert check_completed_batches(conformance_row).status == "pass"
-    assert check_seeds(conformance_row).status == "pass"
+    seed_check = check_seeds(conformance_row)
+    assert seed_check.status == "pass"
+    assert seed_check.expected == 7
+    assert seed_check.observed == [7]
     assert check_checkpoint_cadence(conformance_row).status == "pass"
     assert check_lr_trace(conformance_row).status == "pass"
+
+    conflicting_declarations = replace(
+        conformance_row,
+        bundle_row_spec={**conformance_row.bundle_row_spec, "seeds": [8]},
+    )
+    seed_check = check_seeds(conflicting_declarations)
+    assert seed_check.status == "fail"
+    assert seed_check.expected == {"bundle_row_spec": [8]}
+    assert seed_check.observed == {"execution.row_provenance.seed": 7}
+    assert seed_check.detail == (
+        "declared seeds disagree between bundle row and execution provenance"
+    )
+
+    mismatched_seed = replace(
+        conformance_row,
+        training_diagnostics={**diagnostics, "seeds": [8]},
+    )
+    seed_check = check_seeds(mismatched_seed)
+    assert seed_check.status == "fail"
+    assert seed_check.expected == 7
+    assert seed_check.observed == [8]
+
+    missing_seed = replace(
+        conformance_row,
+        execution=row.execution.model_copy(update={"row_provenance": None}),
+    )
+    seed_check = check_seeds(missing_seed)
+    assert seed_check.status == "fail"
+    assert seed_check.detail == "missing required input: bundle_row_spec.seeds"
 
     driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
     state = RunSetState(
