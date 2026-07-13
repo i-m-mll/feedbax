@@ -59,6 +59,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointConsistencyError,
     CheckpointContractBindingError,
     CheckpointIntegrityError,
+    CheckpointReferenceResolutionError,
     checkpoint_slot_names,
     detect_known_legacy_checkpoint_layout,
     fork_checkpoint_transaction,
@@ -66,6 +67,7 @@ from feedbax.training.checkpoint_custody import (
     load_checkpoint_custody_documents,
     load_checkpoint_latest_pointer_json,
     load_checkpoint_transaction_manifest_file,
+    resolve_checkpoint_custody_ref,
     write_checkpoint_transaction,
     concatenate_checkpoint_histories,
     materialize_concatenated_checkpoint_histories,
@@ -176,6 +178,88 @@ def _slot_blob_path(manifest_path: Path, slot_name: str) -> Path:
         if slot["slot"] == slot_name:
             return _manifest_blob_path(manifest_path, slot["relative_path"])
     raise AssertionError(f"slot not found in manifest: {slot_name}")
+
+
+def _write_resolver_checkpoint(
+    tmp_path: Path,
+    *,
+    slots: dict[str, object] | None = None,
+):
+    run_spec = _run_spec(minimax=True)
+    return write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=run_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots or _minimax_slots(),
+    )
+
+
+def _resolver_parent_ref(result, **updates: object) -> ParentRef:
+    values: dict[str, object] = {
+        "kind": "TrainingCheckpointTransactionManifest",
+        "id": result.manifest.transaction_id,
+        "role": "training_checkpoint_custody",
+        "uri": str(result.manifest_path),
+        "metadata": {"manifest_sha256": _sha256_file(result.manifest_path)},
+    }
+    values.update(updates)
+    return ParentRef.model_validate(values)
+
+
+def _replace_resolver_slot_blob(result, slot_name: str, value: object) -> dict[str, object]:
+    payload = json.loads(result.manifest_path.read_text())
+    slot = next(item for item in payload["slots"] if item["slot"] == slot_name)
+    digest = next(
+        item
+        for item in payload["content_integrity_digest"]["slots"]
+        if item["slot"] == slot_name
+    )
+    blob_path = _manifest_blob_path(result.manifest_path, slot["relative_path"])
+    blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    blob_sha256 = hashlib.sha256(blob_bytes).hexdigest()
+    blob_path.write_bytes(blob_bytes)
+    slot["sha256"] = blob_sha256
+    slot["size_bytes"] = len(blob_bytes)
+    for record in (slot["content_digest"], digest):
+        record["blob_sha256"] = blob_sha256
+        record["blob_size_bytes"] = len(blob_bytes)
+        record["slot_root_sha256"] = custody_module._slot_root_sha256(
+            slot_name,
+            blob_sha256,
+            [
+                custody_module.SlotLeafContentDigest.model_validate(item)
+                for item in record["leaf_hashes"]
+            ],
+        )
+    payload["content_integrity_digest"]["transaction_root_sha256"] = (
+        custody_module._transaction_root_sha256(
+            [
+                custody_module.SlotContentDigest.model_validate(item)
+                for item in payload["content_integrity_digest"]["slots"]
+            ]
+        )
+    )
+    _write_json(result.manifest_path, payload)
+    return payload
+
+
+class _RuntimeErrorAfterRoundTrip:
+    def __init__(self, *, decoded: bool = False) -> None:
+        self.decoded = decoded
+
+    def __reduce__(self):
+        if self.decoded:
+            raise RuntimeError("post-unpickle leaf verification failed")
+        return (_decoded_runtime_error_leaf, ())
+
+    def __repr__(self) -> str:
+        return "_RuntimeErrorAfterRoundTrip()"
+
+
+def _decoded_runtime_error_leaf() -> _RuntimeErrorAfterRoundTrip:
+    return _RuntimeErrorAfterRoundTrip(decoded=True)
 
 
 def _write_run_spec(path: Path, run_spec: TrainingRunSpec) -> None:
@@ -2263,3 +2347,470 @@ def test_checkpoint_fork_rejects_mapping_for_wrong_actual_source_barrier(
             expected_slots=_minimax_slots(),
             barrier_mapping=mapping,
         )
+
+
+def test_public_checkpoint_custody_ref_resolver_round_trip_all_and_selected(
+    tmp_path: Path,
+) -> None:
+    from feedbax.training import (
+        CheckpointReferenceResolutionError as PublicResolutionError,
+        ResolvedCheckpointTransaction,
+        resolve_checkpoint_custody_ref as public_resolver,
+    )
+
+    result = _write_resolver_checkpoint(tmp_path)
+    ref = _resolver_parent_ref(result)
+
+    resolved = public_resolver(ref, allowed_root=tmp_path)
+    selected = public_resolver(
+        ref,
+        allowed_root=tmp_path,
+        slot_names=["rng", "controller"],
+    )
+
+    assert PublicResolutionError is CheckpointReferenceResolutionError
+    assert isinstance(resolved, ResolvedCheckpointTransaction)
+    assert resolved.parent_ref == ref
+    assert resolved.manifest_sha256 == result.latest_pointer.manifest_sha256
+    assert resolved.manifest == result.manifest
+    assert tuple(resolved.slots) == tuple(slot.slot for slot in result.manifest.slots)
+    assert resolved.slots["controller"].tolist() == [1.0, 2.0]
+    assert tuple(selected.slots) == ("controller", "rng")
+    assert selected.slots["rng"].dtype == jnp.uint32
+    assert resolved.migration_records == ()
+
+
+def test_checkpoint_custody_ref_resolver_returns_immutable_lineage_snapshots(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    ref = _resolver_parent_ref(result)
+    expected_sha256 = ref.metadata["manifest_sha256"]
+
+    resolved = resolve_checkpoint_custody_ref(ref, allowed_root=tmp_path)
+    ref.metadata["manifest_sha256"] = "0" * 64
+
+    assert resolved.parent_ref.metadata["manifest_sha256"] == expected_sha256
+    assert resolved.manifest.transaction_id == result.manifest.transaction_id
+    assert isinstance(resolved.manifest, custody_module.CheckpointTransactionManifest)
+    assert resolved.manifest.model_dump(mode="json")["transaction_id"] == (
+        result.manifest.transaction_id
+    )
+    with pytest.raises((TypeError, ValueError), match="frozen|immutable"):
+        resolved.manifest.transaction_id = "mutated"
+    with pytest.raises((TypeError, ValueError), match="frozen|immutable"):
+        resolved.manifest.slots[0].content_digest.slot_root_sha256 = "0" * 64
+    with pytest.raises(TypeError, match="immutable"):
+        resolved.manifest.slots.append(resolved.manifest.slots[0])
+    assert resolved.manifest.transaction_id == result.manifest.transaction_id
+
+
+def test_checkpoint_custody_ref_resolver_accepts_contained_file_uri(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    ref = _resolver_parent_ref(result, uri=result.manifest_path.as_uri())
+
+    resolved = resolve_checkpoint_custody_ref(
+        ref,
+        allowed_root=tmp_path,
+        slot_names=["controller"],
+    )
+
+    assert resolved.slots["controller"].tolist() == [1.0, 2.0]
+
+
+def test_checkpoint_custody_ref_resolver_rejects_absolute_slot_path(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    slot = payload["slots"][0]
+    slot["relative_path"] = str(
+        _manifest_blob_path(result.manifest_path, slot["relative_path"])
+    )
+    _write_json(result.manifest_path, payload)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="must be relative"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+            slot_names=[slot["slot"]],
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "message"),
+    [
+        ("content", "schema_id", "content integrity schema_id"),
+        ("content", "schema_version", "content integrity schema_version"),
+        ("abi", "schema_id", "structural ABI schema_id"),
+        ("abi", "schema_version", "structural ABI schema_version"),
+        ("abi", "fingerprint_algorithm_version", "structural ABI algorithm"),
+    ],
+)
+def test_checkpoint_custody_ref_resolver_rejects_nested_schema_or_algorithm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    field: str,
+    message: str,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    record = (
+        payload["content_integrity_digest"]
+        if target == "content"
+        else payload["slots"][0]["structural_abi_fingerprint"]
+    )
+    record[field] = f"feedbax.invalid.{field}.v999"
+    _write_json(result.manifest_path, payload)
+
+    def unexpected_decode(_data: bytes) -> object:
+        raise AssertionError("nested schema gate must run before pickle decode")
+
+    monkeypatch.setattr(custody_module.pickle, "loads", unexpected_decode)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match=message):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+            slot_names=[payload["slots"][0]["slot"]],
+        )
+
+
+def test_checkpoint_custody_ref_resolver_wraps_post_unpickle_runtime_error(
+    tmp_path: Path,
+) -> None:
+    slots = _minimax_slots()
+    slots["controller"] = _RuntimeErrorAfterRoundTrip()
+    result = _write_resolver_checkpoint(tmp_path, slots=slots)
+
+    with pytest.raises(
+        CheckpointReferenceResolutionError,
+        match="post-unpickle leaf verification failed",
+    ) as exc_info:
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+            slot_names=["controller"],
+        )
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_checkpoint_custody_ref_resolver_rejects_decoded_structural_abi_mismatch(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    _replace_resolver_slot_blob(
+        result,
+        "controller",
+        jnp.array([[1.0, 2.0]]),
+    )
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="structural ABI fingerprint"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+            slot_names=["controller"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"kind": "CheckpointManifest"}, "kind"),
+        ({"role": "resume_parent"}, "role"),
+        ({"id": "wrong-transaction"}, "transaction_id"),
+        ({"metadata": {"manifest_sha256": "not-a-sha"}}, "manifest_sha256"),
+    ],
+)
+def test_checkpoint_custody_ref_resolver_rejects_wrong_reference_identity(
+    tmp_path: Path,
+    updates: dict[str, object],
+    message: str,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    ref = _resolver_parent_ref(result, **updates)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match=message):
+        resolve_checkpoint_custody_ref(ref, allowed_root=tmp_path)
+
+
+def test_checkpoint_custody_ref_resolver_authenticates_raw_manifest_before_parse(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    ref = _resolver_parent_ref(result)
+    result.manifest_path.write_bytes(result.manifest_path.read_bytes() + b"\n")
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="raw manifest bytes"):
+        resolve_checkpoint_custody_ref(ref, allowed_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "slot_names",
+    ["controller", [], ["controller", "controller"], [""], [1]],
+)
+def test_checkpoint_custody_ref_resolver_rejects_invalid_slot_selection(
+    tmp_path: Path,
+    slot_names: object,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="slot_names"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+            slot_names=slot_names,  # type: ignore[arg-type]
+        )
+
+
+def test_checkpoint_custody_ref_resolver_rejects_missing_requested_slot(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="slots are missing"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+            slot_names=["missing"],
+        )
+
+
+def test_checkpoint_custody_ref_resolver_rejects_manifest_and_slot_path_escape(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path / "custody")
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(result.manifest_path.read_bytes())
+    escaped_ref = _resolver_parent_ref(
+        result,
+        uri=str(outside),
+        metadata={"manifest_sha256": _sha256_file(outside)},
+    )
+    with pytest.raises(CheckpointReferenceResolutionError, match="escapes"):
+        resolve_checkpoint_custody_ref(escaped_ref, allowed_root=tmp_path / "custody")
+
+    payload = json.loads(result.manifest_path.read_text())
+    slot = payload["slots"][0]
+    original_blob = _manifest_blob_path(result.manifest_path, slot["relative_path"])
+    escaped_blob = result.root / "escaped.pkl"
+    escaped_blob.write_bytes(original_blob.read_bytes())
+    slot["relative_path"] = "../../escaped.pkl"
+    _write_json(result.manifest_path, payload)
+    with pytest.raises(CheckpointReferenceResolutionError, match="escapes"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=result.root,
+            slot_names=[slot["slot"]],
+        )
+
+    symlink_result = _write_resolver_checkpoint(tmp_path / "symlink-custody")
+    symlink_payload = json.loads(symlink_result.manifest_path.read_text())
+    symlink_slot = symlink_payload["slots"][0]
+    source_blob = _manifest_blob_path(
+        symlink_result.manifest_path,
+        symlink_slot["relative_path"],
+    )
+    outside_blob = tmp_path / "outside.pkl"
+    outside_blob.write_bytes(source_blob.read_bytes())
+    blob_link = symlink_result.manifest_path.parent / "blob-link.pkl"
+    blob_link.symlink_to(outside_blob)
+    symlink_slot["relative_path"] = blob_link.name
+    _write_json(symlink_result.manifest_path, symlink_payload)
+    with pytest.raises(CheckpointReferenceResolutionError, match="escapes"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(symlink_result),
+            allowed_root=symlink_result.root,
+            slot_names=[symlink_slot["slot"]],
+        )
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        ("transaction_root", "transaction content root"),
+        ("slot_root", "content root"),
+        ("content_correspondence", "content digests differ"),
+        ("structural_abi", "structural ABI fingerprint"),
+    ],
+)
+def test_checkpoint_custody_ref_resolver_rejects_authenticated_manifest_tamper(
+    tmp_path: Path,
+    tamper: str,
+    message: str,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    if tamper == "transaction_root":
+        payload["content_integrity_digest"]["transaction_root_sha256"] = "0" * 64
+    elif tamper == "slot_root":
+        payload["slots"][0]["content_digest"]["slot_root_sha256"] = "0" * 64
+        payload["content_integrity_digest"]["slots"][0]["slot_root_sha256"] = "0" * 64
+    elif tamper == "content_correspondence":
+        payload["slots"][0]["content_digest"]["blob_size_bytes"] += 1
+    else:
+        payload["slots"][0]["structural_abi_fingerprint"]["fingerprint_sha256"] = "0" * 64
+    _write_json(result.manifest_path, payload)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match=message):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+        )
+
+
+def test_checkpoint_custody_ref_resolver_rejects_missing_and_modified_blob(
+    tmp_path: Path,
+) -> None:
+    missing_result = _write_resolver_checkpoint(tmp_path / "missing")
+    missing_blob = _slot_blob_path(missing_result.manifest_path, "controller")
+    missing_blob.unlink()
+    with pytest.raises(CheckpointReferenceResolutionError, match="blob is missing"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(missing_result),
+            allowed_root=missing_result.root,
+            slot_names=["controller"],
+        )
+
+    modified_result = _write_resolver_checkpoint(tmp_path / "modified")
+    modified_blob = _slot_blob_path(modified_result.manifest_path, "controller")
+    modified_bytes = bytearray(modified_blob.read_bytes())
+    modified_bytes[-1] ^= 1
+    modified_blob.write_bytes(modified_bytes)
+    with pytest.raises(CheckpointReferenceResolutionError, match="hash mismatch"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(modified_result),
+            allowed_root=modified_result.root,
+            slot_names=["controller"],
+        )
+
+
+def test_checkpoint_custody_ref_resolver_rejects_decoded_content_tamper(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    slot = payload["slots"][0]
+    digest = payload["content_integrity_digest"]["slots"][0]
+    blob_path = _manifest_blob_path(result.manifest_path, slot["relative_path"])
+    altered_blob = pickle.dumps(jnp.array([9.0, 8.0]), protocol=pickle.HIGHEST_PROTOCOL)
+    altered_sha256 = hashlib.sha256(altered_blob).hexdigest()
+    blob_path.write_bytes(altered_blob)
+    for record in (slot, slot["content_digest"], digest):
+        if "sha256" in record:
+            record["sha256"] = altered_sha256
+        if "blob_sha256" in record:
+            record["blob_sha256"] = altered_sha256
+        if "size_bytes" in record:
+            record["size_bytes"] = len(altered_blob)
+        if "blob_size_bytes" in record:
+            record["blob_size_bytes"] = len(altered_blob)
+    slot_root = custody_module._slot_root_sha256(
+        slot["slot"],
+        altered_sha256,
+        [
+            custody_module.SlotLeafContentDigest.model_validate(item)
+            for item in digest["leaf_hashes"]
+        ],
+    )
+    slot["content_digest"]["slot_root_sha256"] = slot_root
+    digest["slot_root_sha256"] = slot_root
+    payload["content_integrity_digest"]["transaction_root_sha256"] = (
+        custody_module._transaction_root_sha256(
+            [
+                custody_module.SlotContentDigest.model_validate(item)
+                for item in payload["content_integrity_digest"]["slots"]
+            ]
+        )
+    )
+    _write_json(result.manifest_path, payload)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="leaf content digest"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result),
+            allowed_root=tmp_path,
+            slot_names=[slot["slot"]],
+        )
+
+
+def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6
+    payload.pop("segment_lineage")
+    _write_json(result.manifest_path, payload)
+
+    resolved = resolve_checkpoint_custody_ref(
+        _resolver_parent_ref(result),
+        allowed_root=tmp_path,
+        slot_names=["controller"],
+    )
+
+    assert resolved.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert resolved.manifest.segment_lineage.start_batch == 0
+    assert [record.migration_id for record in resolved.migration_records] == [
+        "training-checkpoint-transaction-v6-to-v7-segment-lineage"
+    ]
+
+
+def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
+    tmp_path: Path,
+) -> None:
+    slots = _minimax_slots()
+    slots["controller"] = {"loss": jnp.arange(4, dtype=jnp.float32)}
+    result = _write_resolver_checkpoint(tmp_path, slots=slots)
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    payload.pop("segment_lineage")
+    payload["metadata"]["checkpoint_continuation"] = {
+        "schema_version": "feedbax.spec.training_checkpoint_continuation.v1",
+        "source_completed_batches": 4,
+        "target_total_batches": 4,
+        "batch_indexed_leaves": [{"slot": "controller", "tree_path": "/loss"}],
+    }
+    _write_json(result.manifest_path, payload)
+
+    resolved = resolve_checkpoint_custody_ref(
+        _resolver_parent_ref(result),
+        allowed_root=tmp_path,
+        slot_names=["controller"],
+    )
+
+    assert not isinstance(resolved.slots["controller"]["loss"], BatchHistory)
+    assert resolved.slots["controller"]["loss"].tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert [record.migration_id for record in resolved.migration_records] == [
+        "training-checkpoint-transaction-v5-to-v6-batch-history",
+        "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+    ]
+
+
+def test_checkpoint_custody_ref_resolver_rejects_unsupported_manifest_migration(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = "feedbax.manifest.training_checkpoint_transaction.v99"
+    _write_json(result.manifest_path, payload)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="source_version"):
+        resolve_checkpoint_custody_ref(_resolver_parent_ref(result), allowed_root=tmp_path)
+
+
+def test_checkpoint_custody_ref_resolver_rejects_invalid_supported_migration(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6
+    payload.pop("segment_lineage")
+    payload["completed_training_batches"] = "invalid"
+    _write_json(result.manifest_path, payload)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="non-negative"):
+        resolve_checkpoint_custody_ref(_resolver_parent_ref(result), allowed_root=tmp_path)

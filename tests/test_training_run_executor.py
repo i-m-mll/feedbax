@@ -11,7 +11,12 @@ import pytest
 import jax.numpy as jnp
 
 from feedbax.contracts.manifest import load_manifest, sha256_bytes
-from feedbax.contracts.checkpoints import BatchHistory, CheckpointContinuationRequest
+from feedbax.contracts.checkpoints import (
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+    BatchHistory,
+    CheckpointContinuationRequest,
+)
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     training_run_execution_hash,
@@ -60,6 +65,7 @@ from feedbax.orchestration.drivers.native_execution import (
     NativeExecutionContextError,
     inject_native_execution_context,
 )
+from feedbax.training import resolve_checkpoint_custody_ref
 from feedbax.training.checkpoint_custody import (
     concatenate_checkpoint_histories,
     load_latest_checkpoint,
@@ -439,11 +445,13 @@ def _corrected_rlrmp_payload() -> dict[str, object]:
 def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     tmp_path: Path,
 ) -> None:
+    checkpoint_root = tmp_path / "checkpoint-custody"
     result = execute_training_run_spec(
         _run_spec(),
         run_id="toy-run",
         initial_slots=_initial_slots(),
         manifest_root=tmp_path,
+        checkpoint_root=checkpoint_root,
         training_spec_payload={"experiment": "rlrmp-demo", "variant": "a"},
         training_spec_payload_kind="RLRMPRunSpec",
         training_spec_payload_schema_id="rlrmp.spec.run",
@@ -467,6 +475,33 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert Path(manifest.checkpoint_custody[0].uri).is_file()
     assert manifest.summary_metrics["train_loss"] == 1.0
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
+
+    emitted_ref = result.manifest.checkpoint_custody[0]
+    resolved = resolve_checkpoint_custody_ref(
+        emitted_ref,
+        allowed_root=checkpoint_root,
+        slot_names=["model"],
+    )
+    model_slot = next(slot for slot in resolved.manifest.slots if slot.slot == "model")
+
+    assert resolved.parent_ref.kind == "TrainingCheckpointTransactionManifest"
+    assert resolved.parent_ref.role == "training_checkpoint_custody"
+    assert resolved.parent_ref.id == emitted_ref.id
+    assert resolved.manifest_sha256 == emitted_ref.metadata["manifest_sha256"]
+    assert resolved.manifest.kind == resolved.parent_ref.kind
+    assert resolved.manifest.schema_id == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID
+    assert resolved.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert resolved.manifest.transaction_id == emitted_ref.id
+    assert (
+        resolved.manifest.content_integrity_digest.transaction_root_sha256
+        == result.checkpoint_writes[0].manifest.content_integrity_digest.transaction_root_sha256
+    )
+    assert dict(resolved.slots) == {"model": result.final_slots["model"]}
+    assert model_slot.sha256 == model_slot.content_digest.blob_sha256
+    assert model_slot.content_digest.slot_root_sha256
+    assert model_slot.structural_abi_fingerprint.schema_id
+    assert model_slot.structural_abi_fingerprint.schema_version
+    assert model_slot.structural_abi_fingerprint.fingerprint_sha256
 
 
 def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnostics(
