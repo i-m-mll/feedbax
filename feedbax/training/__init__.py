@@ -37,6 +37,13 @@ from .diagnostics import (
     ScheduleContextDiagnostic,
     TrainingDiagnostics,
 )
+from feedbax.contracts.run_matrix import (
+    AuthoredTrainingRow,
+    RowLowererIdentity,
+    TrainingRowLoweringResult,
+    TrainingRowPlanningProvenance,
+    TrainingRowProvenance,
+)
 
 try:
     from ..config.hyperparams import load_hps
@@ -67,12 +74,7 @@ try:
         stamp_training_run_manifest_identities,
     )
     from .run_matrix import (
-        AuthoredTrainingRow,
-        RowLowererIdentity,
         TrainingRowLowerer,
-        TrainingRowLoweringResult,
-        TrainingRowPlanningProvenance,
-        TrainingRowProvenance,
         materialize_adapted_run_matrix,
     )
 except ImportError:
