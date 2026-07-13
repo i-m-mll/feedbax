@@ -30,6 +30,8 @@ from feedbax.contracts.manifest import (
     ParentRef,
     Provenance,
     TrainingRunManifest,
+    TrainingManifestMetadataProjectionCustody,
+    TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY,
     ArtifactRef,
     canonical_json_bytes,
     default_manifest_root,
@@ -45,9 +47,10 @@ from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     GraphTopologySourceSpec,
     TrainingMethodRegistry,
+    TrainingManifestMetadataProjection,
     TrainingRunSpec,
 )
-from feedbax.contracts.spec_storage import training_spec_canonical_bytes
+from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
 from feedbax.orchestration.events import RunEventEmitter
@@ -86,6 +89,8 @@ ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
 CancellationProbe = Callable[[ProgressCoordinate], CancellationDecision | None]
 _RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
+_FEEDBAX_METADATA_NAMESPACE_PREFIX = "feedbax_"
+_METADATA_VALUE_ABSENT = object()
 
 
 class TrainingRunExecutorError(ValueError):
@@ -333,6 +338,9 @@ def execute_training_run_spec(
     training_spec_payload_schema_id: str | None = None,
     training_spec_payload_schema_version: str | None = None,
     training_spec_payload_ref: str | None = None,
+    manifest_metadata_projection: TrainingManifestMetadataProjection
+    | Mapping[str, Any]
+    | None = None,
     task_binding_spec: Mapping[str, Any] | None = None,
     resume: bool = False,
     resume_slot_transform: ResumeSlotTransform | None = None,
@@ -376,6 +384,16 @@ def execute_training_run_spec(
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=training_spec_payload_ref,
         task_binding_spec=task_binding_spec,
+    )
+    method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
+    projection_custody = prepare_training_manifest_metadata_projection(
+        manifest_metadata_projection,
+        registry=method_registry,
+        run_spec=run_spec,
+        training_spec_payload=training_spec_payload,
+        training_spec_payload_kind=training_spec_payload_kind,
+        training_spec_payload_schema_id=training_spec_payload_schema_id,
+        training_spec_payload_schema_version=training_spec_payload_schema_version,
     )
     root_path = (
         Path(manifest_root)
@@ -422,7 +440,6 @@ def execute_training_run_spec(
         collection_root=collection_root,
     )
     _preflight_training_diagnostics_emission(diagnostics_path)
-    method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
     registration = method_registry.resolve(run_spec.method_ref, path="/method_ref")
     method_payload = method_registry.validate_payload(
         run_spec.method_ref,
@@ -636,6 +653,7 @@ def execute_training_run_spec(
             execution_context=producer_context,
             diagnostics_ref=diagnostics_ref,
             completed_batches=diagnostics.completed_batches,
+            projection_custody=projection_custody,
         )
         manifest_output_path = (
             collection_root / "manifest.json" if collection_root is not None else None
@@ -720,6 +738,7 @@ def execute_training_run_spec(
             execution_context=producer_context,
             diagnostics_ref=diagnostics_ref,
             completed_batches=diagnostics.completed_batches,
+            projection_custody=projection_custody,
         )
         manifest_output_path = (
             collection_root / "manifest.json" if collection_root is not None else None
@@ -811,6 +830,135 @@ def _validate_execution_context(
             "/execution_context/execution/row_provenance is required for native execution"
         )
     return validated
+
+
+def prepare_training_manifest_metadata_projection(
+    supplied: TrainingManifestMetadataProjection | Mapping[str, Any] | None,
+    *,
+    registry: TrainingMethodRegistry,
+    run_spec: TrainingRunSpec,
+    training_spec_payload: Mapping[str, Any] | None,
+    training_spec_payload_kind: str,
+    training_spec_payload_schema_id: str | None,
+    training_spec_payload_schema_version: str | None,
+) -> TrainingManifestMetadataProjectionCustody | None:
+    """Validate and bind an explicit metadata projection before any side effect."""
+    if supplied is None:
+        return None
+    raw_projection: Any = (
+        supplied.model_dump(mode="json", exclude_none=True)
+        if isinstance(supplied, TrainingManifestMetadataProjection)
+        else supplied
+    )
+    try:
+        # Canonicalization before Pydantic prevents key coercion and rejects
+        # NaN, infinities, arrays, and other unsupported JSON objects.
+        training_spec_canonical_bytes(raw_projection)
+        projection = TrainingManifestMetadataProjection.model_validate(raw_projection)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise TrainingRunExecutorError(
+            f"/manifest_metadata_projection validation failed: {exc}"
+        ) from exc
+
+    source_payload = dict(training_spec_payload or run_spec.model_dump(mode="json"))
+    source_schema_id = training_spec_payload_schema_id
+    source_schema_version = training_spec_payload_schema_version
+    if training_spec_payload_kind == "TrainingRunSpec":
+        source_schema_id = source_payload.get("schema_id")
+        source_schema_version = source_payload.get("schema_version")
+    if not isinstance(source_schema_id, str) or not isinstance(source_schema_version, str):
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection source payload requires explicit schema identity"
+        )
+    observed_source = (
+        training_spec_payload_kind,
+        source_schema_id,
+        source_schema_version,
+    )
+    declared_source = (
+        projection.source_payload_kind,
+        projection.source_payload_schema_id,
+        projection.source_payload_schema_version,
+    )
+    if declared_source != observed_source:
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection source payload identity mismatch; "
+            f"declared={declared_source!r}, observed={observed_source!r}"
+        )
+    observed_source_sha256 = training_spec_sha256(source_payload)
+    if projection.source_payload_sha256 != observed_source_sha256:
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection source payload sha256 mismatch; "
+            f"declared={projection.source_payload_sha256}, "
+            f"observed={observed_source_sha256}"
+        )
+    try:
+        registration, values = registry.validate_manifest_metadata_projection(
+            projection,
+            path="/manifest_metadata_projection",
+        )
+        canonical_values = json.loads(training_spec_canonical_bytes(values))
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise TrainingRunExecutorError(
+            f"/manifest_metadata_projection validation failed: {exc}"
+        ) from exc
+    owned_keys = _feedbax_owned_training_manifest_metadata(
+        training_run_spec_schema_version=run_spec.schema_version,
+        include_all_owned_keys=True,
+    )
+    collisions = sorted(
+        key
+        for key in canonical_values
+        if key in owned_keys or key.startswith(_FEEDBAX_METADATA_NAMESPACE_PREFIX)
+    )
+    if collisions:
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection reserved Feedbax metadata key collision; "
+            f"keys={collisions!r}"
+        )
+    return TrainingManifestMetadataProjectionCustody(
+        source_payload_kind=projection.source_payload_kind,
+        source_payload_schema_id=projection.source_payload_schema_id,
+        source_payload_schema_version=projection.source_payload_schema_version,
+        source_payload_sha256=projection.source_payload_sha256,
+        projection_schema_id=projection.projection_schema_id,
+        projection_schema_version=projection.projection_schema_version,
+        values=canonical_values,
+        values_sha256=training_spec_sha256(canonical_values),
+        registration_owner=registration.owner,
+        registration_package=registration.package,
+    )
+
+
+def _feedbax_owned_training_manifest_metadata(
+    *,
+    training_run_spec_schema_version: str,
+    environment_fingerprint: Any = _METADATA_VALUE_ABSENT,
+    training_row_provenance: Any = _METADATA_VALUE_ABSENT,
+    runtime_telemetry: Any = _METADATA_VALUE_ABSENT,
+    include_all_owned_keys: bool = False,
+) -> dict[str, Any]:
+    """Build Feedbax-owned root metadata and define its collision policy.
+
+    ``include_all_owned_keys`` exposes the complete key policy before runtime
+    values exist, allowing projection validation to fail before output or
+    training side effects. The ``feedbax_`` namespace is reserved for future
+    Feedbax-owned root metadata so adding a key cannot silently create a
+    downstream collision.
+    """
+    candidates = {
+        "training_run_spec_schema_version": training_run_spec_schema_version,
+        "environment_fingerprint": environment_fingerprint,
+        "training_row_provenance": training_row_provenance,
+        "runtime_telemetry": runtime_telemetry,
+    }
+    if include_all_owned_keys:
+        return candidates
+    return {
+        key: value
+        for key, value in candidates.items()
+        if value is not _METADATA_VALUE_ABSENT
+    }
 
 
 def _validate_execution_payload_binding(
@@ -1535,6 +1683,7 @@ def _build_manifest(
     execution_context: NativeExecutionProducerContext | None = None,
     diagnostics_ref: ArtifactRef,
     completed_batches: int,
+    projection_custody: TrainingManifestMetadataProjectionCustody | None,
 ) -> TrainingRunManifest:
     artifacts = [*barrier_artifacts, diagnostics_ref]
     if history_events:
@@ -1570,6 +1719,15 @@ def _build_manifest(
         execution_identity.row_provenance.model_dump(mode="json", exclude_none=True)
         if execution_identity is not None and execution_identity.row_provenance is not None
         else None
+    )
+    projection_values = projection_custody.values if projection_custody is not None else {}
+    projection_provenance = (
+        {
+            TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY:
+                projection_custody.provenance_summary()
+        }
+        if projection_custody is not None
+        else {}
     )
     return TrainingRunManifest(
         id=manifest_id,
@@ -1622,6 +1780,7 @@ def _build_manifest(
             issues=list(issues or ()),
             metadata={
                 "training_executor": "native",
+                **projection_provenance,
                 **(
                     {"environment_fingerprint": execution_context.environment_fingerprint}
                     if execution_context is not None
@@ -1636,17 +1795,27 @@ def _build_manifest(
         ),
         artifacts=artifacts,
         metadata={
-            "training_run_spec_schema_version": spec.schema_version,
-            **(
-                {
-                    "environment_fingerprint": execution_context.environment_fingerprint,
-                    "training_row_provenance": row_provenance,
-                }
-                if execution_context is not None
-                else {}
+            **_feedbax_owned_training_manifest_metadata(
+                training_run_spec_schema_version=spec.schema_version,
+                environment_fingerprint=(
+                    execution_context.environment_fingerprint
+                    if execution_context is not None
+                    else _METADATA_VALUE_ABSENT
+                ),
+                training_row_provenance=(
+                    row_provenance
+                    if execution_context is not None
+                    else _METADATA_VALUE_ABSENT
+                ),
+                runtime_telemetry=(
+                    dict(runtime_telemetry)
+                    if runtime_telemetry
+                    else _METADATA_VALUE_ABSENT
+                ),
             ),
-            **({"runtime_telemetry": dict(runtime_telemetry)} if runtime_telemetry else {}),
+            **projection_values,
         },
+        metadata_projection_custody=projection_custody,
     )
 
 

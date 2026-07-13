@@ -14,7 +14,10 @@ from typing import Any, Mapping, Sequence
 from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY, TrainingRunSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.orchestration.events import RunEventEmitter
-from feedbax.training.executor import execute_training_run_spec
+from feedbax.training.executor import (
+    execute_training_run_spec,
+    prepare_training_manifest_metadata_projection,
+)
 from feedbax.training.interruption import RunInterruptionController
 from feedbax.training.preparation import (
     DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
@@ -196,6 +199,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     execute_parser.add_argument("--training-payload-schema-id")
     execute_parser.add_argument("--training-payload-schema-version")
     execute_parser.add_argument("--training-payload-ref")
+    execute_parser.add_argument(
+        "--manifest-metadata-projection",
+        help="Governed training-manifest metadata projection envelope JSON path",
+    )
     execution_context_group = execute_parser.add_mutually_exclusive_group()
     execution_context_group.add_argument(
         "--execution-context",
@@ -212,8 +219,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--plugin",
         action="append",
         help=(
-            "Import a module that registers Feedbax training methods before "
-            "TrainingRunSpec validation; may be repeated."
+            "Import a module that registers Feedbax training methods or governed "
+            "manifest metadata projections before validation; may be repeated."
         ),
     )
     execute_parser.add_argument("--resume", action="store_true")
@@ -237,13 +244,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     preflight_parser.add_argument("--training-payload-schema-id")
     preflight_parser.add_argument("--training-payload-schema-version")
     preflight_parser.add_argument("--training-payload-ref")
+    preflight_parser.add_argument(
+        "--manifest-metadata-projection",
+        help="Governed training-manifest metadata projection envelope JSON path",
+    )
     preflight_parser.add_argument("--task-binding-spec")
     preflight_parser.add_argument(
         "--plugin",
         action="append",
         help=(
-            "Import a module that registers Feedbax training methods before "
-            "TrainingRunSpec validation; may be repeated."
+            "Import a module that registers Feedbax training methods or governed "
+            "manifest metadata projections before validation; may be repeated."
         ),
     )
     adopt_root = subparsers.add_parser(
@@ -437,6 +448,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             loss_service = prepared.loss_service
             resume_slot_transform = prepared.resume_slot_transform
         training_payload = _read_json(args.training_payload) if args.training_payload else None
+        metadata_projection = (
+            _read_json(args.manifest_metadata_projection)
+            if args.manifest_metadata_projection
+            else None
+        )
         execution_context = (
             _read_json(args.execution_context)
             if args.execution_context
@@ -458,11 +474,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     loss_service=loss_service,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
+                    registry=DEFAULT_TRAINING_METHOD_REGISTRY,
                     training_spec_payload=training_payload,
                     training_spec_payload_kind=args.training_payload_kind,
                     training_spec_payload_schema_id=args.training_payload_schema_id,
                     training_spec_payload_schema_version=args.training_payload_schema_version,
                     training_spec_payload_ref=args.training_payload_ref,
+                    manifest_metadata_projection=metadata_projection,
                     resume=args.resume,
                     resume_slot_transform=resume_slot_transform,
                     stop_after_barrier=args.stop_after_barrier,
@@ -494,9 +512,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "preflight-training-run-manifest":
         _load_training_method_plugins(args.plugin)
         training_payload = _read_json(args.training_payload) if args.training_payload else None
+        metadata_projection = (
+            _read_json(args.manifest_metadata_projection)
+            if args.manifest_metadata_projection
+            else None
+        )
         task_binding_spec = _read_json(args.task_binding_spec) if args.task_binding_spec else None
+        run_spec = validate_training_run_spec(_read_json(args.spec))
         payloads = preflight_training_run_manifest_payloads(
-            _read_json(args.spec),
+            run_spec,
             training_spec_payload=training_payload,
             training_spec_payload_kind=args.training_payload_kind,
             training_spec_payload_schema_id=args.training_payload_schema_id,
@@ -506,7 +530,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             row_id=args.row_id,
             spec_path=args.spec,
         )
-        json.dump(payloads.model_dump(), fp=sys.stdout, indent=2, sort_keys=True)
+        projection_custody = prepare_training_manifest_metadata_projection(
+            metadata_projection,
+            registry=DEFAULT_TRAINING_METHOD_REGISTRY,
+            run_spec=run_spec,
+            training_spec_payload=training_payload,
+            training_spec_payload_kind=args.training_payload_kind,
+            training_spec_payload_schema_id=args.training_payload_schema_id,
+            training_spec_payload_schema_version=args.training_payload_schema_version,
+        )
+        output = payloads.model_dump()
+        if projection_custody is not None:
+            output["metadata_projection_custody"] = projection_custody.model_dump(
+                mode="json",
+                exclude_none=True,
+            )
+        json.dump(output, fp=sys.stdout, indent=2, sort_keys=True)
         print()
         return 0
     if args.command == "adopt-legacy-checkpoint":

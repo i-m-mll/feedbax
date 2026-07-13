@@ -47,6 +47,12 @@ STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID = (
 STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION = (
     "feedbax.spec.training_method.standard_supervised_payload.v1"
 )
+TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_ID = (
+    "feedbax.spec.training_manifest_metadata_projection"
+)
+TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_VERSION = (
+    "feedbax.spec.training_manifest_metadata_projection.v1"
+)
 
 
 class BatchScheduleOriginSpec(BaseModel):
@@ -424,11 +430,70 @@ class TrainingMethodRegistration:
     requires_execution_preparation: bool = False
 
 
+class TrainingManifestMetadataProjection(TrainingRunContractModel):
+    """Governed request to project selected external payload metadata."""
+
+    schema_id: Literal["feedbax.spec.training_manifest_metadata_projection"] = (
+        TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_ID
+    )
+    schema_version: str = TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_VERSION
+    source_payload_kind: str = Field(min_length=1)
+    source_payload_schema_id: str = Field(min_length=1)
+    source_payload_schema_version: str = Field(min_length=1)
+    source_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    projection_schema_id: str = Field(min_length=1)
+    projection_schema_version: str = Field(min_length=1)
+    values: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _validate_schema(self) -> "TrainingManifestMetadataProjection":
+        if self.schema_version != TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_VERSION:
+            raise ValueError(
+                "/manifest_metadata_projection/schema_version unsupported version "
+                f"{self.schema_version!r}; expected "
+                f"{TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_VERSION!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        if not self.values:
+            raise ValueError("/manifest_metadata_projection/values must not be empty")
+        if any(not key for key in self.values):
+            raise ValueError(
+                "/manifest_metadata_projection/values keys must be non-empty strings"
+            )
+        return self
+
+
+@dataclass(frozen=True)
+class TrainingManifestMetadataProjectionRegistration:
+    """Governance row for one external payload metadata projection schema."""
+
+    source_payload_kind: str
+    source_payload_schema_id: str
+    source_payload_schema_version: str
+    projection_schema_id: str
+    projection_schema_version: str
+    values_model: type[BaseModel]
+    owner: str
+    package: str
+
+    @property
+    def source_key(self) -> tuple[str, str, str]:
+        """Return the external training payload identity governed by this row."""
+        return (
+            self.source_payload_kind,
+            self.source_payload_schema_id,
+            self.source_payload_schema_version,
+        )
+
+
 class TrainingMethodRegistry:
-    """Registry for method-ref keyed payload validation and migration dispatch."""
+    """Registry for method payloads and independent manifest projection governance."""
 
     def __init__(self) -> None:
         self._registrations: dict[str, TrainingMethodRegistration] = {}
+        self._metadata_projection_registrations: dict[
+            tuple[str, str, str], TrainingManifestMetadataProjectionRegistration
+        ] = {}
 
     def register(self, registration: TrainingMethodRegistration) -> None:
         """Register one method payload governance row."""
@@ -484,6 +549,88 @@ class TrainingMethodRegistry:
                 f"available registry keys={list(self.available_keys())!r}"
             )
         return registration.payload_model.model_validate(envelope.payload)
+
+    def register_manifest_metadata_projection(
+        self,
+        registration: TrainingManifestMetadataProjectionRegistration,
+    ) -> None:
+        """Register projection governance independently of training methods."""
+        required = {
+            "source_payload_kind": registration.source_payload_kind,
+            "source_payload_schema_id": registration.source_payload_schema_id,
+            "source_payload_schema_version": registration.source_payload_schema_version,
+            "projection_schema_id": registration.projection_schema_id,
+            "projection_schema_version": registration.projection_schema_version,
+            "owner": registration.owner,
+            "package": registration.package,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(
+                "manifest metadata projection registration is incomplete: "
+                f"empty fields={missing!r}"
+            )
+        if registration.values_model.model_config.get("extra") != "forbid":
+            raise ValueError(
+                "manifest metadata projection values_model must set extra='forbid'"
+            )
+        if registration.values_model.model_config.get("strict") is not True:
+            raise ValueError(
+                "manifest metadata projection values_model must set strict=True"
+            )
+        key = registration.source_key
+        if key in self._metadata_projection_registrations:
+            raise ValueError(
+                "manifest metadata projection already registered for source payload "
+                f"identity={key!r}"
+            )
+        self._metadata_projection_registrations[key] = registration
+
+    def resolve_manifest_metadata_projection(
+        self,
+        source_key: tuple[str, str, str],
+        *,
+        path: str,
+    ) -> TrainingManifestMetadataProjectionRegistration:
+        """Resolve projection governance for an exact source payload identity."""
+        try:
+            return self._metadata_projection_registrations[source_key]
+        except KeyError as exc:
+            raise ValueError(
+                f"{path}: no manifest metadata projection registered for source payload "
+                f"identity={source_key!r}"
+            ) from exc
+
+    def validate_manifest_metadata_projection(
+        self,
+        projection: TrainingManifestMetadataProjection,
+        *,
+        path: str,
+    ) -> tuple[TrainingManifestMetadataProjectionRegistration, dict[str, Any]]:
+        """Validate one projection envelope and return JSON-mode canonical values."""
+        registration = self.resolve_manifest_metadata_projection(
+            (
+                projection.source_payload_kind,
+                projection.source_payload_schema_id,
+                projection.source_payload_schema_version,
+            ),
+            path=path,
+        )
+        if projection.projection_schema_id != registration.projection_schema_id:
+            raise ValueError(
+                f"{path}/projection_schema_id unsupported schema_id "
+                f"{projection.projection_schema_id!r}; expected "
+                f"{registration.projection_schema_id!r}"
+            )
+        if projection.projection_schema_version != registration.projection_schema_version:
+            raise ValueError(
+                f"{path}/projection_schema_version unsupported schema version "
+                f"{projection.projection_schema_version!r}; expected "
+                f"{registration.projection_schema_version!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        validated = registration.values_model.model_validate(projection.values)
+        return registration, validated.model_dump(mode="json", exclude_none=True)
 
 
 def standard_supervised_method_ref() -> MethodRefSpec:

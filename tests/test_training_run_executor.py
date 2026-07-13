@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 import jax.numpy as jnp
+from pydantic import BaseModel, ConfigDict
 
-from feedbax.contracts.manifest import load_manifest, sha256_bytes
+from feedbax.contracts.manifest import TrainingRunManifest, load_manifest, sha256_bytes
 from feedbax.contracts.checkpoints import BatchHistory, CheckpointContinuationRequest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
@@ -27,6 +28,8 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingMethodRegistration,
     TrainingMethodRegistry,
+    TrainingManifestMetadataProjection,
+    TrainingManifestMetadataProjectionRegistration,
     TrainingRunSpec,
     WorkerExecutionSpec,
     standard_supervised_update_kernels,
@@ -34,6 +37,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
+    default_training_method_registry,
 )
 from feedbax.contracts.worker import (
     BarrierArtifactSinkSpec,
@@ -68,7 +72,9 @@ from feedbax.training.executor import (
     DiagnosticsEmissionConflictError,
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
+    _feedbax_owned_training_manifest_metadata,
     _same_row_resume_start_batch,
+    _preflight_manifest_emission,
     execute_training_run_spec,
 )
 from feedbax.training.manifest_preflight import (
@@ -436,6 +442,45 @@ def _corrected_rlrmp_payload() -> dict[str, object]:
     }
 
 
+class _RlrmpManifestProjectionValues(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    gru_postrun_candidate: bool
+
+
+def _projection_registry() -> TrainingMethodRegistry:
+    registry = default_training_method_registry()
+    registry.register_manifest_metadata_projection(
+        TrainingManifestMetadataProjectionRegistration(
+            source_payload_kind="RLRMPRunSpec",
+            source_payload_schema_id="rlrmp.run_spec",
+            source_payload_schema_version="rlrmp.run_spec.v2",
+            projection_schema_id="rlrmp.manifest_projection",
+            projection_schema_version="rlrmp.manifest_projection.v1",
+            values_model=_RlrmpManifestProjectionValues,
+            owner="rlrmp.training_manifest_projection",
+            package="rlrmp",
+        )
+    )
+    return registry
+
+
+def _manifest_projection(
+    payload: dict[str, object],
+    *,
+    value: bool = True,
+) -> TrainingManifestMetadataProjection:
+    return TrainingManifestMetadataProjection(
+        source_payload_kind="RLRMPRunSpec",
+        source_payload_schema_id="rlrmp.run_spec",
+        source_payload_schema_version="rlrmp.run_spec.v2",
+        source_payload_sha256=sha256_bytes(training_spec_canonical_bytes(payload)),
+        projection_schema_id="rlrmp.manifest_projection",
+        projection_schema_version="rlrmp.manifest_projection.v1",
+        values={"gru_postrun_candidate": value},
+    )
+
+
 def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     tmp_path: Path,
 ) -> None:
@@ -467,6 +512,375 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert Path(manifest.checkpoint_custody[0].uri).is_file()
     assert manifest.summary_metrics["train_loss"] == 1.0
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
+
+
+def test_governed_manifest_metadata_projection_round_trips_deterministically(
+    tmp_path: Path,
+) -> None:
+    payload = _corrected_rlrmp_payload()
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="projected",
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path,
+        registry=_projection_registry(),
+        training_spec_payload=payload,
+        training_spec_payload_kind="RLRMPRunSpec",
+        training_spec_payload_schema_id="rlrmp.run_spec",
+        training_spec_payload_schema_version="rlrmp.run_spec.v2",
+        manifest_metadata_projection=_manifest_projection(payload),
+    )
+
+    loaded = load_manifest(result.manifest_path)
+    custody = loaded.metadata_projection_custody
+    assert loaded.metadata["gru_postrun_candidate"] is True
+    assert custody is not None
+    assert custody.values == {"gru_postrun_candidate": True}
+    assert custody.source_payload_sha256 == sha256_bytes(
+        training_spec_canonical_bytes(payload)
+    )
+    assert custody.registration_package == "rlrmp"
+    assert loaded.provenance.metadata["manifest_metadata_projection"] == (
+        custody.provenance_summary()
+    )
+    assert result.manifest_path.read_text(encoding="utf-8") == (
+        loaded.model_dump_json(indent=2, exclude_none=True) + "\n"
+    )
+
+
+def test_projection_free_manifest_serialization_remains_absent(tmp_path: Path) -> None:
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="no-projection",
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path,
+    )
+    raw = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert "metadata_projection_custody" not in raw
+    assert "manifest_metadata_projection" not in raw["provenance"]["metadata"]
+
+    manifest = TrainingRunManifest(id="feedbax-training-run:serialization")
+    explicit_none = TrainingRunManifest(
+        id="feedbax-training-run:serialization",
+        metadata_projection_custody=None,
+    )
+    assert manifest.model_dump_json(exclude_none=True) == explicit_none.model_dump_json(
+        exclude_none=True
+    )
+
+
+def test_reserved_metadata_policy_matches_all_constructed_feedbax_root_keys(
+    tmp_path: Path,
+) -> None:
+    context = _execution_context(collection_root=tmp_path / "row")
+    result = execute_training_run_spec(
+        _run_spec(),
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path / "runs",
+        execution_context=context,
+    )
+    owned_policy = _feedbax_owned_training_manifest_metadata(
+        training_run_spec_schema_version=_run_spec().schema_version,
+        include_all_owned_keys=True,
+    )
+    assert set(result.manifest.metadata) == set(owned_policy)
+
+
+@pytest.mark.parametrize(
+    ("values", "match"),
+    [
+        ({"gru_postrun_candidate": True, "unregistered": True}, "extra_forbidden"),
+        ({"gru_postrun_candidate": float("nan")}, "require finite numbers"),
+        ({1: True}, "keys must all be strings"),
+    ],
+)
+def test_manifest_metadata_projection_rejects_unregistered_or_noncanonical_values(
+    tmp_path: Path,
+    values: dict[object, object],
+    match: str,
+) -> None:
+    payload = _corrected_rlrmp_payload()
+    projection = _manifest_projection(payload).model_dump(mode="python")
+    projection["values"] = values
+    with pytest.raises(TrainingRunExecutorError, match=match):
+        execute_training_run_spec(
+            _run_spec(),
+            run_id="bad-projection",
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path,
+            registry=_projection_registry(),
+            training_spec_payload=payload,
+            training_spec_payload_kind="RLRMPRunSpec",
+            training_spec_payload_schema_id="rlrmp.run_spec",
+            training_spec_payload_schema_version="rlrmp.run_spec.v2",
+            manifest_metadata_projection=projection,
+        )
+    assert not any(tmp_path.rglob("*"))
+
+
+def test_manifest_metadata_projection_registration_requires_strict_values_model() -> None:
+    class PermissiveValues(BaseModel):
+        flag: bool
+
+    with pytest.raises(ValueError, match="extra='forbid'"):
+        TrainingMethodRegistry().register_manifest_metadata_projection(
+            TrainingManifestMetadataProjectionRegistration(
+                source_payload_kind="RLRMPRunSpec",
+                source_payload_schema_id="rlrmp.run_spec",
+                source_payload_schema_version="rlrmp.run_spec.v2",
+                projection_schema_id="rlrmp.manifest_projection",
+                projection_schema_version="rlrmp.manifest_projection.v1",
+                values_model=PermissiveValues,
+                owner="rlrmp",
+                package="rlrmp",
+            )
+        )
+
+    class NonStrictValues(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        flag: bool
+
+    with pytest.raises(ValueError, match="strict=True"):
+        TrainingMethodRegistry().register_manifest_metadata_projection(
+            TrainingManifestMetadataProjectionRegistration(
+                source_payload_kind="RLRMPRunSpec",
+                source_payload_schema_id="rlrmp.run_spec",
+                source_payload_schema_version="rlrmp.run_spec.v2",
+                projection_schema_id="rlrmp.manifest_projection",
+                projection_schema_version="rlrmp.manifest_projection.v1",
+                values_model=NonStrictValues,
+                owner="rlrmp",
+                package="rlrmp",
+            )
+        )
+
+
+def test_manifest_metadata_projection_rejects_reserved_collision_before_output(
+    tmp_path: Path,
+) -> None:
+    class CollisionValues(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        runtime_telemetry: bool
+
+    payload = _corrected_rlrmp_payload()
+    registry = default_training_method_registry()
+    registry.register_manifest_metadata_projection(
+        TrainingManifestMetadataProjectionRegistration(
+            source_payload_kind="RLRMPRunSpec",
+            source_payload_schema_id="rlrmp.run_spec",
+            source_payload_schema_version="rlrmp.run_spec.v2",
+            projection_schema_id="rlrmp.manifest_projection",
+            projection_schema_version="rlrmp.manifest_projection.v1",
+            values_model=CollisionValues,
+            owner="rlrmp",
+            package="rlrmp",
+        )
+    )
+    projection = _manifest_projection(payload).model_copy(
+        update={"values": {"runtime_telemetry": True}}
+    )
+    with pytest.raises(TrainingRunExecutorError, match="reserved.*collision"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path,
+            registry=registry,
+            training_spec_payload=payload,
+            training_spec_payload_kind="RLRMPRunSpec",
+            training_spec_payload_schema_id="rlrmp.run_spec",
+            training_spec_payload_schema_version="rlrmp.run_spec.v2",
+            manifest_metadata_projection=projection,
+        )
+    assert not any(tmp_path.rglob("*"))
+
+
+def test_manifest_metadata_projection_rejects_reserved_feedbax_namespace(
+    tmp_path: Path,
+) -> None:
+    class NamespacedValues(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        feedbax_downstream_marker: bool
+
+    payload = _corrected_rlrmp_payload()
+    registry = default_training_method_registry()
+    registry.register_manifest_metadata_projection(
+        TrainingManifestMetadataProjectionRegistration(
+            source_payload_kind="RLRMPRunSpec",
+            source_payload_schema_id="rlrmp.run_spec",
+            source_payload_schema_version="rlrmp.run_spec.v2",
+            projection_schema_id="rlrmp.manifest_projection",
+            projection_schema_version="rlrmp.manifest_projection.v1",
+            values_model=NamespacedValues,
+            owner="rlrmp",
+            package="rlrmp",
+        )
+    )
+    projection = _manifest_projection(payload).model_copy(
+        update={"values": {"feedbax_downstream_marker": True}}
+    )
+    with pytest.raises(TrainingRunExecutorError, match="reserved.*collision"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path,
+            registry=registry,
+            training_spec_payload=payload,
+            training_spec_payload_kind="RLRMPRunSpec",
+            training_spec_payload_schema_id="rlrmp.run_spec",
+            training_spec_payload_schema_version="rlrmp.run_spec.v2",
+            manifest_metadata_projection=projection,
+        )
+    assert not any(tmp_path.rglob("*"))
+
+
+def test_manifest_metadata_projection_rejects_source_hash_mismatch_before_output(
+    tmp_path: Path,
+) -> None:
+    payload = _corrected_rlrmp_payload()
+    projection = _manifest_projection(payload).model_copy(
+        update={"source_payload_sha256": "0" * 64}
+    )
+    with pytest.raises(TrainingRunExecutorError, match="source payload sha256 mismatch"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path,
+            registry=_projection_registry(),
+            training_spec_payload=payload,
+            training_spec_payload_kind="RLRMPRunSpec",
+            training_spec_payload_schema_id="rlrmp.run_spec",
+            training_spec_payload_schema_version="rlrmp.run_spec.v2",
+            manifest_metadata_projection=projection,
+        )
+    assert not any(tmp_path.rglob("*"))
+
+
+def test_manifest_metadata_projection_rejects_unregistered_source_before_output(
+    tmp_path: Path,
+) -> None:
+    payload = _corrected_rlrmp_payload()
+    with pytest.raises(TrainingRunExecutorError, match="no manifest metadata projection"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path,
+            registry=default_training_method_registry(),
+            training_spec_payload=payload,
+            training_spec_payload_kind="RLRMPRunSpec",
+            training_spec_payload_schema_id="rlrmp.run_spec",
+            training_spec_payload_schema_version="rlrmp.run_spec.v2",
+            manifest_metadata_projection=_manifest_projection(payload),
+        )
+    assert not any(tmp_path.rglob("*"))
+
+
+def test_manifest_metadata_projection_registration_rejects_duplicates() -> None:
+    registry = _projection_registry()
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register_manifest_metadata_projection(
+            TrainingManifestMetadataProjectionRegistration(
+                source_payload_kind="RLRMPRunSpec",
+                source_payload_schema_id="rlrmp.run_spec",
+                source_payload_schema_version="rlrmp.run_spec.v2",
+                projection_schema_id="rlrmp.manifest_projection",
+                projection_schema_version="rlrmp.manifest_projection.v1",
+                values_model=_RlrmpManifestProjectionValues,
+                owner="rlrmp",
+                package="rlrmp",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "root_value",
+        "custody_value",
+        "digest",
+        "provenance",
+        "source_identity",
+        "schema_version",
+    ],
+)
+def test_manifest_metadata_projection_tampering_fails_on_load(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    payload = _corrected_rlrmp_payload()
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id=f"tamper-{tamper}",
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path,
+        registry=_projection_registry(),
+        training_spec_payload=payload,
+        training_spec_payload_kind="RLRMPRunSpec",
+        training_spec_payload_schema_id="rlrmp.run_spec",
+        training_spec_payload_schema_version="rlrmp.run_spec.v2",
+        manifest_metadata_projection=_manifest_projection(payload),
+    )
+    raw = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    custody = raw["metadata_projection_custody"]
+    if tamper == "root_value":
+        raw["metadata"]["gru_postrun_candidate"] = False
+    elif tamper == "custody_value":
+        custody["values"]["gru_postrun_candidate"] = False
+    elif tamper == "digest":
+        custody["values_sha256"] = "0" * 64
+    elif tamper == "provenance":
+        raw["provenance"]["metadata"]["manifest_metadata_projection"][
+            "registration_owner"
+        ] = "tampered"
+    elif tamper == "source_identity":
+        custody["source_payload_kind"] = "TamperedRunSpec"
+    else:
+        custody["schema_version"] = "feedbax.manifest.training_metadata_projection_custody.v0"
+    _write_json(result.manifest_path, raw)
+    with pytest.raises(ValueError):
+        load_manifest(result.manifest_path)
+
+
+def test_same_manifest_identity_rejects_valid_alternate_projection(tmp_path: Path) -> None:
+    payload = _corrected_rlrmp_payload()
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="projection-conflict",
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path,
+        registry=_projection_registry(),
+        training_spec_payload=payload,
+        training_spec_payload_kind="RLRMPRunSpec",
+        training_spec_payload_schema_id="rlrmp.run_spec",
+        training_spec_payload_schema_version="rlrmp.run_spec.v2",
+        manifest_metadata_projection=_manifest_projection(payload),
+    )
+    # This is a separately valid projection, not a partial-tamper test. Without
+    # an external signature/custody anchor hashes cannot establish authorship;
+    # the existing same-manifest-id conflict is the relevant protection here.
+    altered = result.manifest.model_dump(mode="json", exclude_none=True)
+    altered["metadata_projection_custody"]["values"] = {
+        "gru_postrun_candidate": False
+    }
+    altered["metadata_projection_custody"]["values_sha256"] = sha256_bytes(
+        training_spec_canonical_bytes({"gru_postrun_candidate": False})
+    )
+    altered["metadata"]["gru_postrun_candidate"] = False
+    custody = altered["metadata_projection_custody"]
+    altered["provenance"]["metadata"]["manifest_metadata_projection"] = {
+        **altered["provenance"]["metadata"]["manifest_metadata_projection"],
+        "values_sha256": custody["values_sha256"],
+    }
+    different = TrainingRunManifest.model_validate(altered)
+    with pytest.raises(ManifestEmissionConflictError, match="different content"):
+        _preflight_manifest_emission(
+            different,
+            root=tmp_path,
+            conflict_policy="reuse-identical",
+            path=result.manifest_path,
+        )
 
 
 def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnostics(
