@@ -44,14 +44,17 @@ REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
 ANALYSIS_DATA_PRODUCT_SCHEMA_ID = "feedbax.manifest.analysis_data_product"
 ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION = "feedbax.manifest.analysis_data_product.v1"
 EVALUATION_STATES_CONTAINER_SCHEMA_ID = "feedbax.manifest.evaluation_states_container"
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = (
-    "feedbax.manifest.evaluation_states_container.v1"
-)
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
-    "feedbax.manifest.evaluation_states_container.v2"
-)
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = "feedbax.manifest.evaluation_states_container.v1"
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = "feedbax.manifest.evaluation_states_container.v2"
 FIGURE_MANIFEST_SCHEMA_ID = "feedbax.manifest.figure"
 FIGURE_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.figure.v1"
+TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID = (
+    "feedbax.manifest.training_metadata_projection_custody"
+)
+TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION = (
+    "feedbax.manifest.training_metadata_projection_custody.v1"
+)
+TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projection"
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
@@ -491,6 +494,73 @@ class TrainingRunSetManifest(BaseManifest):
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
+class TrainingManifestMetadataProjectionCustody(StrictModel):
+    """Auditable consistency binding for governed projected metadata.
+
+    The hashes detect partial drift among this record, the embedded source,
+    root metadata, and provenance. They do not prove authorship or authenticity;
+    that requires an external signed or content-addressed custody anchor.
+    """
+
+    schema_id: Literal["feedbax.manifest.training_metadata_projection_custody"] = (
+        TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID
+    )
+    schema_version: str = TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION
+    source_payload_kind: str = Field(min_length=1)
+    source_payload_schema_id: str = Field(min_length=1)
+    source_payload_schema_version: str = Field(min_length=1)
+    source_payload_sha256: str
+    projection_schema_id: str = Field(min_length=1)
+    projection_schema_version: str = Field(min_length=1)
+    values: dict[str, Any]
+    values_sha256: str
+    registration_owner: str = Field(min_length=1)
+    registration_package: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_custody(self) -> "TrainingManifestMetadataProjectionCustody":
+        from feedbax.contracts.spec_storage import (
+            training_spec_canonical_bytes,
+            training_spec_sha256,
+            validate_sha256,
+        )
+
+        if self.schema_version != TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported training metadata projection custody schema_version "
+                f"{self.schema_version!r}; expected "
+                f"{TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        validate_sha256(self.source_payload_sha256, field_name="source_payload_sha256")
+        validate_sha256(self.values_sha256, field_name="values_sha256")
+        canonical_values = json.loads(training_spec_canonical_bytes(self.values))
+        if self.values != canonical_values:
+            raise ValueError("training metadata projection values are not JSON-canonical")
+        expected_digest = training_spec_sha256(self.values)
+        if self.values_sha256 != expected_digest:
+            raise ValueError(
+                "training metadata projection values_sha256 does not match canonical values; "
+                f"expected={expected_digest}, observed={self.values_sha256}"
+            )
+        return self
+
+    def provenance_summary(self) -> dict[str, Any]:
+        """Return the exact compact provenance record bound to this custody envelope."""
+        return {
+            "source_payload_kind": self.source_payload_kind,
+            "source_payload_schema_id": self.source_payload_schema_id,
+            "source_payload_schema_version": self.source_payload_schema_version,
+            "source_payload_sha256": self.source_payload_sha256,
+            "projection_schema_id": self.projection_schema_id,
+            "projection_schema_version": self.projection_schema_version,
+            "projected_keys": sorted(self.values),
+            "values_sha256": self.values_sha256,
+            "registration_owner": self.registration_owner,
+            "registration_package": self.registration_package,
+        }
+
+
 class TrainingRunManifest(BaseManifest):
     kind: Literal["TrainingRunManifest"] = "TrainingRunManifest"
     run_set_id: Optional[str] = None
@@ -511,6 +581,7 @@ class TrainingRunManifest(BaseManifest):
     resolved_semantics_root_hash: Optional[str] = None
     input_data_identities: list[dict[str, Any]] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
+    metadata_projection_custody: TrainingManifestMetadataProjectionCustody | None = None
 
     @model_validator(mode="after")
     def _validate_execution_identity(self) -> "TrainingRunManifest":
@@ -543,6 +614,48 @@ class TrainingRunManifest(BaseManifest):
                     f"computed={expected!r}"
                 )
             self.execution_hash = expected
+        projection = self.metadata_projection_custody
+        if projection is not None:
+            if self.training_spec is None:
+                raise ValueError(
+                    "training metadata projection custody requires embedded training_spec"
+                )
+            training_spec_identity = (
+                self.training_spec.kind,
+                self.training_spec.schema_id,
+                self.training_spec.schema_version,
+            )
+            projection_source_identity = (
+                projection.source_payload_kind,
+                projection.source_payload_schema_id,
+                projection.source_payload_schema_version,
+            )
+            if projection_source_identity != training_spec_identity:
+                raise ValueError(
+                    "training metadata projection source identity disagrees with "
+                    "embedded training_spec"
+                )
+            from feedbax.contracts.spec_storage import training_spec_sha256
+
+            observed_source_sha256 = training_spec_sha256(self.training_spec.inline)
+            if projection.source_payload_sha256 != observed_source_sha256:
+                raise ValueError(
+                    "training metadata projection source hash disagrees with embedded training_spec"
+                )
+            for key, value in projection.values.items():
+                if key not in self.metadata or self.metadata[key] != value:
+                    raise ValueError(
+                        "training metadata projection custody disagrees with root metadata; "
+                        f"key={key!r}"
+                    )
+            expected_provenance = projection.provenance_summary()
+            observed_provenance = self.provenance.metadata.get(
+                TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY
+            )
+            if observed_provenance != expected_provenance:
+                raise ValueError(
+                    "training metadata projection custody disagrees with provenance summary"
+                )
         return self
 
 
@@ -593,7 +706,11 @@ class CheckpointSelectionBank(StrictModel):
     def _validate_bank_status(self) -> "CheckpointSelectionBank":
         if self.status == "available" and self.ref is None:
             raise ValueError("available checkpoint-selection banks must include ref")
-        if self.status != "available" and self.fallback_ref is not None and not self.fallback_reason:
+        if (
+            self.status != "available"
+            and self.fallback_ref is not None
+            and not self.fallback_reason
+        ):
             raise ValueError("checkpoint-selection bank fallback_ref requires fallback_reason")
         return self
 
@@ -642,9 +759,7 @@ class CheckpointSelectionGroup(StrictModel):
         if self.selected_checkpoint is not None:
             candidate_ids = {candidate.id for candidate in self.candidate_checkpoints}
             if self.selected_checkpoint.id not in candidate_ids:
-                raise ValueError(
-                    "selected checkpoint must also appear in candidate_checkpoints"
-                )
+                raise ValueError("selected checkpoint must also appear in candidate_checkpoints")
         return self
 
 
@@ -722,9 +837,7 @@ class AnalysisRunManifest(BaseManifest):
     kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
     analysis_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
-        default_factory=list
-    )
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
     produced_data: list[AnalysisDataProduct] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
@@ -742,9 +855,7 @@ class ReportManifest(BaseManifest):
     kind: Literal["ReportManifest"] = "ReportManifest"
     report_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
-        default_factory=list
-    )
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
 
 
 class FigureBindingRecord(StrictModel):
@@ -783,9 +894,7 @@ class FigureManifest(BaseManifest):
     binding_records: list[FigureBindingRecord] = Field(default_factory=list)
     expression_results_digest: Optional[str] = None
     failure: Optional[dict[str, Any]] = None
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
-        default_factory=list
-    )
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
 
 
 AnyManifest = (
@@ -800,6 +909,7 @@ AnyManifest = (
     | FigureManifest
 )
 
+
 class GraphSpecLoadResult(StrictModel):
     """Migrated GraphSpec payload plus the manifest that owns its migration records."""
 
@@ -810,6 +920,7 @@ class GraphSpecLoadResult(StrictModel):
     applied_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
     downstream_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+
 
 MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "GraphSpecManifest": GraphSpecManifest,
@@ -830,6 +941,7 @@ def _manifest_model_for_kind(kind: str) -> type[BaseModel] | None:
 
         return CheckpointTransactionManifest
     return MANIFEST_MODELS.get(kind)
+
 
 SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     "GraphSpecManifest": ("graph_spec",),
@@ -892,8 +1004,7 @@ def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dic
         "producer_manifest_id": product.producer_manifest_id,
         "producer_manifest_hash": product.producer_manifest_hash,
         "parent_manifests": [
-            parent.model_dump(mode="json", exclude_none=True)
-            for parent in product.parent_manifests
+            parent.model_dump(mode="json", exclude_none=True) for parent in product.parent_manifests
         ],
         "checkpoint_policy": product.checkpoint_policy,
         "rollout_policy": product.rollout_policy,
@@ -955,9 +1066,7 @@ def tree_hash_ref(
 
     entries: list[TreeHashEntry] = []
     total_size = 0
-    for file_path in sorted(
-        candidate for candidate in tree_path.rglob("*") if candidate.is_file()
-    ):
+    for file_path in sorted(candidate for candidate in tree_path.rglob("*") if candidate.is_file()):
         relative_path = str(file_path.relative_to(tree_path))
         stat = file_path.stat()
         total_size += stat.st_size
@@ -1562,9 +1671,7 @@ def planned_training_run_manifest_id(
     }
     if row_provenance_identity is not None:
         identity["row_provenance_identity"] = row_provenance_identity
-    digest = sha256_bytes(
-        canonical_json_bytes(identity)
-    )
+    digest = sha256_bytes(canonical_json_bytes(identity))
     return f"feedbax-training-run:{digest[:32]}"
 
 
@@ -1686,8 +1793,10 @@ def load_graph_spec_from_manifest(
     present on a model artifact remain distinct and are surfaced separately.
     """
     manifest_obj, manifest_path = _load_graph_spec_manifest_source(manifest)
-    base = Path(root) if root is not None else (
-        manifest_path.parent if manifest_path is not None else Path(".")
+    base = (
+        Path(root)
+        if root is not None
+        else (manifest_path.parent if manifest_path is not None else Path("."))
     )
 
     if isinstance(manifest_obj, GraphSpecManifest):
@@ -1727,8 +1836,7 @@ def _load_graph_spec_manifest_source(
     loaded = load_manifest(path)
     if not isinstance(loaded, GraphSpecManifest | ModelArtifactManifest):
         raise TypeError(
-            "Expected GraphSpecManifest or ModelArtifactManifest, "
-            f"got {type(loaded).__name__}."
+            f"Expected GraphSpecManifest or ModelArtifactManifest, got {type(loaded).__name__}."
         )
     return loaded, path
 

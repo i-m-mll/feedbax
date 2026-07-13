@@ -27,6 +27,7 @@ from feedbax.contracts.training import (
     standard_supervised_update_kernels,
 )
 from feedbax.plugins.discovery import load_training_method_plugins
+from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.training.preparation import (
     ExecutionPreparationError,
     ExecutionPreparationProviderRegistry,
@@ -560,3 +561,160 @@ def test_execute_cli_plugin_prepares_non_json_slots_and_kernel_context(tmp_path:
     assert missing.returncode != 0
     assert "requires an execution-preparation provider, but none is registered" in missing.stderr
     assert not (tmp_path / "missing-runs").exists()
+
+
+def test_native_cli_plugin_projects_governed_training_manifest_metadata(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "standard-run-spec.json"
+    slots_path = tmp_path / "initial-slots.json"
+    payload_path = tmp_path / "external-training-payload.json"
+    projection_path = tmp_path / "manifest-metadata-projection.json"
+    plugin_path = tmp_path / "projection_plugin.py"
+    spec_path.write_text(
+        json.dumps(_standard_run_spec_payload(), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    slots_path.write_text(
+        json.dumps(
+            {
+                "model": 0,
+                "optimizer": {"count": 1},
+                "prng": [0, 1],
+                "batch_counter": 0,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    external_payload = {
+        "schema_version": "rlrmp.run_spec.v2",
+        "experiment": "projection-cli",
+    }
+    payload_path.write_text(
+        json.dumps(external_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    projection_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "feedbax.spec.training_manifest_metadata_projection",
+                "schema_version": "feedbax.spec.training_manifest_metadata_projection.v1",
+                "source_payload_kind": "RLRMPRunSpec",
+                "source_payload_schema_id": "rlrmp.run_spec",
+                "source_payload_schema_version": "rlrmp.run_spec.v2",
+                "source_payload_sha256": training_spec_sha256(external_payload),
+                "projection_schema_id": "rlrmp.manifest_projection",
+                "projection_schema_version": "rlrmp.manifest_projection.v1",
+                "values": {"gru_postrun_candidate": True},
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    plugin_path.write_text(
+        textwrap.dedent(
+            """
+            from pydantic import BaseModel, ConfigDict
+
+            from feedbax.contracts.training import (
+                TrainingManifestMetadataProjectionRegistration,
+            )
+
+
+            class ProjectionValues(BaseModel):
+                model_config = ConfigDict(extra="forbid", strict=True)
+
+                gru_postrun_candidate: bool
+
+
+            def register_feedbax_training_methods(registry):
+                registry.register_manifest_metadata_projection(
+                    TrainingManifestMetadataProjectionRegistration(
+                        source_payload_kind="RLRMPRunSpec",
+                        source_payload_schema_id="rlrmp.run_spec",
+                        source_payload_schema_version="rlrmp.run_spec.v2",
+                        projection_schema_id="rlrmp.manifest_projection",
+                        projection_schema_version="rlrmp.manifest_projection.v1",
+                        values_model=ProjectionValues,
+                        owner="projection_plugin",
+                        package="rlrmp",
+                    )
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            [str(tmp_path), str(repo_root), os.environ.get("PYTHONPATH", "")]
+        ),
+    }
+    shared_args = [
+        "--plugin",
+        "projection_plugin",
+        "--training-payload",
+        str(payload_path),
+        "--training-payload-kind",
+        "RLRMPRunSpec",
+        "--training-payload-schema-id",
+        "rlrmp.run_spec",
+        "--training-payload-schema-version",
+        "rlrmp.run_spec.v2",
+        "--manifest-metadata-projection",
+        str(projection_path),
+    ]
+
+    preflight = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "feedbax",
+            "preflight-training-run-manifest",
+            str(spec_path),
+            *shared_args,
+        ],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert preflight.returncode == 0, preflight.stderr
+    preflight_output = json.loads(preflight.stdout)
+    assert preflight_output["metadata_projection_custody"]["values"] == {
+        "gru_postrun_candidate": True
+    }
+
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "feedbax",
+            "execute-training-run-spec",
+            str(spec_path),
+            "--initial-slots",
+            str(slots_path),
+            "--manifest-root",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "projection-cli",
+            "--no-progress",
+            *shared_args,
+        ],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert executed.returncode == 0, executed.stderr
+    manifest = json.loads(executed.stdout)["manifest_payload"]
+    assert manifest["metadata"]["gru_postrun_candidate"] is True
+    assert manifest["metadata_projection_custody"]["registration_owner"] == ("projection_plugin")
