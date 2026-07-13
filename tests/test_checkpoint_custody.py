@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import pickle
 import shutil
 import subprocess
@@ -797,6 +798,232 @@ def test_checkpoint_transaction_manifest_persists_binding_projection(
     assert binding["canonical_projection"]["training_run_spec"]["schema_id"]
     assert binding["canonical_projection"]["phase_program"]["checkpoint_barriers"]
     assert binding["canonical_projection_sha256"]
+
+
+def test_run_contract_binding_normalizes_nested_signed_zero() -> None:
+    positive = _run_spec()
+    negative = positive.model_copy(deep=True)
+    _set_graph_gain(positive, 0.0)
+    _set_graph_gain(negative, -0.0)
+    program = positive.worker_execution.method_contract.phase_program
+
+    positive_binding = custody_module.run_contract_binding(positive, program)
+    negative_binding = custody_module.run_contract_binding(negative, program)
+
+    assert positive_binding.training_run_spec_sha256 == (
+        negative_binding.training_run_spec_sha256
+    )
+    assert positive_binding.graph_sha256 == negative_binding.graph_sha256
+    assert positive_binding.canonical_projection_sha256 == (
+        negative_binding.canonical_projection_sha256
+    )
+
+
+def test_signed_zero_normalization_preserves_other_floating_values() -> None:
+    payload = {
+        "positive": 1.5,
+        "negative": -2.5,
+        "nan": float("nan"),
+        "positive_infinity": float("inf"),
+        "negative_infinity": float("-inf"),
+        "nested": [0.0, {"negative_zero": -0.0}],
+    }
+
+    normalized = custody_module._normalize_signed_zero(payload)
+
+    assert normalized["positive"] == 1.5
+    assert normalized["negative"] == -2.5
+    assert math.isnan(normalized["nan"])
+    assert normalized["positive_infinity"] == float("inf")
+    assert normalized["negative_infinity"] == float("-inf")
+    assert math.copysign(1.0, normalized["nested"][0]) == 1.0
+    assert math.copysign(1.0, normalized["nested"][1]["negative_zero"]) == 1.0
+
+
+def _set_graph_gain(run_spec: TrainingRunSpec, gain: float) -> None:
+    assert run_spec.graph.inline is not None
+    run_spec.graph.inline["nodes"]["gain"]["params"]["gain"] = gain
+
+
+def _rewrite_binding_as_legacy_lexical_hashes(binding: dict[str, object]) -> None:
+    projection = binding["canonical_projection"]
+    training_run_spec = projection["training_run_spec"]
+    phase_program = projection["phase_program"]
+    optimizer_bindings = phase_program["optimizer_bindings"]
+    binding["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
+    binding["training_run_spec_sha256"] = custody_module._canonical_hash(training_run_spec)
+    binding["method_payload_sha256"] = custody_module._canonical_hash(
+        training_run_spec["method_payload"]
+    )
+    binding["phase_program_sha256"] = custody_module._canonical_hash(phase_program)
+    binding["objective_sha256"] = custody_module._canonical_hash(training_run_spec["objective"])
+    binding["graph_sha256"] = custody_module._canonical_hash(training_run_spec["graph"])
+    binding["optimizer_bindings_sha256"] = custody_module._canonical_hash(optimizer_bindings)
+    binding["canonical_projection_sha256"] = custody_module._canonical_hash(projection)
+
+
+def test_strict_load_accepts_legacy_signed_zero_projection_with_proof(
+    tmp_path: Path,
+) -> None:
+    recorded_run_spec = _run_spec(minimax=True)
+    _set_graph_gain(recorded_run_spec, -0.0)
+    program = recorded_run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=recorded_run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    _rewrite_binding_as_legacy_lexical_hashes(payload["run_contract_binding"])
+    _rewrite_manifest_and_latest(result, payload)
+    expected_run_spec = recorded_run_spec.model_copy(deep=True)
+    _set_graph_gain(expected_run_spec, 0.0)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=expected_run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert loaded.manifest.transaction_id == result.manifest.transaction_id
+
+
+def test_strict_load_accepts_zero_free_v2_projection_with_proof(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["run_contract_binding"]["algorithm_version"] = (
+        "feedbax.training_checkpoint.run_contract_binding.v2"
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert loaded.manifest.transaction_id == result.manifest.transaction_id
+
+
+def test_strict_load_rejects_unsupported_algorithm_with_equal_projection_digest(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["run_contract_binding"]["algorithm_version"] = (
+        "feedbax.training_checkpoint.run_contract_binding.v99"
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointContractBindingError):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate_binding", "expected_gain"),
+    [
+        (lambda binding: binding.__setitem__("canonical_projection_sha256", "0" * 64), 0.0),
+        (lambda binding: None, 1.0),
+        (
+            lambda binding: binding.__setitem__(
+                "algorithm_version",
+                "feedbax.training_checkpoint.run_contract_binding.v99",
+            ),
+            0.0,
+        ),
+    ],
+    ids=["stale-projection-digest", "unequal-projection", "unsupported-algorithm"],
+)
+def test_legacy_signed_zero_projection_compatibility_fails_closed(
+    tmp_path: Path,
+    mutate_binding,
+    expected_gain: float,
+) -> None:
+    recorded_run_spec = _run_spec(minimax=True)
+    _set_graph_gain(recorded_run_spec, -0.0)
+    program = recorded_run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=recorded_run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+    _rewrite_binding_as_legacy_lexical_hashes(binding)
+    mutate_binding(binding)
+    _rewrite_manifest_and_latest(result, payload)
+    expected_run_spec = recorded_run_spec.model_copy(deep=True)
+    _set_graph_gain(expected_run_spec, expected_gain)
+
+    with pytest.raises(CheckpointContractBindingError):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=expected_run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+def test_projectionless_legacy_signed_zero_binding_keeps_lexical_match(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    _set_graph_gain(run_spec, -0.0)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+    _rewrite_binding_as_legacy_lexical_hashes(binding)
+    binding.pop("canonical_projection")
+    binding.pop("canonical_projection_sha256")
+    _rewrite_manifest_and_latest(result, payload)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert loaded.manifest.run_contract_binding.canonical_projection is None
 
 
 def test_checkpoint_fork_hardlinks_three_targets_and_survives_source_quarantine(

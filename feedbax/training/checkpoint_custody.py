@@ -76,6 +76,9 @@ LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT = (
     "feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint"
 )
 LEGACY_CHECKPOINT_ADOPTION_DOCS = "docs/structure.md#legacy-checkpoint-adoption"
+_RUN_CONTRACT_BINDING_ALGORITHM_V2 = "feedbax.training_checkpoint.run_contract_binding.v2"
+_RUN_CONTRACT_BINDING_ALGORITHM_V3 = "feedbax.training_checkpoint.run_contract_binding.v3"
+_RUN_CONTRACT_HASH_DOMAIN = "migrated-canonical-json"
 
 
 class CheckpointCustodyError(ValueError):
@@ -1932,18 +1935,19 @@ def run_contract_binding(
         for binding in phase_program.optimizer_bindings
     ]
     return RunContractBinding(
+        algorithm_version=_RUN_CONTRACT_BINDING_ALGORITHM_V3,
         training_run_spec_schema_id=training_run_spec["schema_id"],
         training_run_spec_schema_version=training_run_spec["schema_version"],
-        training_run_spec_sha256=_canonical_hash(training_run_spec),
+        training_run_spec_sha256=_run_contract_hash(training_run_spec),
         method_payload_schema_id=method_payload["schema_id"],
         method_payload_schema_version=method_payload["schema_version"],
-        method_payload_sha256=_canonical_hash(method_payload),
-        phase_program_sha256=_canonical_hash(phase_program),
-        objective_sha256=_canonical_hash(objective),
-        graph_sha256=_canonical_hash(graph),
-        optimizer_bindings_sha256=_canonical_hash(optimizer_bindings),
+        method_payload_sha256=_run_contract_hash(method_payload),
+        phase_program_sha256=_run_contract_hash(phase_program),
+        objective_sha256=_run_contract_hash(objective),
+        graph_sha256=_run_contract_hash(graph),
+        optimizer_bindings_sha256=_run_contract_hash(optimizer_bindings),
         canonical_projection=projection,
-        canonical_projection_sha256=_canonical_hash(projection),
+        canonical_projection_sha256=_run_contract_hash(projection),
     )
 
 
@@ -1951,12 +1955,14 @@ def run_contract_canonical_projection(
     run_spec: TrainingRunSpec,
     phase_program: PhaseProgramSpec,
 ) -> dict[str, Any]:
-    """Return the stored semantic projection for run-contract binding v2.
+    """Return the stored semantic projection for run-contract binding v3.
 
     The projection intentionally includes the full migrated ``TrainingRunSpec``
     payload and the phase program used by the checkpoint barrier. No
     non-semantic fields are excluded today; adding exclusions would be a
     binding-algorithm change and must bump ``RunContractBinding.algorithm_version``.
+    The projection-envelope algorithm remains v2 because its selection and
+    shape did not change in v3; v3 normalizes signed zero only while hashing.
     """
     migrated_run_spec = _canonical_training_run_spec_payload(run_spec)
     return {
@@ -2268,10 +2274,23 @@ def _contract_binding_matches(
     expected_phase_program: PhaseProgramSpec,
 ) -> bool:
     if (
+        expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V3
+        or expected.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+        or recorded.algorithm_version
+        not in {_RUN_CONTRACT_BINDING_ALGORITHM_V2, _RUN_CONTRACT_BINDING_ALGORITHM_V3}
+        or recorded.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+    ):
+        return False
+    if (
         recorded.canonical_projection_sha256 is not None
         and expected.canonical_projection_sha256 is not None
     ):
-        return recorded.canonical_projection_sha256 == expected.canonical_projection_sha256
+        if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
+            return (
+                recorded.canonical_projection_sha256
+                == expected.canonical_projection_sha256
+            )
+        return _compatible_stored_canonical_projection(recorded, expected)
 
     if _binding_hash_fields(recorded) == _binding_hash_fields(expected):
         return True
@@ -2293,6 +2312,38 @@ def _binding_hash_fields(binding: RunContractBinding) -> dict[str, str | None]:
         "graph_sha256": binding.graph_sha256,
         "optimizer_bindings_sha256": binding.optimizer_bindings_sha256,
     }
+
+
+def _compatible_stored_canonical_projection(
+    recorded: RunContractBinding,
+    expected: RunContractBinding,
+) -> bool:
+    """Prove equality for a binding stored before signed-zero normalization."""
+    if (
+        recorded.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V2
+        or expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V3
+        or recorded.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+        or expected.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+    ):
+        return False
+    projection = recorded.canonical_projection
+    recorded_sha256 = recorded.canonical_projection_sha256
+    expected_projection = expected.canonical_projection
+    if projection is None or recorded_sha256 is None or expected_projection is None:
+        return False
+
+    # The stored projection is evidence only when its content agrees with its
+    # binding. Accept either the legacy lexical hash or the normalized current
+    # hash; never use projection equality to excuse a stale or forged digest.
+    valid_projection_hashes = {
+        _canonical_hash(projection),
+        _run_contract_hash(projection),
+    }
+    if recorded_sha256 not in valid_projection_hashes:
+        return False
+    return canonical_json_bytes(_normalize_signed_zero(projection)) == canonical_json_bytes(
+        _normalize_signed_zero(expected_projection)
+    )
 
 
 def _format_binding_hash_field_summary(
@@ -2360,6 +2411,8 @@ def _legacy_binding_hash_fields(
         for binding in expected_phase_program.optimizer_bindings
     ]
     return {
+        # Legacy bindings used lexical canonical JSON, including its signed-zero
+        # spelling. Keep this reconstruction exact for projection-less records.
         "training_run_spec_sha256": _canonical_hash(training_run_spec),
         "method_payload_sha256": _canonical_hash(training_run_spec["method_payload"]),
         "phase_program_sha256": _canonical_hash(expected_phase_program),
@@ -2804,6 +2857,26 @@ def _canonical_hash(value: Any) -> str:
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json", exclude_none=True)
     return sha256_bytes(canonical_json_bytes(value))
+
+
+def _run_contract_hash(value: Any) -> str:
+    """Hash run-contract content after normalizing IEEE signed zero."""
+    return _canonical_hash(_normalize_signed_zero(value))
+
+
+def _normalize_signed_zero(value: Any) -> Any:
+    """Return JSON-shaped content with every floating signed zero normalized."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, float):
+        return 0.0 if value == 0.0 else value
+    if isinstance(value, Mapping):
+        return {key: _normalize_signed_zero(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_signed_zero(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_signed_zero(item) for item in value)
+    return value
 
 
 def _qualified_type_name(value: Any) -> str:
