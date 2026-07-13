@@ -1726,6 +1726,85 @@ def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
+    ("second_probe_status", "expected_status"),
+    [
+        ("completed", "completed"),
+        ("failed", "failed"),
+    ],
+)
+def test_monitor_reconciles_terminal_event_before_local_sentinel(
+    tmp_path: Path,
+    second_probe_status: str,
+    expected_status: str,
+) -> None:
+    class TerminalEventFirstDriver(FakeDriver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probe_count = 0
+
+        def launch_row(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, Any]:
+            outputs = super().launch_row(bundle, row, state)
+            events = bundle.run_set_dir / "events"
+            events.mkdir(parents=True, exist_ok=True)
+            status = "completed" if second_probe_status == "completed" else "failed"
+            (events / f"{row.row_id}.events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "run_set_id": bundle.run_set_id,
+                        "row_id": row.row_id,
+                        "seq": 0,
+                        "emitted_at_ms": 1,
+                        "type": "complete" if status == "completed" else "failed",
+                        "payload": {"status": status},
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return outputs
+
+        def probe(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> DriverRowProbe:
+            self._call(f"probe:{row.row_id}")
+            self.probe_count += 1
+            if self.probe_count == 1:
+                return DriverRowProbe(status="running")
+            if second_probe_status == "completed":
+                sentinels = bundle.run_set_dir / "sentinels"
+                sentinels.mkdir(parents=True, exist_ok=True)
+                (sentinels / f"{row.row_id}.done").write_text("0\n", encoding="utf-8")
+            return DriverRowProbe(status=second_probe_status)
+
+    bundle = _bundle(tmp_path)
+    driver = TerminalEventFirstDriver()
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+        poll_interval_seconds=0,
+    ).run(stop_after_stage="MONITOR")
+
+    assert driver.probe_count == 2
+    assert state.rows["row-a"].status == expected_status
+    if expected_status == "completed":
+        assert state.rows["row-a"].event_discrepancies == []
+    else:
+        assert state.rows["row-a"].event_discrepancies == [
+            {"code": "terminal_event_without_sentinel", "event_status": "failed"}
+        ]
+
+
+@pytest.mark.parametrize(
     ("first_status", "second_status", "abort_reason", "expected_call"),
     [
         ("ready", "launched", None, "launch:second"),

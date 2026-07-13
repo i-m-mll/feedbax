@@ -699,10 +699,16 @@ class StageEngine:
                 done_sentinel=done,
                 failed_sentinel=failed,
             )
+            terminal_event_without_sentinel = any(
+                item.get("code") == "terminal_event_without_sentinel"
+                for item in reconciled.discrepancies
+            )
             status = row_state.status
             completed_at = row_state.completed_at
             error = row_state.error
-            if reconciled.status == "completed" or probe.status == "completed":
+            if (
+                reconciled.status == "completed" and not terminal_event_without_sentinel
+            ) or probe.status == "completed":
                 terminal_status = (
                     reconciled.terminal_event.payload.get("status")
                     if reconciled.terminal_event is not None
@@ -712,7 +718,9 @@ class StageEngine:
                 completed_at = completed_at or utc_now()
                 if terminal_status == "cancelled":
                     error = "operator-stop-after-checkpoint"
-            elif reconciled.status in ("failed", "error") or probe.status == "failed":
+            elif (
+                reconciled.status in ("failed", "error") and not terminal_event_without_sentinel
+            ) or probe.status == "failed":
                 status = "failed"
                 completed_at = completed_at or utc_now()
                 error = probe.detail or error
