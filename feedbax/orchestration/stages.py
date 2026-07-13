@@ -495,6 +495,7 @@ class StageEngine:
                 self.assembly_context.schema_registry if self.assembly_context is not None else None
             ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
+            row_status=state.rows[row.row_id].status,
             bundle_row_spec=run_spec,
             recorded_environment_fingerprint=state.environment_fingerprint,
             manifest_path=discovered.get("manifest_path"),
