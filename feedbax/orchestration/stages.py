@@ -28,6 +28,7 @@ from feedbax.orchestration.bundle import (
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
+    RowConformanceRuntimeInputs,
     RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
@@ -136,6 +137,8 @@ class StageEngine:
         run_set_id: str | None = None,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
+        row_conformance_inputs: Mapping[str, RowConformanceRuntimeInputs | Mapping[str, Any]]
+        | None = None,
         poll_interval_seconds: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -169,6 +172,10 @@ class StageEngine:
         )
         self.store = store or RunSetStateStore(run_set_dir / "state.json")
         self.conformance_registry = conformance_registry or CheckRegistry()
+        self.row_conformance_inputs = {
+            row_id: RowConformanceRuntimeInputs.model_validate(inputs)
+            for row_id, inputs in (row_conformance_inputs or {}).items()
+        }
         self.poll_interval_seconds = (
             float(getattr(driver, "poll_interval_seconds", 0.05))
             if poll_interval_seconds is None
@@ -502,6 +509,8 @@ class StageEngine:
             training_diagnostics=discovered.get("training_diagnostics"),
             checkpoint_custody_root=discovered.get("checkpoint_custody_root"),
             preflight_normalized_payload=preflight_payload,
+            row_state=state.rows.get(row.row_id),
+            runtime_inputs=self.row_conformance_inputs.get(row.row_id),
         )
 
     def _execution_identity_adapter(self) -> Any:
