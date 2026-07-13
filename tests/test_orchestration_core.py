@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -76,6 +77,7 @@ from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.local import (
     LocalDriverError,
     LocalOrchestrationDriver,
+    _canonicalize_dependency_inventory,
     compute_environment_fingerprint,
 )
 from feedbax.orchestration.stages import (
@@ -1077,9 +1079,7 @@ def test_conformance_discovery_prefers_typed_diagnostics_over_manifest_metrics(
 
     assert discovered["manifest_payload"] == manifest
     assert discovered["training_diagnostics"] == diagnostics
-    assert discovered["training_diagnostics"]["lr_trace"] == [
-        {"step": 10, "learning_rate": 3e-4}
-    ]
+    assert discovered["training_diagnostics"]["lr_trace"] == [{"step": 10, "learning_rate": 3e-4}]
     assert discovered["training_diagnostics"]["checkpoint_coordinates"] == [10]
     assert discovered["training_diagnostics"]["checkpoint_transactions"] == [
         {
@@ -1800,3 +1800,150 @@ def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) 
     )
     with pytest.raises(LocalDriverError, match="dirty repo not allowed"):
         compute_environment_fingerprint(disallow_dirty, cwd=repo, freeze_lines=("a==1",))
+
+
+def test_fingerprint_inventory_does_not_require_pip(tmp_path: Path) -> None:
+    site_packages = tmp_path / "site-packages"
+    dist_info = site_packages / "example_pkg-1.2.3.dist-info"
+    dist_info.mkdir(parents=True)
+    metadata = dist_info / "METADATA"
+    metadata.write_text(
+        "Metadata-Version: 2.1\nName: example-pkg\nVersion: 1.2.3\n",
+        encoding="utf-8",
+    )
+    (dist_info / "direct_url.json").write_text(
+        '{"url":"file:///example-pkg","dir_info":{"editable":true}}\n',
+        encoding="utf-8",
+    )
+    python = tmp_path / "pipless-python"
+    python.write_text(
+        (
+            "#!/bin/sh\n"
+            f"PYTHONPATH={shlex.quote(str(site_packages))} "
+            f'exec {shlex.quote(sys.executable)} -S "$@"\n'
+        ),
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    pip_probe = subprocess.run(
+        [str(python), "-c", "import importlib.util; print(importlib.util.find_spec('pip'))"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert pip_probe.stdout.strip() == "None"
+
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+    driver = LocalOrchestrationDriver(
+        cwd=tmp_path,
+        python_executable=str(python),
+    )
+    state = RunSetState(run_set_id=bundle.run_set_id)
+    first = driver.realize_env(bundle, state)
+    second = driver.realize_env(bundle, state)
+    metadata.write_text(
+        "Metadata-Version: 2.1\nName: example-pkg\nVersion: 1.2.4\n",
+        encoding="utf-8",
+    )
+    changed = driver.realize_env(bundle, state)
+
+    assert first == second
+    assert first != changed
+
+
+def test_dependency_inventory_normalizes_names_and_order() -> None:
+    first = [
+        {"direct_url": None, "name": "Z_pkg", "version": "2"},
+        {"direct_url": None, "name": "a.pkg", "version": "1"},
+    ]
+    reordered = [
+        {"direct_url": None, "name": "A-PKG", "version": "1"},
+        {"direct_url": None, "name": "z.pkg", "version": "2"},
+    ]
+
+    assert _canonicalize_dependency_inventory(first, executable="fixture") == (
+        _canonicalize_dependency_inventory(reordered, executable="fixture")
+    )
+
+
+def test_dependency_inventory_rejects_conflicting_normalized_duplicates() -> None:
+    inventory = [
+        {"direct_url": None, "name": "example_pkg", "version": "1"},
+        {"direct_url": None, "name": "example.pkg", "version": "2"},
+    ]
+
+    with pytest.raises(LocalDriverError, match="conflicting distributions"):
+        _canonicalize_dependency_inventory(inventory, executable="fixture")
+
+
+def test_fingerprint_uses_selected_interpreter_identity(tmp_path: Path) -> None:
+    probe_payload = tmp_path / "probe.json"
+    python = tmp_path / "identity-python"
+    python.write_text(
+        f"#!/bin/sh\ncat {shlex.quote(str(probe_payload))}\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+
+    def write_probe(version: str) -> None:
+        probe_payload.write_text(
+            json.dumps(
+                {
+                    "schema_version": "feedbax.local_dependency_inventory.v1",
+                    "interpreter": {
+                        "cache_tag": "cpython-313",
+                        "executable": "/selected/python",
+                        "implementation": "cpython",
+                        "version": version,
+                    },
+                    "distributions": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_probe("3.13.5")
+    first = compute_environment_fingerprint(
+        bundle,
+        cwd=tmp_path,
+        python_executable=str(python),
+    )
+    write_probe("3.13.6")
+    changed = compute_environment_fingerprint(
+        bundle,
+        cwd=tmp_path,
+        python_executable=str(python),
+    )
+
+    assert first != changed
+
+
+def test_fingerprint_rejects_malformed_probe_payload(tmp_path: Path) -> None:
+    python = tmp_path / "malformed-python"
+    python.write_text("#!/bin/sh\necho '{\"distributions\":[]}'\n", encoding="utf-8")
+    python.chmod(0o755)
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+
+    with pytest.raises(LocalDriverError, match="invalid structure"):
+        compute_environment_fingerprint(
+            bundle,
+            cwd=tmp_path,
+            python_executable=str(python),
+        )
+
+
+def test_fingerprint_inventory_failure_is_not_replaced_with_empty_inventory(
+    tmp_path: Path,
+) -> None:
+    broken_python = tmp_path / "broken-python"
+    broken_python.write_text("#!/bin/sh\necho inventory-broken >&2\nexit 17\n", encoding="utf-8")
+    broken_python.chmod(0o755)
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+
+    with pytest.raises(LocalDriverError, match="inventory-broken"):
+        compute_environment_fingerprint(
+            bundle,
+            cwd=tmp_path,
+            python_executable=str(broken_python),
+        )
