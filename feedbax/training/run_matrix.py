@@ -971,7 +971,7 @@ def _lower_authored_row(
         if row_validator is None
         else row_validator(copy.deepcopy(execution_payload), row_id)
     )
-    lowered_execution_payload_hash = sha256_bytes(canonical_json_bytes(execution_payload))
+    lowered_execution_payload_hash = training_spec_sha256(execution_payload)
     return (
         execution_payload,
         spec,

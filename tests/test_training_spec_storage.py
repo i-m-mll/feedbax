@@ -340,7 +340,7 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
         authored_value: int,
         lowerer_version: str,
         *,
-        unprojected_value: str = "baseline",
+        unprojected_value: str | float = "baseline",
         reverse_lowerers: bool = False,
     ):
         def lower(_authored_row):
@@ -388,6 +388,16 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
         "example.science.v1",
         reverse_lowerers=True,
     )
+    negative_zero = materialize(
+        1,
+        "example.science.v1",
+        unprojected_value=-0.0,
+    )
+    positive_zero = materialize(
+        1,
+        "example.science.v1",
+        unprojected_value=0.0,
+    )
 
     assert baseline.payload == changed_authored.payload == changed_lowerer.payload
     assert baseline.payload != changed_unprojected_execution.payload
@@ -406,6 +416,26 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
     assert baseline.provenance.lowered_execution_payload_hash != (
         changed_unprojected_execution.provenance.lowered_execution_payload_hash
     )
+    negative_zero_artifact = store_canonical_json_artifact(
+        negative_zero.payload,
+        root=tmp_path / "custody",
+        role="compiled_execution_payload",
+        logical_name="negative-zero.json",
+    )
+    positive_zero_artifact = store_canonical_json_artifact(
+        positive_zero.payload,
+        root=tmp_path / "custody",
+        role="compiled_execution_payload",
+        logical_name="positive-zero.json",
+    )
+    assert negative_zero.provenance.lowered_execution_payload_hash == (
+        negative_zero_artifact.sha256
+    )
+    assert positive_zero.provenance.lowered_execution_payload_hash == (
+        positive_zero_artifact.sha256
+    )
+    assert negative_zero_artifact.sha256 == positive_zero_artifact.sha256
+    assert negative_zero.planned_run_id == positive_zero.planned_run_id
     assert [
         identity.lowerer_id for identity in baseline.provenance.lowerer_identities
     ] == ["example.adapter", "example.science"]
