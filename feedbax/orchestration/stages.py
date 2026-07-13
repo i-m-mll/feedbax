@@ -532,10 +532,18 @@ class StageEngine:
         certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
         certificate = RunConformanceCertificate.model_validate(certificate_payload)
         certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
-        if certificate.overall == "pass":
-            status = "aborted" if state.abort_reason else "completed"
-        else:
+        row_statuses = {row_id: row.status for row_id, row in sorted(state.rows.items())}
+        row_status_set = set(row_statuses.values())
+        if certificate.overall == "fail":
             status = "failed"
+        elif state.abort_reason:
+            status = "aborted"
+        elif row_status_set == {"completed"}:
+            status = "completed"
+        elif row_status_set == {"stopped"}:
+            status = "stopped"
+        else:
+            status = "mixed"
         payload = {
             "run_set_id": self.bundle.run_set_id,
             "status": status,
@@ -546,6 +554,14 @@ class StageEngine:
         }
         if status == "failed":
             payload["failure_reason"] = "conformance-failed"
+        elif status in {"stopped", "mixed"}:
+            payload["row_outcomes"] = {
+                row_id: {
+                    "status": row.status,
+                    **({"reason": row.error} if row.error else {}),
+                }
+                for row_id, row in sorted(state.rows.items())
+            }
         state = state.model_copy(update={"registration_payload": payload, "updated_at": utc_now()})
         register_path = self.bundle.run_set_dir / "registration.json"
         self._write_or_verify_registration(
