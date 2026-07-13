@@ -282,6 +282,39 @@ templates:
 """,
         encoding="utf-8",
     )
+    (bundle_root / "staged.yml").write_text(
+        f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v3
+name: toy_staged_cli
+predicate:
+  manifest_kind: TrainingRunManifest
+  metadata_equals:
+    method: minimax
+stages:
+  - name: eval
+    kind: evaluation
+    evaluation_type: {TOY_EVALUATION_TYPE}
+    local_params:
+      n_trials: 3
+    outputs:
+      - role: manifest
+  - name: analysis
+    kind: analysis
+    depends_on: [eval]
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [toy]
+    outputs:
+      - role: manifest
+  - name: report
+    kind: report
+    depends_on: [analysis]
+    report_type: {BUNDLE_SUMMARY_REPORT_TYPE}
+    outputs:
+      - role: report
+""",
+        encoding="utf-8",
+    )
 
     monkeypatch.syspath_prepend(str(tmp_path))
     importlib.invalidate_caches()
@@ -720,6 +753,25 @@ def test_simple_bundle_rejects_explicit_unsupported_old_schema_version() -> None
                     }
                 ],
             }
+        )
+
+
+def test_bundle_spec_rejects_duplicate_stage_names() -> None:
+    with pytest.raises(ValueError, match="duplicate stage name 'repeated'"):
+        AnalysisBundleSpec(
+            name="duplicate_stages",
+            stages=[
+                BundleStageSpec(
+                    name="repeated",
+                    kind="analysis",
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                ),
+                BundleStageSpec(
+                    name="repeated",
+                    kind="analysis",
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                ),
+            ],
         )
 
 
@@ -1590,6 +1642,63 @@ def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypa
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 
+def test_analysis_cli_runs_staged_bundle_with_addressable_outputs(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        training = _write_toy_training(tmp_path, method="minimax")
+        registry = _write_bundle_package(tmp_path, monkeypatch)
+
+        from feedbax.bin import analysis as analysis_cli
+
+        monkeypatch.setattr(analysis_cli, "EXPERIMENT_REGISTRY", registry)
+        analysis_cli.main(
+            [
+                "--bundle",
+                "toy/staged",
+                "--manifest-root",
+                str(tmp_path),
+                "--fig-dump-dir",
+                str(tmp_path / "figures"),
+                "--fig-dump-formats",
+                "json",
+                "--issue",
+                "7e4cf6b",
+            ]
+        )
+
+        stdout = capsys.readouterr().out
+        payload = json.loads(stdout)
+        assert stdout == f"{json.dumps(payload, indent=2, sort_keys=True)}\n"
+        assert payload["schema_id"] == "feedbax.manifest.analysis_bundle_execution"
+        assert payload["bundle_name"] == "toy_staged_cli"
+        assert payload["matched_run_ids"] == [training.id]
+        assert [stage["name"] for stage in payload["stages"]] == [
+            "eval",
+            "analysis",
+            "report",
+        ]
+        assert payload["stages"][0]["manifest_refs"][0]["kind"] == (
+            "EvaluationRunManifest"
+        )
+        analysis_stage = payload["stages"][1]
+        assert analysis_stage["manifest_refs"][0]["kind"] == "AnalysisRunManifest"
+        assert analysis_stage["artifact_groups"]["figure"]
+        for artifact in analysis_stage["artifact_groups"]["figure"]:
+            assert Path(artifact["uri"]).exists()
+        report_stage = payload["stages"][2]
+        assert report_stage["manifest_refs"][0]["kind"] == "ReportManifest"
+        assert payload["report_outputs"][0]["status"] == "materialized"
+        assert Path(payload["report_outputs"][0]["artifacts"][0]["uri"]).exists()
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
 def test_analysis_cli_keeps_bundle_progress_off_json_stdout(
     tmp_path: Path,
     monkeypatch,
@@ -1612,7 +1721,11 @@ def test_analysis_cli_keeps_bundle_progress_off_json_stdout(
             )
         ]
 
-    monkeypatch.setattr(analysis_cli, "load_analysis_bundle", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        analysis_cli,
+        "load_analysis_bundle",
+        lambda *_args, **_kwargs: SimpleNamespace(templates=[object()], stages=[]),
+    )
     monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fake_execute_analysis_bundle)
 
     analysis_cli.main(
@@ -1641,6 +1754,118 @@ def test_analysis_cli_keeps_bundle_progress_off_json_stdout(
             "manifest_path": str(tmp_path / "manifests" / "analysis_runs" / "toy.json"),
         }
     ]
+
+
+def test_analysis_cli_fails_closed_without_cross_executor_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    staged_bundle = SimpleNamespace(name="staged", templates=[], stages=[object()])
+    legacy_called = False
+
+    def fail_staged(*_args, **_kwargs):
+        raise RuntimeError("staged execution failed")
+
+    def record_legacy(*_args, **_kwargs):
+        nonlocal legacy_called
+        legacy_called = True
+        return []
+
+    monkeypatch.setattr(
+        analysis_cli,
+        "load_analysis_bundle",
+        lambda *_args, **_kwargs: staged_bundle,
+    )
+    monkeypatch.setattr(analysis_cli, "execute_staged_analysis_bundle", fail_staged)
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", record_legacy)
+
+    with pytest.raises(RuntimeError, match="staged execution failed"):
+        analysis_cli.main(
+            [
+                "--bundle",
+                "toy/staged",
+                "--manifest-root",
+                str(tmp_path),
+                "--fig-dump-formats",
+                "json",
+            ]
+        )
+
+    assert not legacy_called
+
+
+def test_analysis_cli_legacy_error_does_not_fallback_to_staged_executor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    legacy_bundle = SimpleNamespace(name="legacy", templates=[object()], stages=[])
+    staged_called = False
+
+    def fail_legacy(*_args, **_kwargs):
+        raise RuntimeError("legacy execution failed")
+
+    def record_staged(*_args, **_kwargs):
+        nonlocal staged_called
+        staged_called = True
+
+    monkeypatch.setattr(
+        analysis_cli,
+        "load_analysis_bundle",
+        lambda *_args, **_kwargs: legacy_bundle,
+    )
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fail_legacy)
+    monkeypatch.setattr(analysis_cli, "execute_staged_analysis_bundle", record_staged)
+
+    with pytest.raises(RuntimeError, match="legacy execution failed"):
+        analysis_cli.main(
+            [
+                "--bundle",
+                "toy/legacy",
+                "--manifest-root",
+                str(tmp_path),
+                "--fig-dump-formats",
+                "json",
+            ]
+        )
+
+    assert not staged_called
+
+
+@pytest.mark.parametrize(
+    "bundle",
+    [
+        SimpleNamespace(name="empty", templates=[], stages=[]),
+        SimpleNamespace(name="mixed", templates=[object()], stages=[object()]),
+    ],
+    ids=["empty", "mixed"],
+)
+def test_analysis_cli_rejects_ambiguous_bundle_shape_before_execution(
+    bundle,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    monkeypatch.setattr(analysis_cli, "load_analysis_bundle", lambda *_args, **_kwargs: bundle)
+    legacy = patch.object(analysis_cli, "execute_analysis_bundle")
+    staged = patch.object(analysis_cli, "execute_staged_analysis_bundle")
+    with legacy as legacy_executor, staged as staged_executor:
+        with pytest.raises(ValueError, match="exactly one non-empty execution shape"):
+            analysis_cli.main(
+                [
+                    "--bundle",
+                    "toy/invalid",
+                    "--manifest-root",
+                    str(tmp_path),
+                ]
+            )
+
+    legacy_executor.assert_not_called()
+    staged_executor.assert_not_called()
 
 
 def test_bundle_context_projects_figures_through_registered_routing(

@@ -204,6 +204,8 @@ class AnalysisBundleSpec(StrictModel):
         seen: set[str] = set()
         stage_kinds: dict[str, BundleStageKind] = {}
         for stage in self.stages:
+            if stage.name in seen:
+                raise ValueError(f"AnalysisBundleSpec has duplicate stage name {stage.name!r}")
             for dependency in stage.depends_on:
                 if dependency not in stage_kinds:
                     raise ValueError(
