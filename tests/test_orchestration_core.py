@@ -1580,6 +1580,131 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
         ).run()
 
 
+@pytest.mark.parametrize(
+    ("rows", "abort_reason", "expected_status", "expected_outcomes"),
+    [
+        (
+            {
+                "row-b": RowState(status="completed"),
+                "row-a": RowState(status="completed"),
+            },
+            None,
+            "completed",
+            None,
+        ),
+        (
+            {
+                "row-b": RowState(
+                    status="stopped",
+                    error="operator-stop-after-checkpoint",
+                ),
+                "row-a": RowState(
+                    status="stopped",
+                    error="operator-stop-after-checkpoint",
+                ),
+            },
+            None,
+            "stopped",
+            {
+                "row-a": {
+                    "reason": "operator-stop-after-checkpoint",
+                    "status": "stopped",
+                },
+                "row-b": {
+                    "reason": "operator-stop-after-checkpoint",
+                    "status": "stopped",
+                },
+            },
+        ),
+        (
+            {
+                "row-b": RowState(
+                    status="stopped",
+                    error="operator-stop-after-checkpoint",
+                ),
+                "row-a": RowState(status="completed"),
+            },
+            None,
+            "mixed",
+            {
+                "row-a": {"status": "completed"},
+                "row-b": {
+                    "reason": "operator-stop-after-checkpoint",
+                    "status": "stopped",
+                },
+            },
+        ),
+        (
+            {"row-a": RowState(status="stopped", error="budget-exceeded")},
+            "budget-exceeded",
+            "aborted",
+            None,
+        ),
+    ],
+)
+def test_register_derives_passing_status_from_durable_row_lifecycle(
+    tmp_path: Path,
+    rows: dict[str, RowState],
+    abort_reason: str | None,
+    expected_status: str,
+    expected_outcomes: dict[str, dict[str, str]] | None,
+) -> None:
+    compiled_rows = [_compiled_row(row_id) for row_id in rows]
+    bundle = _bundle(tmp_path, rows=compiled_rows)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows=rows,
+        abort_reason=abort_reason,
+    )
+    state, _ = engine._stage_certify(state)
+
+    registered, payload = engine._stage_register(state)
+
+    assert payload["status"] == expected_status
+    assert payload["abort_reason"] == abort_reason
+    assert payload.get("row_outcomes") == expected_outcomes
+    assert registered.registration_payload == payload
+
+
+def test_register_stopped_payload_reentry_is_idempotent(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    register_path = bundle.run_set_dir / "registration.json"
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={
+            "row-a": RowState(
+                status="stopped",
+                error="operator-stop-after-checkpoint",
+            )
+        },
+    )
+    state, _ = engine._stage_certify(state)
+    state, first_payload = engine._stage_register(state)
+    first_mtime = register_path.stat().st_mtime_ns
+
+    _state, second_payload = engine._stage_register(state)
+
+    assert first_payload["certificate_overall"] == "pass"
+    assert first_payload["certificate_ref"] == state.certificate_ref
+    assert json.loads(register_path.read_text(encoding="utf-8")) == first_payload
+    assert second_payload == first_payload
+    assert register_path.stat().st_mtime_ns == first_mtime
+
+
 def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
     marker = tmp_path / "spawned.txt"
     compiled_row = _compiled_row(
