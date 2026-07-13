@@ -456,11 +456,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         execution_context = (
             _read_json(args.execution_context)
             if args.execution_context
-            else (
-                json.loads(args.execution_context_json)
-                if args.execution_context_json
-                else None
-            )
+            else (json.loads(args.execution_context_json) if args.execution_context_json else None)
         )
         started_at = time.perf_counter()
         emitter = RunEventEmitter.from_env(render_batch_lines=False)

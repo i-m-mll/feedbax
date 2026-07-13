@@ -457,9 +457,7 @@ class TrainingManifestMetadataProjection(TrainingRunContractModel):
         if not self.values:
             raise ValueError("/manifest_metadata_projection/values must not be empty")
         if any(not key for key in self.values):
-            raise ValueError(
-                "/manifest_metadata_projection/values keys must be non-empty strings"
-            )
+            raise ValueError("/manifest_metadata_projection/values keys must be non-empty strings")
         return self
 
 
@@ -567,17 +565,12 @@ class TrainingMethodRegistry:
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError(
-                "manifest metadata projection registration is incomplete: "
-                f"empty fields={missing!r}"
+                f"manifest metadata projection registration is incomplete: empty fields={missing!r}"
             )
         if registration.values_model.model_config.get("extra") != "forbid":
-            raise ValueError(
-                "manifest metadata projection values_model must set extra='forbid'"
-            )
+            raise ValueError("manifest metadata projection values_model must set extra='forbid'")
         if registration.values_model.model_config.get("strict") is not True:
-            raise ValueError(
-                "manifest metadata projection values_model must set strict=True"
-            )
+            raise ValueError("manifest metadata projection values_model must set strict=True")
         key = registration.source_key
         if key in self._metadata_projection_registrations:
             raise ValueError(

@@ -536,9 +536,7 @@ def test_governed_manifest_metadata_projection_round_trips_deterministically(
     assert loaded.metadata["gru_postrun_candidate"] is True
     assert custody is not None
     assert custody.values == {"gru_postrun_candidate": True}
-    assert custody.source_payload_sha256 == sha256_bytes(
-        training_spec_canonical_bytes(payload)
-    )
+    assert custody.source_payload_sha256 == sha256_bytes(training_spec_canonical_bytes(payload))
     assert custody.registration_package == "rlrmp"
     assert loaded.provenance.metadata["manifest_metadata_projection"] == (
         custody.provenance_summary()
@@ -831,9 +829,9 @@ def test_manifest_metadata_projection_tampering_fails_on_load(
     elif tamper == "digest":
         custody["values_sha256"] = "0" * 64
     elif tamper == "provenance":
-        raw["provenance"]["metadata"]["manifest_metadata_projection"][
-            "registration_owner"
-        ] = "tampered"
+        raw["provenance"]["metadata"]["manifest_metadata_projection"]["registration_owner"] = (
+            "tampered"
+        )
     elif tamper == "source_identity":
         custody["source_payload_kind"] = "TamperedRunSpec"
     else:
@@ -861,9 +859,7 @@ def test_same_manifest_identity_rejects_valid_alternate_projection(tmp_path: Pat
     # an external signature/custody anchor hashes cannot establish authorship;
     # the existing same-manifest-id conflict is the relevant protection here.
     altered = result.manifest.model_dump(mode="json", exclude_none=True)
-    altered["metadata_projection_custody"]["values"] = {
-        "gru_postrun_candidate": False
-    }
+    altered["metadata_projection_custody"]["values"] = {"gru_postrun_candidate": False}
     altered["metadata_projection_custody"]["values_sha256"] = sha256_bytes(
         training_spec_canonical_bytes({"gru_postrun_candidate": False})
     )
@@ -904,10 +900,7 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
     assert manifest.id == "feedbax-training-run:planned-row"
     assert manifest.intent_hash == context.execution.authored_intent.intent_hash
     assert manifest.execution_hash == context.execution.execution_capsule.execution_hash
-    assert (
-        manifest.resolved_semantics_root_hash
-        == context.execution.resolved_snapshot.root_hash
-    )
+    assert manifest.resolved_semantics_root_hash == context.execution.resolved_snapshot.root_hash
     assert manifest.input_data_identities == []
     assert manifest.completed_batches == 1
     assert manifest.metadata["environment_fingerprint"] == "environment:fixture"
@@ -922,9 +915,7 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
             "lowerer_version": "v3",
         }
     ]
-    assert manifest.provenance.metadata["environment_fingerprint"] == (
-        "environment:fixture"
-    )
+    assert manifest.provenance.metadata["environment_fingerprint"] == ("environment:fixture")
     assert result.run_id == manifest.id
     assert result.final_coordinate.run_id == manifest.id
     assert result.checkpoint_writes[0].manifest.run_id == manifest.id
@@ -981,9 +972,7 @@ def test_native_execution_rejects_payload_binding_drift_before_side_effects(
         context["execution"]["payload"]["schema_id"] = "feedbax.tests.wrong_payload"
     else:
         context["execution"]["payload"]["sha256"] = "e" * 64
-        context["execution"]["row_provenance"][
-            "lowered_execution_payload_hash"
-        ] = "e" * 64
+        context["execution"]["row_provenance"]["lowered_execution_payload_hash"] = "e" * 64
     callback_called = False
 
     def observe_progress(_event: object) -> None:
@@ -1152,9 +1141,7 @@ def test_orchestration_injects_canonical_context_only_for_native_commands() -> N
 
     assert command[-2] == "--execution-context-json"
     payload = json.loads(command[-1])
-    assert payload["execution"] == context.execution.model_dump(
-        mode="json", exclude_none=True
-    )
+    assert payload["execution"] == context.execution.model_dump(mode="json", exclude_none=True)
     assert payload["execution"]["row_provenance"] == provenance.model_dump(
         mode="json", exclude_none=True
     )
@@ -1165,12 +1152,15 @@ def test_orchestration_injects_canonical_context_only_for_native_commands() -> N
     )
 
     non_native = ["python", "worker.py"]
-    assert inject_native_execution_context(
-        non_native,
-        row=row,
-        environment_fingerprint="environment:runtime",
-        collection_root="/runtime/rows/row-a",
-    ) == non_native
+    assert (
+        inject_native_execution_context(
+            non_native,
+            row=row,
+            environment_fingerprint="environment:runtime",
+            collection_root="/runtime/rows/row-a",
+        )
+        == non_native
+    )
 
     with pytest.raises(NativeExecutionContextError, match="orchestration-owned"):
         inject_native_execution_context(
@@ -1751,7 +1741,6 @@ def test_execute_training_run_spec_applies_resume_slot_transform(
     assert resumed.final_coordinate.program_step == 2
 
 
-
 def test_execute_training_run_spec_writes_checkpoint_before_later_failure(
     tmp_path: Path,
 ) -> None:
@@ -2045,9 +2034,9 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     _write_json(slots_path, _initial_slots())
     _write_json(
         context_path,
-        _execution_context(
-            planned_run_id="feedbax-training-run:planned-cli"
-        ).model_dump(mode="json", exclude_none=True),
+        _execution_context(planned_run_id="feedbax-training-run:planned-cli").model_dump(
+            mode="json", exclude_none=True
+        ),
     )
 
     proc = subprocess.run(
@@ -2094,9 +2083,7 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     assert "loss=1" in proc.stderr
     assert "elapsed=" in proc.stderr
     telemetry = payload["manifest_payload"]["summary_metrics"]["runtime_telemetry"]
-    assert telemetry["measurement_semantics"] == (
-        "measurement_start_to_first_progress_callback"
-    )
+    assert telemetry["measurement_semantics"] == ("measurement_start_to_first_progress_callback")
     assert telemetry["measurement_start_semantics"] == "worker_command_entry"
     assert telemetry["start_to_first_progress_seconds"] >= 0
     assert telemetry["compile_time_estimate_seconds"] is None

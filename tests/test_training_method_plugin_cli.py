@@ -717,6 +717,4 @@ def test_native_cli_plugin_projects_governed_training_manifest_metadata(
     assert executed.returncode == 0, executed.stderr
     manifest = json.loads(executed.stdout)["manifest_payload"]
     assert manifest["metadata"]["gru_postrun_candidate"] is True
-    assert manifest["metadata_projection_custody"]["registration_owner"] == (
-        "projection_plugin"
-    )
+    assert manifest["metadata_projection_custody"]["registration_owner"] == ("projection_plugin")

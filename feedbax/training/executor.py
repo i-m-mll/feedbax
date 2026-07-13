@@ -427,10 +427,7 @@ def execute_training_run_spec(
         / "training_runs"
         / f"{exact_manifest_id.replace(':', '_')}.json"
     )
-    if (
-        manifest_conflict_policy == "error"
-        and manifest_output_path.exists()
-    ):
+    if manifest_conflict_policy == "error" and manifest_output_path.exists():
         raise ManifestEmissionConflictError(
             f"Training-run manifest already exists at {manifest_output_path}"
         )
@@ -606,9 +603,7 @@ def execute_training_run_spec(
             materialize_concatenated_checkpoint_histories(
                 custody_root,
                 custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl",
-                parent_roots={
-                    lineage.transaction_id: custody_root for lineage in parent_lineage
-                },
+                parent_roots={lineage.transaction_id: custody_root for lineage in parent_lineage},
             )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
@@ -954,11 +949,7 @@ def _feedbax_owned_training_manifest_metadata(
     }
     if include_all_owned_keys:
         return candidates
-    return {
-        key: value
-        for key, value in candidates.items()
-        if value is not _METADATA_VALUE_ABSENT
-    }
+    return {key: value for key, value in candidates.items() if value is not _METADATA_VALUE_ABSENT}
 
 
 def _validate_execution_payload_binding(
@@ -1017,8 +1008,7 @@ def _validate_execution_payload_binding(
         raise
     except OSError as exc:
         raise TrainingRunExecutorError(
-            "/execution_context/execution/payload local custody URI could not be read: "
-            f"{ref.uri!r}"
+            f"/execution_context/execution/payload local custody URI could not be read: {ref.uri!r}"
         ) from exc
     custody_sha256 = hashlib.sha256(custody_bytes).hexdigest()
     if custody_sha256 != ref.sha256:
@@ -1520,8 +1510,7 @@ def _same_row_resume_start_batch(manifest: CheckpointTransactionManifest) -> int
             "same-row resume checkpoint lacks authoritative completed-training progress"
         )
     lineage_total = (
-        manifest.segment_lineage.start_batch
-        + manifest.segment_lineage.segment_batch_count
+        manifest.segment_lineage.start_batch + manifest.segment_lineage.segment_batch_count
     )
     if lineage_total != completed_batches:
         raise TrainingRunExecutorError(
@@ -1562,8 +1551,7 @@ def _terminal_completed_batches(
         elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
             if not isinstance(segment, int) or segment >= len(value):
                 raise TrainingRunExecutorError(
-                    f"{segment_path}={segment!r} is not a valid index in "
-                    f"slot {authority.slot!r}"
+                    f"{segment_path}={segment!r} is not a valid index in slot {authority.slot!r}"
                 )
             value = value[segment]
         else:
@@ -1603,8 +1591,7 @@ def _realized_lr_trace(
             continue
         by_step[int(step)] = float(jax.device_get(learning_rate))
     return [
-        LearningRateDiagnostic(step=step, learning_rate=by_step[step])
-        for step in sorted(by_step)
+        LearningRateDiagnostic(step=step, learning_rate=by_step[step]) for step in sorted(by_step)
     ]
 
 
@@ -1723,8 +1710,7 @@ def _build_manifest(
     projection_values = projection_custody.values if projection_custody is not None else {}
     projection_provenance = (
         {
-            TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY:
-                projection_custody.provenance_summary()
+            TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY: projection_custody.provenance_summary()
         }
         if projection_custody is not None
         else {}
@@ -1766,11 +1752,7 @@ def _build_manifest(
         ),
         summary_metrics={
             **final_metrics,
-            **(
-                {"runtime_telemetry": dict(runtime_telemetry)}
-                if runtime_telemetry
-                else {}
-            ),
+            **({"runtime_telemetry": dict(runtime_telemetry)} if runtime_telemetry else {}),
         },
         provenance=Provenance(
             entrypoint=EntrypointRef(
@@ -1803,14 +1785,10 @@ def _build_manifest(
                     else _METADATA_VALUE_ABSENT
                 ),
                 training_row_provenance=(
-                    row_provenance
-                    if execution_context is not None
-                    else _METADATA_VALUE_ABSENT
+                    row_provenance if execution_context is not None else _METADATA_VALUE_ABSENT
                 ),
                 runtime_telemetry=(
-                    dict(runtime_telemetry)
-                    if runtime_telemetry
-                    else _METADATA_VALUE_ABSENT
+                    dict(runtime_telemetry) if runtime_telemetry else _METADATA_VALUE_ABSENT
                 ),
             ),
             **projection_values,
@@ -1826,9 +1804,7 @@ def _emit_manifest(
     conflict_policy: ManifestConflictPolicy,
     path: Path | None = None,
 ) -> Path:
-    path = path or (
-        root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json"
-    )
+    path = path or (root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json")
     _preflight_manifest_emission(
         manifest,
         root=root,
@@ -1852,9 +1828,7 @@ def _preflight_manifest_emission(
     conflict_policy: ManifestConflictPolicy,
     path: Path | None = None,
 ) -> None:
-    path = path or (
-        root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json"
-    )
+    path = path or (root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json")
     if not path.exists():
         return
     payload = manifest.model_dump_json(indent=2, exclude_none=True) + "\n"
