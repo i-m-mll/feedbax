@@ -43,8 +43,13 @@ from feedbax.orchestration.state import (
     StageState,
     utc_now,
 )
-from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
+from feedbax.training.diagnostics import (
+    TRAINING_DIAGNOSTICS_SCHEMA_ID,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+    TrainingDiagnostics,
+)
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 
 
 STAGE_ASSEMBLE = "ASSEMBLE"
@@ -999,7 +1004,9 @@ def _discover_conformance_artifacts(outputs: Mapping[str, str]) -> dict[str, Any
         elif path.suffix == ".json":
             candidates.append(path)
 
-    for path in candidates:
+    typed_diagnostics: list[Mapping[str, Any]] = []
+    legacy_diagnostics: list[Mapping[str, Any]] = []
+    for path in sorted(set(candidates)):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -1009,8 +1016,14 @@ def _discover_conformance_artifacts(outputs: Mapping[str, str]) -> dict[str, Any
         if _is_training_manifest(payload) and "manifest_path" not in result:
             result["manifest_path"] = path
             result["manifest_payload"] = payload
-        if _is_training_diagnostics(payload) and "training_diagnostics" not in result:
-            result["training_diagnostics"] = payload
+        if _is_typed_training_diagnostics(payload):
+            typed_diagnostics.append(payload)
+        elif _is_legacy_training_diagnostics(payload):
+            legacy_diagnostics.append(payload)
+
+    diagnostics = typed_diagnostics or legacy_diagnostics
+    if len(diagnostics) == 1:
+        result["training_diagnostics"] = diagnostics[0]
 
     for output_path in sorted(outputs.values()):
         path = Path(output_path)
@@ -1031,17 +1044,37 @@ def _is_training_manifest(payload: Mapping[str, Any]) -> bool:
 
 
 def _is_training_diagnostics(payload: Mapping[str, Any]) -> bool:
+    return _is_typed_training_diagnostics(payload) or _is_legacy_training_diagnostics(payload)
+
+
+def _is_legacy_training_diagnostics(payload: Mapping[str, Any]) -> bool:
+    if payload.get("kind") == "TrainingRunManifest":
+        return False
+    if "kind" in payload or "schema_id" in payload or "schema_version" in payload:
+        return False
     diagnostic_keys = {
-        "completed_batches",
         "checkpoint_coordinates",
         "checkpoint_transactions",
         "learning_rate_trace",
         "lr_trace",
-        "optimizer_build_context",
-        "resume_context",
-        "seeds",
     }
     return bool(diagnostic_keys.intersection(payload))
+
+
+def _is_typed_training_diagnostics(payload: Mapping[str, Any]) -> bool:
+    if payload.get("kind") == "TrainingRunManifest":
+        return False
+    if (
+        payload.get("kind") != "TrainingDiagnostics"
+        or payload.get("schema_id") != TRAINING_DIAGNOSTICS_SCHEMA_ID
+        or payload.get("schema_version") != TRAINING_DIAGNOSTICS_SCHEMA_VERSION
+    ):
+        return False
+    try:
+        TrainingDiagnostics.model_validate(payload)
+    except ValueError:
+        return False
+    return True
 
 
 def _check(

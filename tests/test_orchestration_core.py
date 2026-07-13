@@ -94,6 +94,7 @@ from feedbax.orchestration.state import (
     RunSetStateStore,
     StateLockError,
 )
+from feedbax.training.diagnostics import TRAINING_DIAGNOSTICS_SCHEMA_ID, TrainingDiagnostics
 from feedbax.training.interruption import CancellationAction, CancellationDecision
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 
@@ -1029,6 +1030,170 @@ def test_production_stage_engine_call_sites_supply_nonempty_registry() -> None:
             assert isinstance(registry, ast.Call), f"{relative}:{call.lineno}"
             assert isinstance(registry.func, ast.Name), f"{relative}:{call.lineno}"
             assert registry.func.id == "build_default_check_registry", f"{relative}:{call.lineno}"
+
+
+def test_conformance_discovery_prefers_typed_diagnostics_over_manifest_metrics(
+    tmp_path: Path,
+) -> None:
+    collected = tmp_path / "collected"
+    collected.mkdir()
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:selection",
+        completed_batches=10,
+        summary_metrics={"completed_batches": 10},
+    ).model_dump(mode="json", exclude_none=True)
+    diagnostics = TrainingDiagnostics(
+        manifest_id=manifest["id"],
+        run_id="selection",
+        terminal_status="completed",
+        completed_batches=10,
+        segment_completed_batches=10,
+        cumulative_completed_batches=10,
+        lr_trace=[{"step": 10, "learning_rate": 3e-4}],
+        checkpoint_coordinates=[10],
+        checkpoint_transactions=[
+            {
+                "transaction_id": "checkpoint-10",
+                "completed_batches": 10,
+                "cumulative_completed_batches": 10,
+                "coordinate": {
+                    "run_id": "selection",
+                    "phase": "train",
+                    "program_step": 10,
+                },
+            }
+        ],
+    ).model_dump(mode="json", exclude_none=True)
+    (collected / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (collected / "training-diagnostics.json").write_text(
+        json.dumps(diagnostics, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    discovered = stages._discover_conformance_artifacts({"collection": str(collected)})
+
+    assert discovered["manifest_payload"] == manifest
+    assert discovered["training_diagnostics"] == diagnostics
+    assert discovered["training_diagnostics"]["lr_trace"] == [
+        {"step": 10, "learning_rate": 3e-4}
+    ]
+    assert discovered["training_diagnostics"]["checkpoint_coordinates"] == [10]
+    assert discovered["training_diagnostics"]["checkpoint_transactions"] == [
+        {
+            "transaction_id": "checkpoint-10",
+            "completed_batches": 10,
+            "cumulative_completed_batches": 10,
+            "coordinate": {
+                "run_id": "selection",
+                "phase": "train",
+                "program_step": 10,
+                "metrics": {},
+            },
+        }
+    ]
+
+
+def test_conformance_discovery_leaves_missing_diagnostics_absent(tmp_path: Path) -> None:
+    collected = tmp_path / "collected"
+    collected.mkdir()
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:missing-diagnostics",
+        completed_batches=10,
+        summary_metrics={"completed_batches": 10},
+    ).model_dump(mode="json", exclude_none=True)
+    (collected / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    discovered = stages._discover_conformance_artifacts({"collection": str(collected)})
+
+    assert discovered["manifest_payload"] == manifest
+    assert "training_diagnostics" not in discovered
+
+
+def test_conformance_discovery_leaves_ambiguous_typed_diagnostics_absent(
+    tmp_path: Path,
+) -> None:
+    collected = tmp_path / "collected"
+    collected.mkdir()
+    for index in (1, 2):
+        diagnostics = TrainingDiagnostics(
+            manifest_id=f"feedbax-training-run:ambiguous-{index}",
+            run_id=f"ambiguous-{index}",
+            terminal_status="completed",
+            completed_batches=10,
+            segment_completed_batches=10,
+            cumulative_completed_batches=10,
+            lr_trace=[{"step": 10, "learning_rate": 3e-4}],
+        ).model_dump(mode="json", exclude_none=True)
+        (collected / f"candidate-{index}.json").write_text(
+            json.dumps(diagnostics, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    discovered = stages._discover_conformance_artifacts({"collection": str(collected)})
+
+    assert "training_diagnostics" not in discovered
+
+
+def test_conformance_discovery_ignores_partial_typed_identity_for_legacy_fallback(
+    tmp_path: Path,
+) -> None:
+    collected = tmp_path / "collected"
+    collected.mkdir()
+    malformed_typed = {
+        "kind": "TrainingDiagnostics",
+        "schema_id": TRAINING_DIAGNOSTICS_SCHEMA_ID,
+        "completed_batches": 10,
+        "lr_trace": [{"step": 10, "learning_rate": 1e-3}],
+    }
+    legacy = {
+        "completed_batches": 10,
+        "lr_trace": [{"step": 10, "learning_rate": 3e-4}],
+        "checkpoint_coordinates": [10],
+    }
+    (collected / "a-partial-typed.json").write_text(
+        json.dumps(malformed_typed, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (collected / "z-legacy.json").write_text(
+        json.dumps(legacy, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    discovered = stages._discover_conformance_artifacts({"collection": str(collected)})
+
+    assert discovered["training_diagnostics"] == legacy
+
+
+def test_conformance_discovery_rejects_schema_less_run_spec_context(
+    tmp_path: Path,
+) -> None:
+    collected = tmp_path / "collected"
+    collected.mkdir()
+    context = _schedule_context(
+        schedule_origin_step=0,
+        current_step=10,
+        optimizer_count_at_current_step=10,
+    )
+    run_spec = {
+        "completed_batches": 10,
+        "seeds": {"controller": 7},
+        "resume_context": context,
+        "optimizer_build_context": context,
+    }
+    (collected / "run-spec.json").write_text(
+        json.dumps(run_spec, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    discovered = stages._discover_conformance_artifacts({"collection": str(collected)})
+
+    assert "training_diagnostics" not in discovered
 
 
 def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
