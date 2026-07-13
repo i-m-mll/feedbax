@@ -25,6 +25,10 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.run_matrix import (
+    TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
+    TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1,
+    TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
+    TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
 )
@@ -98,13 +102,24 @@ from feedbax.execution.models import (
 )
 from feedbax.objectives.spec import validate_objective_spec
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RUN_EVENT_SCHEMA_VERSION
+from feedbax.training.diagnostics import (
+    NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
+    NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
+    TRAINING_DIAGNOSTICS_SCHEMA_ID,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+)
 from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION_V2,
+    RUN_BUNDLE_SCHEMA_VERSION_V3,
+    RUN_BUNDLE_SCHEMA_VERSION_V4,
+    RunBundle,
 )
+from feedbax.contracts.spec_storage import training_run_execution_hash
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
 
@@ -233,11 +248,6 @@ def test_structured_spec_registry_rejects_explicit_unsupported_old_version() -> 
             "feedbax.spec.run_assembly_request.v1",
         ),
         (
-            "ExecutionIdentityEnvelope",
-            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
-            EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
-        ),
-        (
             "StudioTrainingAssemblySpec",
             "feedbax.spec.studio.training_assembly",
             "feedbax.spec.studio.training_assembly.v1",
@@ -268,12 +278,74 @@ def test_default_registry_registers_assemble_contract_families(
         )
 
 
+def test_execution_identity_envelope_v1_migrates_with_unavailable_provenance() -> None:
+    family = default_spec_registry.resolve("ExecutionIdentityEnvelope")
+    assert family.identity == EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID
+    assert family.current_version == EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.stance == "migrate"
+
+    migrated = default_spec_registry.migrate(
+        "ExecutionIdentityEnvelope",
+        {
+            "schema_id": EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
+            "schema_version": EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
+        },
+    )
+    assert migrated.payload["schema_version"] == EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
+    assert migrated.payload["row_provenance"] is None
+    assert [record.migration_id for record in migrated.migration_records] == [
+        "execution-identity-envelope-v1-to-v2-row-provenance-unavailable"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "schema_id", "current_version"),
+    [
+        (
+            "NativeExecutionProducerContext",
+            NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
+            NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
+        ),
+        (
+            "TrainingDiagnostics",
+            TRAINING_DIAGNOSTICS_SCHEMA_ID,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        ),
+    ],
+)
+def test_native_execution_documents_have_explicit_rejection_policy(
+    kind: str,
+    schema_id: str,
+    current_version: str,
+) -> None:
+    family = default_spec_registry.resolve(kind)
+    assert family.identity == schema_id
+    assert family.current_version == current_version
+    assert family.policy is not None
+    assert family.policy.owner_module.startswith("feedbax.training.diagnostics.")
+    assert family.policy.stance == "reject"
+    assert family.policy.emitted_by
+    assert family.policy.consumed_by
+
+    accepted = default_spec_registry.migrate(
+        kind,
+        {"schema_id": schema_id, "schema_version": current_version},
+    )
+    assert accepted.target_version == current_version
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            kind,
+            {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
+        )
+
+
 @pytest.mark.parametrize("old_version", [RUN_BUNDLE_SCHEMA_VERSION_V1, RUN_BUNDLE_SCHEMA_VERSION_V2])
 def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
     family = default_spec_registry.resolve("RunBundle")
     assert family.current_version == RUN_BUNDLE_SCHEMA_VERSION
     assert family.policy is not None
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == "migrate"
 
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         default_spec_registry.migrate("RunBundle", {"schema_version": old_version})
@@ -281,6 +353,154 @@ def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
     message = str(excinfo.value)
     assert old_version in message
     assert "migration_intentionally_absent=yes" in message
+
+
+def test_run_bundle_v3_migrates_with_explicitly_unavailable_row_provenance() -> None:
+    migrated = default_spec_registry.migrate(
+        "RunBundle",
+        {
+            "schema_id": "feedbax.orchestration.run_bundle",
+            "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V3,
+            "rows": [{"row_id": "legacy"}],
+        },
+    )
+
+    assert migrated.target_version == RUN_BUNDLE_SCHEMA_VERSION
+    assert migrated.payload["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION
+    assert "provenance" not in migrated.payload["rows"][0]
+    assert [record.migration_id for record in migrated.migration_records] == [
+        "run-bundle-v3-to-v4-training-row-provenance",
+        "run-bundle-v4-to-v5-envelope-row-provenance",
+    ]
+
+
+def test_run_bundle_v4_moves_row_provenance_into_execution_envelope() -> None:
+    payload_sha256 = "a" * 64
+    resolved_root_hash = "b" * 64
+    execution_hash = training_run_execution_hash(resolved_root_hash, [])
+    provenance = {
+        "schema_id": "feedbax.spec.training_row_provenance",
+        "schema_version": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+        "row_id": "row",
+        "row_index": 0,
+        "planned_run_id": "feedbax-training-run:row",
+        "authored_payload_hash": "c" * 64,
+        "seed": 7,
+        "axis_coordinates": {"learning_rate": 0.001},
+        "overrides": [{"path": "training.learning_rate", "value": 0.001}],
+        "lowerer_identities": [
+            {"lowerer_id": "feedbax.tests.lowerer", "lowerer_version": "v1"}
+        ],
+    }
+    migrated = default_spec_registry.migrate(
+        "RunBundle",
+        {
+            "schema_id": "feedbax.orchestration.run_bundle",
+            "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V4,
+            "run_set_id": "2026-07-13-deadbeef",
+            "driver": "local",
+            "rows": [
+                {
+                    "row_id": "row",
+                    "provenance": provenance,
+                    "execution": {
+                        "schema_id": EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
+                        "schema_version": EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
+                        "payload": {
+                            "schema_id": "feedbax.spec.training_run",
+                            "schema_version": "feedbax.spec.training_run.v1",
+                            "artifact_id": f"artifact://sha256/{payload_sha256}",
+                            "sha256": payload_sha256,
+                        },
+                        "authored_intent": {
+                            "schema_id": "feedbax.spec.authored_training",
+                            "schema_version": "feedbax.spec.authored_training.v1",
+                            "artifact_id": "artifact://authored/row",
+                            "sha256": "d" * 64,
+                            "intent_hash": "e" * 64,
+                        },
+                        "resolved_snapshot": {
+                            "schema_id": "feedbax.spec.resolved_training",
+                            "schema_version": "feedbax.spec.resolved_training.v1",
+                            "artifact_id": "artifact://resolved/row",
+                            "sha256": "f" * 64,
+                            "root_hash": resolved_root_hash,
+                        },
+                        "execution_capsule": {
+                            "schema_id": "feedbax.spec.execution_capsule",
+                            "schema_version": "feedbax.spec.execution_capsule.v1",
+                            "artifact_id": "artifact://execution/row",
+                            "sha256": "1" * 64,
+                            "execution_hash": execution_hash,
+                        },
+                        "immutable_inputs": [],
+                    },
+                    "launch": {"command": ["python", "-m", "feedbax"]},
+                }
+            ],
+            "environment": {"python_version": "3.12"},
+            "budget": {"max_wall_clock_seconds": 60.0},
+        },
+    )
+    row = migrated.payload["rows"][0]
+    assert "provenance" not in row
+    assert row["execution"]["schema_version"] == EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
+    assert row["execution"]["row_provenance"] == {
+        **provenance,
+        "schema_version": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
+        "lowered_execution_payload_hash": payload_sha256,
+    }
+    bundle = RunBundle.model_validate(migrated.payload)
+    assert bundle.rows[0].execution.row_provenance is not None
+    assert (
+        bundle.rows[0].execution.row_provenance.lowered_execution_payload_hash
+        == bundle.rows[0].execution.payload.sha256
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "schema_id"),
+    [
+        ("AuthoredTrainingRow", "feedbax.spec.authored_training_row"),
+        ("TrainingRowLoweringResult", "feedbax.spec.training_row_lowering_result"),
+        (
+            "TrainingRowPlanningProvenance",
+            "feedbax.spec.training_row_planning_provenance",
+        ),
+        ("TrainingRowProvenance", "feedbax.spec.training_row_provenance"),
+    ],
+)
+def test_row_lowering_contracts_have_explicit_schema_policy(
+    kind: str,
+    schema_id: str,
+) -> None:
+    family = default_spec_registry.resolve(kind)
+    assert family.identity == schema_id
+    expected_version = {
+        "TrainingRowPlanningProvenance": TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
+        "TrainingRowProvenance": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
+    }.get(kind, f"{schema_id}.v1")
+    assert family.current_version == expected_version
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            kind,
+            {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
+        )
+
+    rejected_v1 = {
+        "TrainingRowPlanningProvenance": (
+            TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1
+        ),
+        "TrainingRowProvenance": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
+    }.get(kind)
+    if rejected_v1 is not None:
+        with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+            default_spec_registry.migrate(
+                kind,
+                {"schema_id": schema_id, "schema_version": rejected_v1},
+            )
 
 
 def test_structured_spec_registry_reports_unknown_family() -> None:

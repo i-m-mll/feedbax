@@ -10,6 +10,7 @@ from feedbax.contracts.expressions import Coalesce, ValueQuery
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.checkpoints import CheckpointSegmentLineage
 from feedbax.contracts.run_matrix import (
+    RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRunMatrixSpec,
@@ -137,6 +138,13 @@ def test_materialize_explicit_rows_plans_stable_ids_and_writes_deterministic_byt
     second_manifest = write_materialized_matrix(second, tmp_path / "second", wrap_key="wrapped")
 
     assert first_manifest == second_manifest
+    assert first_manifest["schema_version"] == RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION
+    assert first_manifest["rows"][0]["row_provenance"]["planned_run_id"] == (
+        materialized.rows[0].planned_run_id
+    )
+    assert first_manifest["rows"][0]["row_provenance"][
+        "lowered_execution_payload_hash"
+    ] == training_spec_sha256(materialized.rows[0].payload)
     assert (tmp_path / "first" / "lr_hi.json").read_text().startswith('{"wrapped"')
 
 

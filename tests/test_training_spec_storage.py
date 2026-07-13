@@ -15,6 +15,8 @@ from feedbax.contracts.manifest import TrainingRunManifest, TrainingSweepAxis
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    RowLowererIdentity,
+    TrainingRowLoweringResult,
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.spec_storage import (
@@ -26,10 +28,10 @@ from feedbax.contracts.spec_storage import (
     store_canonical_json_artifact,
 )
 from feedbax.training.run_matrix import (
-    RunMatrixError,
     materialize_adapted_run_matrix,
 )
 from feedbax.training.spec_storage import (
+    compile_training_run_matrix,
     emit_training_run_spec_storage,
     stamp_training_run_manifest_identities,
 )
@@ -260,10 +262,309 @@ def test_snapshot_rows_are_complete_and_seed_changes_execution_identity(tmp_path
         "seed",
         "axis_coordinates",
         "overrides",
+        "row_provenance",
         "payload",
     }
     assert row["seed"] == 11
     assert row["axis_coordinates"]["values"]["overrides"] == []
+
+
+def test_typed_row_lowerer_is_authoritative_and_validation_cannot_mutate(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        TrainingRowLoweringResult(
+            execution_payload={},
+            lowerer_identities=[],
+        )
+    matrix_payload = _matrix({"compact": {"gain": 1}}).model_dump(mode="json")
+    matrix_payload["rows"][0]["overrides"] = [
+        {"path": "compact.gain", "op": "replace", "value": 2}
+    ]
+    matrix = TrainingRunMatrixSpec.model_validate(matrix_payload)
+    seen = []
+
+    def lower(authored_row):
+        seen.append(authored_row)
+        return TrainingRowLoweringResult(
+            execution_payload={
+                "schema_id": "example.execution",
+                "schema_version": "example.execution.v1",
+                "lowered_gain": authored_row.payload["compact"]["gain"] * 10,
+            },
+            lowerer_identities=[
+                RowLowererIdentity(
+                    lowerer_id="example.adapter",
+                    lowerer_version="example.adapter.v1",
+                ),
+                RowLowererIdentity(
+                    lowerer_id="example.gain-lowerer",
+                    lowerer_version="example.gain-lowerer.v1",
+                ),
+            ],
+        )
+
+    def validate_only(payload, _row_id):
+        payload["lowered_gain"] = -1
+        return None
+
+    materialized = materialize_adapted_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        row_lowerer=lower,
+        row_validator=validate_only,
+    )
+    row = materialized.rows[0]
+    assert seen[0].payload == {"compact": {"gain": 2}}
+    assert seen[0].payload_hash == row.provenance.authored_payload_hash
+    assert row.authored_payload == {"compact": {"gain": 2}}
+    assert row.payload["lowered_gain"] == 20
+    assert row.provenance.planned_run_id == row.planned_run_id
+    assert row.provenance.axis_coordinates["run_id"] == row.planned_run_id
+    assert row.provenance.lowerer_identities == [
+        RowLowererIdentity(
+            lowerer_id="example.adapter",
+            lowerer_version="example.adapter.v1",
+        ),
+        RowLowererIdentity(
+            lowerer_id="example.gain-lowerer",
+            lowerer_version="example.gain-lowerer.v1",
+        ),
+    ]
+
+
+def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
+    tmp_path: Path,
+) -> None:
+    def materialize(
+        authored_value: int,
+        lowerer_version: str,
+        *,
+        unprojected_value: str = "baseline",
+        reverse_lowerers: bool = False,
+    ):
+        def lower(_authored_row):
+            lowerer_identities = [
+                {
+                    "lowerer_id": "example.adapter",
+                    "lowerer_version": "example.adapter.v1",
+                },
+                {
+                    "lowerer_id": "example.science",
+                    "lowerer_version": lowerer_version,
+                },
+            ]
+            return TrainingRowLoweringResult(
+                execution_payload={
+                    "schema_id": "example.execution",
+                    "schema_version": "example.execution.v1",
+                    "constant": True,
+                    # This field is outside the historical graph/training/task projections.
+                    "extension_payload": {"value": unprojected_value},
+                },
+                lowerer_identities=(
+                    list(reversed(lowerer_identities))
+                    if reverse_lowerers
+                    else lowerer_identities
+                ),
+            )
+
+        return materialize_adapted_run_matrix(
+            _matrix({"authored_value": authored_value}),
+            repo_root=tmp_path,
+            row_lowerer=lower,
+        ).rows[0]
+
+    baseline = materialize(1, "example.science.v1")
+    changed_authored = materialize(2, "example.science.v1")
+    changed_lowerer = materialize(1, "example.science.v2")
+    changed_unprojected_execution = materialize(
+        1,
+        "example.science.v1",
+        unprojected_value="changed",
+    )
+    reversed_lowerer_order = materialize(
+        1,
+        "example.science.v1",
+        reverse_lowerers=True,
+    )
+
+    assert baseline.payload == changed_authored.payload == changed_lowerer.payload
+    assert baseline.payload != changed_unprojected_execution.payload
+    assert len(
+        {
+            baseline.planned_run_id,
+            changed_authored.planned_run_id,
+            changed_lowerer.planned_run_id,
+            changed_unprojected_execution.planned_run_id,
+            reversed_lowerer_order.planned_run_id,
+        }
+    ) == 5
+    assert baseline.provenance.lowered_execution_payload_hash == training_spec_sha256(
+        baseline.payload
+    )
+    assert baseline.provenance.lowered_execution_payload_hash != (
+        changed_unprojected_execution.provenance.lowered_execution_payload_hash
+    )
+    assert [
+        identity.lowerer_id for identity in baseline.provenance.lowerer_identities
+    ] == ["example.adapter", "example.science"]
+
+
+def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
+
+    matrix = _matrix({"compact": {"gain": 3}})
+
+    def lower(authored_row):
+        return TrainingRowLoweringResult(
+            execution_payload={
+                "schema_id": "example.execution",
+                "schema_version": "example.execution.v1",
+                "training_config": {"gain": authored_row.payload["compact"]["gain"]},
+            },
+            lowerer_identities=[
+                {
+                    "lowerer_id": "example.lowerer",
+                    "lowerer_version": "example.lowerer.v2",
+                }
+            ],
+        )
+
+    lock = tmp_path / "uv.lock"
+    lock.write_text("lock", encoding="utf-8")
+    storage = emit_training_run_spec_storage(
+        matrix,
+        repo_root=tmp_path,
+        authored_path=tmp_path / "authored.json",
+        custody_root=tmp_path / "custody",
+        materializer_commit="abc",
+        dependency_lock_path=lock,
+        allow_inline_base=True,
+        row_lowerer=lower,
+    )
+    decoded = decode_resolved_snapshot(
+        json.loads(Path(storage.snapshot_artifact.uri).read_text(encoding="utf-8"))
+    )
+    stored_row = decoded["rows"][0]
+    assert stored_row["payload"]["training_config"]["gain"] == 3
+    assert stored_row["row_provenance"]["authored_payload_hash"]
+    assert stored_row["row_provenance"]["lowerer_identities"] == [
+        {
+            "lowerer_id": "example.lowerer",
+            "lowerer_version": "example.lowerer.v2",
+        }
+    ]
+
+    compiled = compile_training_run_matrix(
+        matrix,
+        run_set_id="run-set",
+        context=SimpleNamespace(repo_root=tmp_path, resolved_inputs=()),
+        allow_inline_base=True,
+        row_lowerer=lower,
+    )
+    compiled_row = compiled.rows[0]
+    assert compiled_row.payload == stored_row["payload"]
+    assert compiled_row.resolved_semantics["payload"] == compiled_row.payload
+    assert compiled_row.provenance is not None
+    assert compiled_row.provenance.planned_run_id == stored_row["planned_run_id"]
+
+
+def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) -> None:
+    from feedbax.orchestration.assembly import (
+        AssemblyCompilerRegistry,
+        AssemblyContext,
+        CompilerIdentity,
+        RunAssemblyRequest,
+        assemble_run_bundle,
+    )
+    from feedbax.orchestration.bundle import (
+        BudgetPolicy,
+        EnvironmentDeclaration,
+        SchemaArtifactRef,
+    )
+    from feedbax.training.spec_storage import (
+        TRAINING_RUN_MATRIX_COMPILER_ID,
+        TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        register_training_run_matrix_compiler,
+    )
+
+    matrix = _matrix({"compact": {"gain": 4}})
+    authored = matrix.model_dump(mode="json", exclude_none=True)
+    authored_bytes = training_spec_canonical_bytes(authored)
+    authored_path = tmp_path / "matrix.json"
+    authored_path.write_bytes(authored_bytes)
+
+    def lower(authored_row):
+        return TrainingRowLoweringResult(
+            execution_payload={
+                "schema_id": "example.execution",
+                "schema_version": "example.execution.v1",
+                "gain": authored_row.payload["compact"]["gain"],
+            },
+            lowerer_identities=[
+                {
+                    "lowerer_id": "example.lowerer",
+                    "lowerer_version": "example.lowerer.v1",
+                }
+            ],
+        )
+
+    request = RunAssemblyRequest(
+        authored=SchemaArtifactRef(
+            schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            artifact_id="fixture:matrix",
+            sha256=hashlib.sha256(authored_bytes).hexdigest(),
+            uri=str(authored_path),
+        ),
+        compiler=CompilerIdentity(
+            compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+            compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        environment=EnvironmentDeclaration(python_version="3.13"),
+        budget=BudgetPolicy(max_wall_clock_seconds=1),
+    )
+    registry = AssemblyCompilerRegistry()
+    register_training_run_matrix_compiler(
+        registry,
+        allow_inline_base=True,
+        row_lowerer=lower,
+    )
+    bundle = assemble_run_bundle(
+        request,
+        run_set_id="run-set",
+        context=AssemblyContext(
+            custody_root=tmp_path / "custody",
+            repo_root=tmp_path,
+            materializer_commit="abc",
+            dependency_lock_digest="d" * 64,
+        ),
+        registry=registry,
+    )
+
+    provenance = bundle.rows[0].execution.row_provenance
+    assert provenance is not None
+    assert provenance.planned_run_id.startswith("feedbax-training-run:")
+    assert provenance.lowered_execution_payload_hash == bundle.rows[0].execution.payload.sha256
+    assert provenance.lowerer_identities == [
+        RowLowererIdentity(
+            lowerer_id="example.lowerer",
+            lowerer_version="example.lowerer.v1",
+        )
+    ]
+    payload = json.loads(Path(bundle.rows[0].execution.payload.uri).read_text())
+    assert payload["gain"] == 4
+
+    mismatched = bundle.rows[0].execution.model_dump(mode="json")
+    mismatched["row_provenance"]["lowered_execution_payload_hash"] = "0" * 64
+    with pytest.raises(
+        ValueError,
+        match="lowered_execution_payload_hash does not match",
+    ):
+        type(bundle.rows[0].execution).model_validate(mismatched)
 
 
 def test_resolved_output_materializes_and_rejects_tampering(tmp_path: Path) -> None:
@@ -322,6 +623,9 @@ def test_custody_reuse_verifies_existing_bytes_and_public_exports(tmp_path: Path
         )
     assert "training_spec_canonical_bytes" in contracts_exports.__all__
     assert "emit_training_run_spec_storage" in training_exports.__all__
+    assert "TrainingRowLoweringResult" in contracts_exports.__all__
+    assert "TrainingRowProvenance" in training_exports.__all__
+    assert training_exports.TrainingRowLoweringResult is TrainingRowLoweringResult
     exported_canonical = getattr(contracts_exports, "training_spec_canonical_bytes")
     training_spec_storage = importlib.import_module("feedbax.training.spec_storage")
     exported_emitter = getattr(training_spec_storage, "emit_training_run_spec_storage")

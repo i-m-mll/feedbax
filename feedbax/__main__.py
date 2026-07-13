@@ -196,6 +196,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     execute_parser.add_argument("--training-payload-schema-id")
     execute_parser.add_argument("--training-payload-schema-version")
     execute_parser.add_argument("--training-payload-ref")
+    execution_context_group = execute_parser.add_mutually_exclusive_group()
+    execution_context_group.add_argument(
+        "--execution-context",
+        help=(
+            "NativeExecutionProducerContext JSON carrying assembly identities, row "
+            "provenance, and diagnostics inputs"
+        ),
+    )
+    execution_context_group.add_argument(
+        "--execution-context-json",
+        help="Inline NativeExecutionProducerContext JSON supplied by orchestration",
+    )
     execute_parser.add_argument(
         "--plugin",
         action="append",
@@ -425,6 +437,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             loss_service = prepared.loss_service
             resume_slot_transform = prepared.resume_slot_transform
         training_payload = _read_json(args.training_payload) if args.training_payload else None
+        execution_context = (
+            _read_json(args.execution_context)
+            if args.execution_context
+            else (
+                json.loads(args.execution_context_json)
+                if args.execution_context_json
+                else None
+            )
+        )
         started_at = time.perf_counter()
         emitter = RunEventEmitter.from_env(render_batch_lines=False)
         with RunInterruptionController() as interruption:
@@ -452,6 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     cancellation_probe=lambda _coordinate: interruption.poll(),
                     execution_started_at_monotonic=command_started_at,
                     execution_start_semantics="worker_command_entry",
+                    execution_context=execution_context,
                 )
             finally:
                 if emitter is not None:

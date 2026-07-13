@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
@@ -100,6 +101,7 @@ class CompiledExecutionRow(StrictModel):
     row_id: str = Field(min_length=1)
     payload: dict[str, JsonValue]
     resolved_semantics: dict[str, JsonValue]
+    provenance: TrainingRowProvenance | None = None
     immutable_inputs: list[ImmutableInputIdentity] = Field(default_factory=list)
     launch: RowLaunchSpec
 
@@ -109,6 +111,8 @@ class CompiledExecutionRow(StrictModel):
             self.payload.get("schema_version"), str
         ):
             raise ValueError("compiled payload requires schema_id and schema_version")
+        if self.provenance is not None and self.provenance.row_id != self.row_id:
+            raise ValueError("compiled row provenance row_id must match row_id")
         return self
 
 
@@ -348,8 +352,13 @@ def persist_compiled_row(
             **_schema_ref(capsule, capsule_artifact).model_dump(), execution_hash=execution_hash
         ),
         immutable_inputs=canonical_inputs,
+        row_provenance=row.provenance,
     )
-    return CompiledRowStorageResult(row_id=row.row_id, execution=execution, launch=row.launch)
+    return CompiledRowStorageResult(
+        row_id=row.row_id,
+        execution=execution,
+        launch=row.launch,
+    )
 
 
 def assemble_run_bundle(
@@ -359,7 +368,7 @@ def assemble_run_bundle(
     context: AssemblyContext,
     registry: AssemblyCompilerRegistry,
 ) -> RunBundle:
-    """Compile a verified authored request and persist a RunBundle v3."""
+    """Compile a verified authored request and persist a current RunBundle."""
     authored = load_schema_artifact(request.authored, context=context)
     registration = registry.resolve(request)
     resolved_inputs = [
@@ -394,7 +403,11 @@ def assemble_run_bundle(
         run_set_id=run_set_id,
         driver=request.driver,
         rows=[
-            RunRowSpec(row_id=item.row_id, execution=item.execution, launch=item.launch)
+            RunRowSpec(
+                row_id=item.row_id,
+                execution=item.execution,
+                launch=item.launch,
+            )
             for item in stored
         ],
         environment=request.environment,

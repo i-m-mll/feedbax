@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.expressions import Coalesce, ValueExpr, ValueQuery
 from feedbax.contracts.extraction import SourceBinding
@@ -23,7 +23,122 @@ TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run_matrix.v1"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run_matrix.v2"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v3"
+AUTHORED_TRAINING_ROW_SCHEMA_ID = "feedbax.spec.authored_training_row"
+AUTHORED_TRAINING_ROW_SCHEMA_VERSION = f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v1"
+TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID = "feedbax.spec.training_row_lowering_result"
+TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION = (
+    f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v1"
+)
+TRAINING_ROW_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_provenance"
+TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v1"
+TRAINING_ROW_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
+TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID = (
+    "feedbax.spec.training_row_planning_provenance"
+)
+TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1 = (
+    f"{TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID}.v1"
+)
+TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION = (
+    f"{TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID}.v2"
+)
+RUN_MATRIX_MATERIALIZATION_SCHEMA_ID = "feedbax.manifest.run_matrix_materialization"
+RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V1 = "feedbax.run_matrix_materialization.v1"
+RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2 = f"{RUN_MATRIX_MATERIALIZATION_SCHEMA_ID}.v2"
+RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION = f"{RUN_MATRIX_MATERIALIZATION_SCHEMA_ID}.v3"
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class RowLowererIdentity(StrictModel):
+    """Stable identity of the implementation that lowered one authored row."""
+
+    lowerer_id: str = Field(min_length=1)
+    lowerer_version: str = Field(min_length=1)
+
+
+class AuthoredTrainingRow(StrictModel):
+    """Axis-patched authored row supplied to a registered row lowerer."""
+
+    schema_id: Literal["feedbax.spec.authored_training_row"] = (
+        AUTHORED_TRAINING_ROW_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.authored_training_row.v1"] = (
+        AUTHORED_TRAINING_ROW_SCHEMA_VERSION
+    )
+    row_id: str = Field(min_length=1)
+    row_index: int = Field(ge=0)
+    payload: dict[str, Any]
+    payload_hash: str
+    seed: int | None = None
+    axis_coordinates: dict[str, Any]
+    overrides: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("payload_hash")
+    @classmethod
+    def _validate_payload_hash(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("payload_hash must be a lowercase sha256 digest")
+        return value
+
+
+class TrainingRowLoweringResult(StrictModel):
+    """Authoritative execution payload returned by one declared row lowerer."""
+
+    schema_id: Literal["feedbax.spec.training_row_lowering_result"] = (
+        TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.training_row_lowering_result.v1"] = (
+        TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION
+    )
+    execution_payload: dict[str, Any]
+    lowerer_identities: list[RowLowererIdentity] = Field(min_length=1)
+
+
+class TrainingRowPlanningProvenance(StrictModel):
+    """Authored and lowerer identity bound into deterministic planned-run IDs."""
+
+    schema_id: Literal["feedbax.spec.training_row_planning_provenance"] = (
+        TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.training_row_planning_provenance.v2"] = (
+        TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION
+    )
+    authored_payload_hash: str
+    lowered_execution_payload_hash: str
+    lowerer_identities: list[RowLowererIdentity] = Field(default_factory=list)
+
+    @field_validator("authored_payload_hash", "lowered_execution_payload_hash")
+    @classmethod
+    def _validate_payload_hash(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("payload hashes must be lowercase sha256 digests")
+        return value
+
+
+class TrainingRowProvenance(StrictModel):
+    """Canonical authored-to-execution provenance for one materialized row."""
+
+    schema_id: Literal["feedbax.spec.training_row_provenance"] = (
+        TRAINING_ROW_PROVENANCE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.training_row_provenance.v2"] = (
+        TRAINING_ROW_PROVENANCE_SCHEMA_VERSION
+    )
+    row_id: str = Field(min_length=1)
+    row_index: int = Field(ge=0)
+    planned_run_id: str = Field(min_length=1)
+    authored_payload_hash: str
+    lowered_execution_payload_hash: str
+    seed: int | None = None
+    axis_coordinates: dict[str, Any]
+    overrides: list[dict[str, Any]] = Field(default_factory=list)
+    lowerer_identities: list[RowLowererIdentity] = Field(default_factory=list)
+
+    @field_validator("authored_payload_hash", "lowered_execution_payload_hash")
+    @classmethod
+    def _validate_payload_hash(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("payload hashes must be lowercase sha256 digests")
+        return value
 
 
 class InlineMatrixBaseSpec(StrictModel):

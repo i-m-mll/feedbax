@@ -12,6 +12,11 @@ import jax.numpy as jnp
 
 from feedbax.contracts.manifest import load_manifest, sha256_bytes
 from feedbax.contracts.checkpoints import BatchHistory, CheckpointContinuationRequest
+from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
+from feedbax.contracts.spec_storage import (
+    training_run_execution_hash,
+    training_spec_canonical_bytes,
+)
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -38,11 +43,25 @@ from feedbax.contracts.worker import (
     StateSlotSpec,
 )
 from feedbax.orchestration.events import RunEventEmitter, RunEventReader
+from feedbax.orchestration.bundle import (
+    AuthoredIntentRef,
+    ExecutionCapsuleRef,
+    ExecutionIdentityEnvelope,
+    ResolvedSnapshotRef,
+    RowLaunchSpec,
+    RunRowSpec,
+    SchemaArtifactRef,
+)
+from feedbax.orchestration.drivers.native_execution import (
+    NativeExecutionContextError,
+    inject_native_execution_context,
+)
 from feedbax.training.checkpoint_custody import (
     concatenate_checkpoint_histories,
     load_latest_checkpoint,
 )
 from feedbax.training.executor import (
+    DiagnosticsEmissionConflictError,
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
     execute_training_run_spec,
@@ -53,6 +72,13 @@ from feedbax.training.manifest_preflight import (
     preflight_training_run_manifest_payloads,
 )
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.diagnostics import (
+    LearningRateDiagnostic,
+    NativeExecutionProducerContext,
+    NativeTrainingDiagnosticsInput,
+    ScheduleContextDiagnostic,
+    TrainingDiagnostics,
+)
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -109,6 +135,74 @@ def _initial_slots(*, arrays: bool = False) -> dict[str, object]:
         "prng": [0, 1],
         "batch_counter": 0,
     }
+
+
+def _execution_context(
+    *,
+    collection_root: Path | None = None,
+    planned_run_id: str = "feedbax-training-run:planned-row",
+) -> NativeExecutionProducerContext:
+    resolved_root = "b" * 64
+    execution_hash = training_run_execution_hash(resolved_root, [])
+    payload = _run_spec().model_dump(mode="json", exclude_none=True)
+    payload_sha256 = sha256_bytes(training_spec_canonical_bytes(payload))
+    artifact = {
+        "schema_id": "feedbax.tests.native_execution",
+        "schema_version": "feedbax.tests.native_execution.v1",
+        "artifact_id": "artifact://tests/native-execution",
+        "sha256": "a" * 64,
+    }
+    provenance = TrainingRowProvenance(
+        row_id="row-a",
+        row_index=2,
+        planned_run_id=planned_run_id,
+        authored_payload_hash="d" * 64,
+        lowered_execution_payload_hash=payload_sha256,
+        seed=7,
+        axis_coordinates={"learning_rate": 3e-4},
+        overrides=[{"path": "training.learning_rate", "value": 3e-4}],
+        lowerer_identities=[
+            RowLowererIdentity(
+                lowerer_id="feedbax.tests.lowerer",
+                lowerer_version="v3",
+            )
+        ],
+    )
+    execution = ExecutionIdentityEnvelope(
+        payload=SchemaArtifactRef(
+            **{
+                **artifact,
+                "schema_id": payload["schema_id"],
+                "schema_version": payload["schema_version"],
+                "artifact_id": f"artifact://sha256/{payload_sha256}",
+                "sha256": payload_sha256,
+            }
+        ),
+        authored_intent=AuthoredIntentRef(**artifact, intent_hash="c" * 64),
+        resolved_snapshot=ResolvedSnapshotRef(**artifact, root_hash=resolved_root),
+        execution_capsule=ExecutionCapsuleRef(
+            **artifact,
+            execution_hash=execution_hash,
+        ),
+        immutable_inputs=[],
+        row_provenance=provenance,
+    )
+    schedule_context = ScheduleContextDiagnostic(
+        schedule_origin_step=0,
+        current_step=0,
+        optimizer_count_at_current_step=0,
+    )
+    return NativeExecutionProducerContext(
+        execution=execution,
+        environment_fingerprint="environment:fixture",
+        collection_root=(str(collection_root) if collection_root is not None else None),
+        diagnostics=NativeTrainingDiagnosticsInput(
+            seeds=[7],
+            lr_trace=[LearningRateDiagnostic(step=1, learning_rate=3e-4)],
+            resume_context=schedule_context,
+            optimizer_build_context=schedule_context,
+        ),
+    )
 
 
 def _chunked_registry(
@@ -368,6 +462,304 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert Path(manifest.checkpoint_custody[0].uri).is_file()
     assert manifest.summary_metrics["train_loss"] == 1.0
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
+
+
+def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnostics(
+    tmp_path: Path,
+) -> None:
+    manifest_root = tmp_path / "manifest-root"
+    collection_root = tmp_path / "row"
+    context = _execution_context(collection_root=collection_root)
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        initial_slots=_initial_slots(),
+        manifest_root=manifest_root,
+        execution_context=context,
+    )
+
+    assert result.manifest_path == collection_root / "manifest.json"
+    assert result.diagnostics_path == collection_root / "training-diagnostics.json"
+    assert not (manifest_root / "manifests" / "training_runs").exists()
+    manifest = load_manifest(result.manifest_path)
+    assert manifest.id == "feedbax-training-run:planned-row"
+    assert manifest.intent_hash == context.execution.authored_intent.intent_hash
+    assert manifest.execution_hash == context.execution.execution_capsule.execution_hash
+    assert (
+        manifest.resolved_semantics_root_hash
+        == context.execution.resolved_snapshot.root_hash
+    )
+    assert manifest.input_data_identities == []
+    assert manifest.completed_batches == 1
+    assert manifest.metadata["environment_fingerprint"] == "environment:fixture"
+    provenance = manifest.metadata["training_row_provenance"]
+    assert provenance["planned_run_id"] == manifest.id
+    assert provenance["row_id"] == "row-a"
+    assert provenance["row_index"] == 2
+    assert provenance["axis_coordinates"] == {"learning_rate": 3e-4}
+    assert provenance["lowerer_identities"] == [
+        {
+            "lowerer_id": "feedbax.tests.lowerer",
+            "lowerer_version": "v3",
+        }
+    ]
+    assert manifest.provenance.metadata["environment_fingerprint"] == (
+        "environment:fixture"
+    )
+    assert result.run_id == manifest.id
+    assert result.final_coordinate.run_id == manifest.id
+    assert result.checkpoint_writes[0].manifest.run_id == manifest.id
+
+    diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics["kind"] == "TrainingDiagnostics"
+    assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v1"
+    assert diagnostics["manifest_id"] == manifest.id
+    assert diagnostics["completed_batches"] == 1
+    assert diagnostics["segment_completed_batches"] == 1
+    assert diagnostics["cumulative_completed_batches"] == 1
+    assert diagnostics["seeds"] == [7]
+    assert diagnostics["lr_trace"] == [{"step": 1, "learning_rate": 3e-4}]
+    assert diagnostics["checkpoint_coordinates"] == [1]
+    assert diagnostics["checkpoint_transactions"][0]["completed_batches"] == 1
+    assert diagnostics["checkpoint_transactions"][0]["cumulative_completed_batches"] == 1
+    diagnostics_ref = next(
+        artifact for artifact in manifest.artifacts if artifact.role == "training_diagnostics"
+    )
+    assert diagnostics_ref.uri == str(result.diagnostics_path)
+    assert diagnostics_ref.sha256 == sha256_bytes(result.diagnostics_path.read_bytes())
+
+
+def test_native_execution_context_and_diagnostics_reject_unknown_schema_versions() -> None:
+    context_payload = _execution_context().model_dump(mode="json", exclude_none=True)
+    context_payload["schema_version"] = "feedbax.spec.native_execution_context.v0"
+    with pytest.raises(ValueError, match="native_execution_context.v1"):
+        NativeExecutionProducerContext.model_validate(context_payload)
+
+    diagnostics_payload = {
+        "kind": "TrainingDiagnostics",
+        "schema_id": "feedbax.manifest.training_diagnostics",
+        "schema_version": "feedbax.manifest.training_diagnostics.v0",
+        "manifest_id": "feedbax-training-run:test",
+        "run_id": "test",
+        "terminal_status": "completed",
+        "completed_batches": 0,
+        "segment_completed_batches": 0,
+    }
+    with pytest.raises(ValueError, match="training_diagnostics.v1"):
+        TrainingDiagnostics.model_validate(diagnostics_payload)
+
+
+@pytest.mark.parametrize("drift", ["schema", "sha256"])
+def test_native_execution_rejects_payload_binding_drift_before_side_effects(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    collection_root = tmp_path / "row"
+    context = _execution_context(collection_root=collection_root).model_dump(
+        mode="json", exclude_none=True
+    )
+    if drift == "schema":
+        context["execution"]["payload"]["schema_id"] = "feedbax.tests.wrong_payload"
+    else:
+        context["execution"]["payload"]["sha256"] = "e" * 64
+        context["execution"]["row_provenance"][
+            "lowered_execution_payload_hash"
+        ] = "e" * 64
+    callback_called = False
+
+    def observe_progress(_event: object) -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(TrainingRunExecutorError, match=drift):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=context,
+            progress_callback=observe_progress,
+        )
+
+    assert callback_called is False
+    assert not collection_root.exists()
+    assert not (tmp_path / "manifest-root").exists()
+    assert not (tmp_path / "checkpoint-root").exists()
+
+
+@pytest.mark.parametrize("case", ["missing", "tampered"])
+def test_native_execution_rejects_invalid_local_payload_custody_before_side_effects(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    collection_root = tmp_path / "row"
+    context = _execution_context(collection_root=collection_root).model_dump(
+        mode="json", exclude_none=True
+    )
+    custody_path = tmp_path / "custody" / "training-run-spec.json"
+    if case == "tampered":
+        custody_path.parent.mkdir()
+        custody_path.write_text('{"tampered": true}\n', encoding="utf-8")
+    context["execution"]["payload"]["uri"] = custody_path.as_uri()
+    callback_called = False
+
+    def observe_progress(_event: object) -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(TrainingRunExecutorError, match="custody"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=context,
+            progress_callback=observe_progress,
+        )
+
+    assert callback_called is False
+    assert not collection_root.exists()
+    assert not (tmp_path / "manifest-root").exists()
+    assert not (tmp_path / "checkpoint-root").exists()
+    if case == "tampered":
+        assert custody_path.read_text(encoding="utf-8") == '{"tampered": true}\n'
+
+
+def test_native_execution_allows_non_local_payload_custody_binding(tmp_path: Path) -> None:
+    context = _execution_context(collection_root=tmp_path / "row").model_dump(
+        mode="json", exclude_none=True
+    )
+    context["execution"]["payload"]["uri"] = "artifact://registry/execution-payload"
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path / "manifest-root",
+        checkpoint_root=tmp_path / "checkpoint-root",
+        execution_context=context,
+    )
+
+    assert result.status == "completed"
+
+
+def test_native_execution_rejects_non_planned_run_id_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    collection_root = tmp_path / "row"
+    with pytest.raises(TrainingRunExecutorError, match="planned_run_id"):
+        execute_training_run_spec(
+            _run_spec(),
+            run_id="row-label-is-not-execution-identity",
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=_execution_context(collection_root=collection_root),
+        )
+
+    assert not collection_root.exists()
+    assert not (tmp_path / "manifest-root").exists()
+    assert not (tmp_path / "checkpoint-root").exists()
+
+
+def test_native_manifest_conflict_fails_before_partial_outputs(tmp_path: Path) -> None:
+    collection_root = tmp_path / "row"
+    collection_root.mkdir()
+    manifest_path = collection_root / "manifest.json"
+    manifest_path.write_text("existing\n", encoding="utf-8")
+
+    with pytest.raises(ManifestEmissionConflictError, match="already exists"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=_execution_context(collection_root=collection_root),
+        )
+
+    assert manifest_path.read_text(encoding="utf-8") == "existing\n"
+    assert list(collection_root.iterdir()) == [manifest_path]
+    assert not (tmp_path / "manifest-root").exists()
+    assert not (tmp_path / "checkpoint-root").exists()
+
+
+def test_native_diagnostics_conflict_fails_before_training_or_checkpoint_side_effects(
+    tmp_path: Path,
+) -> None:
+    collection_root = tmp_path / "row"
+    collection_root.mkdir()
+    diagnostics_path = collection_root / "training-diagnostics.json"
+    diagnostics_path.write_text("existing diagnostics\n", encoding="utf-8")
+    callback_called = False
+
+    def observe_progress(_event: object) -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(DiagnosticsEmissionConflictError, match="before execution"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=_execution_context(collection_root=collection_root),
+            progress_callback=observe_progress,
+        )
+
+    assert callback_called is False
+    assert diagnostics_path.read_text(encoding="utf-8") == "existing diagnostics\n"
+    assert list(collection_root.iterdir()) == [diagnostics_path]
+    assert not (tmp_path / "manifest-root").exists()
+    assert not (tmp_path / "checkpoint-root").exists()
+
+
+def test_orchestration_injects_canonical_context_only_for_native_commands() -> None:
+    context = _execution_context()
+    provenance = context.execution.row_provenance
+    assert provenance is not None
+    row = RunRowSpec(
+        row_id=provenance.row_id,
+        execution=context.execution,
+        launch=RowLaunchSpec(
+            command=["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"]
+        ),
+    )
+
+    command = inject_native_execution_context(
+        row.launch.command,
+        row=row,
+        environment_fingerprint="environment:runtime",
+        collection_root="/runtime/rows/row-a",
+    )
+
+    assert command[-2] == "--execution-context-json"
+    payload = json.loads(command[-1])
+    assert payload["execution"] == context.execution.model_dump(
+        mode="json", exclude_none=True
+    )
+    assert payload["execution"]["row_provenance"] == provenance.model_dump(
+        mode="json", exclude_none=True
+    )
+    assert payload["environment_fingerprint"] == "environment:runtime"
+    assert payload["collection_root"] == "/runtime/rows/row-a"
+    assert payload["execution"]["row_provenance"]["planned_run_id"] == (
+        "feedbax-training-run:planned-row"
+    )
+
+    non_native = ["python", "worker.py"]
+    assert inject_native_execution_context(
+        non_native,
+        row=row,
+        environment_fingerprint="environment:runtime",
+        collection_root="/runtime/rows/row-a",
+    ) == non_native
+
+    with pytest.raises(NativeExecutionContextError, match="orchestration-owned"):
+        inject_native_execution_context(
+            [*row.launch.command, "--execution-context", "caller.json"],
+            row=row,
+            environment_fingerprint="environment:runtime",
+            collection_root="/runtime/rows/row-a",
+        )
 
 
 def test_training_manifest_preflight_rejects_observed_rlrmp_schema_mismatch() -> None:
@@ -776,6 +1168,11 @@ def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histo
     assert child.manifest.segment_lineage.parent_transaction_id == parent.manifest.transaction_id
     assert child.manifest.segment_lineage.start_batch == 1
     assert child.manifest.segment_lineage.segment_batch_count == 1
+    assert resumed.diagnostics.completed_batches == 2
+    assert resumed.diagnostics.segment_completed_batches == 1
+    assert resumed.diagnostics.cumulative_completed_batches == 2
+    assert resumed.diagnostics.checkpoint_coordinates == [1]
+    assert resumed.diagnostics.checkpoint_transactions[0].cumulative_completed_batches == 2
     expected_child_slots = {
         **initial_slots,
         "batch_history": BatchHistory(jnp.array([0], dtype=jnp.int32)),
@@ -1115,7 +1512,7 @@ def test_execute_training_run_spec_manifest_root_injection_and_conflict(
     manifest_path = root / "manifests" / "training_runs" / "feedbax-training-run_stable-id.json"
     assert manifest_path.is_file()
 
-    with pytest.raises(ManifestEmissionConflictError, match="different content"):
+    with pytest.raises(ManifestEmissionConflictError, match="already exists"):
         execute_training_run_spec(
             _run_spec(),
             run_id="stable-id",
@@ -1127,12 +1524,20 @@ def test_execute_training_run_spec_manifest_root_injection_and_conflict(
 def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     spec_path = tmp_path / "training-run-spec.json"
     slots_path = tmp_path / "initial-slots.json"
+    context_path = tmp_path / "execution-context.json"
+    row_dir = tmp_path / "row"
     events_dir = tmp_path / "events"
     cache_dir = tmp_path / "jax-cache"
     cache_dir.mkdir()
     (cache_dir / "preexisting-cache-entry").write_bytes(b"cache")
     _write_json(spec_path, _run_spec().model_dump(mode="json"))
     _write_json(slots_path, _initial_slots())
+    _write_json(
+        context_path,
+        _execution_context(
+            planned_run_id="feedbax-training-run:planned-cli"
+        ).model_dump(mode="json", exclude_none=True),
+    )
 
     proc = subprocess.run(
         [
@@ -1146,7 +1551,9 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
             "--initial-slots",
             str(slots_path),
             "--run-id",
-            "cli-toy",
+            "feedbax-training-run:planned-cli",
+            "--execution-context",
+            str(context_path),
         ],
         check=False,
         stdout=subprocess.PIPE,
@@ -1157,6 +1564,7 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
             **os.environ,
             "FEEDBAX_RUN_SET_ID": "telemetry-set",
             "FEEDBAX_ROW_ID": "telemetry-row",
+            "FEEDBAX_ROW_DIR": str(row_dir),
             "FEEDBAX_RUN_EVENTS_DIR": str(events_dir),
             "JAX_COMPILATION_CACHE_DIR": str(cache_dir),
         },
@@ -1164,9 +1572,12 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
 
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
-    assert payload["run_id"] == "cli-toy"
+    assert payload["run_id"] == "feedbax-training-run:planned-cli"
     assert payload["status"] == "completed"
+    assert Path(payload["manifest_path"]) == row_dir / "manifest.json"
     assert Path(payload["manifest_path"]).is_file()
+    assert (row_dir / "training-diagnostics.json").is_file()
+    assert payload["manifest_payload"]["id"] == "feedbax-training-run:planned-cli"
     assert "phase=train_batch" in proc.stderr
     assert "batch=1" in proc.stderr
     assert "loss=1" in proc.stderr

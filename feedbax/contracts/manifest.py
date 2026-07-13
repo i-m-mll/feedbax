@@ -1549,19 +1549,21 @@ def planned_training_run_manifest_id(
     task_binding_spec: dict[str, Any] | None = None,
     seed: Any | None = None,
     axis_coordinates: dict[str, Any] | None = None,
+    row_provenance_identity: dict[str, Any] | None = None,
 ) -> str:
     """Return deterministic identity for a planned Studio training run."""
+    identity = {
+        "graph_spec": graph_spec,
+        "training_spec": training_spec,
+        "task_spec": task_spec,
+        "task_binding_spec": task_binding_spec,
+        "seed": seed,
+        "axis_coordinates": axis_coordinates or {},
+    }
+    if row_provenance_identity is not None:
+        identity["row_provenance_identity"] = row_provenance_identity
     digest = sha256_bytes(
-        canonical_json_bytes(
-            {
-                "graph_spec": graph_spec,
-                "training_spec": training_spec,
-                "task_spec": task_spec,
-                "task_binding_spec": task_binding_spec,
-                "seed": seed,
-                "axis_coordinates": axis_coordinates or {},
-            }
-        )
+        canonical_json_bytes(identity)
     )
     return f"feedbax-training-run:{digest[:32]}"
 

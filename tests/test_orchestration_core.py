@@ -13,6 +13,7 @@ import pytest
 
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.manifest import TrainingRunManifest
+from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
     training_run_execution_hash,
@@ -1417,6 +1418,84 @@ def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -
     assert outputs["pid"] == process.pid
     assert outputs["adopted"] is True
     assert not marker.exists()
+
+
+def test_local_driver_injects_native_execution_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    original = bundle.row("row-a")
+    row = original.model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=[
+                    sys.executable,
+                    "-m",
+                    "feedbax",
+                    "execute-training-run-spec",
+                    "specs/row-a.json",
+                ]
+            ),
+            "execution": original.execution.model_copy(
+                update={
+                    "row_provenance": TrainingRowProvenance(
+                        row_id="row-a",
+                        row_index=4,
+                        planned_run_id="feedbax-training-run:planned-local",
+                        authored_payload_hash="e" * 64,
+                        lowered_execution_payload_hash=original.execution.payload.sha256,
+                        axis_coordinates={"seed": 9},
+                        seed=9,
+                        lowerer_identities=[
+                            RowLowererIdentity(
+                                lowerer_id="feedbax.tests.local",
+                                lowerer_version="v2",
+                            )
+                        ],
+                    )
+                }
+            ),
+        }
+    )
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        pid = 12345
+
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState()},
+        environment_fingerprint="fingerprint-local",
+    )
+    driver.provision(bundle, state)
+
+    outputs = driver.launch_row(bundle, row, state)
+
+    assert outputs["pid"] == 12345
+    command = captured["command"]
+    assert command[-2] == "--execution-context-json"
+    context = json.loads(command[-1])
+    assert context["execution"]["row_provenance"]["planned_run_id"] == (
+        "feedbax-training-run:planned-local"
+    )
+    assert context["execution"]["row_provenance"]["lowerer_identities"] == [
+        {
+            "lowerer_id": "feedbax.tests.local",
+            "lowerer_version": "v2",
+        }
+    ]
+    assert context["environment_fingerprint"] == "fingerprint-local"
+    assert context["collection_root"].endswith("/rows/row-a")
 
 
 def test_local_driver_marks_dead_started_pid_failed_without_spawning(tmp_path: Path) -> None:
