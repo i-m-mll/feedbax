@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import equinox as eqx
 from pydantic import BaseModel
@@ -65,6 +66,20 @@ class ContextMaterializationPending:
 
 
 ContextMaterializerFn = Callable[[AnalysisRunContext], Any | MaterializationResult]
+DataContextMaterializerFn = Callable[
+    [AnalysisRunContext, AnalysisInputData],
+    Any | MaterializationResult,
+]
+MaterializerInputMode = Literal["context", "context_and_data"]
+
+
+def _materializer_input_mode(value: str) -> MaterializerInputMode:
+    if value not in {"context", "context_and_data"}:
+        raise ValueError(
+            "materializer_input must be 'context' or 'context_and_data', "
+            f"got {value!r}"
+        )
+    return cast(MaterializerInputMode, value)
 
 
 def materialization_metadata(
@@ -96,12 +111,23 @@ class ContextMaterializer(AbstractAnalysis):
     becomes the downstream analysis result.
 
     Feedbax records artifacts and embedded refs but treats the JSON payload as an
-    opaque downstream-owned schema.
+    opaque downstream-owned schema. Materializers receive only the run context by
+    default. Set ``materializer_input="context_and_data"`` to opt in to receiving
+    the resolved :class:`AnalysisInputData` as a second argument.
     """
 
-    materializer: ContextMaterializerFn = eqx.field(kw_only=True, static=True)
+    materializer: ContextMaterializerFn | DataContextMaterializerFn = eqx.field(
+        kw_only=True,
+        static=True,
+    )
     artifact_role: str = eqx.field(kw_only=True, static=True)
     logical_name: str = eqx.field(kw_only=True, static=True)
+    materializer_input: MaterializerInputMode = eqx.field(
+        default="context",
+        kw_only=True,
+        static=True,
+        converter=_materializer_input_mode,
+    )
     schema_boundary: str | None = eqx.field(default=None, static=True)
     metadata: dict[str, Any] = eqx.field(default_factory=dict, static=True)
 
@@ -123,8 +149,14 @@ class ContextMaterializer(AbstractAnalysis):
         **kwargs: Any,
     ) -> Any:
         """Materialize the opaque payload and record all declared artifact refs."""
-        del data, result, kwargs
-        materialized = self._coerce_materialization_result(self.materializer(context))
+        del result, kwargs
+        if self.materializer_input == "context_and_data":
+            materializer = cast(DataContextMaterializerFn, self.materializer)
+            value = materializer(context, data)
+        else:
+            materializer = cast(ContextMaterializerFn, self.materializer)
+            value = materializer(context)
+        materialized = self._coerce_materialization_result(value)
         context.record_artifact_refs_from_value(materialized.payload)
         payload = _json_payload(materialized.payload)
         metadata = {
@@ -168,6 +200,174 @@ class ContextMaterializer(AbstractAnalysis):
         return MaterializationResult(payload=value)
 
 
+def existing_file_artifact_group(
+    path: Path | str,
+    *,
+    group_id: str,
+    role: str,
+    logical_name: str | None = None,
+    group_role: str | None = None,
+    media_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    group_metadata: Mapping[str, Any] | None = None,
+) -> tuple[AnalysisArtifactGroup, ...]:
+    """Describe an existing file as a one-member artifact group.
+
+    Missing paths and paths that are not regular files produce no group. This
+    makes optional materializations composable without deferring the existence
+    check to artifact custody.
+    """
+    artifact_path = Path(path).expanduser()
+    if not artifact_path.is_file():
+        return ()
+    return (
+        AnalysisArtifactGroup(
+            group_id=group_id,
+            members=(
+                AnalysisArtifactFile(
+                    path=artifact_path,
+                    role=role,
+                    logical_name=logical_name,
+                    media_type=media_type,
+                    metadata=dict(metadata or {}),
+                    group_role=group_role,
+                ),
+            ),
+            metadata=dict(group_metadata or {}),
+        ),
+    )
+
+
+def directory_artifact_group(
+    path: Path | str,
+    *,
+    group_id: str,
+    role: str,
+    group_role: str | None = None,
+    logical_name_root: Path | str | None = None,
+    media_type: str | None = None,
+    metadata_for: Callable[[Path], Mapping[str, Any]] | None = None,
+    group_metadata: Mapping[str, Any] | None = None,
+) -> tuple[AnalysisArtifactGroup, ...]:
+    """Describe all regular files below a directory as one artifact group.
+
+    Members are sorted by path for deterministic manifests. Logical names are
+    relative POSIX paths rooted at ``logical_name_root`` when supplied, or at
+    the input directory otherwise. A file outside an explicit logical-name root
+    raises :class:`ValueError` instead of silently emitting a host-specific name.
+    """
+    directory = Path(path).expanduser()
+    if not directory.is_dir():
+        return ()
+    files = tuple(sorted(item for item in directory.rglob("*") if item.is_file()))
+    if not files:
+        return ()
+    name_root = (
+        directory
+        if logical_name_root is None
+        else Path(logical_name_root).expanduser()
+    )
+    members = tuple(
+        AnalysisArtifactFile(
+            path=item,
+            role=role,
+            logical_name=item.relative_to(name_root).as_posix(),
+            media_type=media_type,
+            metadata=dict(metadata_for(item)) if metadata_for is not None else {},
+            group_role=group_role,
+        )
+        for item in files
+    )
+    return (
+        AnalysisArtifactGroup(
+            group_id=group_id,
+            members=members,
+            metadata=dict(group_metadata or {}),
+        ),
+    )
+
+
+def manifest_artifact_group(
+    manifest: Mapping[str, Any],
+    *,
+    entries_key: str,
+    artifact_key: str,
+    group_id: str,
+    role: str,
+    path_key: str = "path",
+    path_root: Path | str | None = None,
+    group_role: str | None = None,
+    media_type: str | None = None,
+    logical_name_for: Callable[[str, Mapping[str, Any], Path], str | None] | None = None,
+    metadata_for: Callable[[str, Mapping[str, Any], Path], Mapping[str, Any]] | None = None,
+    group_metadata: Mapping[str, Any] | None = None,
+) -> tuple[AnalysisArtifactGroup, ...]:
+    """Build one artifact group from path-bearing entries in a manifest mapping.
+
+    ``manifest[entries_key]`` is expected to map entry IDs to mappings, each of
+    which may contain a nested ``artifact_key`` mapping with ``path_key``. Invalid,
+    absent, and non-file entries are skipped. Relative paths are resolved against
+    ``path_root`` when supplied. Callbacks receive the entry ID, nested artifact
+    mapping, and resolved path so downstream packages can own logical names and
+    metadata without Feedbax interpreting their schemas.
+    """
+    entries = manifest.get(entries_key)
+    if not isinstance(entries, Mapping):
+        return ()
+    root = None if path_root is None else Path(path_root).expanduser()
+    members: list[AnalysisArtifactFile] = []
+    for raw_entry_id, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            continue
+        artifact = entry.get(artifact_key)
+        if not isinstance(artifact, Mapping):
+            continue
+        raw_path = artifact.get(path_key)
+        if raw_path is None:
+            continue
+        try:
+            artifact_path = Path(raw_path).expanduser()
+        except TypeError:
+            continue
+        if not artifact_path.is_absolute() and root is not None:
+            artifact_path = root / artifact_path
+        if not artifact_path.is_file():
+            continue
+        entry_id = str(raw_entry_id)
+        members.append(
+            AnalysisArtifactFile(
+                path=artifact_path,
+                role=role,
+                logical_name=(
+                    logical_name_for(entry_id, artifact, artifact_path)
+                    if logical_name_for is not None
+                    else artifact_path.name
+                ),
+                media_type=media_type,
+                metadata=(
+                    dict(metadata_for(entry_id, artifact, artifact_path))
+                    if metadata_for is not None
+                    else {}
+                ),
+                group_role=group_role,
+            )
+        )
+    if not members:
+        return ()
+    return (
+        AnalysisArtifactGroup(
+            group_id=group_id,
+            members=tuple(members),
+            metadata=dict(group_metadata or {}),
+        ),
+    )
+
+
+def read_json_payload(path: Path | str) -> Any:
+    """Read one UTF-8 JSON payload from ``path``."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def _json_payload(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json", exclude_none=True)
@@ -183,8 +383,14 @@ __all__ = [
     "ContextMaterializationPending",
     "ContextMaterializer",
     "ContextMaterializerFn",
+    "DataContextMaterializerFn",
     "ExistingAnalysisArtifact",
+    "MaterializerInputMode",
     "MaterializationResult",
     "RegenerationSpecRef",
+    "directory_artifact_group",
+    "existing_file_artifact_group",
+    "manifest_artifact_group",
     "materialization_metadata",
+    "read_json_payload",
 ]
