@@ -49,7 +49,7 @@ from feedbax.contracts.run_matrix import (
 )
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
-from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 from feedbax.contracts.checkpoints import CheckpointForkBarrierMapping, CheckpointSegmentLineage
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
@@ -1008,18 +1008,22 @@ def _planned_run_id(
     lowered_execution_payload_hash: str,
     lowerer_identities: list[RowLowererIdentity],
 ) -> str:
+    custody_payload = json.loads(training_spec_canonical_bytes(payload))
+    custody_axis_coordinates = json.loads(
+        training_spec_canonical_bytes(axis_coordinates)
+    )
     provenance_identity = TrainingRowPlanningProvenance(
         authored_payload_hash=authored_payload_hash,
         lowered_execution_payload_hash=lowered_execution_payload_hash,
         lowerer_identities=lowerer_identities,
     )
     return planned_training_run_manifest_id(
-        graph_spec=_identity_graph_spec(payload),
-        training_spec=_identity_training_spec(payload),
-        task_spec=_identity_task_spec(payload),
-        task_binding_spec=_identity_task_binding_spec(payload),
+        graph_spec=_identity_graph_spec(custody_payload),
+        training_spec=_identity_training_spec(custody_payload),
+        task_spec=_identity_task_spec(custody_payload),
+        task_binding_spec=_identity_task_binding_spec(custody_payload),
         seed=seed,
-        axis_coordinates=axis_coordinates,
+        axis_coordinates=custody_axis_coordinates,
         row_provenance_identity=provenance_identity.model_dump(
             mode="json", exclude_none=True
         ),

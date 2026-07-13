@@ -341,6 +341,7 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
         lowerer_version: str,
         *,
         unprojected_value: str | float = "baseline",
+        graph_value: float | None = None,
         reverse_lowerers: bool = False,
     ):
         def lower(_authored_row):
@@ -359,6 +360,11 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
                     "schema_id": "example.execution",
                     "schema_version": "example.execution.v1",
                     "constant": True,
+                    **(
+                        {}
+                        if graph_value is None
+                        else {"graph_spec": {"signed_zero": graph_value}}
+                    ),
                     # This field is outside the historical graph/training/task projections.
                     "extension_payload": {"value": unprojected_value},
                 },
@@ -391,12 +397,12 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
     negative_zero = materialize(
         1,
         "example.science.v1",
-        unprojected_value=-0.0,
+        graph_value=-0.0,
     )
     positive_zero = materialize(
         1,
         "example.science.v1",
-        unprojected_value=0.0,
+        graph_value=0.0,
     )
 
     assert baseline.payload == changed_authored.payload == changed_lowerer.payload
@@ -439,6 +445,61 @@ def test_planned_id_binds_complete_lowered_payload_and_ordered_authorship(
     assert [
         identity.lowerer_id for identity in baseline.provenance.lowerer_identities
     ] == ["example.adapter", "example.science"]
+
+
+def test_sweep_planned_id_canonicalizes_payload_and_axis_coordinates(
+    tmp_path: Path,
+) -> None:
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            "name": "signed zero sweep",
+            "base": {
+                "kind": "inline",
+                "inline": {"graph_spec": {"signed_zero": 1.0}},
+            },
+            "axes": [
+                {
+                    "id": "signed_zero",
+                    "path": "graph_spec.signed_zero",
+                    "variation": {"kind": "explicit", "values": [-0.0, 0.0]},
+                }
+            ],
+            "combination": {"mode": "cross"},
+        }
+    )
+
+    negative_zero, positive_zero = materialize_adapted_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        row_validator=lambda _payload, _row_id: None,
+    ).rows
+    negative_zero_artifact = store_canonical_json_artifact(
+        negative_zero.payload,
+        root=tmp_path / "custody",
+        role="compiled_execution_payload",
+        logical_name="sweep-negative-zero.json",
+    )
+    positive_zero_artifact = store_canonical_json_artifact(
+        positive_zero.payload,
+        root=tmp_path / "custody",
+        role="compiled_execution_payload",
+        logical_name="sweep-positive-zero.json",
+    )
+
+    negative_coordinate = negative_zero.provenance.axis_coordinates["values"]["signed_zero"]
+    positive_coordinate = positive_zero.provenance.axis_coordinates["values"]["signed_zero"]
+    assert math.copysign(1.0, negative_coordinate) == -1.0
+    assert math.copysign(1.0, positive_coordinate) == 1.0
+    assert negative_zero.provenance.lowered_execution_payload_hash == (
+        negative_zero_artifact.sha256
+    )
+    assert positive_zero.provenance.lowered_execution_payload_hash == (
+        positive_zero_artifact.sha256
+    )
+    assert negative_zero_artifact.sha256 == positive_zero_artifact.sha256
+    assert negative_zero.planned_run_id == positive_zero.planned_run_id
 
 
 def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Path) -> None:
