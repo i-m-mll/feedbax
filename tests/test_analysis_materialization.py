@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import jax.numpy as jnp
 import pytest
 
 from feedbax.analysis.context import AnalysisRunContext
@@ -16,6 +17,66 @@ from feedbax.analysis.materialization import (
 )
 from feedbax.contracts.manifest import AnalysisRunSpec, load_manifest
 from tests.analysis_fixtures import build_toy_analysis_data
+
+
+def _array_closing_materializer(value: float):
+    array = jnp.asarray([value, value + 1])
+
+    def materialize(_context):
+        return {"value": array[0]}
+
+    return materialize
+
+
+def test_context_materializer_identity_does_not_traverse_callable_array_closures() -> None:
+    first = ContextMaterializer(
+        materializer=_array_closing_materializer(1.0),
+        artifact_role="toy",
+        logical_name="toy.json",
+    )
+    second = ContextMaterializer(
+        materializer=_array_closing_materializer(9.0),
+        artifact_role="toy",
+        logical_name="toy.json",
+    )
+
+    assert first._field_params == {
+        "artifact_role": "toy",
+        "logical_name": "toy.json",
+        "materializer_input": "context",
+        "schema_boundary": None,
+        "metadata": {},
+    }
+    assert first.md5_str == second.md5_str
+
+
+@pytest.mark.parametrize(
+    ("changed", "value"),
+    [
+        ("artifact_role", "other-role"),
+        ("logical_name", "other.json"),
+        ("materializer_input", "context_and_data"),
+        ("schema_boundary", "toy.v2"),
+        ("metadata", {"schema": "toy.v2"}),
+    ],
+)
+def test_context_materializer_declared_identity_fields_affect_hash(
+    changed: str,
+    value,
+) -> None:
+    defaults = {
+        "materializer": _array_closing_materializer(1.0),
+        "artifact_role": "toy",
+        "logical_name": "toy.json",
+        "materializer_input": "context",
+        "schema_boundary": "toy.v1",
+        "metadata": {"schema": "toy.v1"},
+    }
+    baseline = ContextMaterializer(**defaults)
+    changed_fields = {**defaults, changed: value}
+    candidate = ContextMaterializer(**changed_fields)
+
+    assert baseline.md5_str != candidate.md5_str
 
 
 def test_context_materializer_explicitly_dispatches_analysis_input_data(

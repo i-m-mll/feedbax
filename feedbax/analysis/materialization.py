@@ -131,6 +131,24 @@ class ContextMaterializer(AbstractAnalysis):
     schema_boundary: str | None = eqx.field(default=None, static=True)
     metadata: dict[str, Any] = eqx.field(default_factory=dict, static=True)
 
+    @property
+    def _field_params(self) -> dict[str, Any]:
+        """Return stable declarative identity fields without traversing the callable.
+
+        Materializer callbacks may close over resolved analysis inputs, including JAX
+        arrays that are neither stable nor safe to inspect while constructing the
+        analysis dependency graph. The surrounding recipe/spec owns the callback's
+        implementation identity; this node hashes only its declared artifact and
+        dispatch contract.
+        """
+        return {
+            "artifact_role": self.artifact_role,
+            "logical_name": self.logical_name,
+            "materializer_input": self.materializer_input,
+            "schema_boundary": self.schema_boundary,
+            "metadata": self.metadata,
+        }
+
     def compute(self, data: AnalysisInputData, **kwargs: Any) -> ContextMaterializationPending:
         """Return an explicit sentinel; context-bound materialization is in the hook."""
         del data, kwargs
