@@ -580,13 +580,28 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
 def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
     """Verify realized seeds equal declared seeds."""
     check_id = "seeds"
-    expected = _first_present(
+    bundle_seed = _first_present(
         _path(row.bundle_row_spec, "seeds"),
         _path(row.bundle_row_spec, "seed"),
         _path(row.bundle_row_spec, "training", "seeds"),
         _path(row.bundle_row_spec, "metadata", "seeds"),
         _path(row.bundle_row_spec, "metadata", "seed"),
     )
+    provenance_seed = _path(row.execution, "row_provenance", "seed")
+    if provenance_seed is None:
+        provenance_seed = _MISSING
+    if (
+        bundle_seed is not _MISSING
+        and provenance_seed is not _MISSING
+        and _canonical(_seed_sequence(bundle_seed)) != _canonical(_seed_sequence(provenance_seed))
+    ):
+        return fail_check(
+            check_id,
+            expected={"bundle_row_spec": bundle_seed},
+            observed={"execution.row_provenance.seed": provenance_seed},
+            detail="declared seeds disagree between bundle row and execution provenance",
+        )
+    expected = _first_present(bundle_seed, provenance_seed)
     observed = _first_present(
         _path(row.training_diagnostics, "seeds"),
         _path(row.training_diagnostics, "seed"),
@@ -597,7 +612,7 @@ def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, "bundle_row_spec.seeds")
     if observed is _MISSING:
         return missing_input_check(check_id, "manifest/training_diagnostics.seeds")
-    if _canonical(expected) == _canonical(observed):
+    if _canonical(_seed_sequence(expected)) == _canonical(_seed_sequence(observed)):
         return pass_check(check_id, expected=expected, observed=observed)
     return fail_check(check_id, expected=expected, observed=observed)
 
@@ -1028,6 +1043,17 @@ def _first_present(*values: Any) -> Any:
 
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _seed_sequence(value: Any) -> Any:
+    """Normalize one declared or observed scalar seed to singleton-list form."""
+    if (
+        isinstance(value, Mapping)
+        or isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+    ):
+        return value
+    return [value]
 
 
 def _close(observed: float, expected: float, *, rel_tol: float) -> bool:
