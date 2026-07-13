@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.manifest import TrainingRunManifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry, migrate_structured_spec_payload
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
@@ -54,6 +55,7 @@ from feedbax.orchestration.conformance import (
     run_conformance_checks,
     write_conformance_certificate,
 )
+from feedbax.orchestration.state import RowState
 from feedbax.plugins.discovery import load_conformance_check_plugins
 
 
@@ -263,6 +265,155 @@ def test_core_checks_pass_fail_and_missing_inputs() -> None:
     assert checks["seeds"].status == "pass"
     assert checks["events_terminal"].status == "fail"
     assert "did not produce a verdict" in str(checks["events_terminal"].detail)
+
+
+def _authorized_stopped_row(**updates: object) -> ConformanceRowArtifacts:
+    base = {
+        "bundle_row_spec": {"n_batches": 100, "checkpoint_interval": 50},
+        "training_diagnostics": {
+            "manifest_id": "feedbax-training-run:stopped",
+            "terminal_status": "cancelled",
+            "completed_batches": 50,
+            "checkpoint_coordinates": [50],
+            "checkpoint_transactions": [
+                {
+                    "transaction_id": "tx-stopped",
+                    "completed_batches": 50,
+                    "cumulative_completed_batches": 50,
+                }
+            ],
+        },
+        "manifest_payload": {
+            "kind": "TrainingRunManifest",
+            "id": "feedbax-training-run:stopped",
+            "status": "cancelled",
+            "completed_batches": 50,
+        },
+        "row_state": RowState(
+            status="stopped",
+            completed_at=GENERATED_AT,
+            error="operator-stop-after-checkpoint",
+        ),
+        "runtime_inputs": RowConformanceRuntimeInputs(
+            authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=50)
+        ),
+    }
+    base.update(updates)
+    return _row(**base)
+
+
+def test_completed_batches_accepts_only_a_fully_attested_authorized_stop() -> None:
+    result = check_completed_batches(_authorized_stopped_row())
+
+    assert result.status == "pass"
+    assert result.expected == {
+        "authored_batches": 100,
+        "authorized_stop_after_batches": 50,
+        "terminal_status": "cancelled",
+        "row_status": "stopped",
+        "row_error": "operator-stop-after-checkpoint",
+        "final_checkpoint_batches": 50,
+    }
+    assert result.observed["diagnostics_completed_batches"] == 50
+    assert result.observed["checkpoint_coordinates"] == [50]
+    assert result.observed["checkpoint_completed_batches"] == [50]
+
+
+@pytest.mark.parametrize(
+    ("updates", "detail"),
+    [
+        (
+            {
+                "runtime_inputs": RowConformanceRuntimeInputs(
+                    authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=40)
+                )
+            },
+            "diagnostics completed batches do not match the authorized stop",
+        ),
+        (
+            {
+                "manifest_payload": {
+                    "kind": "TrainingRunManifest",
+                    "id": "feedbax-training-run:stopped",
+                    "status": "completed",
+                    "completed_batches": 50,
+                }
+            },
+            "training manifest does not report cancelled status",
+        ),
+        (
+            {
+                "manifest_payload": {
+                    "kind": "TrainingRunManifest",
+                    "id": "feedbax-training-run:stopped",
+                    "status": "cancelled",
+                    "completed_batches": 49,
+                }
+            },
+            "training manifest completed batches do not match the authorized stop",
+        ),
+        (
+            {
+                "manifest_payload": {
+                    "kind": "TrainingRunManifest",
+                    "id": "feedbax-training-run:stopped",
+                    "status": "cancelled",
+                }
+            },
+            "training manifest completed batch count is missing",
+        ),
+        (
+            {"row_state": RowState(status="completed", completed_at=GENERATED_AT)},
+            "orchestration row state is not stopped",
+        ),
+        (
+            {
+                "training_diagnostics": {
+                    "manifest_id": "feedbax-training-run:stopped",
+                    "terminal_status": "cancelled",
+                    "completed_batches": 50,
+                    "checkpoint_coordinates": [40],
+                    "checkpoint_transactions": [
+                        {
+                            "transaction_id": "tx-short",
+                            "completed_batches": 40,
+                            "cumulative_completed_batches": 40,
+                        }
+                    ],
+                }
+            },
+            "final checkpoint coordinate does not match the authorized stop",
+        ),
+    ],
+)
+def test_completed_batches_rejects_inconsistent_authorized_stops(
+    updates: dict[str, object],
+    detail: str,
+) -> None:
+    result = check_completed_batches(_authorized_stopped_row(**updates))
+
+    assert result.status == "fail"
+    assert detail in str(result.detail)
+
+
+def test_completed_batches_does_not_relax_unplanned_or_full_budget_rows() -> None:
+    unplanned = check_completed_batches(
+        _authorized_stopped_row(runtime_inputs=RowConformanceRuntimeInputs())
+    )
+    completed = check_completed_batches(
+        _authorized_stopped_row(
+            training_diagnostics={"completed_batches": 100},
+            manifest_payload={"status": "completed"},
+            row_state=RowState(status="completed", completed_at=GENERATED_AT),
+        )
+    )
+
+    assert unplanned.status == "fail"
+    assert unplanned.expected == 100
+    assert unplanned.observed == 50
+    assert completed.status == "pass"
+    assert completed.expected == 100
+    assert completed.observed == 100
 
 
 def test_checkpoint_cadence_uses_segment_length_for_continuation() -> None:

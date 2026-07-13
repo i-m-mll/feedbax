@@ -35,6 +35,7 @@ from feedbax.orchestration.schedule_eval import (
     learning_rate_from_build_optimizer,
     require_schedule_context,
 )
+from feedbax.orchestration.state import RowState
 
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
@@ -47,6 +48,25 @@ CHECK_STATUSES = (CHECK_STATUS_PASS, CHECK_STATUS_FAIL, CHECK_STATUS_SKIPPED)
 CheckStatus = Literal["pass", "fail", "skipped"]
 OverallStatus = Literal["pass", "fail"]
 CheckCallable = Callable[["ConformanceRowArtifacts"], "CheckEntry"]
+
+
+class AuthorizedBatchStop(StrictModel):
+    """Operational authorization to stop one row at a batch checkpoint.
+
+    The limit is runtime control, not authored scientific identity.  Supplying
+    it does not make a short run conformant by itself: the collected manifest,
+    diagnostics, checkpoint evidence, and orchestration row state must all
+    independently agree that the row stopped at this boundary.
+    """
+
+    stop_after_batches: int = Field(gt=0)
+    reason: Literal["stop_after_batches"] = "stop_after_batches"
+
+
+class RowConformanceRuntimeInputs(StrictModel):
+    """Typed operational inputs available only to row conformance checks."""
+
+    authorized_batch_stop: AuthorizedBatchStop | None = None
 
 
 class CheckEntry(StrictModel):
@@ -115,6 +135,8 @@ class ConformanceRowArtifacts:
     recorded_environment_fingerprint: Any = None
     preflight_normalized_payload: Mapping[str, Any] | None = None
     manifest_payload: Mapping[str, Any] | None = None
+    row_state: RowState | None = None
+    runtime_inputs: RowConformanceRuntimeInputs | None = None
 
 
 class CheckRegistry:
@@ -553,7 +575,7 @@ def assert_certificate_allows_completed_registration(
 
 
 def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
-    """Verify realized batch count equals the declared count."""
+    """Verify full completion or an authorized, internally consistent stop."""
     check_id = "completed_batches"
     expected = _first_present(
         _path(row.bundle_row_spec, "expected_batches"),
@@ -574,9 +596,96 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, "bundle_row_spec.n_batches")
     if observed is _MISSING:
         return missing_input_check(check_id, "training_diagnostics.completed_batches")
-    if int(observed) == int(expected):
-        return pass_check(check_id, expected=int(expected), observed=int(observed))
-    return fail_check(check_id, expected=int(expected), observed=int(observed))
+    authored_batches = int(expected)
+    observed_batches = int(observed)
+    if observed_batches == authored_batches:
+        return pass_check(check_id, expected=authored_batches, observed=observed_batches)
+
+    authorized_stop = (
+        row.runtime_inputs.authorized_batch_stop if row.runtime_inputs is not None else None
+    )
+    if authorized_stop is None:
+        return fail_check(check_id, expected=authored_batches, observed=observed_batches)
+
+    stop_batches = int(authorized_stop.stop_after_batches)
+    manifest = _manifest_payload(row)
+    diagnostics = row.training_diagnostics
+    row_state = row.row_state
+    checkpoint_coordinates = _checkpoint_coordinates(row)
+    checkpoint_completed_batches = _checkpoint_completed_batches(row)
+    manifest_id = _path(manifest, "id")
+    diagnostics_manifest_id = _path(diagnostics, "manifest_id")
+    diagnostics_status = _path(diagnostics, "terminal_status")
+    manifest_status = _path(manifest, "status")
+    manifest_completed_batches = _first_present(
+        _path(manifest, "completed_batches"),
+        _path(manifest, "summary_metrics", "completed_batches"),
+        _path(manifest, "summary_metrics", "n_batches"),
+    )
+    evidence = {
+        "authorized_stop_after_batches": stop_batches,
+        "diagnostics_completed_batches": observed_batches,
+        "diagnostics_terminal_status": (
+            None if diagnostics_status is _MISSING else diagnostics_status
+        ),
+        "manifest_status": None if manifest_status is _MISSING else manifest_status,
+        "manifest_completed_batches": (
+            None if manifest_completed_batches is _MISSING else manifest_completed_batches
+        ),
+        "manifest_id": None if manifest_id is _MISSING else manifest_id,
+        "diagnostics_manifest_id": (
+            None if diagnostics_manifest_id is _MISSING else diagnostics_manifest_id
+        ),
+        "row_status": None if row_state is None else row_state.status,
+        "row_error": None if row_state is None else row_state.error,
+        "checkpoint_coordinates": checkpoint_coordinates,
+        "checkpoint_completed_batches": checkpoint_completed_batches,
+    }
+    expected_evidence = {
+        "authored_batches": authored_batches,
+        "authorized_stop_after_batches": stop_batches,
+        "terminal_status": "cancelled",
+        "row_status": "stopped",
+        "row_error": "operator-stop-after-checkpoint",
+        "final_checkpoint_batches": stop_batches,
+    }
+    failures: list[str] = []
+    if stop_batches >= authored_batches:
+        failures.append("authorized stop must be earlier than the authored batch budget")
+    if observed_batches != stop_batches:
+        failures.append("diagnostics completed batches do not match the authorized stop")
+    if _canonical_terminal_status(diagnostics_status) != "cancelled":
+        failures.append("training diagnostics do not report cancelled terminal status")
+    if _canonical_terminal_status(manifest_status) != "cancelled":
+        failures.append("training manifest does not report cancelled status")
+    if manifest_completed_batches is _MISSING:
+        failures.append("training manifest completed batch count is missing")
+    elif int(manifest_completed_batches) != stop_batches:
+        failures.append("training manifest completed batches do not match the authorized stop")
+    if manifest_id is _MISSING or diagnostics_manifest_id is _MISSING:
+        failures.append("manifest and training diagnostics require linked manifest ids")
+    elif str(manifest_id) != str(diagnostics_manifest_id):
+        failures.append("training diagnostics manifest id does not match the manifest")
+    if row_state is None:
+        failures.append("orchestration row state is missing")
+    else:
+        if row_state.status != "stopped":
+            failures.append("orchestration row state is not stopped")
+        if row_state.error != "operator-stop-after-checkpoint":
+            failures.append("orchestration row stop reason is not checkpoint-stop")
+    if not checkpoint_coordinates or max(checkpoint_coordinates) != stop_batches:
+        failures.append("final checkpoint coordinate does not match the authorized stop")
+    if not checkpoint_completed_batches or max(checkpoint_completed_batches) != stop_batches:
+        failures.append("checkpoint transaction batch count does not match the authorized stop")
+
+    if failures:
+        return fail_check(
+            check_id,
+            expected=expected_evidence,
+            observed=evidence,
+            detail="; ".join(failures),
+        )
+    return pass_check(check_id, expected=expected_evidence, observed=evidence)
 
 
 def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
@@ -984,6 +1093,22 @@ def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
         if coordinate is not _MISSING:
             coordinates.append(int(coordinate))
     return coordinates
+
+
+def _checkpoint_completed_batches(row: ConformanceRowArtifacts) -> list[int] | None:
+    transactions = _path(row.training_diagnostics, "checkpoint_transactions")
+    if transactions is _MISSING:
+        return None
+    completed: list[int] = []
+    for transaction in transactions:
+        value = _first_present(
+            _path(transaction, "cumulative_completed_batches"),
+            _path(transaction, "completed_batches"),
+        )
+        if value is _MISSING:
+            return None
+        completed.append(int(value))
+    return completed
 
 
 def _expected_checkpoint_coordinates(interval: int, completed_batches: int) -> list[int]:

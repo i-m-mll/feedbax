@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 import pytest
 
+from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.manifest import TrainingRunManifest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
@@ -471,6 +472,34 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
             "RunBundle",
             {"schema_version": "feedbax.orchestration.run_bundle.v0"},
         )
+
+
+def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformance(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.rows[0]
+    stopped = RowState(
+        status="stopped",
+        completed_at=stages.utc_now(),
+        error="operator-stop-after-checkpoint",
+    )
+    runtime_inputs = RowConformanceRuntimeInputs(
+        authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=50)
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: stopped},
+    )
+
+    artifacts = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        row_conformance_inputs={row.row_id: runtime_inputs},
+    )._conformance_artifacts(row, state)
+
+    assert artifacts.row_state == stopped
+    assert artifacts.runtime_inputs == runtime_inputs
 
 
 @pytest.mark.parametrize("stop_after", STAGE_ORDER[:-1])
