@@ -20,7 +20,10 @@ import jax.tree as jt
 import numpy as np
 from pydantic import ValidationError
 
-from feedbax.contracts.checkpoints import CheckpointLineageRef
+from feedbax.contracts.checkpoints import (
+    CheckpointLineageRef,
+    CheckpointTransactionManifest,
+)
 from feedbax.contracts.manifest import (
     EntrypointRef,
     ManifestStatus,
@@ -249,6 +252,21 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             barrier_spec.artifact_sinks,
             run_id=saved.coordinate.run_id,
         )
+        segment_batch_count = self.segment_batch_count
+        if segment_batch_count is None and self.segment_start_batch > 0:
+            cumulative_completed_batches = _terminal_completed_batches(
+                program=self.phase_program,
+                final_slots=saved.slots,
+                fallback=saved.coordinate.program_step,
+                require_authority=True,
+            )
+            segment_batch_count = cumulative_completed_batches - self.segment_start_batch
+            if segment_batch_count < 0:
+                raise TrainingRunExecutorError(
+                    "resumed checkpoint progress precedes its validated segment start: "
+                    f"completed_batches={cumulative_completed_batches} "
+                    f"segment_start_batch={self.segment_start_batch}"
+                )
         write = write_checkpoint_transaction(
             self.root,
             run_spec=self.run_spec,
@@ -259,7 +277,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             status="partial",
             parent_lineage=self.parent_lineage,
             segment_start_batch=self.segment_start_batch,
-            segment_batch_count=self.segment_batch_count,
+            segment_batch_count=segment_batch_count,
             segment_parent_transaction_id=self.segment_parent_transaction_id,
             history_availability={"progress": True},
             metadata={"barrier_visit_ordinal": saved.visit_ordinal},
@@ -475,6 +493,10 @@ def execute_training_run_spec(
             segment_start_batch = continuation.source_completed_batches
             segment_batch_count = continuation.additional_batches
             segment_parent_transaction_id = loaded.manifest.transaction_id
+        else:
+            segment_start_batch = _same_row_resume_start_batch(loaded.manifest)
+            if segment_start_batch > 0:
+                segment_parent_transaction_id = loaded.manifest.transaction_id
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
@@ -1335,6 +1357,30 @@ def _build_training_diagnostics(
         ),
         metadata=(dict(diagnostic_input.metadata) if diagnostic_input is not None else {}),
     )
+
+
+def _same_row_resume_start_batch(manifest: CheckpointTransactionManifest) -> int:
+    """Return the authoritative segment origin for an operational resume."""
+
+    completed_batches = manifest.completed_training_batches
+    if (
+        isinstance(completed_batches, bool)
+        or not isinstance(completed_batches, int)
+        or completed_batches < 0
+    ):
+        raise TrainingRunExecutorError(
+            "same-row resume checkpoint lacks authoritative completed-training progress"
+        )
+    lineage_total = (
+        manifest.segment_lineage.start_batch
+        + manifest.segment_lineage.segment_batch_count
+    )
+    if lineage_total != completed_batches:
+        raise TrainingRunExecutorError(
+            "same-row resume checkpoint progress disagrees with segment lineage: "
+            f"completed_batches={completed_batches} lineage_total={lineage_total}"
+        )
+    return completed_batches
 
 
 def _terminal_completed_batches(

@@ -43,6 +43,10 @@ from feedbax.contracts.worker import (
     StateSlotSpec,
 )
 from feedbax.orchestration.events import RunEventEmitter, RunEventReader
+from feedbax.orchestration.conformance import (
+    ConformanceRowArtifacts,
+    check_checkpoint_cadence,
+)
 from feedbax.orchestration.bundle import (
     AuthoredIntentRef,
     ExecutionCapsuleRef,
@@ -64,6 +68,7 @@ from feedbax.training.executor import (
     DiagnosticsEmissionConflictError,
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
+    _same_row_resume_start_batch,
     execute_training_run_spec,
 )
 from feedbax.training.manifest_preflight import (
@@ -1117,6 +1122,98 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
     assert resumed.final_slots["optimizer"]["count"].tolist() == [3.0]
     assert resumed.final_coordinate.program_step == 2
     assert resumed.checkpoint_writes[0].manifest.parent_lineage
+
+
+def test_same_row_resume_realizes_segment_lineage_and_cadence(
+    tmp_path: Path,
+) -> None:
+    checkpoint_root = tmp_path / "checkpoint-custody"
+    source_context = _execution_context(collection_root=tmp_path / "source-row")
+    source_context = source_context.model_copy(
+        update={
+            "diagnostics": source_context.diagnostics.model_copy(
+                update={
+                    "lr_trace": [
+                        LearningRateDiagnostic(step=0, learning_rate=3e-4),
+                        LearningRateDiagnostic(step=1, learning_rate=3e-4),
+                    ]
+                }
+            )
+        }
+    )
+    source = execute_training_run_spec(
+        _run_spec(),
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "source-manifests",
+        checkpoint_root=checkpoint_root,
+        stop_after_barrier="after_train_batch",
+        execution_context=source_context,
+    )
+    parent = source.checkpoint_writes[-1]
+    assert parent.manifest.completed_training_batches == 1
+
+    resume_context = source_context.model_copy(
+        update={"collection_root": str(tmp_path / "resumed-row")}
+    )
+    resumed = execute_training_run_spec(
+        _run_spec(),
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "resumed-manifests",
+        checkpoint_root=checkpoint_root,
+        resume=True,
+        execution_context=resume_context,
+    )
+
+    child = resumed.checkpoint_writes[-1].manifest
+    assert child.segment_lineage.parent_transaction_id == parent.manifest.transaction_id
+    assert child.segment_lineage.start_batch == 1
+    assert child.segment_lineage.segment_batch_count == 1
+    assert resumed.diagnostics.segment_completed_batches == 1
+    assert resumed.diagnostics.cumulative_completed_batches == 2
+    assert resumed.diagnostics.checkpoint_coordinates == [1]
+    assert resumed.diagnostics.resume_context == source_context.diagnostics.resume_context
+    assert (
+        resumed.diagnostics.optimizer_build_context
+        == source_context.diagnostics.optimizer_build_context
+    )
+    assert resumed.diagnostics.lr_trace == source_context.diagnostics.lr_trace
+    conformance_row = ConformanceRowArtifacts(
+        row_id="row-a",
+        execution=source_context.execution,
+        manifest_path=resumed.manifest_path,
+        training_diagnostics=resumed.diagnostics.model_dump(mode="json", exclude_none=True),
+        bundle_row_spec={
+            "training_config": {"n_batches": 2},
+            "checkpoint_progress": {"checkpoint_interval": 1},
+            "optimizer": {"type": "adamw", "params": {"learning_rate": 3e-4}},
+        },
+    )
+    assert check_checkpoint_cadence(conformance_row).status == "pass"
+
+
+def test_same_row_resume_progress_fails_closed_without_consistent_authority(
+    tmp_path: Path,
+) -> None:
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="source",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path,
+    )
+    manifest = result.checkpoint_writes[-1].manifest
+
+    with pytest.raises(TrainingRunExecutorError, match="lacks authoritative"):
+        _same_row_resume_start_batch(
+            manifest.model_copy(update={"completed_training_batches": None})
+        )
+
+    inconsistent_lineage = manifest.segment_lineage.model_copy(
+        update={"segment_batch_count": manifest.segment_lineage.segment_batch_count + 1}
+    )
+    with pytest.raises(TrainingRunExecutorError, match="disagrees with segment lineage"):
+        _same_row_resume_start_batch(
+            manifest.model_copy(update={"segment_lineage": inconsistent_lineage})
+        )
 
 
 @pytest.mark.parametrize("self_contained", [False, True])
