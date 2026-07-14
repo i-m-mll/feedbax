@@ -302,10 +302,7 @@ class RunControlSpec(TrainingRunContractModel):
                 f"{self.schema_version!r}; expected {RUN_CONTROL_SPEC_SCHEMA_VERSION!r}; "
                 "migration_intentionally_absent=yes"
             )
-        if (
-            self.continuation is not None
-            and self.continuation.additional_batches != self.n_batches
-        ):
+        if self.continuation is not None and self.continuation.additional_batches != self.n_batches:
             raise ValueError(
                 "/n_batches must equal /continuation/additional_batches for a continuation"
             )
@@ -398,6 +395,19 @@ class MethodExtensionsSpec(TrainingRunContractModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class TrainingMethodAuthoringContribution(BaseModel):
+    """Runtime-only method values consumed by the typed authoring compiler.
+
+    This hook result is not a durable spec. The authoring compiler embeds its
+    values in the existing ``TrainingRunSpec`` v2 contract.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    training_config: TrainingConfig
+    method_extensions: MethodExtensionsSpec = Field(default_factory=MethodExtensionsSpec)
+
+
 class StandardSupervisedMethodPayload(TrainingRunContractModel):
     """Payload owned by Feedbax's standard supervised training method."""
 
@@ -487,6 +497,23 @@ TrainingMethodOptimizerStepExtractor = Callable[[PayloadT, Mapping[str, Any]], i
 
 
 @dataclass(frozen=True)
+class TrainingMethodAuthoringHook(Generic[PayloadT]):
+    """Stable runtime hook for method-owned authoring contributions."""
+
+    lowerer_id: str
+    lowerer_version: str
+    compile: Callable[[PayloadT], TrainingMethodAuthoringContribution]
+
+    def validate_structure(self) -> None:
+        """Validate the stable lowerer identity and callable boundary."""
+        identities = (self.lowerer_id, self.lowerer_version)
+        if any(not isinstance(value, str) or not value.strip() for value in identities):
+            raise ValueError("training method authoring hook identity must not be empty")
+        if not callable(self.compile):
+            raise TypeError("training method authoring hook compile must be callable")
+
+
+@dataclass(frozen=True)
 class TrainingMethodMetadataProjector(Generic[PayloadT]):
     """Typed runtime hook for projecting method-owned manifest metadata."""
 
@@ -530,6 +557,7 @@ class TrainingMethodDescriptor(Generic[PayloadT]):
     ] = lambda _payload: {}
     preparation_provider: ExecutionPreparationProvider | None = None
     row_compiler: TrainingRowLowerer | None = None
+    authoring_hook: TrainingMethodAuthoringHook[PayloadT] | None = None
     metadata_projector: TrainingMethodMetadataProjector[PayloadT] | None = None
     optimizer_spec_projector: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None
     optimizer_step_extractor: TrainingMethodOptimizerStepExtractor[PayloadT] | None = None
@@ -678,6 +706,13 @@ class TrainingMethodRegistry:
         ]
         if invalid_hooks:
             raise TypeError(f"training method descriptor has non-callable hooks={invalid_hooks!r}")
+        if descriptor.authoring_hook is not None:
+            if not isinstance(descriptor.authoring_hook, TrainingMethodAuthoringHook):
+                raise TypeError(
+                    "training method descriptor authoring_hook must be a "
+                    "TrainingMethodAuthoringHook"
+                )
+            descriptor.authoring_hook.validate_structure()
         if descriptor.metadata_projector is not None:
             if not isinstance(descriptor.metadata_projector, TrainingMethodMetadataProjector):
                 raise TypeError(

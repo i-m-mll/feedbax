@@ -56,6 +56,10 @@ from feedbax.contracts.run_matrix import (
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
 )
+from feedbax.contracts.training import (
+    TrainingMethodAuthoringContribution,
+    TrainingMethodAuthoringHook,
+)
 
 try:
     from ..config.hyperparams import load_hps
@@ -139,7 +143,9 @@ __all__ = [
     "TrainingRowProvenance",
     "TrainingRunExecutorError",
     "TrainingMethodAuthoringCompilation",
+    "TrainingMethodAuthoringContribution",
     "TrainingMethodAuthoringError",
+    "TrainingMethodAuthoringHook",
     "TrainingMethodAuthoringProjectors",
     "AUTHORING_RESERVED_METADATA_KEYS",
     "TRAINING_METHOD_AUTHORING_LOWERER_ID",
