@@ -29,6 +29,8 @@ from feedbax.contracts.training import (
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+    RUN_CONTROL_SPEC_SCHEMA_ID,
+    RUN_CONTROL_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
 )
@@ -569,6 +571,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
     assert families["TrainingRunSpec"].current_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    assert families["RunControlSpec"].identity == RUN_CONTROL_SPEC_SCHEMA_ID
+    assert families["RunControlSpec"].current_version == RUN_CONTROL_SPEC_SCHEMA_VERSION
     assert families["TrainingRunMatrixSpec"].identity == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     assert (
         families["TrainingRunMatrixSpec"].current_version == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
@@ -872,6 +876,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "GraphSpec",
         "PopulationStructureSpec",
         "TrainingRunSpec",
+        "RunControlSpec",
         "TrainingRunMatrixSpec",
         "TrainingSpec",
         "LrScheduleSpec",

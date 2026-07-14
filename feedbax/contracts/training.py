@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run.v1"
 TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v2"
+RUN_CONTROL_SPEC_SCHEMA_ID = "feedbax.spec.training.run_control"
+RUN_CONTROL_SPEC_SCHEMA_VERSION = "feedbax.spec.training.run_control.v1"
 LR_SCHEDULE_SPEC_SCHEMA_ID = "feedbax.spec.training.lr_schedule"
 LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training.lr_schedule.v1"
 LR_SCHEDULE_SPEC_SCHEMA_VERSION = "feedbax.spec.training.lr_schedule.v2"
@@ -276,6 +278,37 @@ class TrainingRunContractModel(StrictModel):
     """Base model for durable training-run request contracts."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class RunControlSpec(TrainingRunContractModel):
+    """Small, method-agnostic control surface for one training segment."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_id: Literal["feedbax.spec.training.run_control"] = RUN_CONTROL_SPEC_SCHEMA_ID
+    schema_version: str = RUN_CONTROL_SPEC_SCHEMA_VERSION
+    n_batches: int = Field(gt=0)
+    batch_size: int = Field(gt=0)
+    checkpoint_interval: int | None = Field(default=None, gt=0)
+    progress_interval: int | None = Field(default=None, gt=0)
+    continuation: CheckpointContinuationRequest | None = None
+
+    @model_validator(mode="after")
+    def _validate_control(self) -> "RunControlSpec":
+        if self.schema_version != RUN_CONTROL_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                "/schema_version unsupported RunControlSpec schema_version "
+                f"{self.schema_version!r}; expected {RUN_CONTROL_SPEC_SCHEMA_VERSION!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        if (
+            self.continuation is not None
+            and self.continuation.additional_batches != self.n_batches
+        ):
+            raise ValueError(
+                "/n_batches must equal /continuation/additional_batches for a continuation"
+            )
+        return self
 
 
 class MethodRefSpec(TrainingRunContractModel):
