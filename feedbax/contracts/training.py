@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import numbers
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, TypeVar
@@ -481,6 +482,9 @@ class TrainingMethodRegistration:
 
 PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
+TrainingMethodOptimizerSpecProjector = Callable[[PayloadT], OptimizerSpec | Mapping[str, Any]]
+TrainingMethodOptimizerStepExtractor = Callable[[PayloadT, Mapping[str, Any]], int]
+
 
 @dataclass(frozen=True)
 class TrainingMethodMetadataProjector(Generic[PayloadT]):
@@ -527,6 +531,8 @@ class TrainingMethodDescriptor(Generic[PayloadT]):
     preparation_provider: ExecutionPreparationProvider | None = None
     row_compiler: TrainingRowLowerer | None = None
     metadata_projector: TrainingMethodMetadataProjector[PayloadT] | None = None
+    optimizer_spec_projector: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None
+    optimizer_step_extractor: TrainingMethodOptimizerStepExtractor[PayloadT] | None = None
     rejected_payload_versions: tuple[str, ...] = ()
     owner: str = "feedbax"
     package: str | None = None
@@ -664,6 +670,8 @@ class TrainingMethodRegistry:
             "guard_predicates_factory": descriptor.guard_predicates_factory,
             "preparation_provider": descriptor.preparation_provider,
             "row_compiler": descriptor.row_compiler,
+            "optimizer_spec_projector": descriptor.optimizer_spec_projector,
+            "optimizer_step_extractor": descriptor.optimizer_step_extractor,
         }
         invalid_hooks = [
             name for name, hook in hooks.items() if hook is not None and not callable(hook)
@@ -1040,10 +1048,47 @@ def standard_supervised_method_descriptor() -> TrainingMethodDescriptor[
         payload_model=StandardSupervisedMethodPayload,
         contract_compiler=lambda _payload: standard_supervised_method_contract(),
         update_kernels_factory=standard_supervised_update_kernels,
+        optimizer_spec_projector=lambda payload: payload.optimizer,
+        optimizer_step_extractor=_standard_supervised_optimizer_step,
         rejected_payload_versions=("feedbax.spec.training_method.standard_supervised_payload.v0",),
         owner="feedbax.contracts.training",
         package="feedbax",
     )
+
+
+def _standard_supervised_optimizer_step(
+    payload: StandardSupervisedMethodPayload,
+    runtime: Mapping[str, Any],
+) -> int:
+    """Extract the standard method's declared optimizer count without tree search."""
+    value: Any
+    metadata = runtime.get("metadata")
+    if isinstance(metadata, Mapping) and "optimizer_step" in metadata:
+        value = metadata["optimizer_step"]
+    elif "optimizer_step" in runtime:
+        value = runtime["optimizer_step"]
+    else:
+        optimizer = runtime.get(payload.optimizer_slot)
+        if not isinstance(optimizer, Mapping) or "count" not in optimizer:
+            raise ValueError(
+                "standard supervised optimizer step requires either checkpoint "
+                "/metadata/optimizer_step or the declared optimizer slot count"
+            )
+        value = optimizer["count"]
+    item = getattr(value, "item", None)
+    if callable(item):
+        size = getattr(value, "size", 1)
+        if size != 1:
+            raise ValueError("standard supervised optimizer count must contain one scalar")
+        value = item()
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError("standard supervised optimizer count must be numeric")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("standard supervised optimizer count must be integer-valued")
+    step = int(value)
+    if step < 0:
+        raise ValueError("standard supervised optimizer count must be non-negative")
+    return step
 
 
 def default_training_method_registry() -> TrainingMethodRegistry:
