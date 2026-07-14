@@ -89,6 +89,16 @@ try:
         TrainingRowLowerer,
         materialize_adapted_run_matrix,
     )
+    from .authoring import (
+        AUTHORING_RESERVED_METADATA_KEYS,
+        TRAINING_METHOD_AUTHORING_LOWERER_ID,
+        TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY,
+        TRAINING_METHOD_AUTHORING_LOWERER_VERSION,
+        TrainingMethodAuthoringCompilation,
+        TrainingMethodAuthoringError,
+        TrainingMethodAuthoringProjectors,
+        compile_training_method_authoring,
+    )
 except ImportError:
     pass
 
@@ -128,6 +138,13 @@ __all__ = [
     "TrainingRowPlanningProvenance",
     "TrainingRowProvenance",
     "TrainingRunExecutorError",
+    "TrainingMethodAuthoringCompilation",
+    "TrainingMethodAuthoringError",
+    "TrainingMethodAuthoringProjectors",
+    "AUTHORING_RESERVED_METADATA_KEYS",
+    "TRAINING_METHOD_AUTHORING_LOWERER_ID",
+    "TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY",
+    "TRAINING_METHOD_AUTHORING_LOWERER_VERSION",
     "DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY",
     "ExecutionPreparationError",
     "ExecutionPreparationProvider",
@@ -141,6 +158,7 @@ __all__ = [
     "derive_checkpoint_fork_compatibility_projection",
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
+    "compile_training_method_authoring",
     "execute_training_run_spec",
     "emit_training_run_spec_storage",
     "fork_checkpoint_plan",

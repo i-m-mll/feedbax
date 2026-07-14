@@ -197,6 +197,8 @@ from feedbax.contracts.training import (
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+    RUN_CONTROL_SPEC_SCHEMA_ID,
+    RUN_CONTROL_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
@@ -2322,6 +2324,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             rejected_old_versions=("feedbax.spec.domain_compile_report.v0",),
             required_tests=("tests/test_acausal_compile_reports.py",),
+        ),
+        _family(
+            "RunControlSpec",
+            RUN_CONTROL_SPEC_SCHEMA_ID,
+            RUN_CONTROL_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=("feedbax.training.authoring.compile_training_method_authoring",),
+            consumed_by=("feedbax.training.authoring.compile_training_method_authoring",),
+            description=(
+                "Method-agnostic batch horizon, cadence, and continuation authoring control."
+            ),
+            rejected_old_versions=(f"{RUN_CONTROL_SPEC_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_training_authoring.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "TrainingRunSpec",
