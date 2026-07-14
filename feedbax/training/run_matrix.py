@@ -50,16 +50,26 @@ from feedbax.contracts.run_matrix import (
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
-from feedbax.contracts.checkpoints import CheckpointForkBarrierMapping, CheckpointSegmentLineage
+from feedbax.contracts.checkpoints import (
+    CheckpointForkBarrierMapping,
+    CheckpointForkPlan,
+    CheckpointSegmentLineage,
+)
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     LrScheduleSpec,
+    OptimizerSpec,
     TrainingMethodRegistry,
     TrainingRunSpec,
 )
 from feedbax.training.checkpoint_custody import (
+    CheckpointForkPlanBindings,
+    CheckpointForkTransformRegistry,
     ResumeSlotTransform,
+    checkpoint_fork_plan_sha256,
+    fork_checkpoint_plan,
     fork_checkpoint_transaction,
+    run_contract_binding,
 )
 from feedbax.training.optimizers import learning_rate_at_step
 from feedbax.training.schedule_clocks import resolve_schedule_window
@@ -119,6 +129,99 @@ class LrContinuationReporter(Protocol):
 RowPayloadValidator = Callable[[dict[str, Any], str], TrainingRunSpec | None]
 
 
+def _validate_matrix_checkpoint_fork_plan(
+    spec: TrainingRunMatrixSpec,
+    materialized: MaterializedRunMatrix,
+    plan: CheckpointForkPlan,
+    bindings: CheckpointForkPlanBindings,
+    source_checkpoint_root: Path,
+) -> None:
+    """Reject matrix/plan identity drift before any checkpoint publication."""
+    if spec.fork is None:
+        raise RunMatrixError("matrix spec has no fork block")
+    materialized_ids = [row.row_id for row in materialized.rows]
+    if len(materialized_ids) != len(set(materialized_ids)):
+        raise RunMatrixError("materialized matrix row identities are not unique")
+    if any(target.row_id is None for target in plan.targets):
+        raise RunMatrixError(
+            "matrix checkpoint fork plan targets require explicit row_id; "
+            "target_id fallback is ambiguous"
+        )
+    plan_ids = [target.row_id for target in plan.targets]
+    if len(plan_ids) != len(set(plan_ids)):
+        raise RunMatrixError("checkpoint fork plan target row identities are not unique")
+    unknown = sorted(set(plan_ids) - set(materialized_ids))
+    missing = sorted(set(materialized_ids) - set(plan_ids))
+    if unknown:
+        raise RunMatrixError(f"checkpoint fork plan contains unknown matrix rows {unknown!r}")
+    if missing:
+        raise RunMatrixError(f"checkpoint fork plan is missing matrix rows {missing!r}")
+
+    try:
+        bound_source = bindings.checkpoint_roots[plan.source.checkpoint_root_ref]
+    except KeyError as exc:
+        raise RunMatrixError(
+            f"checkpoint fork plan source root ref {plan.source.checkpoint_root_ref!r} "
+            "has no runtime binding"
+        ) from exc
+    if Path(bound_source).resolve() != source_checkpoint_root.resolve():
+        raise RunMatrixError(
+            "matrix source_checkpoint_root does not match checkpoint fork plan source binding; "
+            f"matrix={str(source_checkpoint_root.resolve())!r} "
+            f"plan={str(Path(bound_source).resolve())!r}"
+        )
+
+    rows = {row.row_id: row for row in materialized.rows}
+    resolved_roots = [Path(bound_source).resolve()]
+    for target in plan.targets:
+        assert target.row_id is not None
+        row = rows[target.row_id]
+        if row.spec is None:
+            raise RunMatrixError(
+                f"materialized row {target.row_id!r} has no canonical TrainingRunSpec"
+            )
+        try:
+            bound_spec = bindings.run_specs[target.run_spec_ref]
+            bound_target_root = bindings.checkpoint_roots[target.checkpoint_root_ref]
+            bound_templates = bindings.slot_templates[target.slot_template_ref]
+            if target.history_policy.segment_history_template_ref is not None:
+                bindings.segment_history_templates[
+                    target.history_policy.segment_history_template_ref
+                ]
+            if target.population_member_ids_ref is not None:
+                bindings.population_member_ids[target.population_member_ids_ref]
+        except KeyError as exc:
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} has an unresolved "
+                f"runtime binding {exc.args[0]!r}"
+            ) from exc
+        if not isinstance(bound_spec, TrainingRunSpec):
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} run-spec binding "
+                "is not a TrainingRunSpec"
+            )
+        if not isinstance(bound_templates, Mapping):
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} slot-template "
+                "binding is not a mapping"
+            )
+        resolved_roots.append(Path(bound_target_root).resolve())
+        bound_program = bound_spec.worker_execution.method_contract.phase_program
+        row_program = row.spec.worker_execution.method_contract.phase_program
+        bound_hash = run_contract_binding(bound_spec, bound_program).canonical_projection_sha256
+        row_hash = run_contract_binding(row.spec, row_program).canonical_projection_sha256
+        if bound_hash != row_hash:
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} runtime run spec does "
+                f"not match materialized row {target.row_id!r}; "
+                f"bound={bound_hash!r} materialized={row_hash!r}"
+            )
+    if len(resolved_roots) != len(set(resolved_roots)):
+        raise RunMatrixError(
+            "checkpoint fork plan source and target root mappings must be distinct"
+        )
+
+
 class TrainingRowLowerer(Protocol):
     """Public typed boundary from authored row intent to execution payload."""
 
@@ -129,6 +232,9 @@ class TrainingRowLowerer(Protocol):
 class StandardLrContinuationReporter:
     """Generic LR reporter for constant and declarative schedule optimizer specs."""
 
+    def __init__(self, registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY) -> None:
+        self.registry = registry
+
     def points(
         self,
         *,
@@ -137,28 +243,39 @@ class StandardLrContinuationReporter:
         row_spec: TrainingRunSpec,
         declared_mode: str,
     ) -> list[dict[str, Any]]:
-        optimizer = _find_optimizer_spec(row_payload)
+        del row_payload
+        optimizer = _project_optimizer_spec(row_spec, registry=self.registry)
         if optimizer is None:
-            return []
+            raise RunMatrixError(
+                "scheduled LR continuation requires the method descriptor to define "
+                "optimizer_spec_projector, or the caller to supply an explicit lr_reporter"
+            )
         segment_start = _source_completed_step(source_manifest)
         current_step = segment_start
-        schedule = optimizer.get("lr_schedule")
+        recorded_optimizer_step = _recorded_optimizer_step(
+            row_spec,
+            source_manifest,
+            registry=self.registry,
+        )
+        schedule = optimizer.lr_schedule
         if schedule is None:
-            params = optimizer.get("params")
-            if isinstance(params, Mapping) and "learning_rate" in params:
-                return [
-                    {"step": current_step, "lr": params["learning_rate"], "mode": declared_mode}
-                ]
-            training_config = row_payload.get("training_config")
-            if isinstance(training_config, Mapping) and "learning_rate" in training_config:
+            if "learning_rate" in optimizer.params:
                 return [
                     {
                         "step": current_step,
-                        "lr": training_config["learning_rate"],
+                        "lr": optimizer.params["learning_rate"],
                         "mode": declared_mode,
+                        "recorded_optimizer_step": recorded_optimizer_step,
                     }
                 ]
-            return []
+            return [
+                {
+                    "step": current_step,
+                    "lr": None,
+                    "mode": declared_mode,
+                    "recorded_optimizer_step": recorded_optimizer_step,
+                }
+            ]
         schedule_spec = LrScheduleSpec.model_validate(schedule)
         lineage = CheckpointSegmentLineage(
             start_batch=segment_start,
@@ -180,7 +297,14 @@ class StandardLrContinuationReporter:
             current_step=current_step,
             schedule_origin_step=window.start_batch,
         )
-        return [{"step": current_step, "lr": float(lr), "mode": declared_mode}]
+        return [
+            {
+                "step": current_step,
+                "lr": float(lr),
+                "mode": declared_mode,
+                "recorded_optimizer_step": recorded_optimizer_step,
+            }
+        ]
 
 
 def materialize_run_matrix(
@@ -343,6 +467,7 @@ def render_spec_lock_table(
     materialized: MaterializedRunMatrix,
     *,
     segment_lineages: Mapping[str, CheckpointSegmentLineage] | None = None,
+    method_registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY,
 ) -> str:
     """Render a Markdown spec-lock summary for reviewable launch plans."""
     override_paths = sorted(
@@ -353,7 +478,11 @@ def render_spec_lock_table(
             if hasattr(override, "path")
         }
     )
-    schedule_lines = _resolved_schedule_lines(materialized, segment_lineages or {})
+    schedule_lines = _resolved_schedule_lines(
+        materialized,
+        segment_lineages or {},
+        method_registry=method_registry,
+    )
     header = [
         f"Matrix: {spec.name}",
         f"Issue: {spec.issue or ''}",
@@ -391,13 +520,17 @@ def render_spec_lock_table(
 def _resolved_schedule_lines(
     materialized: MaterializedRunMatrix,
     segment_lineages: Mapping[str, CheckpointSegmentLineage],
+    *,
+    method_registry: TrainingMethodRegistry,
 ) -> list[str]:
     lines: list[str] = []
     for row in materialized.rows:
-        optimizer = _find_optimizer_spec(row.payload)
-        if optimizer is None or optimizer.get("lr_schedule") is None:
+        if row.spec is None:
             continue
-        schedule = LrScheduleSpec.model_validate(optimizer["lr_schedule"])
+        optimizer = _project_optimizer_spec(row.spec, registry=method_registry)
+        if optimizer is None or optimizer.lr_schedule is None:
+            continue
+        schedule = optimizer.lr_schedule
         lineage = segment_lineages.get(row.row_id)
         if lineage is None:
             continuation = row.spec.checkpoint_progress.continuation if row.spec else None
@@ -425,8 +558,11 @@ def fork_matrix_checkpoints(
     materialized: MaterializedRunMatrix,
     *,
     source_checkpoint_root: Path,
-    target_checkpoint_roots: Mapping[str, Path],
     parity_output_path: Path,
+    target_checkpoint_roots: Mapping[str, Path] | None = None,
+    fork_plan: CheckpointForkPlan | Mapping[str, Any] | None = None,
+    fork_plan_bindings: CheckpointForkPlanBindings | None = None,
+    fork_transform_registry: CheckpointForkTransformRegistry | None = None,
     target_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
     row_slot_transforms: Mapping[str, Mapping[str, ResumeSlotTransform]] | None = None,
     row_transform_metadata: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
@@ -442,7 +578,9 @@ def fork_matrix_checkpoints(
     | None = None,
     skip_fork: bool = False,
     lr_reporter: LrContinuationReporter | None = None,
+    method_registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY,
     tool_version: str = "feedbax.run_matrix_fork.v1",
+    _preflight_lr_points: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Fork a source checkpoint to all matrix rows and write a parity table.
 
@@ -457,6 +595,98 @@ def fork_matrix_checkpoints(
     barrier. It is caller-owned and passed unchanged to custody, which verifies
     the actual source barrier and target coordinate before publishing a fork.
     """
+    legacy_values = (
+        target_checkpoint_roots,
+        target_slot_templates,
+        row_slot_transforms,
+        row_transform_metadata,
+        row_segment_history_templates,
+        row_target_slot_transforms,
+        row_target_transform_metadata,
+        row_target_transformed_slots,
+        row_target_only_slots,
+        row_barrier_mappings,
+    )
+    if fork_plan is not None:
+        if any(value is not None for value in legacy_values) or skip_fork:
+            raise RunMatrixError(
+                "fork_plan cannot be combined with legacy fork mappings or skip_fork"
+            )
+        if fork_plan_bindings is None:
+            raise RunMatrixError("fork_plan requires fork_plan_bindings")
+        resolved_plan = (
+            fork_plan
+            if isinstance(fork_plan, CheckpointForkPlan)
+            else CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate("CheckpointForkPlan", fork_plan).payload
+            )
+        )
+        _validate_matrix_checkpoint_fork_plan(
+            spec,
+            materialized,
+            resolved_plan,
+            fork_plan_bindings,
+            source_checkpoint_root,
+        )
+        reporter = lr_reporter or StandardLrContinuationReporter(method_registry)
+        cached_lr_points = _preflight_lr_continuation_points(
+            spec,
+            materialized,
+            source_manifest=_read_latest_manifest(source_checkpoint_root),
+            reporter=reporter,
+        )
+        results = fork_checkpoint_plan(
+            resolved_plan,
+            fork_plan_bindings,
+            transform_registry=fork_transform_registry,
+            tool_version=tool_version,
+        )
+        roots: dict[str, Path] = {}
+        transformed: dict[str, list[str]] = {}
+        target_only: dict[str, Mapping[str, Mapping[str, Any]]] = {}
+        transform_meta: dict[str, Mapping[str, Any]] = {}
+        common_slots = {
+            record.slot
+            for step in resolved_plan.source.transforms
+            for record in step.records
+        }
+        plan_sha256 = checkpoint_fork_plan_sha256(resolved_plan)
+        for target in resolved_plan.targets:
+            row_id = target.row_id or target.target_id
+            roots[row_id] = results[target.target_id].root
+            target_only[row_id] = {
+                slot: declaration
+                for step in target.transforms
+                for slot, declaration in step.target_only_slots.items()
+            }
+            changed = common_slots | {
+                record.slot for step in target.transforms for record in step.records
+            }
+            transformed[row_id] = sorted(changed - set(target_only[row_id]))
+            if changed:
+                transform_meta[row_id] = {
+                    "identity": "feedbax.training_checkpoint.plan_materialization.v1",
+                    "parameters": {"plan_sha256": plan_sha256},
+                }
+        return fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=source_checkpoint_root,
+            target_checkpoint_roots=roots,
+            parity_output_path=parity_output_path,
+            row_target_transform_metadata=transform_meta or None,
+            row_target_transformed_slots=transformed or None,
+            row_target_only_slots=target_only or None,
+            skip_fork=True,
+            lr_reporter=lr_reporter,
+            method_registry=method_registry,
+            tool_version=tool_version,
+            _preflight_lr_points=cached_lr_points,
+        )
+    if fork_plan_bindings is not None or fork_transform_registry is not None:
+        raise RunMatrixError("fork plan bindings/registry require fork_plan")
+    if target_checkpoint_roots is None:
+        raise RunMatrixError("target_checkpoint_roots is required for legacy fork execution")
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
     row_ids = {row.row_id for row in materialized.rows}
@@ -485,7 +715,20 @@ def fork_matrix_checkpoints(
         unexpected = sorted(set(values or {}) - row_ids)
         if unexpected:
             raise RunMatrixError(f"{label} contain unknown rows {unexpected!r}")
-    reporter = lr_reporter or StandardLrContinuationReporter()
+    reporter = lr_reporter or StandardLrContinuationReporter(method_registry)
+    cached_lr_points = (
+        {
+            row_id: [dict(point) for point in points]
+            for row_id, points in _preflight_lr_points.items()
+        }
+        if _preflight_lr_points is not None
+        else _preflight_lr_continuation_points(
+            spec,
+            materialized,
+            source_manifest=_read_latest_manifest(source_checkpoint_root),
+            reporter=reporter,
+        )
+    )
     parity_rows: list[dict[str, Any]] = []
     mismatches: list[str] = []
     for row in materialized.rows:
@@ -574,14 +817,18 @@ def fork_matrix_checkpoints(
                 "planned_run_id": row.planned_run_id,
                 "kind": "lr_continuation",
                 "transaction_id": transaction_id,
+                "source_run_id": spec.fork.source_run_id,
+                "target_run_id": row.planned_run_id,
+                "source_transaction_id": source_manifest.get("transaction_id"),
+                "target_transaction_id": transaction_id,
+                "source_completed_batches": source_manifest.get("completed_training_batches"),
+                "target_completed_batches": target_manifest.get("completed_training_batches"),
+                "source_segment_lineage": source_manifest.get("segment_lineage"),
+                "target_segment_lineage": target_manifest.get("segment_lineage"),
+                "declared_mode": spec.fork.lr_continuation,
                 **point,
             }
-            for point in reporter.points(
-                source_manifest=source_manifest,
-                row_payload=row.payload,
-                row_spec=row.spec,
-                declared_mode=spec.fork.lr_continuation,
-            )
+            for point in cached_lr_points[row.row_id]
         )
     table = {
         "schema_version": RUN_MATRIX_FORK_PARITY_SCHEMA_VERSION,
@@ -1450,18 +1697,111 @@ def _parity_rows(
     return rows, mismatches
 
 
-def _find_optimizer_spec(row_payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    method_payload = row_payload.get("method_payload")
-    if isinstance(method_payload, Mapping):
-        payload = method_payload.get("payload")
-        if isinstance(payload, Mapping):
-            optimizer = payload.get("optimizer")
-            if isinstance(optimizer, Mapping):
-                return optimizer
-    training_config = row_payload.get("training_config")
-    if isinstance(training_config, Mapping) and "learning_rate" in training_config:
-        return {"params": {"learning_rate": training_config["learning_rate"]}}
-    return None
+def _preflight_lr_continuation_points(
+    spec: TrainingRunMatrixSpec,
+    materialized: MaterializedRunMatrix,
+    *,
+    source_manifest: Mapping[str, Any],
+    reporter: LrContinuationReporter,
+) -> dict[str, list[dict[str, Any]]]:
+    """Resolve and validate all continuation report points before fork writes."""
+    if spec.fork is None:
+        raise RunMatrixError("matrix spec has no fork block")
+    cached: dict[str, list[dict[str, Any]]] = {}
+    for row in materialized.rows:
+        if row.spec is None:
+            raise RunMatrixError(
+                f"row {row.row_id!r} does not contain a canonical TrainingRunSpec"
+            )
+        try:
+            points = reporter.points(
+                source_manifest=source_manifest,
+                row_payload=row.payload,
+                row_spec=row.spec,
+                declared_mode=spec.fork.lr_continuation,
+            )
+            if not isinstance(points, list) or any(
+                not isinstance(point, Mapping) for point in points
+            ):
+                raise TypeError("lr_reporter.points must return a list of mappings")
+            normalized = [dict(point) for point in points]
+            canonical_json_bytes(normalized)
+        except RunMatrixError:
+            raise
+        except Exception as exc:
+            raise RunMatrixError(
+                f"LR continuation reporter preflight failed for row={row.row_id!r}: {exc}"
+            ) from exc
+        cached[row.row_id] = normalized
+    return cached
+
+
+def _project_optimizer_spec(
+    row_spec: TrainingRunSpec,
+    *,
+    registry: TrainingMethodRegistry,
+) -> OptimizerSpec | None:
+    """Project optimizer intent through the method descriptor only."""
+    descriptor = registry.descriptor(row_spec.method_ref)
+    payload = registry.validate_payload(
+        row_spec.method_ref,
+        row_spec.method_payload,
+        path="/method_payload",
+    )
+    projector = descriptor.optimizer_spec_projector if descriptor is not None else None
+    if projector is None:
+        return None
+    try:
+        projected = projector(payload)
+        if not isinstance(projected, (OptimizerSpec, Mapping)):
+            raise TypeError("optimizer_spec_projector must return OptimizerSpec or a mapping")
+        if isinstance(projected, Mapping):
+            unknown = sorted(set(projected) - {"type", "params", "lr_schedule"})
+            if unknown:
+                raise ValueError(f"optimizer projection contains unknown keys={unknown!r}")
+        return OptimizerSpec.model_validate(projected)
+    except Exception as exc:
+        raise RunMatrixError(
+            f"method {row_spec.method_ref.key!r} optimizer projection failed: {exc}"
+        ) from exc
+
+
+def _recorded_optimizer_step(
+    row_spec: TrainingRunSpec,
+    source_manifest: Mapping[str, Any],
+    *,
+    registry: TrainingMethodRegistry,
+) -> int | None:
+    """Read an explicitly recorded checkpoint step through the descriptor hook."""
+    metadata = source_manifest.get("metadata")
+    if not isinstance(metadata, Mapping) or "optimizer_step" not in metadata:
+        return None
+    descriptor = registry.descriptor(row_spec.method_ref)
+    payload = registry.validate_payload(
+        row_spec.method_ref,
+        row_spec.method_payload,
+        path="/method_payload",
+    )
+    extractor = descriptor.optimizer_step_extractor if descriptor is not None else None
+    if extractor is None:
+        return None
+    try:
+        value = extractor(payload, source_manifest)
+    except Exception as exc:
+        raise ForkParityError(
+            f"method {row_spec.method_ref.key!r} optimizer step extraction failed: {exc}"
+        ) from exc
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ForkParityError(
+            "optimizer_step_extractor must return a non-bool non-negative integer; "
+            f"observed={value!r}"
+        )
+    if value != metadata["optimizer_step"]:
+        raise ForkParityError(
+            "recorded optimizer step disagrees with descriptor extraction; "
+            f"metadata={metadata['optimizer_step']!r}, extracted={value!r}"
+        )
+    return value
 
 
 def _source_completed_step(source_manifest: Mapping[str, Any]) -> int:
