@@ -50,7 +50,11 @@ from feedbax.contracts.run_matrix import (
 from feedbax.contracts.migrations import default_spec_registry, migrate_graph_spec
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
-from feedbax.contracts.checkpoints import CheckpointForkBarrierMapping, CheckpointSegmentLineage
+from feedbax.contracts.checkpoints import (
+    CheckpointForkBarrierMapping,
+    CheckpointForkPlan,
+    CheckpointSegmentLineage,
+)
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     LrScheduleSpec,
@@ -58,8 +62,13 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
 )
 from feedbax.training.checkpoint_custody import (
+    CheckpointForkPlanBindings,
+    CheckpointForkTransformRegistry,
     ResumeSlotTransform,
+    checkpoint_fork_plan_sha256,
+    fork_checkpoint_plan,
     fork_checkpoint_transaction,
+    run_contract_binding,
 )
 from feedbax.training.optimizers import learning_rate_at_step
 from feedbax.training.schedule_clocks import resolve_schedule_window
@@ -117,6 +126,99 @@ class LrContinuationReporter(Protocol):
 
 
 RowPayloadValidator = Callable[[dict[str, Any], str], TrainingRunSpec | None]
+
+
+def _validate_matrix_checkpoint_fork_plan(
+    spec: TrainingRunMatrixSpec,
+    materialized: MaterializedRunMatrix,
+    plan: CheckpointForkPlan,
+    bindings: CheckpointForkPlanBindings,
+    source_checkpoint_root: Path,
+) -> None:
+    """Reject matrix/plan identity drift before any checkpoint publication."""
+    if spec.fork is None:
+        raise RunMatrixError("matrix spec has no fork block")
+    materialized_ids = [row.row_id for row in materialized.rows]
+    if len(materialized_ids) != len(set(materialized_ids)):
+        raise RunMatrixError("materialized matrix row identities are not unique")
+    if any(target.row_id is None for target in plan.targets):
+        raise RunMatrixError(
+            "matrix checkpoint fork plan targets require explicit row_id; "
+            "target_id fallback is ambiguous"
+        )
+    plan_ids = [target.row_id for target in plan.targets]
+    if len(plan_ids) != len(set(plan_ids)):
+        raise RunMatrixError("checkpoint fork plan target row identities are not unique")
+    unknown = sorted(set(plan_ids) - set(materialized_ids))
+    missing = sorted(set(materialized_ids) - set(plan_ids))
+    if unknown:
+        raise RunMatrixError(f"checkpoint fork plan contains unknown matrix rows {unknown!r}")
+    if missing:
+        raise RunMatrixError(f"checkpoint fork plan is missing matrix rows {missing!r}")
+
+    try:
+        bound_source = bindings.checkpoint_roots[plan.source.checkpoint_root_ref]
+    except KeyError as exc:
+        raise RunMatrixError(
+            f"checkpoint fork plan source root ref {plan.source.checkpoint_root_ref!r} "
+            "has no runtime binding"
+        ) from exc
+    if Path(bound_source).resolve() != source_checkpoint_root.resolve():
+        raise RunMatrixError(
+            "matrix source_checkpoint_root does not match checkpoint fork plan source binding; "
+            f"matrix={str(source_checkpoint_root.resolve())!r} "
+            f"plan={str(Path(bound_source).resolve())!r}"
+        )
+
+    rows = {row.row_id: row for row in materialized.rows}
+    resolved_roots = [Path(bound_source).resolve()]
+    for target in plan.targets:
+        assert target.row_id is not None
+        row = rows[target.row_id]
+        if row.spec is None:
+            raise RunMatrixError(
+                f"materialized row {target.row_id!r} has no canonical TrainingRunSpec"
+            )
+        try:
+            bound_spec = bindings.run_specs[target.run_spec_ref]
+            bound_target_root = bindings.checkpoint_roots[target.checkpoint_root_ref]
+            bound_templates = bindings.slot_templates[target.slot_template_ref]
+            if target.history_policy.segment_history_template_ref is not None:
+                bindings.segment_history_templates[
+                    target.history_policy.segment_history_template_ref
+                ]
+            if target.population_member_ids_ref is not None:
+                bindings.population_member_ids[target.population_member_ids_ref]
+        except KeyError as exc:
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} has an unresolved "
+                f"runtime binding {exc.args[0]!r}"
+            ) from exc
+        if not isinstance(bound_spec, TrainingRunSpec):
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} run-spec binding "
+                "is not a TrainingRunSpec"
+            )
+        if not isinstance(bound_templates, Mapping):
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} slot-template "
+                "binding is not a mapping"
+            )
+        resolved_roots.append(Path(bound_target_root).resolve())
+        bound_program = bound_spec.worker_execution.method_contract.phase_program
+        row_program = row.spec.worker_execution.method_contract.phase_program
+        bound_hash = run_contract_binding(bound_spec, bound_program).canonical_projection_sha256
+        row_hash = run_contract_binding(row.spec, row_program).canonical_projection_sha256
+        if bound_hash != row_hash:
+            raise RunMatrixError(
+                f"checkpoint fork plan target {target.target_id!r} runtime run spec does "
+                f"not match materialized row {target.row_id!r}; "
+                f"bound={bound_hash!r} materialized={row_hash!r}"
+            )
+    if len(resolved_roots) != len(set(resolved_roots)):
+        raise RunMatrixError(
+            "checkpoint fork plan source and target root mappings must be distinct"
+        )
 
 
 class TrainingRowLowerer(Protocol):
@@ -425,8 +527,11 @@ def fork_matrix_checkpoints(
     materialized: MaterializedRunMatrix,
     *,
     source_checkpoint_root: Path,
-    target_checkpoint_roots: Mapping[str, Path],
     parity_output_path: Path,
+    target_checkpoint_roots: Mapping[str, Path] | None = None,
+    fork_plan: CheckpointForkPlan | Mapping[str, Any] | None = None,
+    fork_plan_bindings: CheckpointForkPlanBindings | None = None,
+    fork_transform_registry: CheckpointForkTransformRegistry | None = None,
     target_slot_templates: Mapping[str, Mapping[str, Any]] | None = None,
     row_slot_transforms: Mapping[str, Mapping[str, ResumeSlotTransform]] | None = None,
     row_transform_metadata: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
@@ -457,6 +562,89 @@ def fork_matrix_checkpoints(
     barrier. It is caller-owned and passed unchanged to custody, which verifies
     the actual source barrier and target coordinate before publishing a fork.
     """
+    legacy_values = (
+        target_checkpoint_roots,
+        target_slot_templates,
+        row_slot_transforms,
+        row_transform_metadata,
+        row_segment_history_templates,
+        row_target_slot_transforms,
+        row_target_transform_metadata,
+        row_target_transformed_slots,
+        row_target_only_slots,
+        row_barrier_mappings,
+    )
+    if fork_plan is not None:
+        if any(value is not None for value in legacy_values) or skip_fork:
+            raise RunMatrixError(
+                "fork_plan cannot be combined with legacy fork mappings or skip_fork"
+            )
+        if fork_plan_bindings is None:
+            raise RunMatrixError("fork_plan requires fork_plan_bindings")
+        resolved_plan = (
+            fork_plan
+            if isinstance(fork_plan, CheckpointForkPlan)
+            else CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate("CheckpointForkPlan", fork_plan).payload
+            )
+        )
+        _validate_matrix_checkpoint_fork_plan(
+            spec,
+            materialized,
+            resolved_plan,
+            fork_plan_bindings,
+            source_checkpoint_root,
+        )
+        results = fork_checkpoint_plan(
+            resolved_plan,
+            fork_plan_bindings,
+            transform_registry=fork_transform_registry,
+            tool_version=tool_version,
+        )
+        roots: dict[str, Path] = {}
+        transformed: dict[str, list[str]] = {}
+        target_only: dict[str, Mapping[str, Mapping[str, Any]]] = {}
+        transform_meta: dict[str, Mapping[str, Any]] = {}
+        common_slots = {
+            record.slot
+            for step in resolved_plan.source.transforms
+            for record in step.records
+        }
+        plan_sha256 = checkpoint_fork_plan_sha256(resolved_plan)
+        for target in resolved_plan.targets:
+            row_id = target.row_id or target.target_id
+            roots[row_id] = results[target.target_id].root
+            target_only[row_id] = {
+                slot: declaration
+                for step in target.transforms
+                for slot, declaration in step.target_only_slots.items()
+            }
+            changed = common_slots | {
+                record.slot for step in target.transforms for record in step.records
+            }
+            transformed[row_id] = sorted(changed - set(target_only[row_id]))
+            if changed:
+                transform_meta[row_id] = {
+                    "identity": "feedbax.training_checkpoint.plan_materialization.v1",
+                    "parameters": {"plan_sha256": plan_sha256},
+                }
+        return fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=source_checkpoint_root,
+            target_checkpoint_roots=roots,
+            parity_output_path=parity_output_path,
+            row_target_transform_metadata=transform_meta or None,
+            row_target_transformed_slots=transformed or None,
+            row_target_only_slots=target_only or None,
+            skip_fork=True,
+            lr_reporter=lr_reporter,
+            tool_version=tool_version,
+        )
+    if fork_plan_bindings is not None or fork_transform_registry is not None:
+        raise RunMatrixError("fork plan bindings/registry require fork_plan")
+    if target_checkpoint_roots is None:
+        raise RunMatrixError("target_checkpoint_roots is required for legacy fork execution")
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
     row_ids = {row.row_id for row in materialized.rows}

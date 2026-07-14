@@ -7,6 +7,7 @@ state, slot integrity, and run-contract binding for training writers.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Generic, Literal, TypeVar
 
@@ -67,6 +68,8 @@ CheckpointSlotRole = Literal[
 
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_continuation"
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v2"
+CHECKPOINT_FORK_PLAN_SCHEMA_ID = "feedbax.spec.training_checkpoint_fork_plan"
+CHECKPOINT_FORK_PLAN_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_fork_plan.v1"
 
 
 CheckpointDocumentT = TypeVar("CheckpointDocumentT")
@@ -412,6 +415,182 @@ class CheckpointForkBarrierMapping(StrictModel):
         if not isinstance(parameters, dict):
             raise ValueError("/coordinate_mapping/parameters must be a mapping")
         return self
+
+
+class CheckpointForkTransformStep(StrictModel):
+    """One ordered, registry-resolved transform in a checkpoint fork plan.
+
+    ``records`` explicitly names every changed or introduced root slot. The
+    runtime never infers transform scope from values, shapes, or slot names.
+    """
+
+    step_id: str = Field(min_length=1)
+    stage: Literal["source_pre", "target_post"]
+    records: list[CheckpointForkTransformRecord] = Field(min_length=1)
+    target_only_slots: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_step(self) -> "CheckpointForkTransformStep":
+        slots = [record.slot for record in self.records]
+        if len(slots) != len(set(slots)):
+            raise ValueError("/records checkpoint fork transform slots must be unique")
+        identities = {
+            (record.identity, _canonical_json(record.parameters)) for record in self.records
+        }
+        if len(identities) != 1:
+            raise ValueError(
+                "/records in one checkpoint fork transform step must share identity and parameters"
+            )
+        if self.stage == "source_pre":
+            if len(self.records) != 1:
+                raise ValueError("source_pre transform steps must name exactly one slot")
+            if self.target_only_slots:
+                raise ValueError("source_pre transform steps cannot declare target-only slots")
+        unknown_target_only = set(self.target_only_slots) - set(slots)
+        if unknown_target_only:
+            raise ValueError(
+                "/target_only_slots must be named by transform records; "
+                f"slots={sorted(unknown_target_only)!r}"
+            )
+        return self
+
+
+class CheckpointForkHistoryPolicy(StrictModel):
+    """Explicit target history behavior for a checkpoint fork."""
+
+    mode: Literal["preserve", "continue_segment"] = "preserve"
+    continuation_request: CheckpointContinuationRequest | None = None
+    segment_history_template_ref: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_policy(self) -> "CheckpointForkHistoryPolicy":
+        if self.mode == "preserve":
+            if (
+                self.continuation_request is not None
+                or self.segment_history_template_ref is not None
+            ):
+                raise ValueError("preserve history policy cannot declare continuation inputs")
+        elif self.continuation_request is None or not self.segment_history_template_ref:
+            raise ValueError(
+                "continue_segment history policy requires continuation_request and "
+                "segment_history_template_ref"
+            )
+        return self
+
+
+class CheckpointForkSourcePreparation(StrictModel):
+    """Portable source declaration for a fork plan."""
+
+    checkpoint_root_ref: str = Field(min_length=1)
+    expected_transaction_id: str | None = None
+    expected_transaction_root_sha256: str | None = None
+    transforms: list[CheckpointForkTransformStep] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "CheckpointForkSourcePreparation":
+        if any(step.stage != "source_pre" for step in self.transforms):
+            raise ValueError("source preparation only accepts source_pre transforms")
+        if self.expected_transaction_root_sha256 is not None:
+            value = self.expected_transaction_root_sha256
+            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+                raise ValueError("expected_transaction_root_sha256 must be a lowercase sha256")
+        return self
+
+
+class CheckpointForkCompatibilityProjection(StrictModel):
+    """Durable run-contract and slot-ABI identity for one fork target."""
+
+    schema_id: str = "feedbax.spec.training_checkpoint_fork_compatibility"
+    schema_version: str = "feedbax.spec.training_checkpoint_fork_compatibility.v1"
+    run_contract_algorithm_version: str = Field(min_length=1)
+    run_contract_hash_domain: str = Field(min_length=1)
+    run_contract_projection_sha256: str
+    slot_structural_abi_sha256: dict[str, str] = Field(min_length=1)
+    population_member_ids_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_projection(self) -> "CheckpointForkCompatibilityProjection":
+        _validate_sha256(
+            self.run_contract_projection_sha256,
+            path="/run_contract_projection_sha256",
+        )
+        if any(not slot for slot in self.slot_structural_abi_sha256):
+            raise ValueError("/slot_structural_abi_sha256 keys must be non-empty")
+        for slot, value in self.slot_structural_abi_sha256.items():
+            _validate_sha256(value, path=f"/slot_structural_abi_sha256/{slot}")
+        if self.population_member_ids_sha256 is not None:
+            _validate_sha256(
+                self.population_member_ids_sha256,
+                path="/population_member_ids_sha256",
+            )
+        return self
+
+
+class CheckpointForkTarget(StrictModel):
+    """One target row in a portable checkpoint fork plan."""
+
+    target_id: str = Field(min_length=1)
+    row_id: str | None = None
+    checkpoint_root_ref: str = Field(min_length=1)
+    run_spec_ref: str = Field(min_length=1)
+    slot_template_ref: str = Field(min_length=1)
+    compatibility: CheckpointForkCompatibilityProjection
+    history_policy: CheckpointForkHistoryPolicy = Field(
+        default_factory=CheckpointForkHistoryPolicy
+    )
+    transforms: list[CheckpointForkTransformStep] = Field(default_factory=list)
+    barrier_mapping: CheckpointForkBarrierMapping | None = None
+    target_coordinate: ProgressCoordinate | None = None
+    population_member_ids_ref: str | None = None
+
+
+class CheckpointForkPlan(StrictModel):
+    """Versioned portable declaration for one source and several fork targets."""
+
+    schema_id: str = CHECKPOINT_FORK_PLAN_SCHEMA_ID
+    schema_version: str = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
+    source: CheckpointForkSourcePreparation
+    targets: list[CheckpointForkTarget] = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_plan(self) -> "CheckpointForkPlan":
+        if self.schema_id != CHECKPOINT_FORK_PLAN_SCHEMA_ID:
+            raise ValueError(f"unsupported checkpoint fork plan schema_id {self.schema_id!r}")
+        if self.schema_version != CHECKPOINT_FORK_PLAN_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported checkpoint fork plan schema_version "
+                f"{self.schema_version!r}; migration_intentionally_absent=yes"
+            )
+        for label, values in (
+            ("target_id", [target.target_id for target in self.targets]),
+            ("checkpoint_root_ref", [target.checkpoint_root_ref for target in self.targets]),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"checkpoint fork target {label} values must be unique")
+        row_ids = [target.row_id for target in self.targets if target.row_id is not None]
+        if len(row_ids) != len(set(row_ids)):
+            raise ValueError("checkpoint fork target row_id values must be unique")
+        step_ids = [
+            step.step_id
+            for step in (*self.source.transforms, *(s for t in self.targets for s in t.transforms))
+        ]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("checkpoint fork transform step_id values must be unique")
+        return self
+
+
+def _canonical_json(value: Any) -> str:
+    """Return a stable JSON representation used by local model validators."""
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("checkpoint fork transform parameters must be JSON-serializable") from exc
+
+
+def _validate_sha256(value: str, *, path: str) -> None:
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise ValueError(f"{path} must be a lowercase sha256")
 
 
 class CheckpointForkSlotProvenance(StrictModel):
