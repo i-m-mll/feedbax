@@ -140,6 +140,26 @@ def test_adaptive_curriculum_contract_validates_and_emits_guard_rules() -> None:
     assert effective.phase_program.phases[0].schedule_origin is not None
 
 
+def test_worker_contract_validates_guard_mapping_before_execution() -> None:
+    contract = toy_adaptive_curriculum_method_contract()
+
+    with pytest.raises(WorkerContractValidationError, match="missing callable.*predicate_ref"):
+        validate_worker_contract(
+            contract,
+            update_kernels=_toy_adaptive_kernels(),
+            guard_predicates={},
+        )
+
+    with pytest.raises(WorkerContractValidationError, match="must have signature"):
+        validate_worker_contract(
+            contract,
+            update_kernels=_toy_adaptive_kernels(),
+            guard_predicates={
+                "toy_adaptive.stop_when_counter_satisfied": lambda slots: True,
+            },
+        )
+
+
 def test_method_contract_rejects_method_owned_runner_refs() -> None:
     with pytest.raises(ValidationError, match="method-owned training runner"):
         UpdateKernelSpec(kernel_ref="downstream_method.run_minimax")

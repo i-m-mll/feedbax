@@ -146,6 +146,10 @@ def test_public_execution_preparation_survives_downstream_plugin_import_order(
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     (train_root / "__init__.py").write_text("", encoding="utf-8")
     (train_root / "execution_preparation.py").write_text(
+        "from feedbax.contracts import (\n"
+        "    TrainingMethodDescriptor,\n"
+        "    TrainingMethodMetadataProjector,\n"
+        ")\n"
         "from feedbax.training import (\n"
         "    ExecutionPreparationRegistration,\n"
         "    ExecutionPreparationRequest,\n"
@@ -153,7 +157,9 @@ def test_public_execution_preparation_survives_downstream_plugin_import_order(
         ")\n"
         "assert ExecutionPreparationRegistration is not None\n"
         "assert ExecutionPreparationRequest is not None\n"
-        "assert ExecutionPreparationResult is not None\n",
+        "assert ExecutionPreparationResult is not None\n"
+        "assert TrainingMethodDescriptor is not None\n"
+        "assert TrainingMethodMetadataProjector is not None\n",
         encoding="utf-8",
     )
     repo_root = Path(__file__).resolve().parents[1]
@@ -179,10 +185,13 @@ from feedbax.training import (
     ExecutionPreparationRequest,
     ExecutionPreparationResult,
 )
+from feedbax.contracts import TrainingMethodDescriptor, TrainingMethodMetadataProjector
 
 assert ExecutionPreparationRegistration is not None
 assert ExecutionPreparationRequest is not None
 assert ExecutionPreparationResult is not None
+assert TrainingMethodDescriptor is not None
+assert TrainingMethodMetadataProjector is not None
 """
     env = dict(os.environ)
     previous = env.get("PYTHONPATH")
