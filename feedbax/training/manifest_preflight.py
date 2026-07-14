@@ -45,6 +45,28 @@ class TrainingRunManifestSpecPayloads:
         }
 
 
+def resolve_training_spec_payload_ref(
+    explicit_ref: str | None,
+    *,
+    authoritative_ref: str | None,
+) -> str | None:
+    """Resolve the embedded training-spec ref without permitting custody drift."""
+    if explicit_ref is not None and not explicit_ref:
+        raise ValueError("/training_spec_payload_ref must not be empty")
+    if authoritative_ref is not None and not authoritative_ref:
+        raise ValueError("authoritative training payload ref must not be empty")
+    if (
+        explicit_ref is not None
+        and authoritative_ref is not None
+        and explicit_ref != authoritative_ref
+    ):
+        raise ValueError(
+            "/training_spec_payload_ref disagrees with authoritative execution payload; "
+            f"explicit={explicit_ref!r}, authoritative={authoritative_ref!r}"
+        )
+    return authoritative_ref or explicit_ref
+
+
 def validate_training_run_spec(spec: TrainingRunSpec | Mapping[str, Any]) -> TrainingRunSpec:
     """Accept or migrate a TrainingRunSpec mapping for manifest preflight."""
     if isinstance(spec, TrainingRunSpec):
@@ -103,6 +125,7 @@ def preflight_training_run_manifest_payloads(
     training_spec_payload_schema_id: str | None = None,
     training_spec_payload_schema_version: str | None = None,
     training_spec_payload_ref: str | None = None,
+    authoritative_training_spec_payload_ref: str | None = None,
     task_binding_spec: Mapping[str, Any] | None = None,
     row_id: str | None = None,
     spec_path: str | Path | None = None,
@@ -110,13 +133,17 @@ def preflight_training_run_manifest_payloads(
     """Validate final TrainingRunManifest spec payloads without running training."""
     try:
         run_spec = validate_training_run_spec(spec)
+        effective_ref = resolve_training_spec_payload_ref(
+            training_spec_payload_ref,
+            authoritative_ref=authoritative_training_spec_payload_ref,
+        )
         return build_training_run_manifest_spec_payloads(
             run_spec,
             training_spec_payload=training_spec_payload,
             training_spec_payload_kind=training_spec_payload_kind,
             training_spec_payload_schema_id=training_spec_payload_schema_id,
             training_spec_payload_schema_version=training_spec_payload_schema_version,
-            training_spec_payload_ref=training_spec_payload_ref,
+            training_spec_payload_ref=effective_ref,
             task_binding_spec=task_binding_spec,
         )
     except Exception as exc:

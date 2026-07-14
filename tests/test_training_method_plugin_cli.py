@@ -315,6 +315,20 @@ def test_metadata_projector_rejects_invalid_model_callable_and_output() -> None:
         projector.project(DummyPayload())
 
 
+def test_descriptor_optimizer_hooks_are_callable_and_standard_is_explicit() -> None:
+    registry = default_training_method_registry()
+    standard = registry.descriptor("feedbax/standard_supervised/v1")
+    assert standard is not None
+    assert standard.optimizer_spec_projector is not None
+    assert standard.optimizer_step_extractor is not None
+
+    for hook in ("optimizer_spec_projector", "optimizer_step_extractor"):
+        with pytest.raises(TypeError, match="non-callable hooks"):
+            TrainingMethodRegistry().register_descriptor(
+                _dummy_descriptor(**{hook: "not-callable"})
+            )
+
+
 @pytest.mark.parametrize("invalid_mapping", ["kernel", "guard"])
 def test_descriptor_rejects_invalid_runtime_mapping_before_preparation(
     tmp_path: Path,

@@ -15,6 +15,11 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkTarget,
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
+from feedbax.contracts.training import (
+    TrainingMethodRegistry,
+    default_training_method_registry,
+    standard_supervised_method_ref,
+)
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.training.checkpoint_custody import (
     CheckpointCompatibilityError,
@@ -43,6 +48,7 @@ def _write_latest(root: Path, *, transaction_id: str, digest: str) -> None:
     manifest = {
         "transaction_id": transaction_id,
         "completed_training_batches": 5,
+        "metadata": {"optimizer_step": 4},
         "content_integrity_digest": {
             "slots": [{"slot": "model", "slot_root_sha256": digest}],
         },
@@ -118,6 +124,49 @@ def _target_transform_provenance(
     }
 
 
+def _registration_only_method_registry() -> TrainingMethodRegistry:
+    default = default_training_method_registry()
+    registration = default.resolve(
+        standard_supervised_method_ref(),
+        path="/method_ref",
+    )
+    registry = TrainingMethodRegistry()
+    registry.register(registration)
+    return registry
+
+
+def _standard_fork_inputs(tmp_path: Path):
+    run_spec = _run_spec(minimax=True)
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "descriptor continuation preflight",
+            "base": {
+                "kind": "inline",
+                "inline": run_spec.model_dump(mode="json", exclude_none=True),
+            },
+            "fork": {
+                "source_run_id": "feedbax-training-run:source",
+                "lr_continuation": "continue",
+            },
+            "rows": [{"row_id": "target", "overrides": []}],
+        }
+    )
+    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    target_spec = materialized.rows[0].spec
+    assert target_spec is not None
+    slots = _minimax_slots()
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=target_spec,
+        phase_program=target_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+        completed_training_batches=0,
+    )
+    return matrix, materialized, slots
+
+
 def _topology_parity_inputs(
     tmp_path: Path,
 ) -> tuple[TrainingRunMatrixSpec, MaterializedRunMatrix, Path, Path, dict[str, str]]:
@@ -188,7 +237,15 @@ def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -
     assert table["ok"] is True
     assert table["matrix_spec_sha256"] == materialized.matrix_spec_sha256
     assert any(row["kind"] == "slot_parity" and row["ok"] for row in table["rows"])
-    assert any(row["kind"] == "lr_continuation" for row in table["rows"])
+    continuation = next(row for row in table["rows"] if row["kind"] == "lr_continuation")
+    assert continuation["source_run_id"] == spec.fork.source_run_id
+    assert continuation["target_run_id"] == materialized.rows[0].planned_run_id
+    assert continuation["source_transaction_id"] == "tx-source"
+    assert continuation["target_transaction_id"] == "tx-target"
+    assert continuation["source_completed_batches"] == 5
+    assert continuation["target_completed_batches"] == 5
+    assert continuation["declared_mode"] == spec.fork.lr_continuation
+    assert continuation["recorded_optimizer_step"] == 4
 
 
 def test_fork_path_leaves_typed_schedule_payload_byte_identical(tmp_path: Path) -> None:
@@ -721,7 +778,66 @@ def test_matrix_fork_plan_rejects_source_root_drift_before_write(tmp_path: Path)
     assert not any((tmp_path / f"target-{row_id}").exists() for row_id in row_ids)
 
 
+def test_missing_descriptor_optimizer_projector_fails_before_fork_writes(
+    tmp_path: Path,
+) -> None:
+    matrix, materialized, slots = _standard_fork_inputs(tmp_path)
+    target_root = tmp_path / "target"
+    parity_path = tmp_path / "parity.json"
+
+    with pytest.raises(RunMatrixError, match="optimizer_spec_projector"):
+        fork_matrix_checkpoints(
+            matrix,
+            materialized,
+            source_checkpoint_root=tmp_path / "source",
+            target_checkpoint_roots={"target": target_root},
+            target_slot_templates={"target": slots},
+            parity_output_path=parity_path,
+            method_registry=_registration_only_method_registry(),
+        )
+
+    assert not target_root.exists()
+    assert not parity_path.exists()
+
+
+def test_explicit_lr_reporter_overrides_missing_descriptor_projector(
+    tmp_path: Path,
+) -> None:
+    class ExplicitReporter:
+        def points(self, *, source_manifest, row_payload, row_spec, declared_mode):
+            del source_manifest, row_payload, row_spec
+            return [{"step": 0, "lr": 0.01, "mode": declared_mode}]
+
+    matrix, materialized, slots = _standard_fork_inputs(tmp_path)
+    target_root = tmp_path / "target"
+    parity_path = tmp_path / "parity.json"
+    table = fork_matrix_checkpoints(
+        matrix,
+        materialized,
+        source_checkpoint_root=tmp_path / "source",
+        target_checkpoint_roots={"target": target_root},
+        target_slot_templates={"target": slots},
+        parity_output_path=parity_path,
+        method_registry=_registration_only_method_registry(),
+        lr_reporter=ExplicitReporter(),
+    )
+
+    continuation = next(row for row in table["rows"] if row["kind"] == "lr_continuation")
+    assert continuation["lr"] == 0.01
+    assert target_root.exists()
+    assert parity_path.exists()
+
+
 def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> None:
+    reporter_calls: list[str] = []
+
+    class PlanReporter:
+        def points(self, *, source_manifest, row_payload, row_spec, declared_mode):
+            del source_manifest, row_payload, row_spec
+            assert not (tmp_path / "target").exists()
+            reporter_calls.append(declared_mode)
+            return [{"step": 0, "lr": 0.01, "mode": declared_mode}]
+
     run_spec = _run_spec(minimax=True)
     matrix = TrainingRunMatrixSpec.model_validate(
         {
@@ -780,6 +896,8 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
             run_specs={"run": target_spec},
             slot_templates={"slots": _minimax_slots()},
         ),
+        lr_reporter=PlanReporter(),
     )
     assert parity["ok"] is True
+    assert reporter_calls == ["restart"]
     assert (tmp_path / "target" / "latest.json").is_file()
