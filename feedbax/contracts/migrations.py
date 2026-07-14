@@ -2210,6 +2210,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Studio figure dashboards",
             ),
             description="Executable declarative figure specification.",
+            rejected_old_versions=("feedbax.spec.figure.v1",),
             required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(
