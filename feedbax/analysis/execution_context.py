@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-import hashlib
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
@@ -19,7 +19,16 @@ from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
     resolve_manifest_input as resolve_bound_manifest_input,
 )
-from feedbax.contracts.manifest import ParentRef, load_manifest_bytes as parse_manifest_bytes
+from feedbax.contracts.evaluation_states import (
+    EVALUATION_STATES_ARTIFACT_ROLE,
+    load_evaluation_states_container_bytes,
+)
+from feedbax.contracts.manifest import (
+    ArtifactRef,
+    EvaluationRunManifest,
+    ParentRef,
+    load_manifest_bytes as parse_manifest_bytes,
+)
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -85,6 +94,9 @@ class StagedExecutionContext:
         repr=False,
         compare=False,
     )
+    _parent_execution_root_identities: tuple[tuple[int, int], ...] = field(
+        default=(), repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -132,6 +144,17 @@ class StagedExecutionContext:
             "parent_execution_locations",
             tuple(self.parent_execution_locations),
         )
+        parent_identities = tuple(self._parent_execution_root_identities)
+        if not parent_identities:
+            parent_identities = tuple(
+                _directory_identity(location.root, kind="parent execution")
+                for location in self.parent_execution_locations
+            )
+        if len(parent_identities) != len(self.parent_execution_locations):
+            raise StagedExecutionContextError(
+                "parent execution root identities must match parent locations"
+            )
+        object.__setattr__(self, "_parent_execution_root_identities", parent_identities)
 
     def artifact_provider(self, name: str) -> ImmutableArtifactBlobProvider:
         """Return one explicitly bound immutable artifact provider by name."""
@@ -184,6 +207,84 @@ class StagedExecutionContext:
                 path=Path(provider.root) / location.execution_uri,
                 raw_bytes=raw_bytes,
             )
+        finally:
+            _require_directory_identity(
+                Path(provider.root),
+                expected_root_identity,
+                kind="artifact provider",
+            )
+
+    def load_evaluation_states(self, parent: ParentRef) -> Any:
+        """Load durable states through the authority retained for an exact eval parent."""
+        if parent.kind != "EvaluationRunManifest" or parent.role != "evaluation_run":
+            raise StagedExecutionContextError(
+                "evaluation states require an EvaluationRunManifest evaluation_run parent"
+            )
+        location = self.parent_execution_location(parent)
+        expected_root_identity: tuple[int, int] | None = None
+        if location.artifact_provider is None:
+            location_index = self.parent_execution_locations.index(location)
+            expected_root_identity = self._parent_execution_root_identities[location_index]
+            resolved = _resolve_retained_local_manifest_input(
+                parent,
+                location,
+                expected_root_identity=expected_root_identity,
+            )
+        else:
+            resolved = self.resolve_manifest_input(parent)
+        manifest = resolved.manifest
+        if not isinstance(manifest, EvaluationRunManifest):
+            raise StagedExecutionContextError(
+                "resolved prerequisite is not an EvaluationRunManifest"
+            )
+        if manifest.status != "completed":
+            raise StagedExecutionContextError(
+                "evaluation states require a completed EvaluationRunManifest"
+            )
+        artifacts = [
+            artifact
+            for artifact in manifest.artifacts
+            if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+        ]
+        if len(artifacts) != 1:
+            raise StagedExecutionContextError(
+                "completed EvaluationRunManifest must have exactly one evaluation_states artifact"
+            )
+        artifact = artifacts[0]
+        _require_durable_evaluation_states_artifact(artifact)
+        if location.artifact_provider is None:
+            assert expected_root_identity is not None
+            canonical = artifact.metadata.get("relative_path")
+            if not isinstance(canonical, str):
+                raise StagedExecutionContextError(
+                    "local evaluation_states artifact requires metadata.relative_path"
+                )
+            canonical = _validate_relative_execution_uri(canonical)
+            _require_canonical_local_artifact_locators(artifact, canonical)
+            _require_directory_identity(
+                location.root, expected_root_identity, kind="parent execution"
+            )
+            try:
+                data = _read_retained_local_artifact(
+                    location.root,
+                    canonical,
+                    expected_root_identity=expected_root_identity,
+                    expected_size=artifact.size_bytes,
+                    expected_sha256=artifact.sha256,
+                )
+                return load_evaluation_states_container_bytes(data)
+            finally:
+                _require_directory_identity(
+                    location.root, expected_root_identity, kind="parent execution"
+                )
+
+        provider = self.artifact_provider(location.artifact_provider)
+        expected_root_identity = self._artifact_provider_root_identities[
+            location.artifact_provider
+        ]
+        try:
+            data = provider.get_bytes(artifact, size_bytes=artifact.size_bytes)
+            return load_evaluation_states_container_bytes(data)
         finally:
             _require_directory_identity(
                 Path(provider.root),
@@ -351,7 +452,11 @@ def with_staged_parent_execution_locations(
                 artifact_provider=location.artifact_provider,
             )
         )
-    return replace(context, parent_execution_locations=tuple(normalized))
+    return replace(
+        context,
+        parent_execution_locations=tuple(normalized),
+        _parent_execution_root_identities=(),
+    )
 
 
 def _coerce_descriptor(
@@ -428,23 +533,24 @@ def _validate_runtime_root(root: Path | str, *, kind: str) -> Path:
         )
     if ".." in path.parts:
         raise StagedExecutionContextError(f"{kind} root must not contain lexical '..'")
-    current = Path(path.anchor)
-    try:
-        for component in path.parts[1:]:
-            current = current / component
-            current_stat = current.lstat()
-            if stat.S_ISLNK(current_stat.st_mode):
-                raise StagedExecutionContextError(
-                    f"{kind} root contains a symlink component: {current}"
-                )
-    except FileNotFoundError as exc:
-        raise StagedExecutionContextError(f"{kind} root does not exist: {path}") from exc
-    if not path.is_dir():
-        raise StagedExecutionContextError(f"{kind} root is not a directory: {path}")
-    return path.resolve(strict=True)
+    descriptors = _open_directory_chain_no_follow(path, kind=kind)
+    for descriptor in reversed(descriptors):
+        os.close(descriptor)
+    return path
 
 
 def _directory_identity(root: Path, *, kind: str) -> tuple[int, int]:
+    descriptors = _open_directory_chain_no_follow(root, kind=kind)
+    try:
+        root_stat = os.fstat(descriptors[-1])
+        return root_stat.st_dev, root_stat.st_ino
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _open_directory_chain_no_follow(root: Path, *, kind: str) -> list[int]:
+    """Open every component of an absolute directory path without following links."""
     flags = (
         os.O_RDONLY
         | getattr(os, "O_DIRECTORY", 0)
@@ -455,19 +561,22 @@ def _directory_identity(root: Path, *, kind: str) -> tuple[int, int]:
         raise StagedExecutionContextError(
             f"{kind} authority requires no-follow directory descriptors"
         )
+    if not root.is_absolute():
+        raise StagedExecutionContextError(f"{kind} root must be absolute: {root}")
+    descriptors: list[int] = []
     try:
-        descriptor = os.open(root, flags)
+        current = os.open(root.anchor, flags)
+        descriptors.append(current)
+        for component in root.parts[1:]:
+            current = os.open(component, flags, dir_fd=current)
+            descriptors.append(current)
     except OSError as exc:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
         raise StagedExecutionContextError(
-            f"{kind} root is unavailable or was replaced: {root}"
+            f"{kind} root is unavailable, unsafe, or was replaced: {root}"
         ) from exc
-    try:
-        root_stat = os.fstat(descriptor)
-        if not stat.S_ISDIR(root_stat.st_mode):
-            raise StagedExecutionContextError(f"{kind} root is not a directory: {root}")
-        return root_stat.st_dev, root_stat.st_ino
-    finally:
-        os.close(descriptor)
+    return descriptors
 
 
 def _require_directory_identity(
@@ -481,6 +590,206 @@ def _require_directory_identity(
         raise StagedExecutionContextError(
             f"{kind} root authority was replaced after binding: {root}"
         )
+
+
+def _require_durable_evaluation_states_artifact(artifact: ArtifactRef) -> None:
+    """Require a complete content-addressed durable evaluation-states reference."""
+    if artifact.sha256 is None or len(artifact.sha256) != 64:
+        raise StagedExecutionContextError(
+            "evaluation_states artifact requires a complete sha256"
+        )
+    if artifact.size_bytes is None or artifact.size_bytes < 0:
+        raise StagedExecutionContextError(
+            "evaluation_states artifact requires a nonnegative size_bytes"
+        )
+    if artifact.artifact_id != f"artifact://sha256/{artifact.sha256}":
+        raise StagedExecutionContextError(
+            "evaluation_states artifact_id must match its sha256"
+        )
+
+
+def _resolve_retained_local_manifest_input(
+    parent: ParentRef,
+    location: StagedParentExecutionLocation,
+    *,
+    expected_root_identity: tuple[int, int],
+) -> ResolvedManifestInput:
+    """Resolve an authenticated manifest through the exact retained root authority."""
+    if not is_authenticated_manifest_ref(parent):
+        raise StagedExecutionContextError(
+            "local evaluation manifest requires an authenticated ParentRef"
+        )
+    execution_uri = _validate_relative_execution_uri(location.execution_uri)
+    digest = str(parent.metadata["manifest_sha256"])
+    size_bytes = int(parent.metadata["size_bytes"])
+    raw_bytes = _read_retained_local_file(
+        location.root,
+        execution_uri,
+        expected_root_identity=expected_root_identity,
+        expected_size=size_bytes,
+        expected_sha256=digest,
+        kind="local evaluation manifest",
+        require_single_link=False,
+    )
+    manifest = parse_manifest_bytes(raw_bytes)
+    if manifest.kind != parent.kind or manifest.id != parent.id:
+        raise StagedExecutionContextError(
+            "local evaluation manifest kind or id disagrees with ParentRef"
+        )
+    return ResolvedManifestInput(
+        ref=parent,
+        manifest=manifest,
+        path=location.root / execution_uri,
+        raw_bytes=raw_bytes,
+    )
+
+
+def _require_canonical_local_artifact_locators(
+    artifact: ArtifactRef,
+    canonical: str,
+) -> None:
+    """Reject ambiguous or noncanonical local artifact locator claims."""
+    locators = {
+        "uri": artifact.uri,
+        "metadata.relative_path": artifact.metadata.get("relative_path"),
+    }
+    present = {name: value for name, value in locators.items() if value is not None}
+    if not present:
+        raise StagedExecutionContextError(
+            "local evaluation_states artifact requires a canonical relative locator"
+        )
+    for name, value in present.items():
+        if not isinstance(value, str) or value != canonical:
+            raise StagedExecutionContextError(
+                f"local evaluation_states {name} must equal canonical path {canonical!r}"
+            )
+
+
+def _read_retained_local_artifact(
+    root: Path,
+    relative: str,
+    *,
+    expected_root_identity: tuple[int, int],
+    expected_size: int,
+    expected_sha256: str,
+) -> bytes:
+    """Read one root-relative regular single-link file without following aliases."""
+    return _read_retained_local_file(
+        root,
+        relative,
+        expected_root_identity=expected_root_identity,
+        expected_size=expected_size,
+        expected_sha256=expected_sha256,
+        kind="local evaluation_states artifact",
+        require_single_link=True,
+    )
+
+
+def _read_retained_local_file(
+    root: Path,
+    relative: str,
+    *,
+    expected_root_identity: tuple[int, int],
+    expected_size: int,
+    expected_sha256: str,
+    kind: str,
+    require_single_link: bool,
+) -> bytes:
+    """Read one authenticated file relative to an exact retained root authority."""
+    parts = PurePosixPath(relative).parts
+    directory_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    descriptors: list[int] = []
+    directory_records: list[tuple[int, str, tuple[int, int]]] = []
+    try:
+        descriptors.extend(_open_directory_chain_no_follow(root, kind=kind))
+        current = descriptors[-1]
+        root_identity = os.fstat(current)
+        if (root_identity.st_dev, root_identity.st_ino) != expected_root_identity:
+            raise StagedExecutionContextError(f"{kind} root authority changed before read")
+        for component in parts[:-1]:
+            parent_descriptor = current
+            current = os.open(component, directory_flags, dir_fd=parent_descriptor)
+            descriptors.append(current)
+            component_stat = os.fstat(current)
+            directory_records.append(
+                (
+                    parent_descriptor,
+                    component,
+                    (component_stat.st_dev, component_stat.st_ino),
+                )
+            )
+        path_before = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+        if stat.S_ISLNK(path_before.st_mode):
+            raise StagedExecutionContextError(f"{kind} must not be a symlink")
+        file_descriptor = os.open(parts[-1], file_flags, dir_fd=current)
+        descriptors.append(file_descriptor)
+        before = os.fstat(file_descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise StagedExecutionContextError(f"{kind} is not regular")
+        if require_single_link and before.st_nlink != 1:
+            raise StagedExecutionContextError(
+                f"{kind} has mutable hard-link aliases"
+            )
+        if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
+            raise StagedExecutionContextError(f"{kind} identity changed before read")
+        if before.st_size != expected_size:
+            raise StagedExecutionContextError(f"{kind} size mismatch")
+        chunks: list[bytes] = []
+        while chunk := os.read(file_descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(file_descriptor)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise StagedExecutionContextError(f"{kind} identity changed during read")
+        path_after = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+        if (
+            path_before.st_dev,
+            path_before.st_ino,
+            path_before.st_mode,
+            path_before.st_nlink,
+            path_before.st_size,
+            path_before.st_mtime_ns,
+        ) != (
+            path_after.st_dev,
+            path_after.st_ino,
+            path_after.st_mode,
+            path_after.st_nlink,
+            path_after.st_size,
+            path_after.st_mtime_ns,
+        ):
+            raise StagedExecutionContextError(f"{kind} path changed during read")
+        for parent_descriptor, component, expected_identity in directory_records:
+            component_after = os.stat(
+                component,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(component_after.st_mode)
+                or (component_after.st_dev, component_after.st_ino) != expected_identity
+            ):
+                raise StagedExecutionContextError(
+                    f"{kind} directory identity changed during read"
+                )
+        _require_directory_identity(root, expected_root_identity, kind=kind)
+        data = b"".join(chunks)
+        if hashlib.sha256(data).hexdigest() != expected_sha256:
+            raise StagedExecutionContextError(f"{kind} sha256 mismatch")
+        return data
+    except OSError as exc:
+        raise StagedExecutionContextError(
+            f"{kind} path traverses a symlink or unsafe component"
+        ) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _validate_relative_execution_uri(uri: str) -> str:
