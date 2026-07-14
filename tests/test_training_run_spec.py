@@ -219,6 +219,52 @@ def test_training_run_spec_worker_method_ref_must_match_request_method_ref() -> 
     assert STANDARD_SUPERVISED_METHOD_REF in message
 
 
+def test_descriptor_rejects_embedded_contract_or_effective_phase_drift() -> None:
+    contract_payload = _training_run_payload()
+    contract_payload["worker_execution"]["method_contract"]["axes"][0]["role"] = "environment"
+    contract_spec = TrainingRunSpec.model_validate(contract_payload)
+
+    with pytest.raises(ValueError, match="must exactly match.*payload-compiled"):
+        _ = contract_spec.resolved_method
+
+    phase_payload = _training_run_payload()
+    phase_payload["worker_execution"]["effective_phase"]["axes"][0]["role"] = "environment"
+    phase_spec = TrainingRunSpec.model_validate(phase_payload)
+
+    with pytest.raises(ValueError, match="effective_phase must exactly match"):
+        _ = phase_spec.resolved_method
+
+
+def test_method_resolution_cache_revalidates_model_copy_updates() -> None:
+    spec = TrainingRunSpec.model_validate(_training_run_payload())
+    original_resolution = spec.resolved_method
+    assert spec.resolved_method is original_resolution
+
+    payload = spec.method_payload.model_copy(
+        update={
+            "payload": {
+                **spec.method_payload.payload,
+                "gradient_clip": 0.25,
+            }
+        }
+    )
+    changed = spec.model_copy(update={"method_payload": payload})
+
+    assert changed.resolved_method is not original_resolution
+    assert changed.resolved_method.payload.gradient_clip == 0.25
+
+    invalid_contract = spec.worker_execution.method_contract.model_copy(
+        update={"method_ref": "feedbax/other/v1"}
+    )
+    invalid_worker = spec.worker_execution.model_copy(
+        update={"method_contract": invalid_contract}
+    )
+    invalid = spec.model_copy(update={"worker_execution": invalid_worker})
+
+    with pytest.raises(ValueError, match="method_contract/method_ref must match"):
+        _ = invalid.resolved_method
+
+
 def test_provider_manifest_advertises_training_run_spec_as_execution_input() -> None:
     manifest = provider_manifest()
 

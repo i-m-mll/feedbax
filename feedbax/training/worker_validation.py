@@ -334,6 +334,7 @@ def validate_worker_contract(
     dry_run_shape_check: Callable[[MethodContractSpec], DryRunShapeCheckResult | bool | None]
     | None = None,
     update_kernels: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
+    guard_predicates: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
     task_binding_spec: Any | None = None,
     objective_requirements: Any | None = None,
 ) -> EffectivePhaseSpec:
@@ -585,6 +586,22 @@ def validate_worker_contract(
                 f"missing callable for kernel_ref {step.kernel.kernel_ref!r}",
             )
             validate_update_kernel_callable(kernel, path=f"{step_path}/kernel")
+
+    if guard_predicates is not None:
+        for predicate_ref, predicate in guard_predicates.items():
+            validate_update_kernel_callable(
+                predicate,
+                path=f"/guard_predicates/{predicate_ref}",
+            )
+        for transition_index, transition in enumerate(contract.phase_program.transitions):
+            if transition.guard is None:
+                continue
+            predicate_ref = transition.guard.predicate_ref
+            _require(
+                predicate_ref in guard_predicates,
+                f"/phase_program/transitions/{transition_index}/guard/predicate_ref",
+                f"missing callable for predicate_ref {predicate_ref!r}",
+            )
 
     for binding_index, binding in enumerate(contract.phase_program.optimizer_bindings):
         binding_path = f"/phase_program/optimizer_bindings/{binding_index}"
