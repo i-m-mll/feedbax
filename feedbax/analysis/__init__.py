@@ -35,6 +35,14 @@ from .materialization import (
     materialization_metadata,
     read_json_payload,
 )
+from .manifest_inputs import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    ResolvedManifestInput,
+    authenticated_manifest_ref,
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
+)
 from .specs import (
     AnalysisRecipeResult,
     execute_analysis_run_spec,
@@ -91,6 +99,8 @@ from .harness import (
 )
 
 __all__ = [
+    "AUTHENTICATED_MANIFEST_REF_SCHEMA_ID",
+    "AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION",
     "AbstractAnalysis",
     "AnalysisBundleSpec",
     "AnalysisArtifactGroup",
@@ -98,6 +108,10 @@ __all__ = [
     "AnalysisRecipeResult",
     "AnalysisRecipeProtocol",
     "AnalysisRunContext",
+    "ResolvedManifestInput",
+    "authenticated_manifest_ref",
+    "is_authenticated_manifest_ref",
+    "resolve_manifest_input",
     "CallWithDeps",
     "ContextMaterializationPending",
     "ContextMaterializer",

@@ -19,6 +19,7 @@ from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
+from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
 from feedbax.analysis.specs import AnalysisRecipeResult, execute_analysis_run_spec
 from feedbax.config.yaml import get_yaml_loader
@@ -48,9 +49,12 @@ from feedbax.contracts.manifest import (
     StrictModel,
     TrainingRunManifest,
     OverridePatch,
+    canonical_json_bytes,
     collect_git_provenance,
     default_manifest_root,
+    evaluation_run_manifest_id,
     load_manifest,
+    safe_manifest_key,
     spec_payload,
     write_manifest,
 )
@@ -172,21 +176,16 @@ class BundleStageSpec(StrictModel):
         if self.kind == "analysis" and not self.analysis_type and no_static_status:
             raise ValueError(f"analysis bundle stage {self.name!r} requires analysis_type")
         if self.kind == "materialization" and not self.analysis_type and no_static_status:
-            raise ValueError(
-                f"materialization bundle stage {self.name!r} requires analysis_type"
-            )
+            raise ValueError(f"materialization bundle stage {self.name!r} requires analysis_type")
         if self.kind == "figure" and self.figure is None and no_static_status:
             raise ValueError(f"figure bundle stage {self.name!r} requires figure")
         if self.kind == "report" and not self.report_type and no_static_status:
             raise ValueError(f"report bundle stage {self.name!r} requires report_type")
         if self.skip_reason and any(output.required for output in self.outputs):
-            raise ValueError(
-                f"bundle stage {self.name!r} cannot skip required outputs"
-            )
+            raise ValueError(f"bundle stage {self.name!r} cannot skip required outputs")
         if self.run_condition is not None and self.skip_reason is not None:
             raise ValueError(
-                f"bundle stage {self.name!r} cannot combine static skip_reason "
-                "with run_condition"
+                f"bundle stage {self.name!r} cannot combine static skip_reason with run_condition"
             )
         return self
 
@@ -286,9 +285,7 @@ class ResolvedStageInputs:
     """Inputs bound for one stage before execution and condition evaluation."""
 
     parent_refs: tuple[ParentRef, ...] = ()
-    artifact_refs_by_alias: dict[str, tuple[ArtifactRef, ...]] = field(
-        default_factory=dict
-    )
+    artifact_refs_by_alias: dict[str, tuple[ArtifactRef, ...]] = field(default_factory=dict)
 
 
 class BundleStageOutputRecord(StrictModel):
@@ -582,12 +579,7 @@ def _manifest_ref(
     path: Path,
     role: str,
 ) -> ParentRef:
-    return ParentRef(
-        kind=manifest.kind,
-        id=manifest.id,
-        role=role,
-        uri=str(path),
-    )
+    return authenticated_manifest_ref(manifest, path, role)
 
 
 def _stage_regeneration_payload(
@@ -629,6 +621,18 @@ def _with_regeneration_spec(
     *,
     root: Path,
 ) -> tuple[AnalysisRunManifest | FigureManifest | ReportManifest, Path]:
+    if regeneration_payload in manifest.regeneration_specs:
+        path = (
+            root
+            / "manifests"
+            / {
+                "AnalysisRunManifest": "analysis_runs",
+                "FigureManifest": "FigureManifest",
+                "ReportManifest": "reports",
+            }[manifest.kind]
+            / f"{safe_manifest_key(manifest.id)}.json"
+        )
+        return manifest, path
     updated = manifest.model_copy(
         update={"regeneration_specs": [*manifest.regeneration_specs, regeneration_payload]}
     )
@@ -637,12 +641,7 @@ def _with_regeneration_spec(
 
 
 def _artifact_parent_ref(artifact: ArtifactRef, *, role: str) -> ParentRef:
-    artifact_id = (
-        artifact.artifact_id
-        or artifact.sha256
-        or artifact.uri
-        or artifact.logical_name
-    )
+    artifact_id = artifact.artifact_id or artifact.sha256 or artifact.uri or artifact.logical_name
     return ParentRef(
         kind="ArtifactRef",
         id=artifact_id,
@@ -673,16 +672,13 @@ def _resolve_stage_inputs(
     for dependency in stage.depends_on:
         products = stage_products.get(dependency)
         if products is None:
-            raise ValueError(
-                f"Bundle stage {stage.name!r} depends on unknown stage {dependency!r}"
-            )
+            raise ValueError(f"Bundle stage {stage.name!r} depends on unknown stage {dependency!r}")
         inputs.extend(product.manifest_ref for product in products if product.manifest_ref)
     for dependency in stage.depends_on_roles:
         products = stage_products.get(dependency.stage)
         if products is None:
             raise ValueError(
-                f"Bundle stage {stage.name!r} depends on unknown stage "
-                f"{dependency.stage!r}"
+                f"Bundle stage {stage.name!r} depends on unknown stage {dependency.stage!r}"
             )
         artifacts = tuple(
             artifact
@@ -717,14 +713,12 @@ def _exact_execution_location_key(execution_uri: str) -> str:
     decoded = unquote(parsed.path)
     if "\\" in decoded:
         raise ValueError(
-            "exact parent execution_uri contains an unsupported path separator: "
-            f"{execution_uri!r}"
+            f"exact parent execution_uri contains an unsupported path separator: {execution_uri!r}"
         )
     relative = Path(decoded)
     if relative.is_absolute() or not relative.parts or ".." in relative.parts:
         raise ValueError(
-            "exact parent execution_uri escapes the explicit manifest root: "
-            f"{execution_uri!r}"
+            f"exact parent execution_uri escapes the explicit manifest root: {execution_uri!r}"
         )
     return relative.as_posix()
 
@@ -732,68 +726,48 @@ def _exact_execution_location_key(execution_uri: str) -> str:
 def _require_exact_parent_metadata(parent: ParentRef) -> tuple[str, int]:
     """Validate exact immutable-parent identity and return digest and size."""
     if parent.kind != "TrainingRunManifest":
-        raise ValueError(
-            "exact parent kind must be 'TrainingRunManifest'; "
-            f"got {parent.kind!r}"
-        )
+        raise ValueError(f"exact parent kind must be 'TrainingRunManifest'; got {parent.kind!r}")
     if parent.role != "training_run":
-        raise ValueError(
-            "exact parent role must be 'training_run'; "
-            f"got {parent.role!r}"
-        )
+        raise ValueError(f"exact parent role must be 'training_run'; got {parent.role!r}")
     if not parent.id.strip():
         raise ValueError("exact parent id must not be empty")
 
     manifest_digest = parent.metadata.get("manifest_sha256")
-    if not isinstance(manifest_digest, str) or _SHA256_PATTERN.fullmatch(
-        manifest_digest
-    ) is None:
+    if not isinstance(manifest_digest, str) or _SHA256_PATTERN.fullmatch(manifest_digest) is None:
         raise ValueError(
-            "exact parent metadata.manifest_sha256 must be exactly 64 lowercase "
-            "hex characters"
+            "exact parent metadata.manifest_sha256 must be exactly 64 lowercase hex characters"
         )
     certificate_digest = parent.metadata.get("certificate_sha256")
-    if not isinstance(certificate_digest, str) or _SHA256_PATTERN.fullmatch(
-        certificate_digest
-    ) is None:
+    if (
+        not isinstance(certificate_digest, str)
+        or _SHA256_PATTERN.fullmatch(certificate_digest) is None
+    ):
         raise ValueError(
-            "exact parent metadata.certificate_sha256 must be exactly 64 lowercase "
-            "hex characters"
+            "exact parent metadata.certificate_sha256 must be exactly 64 lowercase hex characters"
         )
     size_bytes = parent.metadata.get("size_bytes")
     if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
-        raise ValueError(
-            "exact parent metadata.size_bytes must be a nonnegative integer"
-        )
+        raise ValueError("exact parent metadata.size_bytes must be a nonnegative integer")
     for field_name in _EXACT_PARENT_REQUIRED_TEXT_METADATA:
         value = parent.metadata.get(field_name)
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(
-                f"exact parent metadata.{field_name} must be a nonempty string"
-            )
+            raise ValueError(f"exact parent metadata.{field_name} must be a nonempty string")
     for field_name, expected in _EXACT_PARENT_REQUIRED_STATUS_METADATA.items():
         observed = parent.metadata.get(field_name)
         if observed != expected:
             raise ValueError(
-                f"exact parent metadata.{field_name} must be {expected!r}; "
-                f"got {observed!r}"
+                f"exact parent metadata.{field_name} must be {expected!r}; got {observed!r}"
             )
     if parent.metadata["planned_run_id"] != parent.id:
-        raise ValueError(
-            "exact parent metadata.planned_run_id must equal ParentRef.id"
-        )
+        raise ValueError("exact parent metadata.planned_run_id must equal ParentRef.id")
 
     uri = parent.uri
     match = _IMMUTABLE_MANIFEST_URI_PATTERN.fullmatch(uri or "")
     if match is None:
-        raise ValueError(
-            "exact parent uri must be immutable artifact://sha256/<digest>"
-        )
+        raise ValueError("exact parent uri must be immutable artifact://sha256/<digest>")
     uri_digest = match.group(1)
     if uri_digest != manifest_digest:
-        raise ValueError(
-            "exact parent artifact URI digest must equal metadata.manifest_sha256"
-        )
+        raise ValueError("exact parent artifact URI digest must equal metadata.manifest_sha256")
     return manifest_digest, size_bytes
 
 
@@ -804,9 +778,7 @@ def _available_training_identity_values(
     """Return declared manifest identity facts that are available for comparison."""
     values: list[tuple[str, Any]] = []
     root_field_names = (
-        ("status", "manifest_status")
-        if field_name == "manifest_status"
-        else (field_name,)
+        ("status", "manifest_status") if field_name == "manifest_status" else (field_name,)
     )
     for root_field_name in root_field_names:
         root_value = getattr(manifest, root_field_name, None)
@@ -831,8 +803,7 @@ def _validate_exact_manifest_identity(
 ) -> None:
     if manifest.status != "completed":
         raise ValueError(
-            "exact parent TrainingRunManifest status must be 'completed'; "
-            f"got {manifest.status!r}"
+            f"exact parent TrainingRunManifest status must be 'completed'; got {manifest.status!r}"
         )
     governed_facts = (
         *_EXACT_PARENT_REQUIRED_TEXT_METADATA,
@@ -874,9 +845,7 @@ def _preflight_staged_exact_parents(
     parent_ids = [parent.id for parent in parent_refs]
     if len(set(parent_ids)) != len(parent_ids):
         raise ValueError("StagedExactParents contains a duplicate ParentRef id")
-    location_keys = [
-        _exact_execution_location_key(entry.execution_uri) for entry in entries
-    ]
+    location_keys = [_exact_execution_location_key(entry.execution_uri) for entry in entries]
     if len(set(location_keys)) != len(location_keys):
         raise ValueError("StagedExactParents contains a duplicate execution location")
 
@@ -899,9 +868,7 @@ def _preflight_staged_exact_parents(
         raise ValueError("bundle predicate.run_ids contains duplicate parent IDs")
     for stage in bundle.stages:
         is_root_evaluation = (
-            stage.kind == "evaluation"
-            and not stage.depends_on
-            and not stage.depends_on_roles
+            stage.kind == "evaluation" and not stage.depends_on and not stage.depends_on_roles
         )
         if is_root_evaluation and stage.mode != "per-run":
             raise ValueError(
@@ -934,9 +901,7 @@ def _preflight_staged_exact_parents(
             )
         _validate_exact_manifest_identity(resolved.manifest, parent)
         if not predicate_matches_manifest(predicate, resolved.manifest):
-            raise ValueError(
-                f"exact parent {parent.id!r} does not satisfy the bundle predicate"
-            )
+            raise ValueError(f"exact parent {parent.id!r} does not satisfy the bundle predicate")
         manifests.append(resolved.manifest)
 
     if len(manifests) != len(parent_refs):
@@ -960,9 +925,7 @@ def _stage_expression_context(
     params_base: BundleParamsBase,
 ) -> ExpressionContext:
     items: dict[str, ContextItem] = {
-        "params": ContextItem(
-            kind="params", payload=_params_for_stage(stage, params_base)
-        ),
+        "params": ContextItem(kind="params", payload=_params_for_stage(stage, params_base)),
         "manifests": ContextItem(
             kind="manifests",
             payload=[_manifest_condition_payload(manifest) for manifest in matched_manifests],
@@ -990,10 +953,7 @@ def _stage_expression_context(
     for alias, artifacts in resolved_inputs.artifact_refs_by_alias.items():
         items[alias] = ContextItem(
             kind="artifact_role",
-            payload=[
-                artifact.model_dump(mode="json", exclude_none=True)
-                for artifact in artifacts
-            ],
+            payload=[artifact.model_dump(mode="json", exclude_none=True) for artifact in artifacts],
         )
     return ExpressionContext(items=items)
 
@@ -1011,8 +971,7 @@ def _run_condition_skip_reason(
     if result:
         return None
     return (
-        "run_condition evaluated false: "
-        f"{canonical_expression_json(stage.run_condition)} -> false"
+        f"run_condition evaluated false: {canonical_expression_json(stage.run_condition)} -> false"
     )
 
 
@@ -1115,6 +1074,35 @@ def _record_status(records: Sequence[BundleStageOutputRecord]) -> BundleOutputSt
     return "missing"
 
 
+def _validate_completed_evaluation_cache(
+    manifest: EvaluationRunManifest,
+    *,
+    requested_spec: EvaluationRunSpec,
+    requested_manifest_id: str,
+) -> None:
+    if manifest.id != requested_manifest_id:
+        raise ValueError(
+            "cached EvaluationRunManifest id does not match the requested evaluation spec: "
+            f"expected {requested_manifest_id!r}, got {manifest.id!r}"
+        )
+    if manifest.evaluation_spec.kind != "EvaluationRunSpec":
+        raise ValueError(
+            "cached EvaluationRunManifest evaluation_spec kind must be "
+            f"'EvaluationRunSpec'; got {manifest.evaluation_spec.kind!r}"
+        )
+    try:
+        cached_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    except ValueError as exc:
+        raise ValueError(
+            "cached EvaluationRunManifest evaluation_spec is not a valid EvaluationRunSpec"
+        ) from exc
+    if canonical_json_bytes(cached_spec) != canonical_json_bytes(requested_spec):
+        raise ValueError(
+            "cached EvaluationRunManifest evaluation_spec does not match the requested "
+            "EvaluationRunSpec"
+        )
+
+
 def _execute_evaluation_stage(
     stage: BundleStageSpec,
     input_groups: Sequence[Sequence[ParentRef]],
@@ -1130,19 +1118,30 @@ def _execute_evaluation_stage(
             inputs=list(inputs),
             params=_params_for_stage(stage, bundle.params_base),
         )
-        manifest, path = execute_evaluation_run_spec(
-            spec,
-            root=root,
-            issues=list(issues),
-            metadata={
-                "bundle": {
-                    "name": bundle.name,
-                    "stage": stage.name,
-                    "schema_id": bundle.schema_id,
-                    "schema_version": bundle.schema_version,
-                }
-            },
-        )
+        manifest_id = evaluation_run_manifest_id(spec)
+        path = root / "manifests" / "evaluation_runs" / f"{safe_manifest_key(manifest_id)}.json"
+        existing = load_manifest(path) if path.is_file() else None
+        if isinstance(existing, EvaluationRunManifest) and existing.status == "completed":
+            _validate_completed_evaluation_cache(
+                existing,
+                requested_spec=spec,
+                requested_manifest_id=manifest_id,
+            )
+            manifest = existing
+        else:
+            manifest, path = execute_evaluation_run_spec(
+                spec,
+                root=root,
+                issues=list(issues),
+                metadata={
+                    "bundle": {
+                        "name": bundle.name,
+                        "stage": stage.name,
+                        "schema_id": bundle.schema_id,
+                        "schema_version": bundle.schema_version,
+                    }
+                },
+            )
         products.append(
             StageMaterialization(
                 manifest_ref=_manifest_ref(manifest, path, "evaluation_run"),
@@ -1329,11 +1328,12 @@ def _execute_figure_stage(
                 }
             },
         )
-        manifest_ref = _manifest_ref(manifest, path, "figure")
         regeneration_payload = _stage_regeneration_payload(
             stage,
             inputs=inputs,
-            outputs=[manifest_ref, *manifest.artifacts],
+            # A manifest cannot embed an authentication hash of its own final bytes.
+            # Its external StageMaterialization ref is created after this rewrite.
+            outputs=list(manifest.artifacts),
             issues=issues,
         )
         updated_manifest, updated_path = _with_regeneration_spec(
@@ -1433,11 +1433,11 @@ def _execute_stage_common(
         inputs = tuple(input_group)
         spec = build_spec(inputs, index)
         manifest, path = execute_spec(spec, inputs, index)
-        manifest_ref = _manifest_ref(manifest, path, manifest_role)
         regeneration_payload = _stage_regeneration_payload(
             stage,
             inputs=inputs,
-            outputs=[manifest_ref, *manifest.artifacts],
+            # Self-authentication is carried by the external stage record only.
+            outputs=list(manifest.artifacts),
             issues=issues,
         )
         updated_manifest, updated_path = _with_regeneration_spec(
@@ -1840,9 +1840,7 @@ def execute_staged_analysis_bundle(
         raise ValueError("exact-parent staged execution requires an explicit manifest root")
 
     if exact_parents is not None:
-        exact_parents = StagedExactParents.model_validate(
-            exact_parents.model_dump(mode="json")
-        )
+        exact_parents = StagedExactParents.model_validate(exact_parents.model_dump(mode="json"))
 
     root_path = Path(root) if root is not None else default_manifest_root()
     issue_refs = list(issues or [])
@@ -1999,10 +1997,7 @@ def execute_staged_analysis_bundle(
         )
 
     report_outputs = [
-        output
-        for record in stage_records
-        if record.kind == "report"
-        for output in record.outputs
+        output for record in stage_records if record.kind == "report" for output in record.outputs
     ]
     return StagedAnalysisBundleExecution(
         bundle_name=bundle.name,
