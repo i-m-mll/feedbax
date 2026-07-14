@@ -50,6 +50,7 @@ class CustomEvaluationRecipe:
         _run_spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(
             states={"value": self.value},
@@ -102,7 +103,7 @@ def test_evaluation_recipe_registration_rejects_bad_signature_and_names_type() -
 
     with pytest.raises(
         RecipeValidationError,
-        match="Evaluation recipe 'testpkg.bad_eval'.*three positional arguments.*states_path",
+        match="Evaluation recipe 'testpkg.bad_eval'.*four positional arguments.*states_path",
     ):
         register_evaluation_recipe("testpkg.bad_eval", recipe, replace=True)
 
@@ -135,6 +136,7 @@ def test_valid_analysis_recipe_registers() -> None:
         _run_spec: AnalysisRunSpec,
         _root: Path,
         _inputs: list[object],
+        _execution_context,
     ) -> AnalysisRecipeResult:
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy")},
@@ -166,7 +168,7 @@ def test_analysis_recipe_registration_rejects_bad_signature_and_names_type() -> 
 
     with pytest.raises(
         RecipeValidationError,
-        match="Analysis recipe 'testpkg.bad_analysis'.*three positional arguments.*inputs",
+        match="Analysis recipe 'testpkg.bad_analysis'.*four positional arguments.*inputs",
     ):
         register_analysis_recipe("testpkg.bad_analysis", recipe, replace=True)
 

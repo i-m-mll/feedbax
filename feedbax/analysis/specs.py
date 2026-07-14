@@ -17,6 +17,10 @@ from feedbax.analysis.evaluation import (
     write_evaluation_states_cache,
 )
 from feedbax.analysis.execution import run_analyses_with_context
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContext,
+)
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
     is_authenticated_manifest_ref,
@@ -171,6 +175,7 @@ def resolve_analysis_inputs(
     *,
     root: Path | str | None = None,
     authenticated_inputs: Mapping[int, ResolvedManifestInput] | None = None,
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
 ) -> list[ResolvedAnalysisInput]:
     """Resolve ``AnalysisRunSpec.inputs`` to manifests and cached evaluation states."""
     root_path = Path(root) if root is not None else default_manifest_root()
@@ -195,7 +200,12 @@ def resolve_analysis_inputs(
                     try:
                         states = load_evaluation_states(manifest, root=root_path)
                     except EvaluationStatesArtifactNotFound:
-                        _rederive_evaluation_states(ref.id, manifest, root=root_path)
+                        _rederive_evaluation_states(
+                            ref.id,
+                            manifest,
+                            root=root_path,
+                            execution_context=execution_context,
+                        )
                     else:
                         states_path.parent.mkdir(parents=True, exist_ok=True)
                         write_evaluation_states_cache(
@@ -204,7 +214,12 @@ def resolve_analysis_inputs(
                             states=states,
                         )
                 else:
-                    _rederive_evaluation_states(ref.id, manifest, root=root_path)
+                    _rederive_evaluation_states(
+                        ref.id,
+                        manifest,
+                        root=root_path,
+                        execution_context=execution_context,
+                    )
             if states is None:
                 states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
         resolved.append(
@@ -223,6 +238,7 @@ def _rederive_evaluation_states(
     manifest: AnyManifest | None,
     *,
     root: Path,
+    execution_context: StagedExecutionContext,
 ) -> None:
     if not isinstance(manifest, EvaluationRunManifest):
         raise TypeError(
@@ -240,6 +256,7 @@ def _rederive_evaluation_states(
         root=root,
         provenance=manifest.provenance,
         metadata=metadata,
+        execution_context=execution_context,
     )
     if rederived.id != manifest_id:
         raise ValueError(
@@ -265,6 +282,7 @@ def execute_analysis_run_spec(
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
     validate_result: AnalysisRecipeResultValidator | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -307,8 +325,9 @@ def execute_analysis_run_spec(
             run_spec,
             root=root_path,
             authenticated_inputs=authenticated_inputs,
+            execution_context=execution_context,
         )
-        result = recipe(run_spec, root_path, resolved_inputs)
+        result = recipe(run_spec, root_path, resolved_inputs, execution_context)
         if not result.analyses:
             raise ValueError(f"Analysis recipe {run_spec.analysis_type!r} returned no analyses")
         if validate_result is not None:

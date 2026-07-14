@@ -98,7 +98,7 @@ def test_spec_emitting_bundle_stages_share_one_execution_loop() -> None:
 
 
 def _register_toy_analysis_recipe() -> None:
-    def recipe(spec, _root, inputs):
+    def recipe(spec, _root, inputs, _execution_context):
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
@@ -110,7 +110,7 @@ def _register_toy_analysis_recipe() -> None:
 
 
 def _register_toy_artifact_analysis_recipe() -> None:
-    def recipe(spec, _root, inputs):
+    def recipe(spec, _root, inputs, _execution_context):
         values = [
             int(resolved.states["value"])
             for resolved in inputs
@@ -133,7 +133,7 @@ def _register_toy_materializer_recipe() -> None:
             "value": 23,
         }
 
-    def recipe(_spec, _root, _inputs):
+    def recipe(_spec, _root, _inputs, _execution_context):
         return AnalysisRecipeResult(
             analyses={
                 "materializer": ContextMaterializer(
@@ -150,7 +150,12 @@ def _register_toy_materializer_recipe() -> None:
 
 
 def _register_toy_evaluation_recipe() -> None:
-    def recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+    def recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
         return EvaluationRecipeResult(
             states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
             summary_metrics={"n_trials": run_spec.params["n_trials"]},
@@ -200,7 +205,12 @@ def _prepare_staged_evaluation_cache_truthfulness_case(
     eval_calls: list[int] = []
     analysis_calls: list[int] = []
 
-    def eval_recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+    def eval_recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
         n_trials = int(run_spec.params["n_trials"])
         eval_calls.append(n_trials)
         return EvaluationRecipeResult(
@@ -208,7 +218,7 @@ def _prepare_staged_evaluation_cache_truthfulness_case(
             summary_metrics={"n_trials": n_trials},
         )
 
-    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs):
+    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         value = int(inputs[0].states["value"])
         analysis_calls.append(value)
         return AnalysisRecipeResult(
@@ -483,7 +493,7 @@ def test_analysis_run_spec_reuses_completed_manifest_without_recipe_call(tmp_pat
     _register_toy_evaluation_recipe()
     calls: list[int] = []
 
-    def recipe(spec: AnalysisRunSpec, _root: Path, inputs):
+    def recipe(spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         calls.append(int(inputs[0].states["value"]))
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
@@ -604,7 +614,12 @@ def test_evaluation_states_cache_corruption_fails_closed(tmp_path: Path):
 def test_analysis_run_spec_prefers_durable_states_on_cache_miss(tmp_path: Path):
     calls: list[int] = []
 
-    def recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+    def recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
         calls.append(int(run_spec.params["n_trials"]))
         return EvaluationRecipeResult(
             states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
@@ -1014,7 +1029,7 @@ def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs
     paired_analysis_type = "feedbax.test.paired_bundle_analysis"
     observed_inputs: list[list[tuple[str, str]]] = []
 
-    def recipe(spec: AnalysisRunSpec, _root: Path, inputs):
+    def recipe(spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         observed_inputs.append([(item.ref.kind, item.ref.id) for item in inputs])
         eval_values = [
             int(item.states["value"]) for item in inputs if item.ref.kind == "EvaluationRunManifest"
@@ -1097,7 +1112,12 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(tmp_path: Path) 
     eval_calls: list[int] = []
     analysis_calls: list[int] = []
 
-    def eval_recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+    def eval_recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
         n_trials = int(run_spec.params["n_trials"])
         eval_calls.append(n_trials)
         return EvaluationRecipeResult(
@@ -1105,7 +1125,7 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(tmp_path: Path) 
             summary_metrics={"n_trials": n_trials},
         )
 
-    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs):
+    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         value = int(inputs[0].states["value"])
         analysis_calls.append(value)
         return AnalysisRecipeResult(
@@ -1378,7 +1398,7 @@ def test_staged_bundle_runtime_condition_skips_required_outputs_and_optional_rol
     observed_inputs: list[list[ParentRef]] = []
     consumer_type = "feedbax.test.bundle_optional_role_consumer"
 
-    def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs):
+    def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         observed_inputs.append([resolved.ref for resolved in inputs])
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
@@ -1591,7 +1611,7 @@ def test_staged_bundle_role_dependency_binds_artifact_input_alias(tmp_path: Path
     observed_inputs: list[list[ParentRef]] = []
     consumer_type = "feedbax.test.bundle_role_consumer"
 
-    def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs):
+    def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         observed_inputs.append([resolved.ref for resolved in inputs])
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
@@ -1709,7 +1729,7 @@ def test_staged_bundle_materialization_stage_rejects_non_materializer_node(
 ) -> None:
     bad_materializer_type = "feedbax.test.bundle_bad_materializer"
 
-    def recipe(_spec: AnalysisRunSpec, _root: Path, _inputs):
+    def recipe(_spec: AnalysisRunSpec, _root: Path, _inputs, _execution_context):
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
             data=build_toy_analysis_data(value=0),

@@ -16,6 +16,11 @@ from urllib.parse import unquote, urlsplit
 
 from pydantic import ValidationError
 
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContext,
+    StagedExecutionContextError,
+)
 from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef, TrainingRunManifest
 
 
@@ -94,6 +99,7 @@ def resolve_evaluation_inputs(
     *,
     manifest_root: Path | str,
     require_unique_manifest_id: bool = True,
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
 ) -> tuple[ResolvedEvaluationInput, ...]:
     """Resolve the exact training manifest declared by an evaluation run spec.
 
@@ -133,16 +139,35 @@ def resolve_evaluation_inputs(
 
     ref = refs[0]
     _validate_training_ref(ref)
-    root = _resolve_root(manifest_root)
+    effective_ref = ref
+    requested_root = _resolve_root(manifest_root)
+    if (ref.uri or "").startswith("artifact://sha256/"):
+        try:
+            location = execution_context.parent_execution_location(ref)
+        except StagedExecutionContextError as exc:
+            raise EvaluationInputReferenceError(
+                "immutable exact evaluation input requires a matching complete-ParentRef "
+                "execution location"
+            ) from exc
+        root = _resolve_root(location.root)
+        if root != requested_root:
+            raise EvaluationInputPathError(
+                "immutable exact evaluation input location root does not match manifest_root"
+            )
+        effective_ref = ref.model_copy(update={"uri": location.execution_uri})
+        require_unique_manifest_id = False
+    else:
+        root = requested_root
     with _open_root_fd(root) as root_fd:
         candidate = _resolve_candidate(
-            ref,
+            effective_ref,
             root,
             root_fd,
             require_unique_manifest_id=require_unique_manifest_id,
         )
     digest = hashlib.sha256(candidate.raw_bytes).hexdigest()
     _validate_declared_hash(ref, digest)
+    _validate_declared_size(ref, len(candidate.raw_bytes))
     manifest = _validate_training_manifest(candidate, ref)
 
     return (
@@ -382,6 +407,21 @@ def _validate_declared_hash(ref: ParentRef, observed: str) -> None:
     if declared != observed:
         raise EvaluationInputIntegrityError(
             "Resolved manifest SHA-256 does not match ParentRef metadata.manifest_sha256: "
+            f"declared={declared}, observed={observed}"
+        )
+
+
+def _validate_declared_size(ref: ParentRef, observed: int) -> None:
+    declared = ref.metadata.get("size_bytes")
+    if declared is None:
+        return
+    if isinstance(declared, bool) or not isinstance(declared, int) or declared < 0:
+        raise EvaluationInputIntegrityError(
+            "ParentRef metadata.size_bytes must be a nonnegative integer"
+        )
+    if declared != observed:
+        raise EvaluationInputIntegrityError(
+            "Resolved manifest byte size does not match ParentRef metadata.size_bytes: "
             f"declared={declared}, observed={observed}"
         )
 

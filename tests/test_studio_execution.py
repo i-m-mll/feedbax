@@ -161,6 +161,7 @@ def studio_default_eval_recipe():
         spec: EvaluationRunSpec,
         root: Path,
         states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         artifact = store_json_artifact(
             {
@@ -188,7 +189,7 @@ def studio_default_eval_recipe():
 
 @pytest.fixture
 def studio_default_analysis_recipe():
-    def recipe(spec, _root: Path, inputs) -> AnalysisRecipeResult:
+    def recipe(spec, _root: Path, inputs, _execution_context) -> AnalysisRecipeResult:
         return AnalysisRecipeResult(
             analyses={"studio_summary": ToyAnalysis(variant="studio", cache_result=True)},
             data=build_toy_analysis_data(value=len(inputs)),
