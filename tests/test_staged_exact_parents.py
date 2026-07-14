@@ -220,9 +220,7 @@ def test_four_exact_parents_remain_per_run_until_grouped_downstream(
         manifest = resolve_manifest_input(output_ref, tmp_path).manifest
         assert manifest.input_training_runs == [entry.parent]
         assert manifest.provenance.parents == [entry.parent]
-        assert manifest.evaluation_spec.inline["inputs"] == [
-            entry.parent.model_dump(mode="json")
-        ]
+        assert manifest.evaluation_spec.inline["inputs"] == [entry.parent.model_dump(mode="json")]
 
     grouped_stage = execution.stages[1]
     assert grouped_stage.inputs == evaluation_stage.manifest_refs
@@ -538,9 +536,7 @@ def test_exact_parent_root_evaluation_cannot_group_parents(
     )
     bundle = _bundle()
     bundle = bundle.model_copy(
-        update={
-            "stages": [bundle.stages[0].model_copy(update={"mode": "grouped"})]
-        }
+        update={"stages": [bundle.stages[0].model_copy(update={"mode": "grouped"})]}
     )
 
     with pytest.raises(ValueError, match="grouping is only valid downstream"):

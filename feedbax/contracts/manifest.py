@@ -1525,9 +1525,7 @@ def _secure_store_bytes_artifact(
     temporary_descriptor: int | None = None
     final_descriptor: int | None = None
     try:
-        staging_descriptor = _open_artifact_staging_container(
-            parent_descriptor=parent_descriptor
-        )
+        staging_descriptor = _open_artifact_staging_container(parent_descriptor=parent_descriptor)
         temporary_descriptor = os.open(
             temporary_name,
             _secure_file_flags(writable=True) | os.O_CREAT | os.O_EXCL,
