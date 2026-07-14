@@ -6,6 +6,10 @@ from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
 )
+from feedbax.contracts.checkpoints import (
+    CHECKPOINT_FORK_PLAN_SCHEMA_ID,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+)
 from feedbax.contracts.migrations import (
     SchemaMigration,
     STUDIO_TASK_BINDING_LEGACY_V1,
@@ -941,6 +945,22 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
             assert policy.supported_old_versions, family.kind
         else:
             assert policy.rejected_old_versions, family.kind
+
+
+def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:
+    family = default_spec_registry.resolve("CheckpointForkPlan")
+    assert family.identity == CHECKPOINT_FORK_PLAN_SCHEMA_ID
+    assert family.current_version == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
+    current = default_spec_registry.migrate(
+        "CheckpointForkPlan",
+        {"schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION},
+    )
+    assert not current.migrated
+    with pytest.raises(UnsupportedSpecVersion, match="current_version"):
+        default_spec_registry.migrate(
+            "CheckpointForkPlan",
+            {"schema_version": "feedbax.spec.training_checkpoint_fork_plan.v0"},
+        )
 
 
 def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:
