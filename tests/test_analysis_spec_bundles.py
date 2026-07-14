@@ -53,12 +53,14 @@ from feedbax.contracts.expressions import Compare
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
+    EvaluationRunManifest,
     EvaluationRunSpec,
     ParentRef,
     TrainingRunManifest,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
+    spec_payload,
     write_manifest,
 )
 from feedbax.contracts.selection import TopKByMetricPerGroup
@@ -184,6 +186,66 @@ def _write_toy_training(root: Path, *, method: str, run_id: str = "toy") -> Trai
     )
     write_manifest(manifest, root=root)
     return manifest
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
+
+
+def _prepare_staged_evaluation_cache_truthfulness_case(
+    root: Path,
+) -> tuple[AnalysisBundleSpec, Path, list[int], list[int]]:
+    eval_calls: list[int] = []
+    analysis_calls: list[int] = []
+
+    def eval_recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+        n_trials = int(run_spec.params["n_trials"])
+        eval_calls.append(n_trials)
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(n_trials, dtype=np.int32)},
+            summary_metrics={"n_trials": n_trials},
+        )
+
+    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs):
+        value = int(inputs[0].states["value"])
+        analysis_calls.append(value)
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=value),
+        )
+
+    register_evaluation_recipe(TOY_EVALUATION_TYPE, eval_recipe, replace=True)
+    register_analysis_recipe(TOY_ANALYSIS_TYPE, analysis_recipe, replace=True)
+    _write_toy_training(root, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="evaluation_cache_truthfulness",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 7},
+            ),
+            BundleStageSpec(
+                name="downstream",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+            ),
+        ],
+    )
+    first = execute_staged_analysis_bundle(bundle, root=root, fig_dump_formats=("json",))
+    evaluation_path = resolve_manifest_input(first.stages[0].manifest_refs[0], root).path
+    eval_calls.clear()
+    analysis_calls.clear()
+    return bundle, evaluation_path, eval_calls, analysis_calls
 
 
 def _write_bundle_package(tmp_path: Path, monkeypatch) -> ExperimentRegistry:
@@ -1112,6 +1174,92 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(tmp_path: Path) 
         )
         rebuilt_spec = analysis_spec.model_copy(update={"inputs": [rebuilt_ref]})
         assert analysis_run_manifest_id(rebuilt_spec) != analysis_run_manifest_id(analysis_spec)
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_rejects_wrong_completed_evaluation_id_before_effects(
+    tmp_path: Path,
+) -> None:
+    bundle, evaluation_path, eval_calls, analysis_calls = (
+        _prepare_staged_evaluation_cache_truthfulness_case(tmp_path)
+    )
+    try:
+        cached = load_manifest(evaluation_path)
+        assert isinstance(cached, EvaluationRunManifest)
+        tampered = cached.model_copy(update={"id": "feedbax-evaluation-run:wrong"})
+        evaluation_path.write_text(tampered.model_dump_json(indent=2), encoding="utf-8")
+        before = _file_snapshot(tmp_path)
+
+        with (
+            patch.object(
+                bundle_module,
+                "execute_evaluation_run_spec",
+                wraps=bundle_module.execute_evaluation_run_spec,
+            ) as execute_evaluation,
+            patch.object(
+                bundle_module,
+                "_execute_analysis_stage",
+                wraps=bundle_module._execute_analysis_stage,
+            ) as execute_downstream,
+            pytest.raises(ValueError, match="id does not match the requested evaluation spec"),
+        ):
+            execute_staged_analysis_bundle(bundle, root=tmp_path, fig_dump_formats=("json",))
+
+        assert eval_calls == []
+        assert analysis_calls == []
+        execute_evaluation.assert_not_called()
+        execute_downstream.assert_not_called()
+        assert _file_snapshot(tmp_path) == before
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_rejects_wrong_completed_evaluation_spec_before_effects(
+    tmp_path: Path,
+) -> None:
+    bundle, evaluation_path, eval_calls, analysis_calls = (
+        _prepare_staged_evaluation_cache_truthfulness_case(tmp_path)
+    )
+    try:
+        cached = load_manifest(evaluation_path)
+        assert isinstance(cached, EvaluationRunManifest)
+        wrong_spec = EvaluationRunSpec.model_validate(cached.evaluation_spec.inline).model_copy(
+            update={"params": {"n_trials": 8}}
+        )
+        tampered = cached.model_copy(
+            update={
+                "evaluation_spec": spec_payload(
+                    "EvaluationRunSpec",
+                    wrong_spec.model_dump(mode="json", exclude_none=True),
+                )
+            }
+        )
+        evaluation_path.write_text(tampered.model_dump_json(indent=2), encoding="utf-8")
+        before = _file_snapshot(tmp_path)
+
+        with (
+            patch.object(
+                bundle_module,
+                "execute_evaluation_run_spec",
+                wraps=bundle_module.execute_evaluation_run_spec,
+            ) as execute_evaluation,
+            patch.object(
+                bundle_module,
+                "_execute_analysis_stage",
+                wraps=bundle_module._execute_analysis_stage,
+            ) as execute_downstream,
+            pytest.raises(ValueError, match="evaluation_spec does not match the requested"),
+        ):
+            execute_staged_analysis_bundle(bundle, root=tmp_path, fig_dump_formats=("json",))
+
+        assert eval_calls == []
+        assert analysis_calls == []
+        execute_evaluation.assert_not_called()
+        execute_downstream.assert_not_called()
+        assert _file_snapshot(tmp_path) == before
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)

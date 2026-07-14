@@ -49,6 +49,7 @@ from feedbax.contracts.manifest import (
     StrictModel,
     TrainingRunManifest,
     OverridePatch,
+    canonical_json_bytes,
     collect_git_provenance,
     default_manifest_root,
     evaluation_run_manifest_id,
@@ -1073,6 +1074,35 @@ def _record_status(records: Sequence[BundleStageOutputRecord]) -> BundleOutputSt
     return "missing"
 
 
+def _validate_completed_evaluation_cache(
+    manifest: EvaluationRunManifest,
+    *,
+    requested_spec: EvaluationRunSpec,
+    requested_manifest_id: str,
+) -> None:
+    if manifest.id != requested_manifest_id:
+        raise ValueError(
+            "cached EvaluationRunManifest id does not match the requested evaluation spec: "
+            f"expected {requested_manifest_id!r}, got {manifest.id!r}"
+        )
+    if manifest.evaluation_spec.kind != "EvaluationRunSpec":
+        raise ValueError(
+            "cached EvaluationRunManifest evaluation_spec kind must be "
+            f"'EvaluationRunSpec'; got {manifest.evaluation_spec.kind!r}"
+        )
+    try:
+        cached_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    except ValueError as exc:
+        raise ValueError(
+            "cached EvaluationRunManifest evaluation_spec is not a valid EvaluationRunSpec"
+        ) from exc
+    if canonical_json_bytes(cached_spec) != canonical_json_bytes(requested_spec):
+        raise ValueError(
+            "cached EvaluationRunManifest evaluation_spec does not match the requested "
+            "EvaluationRunSpec"
+        )
+
+
 def _execute_evaluation_stage(
     stage: BundleStageSpec,
     input_groups: Sequence[Sequence[ParentRef]],
@@ -1092,6 +1122,11 @@ def _execute_evaluation_stage(
         path = root / "manifests" / "evaluation_runs" / f"{safe_manifest_key(manifest_id)}.json"
         existing = load_manifest(path) if path.is_file() else None
         if isinstance(existing, EvaluationRunManifest) and existing.status == "completed":
+            _validate_completed_evaluation_cache(
+                existing,
+                requested_spec=spec,
+                requested_manifest_id=manifest_id,
+            )
             manifest = existing
         else:
             manifest, path = execute_evaluation_run_spec(
