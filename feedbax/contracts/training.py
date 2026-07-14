@@ -502,6 +502,10 @@ class TrainingMethodMetadataProjector(Generic[PayloadT]):
             raise ValueError("training method metadata projector identity must not be empty")
         if not isinstance(self.output_model, type) or not issubclass(self.output_model, BaseModel):
             raise TypeError("training method metadata projector output_model must extend BaseModel")
+        if self.output_model.model_config.get("extra") != "forbid":
+            raise ValueError("training method metadata projector output_model must set extra='forbid'")
+        if self.output_model.model_config.get("strict") is not True:
+            raise ValueError("training method metadata projector output_model must set strict=True")
         if not callable(self.projector):
             raise TypeError("training method metadata projector projector must be callable")
 

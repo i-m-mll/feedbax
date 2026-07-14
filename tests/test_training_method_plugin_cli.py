@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
@@ -55,6 +55,8 @@ class DummyPayload(BaseModel):
 
 
 class DummyMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     token_length: int
 
 
@@ -313,6 +315,40 @@ def test_metadata_projector_rejects_invalid_model_callable_and_output() -> None:
     TrainingMethodRegistry().register_descriptor(_dummy_descriptor(metadata_projector=projector))
     with pytest.raises(ValueError, match="token_length"):
         projector.project(DummyPayload())
+
+
+def test_metadata_projector_requires_strict_output_model() -> None:
+    class PermissiveMetadata(BaseModel):
+        token_length: int
+
+    with pytest.raises(ValueError, match="extra='forbid'"):
+        TrainingMethodRegistry().register_descriptor(
+            _dummy_descriptor(
+                metadata_projector=TrainingMethodMetadataProjector(
+                    schema_id="dummy.spec.training_metadata",
+                    schema_version="dummy.spec.training_metadata.v1",
+                    output_model=PermissiveMetadata,
+                    projector=lambda payload: {"token_length": len(payload.token)},
+                )
+            )
+        )
+
+    class NonStrictMetadata(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        token_length: int
+
+    with pytest.raises(ValueError, match="strict=True"):
+        TrainingMethodRegistry().register_descriptor(
+            _dummy_descriptor(
+                metadata_projector=TrainingMethodMetadataProjector(
+                    schema_id="dummy.spec.training_metadata",
+                    schema_version="dummy.spec.training_metadata.v1",
+                    output_model=NonStrictMetadata,
+                    projector=lambda payload: {"token_length": len(payload.token)},
+                )
+            )
+        )
 
 
 def test_descriptor_optimizer_hooks_are_callable_and_standard_is_explicit() -> None:
