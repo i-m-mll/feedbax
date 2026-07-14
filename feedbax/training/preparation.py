@@ -7,7 +7,10 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from pydantic import BaseModel
+
 from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.worker import EffectivePhaseSpec, MethodContractSpec
 from feedbax.objectives.service import LossService
 from feedbax.training.checkpoint_custody import ResumeSlotTransform
 
@@ -23,6 +26,9 @@ class ExecutionPreparationRequest:
     """Validated runtime request passed to an execution-preparation provider."""
 
     run_spec: TrainingRunSpec
+    method_payload: BaseModel | None = None
+    method_contract: MethodContractSpec | None = None
+    effective_phase: EffectivePhaseSpec | None = None
     run_id: str | None = None
     resume: bool = False
 
@@ -53,6 +59,7 @@ class ExecutionPreparationRegistration:
     method_ref: str
     provider: ExecutionPreparationProvider
     owner: str = "feedbax"
+    requires_resolved_method: bool = False
 
 
 class ExecutionPreparationProviderRegistry:
@@ -94,11 +101,53 @@ class ExecutionPreparationProviderRegistry:
                 f"/method_ref {method_ref!r} has no execution-preparation provider; "
                 f"available provider keys={list(self.available_keys())!r}"
             )
+        if registration.requires_resolved_method and (
+            request.method_payload is None
+            or request.method_contract is None
+            or request.effective_phase is None
+        ):
+            raise ExecutionPreparationError(
+                f"descriptor-backed preparation for {method_ref!r} requires the resolved "
+                "method payload, contract, and effective phase"
+            )
+        if (
+            request.method_contract is not None
+            and request.method_contract != request.run_spec.worker_execution.method_contract
+        ):
+            raise ExecutionPreparationError(
+                f"execution preparation method contract does not match TrainingRunSpec for "
+                f"{method_ref!r}"
+            )
+        if (
+            request.effective_phase is not None
+            and request.effective_phase != request.run_spec.worker_execution.effective_phase
+        ):
+            raise ExecutionPreparationError(
+                f"execution preparation effective phase does not match TrainingRunSpec for "
+                f"{method_ref!r}"
+            )
 
         provider_spec = deepcopy(request.run_spec)
+        provider_payload = deepcopy(request.method_payload)
+        provider_contract = deepcopy(request.method_contract)
+        provider_effective_phase = deepcopy(request.effective_phase)
         before = provider_spec.model_dump_json()
+        payload_before = (
+            provider_payload.model_dump_json() if provider_payload is not None else None
+        )
+        contract_before = (
+            provider_contract.model_dump_json() if provider_contract is not None else None
+        )
+        phase_before = (
+            provider_effective_phase.model_dump_json()
+            if provider_effective_phase is not None
+            else None
+        )
         provider_request = ExecutionPreparationRequest(
             run_spec=provider_spec,
+            method_payload=provider_payload,
+            method_contract=provider_contract,
+            effective_phase=provider_effective_phase,
             run_id=request.run_id,
             resume=request.resume,
         )
@@ -113,6 +162,27 @@ class ExecutionPreparationProviderRegistry:
         if provider_spec.model_dump_json() != before:
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} mutated TrainingRunSpec"
+            )
+        if (
+            provider_payload is not None
+            and provider_payload.model_dump_json() != payload_before
+        ):
+            raise ExecutionPreparationError(
+                f"execution preparation provider for {method_ref!r} mutated method payload"
+            )
+        if (
+            provider_contract is not None
+            and provider_contract.model_dump_json() != contract_before
+        ):
+            raise ExecutionPreparationError(
+                f"execution preparation provider for {method_ref!r} mutated method contract"
+            )
+        if (
+            provider_effective_phase is not None
+            and provider_effective_phase.model_dump_json() != phase_before
+        ):
+            raise ExecutionPreparationError(
+                f"execution preparation provider for {method_ref!r} mutated effective phase"
             )
         if not isinstance(result, ExecutionPreparationResult):
             raise ExecutionPreparationError(

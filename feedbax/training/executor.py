@@ -437,13 +437,17 @@ def execute_training_run_spec(
         collection_root=collection_root,
     )
     _preflight_training_diagnostics_emission(diagnostics_path)
-    registration = method_registry.resolve(run_spec.method_ref, path="/method_ref")
-    method_payload = method_registry.validate_payload(
-        run_spec.method_ref,
-        run_spec.method_payload,
-        path="/method_payload",
+    resolved_method = (
+        run_spec.resolved_method
+        if method_registry is DEFAULT_TRAINING_METHOD_REGISTRY
+        else method_registry.resolve_execution(
+            run_spec.method_ref,
+            run_spec.method_payload,
+            worker_execution=run_spec.worker_execution,
+        )
     )
-    method_contract = registration.contract_factory()
+    method_payload = resolved_method.payload
+    method_contract = resolved_method.contract
     _validate_declarations_match_spec(run_spec, method_contract.method_ref)
 
     graph_inline = _graph_inline(run_spec.graph)
@@ -452,15 +456,23 @@ def execute_training_run_spec(
         graph_inline=graph_inline,
         loss_service=loss_service or LossService(),
     )
-    kernels = dict(registration.update_kernels_factory(method_payload))
-    guards = dict(registration.guard_predicates_factory(method_payload))
+    kernels = dict(resolved_method.update_kernels)
+    guards = dict(resolved_method.guard_predicates)
     effective_phase = validate_worker_contract(
         method_contract,
         environment=environment,
         update_kernels=kernels,
+        guard_predicates=guards,
         task_binding_spec=task_binding_spec,
         objective_requirements=lowered.requirements,
     )
+    if (
+        resolved_method.descriptor is not None
+        and effective_phase != run_spec.worker_execution.effective_phase
+    ):
+        raise TrainingRunExecutorError(
+            "/worker_execution/effective_phase does not match the executable method contract"
+        )
     program = effective_phase.phase_program
     slots = _initial_slots(initial_slots, lowered_objective=lowered.loss)
     slots = _normalize_batch_progress_slot(slots, program=program)

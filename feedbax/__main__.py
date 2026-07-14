@@ -414,10 +414,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "execute-training-run-spec":
         _load_training_method_plugins(args.plugin)
         run_spec = validate_training_run_spec(_read_json(args.spec))
-        method_registration = DEFAULT_TRAINING_METHOD_REGISTRY.resolve(
-            run_spec.method_ref,
-            path="/method_ref",
-        )
+        resolved_method = run_spec.resolved_method
+        method_registration = resolved_method.registration
         preparation_registration = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.get(
             run_spec.method_ref.key
         )
@@ -439,6 +437,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.prepare(
                 ExecutionPreparationRequest(
                     run_spec=run_spec,
+                    method_payload=resolved_method.payload,
+                    method_contract=resolved_method.contract,
+                    effective_phase=resolved_method.effective_phase,
                     run_id=args.run_id,
                     resume=args.resume,
                 )

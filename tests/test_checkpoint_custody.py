@@ -18,6 +18,11 @@ from feedbax.contracts.checkpoints import (
     BatchHistory,
     CheckpointContinuationRequest,
     CheckpointForkBarrierMapping,
+    CheckpointForkPlan,
+    CheckpointForkSourcePreparation,
+    CheckpointForkTarget,
+    CheckpointForkTransformRecord,
+    CheckpointForkTransformStep,
     Granularity,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
@@ -46,6 +51,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
 )
 from feedbax.contracts.worker import (
+    CheckpointSlotSpec,
     EffectivePhaseSpec,
     ProgressCoordinate,
     TrainingBatchProgressSpec,
@@ -60,9 +66,14 @@ from feedbax.training.checkpoint_custody import (
     CheckpointContractBindingError,
     CheckpointIntegrityError,
     CheckpointReferenceResolutionError,
+    CheckpointForkPlanBindings,
+    CheckpointForkTransformRegistration,
+    CheckpointForkTransformRegistry,
     checkpoint_slot_names,
+    derive_checkpoint_fork_compatibility_projection,
     detect_known_legacy_checkpoint_layout,
     fork_checkpoint_transaction,
+    fork_checkpoint_plan,
     load_latest_checkpoint,
     load_checkpoint_custody_documents,
     load_checkpoint_latest_pointer_json,
@@ -1240,6 +1251,410 @@ def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     assert controller_provenance.transform.identity == "test:resize_controller"
     assert controller_provenance.transform.parameters == {"from": 2, "to": 3}
     assert "checkpoint_continuation_applied" not in forked.manifest.metadata
+
+
+def _typed_fork_plan(
+    run_spec: TrainingRunSpec,
+    expected_slots: dict[str, object],
+    *,
+    transformed: bool = True,
+) -> CheckpointForkPlan:
+    transforms = []
+    if transformed:
+        transforms = [
+            CheckpointForkTransformStep(
+                step_id="append-controller",
+                stage="source_pre",
+                records=[
+                    CheckpointForkTransformRecord(
+                        slot="controller",
+                        identity="tests.append-controller.v1",
+                        parameters={"value": 3.0},
+                    )
+                ],
+            ),
+            CheckpointForkTransformStep(
+                step_id="scale-controller",
+                stage="source_pre",
+                records=[
+                    CheckpointForkTransformRecord(
+                        slot="controller",
+                        identity="tests.scale-controller.v1",
+                        parameters={"factor": 2.0},
+                    )
+                ],
+            ),
+        ]
+    return CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(
+            checkpoint_root_ref="source",
+            transforms=transforms,
+        ),
+        targets=[
+            CheckpointForkTarget(
+                target_id="target-a",
+                row_id="row-a",
+                checkpoint_root_ref="target-a",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    run_spec,
+                    run_spec.worker_execution.method_contract.phase_program,
+                    expected_slots,
+                ),
+            ),
+            CheckpointForkTarget(
+                target_id="target-b",
+                row_id="row-b",
+                checkpoint_root_ref="target-b",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    run_spec,
+                    run_spec.worker_execution.method_contract.phase_program,
+                    expected_slots,
+                ),
+            ),
+        ],
+    )
+
+
+def test_typed_checkpoint_fork_plan_preflights_once_and_records_projection(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    expected = _minimax_slots()
+    expected["controller"] = jnp.zeros((3,), dtype=jnp.float32)
+    calls: list[str] = []
+    registry = CheckpointForkTransformRegistry()
+
+    def append_controller(slots, parameters):
+        calls.append("append")
+        return {
+            **slots,
+            "controller": jnp.concatenate(
+                [slots["controller"], jnp.asarray([parameters["value"]])]
+            ),
+        }
+
+    def scale_controller(slots, parameters):
+        calls.append("scale")
+        return {**slots, "controller": slots["controller"] * parameters["factor"]}
+
+    registry.register(
+        CheckpointForkTransformRegistration("tests.append-controller.v1", append_controller)
+    )
+    registry.register(
+        CheckpointForkTransformRegistration("tests.scale-controller.v1", scale_controller)
+    )
+    plan = _typed_fork_plan(run_spec, expected)
+    results = fork_checkpoint_plan(
+        plan,
+        CheckpointForkPlanBindings(
+            checkpoint_roots={
+                "source": tmp_path / "source",
+                "target-a": tmp_path / "target-a",
+                "target-b": tmp_path / "target-b",
+            },
+            run_specs={"run": run_spec},
+            slot_templates={"slots": expected},
+        ),
+        transform_registry=registry,
+    )
+
+    assert calls == ["append", "scale"]
+    hashes = set()
+    for target_id, result in results.items():
+        loaded = load_latest_checkpoint(
+            result.root,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=expected,
+        )
+        assert loaded.slots["controller"].tolist() == [2.0, 4.0, 6.0]
+        assert result.manifest.fork_provenance is not None
+        metadata = result.manifest.fork_provenance.metadata
+        hashes.add(metadata["checkpoint_fork_plan_sha256"])
+        assert metadata["checkpoint_fork_plan_target_id"] == target_id
+        assert metadata["checkpoint_fork_plan_compatibility_projection"]["targets"]
+    assert len(hashes) == 1
+
+
+def test_typed_checkpoint_fork_plan_unknown_transform_fails_before_writes(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    with pytest.raises(CheckpointCompatibilityError, match="unregistered"):
+        fork_checkpoint_plan(
+            _typed_fork_plan(run_spec, _minimax_slots()),
+            CheckpointForkPlanBindings(
+                checkpoint_roots={
+                    "source": tmp_path / "source",
+                    "target-a": tmp_path / "target-a",
+                    "target-b": tmp_path / "target-b",
+                },
+                run_specs={"run": run_spec},
+                slot_templates={"slots": _minimax_slots()},
+            ),
+            transform_registry=CheckpointForkTransformRegistry(),
+        )
+    assert not (tmp_path / "target-a").exists()
+    assert not (tmp_path / "target-b").exists()
+
+
+def test_typed_checkpoint_fork_plan_preserves_untransformed_hardlinks(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    results = fork_checkpoint_plan(
+        _typed_fork_plan(run_spec, _minimax_slots(), transformed=False),
+        CheckpointForkPlanBindings(
+            checkpoint_roots={
+                "source": tmp_path / "source",
+                "target-a": tmp_path / "target-a",
+                "target-b": tmp_path / "target-b",
+            },
+            run_specs={"run": run_spec},
+            slot_templates={"slots": _minimax_slots()},
+        ),
+    )
+    assert set(results) == {"target-a", "target-b"}
+    assert all(
+        set(result.slot_transfer_modes.values()) == {"hardlink"}
+        for result in results.values()
+    )
+
+
+def test_typed_checkpoint_fork_plan_requires_declared_target_only_slot(
+    tmp_path: Path,
+) -> None:
+    source_spec = _run_spec(minimax=True)
+    source_program = source_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=source_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    target_spec = source_spec.model_copy(deep=True)
+    target_program = target_spec.worker_execution.method_contract.phase_program
+    target_program.checkpoint_barriers[0].slots.append(
+        CheckpointSlotSpec(slot="adaptive_state")
+    )
+    expected = {**_minimax_slots(), "adaptive_state": jnp.zeros((2,), dtype=jnp.float32)}
+    declaration = {"identity": "tests.adaptive-state-slot.v1"}
+    plan = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        targets=[
+            CheckpointForkTarget(
+                target_id="target",
+                checkpoint_root_ref="target",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    target_spec,
+                    target_program,
+                    expected,
+                ),
+                transforms=[
+                    CheckpointForkTransformStep(
+                        step_id="add-adaptive-state",
+                        stage="target_post",
+                        records=[
+                            CheckpointForkTransformRecord(
+                                slot="adaptive_state",
+                                identity="tests.add-adaptive-state.v1",
+                            )
+                        ],
+                        target_only_slots={"adaptive_state": declaration},
+                    )
+                ],
+            )
+        ],
+    )
+    registry = CheckpointForkTransformRegistry()
+    registry.register(
+        CheckpointForkTransformRegistration(
+            "tests.add-adaptive-state.v1",
+            lambda slots, parameters: {
+                **slots,
+                "adaptive_state": jnp.zeros((2,), dtype=jnp.float32),
+            },
+        )
+    )
+    result = fork_checkpoint_plan(
+        plan,
+        CheckpointForkPlanBindings(
+            checkpoint_roots={
+                "source": tmp_path / "source",
+                "target": tmp_path / "target",
+            },
+            run_specs={"run": target_spec},
+            slot_templates={"slots": expected},
+        ),
+        transform_registry=registry,
+    )["target"]
+    provenance = {slot.slot: slot for slot in result.manifest.fork_provenance.slots}
+    assert provenance["adaptive_state"].source_sha256 is None
+    assert provenance["adaptive_state"].transform.metadata["target_only_declaration"] == declaration
+
+
+def test_typed_checkpoint_fork_plan_history_policy_fails_closed_before_write(
+    tmp_path: Path,
+) -> None:
+    source_spec = _run_spec(minimax=True)
+    source_program = source_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=source_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=0,
+        additional_batches=5,
+    )
+    target_spec = source_spec.model_copy(
+        update={
+            "checkpoint_progress": source_spec.checkpoint_progress.model_copy(
+                update={"continuation": continuation}
+            )
+        }
+    )
+    plan = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        targets=[
+            CheckpointForkTarget(
+                target_id="target",
+                checkpoint_root_ref="target",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    target_spec,
+                    target_spec.worker_execution.method_contract.phase_program,
+                    _minimax_slots(),
+                ),
+            )
+        ],
+    )
+    with pytest.raises(CheckpointCompatibilityError, match="history policy is preserve"):
+        fork_checkpoint_plan(
+            plan,
+            CheckpointForkPlanBindings(
+                checkpoint_roots={
+                    "source": tmp_path / "source",
+                    "target": tmp_path / "target",
+                },
+                run_specs={"run": target_spec},
+                slot_templates={"slots": _minimax_slots()},
+            ),
+        )
+    assert not (tmp_path / "target").exists()
+
+
+def test_typed_checkpoint_fork_plan_preflights_all_target_structures(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    bad_slots = _minimax_slots()
+    bad_slots["controller"] = jnp.zeros((9,), dtype=jnp.float32)
+    plan = _typed_fork_plan(run_spec, _minimax_slots(), transformed=False)
+    plan = plan.model_copy(
+        update={
+            "targets": [
+                plan.targets[0],
+                plan.targets[1].model_copy(update={"slot_template_ref": "bad-slots"}),
+            ]
+        }
+    )
+    with pytest.raises(CheckpointCompatibilityError, match="target-b.*compatibility ABI mismatch"):
+        fork_checkpoint_plan(
+            plan,
+            CheckpointForkPlanBindings(
+                checkpoint_roots={
+                    "source": tmp_path / "source",
+                    "target-a": tmp_path / "target-a",
+                    "target-b": tmp_path / "target-b",
+                },
+                run_specs={"run": run_spec},
+                slot_templates={"slots": _minimax_slots(), "bad-slots": bad_slots},
+            ),
+        )
+    assert not (tmp_path / "target-a").exists()
+    assert not (tmp_path / "target-b").exists()
+
+
+def test_typed_checkpoint_fork_plan_rejects_runtime_run_contract_drift(
+    tmp_path: Path,
+) -> None:
+    declared_spec = _run_spec(minimax=True)
+    program = declared_spec.worker_execution.method_contract.phase_program
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=declared_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    plan = _typed_fork_plan(declared_spec, _minimax_slots(), transformed=False)
+    runtime_spec = _incompatible_slot_run_spec(declared_spec)
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="target-a.*run-contract projection sha256 mismatch",
+    ):
+        fork_checkpoint_plan(
+            plan,
+            CheckpointForkPlanBindings(
+                checkpoint_roots={
+                    "source": tmp_path / "source",
+                    "target-a": tmp_path / "target-a",
+                    "target-b": tmp_path / "target-b",
+                },
+                run_specs={"run": runtime_spec},
+                slot_templates={"slots": _minimax_slots()},
+            ),
+        )
+    assert not (tmp_path / "target-a").exists()
+    assert not (tmp_path / "target-b").exists()
 
 
 def test_checkpoint_fork_fails_closed_on_source_blob_hash_mismatch(
