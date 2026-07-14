@@ -151,12 +151,31 @@ def _read_regular_file(root: Path, parts: tuple[str, ...]) -> bytes:
         file_stat = os.fstat(file_descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise ValueError("Authenticated manifest locator does not name a regular file")
+        if file_stat.st_nlink != 1:
+            raise ValueError("Authenticated manifest locator must have exactly one hard link")
         chunks: list[bytes] = []
         while True:
             chunk = os.read(file_descriptor, 1024 * 1024)
             if not chunk:
                 break
             chunks.append(chunk)
+        final_stat = os.fstat(file_descriptor)
+        if final_stat.st_nlink != 1:
+            raise ValueError("Authenticated manifest locator hard-link count changed during read")
+        if (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+            final_stat.st_ctime_ns,
+        ) != (
+            file_stat.st_dev,
+            file_stat.st_ino,
+            file_stat.st_size,
+            file_stat.st_mtime_ns,
+            file_stat.st_ctime_ns,
+        ):
+            raise ValueError("Authenticated manifest identity changed during read")
         return b"".join(chunks)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
@@ -198,6 +217,27 @@ def resolve_manifest_input(
         raise ValueError(
             f"Authenticated manifest id mismatch: expected {ref.id!r}, got {manifest.id!r}"
         )
+    return ResolvedManifestInput(
+        ref=ref,
+        manifest=manifest,
+        path=root.joinpath(*parts),
+        raw_bytes=raw,
+    )
+
+
+def resolve_contained_manifest_input(
+    ref: ParentRef,
+    manifest_root: Path | str,
+    runtime_locator: Path | str,
+) -> ResolvedManifestInput:
+    """Resolve an explicitly located provider-free manifest within one supplied root."""
+
+    parts = _locator_parts(runtime_locator)
+    root = Path(manifest_root)
+    raw = _read_regular_file(root, parts)
+    manifest = load_manifest_bytes(raw)
+    if manifest.kind != ref.kind or manifest.id != ref.id:
+        raise ValueError("Contained manifest kind or id disagrees with ParentRef")
     return ResolvedManifestInput(
         ref=ref,
         manifest=manifest,

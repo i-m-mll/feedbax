@@ -12,10 +12,11 @@ from typing import Any
 
 import plotly.graph_objs as go
 
-from feedbax.analysis.specs import find_manifest_by_id
+from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.analysis.manifest_inputs import (
     is_authenticated_manifest_ref,
     resolve_manifest_input,
+    resolve_contained_manifest_input,
 )
 from feedbax.contracts.expressions import (
     ContextItem,
@@ -28,7 +29,7 @@ from feedbax.contracts.expressions import (
     evaluate_query,
     expression_hash,
 )
-from feedbax.contracts.figures import FigureSpec, TraceBinding
+from feedbax.contracts.figures import FigureInputAuthority, FigureSpec, TraceBinding
 from feedbax.contracts.manifest import (
     AnyManifest,
     EntrypointRef,
@@ -71,6 +72,12 @@ class ResolvedFigureInput:
     ref: ParentRef
     manifest: AnyManifest | None
     path: Path | None
+    artifact_payloads: Mapping[str, Any] = field(default_factory=dict)
+    artifact_refs: tuple[ArtifactRef, ...] = ()
+
+
+class FigureInputAuthorityError(ValueError):
+    """Stable fail-closed error for figure input authority violations."""
 
 
 @dataclass
@@ -133,20 +140,136 @@ def resolve_figure_inputs(
     spec: FigureSpec,
     *,
     root: Path | str | None = None,
+    execution_context: StagedExecutionContext | None = None,
 ) -> list[ResolvedFigureInput]:
-    """Resolve FigureSpec.inputs to manifests where possible."""
-    root_path = Path(root) if root is not None else default_manifest_root()
+    """Resolve and materialize every external figure input before effects."""
+    root_path = Path(root) if root is not None else None
     resolved: list[ResolvedFigureInput] = []
     for ref in spec.inputs:
         manifest: AnyManifest | None = None
         manifest_path: Path | None = None
         if is_authenticated_manifest_ref(ref):
-            authenticated = resolve_manifest_input(ref, root_path)
+            if execution_context is not None:
+                try:
+                    authenticated = execution_context.resolve_manifest_input(ref)
+                except Exception as exc:
+                    raise FigureInputAuthorityError(
+                        f"figure input authority rejected exact parent {ref.id!r}"
+                    ) from exc
+            elif root_path is not None:
+                authenticated = resolve_manifest_input(ref, root_path)
+            else:
+                raise FigureInputAuthorityError(
+                    f"figure input authority is missing for exact parent {ref.id!r}"
+                )
             manifest, manifest_path = authenticated.manifest, authenticated.path
         elif ref.kind.endswith("Manifest"):
-            manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
-        resolved.append(ResolvedFigureInput(ref=ref, manifest=manifest, path=manifest_path))
+            if root_path is None or ref.uri is None:
+                raise FigureInputAuthorityError(
+                    f"figure input parent {ref.id!r} requires an authenticated reference "
+                    "profile or explicit contained locator"
+                )
+            try:
+                contained = resolve_contained_manifest_input(ref, root_path, ref.uri)
+            except Exception as exc:
+                raise FigureInputAuthorityError(
+                    f"figure input authority rejected contained parent {ref.id!r}"
+                ) from exc
+            manifest, manifest_path = contained.manifest, contained.path
+        authority = _authority_for_parent(spec, ref)
+        payloads, artifact_refs = _resolve_authority_payloads(
+            authority, manifest, execution_context
+        )
+        resolved.append(
+            ResolvedFigureInput(
+                ref=ref,
+                manifest=manifest,
+                path=manifest_path,
+                artifact_payloads=payloads,
+                artifact_refs=artifact_refs,
+            )
+        )
     return resolved
+
+
+def _authority_for_parent(spec: FigureSpec, ref: ParentRef) -> FigureInputAuthority | None:
+    matches = [authority for authority in spec.input_authorities if authority.parent == ref]
+    if len(matches) > 1:
+        raise FigureInputAuthorityError(
+            f"figure input authority is ambiguous for exact parent {ref.id!r}"
+        )
+    return matches[0] if matches else None
+
+
+def _resolve_authority_payloads(
+    authority: FigureInputAuthority | None,
+    manifest: AnyManifest | None,
+    execution_context: StagedExecutionContext | None,
+) -> tuple[dict[str, Any], tuple[ArtifactRef, ...]]:
+    if authority is None or not authority.artifact_payloads:
+        return {}, ()
+    if manifest is None:
+        raise FigureInputAuthorityError("figure artifact payload parent manifest is unavailable")
+    if manifest.status != "completed":
+        raise FigureInputAuthorityError("figure artifact payload parent status mismatch")
+    resolved: dict[str, Any] = {}
+    resolved_refs: list[ArtifactRef] = []
+    for selector in authority.artifact_payloads:
+        if authority.parent.role != selector.manifest_role:
+            raise FigureInputAuthorityError(
+                f"figure artifact payload manifest role mismatch for {selector.name!r}"
+            )
+        artifacts = list(manifest.artifacts)
+        for data_product in getattr(manifest, "produced_data", []):
+            artifacts.extend(data_product.artifacts)
+        matches = [artifact for artifact in artifacts if artifact.role == selector.artifact_role]
+        if not matches:
+            raise FigureInputAuthorityError(
+                f"figure artifact payload is missing for selector {selector.name!r}"
+            )
+        if len(matches) != 1:
+            raise FigureInputAuthorityError(
+                f"figure artifact payload is duplicated for selector {selector.name!r}"
+            )
+        artifact = matches[0]
+        if artifact.media_type != selector.media_type:
+            raise FigureInputAuthorityError(
+                f"figure artifact payload media type mismatch for {selector.name!r}"
+            )
+        if execution_context is None:
+            raise FigureInputAuthorityError(
+                f"figure artifact provider binding is missing for {selector.name!r}"
+            )
+        try:
+            provider = execution_context.artifact_provider(selector.artifact_provider)
+            raw = provider.get_bytes(artifact)
+        except Exception as exc:
+            raise FigureInputAuthorityError(
+                f"figure artifact provider rejected payload {selector.name!r}"
+            ) from exc
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise FigureInputAuthorityError(
+                f"figure artifact payload is not valid JSON for {selector.name!r}"
+            ) from exc
+        if selector.payload_schema_id is not None and (
+            not isinstance(payload, Mapping)
+            or payload.get("schema_id") != selector.payload_schema_id
+        ):
+            raise FigureInputAuthorityError(
+                f"figure artifact payload schema_id mismatch for {selector.name!r}"
+            )
+        if selector.payload_schema_version is not None and (
+            not isinstance(payload, Mapping)
+            or payload.get("schema_version") != selector.payload_schema_version
+        ):
+            raise FigureInputAuthorityError(
+                f"figure artifact payload schema_version mismatch for {selector.name!r}"
+            )
+        resolved[selector.name] = payload
+        resolved_refs.append(artifact)
+    return resolved, tuple(resolved_refs)
 
 
 def execute_figure_spec(
@@ -156,6 +279,7 @@ def execute_figure_spec(
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    execution_context: StagedExecutionContext | None = None,
 ) -> tuple[FigureManifest, Path]:
     """Execute a declarative figure spec and write a FigureManifest."""
     figure_spec = coerce_figure_spec(spec)
@@ -169,7 +293,9 @@ def execute_figure_spec(
         prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=figure_spec.name)
 
     exec_trace = FigureExecutionTrace()
-    resolved_inputs = resolve_figure_inputs(figure_spec, root=root_path)
+    resolved_inputs = resolve_figure_inputs(
+        figure_spec, root=root, execution_context=execution_context
+    )
     try:
         context = _figure_expression_context(figure_spec, resolved_inputs)
         if figure_spec.run_condition is not None and not evaluate_expr(
@@ -238,6 +364,8 @@ def _figure_expression_context(
     }
     for resolved in resolved_inputs:
         manifest_payload = _manifest_payload(resolved.manifest, resolved.ref)
+        if resolved.artifact_payloads:
+            manifest_payload["artifact_payloads"] = dict(resolved.artifact_payloads)
         payloads.append(manifest_payload)
         role = resolved.ref.role
         if role:
@@ -260,33 +388,55 @@ def _figure_expression_context(
 
 def _manifest_payload(manifest: AnyManifest | None, ref: ParentRef) -> dict[str, Any]:
     if manifest is None:
-        return {"kind": ref.kind, "id": ref.id, "metadata": dict(ref.metadata)}
+        return {"kind": ref.kind, "id": ref.id, "metadata": _portable_value(ref.metadata)}
     payload: dict[str, Any] = {
         "kind": manifest.kind,
         "id": manifest.id,
-        "metadata": dict(manifest.metadata),
+        "metadata": _portable_value(manifest.metadata),
         "artifacts": [
-            artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
+            artifact.model_dump(mode="json", exclude_none=True, exclude={"uri"})
+            for artifact in manifest.artifacts
         ],
     }
     produced_data = getattr(manifest, "produced_data", None)
     if produced_data is not None:
         payload["produced_data"] = [
-            product.model_dump(mode="json", exclude_none=True) for product in produced_data
+            _portable_value(product.model_dump(mode="json", exclude_none=True))
+            for product in produced_data
         ]
     for attr in ("summary_metrics", "inputs"):
         if hasattr(manifest, attr):
             value = getattr(manifest, attr)
             if isinstance(value, list):
-                payload[attr] = [
+                payload[attr] = _portable_value([
                     item.model_dump(mode="json", exclude_none=True)
                     if hasattr(item, "model_dump")
                     else item
                     for item in value
-                ]
+                ])
             else:
-                payload[attr] = value
+                payload[attr] = _portable_value(value)
     return payload
+
+
+_RUNTIME_CONTEXT_KEYS = frozenset(
+    {"uri", "path", "root", "callback", "execution_context"}
+)
+
+
+def _portable_value(value: Any) -> Any:
+    """Remove runtime locator/capability fields from constructor-visible payloads."""
+    if isinstance(value, Mapping):
+        return {
+            key: _portable_value(item)
+            for key, item in value.items()
+            if key not in _RUNTIME_CONTEXT_KEYS
+        }
+    if isinstance(value, list):
+        return [_portable_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_portable_value(item) for item in value)
+    return value
 
 
 def _build_figures(
@@ -885,6 +1035,11 @@ def _build_figure_manifest(
         expression_results_digest=sha256_bytes(canonical_json_bytes(binding_payload)),
         provenance=provenance,
         artifacts=artifacts,
+        regeneration_specs=[
+            artifact
+            for resolved in resolved_inputs
+            for artifact in resolved.artifact_refs
+        ],
         failure=failure,
         metadata=metadata,
     )

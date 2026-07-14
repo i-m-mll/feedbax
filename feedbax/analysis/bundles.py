@@ -1468,6 +1468,7 @@ def _execute_figure_stage(
     root: Path,
     issues: Sequence[str],
     bundle: AnalysisBundleSpec,
+    execution_context: StagedExecutionContext,
 ) -> list[StageMaterialization]:
     products: list[StageMaterialization] = []
     if stage.figure is None:
@@ -1505,6 +1506,7 @@ def _execute_figure_stage(
                     "schema_version": bundle.schema_version,
                 }
             },
+            execution_context=execution_context,
         )
         regeneration_payload = _stage_regeneration_payload(
             stage,
@@ -2227,6 +2229,7 @@ def execute_staged_analysis_bundle(
                 root=root_path,
                 issues=issue_refs,
                 bundle=bundle,
+                execution_context=execution_context,
             )
         elif stage.kind == "report":
             products = _execute_report_stage(

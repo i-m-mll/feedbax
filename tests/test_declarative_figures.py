@@ -33,6 +33,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
     spec_payload,
     write_manifest,
+    safe_manifest_key,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.plot.constructors import (
@@ -84,20 +85,30 @@ def _analysis_manifest(root: Path) -> AnalysisRunManifest:
     return manifest
 
 
+def _contained_analysis_ref(manifest: AnalysisRunManifest) -> ParentRef:
+    return ParentRef(
+        kind=manifest.kind,
+        id=manifest.id,
+        role="analysis",
+        uri=f"manifests/analysis_runs/{safe_manifest_key(manifest.id)}.json",
+    )
+
+
 def test_figure_spec_schema_identity_rejects_old_versions() -> None:
     current = FigureSpec(name="demo", assembler="feedbax.grid_figure")
     assert current.schema_id == FIGURE_SPEC_SCHEMA_ID
     assert current.schema_version == FIGURE_SPEC_SCHEMA_VERSION
 
-    with pytest.raises(ValidationError, match="unsupported FigureSpec schema_version"):
-        FigureSpec.model_validate(
-            {
-                "schema_id": FIGURE_SPEC_SCHEMA_ID,
-                "schema_version": "feedbax.spec.figure.v0",
-                "name": "old",
-                "assembler": "feedbax.grid_figure",
-            }
-        )
+    for old_version in ("feedbax.spec.figure.v0", "feedbax.spec.figure.v1"):
+        with pytest.raises(ValidationError, match="unsupported FigureSpec schema_version"):
+            FigureSpec.model_validate(
+                {
+                    "schema_id": FIGURE_SPEC_SCHEMA_ID,
+                    "schema_version": old_version,
+                    "name": "old",
+                    "assembler": "feedbax.grid_figure",
+                }
+            )
 
     with pytest.raises(UnsupportedSpecVersion):
         spec_payload(
@@ -144,7 +155,7 @@ def test_execute_figure_spec_records_optional_omission_and_custody(tmp_path: Pat
     spec = FigureSpec(
         name="profile-demo",
         assembler="feedbax.grid_figure",
-        inputs=[ParentRef(kind=manifest.kind, id=manifest.id, role="analysis")],
+        inputs=[_contained_analysis_ref(manifest)],
         panels=[{"name": "main", "title": "Demo"}],
         traces=[
             TraceBinding(
@@ -185,7 +196,7 @@ def test_execute_figure_spec_required_absence_fails_with_manifest(tmp_path: Path
     spec = FigureSpec(
         name="profile-required-missing",
         assembler="feedbax.grid_figure",
-        inputs=[ParentRef(kind=manifest.kind, id=manifest.id, role="analysis")],
+        inputs=[_contained_analysis_ref(manifest)],
         traces=[
             TraceBinding(
                 name="missing-required",
@@ -223,7 +234,7 @@ def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(tmp_path: Path
     spec = FigureSpec(
         name="faceted-panels",
         template="feedbax.test_faceted_panels",
-        inputs=[ParentRef(kind=manifest.kind, id=manifest.id, role="analysis")],
+        inputs=[_contained_analysis_ref(manifest)],
         slot_bindings={
             "profiles": TraceBinding(
                 name="profile",
@@ -282,7 +293,7 @@ def test_execute_figure_spec_fans_facets_out_to_separate_renders(tmp_path: Path)
     spec = FigureSpec(
         name="faceted-figures",
         template="feedbax.test_faceted_figures",
-        inputs=[ParentRef(kind=manifest.kind, id=manifest.id, role="analysis")],
+        inputs=[_contained_analysis_ref(manifest)],
         slot_bindings={
             "profiles": TraceBinding(
                 name="profile",
