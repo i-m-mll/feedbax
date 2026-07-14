@@ -6,6 +6,7 @@ import os
 import stat
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+import hashlib
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
@@ -13,7 +14,12 @@ from urllib.parse import unquote, urlsplit
 
 from pydantic import ValidationError
 
-from feedbax.contracts.manifest import ParentRef
+from feedbax.analysis.manifest_inputs import (
+    ResolvedManifestInput,
+    is_authenticated_manifest_ref,
+    resolve_manifest_input as resolve_bound_manifest_input,
+)
+from feedbax.contracts.manifest import ParentRef, load_manifest_bytes as parse_manifest_bytes
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -58,6 +64,7 @@ class StagedParentExecutionLocation:
     parent: ParentRef
     root: Path
     execution_uri: str
+    artifact_provider: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,12 +80,32 @@ class StagedExecutionContext:
         repr=False,
         compare=False,
     )
+    _artifact_provider_root_identities: Mapping[str, tuple[int, int]] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "opened_artifact_providers",
             MappingProxyType(dict(self.opened_artifact_providers)),
+        )
+        artifact_identities = dict(self._artifact_provider_root_identities)
+        if not artifact_identities:
+            artifact_identities = {
+                name: _directory_identity(Path(provider.root), kind="artifact provider")
+                for name, provider in self.opened_artifact_providers.items()
+            }
+        if set(artifact_identities) != set(self.opened_artifact_providers):
+            raise StagedExecutionContextError(
+                "artifact provider root identities must exactly match opened providers"
+            )
+        object.__setattr__(
+            self,
+            "_artifact_provider_root_identities",
+            MappingProxyType(artifact_identities),
         )
         object.__setattr__(
             self,
@@ -110,11 +137,59 @@ class StagedExecutionContext:
         """Return one explicitly bound immutable artifact provider by name."""
         validate_staged_binding_name(name)
         try:
-            return self.opened_artifact_providers[name]
+            provider = self.opened_artifact_providers[name]
         except KeyError as exc:
             raise StagedExecutionContextError(
                 f"staged artifact provider binding is unavailable: {name!r}"
             ) from exc
+        _require_directory_identity(
+            Path(provider.root),
+            self._artifact_provider_root_identities[name],
+            kind="artifact provider",
+        )
+        return provider
+
+    def resolve_manifest_input(self, parent: ParentRef) -> ResolvedManifestInput:
+        """Resolve one authenticated manifest through its retained runtime authority."""
+        location = self.parent_execution_location(parent)
+        if location.artifact_provider is None:
+            return resolve_bound_manifest_input(
+                parent,
+                location.root,
+                runtime_locator=location.execution_uri,
+            )
+        if not is_authenticated_manifest_ref(parent):
+            raise StagedExecutionContextError(
+                "provider-backed manifest input requires an authenticated ParentRef"
+            )
+        provider = self.artifact_provider(location.artifact_provider)
+        expected_root_identity = self._artifact_provider_root_identities[
+            location.artifact_provider
+        ]
+        digest = str(parent.metadata["manifest_sha256"])
+        size_bytes = int(parent.metadata["size_bytes"])
+        artifact_id = f"artifact://sha256/{digest}"
+        try:
+            raw_bytes = provider.get_bytes(artifact_id, size_bytes=size_bytes)
+            if hashlib.sha256(raw_bytes).hexdigest() != digest:
+                raise StagedExecutionContextError("provider-backed manifest digest changed")
+            manifest = parse_manifest_bytes(raw_bytes)
+            if manifest.kind != parent.kind or manifest.id != parent.id:
+                raise StagedExecutionContextError(
+                    "provider-backed manifest kind or id disagrees with ParentRef"
+                )
+            return ResolvedManifestInput(
+                ref=parent,
+                manifest=manifest,
+                path=Path(provider.root) / location.execution_uri,
+                raw_bytes=raw_bytes,
+            )
+        finally:
+            _require_directory_identity(
+                Path(provider.root),
+                expected_root_identity,
+                kind="artifact provider",
+            )
 
     def checkpoint_custody_root(self, name: str) -> Path:
         """Return one explicitly bound trusted checkpoint-custody root by name."""
@@ -273,6 +348,7 @@ def with_staged_parent_execution_locations(
                 parent=location.parent,
                 root=root,
                 execution_uri=execution_uri,
+                artifact_provider=location.artifact_provider,
             )
         )
     return replace(context, parent_execution_locations=tuple(normalized))

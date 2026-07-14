@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import resources
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -28,6 +29,7 @@ from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
+from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref, resolve_manifest_input
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
 from feedbax.analysis.specs import AnalysisRecipeResult, execute_analysis_run_spec
 from feedbax.config.yaml import get_yaml_loader
@@ -56,6 +58,7 @@ from feedbax.contracts.manifest import (
     SpecPayload,
     StrictModel,
     TrainingRunManifest,
+    StagedEvaluationPrerequisite,
     OverridePatch,
     canonical_json_bytes,
     collect_git_provenance,
@@ -65,6 +68,7 @@ from feedbax.contracts.manifest import (
     safe_manifest_key,
     spec_payload,
     write_manifest,
+    load_manifest_bytes,
 )
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.run_matrix import apply_override_patches
@@ -86,7 +90,8 @@ from feedbax.plugins.registry import ExperimentRegistry
 
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.spec.analysis_bundle.v2"
-ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v3"
+ANALYSIS_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.spec.analysis_bundle.v3"
+ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v4"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v1"
 
@@ -145,6 +150,15 @@ class BundleParamsBase(StrictModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class BundlePerInputPrerequisiteBinding(StrictModel):
+    """Bind one authenticated external manifest to one selected root input."""
+
+    input_id: str
+    bind_as: str
+    parent: ParentRef
+    artifact_provider: str | None = None
+
+
 class BundleStageSpec(StrictModel):
     """One ordered stage in a schema-bearing analysis bundle plan.
 
@@ -172,9 +186,23 @@ class BundleStageSpec(StrictModel):
     skip_reason: str | None = None
     not_applicable_reason: str | None = None
     run_condition: Expr | None = None
+    prerequisite_bindings: list[BundlePerInputPrerequisiteBinding] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_stage_payload(self) -> "BundleStageSpec":
+        if self.prerequisite_bindings and (
+            self.kind != "evaluation"
+            or self.mode != "per-run"
+            or self.depends_on
+            or self.depends_on_roles
+        ):
+            raise ValueError(
+                f"bundle stage {self.name!r} prerequisite_bindings require a root per-run "
+                "evaluation stage"
+            )
+        input_ids = [binding.input_id for binding in self.prerequisite_bindings]
+        if len(set(input_ids)) != len(input_ids):
+            raise ValueError(f"bundle stage {self.name!r} has duplicate prerequisite input_id")
         if self.local_params is not None and self.params_patches:
             raise ValueError(
                 f"bundle stage {self.name!r} cannot combine local_params with params_patches"
@@ -295,6 +323,14 @@ class ResolvedStageInputs:
 
     parent_refs: tuple[ParentRef, ...] = ()
     artifact_refs_by_alias: dict[str, tuple[ArtifactRef, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedPerInputPrerequisites:
+    """Preflight-authenticated prerequisite values and their runtime locations."""
+
+    by_stage_and_input: dict[tuple[str, str], dict[str, StagedEvaluationPrerequisite]]
+    locations: tuple[StagedParentExecutionLocation, ...]
 
 
 class BundleStageOutputRecord(StrictModel):
@@ -930,6 +966,96 @@ def _preflight_staged_exact_parents(
     return manifests, parent_refs, tuple(locations)
 
 
+def _preflight_per_input_prerequisites(
+    bundle: AnalysisBundleSpec,
+    matched_manifests: Sequence[AnyManifest],
+    *,
+    root: Path,
+    execution_context: StagedExecutionContext,
+) -> ResolvedPerInputPrerequisites:
+    """Authenticate every selective prerequisite before any recipe or cache effect."""
+    selected_ids = {manifest.id for manifest in matched_manifests}
+    resolved: dict[tuple[str, str], dict[str, StagedEvaluationPrerequisite]] = {}
+    locations: list[StagedParentExecutionLocation] = []
+    for stage in bundle.stages:
+        if not stage.prerequisite_bindings:
+            continue
+        if "staged_prerequisites" in _params_for_stage(stage, bundle.params_base):
+            raise ValueError(
+                f"bundle stage {stage.name!r} params must not declare reserved "
+                "staged_prerequisites"
+            )
+        for binding in stage.prerequisite_bindings:
+            if binding.input_id not in selected_ids:
+                raise ValueError(
+                    f"bundle stage {stage.name!r} prerequisite input_id "
+                    f"{binding.input_id!r} is not a selected bundle input"
+                )
+            if not binding.bind_as.strip():
+                raise ValueError("prerequisite bind_as must be nonempty")
+            parent = binding.parent
+            if parent.kind != "EvaluationRunManifest":
+                raise ValueError("staged prerequisite parent kind must be EvaluationRunManifest")
+            if parent.role != "evaluation_run":
+                raise ValueError("staged prerequisite parent role must be evaluation_run")
+            if not is_authenticated_manifest_ref(parent):
+                raise ValueError("staged prerequisite parent requires an authenticated profile")
+
+            if binding.artifact_provider is None:
+                try:
+                    product = resolve_manifest_input(parent, root)
+                except FileNotFoundError as exc:
+                    raise ValueError(
+                        f"staged prerequisite manifest {parent.id!r} is missing"
+                    ) from exc
+                location_root = root.resolve(strict=True)
+                execution_uri = product.path.relative_to(location_root).as_posix()
+                manifest = product.manifest
+            else:
+                provider = execution_context.artifact_provider(binding.artifact_provider)
+                digest = str(parent.metadata["manifest_sha256"])
+                size_bytes = int(parent.metadata["size_bytes"])
+                artifact_id = f"artifact://sha256/{digest}"
+                raw_bytes = provider.get_bytes(artifact_id, size_bytes=size_bytes)
+                if len(raw_bytes) != size_bytes or hashlib.sha256(raw_bytes).hexdigest() != digest:
+                    raise ValueError("staged prerequisite provider bytes failed authentication")
+                manifest = load_manifest_bytes(raw_bytes)
+                location_root = Path(provider.root).resolve(strict=True)
+                execution_uri = provider.canonical_relative_path(
+                    artifact_id,
+                    size_bytes=size_bytes,
+                ).as_posix()
+            if manifest.kind != parent.kind or manifest.id != parent.id:
+                raise ValueError("staged prerequisite manifest kind or id disagrees with ParentRef")
+            if manifest.status != "completed":
+                raise ValueError("staged prerequisite EvaluationRunManifest must be completed")
+
+            value = StagedEvaluationPrerequisite(
+                parent=parent,
+                artifact_provider=binding.artifact_provider,
+            )
+            key = (stage.name, binding.input_id)
+            resolved.setdefault(key, {})[binding.bind_as] = value
+            location = StagedParentExecutionLocation(
+                parent=parent,
+                root=location_root,
+                execution_uri=execution_uri,
+                artifact_provider=binding.artifact_provider,
+            )
+            existing_location = next(
+                (candidate for candidate in locations if candidate.parent == parent),
+                None,
+            )
+            if existing_location is not None and existing_location != location:
+                raise ValueError("staged prerequisite has conflicting runtime locations")
+            if existing_location is None:
+                locations.append(location)
+    return ResolvedPerInputPrerequisites(
+        by_stage_and_input=resolved,
+        locations=tuple(locations),
+    )
+
+
 def _manifest_condition_payload(manifest: AnyManifest) -> dict[str, Any]:
     return {
         "kind": manifest.kind,
@@ -1100,6 +1226,7 @@ def _validate_completed_evaluation_cache(
     *,
     requested_spec: EvaluationRunSpec,
     requested_manifest_id: str,
+    expected_provenance_parents: Sequence[ParentRef],
 ) -> None:
     if manifest.id != requested_manifest_id:
         raise ValueError(
@@ -1122,6 +1249,11 @@ def _validate_completed_evaluation_cache(
             "cached EvaluationRunManifest evaluation_spec does not match the requested "
             "EvaluationRunSpec"
         )
+    if manifest.provenance.parents != list(expected_provenance_parents):
+        raise ValueError(
+            "cached EvaluationRunManifest provenance parents do not match the requested "
+            "training input and exact staged prerequisites"
+        )
 
 
 def _execute_evaluation_stage(
@@ -1132,14 +1264,31 @@ def _execute_evaluation_stage(
     issues: Sequence[str],
     bundle: AnalysisBundleSpec,
     execution_context: StagedExecutionContext,
+    prerequisites: ResolvedPerInputPrerequisites,
 ) -> list[StageMaterialization]:
     products: list[StageMaterialization] = []
     for inputs in input_groups:
+        if len(inputs) != 1:
+            raise ValueError("root per-run evaluation stages require singleton input groups")
+        stage_params = _params_for_stage(stage, bundle.params_base)
+        matched_prerequisites = prerequisites.by_stage_and_input.get(
+            (stage.name, inputs[0].id),
+            {},
+        )
+        if matched_prerequisites:
+            stage_params["staged_prerequisites"] = {
+                name: value.model_dump(mode="json", exclude_none=True)
+                for name, value in matched_prerequisites.items()
+            }
         spec = EvaluationRunSpec(
             evaluation_type=str(stage.evaluation_type),
             inputs=list(inputs),
-            params=_params_for_stage(stage, bundle.params_base),
+            params=stage_params,
         )
+        provenance_parents = [
+            *inputs,
+            *(value.parent for value in matched_prerequisites.values()),
+        ]
         manifest_id = evaluation_run_manifest_id(spec)
         path = root / "manifests" / "evaluation_runs" / f"{safe_manifest_key(manifest_id)}.json"
         existing = load_manifest(path) if path.is_file() else None
@@ -1148,6 +1297,7 @@ def _execute_evaluation_stage(
                 existing,
                 requested_spec=spec,
                 requested_manifest_id=manifest_id,
+                expected_provenance_parents=provenance_parents,
             )
             manifest = existing
         else:
@@ -1155,6 +1305,7 @@ def _execute_evaluation_stage(
                 spec,
                 root=root,
                 issues=list(issues),
+                provenance=Provenance(parents=provenance_parents),
                 execution_context=execution_context,
                 metadata={
                     "bundle": {
@@ -1767,6 +1918,20 @@ def dry_run_staged_analysis_bundle(
         preview = preview.model_copy(
             update={"parent_refs": shown_parent_refs, "truncated": truncated}
         )
+    prerequisite_resolution = _preflight_per_input_prerequisites(
+        bundle,
+        matched_manifests,
+        root=root_path,
+        execution_context=_execution_context,
+    )
+    if prerequisite_resolution.locations:
+        _execution_context = with_staged_parent_execution_locations(
+            _execution_context,
+            [
+                *_execution_context.parent_execution_locations,
+                *prerequisite_resolution.locations,
+            ],
+        )
     stage_products: dict[str, list[StageMaterialization]] = {}
     records: list[BundleStageDryRunRecord] = []
 
@@ -1935,6 +2100,20 @@ def execute_staged_analysis_bundle(
             execution_context,
             parent_locations,
         )
+    prerequisite_resolution = _preflight_per_input_prerequisites(
+        bundle,
+        matched_manifests,
+        root=root_path,
+        execution_context=execution_context,
+    )
+    if prerequisite_resolution.locations:
+        execution_context = with_staged_parent_execution_locations(
+            execution_context,
+            [
+                *execution_context.parent_execution_locations,
+                *prerequisite_resolution.locations,
+            ],
+        )
     stage_products: dict[str, list[StageMaterialization]] = {}
     stage_records: list[BundleStageExecutionRecord] = []
 
@@ -2017,6 +2196,7 @@ def execute_staged_analysis_bundle(
                 issues=issue_refs,
                 bundle=bundle,
                 execution_context=execution_context,
+                prerequisites=prerequisite_resolution,
             )
         elif stage.kind == "analysis":
             products = _execute_analysis_stage(

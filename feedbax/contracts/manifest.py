@@ -59,6 +59,10 @@ TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION = (
     "feedbax.manifest.training_metadata_projection_custody.v1"
 )
 TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projection"
+STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID = "feedbax.spec.staged_evaluation_prerequisite"
+STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = (
+    "feedbax.spec.staged_evaluation_prerequisite.v1"
+)
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
@@ -161,6 +165,32 @@ class ParentRef(StrictModel):
     role: Optional[str] = None
     uri: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StagedEvaluationPrerequisite(StrictModel):
+    """Portable prerequisite injected into one staged evaluation's parameters."""
+
+    schema_id: str = STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID
+    schema_version: str = STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION
+    parent: ParentRef
+    artifact_provider: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "StagedEvaluationPrerequisite":
+        if self.schema_id != STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID:
+            raise ValueError(f"unsupported staged prerequisite schema_id: {self.schema_id!r}")
+        if self.schema_version != STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported staged prerequisite schema_version: "
+                f"{self.schema_version!r}"
+            )
+        return self
+
+
+class EvaluationParamsBase(StrictModel):
+    """Strict public base for recipe params, including Feedbax-reserved fields."""
+
+    staged_prerequisites: dict[str, StagedEvaluationPrerequisite] | None = None
 
 
 class Provenance(StrictModel):
