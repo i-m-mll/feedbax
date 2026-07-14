@@ -170,8 +170,33 @@ def _register_training_plugin(
     *,
     provenance: str,
 ) -> None:
+    descriptor_keys_before = set(
+        registry.descriptor_keys() if hasattr(registry, "descriptor_keys") else ()
+    )
     _register_training_methods_from_plugin(plugin, registry, provenance=provenance)
     _register_analysis_recipes_from_plugin(plugin, provenance=provenance)
+    descriptor_keys_after = set(
+        registry.descriptor_keys() if hasattr(registry, "descriptor_keys") else ()
+    )
+    for method_ref in sorted(descriptor_keys_after - descriptor_keys_before):
+        descriptor = registry.descriptor(method_ref)
+        if descriptor is None or descriptor.preparation_provider is None:
+            continue
+        from feedbax.training.preparation import ExecutionPreparationRegistration
+
+        try:
+            preparation_registry.register(
+                ExecutionPreparationRegistration(
+                    method_ref=method_ref,
+                    provider=descriptor.preparation_provider,
+                    owner=descriptor.owner,
+                    requires_resolved_method=True,
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to derive Feedbax execution preparation from {provenance}: {exc}"
+            ) from exc
     registrar = _execution_preparation_registrar(plugin)
     if registrar is None:
         return

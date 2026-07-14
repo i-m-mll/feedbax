@@ -10,17 +10,23 @@ from feedbax.contracts.checkpoints import (
     BatchHistory,
     CheckpointContinuationRequest,
     CheckpointForkBarrierMapping,
+    CheckpointForkPlan,
+    CheckpointForkSourcePreparation,
+    CheckpointForkTarget,
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.training.checkpoint_custody import (
     CheckpointCompatibilityError,
+    CheckpointForkPlanBindings,
+    derive_checkpoint_fork_compatibility_projection,
     load_latest_checkpoint,
     write_checkpoint_transaction,
 )
 from feedbax.training.run_matrix import (
     ForkParityError,
     MaterializedRunMatrix,
+    RunMatrixError,
     fork_matrix_checkpoints,
     main,
 )
@@ -545,3 +551,235 @@ def test_fork_cli_rejects_malformed_target(tmp_path: Path) -> None:
                 "--skip-fork",
             ]
         )
+
+
+def _matrix_plan_for_rows(
+    materialized: MaterializedRunMatrix,
+    tmp_path: Path,
+    row_ids: list[str],
+) -> tuple[CheckpointForkPlan, CheckpointForkPlanBindings]:
+    rows = {row.row_id: row for row in materialized.rows}
+    fallback = materialized.rows[0]
+    targets = []
+    roots = {"source": tmp_path / "source"}
+    run_specs = {}
+    for row_id in row_ids:
+        row = rows.get(row_id, fallback)
+        assert row.spec is not None
+        target_id = f"target-{row_id}"
+        run_ref = f"run-{row_id}"
+        root_ref = f"root-{row_id}"
+        targets.append(
+            CheckpointForkTarget(
+                target_id=target_id,
+                row_id=row_id,
+                checkpoint_root_ref=root_ref,
+                run_spec_ref=run_ref,
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    row.spec,
+                    row.spec.worker_execution.method_contract.phase_program,
+                    _minimax_slots(),
+                ),
+            )
+        )
+        roots[root_ref] = tmp_path / target_id
+        run_specs[run_ref] = row.spec
+    return (
+        CheckpointForkPlan(
+            source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+            targets=targets,
+        ),
+        CheckpointForkPlanBindings(
+            checkpoint_roots=roots,
+            run_specs=run_specs,
+            slot_templates={"slots": _minimax_slots()},
+        ),
+    )
+
+
+def test_matrix_fork_rejects_plan_plus_legacy_mappings_before_source_read(
+    tmp_path: Path,
+) -> None:
+    spec = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    row = materialized.rows[0]
+    assert row.spec is not None
+    plan = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        targets=[
+            CheckpointForkTarget(
+                target_id=row.row_id,
+                row_id=row.row_id,
+                checkpoint_root_ref="target",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    row.spec,
+                    row.spec.worker_execution.method_contract.phase_program,
+                    _minimax_slots(),
+                ),
+            )
+        ],
+    )
+    with pytest.raises(RunMatrixError, match="cannot be combined"):
+        fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=tmp_path / "missing-source",
+            target_checkpoint_roots={},
+            parity_output_path=tmp_path / "parity.json",
+            fork_plan=plan,
+            fork_plan_bindings=CheckpointForkPlanBindings(
+                checkpoint_roots={
+                    "source": tmp_path / "missing-source",
+                    "target": tmp_path / "target",
+                },
+                run_specs={"run": row.spec},
+                slot_templates={"slots": {}},
+            ),
+        )
+    assert not (tmp_path / "target").exists()
+
+
+def test_matrix_fork_plan_rejects_unknown_row_before_write(tmp_path: Path) -> None:
+    spec = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    plan, bindings = _matrix_plan_for_rows(materialized, tmp_path, ["unknown"])
+    with pytest.raises(RunMatrixError, match="unknown matrix rows"):
+        fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=tmp_path / "source",
+            parity_output_path=tmp_path / "parity.json",
+            fork_plan=plan,
+            fork_plan_bindings=bindings,
+        )
+    assert not (tmp_path / "target-unknown").exists()
+
+
+def test_matrix_fork_plan_rejects_missing_row_before_write(tmp_path: Path) -> None:
+    spec = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    plan, bindings = _matrix_plan_for_rows(
+        materialized,
+        tmp_path,
+        [materialized.rows[0].row_id],
+    )
+    with pytest.raises(RunMatrixError, match="missing matrix rows"):
+        fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=tmp_path / "source",
+            parity_output_path=tmp_path / "parity.json",
+            fork_plan=plan,
+            fork_plan_bindings=bindings,
+        )
+    assert not (tmp_path / f"target-{materialized.rows[0].row_id}").exists()
+
+
+def test_matrix_fork_plan_rejects_runtime_row_spec_drift_before_write(
+    tmp_path: Path,
+) -> None:
+    spec = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    row_ids = [row.row_id for row in materialized.rows]
+    plan, bindings = _matrix_plan_for_rows(materialized, tmp_path, row_ids)
+    run_specs = dict(bindings.run_specs)
+    run_specs[f"run-{row_ids[0]}"] = _run_spec(minimax=True)
+    bindings = CheckpointForkPlanBindings(
+        checkpoint_roots=bindings.checkpoint_roots,
+        run_specs=run_specs,
+        slot_templates=bindings.slot_templates,
+    )
+    with pytest.raises(RunMatrixError, match="does not match materialized row"):
+        fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=tmp_path / "source",
+            parity_output_path=tmp_path / "parity.json",
+            fork_plan=plan,
+            fork_plan_bindings=bindings,
+        )
+    assert not any((tmp_path / f"target-{row_id}").exists() for row_id in row_ids)
+
+
+def test_matrix_fork_plan_rejects_source_root_drift_before_write(tmp_path: Path) -> None:
+    spec = _matrix(_training_run_payload())
+    materialized = materialize_run_matrix(spec, repo_root=tmp_path)
+    row_ids = [row.row_id for row in materialized.rows]
+    plan, bindings = _matrix_plan_for_rows(materialized, tmp_path, row_ids)
+    with pytest.raises(RunMatrixError, match="does not match.*source binding"):
+        fork_matrix_checkpoints(
+            spec,
+            materialized,
+            source_checkpoint_root=tmp_path / "different-source",
+            parity_output_path=tmp_path / "parity.json",
+            fork_plan=plan,
+            fork_plan_bindings=bindings,
+        )
+    assert not any((tmp_path / f"target-{row_id}").exists() for row_id in row_ids)
+
+
+def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "typed plan row",
+            "base": {
+                "kind": "inline",
+                "inline": run_spec.model_dump(mode="json", exclude_none=True),
+            },
+            "fork": {
+                "source_run_id": "feedbax-training-run:source",
+                "lr_continuation": "restart",
+            },
+            "rows": [{"row_id": "target", "overrides": []}],
+        }
+    )
+    materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
+    target_spec = materialized.rows[0].spec
+    assert target_spec is not None
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=target_spec,
+        phase_program=target_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+        completed_training_batches=0,
+    )
+    plan = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        targets=[
+            CheckpointForkTarget(
+                target_id="target",
+                row_id="target",
+                checkpoint_root_ref="target",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    target_spec,
+                    target_spec.worker_execution.method_contract.phase_program,
+                    _minimax_slots(),
+                ),
+            )
+        ],
+    )
+    parity = fork_matrix_checkpoints(
+        matrix,
+        materialized,
+        source_checkpoint_root=tmp_path / "source",
+        parity_output_path=tmp_path / "parity.json",
+        fork_plan=plan,
+        fork_plan_bindings=CheckpointForkPlanBindings(
+            checkpoint_roots={
+                "source": tmp_path / "source",
+                "target": tmp_path / "target",
+            },
+            run_specs={"run": target_spec},
+            slot_templates={"slots": _minimax_slots()},
+        ),
+    )
+    assert parity["ok"] is True
+    assert (tmp_path / "target" / "latest.json").is_file()

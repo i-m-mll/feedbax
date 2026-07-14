@@ -16,6 +16,8 @@ from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
 )
 from feedbax.contracts.checkpoints import (
+    CHECKPOINT_FORK_PLAN_SCHEMA_ID,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
@@ -2413,6 +2415,24 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             stance="reject",
             rejected_old_versions=("feedbax.spec.evaluation_run_matrix.v0",),
             required_tests=("tests/test_evaluation_matrix.py",),
+        ),
+        _family(
+            "CheckpointForkPlan",
+            CHECKPOINT_FORK_PLAN_SCHEMA_ID,
+            CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoints",
+            emitted_by=("feedbax.training.checkpoint_custody",),
+            consumed_by=("checkpoint fork planning and execution",),
+            description=(
+                "Portable multi-target checkpoint fork declaration with explicit "
+                "transform identities and compatibility projections."
+            ),
+            stance="reject",
+            rejected_old_versions=("feedbax.spec.training_checkpoint_fork_plan.v0",),
+            required_tests=(
+                "tests/test_checkpoint_custody.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "TrainingCheckpointTransactionManifest",

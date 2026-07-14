@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
@@ -31,12 +31,16 @@ from feedbax.contracts.checkpoints import (
     CheckpointContinuationRequest,
     CheckpointDocumentLoadResult,
     CheckpointForkBarrierMapping,
+    CheckpointForkCompatibilityProjection,
+    CheckpointForkPlan,
     CheckpointLatestPointer,
     CheckpointLineageRef,
     CheckpointForkProvenance,
     CheckpointForkSlotProvenance,
     CheckpointForkSourceRecord,
+    CheckpointForkTarget,
     CheckpointForkTransformRecord,
+    CheckpointForkTransformStep,
     CheckpointResumeResult,
     CheckpointSegmentLineage,
     CheckpointProvenanceNotice,
@@ -209,6 +213,90 @@ class CheckpointForkResult:
     latest_pointer: CheckpointLatestPointer
     slot_transfer_modes: Mapping[str, str]
     source_provenance_notices: tuple[CheckpointProvenanceNotice, ...] = ()
+
+
+CheckpointForkPlanTransform = Callable[
+    [Mapping[str, Any], Mapping[str, Any]],
+    Mapping[str, Any],
+]
+
+
+@dataclass(frozen=True)
+class CheckpointForkTransformRegistration:
+    """Runtime implementation for one durable fork-transform identity."""
+
+    identity: str
+    transform: CheckpointForkPlanTransform
+    owner: str = "feedbax"
+
+
+class CheckpointForkTransformRegistry:
+    """Exact runtime registry for durable checkpoint-fork transforms."""
+
+    def __init__(self) -> None:
+        self._registrations: dict[str, CheckpointForkTransformRegistration] = {}
+
+    def register(self, registration: CheckpointForkTransformRegistration) -> None:
+        if not registration.identity:
+            raise ValueError("checkpoint fork transform identity must not be empty")
+        if not callable(registration.transform):
+            raise TypeError(f"checkpoint fork transform {registration.identity!r} is not callable")
+        if registration.identity in self._registrations:
+            existing = self._registrations[registration.identity]
+            raise ValueError(
+                f"checkpoint fork transform {registration.identity!r} already registered "
+                f"by {existing.owner!r}"
+            )
+        self._registrations[registration.identity] = registration
+
+    def resolve(self, identity: str) -> CheckpointForkTransformRegistration:
+        try:
+            return self._registrations[identity]
+        except KeyError as exc:
+            raise CheckpointCompatibilityError(
+                f"unregistered checkpoint fork transform {identity!r}; "
+                f"available identities={list(self.available_keys())!r}"
+            ) from exc
+
+    def available_keys(self) -> tuple[str, ...]:
+        """Return registered durable identities in deterministic order."""
+        return tuple(sorted(self._registrations))
+
+
+DEFAULT_CHECKPOINT_FORK_TRANSFORM_REGISTRY = CheckpointForkTransformRegistry()
+
+
+@dataclass(frozen=True)
+class CheckpointForkPlanBindings:
+    """Runtime-only paths, run specs, and PyTree templates for a fork plan."""
+
+    checkpoint_roots: Mapping[str, str | Path]
+    run_specs: Mapping[str, TrainingRunSpec]
+    slot_templates: Mapping[str, Mapping[str, Any]]
+    segment_history_templates: Mapping[str, Mapping[str, Any]] = dataclass_field(
+        default_factory=dict
+    )
+    population_member_ids: Mapping[str, Mapping[str, Sequence[str]]] = dataclass_field(
+        default_factory=dict
+    )
+
+
+@dataclass(frozen=True)
+class _PreparedForkPlanTarget:
+    target_id: str
+    target_root: Path
+    run_spec: TrainingRunSpec
+    phase_program: PhaseProgramSpec
+    expected_slots: Mapping[str, Any]
+    prepared_slots: Mapping[str, Any]
+    segment_history_templates: Mapping[str, Any] | None
+    continuation_request: CheckpointContinuationRequest | None
+    barrier_mapping: CheckpointForkBarrierMapping | None
+    target_coordinate: ProgressCoordinate | None
+    transformed_slots: frozenset[str]
+    target_only_slots: Mapping[str, Mapping[str, Any]]
+    transform_records: Mapping[str, tuple[CheckpointForkTransformRecord, ...]]
+    population_member_ids: Mapping[str, Sequence[str]]
 
 
 @dataclass(frozen=True)
@@ -1456,6 +1544,494 @@ def _manifest_from_latest_pointer(
     return manifest_path, manifest
 
 
+def checkpoint_fork_plan_canonical_projection(plan: CheckpointForkPlan) -> dict[str, Any]:
+    """Return the portable semantic projection hashed into fork provenance."""
+    return plan.model_dump(mode="json", exclude_none=True, exclude={"metadata"})
+
+
+def checkpoint_fork_plan_sha256(plan: CheckpointForkPlan) -> str:
+    """Return the deterministic compatibility hash for ``plan``."""
+    return sha256_bytes(canonical_json_bytes(checkpoint_fork_plan_canonical_projection(plan)))
+
+
+def derive_checkpoint_fork_compatibility_projection(
+    run_spec: TrainingRunSpec,
+    phase_program: PhaseProgramSpec,
+    slot_templates: Mapping[str, Any],
+    *,
+    population_member_ids: Mapping[str, Sequence[str]] | None = None,
+) -> CheckpointForkCompatibilityProjection:
+    """Bind a fork target to its canonical run contract and template ABIs."""
+    binding = run_contract_binding(run_spec, phase_program)
+    projection_sha256 = binding.canonical_projection_sha256
+    if projection_sha256 is None:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork run-contract binding has no canonical projection hash"
+        )
+    normalized_population = {
+        slot: [str(member_id) for member_id in member_ids]
+        for slot, member_ids in sorted((population_member_ids or {}).items())
+    }
+    return CheckpointForkCompatibilityProjection(
+        run_contract_algorithm_version=binding.algorithm_version,
+        run_contract_hash_domain=binding.hash_domain,
+        run_contract_projection_sha256=projection_sha256,
+        slot_structural_abi_sha256={
+            slot: structural_abi_fingerprint(value).fingerprint_sha256
+            for slot, value in sorted(slot_templates.items())
+        },
+        population_member_ids_sha256=(
+            sha256_bytes(canonical_json_bytes(normalized_population))
+            if population_member_ids is not None
+            else None
+        ),
+    )
+
+
+def _validate_checkpoint_fork_compatibility(
+    target: CheckpointForkTarget,
+    run_spec: TrainingRunSpec,
+    phase_program: PhaseProgramSpec,
+    slot_templates: Mapping[str, Any],
+    population_member_ids: Mapping[str, Sequence[str]],
+) -> None:
+    actual = derive_checkpoint_fork_compatibility_projection(
+        run_spec,
+        phase_program,
+        slot_templates,
+        population_member_ids=(
+            population_member_ids if target.population_member_ids_ref is not None else None
+        ),
+    )
+    declared = target.compatibility
+    for label, declared_value, actual_value in (
+        (
+            "run-contract algorithm",
+            declared.run_contract_algorithm_version,
+            actual.run_contract_algorithm_version,
+        ),
+        (
+            "run-contract hash domain",
+            declared.run_contract_hash_domain,
+            actual.run_contract_hash_domain,
+        ),
+        (
+            "run-contract projection sha256",
+            declared.run_contract_projection_sha256,
+            actual.run_contract_projection_sha256,
+        ),
+        (
+            "population member ids sha256",
+            declared.population_member_ids_sha256,
+            actual.population_member_ids_sha256,
+        ),
+    ):
+        if declared_value != actual_value:
+            raise CheckpointCompatibilityError(
+                f"checkpoint fork target {target.target_id!r} {label} mismatch; "
+                f"declared={declared_value!r} actual={actual_value!r}"
+            )
+    declared_slots = set(declared.slot_structural_abi_sha256)
+    actual_slots = set(actual.slot_structural_abi_sha256)
+    if declared_slots != actual_slots:
+        raise CheckpointCompatibilityError(
+            f"checkpoint fork target {target.target_id!r} compatibility slot coverage "
+            f"mismatch; declared={sorted(declared_slots)!r} actual={sorted(actual_slots)!r}"
+        )
+    for slot in sorted(actual_slots):
+        declared_hash = declared.slot_structural_abi_sha256[slot]
+        actual_hash = actual.slot_structural_abi_sha256[slot]
+        if declared_hash != actual_hash:
+            raise CheckpointCompatibilityError(
+                f"checkpoint fork target {target.target_id!r} slot {slot!r} compatibility "
+                f"ABI mismatch; declared={declared_hash!r} actual={actual_hash!r}"
+            )
+
+
+def _coerce_checkpoint_fork_plan(
+    value: CheckpointForkPlan | Mapping[str, Any],
+) -> CheckpointForkPlan:
+    if isinstance(value, CheckpointForkPlan):
+        return value
+    try:
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        migrated = migrate_structured_spec_payload("CheckpointForkPlan", value)
+        return CheckpointForkPlan.model_validate(migrated.payload)
+    except (ValueError, ValidationError) as exc:
+        raise CheckpointCompatibilityError(f"checkpoint fork plan is invalid: {exc}") from exc
+
+
+def _require_plan_binding(values: Mapping[str, Any], ref: str, *, kind: str) -> Any:
+    try:
+        return values[ref]
+    except KeyError as exc:
+        raise CheckpointCompatibilityError(
+            f"checkpoint fork plan references unknown {kind} {ref!r}"
+        ) from exc
+
+
+def _apply_registered_fork_step(
+    slots: Mapping[str, Any],
+    step: CheckpointForkTransformStep,
+    registry: CheckpointForkTransformRegistry,
+) -> tuple[dict[str, Any], set[str]]:
+    record = step.records[0]
+    registration = registry.resolve(record.identity)
+    declared = {item.slot for item in step.records}
+    target_only = set(step.target_only_slots)
+
+    def transform(values: Mapping[str, Any]) -> Mapping[str, Any]:
+        return registration.transform(values, record.parameters)
+
+    transformed, changed = _apply_target_slot_transform(
+        slots,
+        transform=transform,
+        declared_transformed_slots=declared - target_only,
+        declared_target_only_slots=target_only,
+    )
+    if changed != declared:
+        raise CheckpointCompatibilityError(
+            f"checkpoint fork transform step {step.step_id!r} did not change exactly its "
+            f"declared slots; declared={sorted(declared)!r} actual={sorted(changed)!r}"
+        )
+    return transformed, changed
+
+
+def _plan_step_records(
+    records: dict[str, list[CheckpointForkTransformRecord]],
+    step: CheckpointForkTransformStep,
+) -> None:
+    for record in step.records:
+        metadata = dict(record.metadata)
+        metadata.update({"stage": step.stage, "step_id": step.step_id})
+        records.setdefault(record.slot, []).append(record.model_copy(update={"metadata": metadata}))
+
+
+def _resolve_plan_barrier(
+    source: _LoadedCheckpointTransaction,
+    target: CheckpointForkTarget,
+    phase_program: PhaseProgramSpec,
+) -> tuple[CheckpointBarrierSpec, ProgressCoordinate]:
+    mapping = target.barrier_mapping
+    if mapping is None:
+        barrier = checkpoint_barrier(phase_program, source.manifest.barrier)
+        return barrier, target.target_coordinate or source.manifest.completed_coordinate
+    if source.manifest.barrier != mapping.source_barrier:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork source barrier mapping does not match source manifest; "
+            f"declared={mapping.source_barrier!r} actual={source.manifest.barrier!r}"
+        )
+    if target.target_coordinate is not None and mapping.target_coordinate is not None:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork target declares both target_coordinate and "
+            "barrier_mapping.target_coordinate"
+        )
+    barrier = checkpoint_barrier(phase_program, mapping.target_barrier)
+    coordinate = (
+        mapping.target_coordinate
+        or target.target_coordinate
+        or source.manifest.completed_coordinate
+    )
+    if coordinate.completed_barrier != barrier.name:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork target coordinate does not name mapped target barrier; "
+            f"coordinate.completed_barrier={coordinate.completed_barrier!r} "
+            f"target_barrier={barrier.name!r}"
+        )
+    return barrier, coordinate
+
+
+def _validate_prepared_fork_templates(
+    target_id: str,
+    barrier: CheckpointBarrierSpec,
+    prepared_slots: Mapping[str, Any],
+    expected_slots: Mapping[str, Any],
+) -> None:
+    _validate_required_slots(
+        tuple(barrier.slots), prepared_slots, error_cls=CheckpointCompatibilityError
+    )
+    _validate_expected_slot_set(barrier, expected_slots)
+    for spec in barrier.slots:
+        if spec.slot not in prepared_slots or spec.slot not in expected_slots:
+            continue
+        actual = structural_abi_fingerprint(prepared_slots[spec.slot])
+        expected = structural_abi_fingerprint(expected_slots[spec.slot])
+        if actual.fingerprint_sha256 != expected.fingerprint_sha256:
+            raise CheckpointCompatibilityError(
+                f"checkpoint fork target {target_id!r} slot {spec.slot!r} structural ABI "
+                f"mismatch{_format_structural_abi_diff(expected, actual)}"
+            )
+
+
+def _prepare_checkpoint_fork_plan(
+    plan: CheckpointForkPlan,
+    bindings: CheckpointForkPlanBindings,
+    registry: CheckpointForkTransformRegistry,
+) -> list[_PreparedForkPlanTarget]:
+    source_root = Path(
+        _require_plan_binding(
+            bindings.checkpoint_roots,
+            plan.source.checkpoint_root_ref,
+            kind="checkpoint root",
+        )
+    )
+    target_roots = [
+        Path(
+            _require_plan_binding(
+                bindings.checkpoint_roots,
+                target.checkpoint_root_ref,
+                kind="checkpoint root",
+            )
+        )
+        for target in plan.targets
+    ]
+    resolved_roots = [source_root.resolve(), *(root.resolve() for root in target_roots)]
+    if len(resolved_roots) != len(set(resolved_roots)):
+        raise CheckpointCompatibilityError(
+            "checkpoint fork source and target checkpoint roots must be distinct"
+        )
+
+    all_steps = [
+        *plan.source.transforms,
+        *(step for target in plan.targets for step in target.transforms),
+    ]
+    for step in all_steps:
+        registry.resolve(step.records[0].identity)
+    for target in plan.targets:
+        _require_plan_binding(bindings.run_specs, target.run_spec_ref, kind="run spec")
+        _require_plan_binding(
+            bindings.slot_templates,
+            target.slot_template_ref,
+            kind="slot template",
+        )
+        policy = target.history_policy
+        if policy.segment_history_template_ref is not None:
+            _require_plan_binding(
+                bindings.segment_history_templates,
+                policy.segment_history_template_ref,
+                kind="segment history template",
+            )
+        if target.population_member_ids_ref is not None:
+            _require_plan_binding(
+                bindings.population_member_ids,
+                target.population_member_ids_ref,
+                kind="population member ids",
+            )
+
+    source = _load_latest_checkpoint_transaction(source_root)
+    if (
+        plan.source.expected_transaction_id is not None
+        and source.manifest.transaction_id != plan.source.expected_transaction_id
+    ):
+        raise CheckpointCompatibilityError(
+            "checkpoint fork source transaction id does not match plan; "
+            f"declared={plan.source.expected_transaction_id!r} "
+            f"actual={source.manifest.transaction_id!r}"
+        )
+    actual_root = source.manifest.content_integrity_digest.transaction_root_sha256
+    if (
+        plan.source.expected_transaction_root_sha256 is not None
+        and actual_root != plan.source.expected_transaction_root_sha256
+    ):
+        raise CheckpointCompatibilityError(
+            "checkpoint fork source transaction root does not match plan; "
+            f"declared={plan.source.expected_transaction_root_sha256!r} "
+            f"actual={actual_root!r}"
+        )
+
+    common_slots = dict(source.slots)
+    common_records: dict[str, list[CheckpointForkTransformRecord]] = {}
+    common_changed: set[str] = set()
+    for step in plan.source.transforms:
+        common_slots, changed = _apply_registered_fork_step(common_slots, step, registry)
+        common_changed.update(changed)
+        _plan_step_records(common_records, step)
+
+    prepared_targets: list[_PreparedForkPlanTarget] = []
+    for target, target_root in zip(plan.targets, target_roots, strict=True):
+        run_spec = _require_plan_binding(bindings.run_specs, target.run_spec_ref, kind="run spec")
+        expected_slots = _require_plan_binding(
+            bindings.slot_templates,
+            target.slot_template_ref,
+            kind="slot template",
+        )
+        phase_program = run_spec.worker_execution.method_contract.phase_program
+        population_ids = (
+            {}
+            if target.population_member_ids_ref is None
+            else _require_plan_binding(
+                bindings.population_member_ids,
+                target.population_member_ids_ref,
+                kind="population member ids",
+            )
+        )
+        _validate_checkpoint_fork_compatibility(
+            target,
+            run_spec,
+            phase_program,
+            expected_slots,
+            population_ids,
+        )
+        barrier, _ = _resolve_plan_barrier(source, target, phase_program)
+        slots = dict(common_slots)
+        changed_slots = set(common_changed)
+        records = {slot: list(values) for slot, values in common_records.items()}
+        target_only: dict[str, Mapping[str, Any]] = {}
+        for step in (item for item in target.transforms if item.stage == "source_pre"):
+            slots, changed = _apply_registered_fork_step(slots, step, registry)
+            changed_slots.update(changed)
+            _plan_step_records(records, step)
+
+        policy = target.history_policy
+        declared_continuation = run_spec.checkpoint_progress.continuation
+        if policy.mode == "preserve":
+            if declared_continuation is not None:
+                raise CheckpointCompatibilityError(
+                    f"checkpoint fork target {target.target_id!r} declares continuation "
+                    "but history policy is preserve"
+                )
+            request = None
+            history_templates = None
+        else:
+            request = _resolve_fork_continuation_request(
+                target_run_spec=run_spec,
+                continuation_request=policy.continuation_request,
+            )
+            assert request is not None
+            history_templates = _require_plan_binding(
+                bindings.segment_history_templates,
+                policy.segment_history_template_ref or "",
+                kind="segment history template",
+            )
+            source_total = (
+                source.manifest.segment_lineage.start_batch
+                + source.manifest.segment_lineage.segment_batch_count
+            )
+            if request.source_completed_batches != source_total:
+                raise CheckpointCompatibilityError(
+                    "checkpoint continuation source offset mismatch; "
+                    f"lineage_total={source_total} requested={request.source_completed_batches}"
+                )
+            slots, _ = _allocate_segment_histories(slots, dict(history_templates))
+
+        for step in (item for item in target.transforms if item.stage == "target_post"):
+            slots, changed = _apply_registered_fork_step(slots, step, registry)
+            changed_slots.update(changed)
+            target_only.update(step.target_only_slots)
+            _plan_step_records(records, step)
+        _validate_prepared_fork_templates(target.target_id, barrier, slots, expected_slots)
+        population_slots = _population_slot_names(run_spec)
+        for slot in sorted(population_slots | set(population_ids)):
+            if slot not in slots:
+                raise CheckpointCompatibilityError(
+                    f"checkpoint fork target {target.target_id!r} population slot "
+                    f"{slot!r} is missing"
+                )
+            _population_record(
+                slot,
+                slots[slot],
+                population_member_ids=population_ids,
+                population_slots=population_slots,
+            )
+        prepared_targets.append(
+            _PreparedForkPlanTarget(
+                target_id=target.target_id,
+                target_root=target_root,
+                run_spec=run_spec,
+                phase_program=phase_program,
+                expected_slots=expected_slots,
+                prepared_slots=slots,
+                segment_history_templates=history_templates,
+                continuation_request=request,
+                barrier_mapping=target.barrier_mapping,
+                target_coordinate=target.target_coordinate,
+                transformed_slots=frozenset(changed_slots),
+                target_only_slots=target_only,
+                transform_records={slot: tuple(values) for slot, values in records.items()},
+                population_member_ids=population_ids,
+            )
+        )
+    return prepared_targets
+
+
+def fork_checkpoint_plan(
+    plan: CheckpointForkPlan | Mapping[str, Any],
+    bindings: CheckpointForkPlanBindings,
+    *,
+    transform_registry: CheckpointForkTransformRegistry | None = None,
+    tool_version: str | None = None,
+) -> dict[str, CheckpointForkResult]:
+    """Preflight and execute a portable multi-target checkpoint fork plan."""
+    resolved_plan = _coerce_checkpoint_fork_plan(plan)
+    registry = transform_registry or DEFAULT_CHECKPOINT_FORK_TRANSFORM_REGISTRY
+    projection = checkpoint_fork_plan_canonical_projection(resolved_plan)
+    plan_sha256 = checkpoint_fork_plan_sha256(resolved_plan)
+    prepared_targets = _prepare_checkpoint_fork_plan(resolved_plan, bindings, registry)
+    results: dict[str, CheckpointForkResult] = {}
+    source_root = _require_plan_binding(
+        bindings.checkpoint_roots,
+        resolved_plan.source.checkpoint_root_ref,
+        kind="checkpoint root",
+    )
+    for prepared in prepared_targets:
+        transformed_source_slots = set(prepared.transformed_slots) - set(
+            prepared.target_only_slots
+        )
+        materializer: ResumeSlotTransform | None = None
+        transform_metadata: dict[str, Any] | None = None
+        if prepared.transformed_slots:
+
+            def materializer(
+                current: Mapping[str, Any],
+                *,
+                values: Mapping[str, Any] = prepared.prepared_slots,
+                changed: frozenset[str] = prepared.transformed_slots,
+            ) -> Mapping[str, Any]:
+                materialized = dict(current)
+                for slot in changed:
+                    materialized[slot] = values[slot]
+                return materialized
+
+            transform_metadata = {
+                "identity": "feedbax.training_checkpoint.plan_materialization.v1",
+                "parameters": {"plan_sha256": plan_sha256},
+                "declared_plan_stages": {
+                    slot: [record.model_dump(mode="json", exclude_none=True) for record in records]
+                    for slot, records in prepared.transform_records.items()
+                },
+            }
+        result = fork_checkpoint_transaction(
+            source_root,
+            prepared.target_root,
+            target_run_spec=prepared.run_spec,
+            target_phase_program=prepared.phase_program,
+            expected_slots=prepared.expected_slots,
+            target_coordinate=prepared.target_coordinate,
+            barrier_mapping=prepared.barrier_mapping,
+            expected_population_member_ids=prepared.population_member_ids,
+            segment_history_templates=prepared.segment_history_templates,
+            target_slot_transform=materializer,
+            target_transform_metadata=transform_metadata,
+            target_transformed_slots=(
+                sorted(transformed_source_slots) if materializer is not None else None
+            ),
+            target_only_slots=prepared.target_only_slots or None,
+            continuation_request=prepared.continuation_request,
+            tool_version=tool_version,
+            metadata={"checkpoint_fork_plan_target_id": prepared.target_id},
+            fork_provenance_metadata={
+                "checkpoint_fork_plan_schema_id": resolved_plan.schema_id,
+                "checkpoint_fork_plan_schema_version": resolved_plan.schema_version,
+                "checkpoint_fork_plan_sha256": plan_sha256,
+                "checkpoint_fork_plan_target_id": prepared.target_id,
+                "checkpoint_fork_plan_compatibility_projection": projection,
+            },
+        )
+        results[prepared.target_id] = result
+    return results
+
+
 def fork_checkpoint_transaction(
     source_root: str | Path,
     target_root: str | Path,
@@ -1479,6 +2055,7 @@ def fork_checkpoint_transaction(
     link_strategy: CheckpointBlobLinkStrategy | None = None,
     tool_version: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    fork_provenance_metadata: Mapping[str, Any] | None = None,
 ) -> CheckpointForkResult:
     """Fork one valid custody checkpoint into a target run contract/root.
 
@@ -1846,6 +2423,7 @@ def fork_checkpoint_transaction(
                 slots=slot_provenance,
                 tool_version=tool_version or feedbax_version(),
                 barrier_mapping=resolved_barrier_mapping,
+                metadata=dict(fork_provenance_metadata or {}),
             ),
             metadata=manifest_metadata,
         )
