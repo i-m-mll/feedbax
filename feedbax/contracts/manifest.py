@@ -6,11 +6,15 @@ records that describe specs, executions, lineage, and large output artifacts.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1267,6 +1271,360 @@ def _artifact_path(root: Path, digest: str, suffix: str = "") -> Path:
     return root / "artifacts" / "sha256" / digest[:2] / f"{digest}{suffix}"
 
 
+class ArtifactStoreSecurityError(RuntimeError):
+    """Raised when the local artifact store cannot preserve secure CAS semantics."""
+
+
+class ArtifactStoreIntegrityError(ArtifactStoreSecurityError):
+    """Raised when existing content-addressed bytes do not match their identity."""
+
+
+def _require_secure_artifact_store_capabilities() -> None:
+    required_constants = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    missing = [name for name in required_constants if not getattr(os, name, 0)]
+    dir_fd_functions = (os.open, os.mkdir, os.link, os.stat, os.unlink)
+    supports_dir_fd = getattr(os, "supports_dir_fd", set())
+    missing.extend(
+        function.__name__ for function in dir_fd_functions if function not in supports_dir_fd
+    )
+    supports_follow_symlinks = getattr(os, "supports_follow_symlinks", set())
+    if os.stat not in supports_follow_symlinks:
+        missing.append("stat(follow_symlinks=False)")
+    if os.link not in supports_follow_symlinks:
+        missing.append("link(follow_symlinks=False)")
+    if missing:
+        raise ArtifactStoreSecurityError(
+            "secure artifact storage requires descriptor-relative no-follow filesystem "
+            "operations; unavailable: " + ", ".join(sorted(set(missing)))
+        )
+
+
+def _secure_directory_flags() -> int:
+    _require_secure_artifact_store_capabilities()
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _secure_file_flags(*, writable: bool = False) -> int:
+    flags = os.O_RDWR if writable else os.O_RDONLY
+    return flags | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
+def _canonicalize_trusted_system_aliases(path: Path) -> Path:
+    """Canonicalize only Darwin's fixed first-level /tmp and /var aliases."""
+    absolute_path = Path(os.path.abspath(path))
+    if sys.platform != "darwin" or len(absolute_path.parts) < 2:
+        return absolute_path
+    alias_name = absolute_path.parts[1]
+    expected = {
+        "tmp": (Path("/private/tmp"), {"private/tmp", "/private/tmp"}),
+        "var": (Path("/private/var"), {"private/var", "/private/var"}),
+    }.get(alias_name)
+    if expected is None:
+        return absolute_path
+    canonical_prefix, allowed_targets = expected
+    alias_path = Path(absolute_path.anchor) / alias_name
+    try:
+        alias_stat = alias_path.lstat()
+        alias_target = os.readlink(alias_path)
+    except OSError:
+        return absolute_path
+    if not stat.S_ISLNK(alias_stat.st_mode) or alias_target not in allowed_targets:
+        return absolute_path
+    return canonical_prefix.joinpath(*absolute_path.parts[2:])
+
+
+def _open_secure_directory_chain(
+    directory: Path,
+    *,
+    create: bool,
+) -> list[tuple[Path, int, os.stat_result]]:
+    absolute_directory = _canonicalize_trusted_system_aliases(directory)
+    anchor = Path(absolute_directory.anchor)
+    if not anchor.anchor:
+        raise ArtifactStoreSecurityError(
+            f"artifact store directory must resolve to an absolute path: {directory}"
+        )
+
+    records: list[tuple[Path, int, os.stat_result]] = []
+    flags = _secure_directory_flags()
+    try:
+        descriptor = os.open(anchor, flags)
+        anchor_stat = os.fstat(descriptor)
+        if not stat.S_ISDIR(anchor_stat.st_mode):
+            raise ArtifactStoreSecurityError(f"artifact store anchor is not a directory: {anchor}")
+        records.append((anchor, descriptor, anchor_stat))
+        current_path = anchor
+        for component in absolute_directory.parts[1:]:
+            current_path = current_path / component
+            try:
+                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(component, mode=0o777, dir_fd=records[-1][1])
+                except FileExistsError:
+                    pass
+                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
+            next_stat = os.fstat(next_descriptor)
+            if not stat.S_ISDIR(next_stat.st_mode):
+                os.close(next_descriptor)
+                raise ArtifactStoreSecurityError(
+                    f"artifact store component is not a directory: {current_path}"
+                )
+            records.append((current_path, next_descriptor, next_stat))
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            error = ArtifactStoreSecurityError(
+                f"artifact store directory traverses a symlink or non-directory: {directory}"
+            )
+            for _, descriptor, _ in reversed(records):
+                os.close(descriptor)
+            raise error from exc
+        for _, descriptor, _ in reversed(records):
+            os.close(descriptor)
+        raise
+    except Exception:
+        for _, descriptor, _ in reversed(records):
+            os.close(descriptor)
+        raise
+    return records
+
+
+def _recheck_secure_directory_chain(
+    records: list[tuple[Path, int, os.stat_result]],
+) -> None:
+    for path, descriptor, initial_stat in records:
+        descriptor_stat = os.fstat(descriptor)
+        try:
+            path_stat = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise ArtifactStoreSecurityError(
+                f"artifact store directory disappeared during write: {path}"
+            ) from exc
+        expected_identity = (initial_stat.st_dev, initial_stat.st_ino)
+        if (
+            not stat.S_ISDIR(path_stat.st_mode)
+            or (descriptor_stat.st_dev, descriptor_stat.st_ino) != expected_identity
+            or (path_stat.st_dev, path_stat.st_ino) != expected_identity
+        ):
+            raise ArtifactStoreSecurityError(
+                f"artifact store directory identity changed during write: {path}"
+            )
+
+
+def _close_secure_directory_chain(
+    records: list[tuple[Path, int, os.stat_result]],
+) -> None:
+    for _, descriptor, _ in reversed(records):
+        os.close(descriptor)
+
+
+def _write_all_bytes(file_descriptor: int, data: bytes) -> None:
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(file_descriptor, remaining)
+        if written <= 0:
+            raise ArtifactStoreSecurityError("artifact store write made no progress")
+        remaining = remaining[written:]
+
+
+def _read_all_bytes(file_descriptor: int) -> bytes:
+    os.lseek(file_descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while chunk := os.read(file_descriptor, 1024 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _link_artifact_file(
+    temporary_name: str,
+    final_name: str,
+    *,
+    temporary_parent_descriptor: int,
+    parent_descriptor: int,
+) -> None:
+    os.link(
+        temporary_name,
+        final_name,
+        src_dir_fd=temporary_parent_descriptor,
+        dst_dir_fd=parent_descriptor,
+        follow_symlinks=False,
+    )
+
+
+def _open_artifact_staging_container(
+    *,
+    parent_descriptor: int,
+) -> int:
+    """Open the fixed descriptor-pinned private staging container.
+
+    POSIX has no conditional unlink-by-inode operation. Keeping the temporary
+    name inside an owned mode-0700 container gives this operation exclusive
+    name mutation. The public container name is never removed, so a replacement
+    cannot be deleted during cleanup.
+    """
+    directory_name = ".feedbax-artifact-staging"
+    try:
+        os.mkdir(directory_name, mode=0o700, dir_fd=parent_descriptor)
+    except FileExistsError:
+        pass
+    directory_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(
+            directory_name,
+            _secure_directory_flags(),
+            dir_fd=parent_descriptor,
+        )
+        descriptor_stat = os.fstat(directory_descriptor)
+        path_stat = os.stat(
+            directory_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(descriptor_stat.st_mode)
+            or descriptor_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(descriptor_stat.st_mode) & 0o077
+            or (descriptor_stat.st_dev, descriptor_stat.st_ino)
+            != (path_stat.st_dev, path_stat.st_ino)
+        ):
+            raise ArtifactStoreSecurityError(
+                "artifact staging container must be owned, mode-0700, and stable"
+            )
+        return directory_descriptor
+    except Exception:
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+        raise
+
+
+def _remove_private_artifact_staging_name(
+    *,
+    directory_descriptor: int,
+    temporary_name: str,
+) -> None:
+    """Remove one unguessable name from the pinned private container."""
+    try:
+        os.unlink(temporary_name, dir_fd=directory_descriptor)
+    except FileNotFoundError:
+        pass
+    os.close(directory_descriptor)
+
+
+def _secure_store_bytes_artifact(
+    data: bytes,
+    *,
+    destination: Path,
+) -> os.stat_result:
+    records = _open_secure_directory_chain(destination.parent, create=True)
+    parent_descriptor = records[-1][1]
+    final_name = destination.name
+    temporary_name = f"payload-{uuid.uuid4().hex}"
+    staging_descriptor: int | None = None
+    temporary_descriptor: int | None = None
+    final_descriptor: int | None = None
+    try:
+        staging_descriptor = _open_artifact_staging_container(
+            parent_descriptor=parent_descriptor
+        )
+        temporary_descriptor = os.open(
+            temporary_name,
+            _secure_file_flags(writable=True) | os.O_CREAT | os.O_EXCL,
+            0o666,
+            dir_fd=staging_descriptor,
+        )
+        _write_all_bytes(temporary_descriptor, data)
+        os.fsync(temporary_descriptor)
+        if _read_all_bytes(temporary_descriptor) != data:
+            raise ArtifactStoreIntegrityError(
+                f"artifact temporary bytes failed verification: {destination}"
+            )
+
+        try:
+            _link_artifact_file(
+                temporary_name,
+                final_name,
+                temporary_parent_descriptor=staging_descriptor,
+                parent_descriptor=parent_descriptor,
+            )
+        except FileExistsError:
+            pass
+        _remove_private_artifact_staging_name(
+            directory_descriptor=staging_descriptor,
+            temporary_name=temporary_name,
+        )
+        staging_descriptor = None
+
+        for attempt in range(101):
+            final_descriptor = os.open(
+                final_name,
+                _secure_file_flags(),
+                dir_fd=parent_descriptor,
+            )
+            final_stat_before = os.fstat(final_descriptor)
+            if not stat.S_ISREG(final_stat_before.st_mode) or final_stat_before.st_nlink == 1:
+                break
+            os.close(final_descriptor)
+            final_descriptor = None
+            if attempt == 100:
+                raise ArtifactStoreIntegrityError(
+                    f"canonical artifact has mutable hard-link aliases: {destination}"
+                )
+            time.sleep(0.001)
+        if final_descriptor is None:  # pragma: no cover - loop either opens or raises.
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact could not be opened securely: {destination}"
+            )
+        if not stat.S_ISREG(final_stat_before.st_mode):
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact is not a regular file: {destination}"
+            )
+        stored_data = _read_all_bytes(final_descriptor)
+        final_stat_after = os.fstat(final_descriptor)
+        if (
+            (final_stat_before.st_dev, final_stat_before.st_ino)
+            != (final_stat_after.st_dev, final_stat_after.st_ino)
+            or final_stat_before.st_size != final_stat_after.st_size
+            or stored_data != data
+        ):
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact bytes do not match content identity: {destination}"
+            )
+        path_stat = os.stat(final_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (path_stat.st_dev, path_stat.st_ino) != (
+            final_stat_after.st_dev,
+            final_stat_after.st_ino,
+        ):
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact identity changed during write: {destination}"
+            )
+        _recheck_secure_directory_chain(records)
+        return final_stat_after
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ArtifactStoreSecurityError(
+                f"canonical artifact path traverses a symlink or non-directory: {destination}"
+            ) from exc
+        raise
+    finally:
+        if temporary_descriptor is not None:
+            os.close(temporary_descriptor)
+        if final_descriptor is not None:
+            os.close(final_descriptor)
+        if staging_descriptor is not None:
+            try:
+                _remove_private_artifact_staging_name(
+                    directory_descriptor=staging_descriptor,
+                    temporary_name=temporary_name,
+                )
+            except OSError:
+                # Preserve an exceptional private orphan for diagnosis. Never
+                # widen cleanup to a public canonical name.
+                os.close(staging_descriptor)
+        _close_secure_directory_chain(records)
+
+
 def store_artifact(
     source_path: Path | str,
     *,
@@ -1343,14 +1701,21 @@ def store_bytes_artifact(
     suffix: str = "",
     metadata: Optional[dict[str, Any]] = None,
 ) -> ArtifactRef:
-    """Write opaque bytes into the local content-addressed artifact store."""
+    """Atomically write opaque bytes into the local content-addressed store.
+
+    The canonical name is published only after the exact temporary bytes are
+    flushed and verified. Platforms without descriptor-relative, no-follow
+    operations fail closed with :class:`ArtifactStoreSecurityError`.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("artifact data must be bytes")
+    if not isinstance(suffix, str) or "\0" in suffix or Path(f"x{suffix}").name != f"x{suffix}":
+        raise ValueError("artifact suffix must not contain path components")
     root_path = Path(root) if root is not None else default_manifest_root()
     digest = sha256_bytes(data)
     dest = _artifact_path(root_path, digest, suffix)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if not dest.exists():
-        dest.write_bytes(data)
-    stat = dest.stat()
+    destination = Path(os.path.abspath(dest))
+    artifact_stat = _secure_store_bytes_artifact(data, destination=destination)
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
     return ArtifactRef(
@@ -1359,7 +1724,7 @@ def store_bytes_artifact(
         artifact_id=f"artifact://sha256/{digest}",
         sha256=digest,
         media_type=media_type,
-        size_bytes=stat.st_size,
+        size_bytes=artifact_stat.st_size,
         uri=str(dest),
         metadata=artifact_metadata,
     )

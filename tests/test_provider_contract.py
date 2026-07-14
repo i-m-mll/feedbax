@@ -8,6 +8,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.contracts.artifact_custody import (
+    ImmutableArtifactBlobProviderConfig,
+    ImmutableArtifactBlobProviderSpec,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -308,6 +312,27 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "MandibleManifestMapping" in manifest.schemas
     assert "ExecutionPlan" in manifest.schemas
     assert "LocalExecutionResult" in manifest.schemas
+
+
+def test_provider_manifest_discovers_immutable_blob_spec_and_open_capability() -> None:
+    manifest = provider_manifest()
+
+    assert (
+        manifest.schemas["ImmutableArtifactBlobProviderConfig"]
+        == ImmutableArtifactBlobProviderConfig.model_json_schema()
+    )
+    assert (
+        manifest.schemas["ImmutableArtifactBlobProviderSpec"]
+        == ImmutableArtifactBlobProviderSpec.model_json_schema()
+    )
+    capability = manifest.capabilities["open_immutable_artifact_blob_provider"]
+    assert capability.input_schema == "ImmutableArtifactBlobProviderSpec"
+    assert capability.output_schema is None
+    assert capability.action == "open"
+    assert capability.transports == ["python"]
+    assert not capability.mutates_state
+    assert not capability.may_launch_compute
+    assert "absolute explicit_root" in capability.compatibility_predicates[1]
 
 
 def test_provider_manifest_exports_governed_execution_artifact_refs() -> None:
