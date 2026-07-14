@@ -19,12 +19,18 @@ from feedbax.contracts.run_matrix import (
 )
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.training import (
+    ArtifactPolicySpec,
+    CheckpointProgressPolicySpec,
+    ExecutionPolicySpec,
     GraphTopologySourceSpec,
     MethodPayloadEnvelope,
     MethodRefSpec,
     ObjectiveSlotSpec,
+    RiskAggregationSpec,
     RunControlSpec,
     TaskSpec,
+    TrainingConfig,
+    TrainingMethodAuthoringContribution,
     TrainingMethodDescriptor,
     TrainingRunSpec,
     WorkerExecutionSpec,
@@ -53,6 +59,7 @@ AUTHORING_RESERVED_METADATA_KEYS = frozenset(
 )
 
 PayloadT = TypeVar("PayloadT", bound=BaseModel)
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 class TrainingMethodAuthoringError(ValueError):
@@ -147,7 +154,9 @@ def _project_model(
         validated = model.model_validate(projected)
         return model.model_validate(validated.model_dump(mode="json", exclude_none=True))
     except Exception as exc:
-        raise TrainingMethodAuthoringError(f"/{name} projector returned invalid output: {exc}") from exc
+        raise TrainingMethodAuthoringError(
+            f"/{name} projector returned invalid output: {exc}"
+        ) from exc
 
 
 def _project_domain(
@@ -188,11 +197,17 @@ def _project_domain(
     return canonical
 
 
-def _require_equal(path: str, actual: object, expected: object) -> None:
-    if actual != expected:
-        raise TrainingMethodAuthoringError(
-            f"{path} returned by row_compiler does not match the authoring projection"
-        )
+def _copy_typed_option(
+    value: ModelT | None,
+    model: type[ModelT],
+    *,
+    path: str,
+) -> ModelT:
+    if value is None:
+        return model()
+    if type(value) is not model:
+        raise TrainingMethodAuthoringError(f"{path} must be an exact {model.__name__} instance")
+    return model.model_validate(value.model_dump(mode="python"))
 
 
 def _descriptor_for_authoring(
@@ -206,9 +221,9 @@ def _descriptor_for_authoring(
             f"/method_ref {method_ref.key!r} is a low-level-only registration; "
             "typed authoring requires a TrainingMethodDescriptor"
         )
-    if descriptor.row_compiler is None:
+    if descriptor.authoring_hook is None:
         raise TrainingMethodAuthoringError(
-            f"/method_ref {method_ref.key!r} descriptor has no row_compiler"
+            f"/method_ref {method_ref.key!r} descriptor has no authoring_hook"
         )
     return descriptor
 
@@ -219,6 +234,9 @@ def compile_training_method_authoring(
     method_ref: MethodRefSpec | str | Mapping[str, Any],
     run_control: RunControlSpec | Mapping[str, Any],
     projectors: TrainingMethodAuthoringProjectors[Any],
+    execution: ExecutionPolicySpec | None = None,
+    artifacts: ArtifactPolicySpec | None = None,
+    risk_aggregation: RiskAggregationSpec | None = None,
 ) -> TrainingMethodAuthoringCompilation:
     """Compile one compact typed method payload into canonical run contracts.
 
@@ -243,11 +261,39 @@ def compile_training_method_authoring(
     normalized_ref = _normalize_method_ref(method_ref)
     control = _validate_run_control(run_control)
     descriptor = _descriptor_for_authoring(normalized_ref)
+    execution_policy = _copy_typed_option(
+        execution,
+        ExecutionPolicySpec,
+        path="/execution",
+    )
+    artifact_policy = _copy_typed_option(
+        artifacts,
+        ArtifactPolicySpec,
+        path="/artifacts",
+    )
+    risk_policy = _copy_typed_option(
+        risk_aggregation,
+        RiskAggregationSpec,
+        path="/risk_aggregation",
+    )
+
+    authoring_hook = descriptor.authoring_hook
+    if authoring_hook is None:  # Narrowed by _descriptor_for_authoring.
+        raise AssertionError("descriptor authoring hook unexpectedly missing")
+    try:
+        hook_identity = RowLowererIdentity(
+            lowerer_id=authoring_hook.lowerer_id,
+            lowerer_version=authoring_hook.lowerer_version,
+        )
+    except Exception as exc:
+        raise TrainingMethodAuthoringError(f"/authoring_hook identity is invalid: {exc}") from exc
+    if hook_identity == TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY:
+        raise TrainingMethodAuthoringError(
+            "/authoring_hook identity duplicates the reserved authoring compiler identity"
+        )
 
     try:
-        typed_payload = descriptor.payload_model.model_validate(
-            copy.deepcopy(authored_row.payload)
-        )
+        typed_payload = descriptor.payload_model.model_validate(copy.deepcopy(authored_row.payload))
     except Exception as exc:
         raise TrainingMethodAuthoringError(
             f"/row/payload does not match method payload schema: {exc}"
@@ -262,9 +308,7 @@ def compile_training_method_authoring(
 
     graph = _project_model("graph", projectors.graph, typed_payload, GraphTopologySourceSpec)
     task = _project_model("task", projectors.task, typed_payload, TaskSpec)
-    objective = _project_model(
-        "objective", projectors.objective, typed_payload, ObjectiveSlotSpec
-    )
+    objective = _project_model("objective", projectors.objective, typed_payload, ObjectiveSlotSpec)
     domain = _project_domain(projectors.domain, typed_payload)
 
     try:
@@ -278,100 +322,61 @@ def compile_training_method_authoring(
         effective_phase=resolved.effective_phase,
     )
 
-    compiler_payload = {
-        "method_ref": normalized_ref.model_dump(mode="json"),
-        "method_payload": envelope.model_dump(mode="json", exclude_none=True),
-        "run_control": control.model_dump(mode="json", exclude_none=True),
-        "graph": graph.model_dump(mode="json", exclude_none=True),
-        "task": task.model_dump(mode="json", exclude_none=True),
-        "objective": objective.model_dump(mode="json", exclude_none=True),
-        "domain": copy.deepcopy(domain),
-    }
-    compiler_row = AuthoredTrainingRow.model_validate(
-        {
-            **source_snapshot,
-            "payload": compiler_payload,
-            "payload_hash": training_spec_sha256(compiler_payload),
-        }
-    )
-    callback_row = compiler_row.model_copy(deep=True)
-    compiler_row_snapshot = callback_row.model_dump(mode="python")
+    callback_payload = typed_payload.model_copy(deep=True)
+    callback_snapshot = callback_payload.model_dump(mode="python")
     try:
-        raw_result = descriptor.row_compiler(callback_row)
+        raw_contribution = authoring_hook.compile(callback_payload)
     except Exception as exc:
-        raise TrainingMethodAuthoringError(f"/row_compiler failed: {exc}") from exc
-    if callback_row.model_dump(mode="python") != compiler_row_snapshot:
-        raise TrainingMethodAuthoringError("/row_compiler mutated its AuthoredTrainingRow input")
+        raise TrainingMethodAuthoringError(f"/authoring_hook failed: {exc}") from exc
+    if callback_payload.model_dump(mode="python") != callback_snapshot:
+        raise TrainingMethodAuthoringError("/authoring_hook mutated its typed payload input")
     if authored_row.model_dump(mode="python") != source_snapshot:
         raise TrainingMethodAuthoringError("authoring compilation mutated the source row")
-
-    try:
-        result_payload = (
-            raw_result.model_dump(mode="python")
-            if isinstance(raw_result, TrainingRowLoweringResult)
-            else raw_result
+    if type(raw_contribution) is not TrainingMethodAuthoringContribution:
+        raise TrainingMethodAuthoringError(
+            "/authoring_hook must return an exact TrainingMethodAuthoringContribution instance"
         )
-        result = TrainingRowLoweringResult.model_validate(result_payload)
+    try:
+        contribution = TrainingMethodAuthoringContribution.model_validate(
+            raw_contribution.model_dump(mode="python")
+        )
     except Exception as exc:
         raise TrainingMethodAuthoringError(
-            f"/row_compiler returned invalid TrainingRowLoweringResult: {exc}"
+            f"/authoring_hook returned an invalid contribution: {exc}"
         ) from exc
-    identity_indices: dict[tuple[str, str], int] = {}
-    for index, identity in enumerate(result.lowerer_identities):
-        identity_key = (identity.lowerer_id, identity.lowerer_version)
-        if identity_key in identity_indices:
-            raise TrainingMethodAuthoringError(
-                f"/row_compiler/lowerer_identities/{index} duplicates identity at "
-                f"index {identity_indices[identity_key]}; identity={identity_key!r}"
-            )
-        identity_indices[identity_key] = index
-    if TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY in result.lowerer_identities:
-        raise TrainingMethodAuthoringError(
-            "/row_compiler must not claim the reserved authoring compiler identity"
-        )
-
-    try:
-        run_spec = TrainingRunSpec.model_validate(copy.deepcopy(result.execution_payload))
-    except Exception as exc:
-        raise TrainingMethodAuthoringError(
-            f"/row_compiler execution_payload is not TrainingRunSpec v2: {exc}"
-        ) from exc
+    training_config = TrainingConfig.model_validate(
+        {
+            **contribution.training_config.model_dump(mode="python"),
+            "n_batches": control.n_batches,
+            "batch_size": control.batch_size,
+        }
+    )
+    run_spec = TrainingRunSpec(
+        graph=graph,
+        task=task,
+        training_config=training_config,
+        objective=objective,
+        risk_aggregation=risk_policy,
+        method_ref=normalized_ref,
+        method_payload=envelope,
+        method_extensions=contribution.method_extensions,
+        worker_execution=expected_worker,
+        execution=execution_policy,
+        artifacts=artifact_policy,
+        checkpoint_progress=CheckpointProgressPolicySpec(
+            checkpoint_interval=control.checkpoint_interval,
+            progress_interval=control.progress_interval,
+            continuation=control.continuation,
+        ),
+        metadata=domain,
+    )
     canonical_payload = run_spec.model_dump(mode="json", exclude_none=True)
-    if result.execution_payload != canonical_payload:
-        raise TrainingMethodAuthoringError(
-            "/row_compiler execution_payload is not the canonical TrainingRunSpec projection"
-        )
-
-    _require_equal("/graph", run_spec.graph, graph)
-    _require_equal("/task", run_spec.task, task)
-    _require_equal("/objective", run_spec.objective, objective)
-    _require_equal("/metadata", run_spec.metadata, domain)
-    _require_equal("/method_ref", run_spec.method_ref, normalized_ref)
-    _require_equal("/method_payload", run_spec.method_payload, envelope)
-    _require_equal("/worker_execution", run_spec.worker_execution, expected_worker)
-    _require_equal("/training_config/n_batches", run_spec.training_config.n_batches, control.n_batches)
-    _require_equal("/training_config/batch_size", run_spec.training_config.batch_size, control.batch_size)
-    _require_equal(
-        "/checkpoint_progress/checkpoint_interval",
-        run_spec.checkpoint_progress.checkpoint_interval,
-        control.checkpoint_interval,
-    )
-    _require_equal(
-        "/checkpoint_progress/progress_interval",
-        run_spec.checkpoint_progress.progress_interval,
-        control.progress_interval,
-    )
-    _require_equal(
-        "/checkpoint_progress/continuation",
-        run_spec.checkpoint_progress.continuation,
-        control.continuation,
-    )
 
     lowering_result = TrainingRowLoweringResult(
         execution_payload=canonical_payload,
         lowerer_identities=[
             TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY,
-            *result.lowerer_identities,
+            hook_identity,
         ],
     )
     return TrainingMethodAuthoringCompilation(
