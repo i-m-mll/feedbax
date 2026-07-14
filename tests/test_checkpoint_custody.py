@@ -639,19 +639,91 @@ def test_chunked_custody_records_program_and_batch_progress_independently(
     assert latest["completed_training_batches"] == 12000
 
 
-def test_custody_rejects_batch_total_seeded_as_program_step(tmp_path: Path) -> None:
+def test_custody_records_program_batch_and_visit_coordinates_independently(
+    tmp_path: Path,
+) -> None:
     spec, program = _batch_counter_program_and_spec()
-    with pytest.raises(CheckpointConsistencyError, match="not a training-batch total"):
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="independent-coordinates",
+            phase="train_batch",
+            program_step=500,
+            completed_barrier="after_train_batch",
+        ),
+        slots={
+            "model": 0,
+            "optimizer": {"count": 0},
+            "prng": [0, 1],
+            "batch_counter": 12000,
+        },
+        metadata={"barrier_visit_ordinal": 24},
+    )
+
+    assert result.manifest.completed_coordinate.program_step == 500
+    assert result.manifest.completed_training_batches == 12000
+    assert result.manifest.metadata["barrier_visit_ordinal"] == 24
+
+
+def test_checkpoint_fork_preserves_completed_batches_independently_of_program_step(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec()
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = {
+        "model": 0,
+        "optimizer": {"count": 0},
+        "prng": [0, 1],
+        "batch_counter": 3,
+    }
+    source = write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="fork-source",
+            phase="train_batch",
+            program_step=500,
+            completed_barrier="after_train_batch",
+        ),
+        slots=slots,
+        metadata={"barrier_visit_ordinal": 0},
+    )
+
+    forked = fork_checkpoint_transaction(
+        source.root,
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=slots,
+    )
+
+    assert source.manifest.completed_training_batches == 3
+    assert forked.manifest.completed_training_batches == 3
+    assert forked.manifest.completed_coordinate.program_step == 500
+    assert forked.manifest.metadata["barrier_visit_ordinal"] == 0
+
+
+@pytest.mark.parametrize("visit_ordinal", [-1, True, "0"])
+def test_custody_retains_strict_barrier_visit_ordinal_validation(
+    tmp_path: Path,
+    visit_ordinal: object,
+) -> None:
+    spec, program = _batch_counter_program_and_spec()
+    with pytest.raises(CheckpointConsistencyError, match="must be a non-negative integer"):
         write_checkpoint_transaction(
             tmp_path,
             run_spec=spec,
             phase_program=program,
             barrier_name="after_train_batch",
             coordinate=ProgressCoordinate(
-                run_id="poisoned-units",
+                run_id="invalid-visit",
                 phase="train_batch",
-                program_step=12000,
-                completed_barrier="after_train_batch",
+                program_step=500,
             ),
             slots={
                 "model": 0,
@@ -659,7 +731,7 @@ def test_custody_rejects_batch_total_seeded_as_program_step(tmp_path: Path) -> N
                 "prng": [0, 1],
                 "batch_counter": 12000,
             },
-            metadata={"barrier_visit_ordinal": 24},
+            metadata={"barrier_visit_ordinal": visit_ordinal},
         )
 
 

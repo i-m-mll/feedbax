@@ -321,6 +321,29 @@ def _chunked_registry(
     return registry, program
 
 
+def _interval_registry(*, total_updates: int) -> tuple[TrainingMethodRegistry, object]:
+    """Return one multi-update phase for cadence and mid-phase resume tests."""
+    contract = standard_supervised_method_contract()
+    program = contract.phase_program.model_copy(deep=True)
+    phase = program.phases[0].model_copy(update={"max_steps": total_updates})
+    program = program.model_copy(update={"phases": [phase]})
+    contract = contract.model_copy(update={"phase_program": program})
+    registry = TrainingMethodRegistry()
+    registry.register(
+        TrainingMethodRegistration(
+            method_ref="feedbax/standard_supervised/v1",
+            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            payload_model=StandardSupervisedMethodPayload,
+            contract_factory=lambda: contract,
+            update_kernels_factory=lambda _payload: standard_supervised_update_kernels(),
+            owner="tests.test_training_run_executor",
+            package="feedbax",
+        )
+    )
+    return registry, program
+
+
 def _history_registry(*, stop_after_program_step: int) -> tuple[TrainingMethodRegistry, object]:
     """Return a small registry whose checkpointed history is segment-local."""
     contract = standard_supervised_method_contract()
@@ -1518,6 +1541,213 @@ def test_execute_training_run_spec_invokes_progress_callback_in_history_order(
     assert [event["metrics"]["train_loss"] for event in callback_events] == [1.0, 2.0, 3.0]
     callback_events[0]["metrics"]["train_loss"] = 999.0
     assert result.history_events[0]["metrics"]["train_loss"] == 1.0
+
+
+@pytest.mark.parametrize(
+    (
+        "total_updates",
+        "checkpoint_interval",
+        "progress_interval",
+        "expected_checkpoints",
+        "expected_progress",
+    ),
+    [
+        (4, 2, 2, [2, 4], [2, 4]),
+        (7, 3, 3, [3, 6, 7], [3, 6, 7]),
+        (5, 2, 3, [2, 4, 5], [3, 5]),
+    ],
+)
+def test_authored_intervals_drive_multi_update_phase_and_terminal_remainder(
+    tmp_path: Path,
+    total_updates: int,
+    checkpoint_interval: int,
+    progress_interval: int,
+    expected_checkpoints: list[int],
+    expected_progress: list[int],
+) -> None:
+    registry, _program = _interval_registry(total_updates=total_updates)
+    base_spec = _run_spec()
+    spec = base_spec.model_copy(
+        update={
+            "training_config": base_spec.training_config.model_copy(
+                update={"n_batches": total_updates}
+            ),
+            "checkpoint_progress": base_spec.checkpoint_progress.model_copy(
+                update={
+                    "checkpoint_interval": checkpoint_interval,
+                    "progress_interval": progress_interval,
+                }
+            ),
+        }
+    )
+    callback_events: list[dict[str, object]] = []
+
+    result = execute_training_run_spec(
+        spec,
+        run_id=f"interval-{total_updates}-{checkpoint_interval}-{progress_interval}",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+        progress_callback=callback_events.append,
+    )
+
+    assert [
+        write.manifest.completed_training_batches for write in result.checkpoint_writes
+    ] == expected_checkpoints
+    assert [
+        write.manifest.completed_coordinate.program_step for write in result.checkpoint_writes
+    ] == expected_checkpoints
+    assert [
+        write.manifest.metadata["barrier_visit_ordinal"] for write in result.checkpoint_writes
+    ] == list(range(len(expected_checkpoints)))
+    assert [event["coordinate"]["program_step"] for event in callback_events] == expected_progress
+    assert [event["coordinate"]["program_step"] for event in result.history_events] == (
+        expected_progress
+    )
+    assert result.final_coordinate.program_step == total_updates
+    assert int(result.final_slots["batch_counter"]) == total_updates
+
+
+def test_authored_cadence_uses_completed_batches_not_program_step(tmp_path: Path) -> None:
+    registry, _program = _interval_registry(total_updates=4)
+    base_spec = _run_spec()
+    spec = base_spec.model_copy(
+        update={
+            "checkpoint_progress": base_spec.checkpoint_progress.model_copy(
+                update={"checkpoint_interval": 3, "progress_interval": 3}
+            ),
+        }
+    )
+    initial_slots = _initial_slots(arrays=True)
+    initial_slots["batch_counter"] = jnp.array(10, dtype=jnp.int32)
+
+    result = execute_training_run_spec(
+        spec,
+        run_id="divergent-batch-progress",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+    )
+
+    assert [
+        (
+            write.manifest.completed_training_batches,
+            write.manifest.completed_coordinate.program_step,
+        )
+        for write in result.checkpoint_writes
+    ] == [(12, 2), (14, 4)]
+    assert [event["coordinate"]["program_step"] for event in result.history_events] == [2, 4]
+    assert int(result.final_slots["batch_counter"]) == 14
+
+
+def test_interval_resume_preserves_inner_step_and_absolute_batch_cadence(
+    tmp_path: Path,
+) -> None:
+    base_spec = _run_spec()
+    spec = base_spec.model_copy(
+        update={
+            "training_config": base_spec.training_config.model_copy(update={"n_batches": 7}),
+            "checkpoint_progress": base_spec.checkpoint_progress.model_copy(
+                update={"checkpoint_interval": 3, "progress_interval": 3}
+            ),
+        }
+    )
+    checkpoint_root = tmp_path / "checkpoints"
+    partial_registry, _program = _interval_registry(total_updates=7)
+    partial = execute_training_run_spec(
+        spec,
+        run_id="interval-partial",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "partial-runs",
+        checkpoint_root=checkpoint_root,
+        registry=partial_registry,
+        stop_after_barrier="after_train_batch",
+    )
+    assert partial.final_coordinate.program_step == 3
+    assert partial.checkpoint_writes[-1].manifest.completed_training_batches == 3
+
+    resume_events: list[dict[str, object]] = []
+    resume_registry, _program = _interval_registry(total_updates=7)
+    resumed = execute_training_run_spec(
+        spec,
+        run_id="interval-resumed",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "resumed-runs",
+        checkpoint_root=checkpoint_root,
+        registry=resume_registry,
+        resume=True,
+        progress_callback=resume_events.append,
+    )
+    full_registry, _program = _interval_registry(total_updates=7)
+    full = execute_training_run_spec(
+        spec,
+        run_id="interval-full",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "full-runs",
+        checkpoint_root=tmp_path / "full-checkpoints",
+        registry=full_registry,
+    )
+
+    assert [write.manifest.completed_training_batches for write in resumed.checkpoint_writes] == [
+        6,
+        7,
+    ]
+    assert [
+        write.manifest.metadata["barrier_visit_ordinal"] for write in resumed.checkpoint_writes
+    ] == [1, 2]
+    assert [event["coordinate"]["program_step"] for event in resume_events] == [6, 7]
+    assert resumed.final_coordinate.program_step == 7
+    assert resumed.final_slots["model"].tolist() == full.final_slots["model"].tolist()
+    assert resumed.final_slots["optimizer"]["count"].tolist() == (
+        full.final_slots["optimizer"]["count"].tolist()
+    )
+    assert resumed.final_slots["prng"].tolist() == full.final_slots["prng"].tolist()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        (
+            "resume_from",
+            {"phase": "train_batch", "completed_barrier": "after_train_batch"},
+            "/checkpoint_progress/resume_from",
+        ),
+        (
+            "checkpoint_slots",
+            {
+                "slots": [
+                    {
+                        "slot": "model",
+                        "barrier": "after_train_batch",
+                        "program_step": 1,
+                    }
+                ]
+            },
+            "/checkpoint_progress/checkpoint_slots",
+        ),
+    ],
+)
+def test_unconsumed_checkpoint_policy_fields_fail_loudly_before_execution(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    error: str,
+) -> None:
+    payload = _run_spec().model_dump(mode="json")
+    payload["checkpoint_progress"][field] = value
+    spec = TrainingRunSpec.model_validate(payload)
+
+    with pytest.raises(NotImplementedError, match=error):
+        execute_training_run_spec(
+            spec,
+            run_id=f"unsupported-{field}",
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path,
+        )
+
+    assert not any(tmp_path.iterdir())
 
 
 def test_execute_training_run_spec_emits_run_events_without_changing_manifest(

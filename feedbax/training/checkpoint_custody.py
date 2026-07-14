@@ -145,7 +145,7 @@ def _validate_program_step_units(
     *,
     context: str,
 ) -> None:
-    """Reject coordinates that use a known barrier ordinal in different units."""
+    """Validate the barrier visit ordinal without conflating coordinate units."""
     raw_ordinal = metadata.get("barrier_visit_ordinal")
     if raw_ordinal is None:
         return
@@ -153,15 +153,9 @@ def _validate_program_step_units(
         raise CheckpointConsistencyError(
             f"{context} /metadata/barrier_visit_ordinal must be a non-negative integer"
         )
-    # Executor checkpoints record the zero-based visit being completed, while
-    # chunk-oriented callers may record the one-based completed chunk ordinal.
-    # Those are the only two governed representations of the same granularity.
-    if coordinate.program_step not in {raw_ordinal, raw_ordinal + 1}:
+    if coordinate.program_step < 0:
         raise CheckpointConsistencyError(
-            f"{context} /completed_coordinate/program_step={coordinate.program_step} "
-            "is inconsistent with the checkpoint/chunk ordinal "
-            f"/metadata/barrier_visit_ordinal={raw_ordinal}; program_step is a "
-            "phase-program coordinate, not a training-batch total"
+            f"{context} /completed_coordinate/program_step must be non-negative"
         )
 
 

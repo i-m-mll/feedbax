@@ -382,6 +382,7 @@ def execute_training_run_spec(
     manifest; ``terminate`` emits a cancelled manifest immediately.
     """
     run_spec = _validate_spec(spec)
+    _validate_checkpoint_progress_policy(run_spec)
     producer_context = _validate_execution_context(execution_context)
     _validate_execution_payload_binding(
         spec,
@@ -644,6 +645,8 @@ def execute_training_run_spec(
                 expected_slots=slots,
                 resume_slot_transform=resume_slot_transform,
             ),
+            checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
+            progress_interval=run_spec.checkpoint_progress.progress_interval,
         )
         checkpoint_writes = checkpoint_store.writes
         continuation = run_spec.checkpoint_progress.continuation
@@ -857,6 +860,29 @@ def _validate_spec(spec: TrainingRunSpec | Mapping[str, Any]) -> TrainingRunSpec
         return validate_training_run_spec(spec)
     except ValidationError as exc:
         raise TrainingRunExecutorError(f"/training_run_spec validation failed: {exc}") from exc
+
+
+def _validate_checkpoint_progress_policy(run_spec: TrainingRunSpec) -> None:
+    policy = run_spec.checkpoint_progress
+    for name in ("checkpoint_interval", "progress_interval"):
+        interval = getattr(policy, name)
+        if interval is not None and (
+            isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0
+        ):
+            raise TrainingRunExecutorError(
+                f"/checkpoint_progress/{name} must be a positive integer"
+            )
+    if policy.resume_from is not None:
+        raise NotImplementedError(
+            "/checkpoint_progress/resume_from is authored but not consumed by the native "
+            "executor; use the explicit resume execution input until coordinate-selected "
+            "resume is implemented"
+        )
+    if policy.checkpoint_slots is not None:
+        raise NotImplementedError(
+            "/checkpoint_progress/checkpoint_slots is authored but not consumed by the "
+            "native executor; checkpoint slots remain governed by the phase program"
+        )
 
 
 def _validate_execution_context(
