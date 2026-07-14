@@ -2321,13 +2321,6 @@ def _write_pending_evaluation_manifest(
 
     training_ref = item["training_ref"]
     condition = item["condition"]
-    checkpoint_parent = ParentRef(
-        kind=checkpoint_ref.kind,
-        id=checkpoint_ref.id,
-        role=checkpoint_ref.role,
-        uri=checkpoint_ref.uri,
-        metadata=checkpoint_ref.metadata,
-    )
     label = _evaluation_condition_label(training_ref, condition)
     manifest = EvaluationRunManifest(
         id=manifest_id,
@@ -2345,7 +2338,7 @@ def _write_pending_evaluation_manifest(
                 metadata={"job_id": item["job_id"]},
             ),
             issues=list(request.issues),
-            parents=[training_ref, checkpoint_parent],
+            parents=list(item["evaluation_spec"].inputs),
             metadata={
                 **request.metadata,
                 "checkpoint_policy": item["checkpoint_policy"],
