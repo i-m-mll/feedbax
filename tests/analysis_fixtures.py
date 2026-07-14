@@ -176,6 +176,7 @@ def execute_toy_evaluation(root: Path) -> tuple[EvaluationRunManifest, Path]:
         run_spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(
             states={"training_run_ids": [ref.id for ref in run_spec.inputs]},

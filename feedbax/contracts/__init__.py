@@ -6,6 +6,14 @@ under their transport package.
 """
 
 from feedbax.contracts.component import ComponentDefinition, PortType, PortTypeSpec
+from feedbax.contracts.staged_execution import (
+    STAGED_CHECKPOINT_CUSTODY_BACKEND,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+    StagedCheckpointCustodySpec,
+    StagedExecutionDescriptor,
+    validate_staged_binding_name,
+)
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
     ACAUSAL_GRAPH_SCHEMA_VERSION,
@@ -706,4 +714,10 @@ __all__ = [
     "layered_semantic_diff",
     "verify_extraction_product",
     "workspace_replay_metadata",
+    "STAGED_CHECKPOINT_CUSTODY_BACKEND",
+    "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID",
+    "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
+    "StagedCheckpointCustodySpec",
+    "StagedExecutionDescriptor",
+    "validate_staged_binding_name",
 ]

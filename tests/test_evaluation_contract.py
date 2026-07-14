@@ -60,6 +60,7 @@ def test_evaluation_contract_helper_passes_for_dummy_recipe(tmp_path: Path) -> N
         spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         calls.append(spec.evaluation_type)
         return EvaluationRecipeResult(
@@ -95,6 +96,7 @@ def test_evaluation_contract_helper_accepts_explicit_params_schema_waiver(
         _spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(
             states={"value": 1},
@@ -123,6 +125,7 @@ def test_evaluation_contract_helper_rejects_missing_params_family_without_waiver
         _spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(
             states={"value": 1},
@@ -149,6 +152,7 @@ def test_evaluation_contract_helper_rejects_missing_states_schema(
         _spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states={"value": 1})
 
@@ -170,6 +174,7 @@ def test_evaluation_contract_helper_rejects_spec_type_mismatch(tmp_path: Path) -
         _spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(
             states={"value": 1},

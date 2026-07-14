@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec, ReportSpec
 
 if TYPE_CHECKING:
+    from feedbax.analysis.execution_context import StagedExecutionContext
     from feedbax.analysis.evaluation import EvaluationRecipeResult
     from feedbax.analysis.reports import ReportRecipeResult, ResolvedReportInput
     from feedbax.analysis.specs import AnalysisRecipeResult, ResolvedAnalysisInput
@@ -20,6 +21,7 @@ else:
     ResolvedReportInput = Any
     AnalysisRecipeResult = Any
     ResolvedAnalysisInput = Any
+    StagedExecutionContext = Any
 
 
 class RecipeValidationError(ValueError):
@@ -65,6 +67,7 @@ class EvaluationRecipeProtocol(Protocol):
         run_spec: EvaluationRunSpec,
         root: Path,
         states_path: Path,
+        execution_context: StagedExecutionContext,
         /,
     ) -> EvaluationRecipeResult:
         """Execute one evaluation run spec."""
@@ -78,6 +81,7 @@ class AnalysisRecipeProtocol(Protocol):
         run_spec: AnalysisRunSpec,
         root: Path,
         inputs: Sequence[ResolvedAnalysisInput],
+        execution_context: StagedExecutionContext,
         /,
     ) -> AnalysisRecipeResult:
         """Build executable analyses for one analysis run spec."""
@@ -106,8 +110,8 @@ def validate_evaluation_recipe(
         kind="Evaluation recipe",
         type_key=evaluation_type,
         recipe=recipe,
-        example_args=(object(), object(), object()),
-        expected="(run_spec, root, states_path)",
+        example_args=(object(), object(), object(), object()),
+        expected="(run_spec, root, states_path, execution_context)",
     )
     return recipe
 
@@ -122,8 +126,8 @@ def validate_analysis_recipe(
         kind="Analysis recipe",
         type_key=analysis_type,
         recipe=recipe,
-        example_args=(object(), object(), object()),
-        expected="(run_spec, root, inputs)",
+        example_args=(object(), object(), object(), object()),
+        expected="(run_spec, root, inputs, execution_context)",
     )
     return recipe
 
@@ -169,7 +173,11 @@ def _validate_callable_shape(
     try:
         signature.bind(*example_args)
     except TypeError as exc:
+        argument_count = {3: "three", 4: "four"}.get(
+            len(example_args),
+            str(len(example_args)),
+        )
         raise RecipeValidationError(
-            f"{kind} {type_key!r} must accept three positional arguments "
+            f"{kind} {type_key!r} must accept {argument_count} positional arguments "
             f"{expected}; signature {signature} is invalid: {exc}"
         ) from exc

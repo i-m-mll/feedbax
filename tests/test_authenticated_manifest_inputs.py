@@ -261,8 +261,8 @@ def test_analysis_integrity_failure_precedes_recipe_cache_and_filesystem_effects
     )
     calls: list[object] = []
 
-    def recipe(run_spec, root, inputs):
-        calls.append((run_spec, root, inputs))
+    def recipe(run_spec, root, inputs, execution_context):
+        calls.append((run_spec, root, inputs, execution_context))
         raise AssertionError("analysis recipe must not run")
 
     register_analysis_recipe(spec.analysis_type, recipe, replace=True)

@@ -49,7 +49,18 @@ EXACT_EVALUATION_TYPE = "feedbax.test.staged_exact_parent_eval"
 def exact_evaluation_calls():
     calls: list[EvaluationRunSpec] = []
 
-    def recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+    def recipe(
+        run_spec: EvaluationRunSpec,
+        root: Path,
+        _states_path: Path,
+        execution_context,
+    ):
+        resolved = resolve_evaluation_inputs(
+            run_spec,
+            manifest_root=root,
+            execution_context=execution_context,
+        )
+        assert resolved[0].ref == run_spec.inputs[0]
         calls.append(run_spec)
         return EvaluationRecipeResult(
             states={"value": np.asarray(len(calls), dtype=np.int32)},

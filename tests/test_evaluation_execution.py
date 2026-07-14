@@ -88,6 +88,7 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
         run_spec: EvaluationRunSpec,
         root: Path,
         states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         calls.append(str(root))
         return EvaluationRecipeResult(
@@ -177,6 +178,7 @@ def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
         _run_spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states=expected_states)
 
@@ -223,6 +225,7 @@ def test_evaluation_states_tamper_fails_closed(tmp_path: Path):
         _run_spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(states={"value": np.asarray([1], dtype=np.int32)})
 
@@ -335,6 +338,7 @@ def test_evaluation_states_durable_rejects_non_json_metadata_leaf_path(tmp_path:
         _run_spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(
             states={
@@ -376,6 +380,7 @@ def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: 
         _run_spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult()
 

@@ -13,6 +13,23 @@ from .exact_parents import (
     StagedExactParentEntry,
     StagedExactParents,
 )
+from .execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
+    StagedExecutionContext,
+    StagedExecutionContextError,
+    StagedParentExecutionLocation,
+    resolve_staged_execution_context,
+    with_staged_parent_execution_locations,
+)
+from feedbax.contracts.staged_execution import (
+    STAGED_CHECKPOINT_CUSTODY_BACKEND,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+    StagedCheckpointCustodySpec,
+    StagedExecutionDescriptor,
+)
 from .context import AnalysisRunContext
 from .controller import (
     GraphControllerAdapter,
@@ -118,6 +135,7 @@ __all__ = [
     "ContextMaterializerFn",
     "DataContextMaterializerFn",
     "EvaluationRecipeProtocol",
+    "EMPTY_STAGED_EXECUTION_CONTEXT",
     "EvaluationInputAmbiguityError",
     "EvaluationInputCardinalityError",
     "EvaluationInputIntegrityError",
@@ -144,8 +162,18 @@ __all__ = [
     "STAGED_EXACT_PARENTS_SCHEMA_ID",
     "STAGED_EXACT_PARENTS_SCHEMA_VERSION",
     "StagedAnalysisBundleExecution",
+    "StagedArtifactProviderRootBinding",
+    "StagedCheckpointCustodyRootBinding",
+    "StagedCheckpointCustodySpec",
+    "StagedExecutionContext",
+    "StagedExecutionContextError",
+    "StagedExecutionDescriptor",
     "StagedExactParentEntry",
     "StagedExactParents",
+    "StagedParentExecutionLocation",
+    "STAGED_CHECKPOINT_CUSTODY_BACKEND",
+    "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID",
+    "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
     "SemanticChange",
     "diff_regenerated_archived",
     "diff_resolved_rows",
@@ -168,6 +196,7 @@ __all__ = [
     "read_json_payload",
     "registered_evaluation_recipes",
     "resolve_evaluation_inputs",
+    "resolve_staged_execution_context",
     "registered_report_types",
     "get_evaluation_recipe",
     "unregister_analysis_recipe",
@@ -177,6 +206,7 @@ __all__ = [
     "validate_analysis_recipe",
     "validate_evaluation_recipe",
     "validate_report_recipe",
+    "with_staged_parent_execution_locations",
     "BundleParamsBase",
     "BundleStageSpec",
 ]

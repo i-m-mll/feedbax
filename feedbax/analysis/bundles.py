@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import resources
 import json
@@ -16,6 +16,14 @@ from pydantic import Field, field_validator, model_validator
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
+from feedbax.analysis.execution_context import (
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
+    StagedExecutionContext,
+    StagedParentExecutionLocation,
+    resolve_staged_execution_context,
+    with_staged_parent_execution_locations,
+)
 from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
@@ -58,6 +66,7 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
+from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.run_matrix import apply_override_patches
 from feedbax.contracts.selection import (
     ManifestIndexRow,
@@ -825,7 +834,11 @@ def _preflight_staged_exact_parents(
     exact_parents: StagedExactParents,
     *,
     root: Path,
-) -> tuple[list[TrainingRunManifest], tuple[ParentRef, ...]]:
+) -> tuple[
+    list[TrainingRunManifest],
+    tuple[ParentRef, ...],
+    tuple[StagedParentExecutionLocation, ...],
+]:
     """Resolve and validate authoritative staged parents before any recipe work."""
     entries = list(exact_parents.parents)
     if not entries:
@@ -877,6 +890,7 @@ def _preflight_staged_exact_parents(
             )
 
     manifests: list[TrainingRunManifest] = []
+    locations: list[StagedParentExecutionLocation] = []
     for entry in entries:
         parent = entry.parent
         declared_digest, declared_size = _require_exact_parent_metadata(parent)
@@ -903,10 +917,17 @@ def _preflight_staged_exact_parents(
         if not predicate_matches_manifest(predicate, resolved.manifest):
             raise ValueError(f"exact parent {parent.id!r} does not satisfy the bundle predicate")
         manifests.append(resolved.manifest)
+        locations.append(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=root.resolve(strict=True),
+                execution_uri=entry.execution_uri,
+            )
+        )
 
     if len(manifests) != len(parent_refs):
         raise ValueError("exact parent resolution did not preserve one-to-one cardinality")
-    return manifests, parent_refs
+    return manifests, parent_refs, tuple(locations)
 
 
 def _manifest_condition_payload(manifest: AnyManifest) -> dict[str, Any]:
@@ -1110,6 +1131,7 @@ def _execute_evaluation_stage(
     root: Path,
     issues: Sequence[str],
     bundle: AnalysisBundleSpec,
+    execution_context: StagedExecutionContext,
 ) -> list[StageMaterialization]:
     products: list[StageMaterialization] = []
     for inputs in input_groups:
@@ -1133,6 +1155,7 @@ def _execute_evaluation_stage(
                 spec,
                 root=root,
                 issues=list(issues),
+                execution_context=execution_context,
                 metadata={
                     "bundle": {
                         "name": bundle.name,
@@ -1161,6 +1184,7 @@ def _execute_analysis_stage(
     bundle: AnalysisBundleSpec,
     fig_dump_path: Path | str | None,
     fig_dump_formats: Sequence[str],
+    execution_context: StagedExecutionContext,
 ) -> list[StageMaterialization]:
     def build_spec(inputs: Sequence[ParentRef], _index: int) -> AnalysisRunSpec:
         return AnalysisRunSpec(
@@ -1182,6 +1206,7 @@ def _execute_analysis_stage(
             root=root,
             issues=list(issues),
             provenance=base_provenance,
+            execution_context=execution_context,
             metadata={
                 "bundle": {
                     "name": bundle.name,
@@ -1236,6 +1261,7 @@ def _execute_materialization_stage(
     bundle: AnalysisBundleSpec,
     fig_dump_path: Path | str | None,
     fig_dump_formats: Sequence[str],
+    execution_context: StagedExecutionContext,
 ) -> list[StageMaterialization]:
     def build_spec(inputs: Sequence[ParentRef], _index: int) -> AnalysisRunSpec:
         return AnalysisRunSpec(
@@ -1257,6 +1283,7 @@ def _execute_materialization_stage(
             root=root,
             issues=list(issues),
             provenance=base_provenance,
+            execution_context=execution_context,
             metadata={
                 "bundle": {
                     "name": bundle.name,
@@ -1689,20 +1716,61 @@ def dry_run_staged_analysis_bundle(
     root: Path | str | None = None,
     selection_spec: SelectionSpec | None = None,
     run_ids: Iterable[str] | None = None,
+    exact_parents: StagedExactParents | None = None,
     preview_limit: int | None = 50,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ) -> AnalysisBundleDryRunResult:
     """Evaluate staged bundle bindings, conditions, and role dependencies only."""
+    _execution_context = resolve_staged_execution_context(
+        execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+    )
     if not bundle.stages:
         raise ValueError(f"Analysis bundle {bundle.name!r} has no staged plan")
+    if exact_parents is not None and (run_ids is not None or selection_spec is not None):
+        raise ValueError("exact_parents cannot be combined with run_ids or selection_spec")
+    if exact_parents is not None and root is None:
+        raise ValueError("exact-parent staged dry-run requires an explicit manifest root")
+    if exact_parents is not None:
+        exact_parents = StagedExactParents.model_validate(
+            exact_parents.model_dump(mode="json")
+        )
 
     root_path = Path(root) if root is not None else default_manifest_root()
-    matched_manifests, preview = _select_dry_run_manifests(
-        bundle,
-        root_path,
-        selection_spec=selection_spec,
-        run_ids=run_ids,
-        preview_limit=preview_limit,
-    )
+    bundle_parent_refs: tuple[ParentRef, ...] | None = None
+    if exact_parents is None:
+        matched_manifests, preview = _select_dry_run_manifests(
+            bundle,
+            root_path,
+            selection_spec=selection_spec,
+            run_ids=run_ids,
+            preview_limit=preview_limit,
+        )
+    else:
+        matched_manifests, bundle_parent_refs, parent_locations = (
+            _preflight_staged_exact_parents(
+                bundle,
+                exact_parents,
+                root=root_path,
+            )
+        )
+        _execution_context = with_staged_parent_execution_locations(
+            _execution_context,
+            parent_locations,
+        )
+        preview = _selection_preview_for_bundle(bundle, matched_manifests)
+        full_parent_refs = list(bundle_parent_refs)
+        shown_parent_refs = full_parent_refs
+        truncated = False
+        if preview_limit is not None and preview_limit >= 0:
+            shown_parent_refs = full_parent_refs[:preview_limit]
+            truncated = len(full_parent_refs) > preview_limit
+        preview = preview.model_copy(
+            update={"parent_refs": shown_parent_refs, "truncated": truncated}
+        )
     stage_products: dict[str, list[StageMaterialization]] = {}
     records: list[BundleStageDryRunRecord] = []
 
@@ -1728,7 +1796,12 @@ def dry_run_staged_analysis_bundle(
             )
             continue
 
-        resolved_inputs = _resolve_stage_inputs(stage, matched_manifests, stage_products)
+        resolved_inputs = _resolve_stage_inputs(
+            stage,
+            matched_manifests,
+            stage_products,
+            bundle_parent_refs=bundle_parent_refs,
+        )
         inputs = list(resolved_inputs.parent_refs)
         if stage.skip_reason is not None:
             outputs = _dry_run_stage_outputs(stage, "would_skip", reason=stage.skip_reason)
@@ -1820,6 +1893,9 @@ def execute_staged_analysis_bundle(
     root: Path | str | None = None,
     run_ids: Iterable[str] | None = None,
     exact_parents: StagedExactParents | None = None,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -1831,6 +1907,12 @@ def execute_staged_analysis_bundle(
     and materialization stages emit ``AnalysisRunManifest`` refs plus artifacts,
     and report stages emit ``ReportManifest`` refs plus report artifacts.
     """
+    execution_context = resolve_staged_execution_context(
+        execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+    )
+
     if not bundle.stages:
         raise ValueError(f"Analysis bundle {bundle.name!r} has no staged plan")
 
@@ -1848,10 +1930,14 @@ def execute_staged_analysis_bundle(
         matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
         bundle_parent_refs = None
     else:
-        matched_manifests, bundle_parent_refs = _preflight_staged_exact_parents(
+        matched_manifests, bundle_parent_refs, parent_locations = _preflight_staged_exact_parents(
             bundle,
             exact_parents,
             root=root_path,
+        )
+        execution_context = with_staged_parent_execution_locations(
+            execution_context,
+            parent_locations,
         )
     stage_products: dict[str, list[StageMaterialization]] = {}
     stage_records: list[BundleStageExecutionRecord] = []
@@ -1934,6 +2020,7 @@ def execute_staged_analysis_bundle(
                 root=root_path,
                 issues=issue_refs,
                 bundle=bundle,
+                execution_context=execution_context,
             )
         elif stage.kind == "analysis":
             products = _execute_analysis_stage(
@@ -1944,6 +2031,7 @@ def execute_staged_analysis_bundle(
                 bundle=bundle,
                 fig_dump_path=fig_dump_path,
                 fig_dump_formats=fig_dump_formats,
+                execution_context=execution_context,
             )
         elif stage.kind == "materialization":
             products = _execute_materialization_stage(
@@ -1954,6 +2042,7 @@ def execute_staged_analysis_bundle(
                 bundle=bundle,
                 fig_dump_path=fig_dump_path,
                 fig_dump_formats=fig_dump_formats,
+                execution_context=execution_context,
             )
         elif stage.kind == "figure":
             products = _execute_figure_stage(
