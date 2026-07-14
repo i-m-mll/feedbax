@@ -36,6 +36,7 @@ from feedbax.contracts.manifest import (
     EntrypointRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
+    StagedEvaluationPrerequisite,
     ManifestStatus,
     Provenance,
     collect_git_provenance,
@@ -318,7 +319,21 @@ def execute_evaluation_run_spec(
         if provenance is not None
         else collect_git_provenance()
     )
-    prov.parents = list(run_spec.inputs)
+    staged_prerequisites = run_spec.params.get("staged_prerequisites")
+    if staged_prerequisites is None:
+        staged_prerequisites = {}
+    elif not isinstance(staged_prerequisites, Mapping):
+        raise TypeError("evaluation params.staged_prerequisites must be a mapping or null")
+    staged_prerequisite_parents = [
+        StagedEvaluationPrerequisite.model_validate(value).parent
+        for value in staged_prerequisites.values()
+    ]
+    expected_parents = [*run_spec.inputs, *staged_prerequisite_parents]
+    if provenance is not None and prov.parents and prov.parents != expected_parents:
+        raise ValueError(
+            "evaluation provenance parents disagree with inputs and staged prerequisites"
+        )
+    prov.parents = expected_parents
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
     if prov.entrypoint is None:

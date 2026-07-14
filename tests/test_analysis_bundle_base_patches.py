@@ -11,6 +11,7 @@ from feedbax.analysis.bundles import (
     _params_for_stage,
 )
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     migrate_structured_spec_payload,
@@ -61,7 +62,7 @@ def test_bundle_stage_local_params_is_explicit_and_exclusive() -> None:
         )
 
 
-def test_analysis_bundle_v3_is_accepted_without_migration() -> None:
+def test_analysis_bundle_v4_is_accepted_without_migration() -> None:
     payload = AnalysisBundleSpec(name="current").model_dump(mode="json")
     result = migrate_structured_spec_payload("AnalysisBundleSpec", payload)
 
@@ -90,11 +91,62 @@ def test_analysis_bundle_v2_migrates_stage_params_to_explicit_local_params() -> 
 
     assert result.target_version == ANALYSIS_BUNDLE_SCHEMA_VERSION
     assert [record.migration_id for record in result.migration_records] == [
-        "analysis-bundle-v2-to-v3-shared-params-base"
+        "analysis-bundle-v2-to-v3-shared-params-base",
+        "analysis-bundle-v3-to-v4-per-input-prerequisites",
     ]
     assert migrated.params_base.params == {}
     assert migrated.stages[0].local_params == {"window": 11}
     assert migrated.stages[0].params_patches == []
+    assert migrated.stages[0].prerequisite_bindings == []
+
+
+def test_analysis_bundle_v3_migrates_with_empty_prerequisite_bindings() -> None:
+    result = migrate_structured_spec_payload(
+        "AnalysisBundleSpec",
+        {
+            "schema_id": ANALYSIS_BUNDLE_SCHEMA_ID,
+            "schema_version": "feedbax.spec.analysis_bundle.v3",
+            "name": "archived-v3",
+            "stages": [],
+        },
+    )
+
+    migrated = AnalysisBundleSpec.model_validate(result.payload)
+    assert migrated.schema_version == ANALYSIS_BUNDLE_SCHEMA_VERSION
+    assert [record.migration_id for record in result.migration_records] == [
+        "analysis-bundle-v3-to-v4-per-input-prerequisites"
+    ]
+
+
+def test_analysis_bundle_v4_yaml_round_trip_preserves_prerequisite_binding() -> None:
+    payload = """
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v4
+name: portable
+stages:
+  - name: evaluate
+    kind: evaluation
+    mode: per-run
+    evaluation_type: feedbax.test.portable
+    prerequisite_bindings:
+      - input_id: training-1
+        bind_as: baseline
+        artifact_provider: external
+        parent:
+          kind: EvaluationRunManifest
+          id: prerequisite-1
+          role: evaluation_run
+          metadata:
+            ref_schema_id: feedbax.ref.authenticated_manifest
+            ref_schema_version: feedbax.ref.authenticated_manifest.v1
+            manifest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+            size_bytes: 10
+"""
+    loaded = AnalysisBundleSpec.model_validate(get_yaml_loader(typ="safe").load(payload))
+    round_tripped = AnalysisBundleSpec.model_validate_json(loaded.model_dump_json())
+    binding = round_tripped.stages[0].prerequisite_bindings[0]
+    assert binding.input_id == "training-1"
+    assert binding.artifact_provider == "external"
 
 
 def test_analysis_bundle_v1_is_explicitly_rejected() -> None:

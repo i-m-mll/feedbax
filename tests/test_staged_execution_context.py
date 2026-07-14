@@ -26,6 +26,7 @@ from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
     StagedCheckpointCustodyRootBinding,
+    StagedExecutionContext,
     StagedExecutionContextError,
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
@@ -48,6 +49,7 @@ from feedbax.contracts.staged_execution import (
     StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
+from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
 from feedbax.training.checkpoint_custody import write_checkpoint_transaction
 from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 from tests.test_staged_exact_parents import _exact_document, _write_exact_parent
@@ -112,6 +114,32 @@ def _bundle() -> AnalysisBundleSpec:
             )
         ],
     )
+
+
+@pytest.mark.parametrize(
+    "root_identities",
+    [{"other": (1, 2)}, {"primary": (1, 2), "extra": (3, 4)}],
+)
+def test_artifact_provider_root_identity_keys_must_match_opened_providers(
+    tmp_path: Path,
+    root_identities: dict[str, tuple[int, int]],
+) -> None:
+    provider_root = tmp_path / "provider"
+    provider_root.mkdir()
+    provider = open_immutable_artifact_blob_provider(
+        ImmutableArtifactBlobProviderSpec(), explicit_root=provider_root
+    )
+    with pytest.raises(
+        StagedExecutionContextError,
+        match="identities must exactly match opened providers",
+    ):
+        StagedExecutionContext(
+            descriptor=None,
+            opened_artifact_providers={"primary": provider},
+            checkpoint_custody_roots={},
+            parent_execution_locations=(),
+            _artifact_provider_root_identities=root_identities,
+        )
 
 
 def _write_training(root: Path, run_id: str = "feedbax-training-run:context") -> None:

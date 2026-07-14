@@ -421,6 +421,17 @@ class ImmutableArtifactBlobProvider:
             )
         return data
 
+    def canonical_relative_path(
+        self,
+        artifact: ArtifactRef | str,
+        *,
+        size_bytes: int | None = None,
+    ) -> Path:
+        """Return the provider-owned relative location after validating exact bytes."""
+        digest, expected_size = self._validated_reference(artifact, size_bytes=size_bytes)
+        self.get_bytes(artifact, size_bytes=size_bytes)
+        return Path("artifacts") / "sha256" / digest[:2] / digest
+
     def materialize(
         self,
         artifact: ArtifactRef | str,

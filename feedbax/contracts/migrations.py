@@ -2735,7 +2735,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
-            "feedbax.spec.analysis_bundle.v3",
+            "feedbax.spec.analysis_bundle.v4",
             owner_module="feedbax.analysis.bundles",
             emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
             consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
@@ -2744,7 +2744,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "materialization, and report stages."
             ),
             stance="migrate",
-            supported_old_versions=("feedbax.spec.analysis_bundle.v2",),
+            supported_old_versions=(
+                "feedbax.spec.analysis_bundle.v2",
+                "feedbax.spec.analysis_bundle.v3",
+            ),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
             required_tests=("tests/test_analysis_bundle_base_patches.py",),
         ),
@@ -3602,6 +3605,20 @@ def _migrate_analysis_bundle_v2_to_v3_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_analysis_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add the empty selective-prerequisite contract without changing legacy stages."""
+    migrated = dict(payload)
+    raw_stages = migrated.get("stages", [])
+    if isinstance(raw_stages, list):
+        migrated["stages"] = [
+            {**stage, "prerequisite_bindings": []}
+            if isinstance(stage, Mapping)
+            else stage
+            for stage in raw_stages
+        ]
+    return migrated
+
+
 def _migrate_run_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Mark provenance as unavailable on bundles emitted before row handoff v1."""
     migrated = dict(payload)
@@ -3675,6 +3692,19 @@ default_spec_registry.register_migration(
         description=(
             "Preserve envelopes from compiler families that predate typed training-row "
             "provenance and mark that provenance explicitly unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisBundleSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.analysis_bundle.v3",
+        target_version="feedbax.spec.analysis_bundle.v4",
+        migration_id="analysis-bundle-v3-to-v4-per-input-prerequisites",
+        migrate=_migrate_analysis_bundle_v3_to_v4_payload,
+        description=(
+            "Preserve existing stages while adding explicit selective authenticated "
+            "prerequisite bindings."
         ),
     ),
 )
