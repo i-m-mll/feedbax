@@ -7,6 +7,12 @@ from .bundles import (
     execute_staged_analysis_bundle,
     load_analysis_bundle,
 )
+from .exact_parents import (
+    STAGED_EXACT_PARENTS_SCHEMA_ID,
+    STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+    StagedExactParentEntry,
+    StagedExactParents,
+)
 from .context import AnalysisRunContext
 from .controller import (
     GraphControllerAdapter,
@@ -121,7 +127,11 @@ __all__ = [
     "REPORT_RENDER_ROLE",
     "BUNDLE_SUMMARY_REPORT_TYPE",
     "STUDIO_REPORT_TYPE",
+    "STAGED_EXACT_PARENTS_SCHEMA_ID",
+    "STAGED_EXACT_PARENTS_SCHEMA_VERSION",
     "StagedAnalysisBundleExecution",
+    "StagedExactParentEntry",
+    "StagedExactParents",
     "SemanticChange",
     "diff_regenerated_archived",
     "diff_resolved_rows",
