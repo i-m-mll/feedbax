@@ -5,13 +5,18 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from importlib import resources
+import json
 from pathlib import Path
+import re
 from typing import Any, Literal, TypeVar
+from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
+from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
+from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
 from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
@@ -41,6 +46,7 @@ from feedbax.contracts.manifest import (
     ReportSpec,
     SpecPayload,
     StrictModel,
+    TrainingRunManifest,
     OverridePatch,
     collect_git_provenance,
     default_manifest_root,
@@ -70,6 +76,19 @@ ANALYSIS_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.spec.analysis_bundle.v2"
 ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v3"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v1"
+
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_IMMUTABLE_MANIFEST_URI_PATTERN = re.compile(r"artifact://sha256/([0-9a-f]{64})")
+_EXACT_PARENT_REQUIRED_TEXT_METADATA = (
+    "run_set_id",
+    "row_id",
+    "planned_run_id",
+)
+_EXACT_PARENT_REQUIRED_STATUS_METADATA = {
+    "manifest_status": "completed",
+    "registration_status": "completed",
+    "conformance_overall": "pass",
+}
 
 AnalysisBundleMode = Literal["per-run", "grouped"]
 BundleStageKind = Literal["evaluation", "analysis", "materialization", "figure", "report"]
@@ -641,11 +660,16 @@ def _resolve_stage_inputs(
     stage: BundleStageSpec,
     matched_manifests: Sequence[AnyManifest],
     stage_products: dict[str, list[StageMaterialization]],
+    *,
+    bundle_parent_refs: Sequence[ParentRef] | None = None,
 ) -> ResolvedStageInputs:
     inputs: list[ParentRef] = []
     artifacts_by_alias: dict[str, tuple[ArtifactRef, ...]] = {}
     if stage.include_bundle_inputs or (not stage.depends_on and not stage.depends_on_roles):
-        inputs.extend(_parent_ref_for_manifest(manifest) for manifest in matched_manifests)
+        if bundle_parent_refs is None:
+            inputs.extend(_parent_ref_for_manifest(manifest) for manifest in matched_manifests)
+        else:
+            inputs.extend(bundle_parent_refs)
     for dependency in stage.depends_on:
         products = stage_products.get(dependency)
         if products is None:
@@ -678,6 +702,246 @@ def _resolve_stage_inputs(
         artifacts_by_alias[alias] = (*artifacts_by_alias.get(alias, ()), *artifacts)
         inputs.extend(_artifact_parent_ref(artifact, role=alias) for artifact in artifacts)
     return ResolvedStageInputs(parent_refs=tuple(inputs), artifact_refs_by_alias=artifacts_by_alias)
+
+
+def _exact_execution_location_key(execution_uri: str) -> str:
+    """Validate and normalize one root-relative execution URI for uniqueness."""
+    if not execution_uri.strip():
+        raise ValueError("exact parent execution_uri must not be empty")
+    parsed = urlsplit(execution_uri)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError(
+            "exact parent execution_uri must be a relative local path without "
+            f"scheme, query, or fragment: {execution_uri!r}"
+        )
+    decoded = unquote(parsed.path)
+    if "\\" in decoded:
+        raise ValueError(
+            "exact parent execution_uri contains an unsupported path separator: "
+            f"{execution_uri!r}"
+        )
+    relative = Path(decoded)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise ValueError(
+            "exact parent execution_uri escapes the explicit manifest root: "
+            f"{execution_uri!r}"
+        )
+    return relative.as_posix()
+
+
+def _require_exact_parent_metadata(parent: ParentRef) -> tuple[str, int]:
+    """Validate exact immutable-parent identity and return digest and size."""
+    if parent.kind != "TrainingRunManifest":
+        raise ValueError(
+            "exact parent kind must be 'TrainingRunManifest'; "
+            f"got {parent.kind!r}"
+        )
+    if parent.role != "training_run":
+        raise ValueError(
+            "exact parent role must be 'training_run'; "
+            f"got {parent.role!r}"
+        )
+    if not parent.id.strip():
+        raise ValueError("exact parent id must not be empty")
+
+    manifest_digest = parent.metadata.get("manifest_sha256")
+    if not isinstance(manifest_digest, str) or _SHA256_PATTERN.fullmatch(
+        manifest_digest
+    ) is None:
+        raise ValueError(
+            "exact parent metadata.manifest_sha256 must be exactly 64 lowercase "
+            "hex characters"
+        )
+    certificate_digest = parent.metadata.get("certificate_sha256")
+    if not isinstance(certificate_digest, str) or _SHA256_PATTERN.fullmatch(
+        certificate_digest
+    ) is None:
+        raise ValueError(
+            "exact parent metadata.certificate_sha256 must be exactly 64 lowercase "
+            "hex characters"
+        )
+    size_bytes = parent.metadata.get("size_bytes")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
+        raise ValueError(
+            "exact parent metadata.size_bytes must be a nonnegative integer"
+        )
+    for field_name in _EXACT_PARENT_REQUIRED_TEXT_METADATA:
+        value = parent.metadata.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"exact parent metadata.{field_name} must be a nonempty string"
+            )
+    for field_name, expected in _EXACT_PARENT_REQUIRED_STATUS_METADATA.items():
+        observed = parent.metadata.get(field_name)
+        if observed != expected:
+            raise ValueError(
+                f"exact parent metadata.{field_name} must be {expected!r}; "
+                f"got {observed!r}"
+            )
+    if parent.metadata["planned_run_id"] != parent.id:
+        raise ValueError(
+            "exact parent metadata.planned_run_id must equal ParentRef.id"
+        )
+
+    uri = parent.uri
+    match = _IMMUTABLE_MANIFEST_URI_PATTERN.fullmatch(uri or "")
+    if match is None:
+        raise ValueError(
+            "exact parent uri must be immutable artifact://sha256/<digest>"
+        )
+    uri_digest = match.group(1)
+    if uri_digest != manifest_digest:
+        raise ValueError(
+            "exact parent artifact URI digest must equal metadata.manifest_sha256"
+        )
+    return manifest_digest, size_bytes
+
+
+def _available_training_identity_values(
+    manifest: TrainingRunManifest,
+    field_name: str,
+) -> list[tuple[str, Any]]:
+    """Return declared manifest identity facts that are available for comparison."""
+    values: list[tuple[str, Any]] = []
+    root_field_names = (
+        ("status", "manifest_status")
+        if field_name == "manifest_status"
+        else (field_name,)
+    )
+    for root_field_name in root_field_names:
+        root_value = getattr(manifest, root_field_name, None)
+        if root_value is not None:
+            values.append((root_field_name, root_value))
+    if field_name in manifest.metadata:
+        values.append((f"metadata.{field_name}", manifest.metadata[field_name]))
+    if field_name in manifest.provenance.metadata:
+        values.append(
+            (f"provenance.metadata.{field_name}", manifest.provenance.metadata[field_name])
+        )
+    if manifest.training_spec is not None and field_name in manifest.training_spec.inline:
+        values.append(
+            (f"training_spec.inline.{field_name}", manifest.training_spec.inline[field_name])
+        )
+    return values
+
+
+def _validate_exact_manifest_identity(
+    manifest: TrainingRunManifest,
+    parent: ParentRef,
+) -> None:
+    if manifest.status != "completed":
+        raise ValueError(
+            "exact parent TrainingRunManifest status must be 'completed'; "
+            f"got {manifest.status!r}"
+        )
+    governed_facts = (
+        *_EXACT_PARENT_REQUIRED_TEXT_METADATA,
+        *_EXACT_PARENT_REQUIRED_STATUS_METADATA,
+        "certificate_sha256",
+    )
+    for field_name in governed_facts:
+        expected = parent.metadata[field_name]
+        for source, observed in _available_training_identity_values(manifest, field_name):
+            if observed != expected:
+                raise ValueError(
+                    f"exact parent {source} disagrees with ParentRef metadata.{field_name}: "
+                    f"expected={expected!r}, observed={observed!r}"
+                )
+
+
+def _preflight_staged_exact_parents(
+    bundle: AnalysisBundleSpec,
+    exact_parents: StagedExactParents,
+    *,
+    root: Path,
+) -> tuple[list[TrainingRunManifest], tuple[ParentRef, ...]]:
+    """Resolve and validate authoritative staged parents before any recipe work."""
+    entries = list(exact_parents.parents)
+    if not entries:
+        raise ValueError("StagedExactParents.parents must be nonempty")
+
+    parent_refs = tuple(entry.parent for entry in entries)
+    serialized_refs = [
+        json.dumps(
+            parent.model_dump(mode="json", exclude_none=False),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for parent in parent_refs
+    ]
+    if len(set(serialized_refs)) != len(serialized_refs):
+        raise ValueError("StagedExactParents contains a duplicate ParentRef")
+    parent_ids = [parent.id for parent in parent_refs]
+    if len(set(parent_ids)) != len(parent_ids):
+        raise ValueError("StagedExactParents contains a duplicate ParentRef id")
+    location_keys = [
+        _exact_execution_location_key(entry.execution_uri) for entry in entries
+    ]
+    if len(set(location_keys)) != len(location_keys):
+        raise ValueError("StagedExactParents contains a duplicate execution location")
+
+    for parent in parent_refs:
+        _require_exact_parent_metadata(parent)
+
+    predicate = bundle.predicate
+    exact_id_set = set(parent_ids)
+    if predicate.top_k_by_metric_per_group is not None:
+        raise ValueError(
+            "exact-parent staged execution rejects top_k_by_metric_per_group; "
+            "frozen membership cannot be narrowed"
+        )
+    if predicate.run_ids and set(predicate.run_ids) != exact_id_set:
+        raise ValueError(
+            "bundle predicate.run_ids must equal the exact parent ID set; "
+            "predicates cannot add, remove, or narrow frozen parents"
+        )
+    if len(set(predicate.run_ids)) != len(predicate.run_ids):
+        raise ValueError("bundle predicate.run_ids contains duplicate parent IDs")
+    for stage in bundle.stages:
+        is_root_evaluation = (
+            stage.kind == "evaluation"
+            and not stage.depends_on
+            and not stage.depends_on_roles
+        )
+        if is_root_evaluation and stage.mode != "per-run":
+            raise ValueError(
+                f"exact-parent root evaluation stage {stage.name!r} must use per-run mode; "
+                "parent grouping is only valid downstream"
+            )
+
+    manifests: list[TrainingRunManifest] = []
+    for entry in entries:
+        parent = entry.parent
+        declared_digest, declared_size = _require_exact_parent_metadata(parent)
+        execution_ref = parent.model_copy(update={"uri": entry.execution_uri})
+        resolved = resolve_evaluation_inputs(
+            EvaluationRunSpec(
+                evaluation_type="feedbax.internal.staged_exact_parent_preflight",
+                inputs=[execution_ref],
+            ),
+            manifest_root=root,
+            require_unique_manifest_id=False,
+        )[0]
+        if resolved.sha256 != declared_digest:
+            raise ValueError(
+                "exact parent manifest bytes do not match the immutable artifact digest"
+            )
+        observed_size = resolved.size_bytes
+        if observed_size != declared_size:
+            raise ValueError(
+                "exact parent manifest byte size does not match metadata.size_bytes: "
+                f"declared={declared_size}, observed={observed_size}"
+            )
+        _validate_exact_manifest_identity(resolved.manifest, parent)
+        if not predicate_matches_manifest(predicate, resolved.manifest):
+            raise ValueError(
+                f"exact parent {parent.id!r} does not satisfy the bundle predicate"
+            )
+        manifests.append(resolved.manifest)
+
+    if len(manifests) != len(parent_refs):
+        raise ValueError("exact parent resolution did not preserve one-to-one cardinality")
+    return manifests, parent_refs
 
 
 def _manifest_condition_payload(manifest: AnyManifest) -> dict[str, Any]:
@@ -1555,6 +1819,7 @@ def execute_staged_analysis_bundle(
     *,
     root: Path | str | None = None,
     run_ids: Iterable[str] | None = None,
+    exact_parents: StagedExactParents | None = None,
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -1569,14 +1834,37 @@ def execute_staged_analysis_bundle(
     if not bundle.stages:
         raise ValueError(f"Analysis bundle {bundle.name!r} has no staged plan")
 
+    if exact_parents is not None and run_ids is not None:
+        raise ValueError("exact_parents and run_ids are mutually exclusive")
+    if exact_parents is not None and root is None:
+        raise ValueError("exact-parent staged execution requires an explicit manifest root")
+
+    if exact_parents is not None:
+        exact_parents = StagedExactParents.model_validate(
+            exact_parents.model_dump(mode="json")
+        )
+
     root_path = Path(root) if root is not None else default_manifest_root()
     issue_refs = list(issues or [])
-    matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
+    if exact_parents is None:
+        matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
+        bundle_parent_refs = None
+    else:
+        matched_manifests, bundle_parent_refs = _preflight_staged_exact_parents(
+            bundle,
+            exact_parents,
+            root=root_path,
+        )
     stage_products: dict[str, list[StageMaterialization]] = {}
     stage_records: list[BundleStageExecutionRecord] = []
 
     for stage in bundle.stages:
-        resolved_inputs = _resolve_stage_inputs(stage, matched_manifests, stage_products)
+        resolved_inputs = _resolve_stage_inputs(
+            stage,
+            matched_manifests,
+            stage_products,
+            bundle_parent_refs=bundle_parent_refs,
+        )
         inputs = list(resolved_inputs.parent_refs)
         if stage.skip_reason is not None:
             records = _output_records(stage, products=[], skipped_reason=stage.skip_reason)

@@ -33,6 +33,7 @@ from feedbax.analysis.bundles import (
     execute_staged_analysis_bundle,
     load_analysis_bundle,
 )
+from feedbax.analysis.exact_parents import StagedExactParents
 from feedbax.config import (
     PATHS,
     PLOTLY_CONFIG,
@@ -131,11 +132,22 @@ def build_arg_parser():
         default=None,
         help="Manifest root used by --bundle and manifest-canonical analysis outputs.",
     )
-    parser.add_argument(
+    parent_selection = parser.add_mutually_exclusive_group()
+    parent_selection.add_argument(
         "--runs",
         type=str,
         default=None,
         help="Comma-separated manifest IDs to constrain --bundle selection.",
+    )
+    parent_selection.add_argument(
+        "--exact-parents",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Versioned exact-parent JSON document for staged --bundle execution; "
+            "requires --manifest-root."
+        ),
     )
     parser.add_argument(
         "--issue",
@@ -147,7 +159,13 @@ def build_arg_parser():
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_arg_parser().parse_args(argv or sys.argv[1:])
+    parser = build_arg_parser()
+    args = parser.parse_args(argv or sys.argv[1:])
+
+    if args.exact_parents is not None and args.bundle is None:
+        parser.error("--exact-parents is only valid with --bundle")
+    if args.exact_parents is not None and args.manifest_root is None:
+        parser.error("--exact-parents requires --manifest-root")
 
     pio.templates.default = args.plotly_template or PLOTLY_CONFIG.templates.default
 
@@ -174,6 +192,8 @@ def main(argv: list[str] | None = None) -> None:
             "fig_dump_formats": fig_dump_formats,
         }
         if bundle.templates and not bundle.stages:
+            if args.exact_parents is not None:
+                raise ValueError("--exact-parents is only valid for staged analysis bundles")
             with _bundle_human_output_to_stderr():
                 outputs = execute_analysis_bundle(bundle, **execution_kwargs)
             payload = [
@@ -188,8 +208,29 @@ def main(argv: list[str] | None = None) -> None:
                 for expansion, manifest, path in outputs
             ]
         elif bundle.stages and not bundle.templates:
+            exact_parents = None
+            if args.exact_parents is not None:
+                exact_path = Path(args.exact_parents)
+                exact_payload = json.loads(exact_path.read_text(encoding="utf-8"))
+                if not isinstance(exact_payload, dict):
+                    raise ValueError("--exact-parents document must be a JSON object")
+                missing_schema = [
+                    field_name
+                    for field_name in ("schema_id", "schema_version")
+                    if field_name not in exact_payload
+                ]
+                if missing_schema:
+                    raise ValueError(
+                        "--exact-parents document requires explicit schema_id and "
+                        f"schema_version; missing {', '.join(missing_schema)}"
+                    )
+                exact_parents = StagedExactParents.model_validate(exact_payload)
             with _bundle_human_output_to_stderr():
-                execution = execute_staged_analysis_bundle(bundle, **execution_kwargs)
+                execution = execute_staged_analysis_bundle(
+                    bundle,
+                    exact_parents=exact_parents,
+                    **execution_kwargs,
+                )
             payload = execution.model_dump(mode="json", exclude_none=True)
         else:
             raise ValueError(

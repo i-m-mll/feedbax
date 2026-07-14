@@ -59,7 +59,8 @@ class ResolvedEvaluationInput:
 
     ``path`` is canonical and contained by the explicitly allowed manifest root.
     ``reference`` is its stable POSIX path relative to that root. ``sha256`` is
-    computed from the same bytes used to validate ``manifest``.
+    computed from the same bytes used to validate ``manifest``; ``size_bytes``
+    is the length of that same descriptor read.
     """
 
     ref: ParentRef
@@ -67,6 +68,7 @@ class ResolvedEvaluationInput:
     path: Path
     reference: str
     sha256: str
+    size_bytes: int
 
     @property
     def kind(self) -> str:
@@ -91,6 +93,7 @@ def resolve_evaluation_inputs(
     run_spec: EvaluationRunSpec,
     *,
     manifest_root: Path | str,
+    require_unique_manifest_id: bool = True,
 ) -> tuple[ResolvedEvaluationInput, ...]:
     """Resolve the exact training manifest declared by an evaluation run spec.
 
@@ -101,6 +104,10 @@ def resolve_evaluation_inputs(
     Args:
         run_spec: Registered evaluation recipe's validated run specification.
         manifest_root: Explicit filesystem root allowed to contain manifests.
+        require_unique_manifest_id: Whether an explicit URI must also be the
+            only manifest under ``manifest_root/manifests`` with the declared
+            ID. Disable only when a separate frozen authority already binds an
+            exact URI and immutable content digest.
 
     Returns:
         A one-item tuple containing the verified training-run manifest input.
@@ -128,7 +135,12 @@ def resolve_evaluation_inputs(
     _validate_training_ref(ref)
     root = _resolve_root(manifest_root)
     with _open_root_fd(root) as root_fd:
-        candidate = _resolve_candidate(ref, root, root_fd)
+        candidate = _resolve_candidate(
+            ref,
+            root,
+            root_fd,
+            require_unique_manifest_id=require_unique_manifest_id,
+        )
     digest = hashlib.sha256(candidate.raw_bytes).hexdigest()
     _validate_declared_hash(ref, digest)
     manifest = _validate_training_manifest(candidate, ref)
@@ -140,6 +152,7 @@ def resolve_evaluation_inputs(
             path=candidate.path,
             reference=candidate.reference,
             sha256=digest,
+            size_bytes=len(candidate.raw_bytes),
         ),
     )
 
@@ -168,7 +181,13 @@ def _resolve_root(manifest_root: Path | str) -> Path:
     return resolved
 
 
-def _resolve_candidate(ref: ParentRef, root: Path, root_fd: int) -> _ManifestCandidate:
+def _resolve_candidate(
+    ref: ParentRef,
+    root: Path,
+    root_fd: int,
+    *,
+    require_unique_manifest_id: bool,
+) -> _ManifestCandidate:
     if ref.uri is not None:
         selected_reference = _resolve_ref_uri(ref.uri)
         selected = _read_candidate(selected_reference, root, root_fd)
@@ -183,6 +202,8 @@ def _resolve_candidate(ref: ParentRef, root: Path, root_fd: int) -> _ManifestCan
                 "Resolved manifest id does not match ParentRef: "
                 f"declared={ref.id!r}, loaded={loaded_id!r}"
             )
+        if not require_unique_manifest_id:
+            return selected
         matches = _find_id_candidates(ref.id, root, root_fd, selected=selected)
         _require_unambiguous(ref.id, matches)
         if matches[0].path != selected.path:
@@ -190,6 +211,11 @@ def _resolve_candidate(ref: ParentRef, root: Path, root_fd: int) -> _ManifestCan
                 f"ParentRef URI does not select the unique manifest for id {ref.id!r}"
             )
         return selected
+
+    if not require_unique_manifest_id:
+        raise EvaluationInputReferenceError(
+            "require_unique_manifest_id=False requires an explicit ParentRef uri"
+        )
 
     matches = _find_id_candidates(ref.id, root, root_fd)
     return _require_unambiguous(ref.id, matches)
