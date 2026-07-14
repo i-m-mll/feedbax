@@ -220,6 +220,7 @@ def _check_failure_manifest(
         _run_spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context: object,
     ) -> None:
         raise RuntimeError("feedbax evaluation contract failure probe")
 

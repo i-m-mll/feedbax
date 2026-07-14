@@ -54,6 +54,10 @@ from feedbax.contracts.matrix_core import (
     RowMatrixSpec,
     materialize_matrix_rows,
 )
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContext,
+)
 from feedbax.analysis.validation import (
     EvaluationRecipeProtocol,
     validate_evaluation_recipe,
@@ -289,6 +293,7 @@ def execute_evaluation_run_spec(
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
     use_cache: bool = True,
     force: bool = False,
 ) -> tuple[EvaluationRunManifest, Path]:
@@ -348,7 +353,7 @@ def execute_evaluation_run_spec(
             cache_metadata["states_cache_hit"] = True
             cache_hit = True
         else:
-            result = recipe(run_spec, root_path, states_path)
+            result = recipe(run_spec, root_path, states_path, execution_context)
             if use_cache and result.states is not None:
                 write_evaluation_states_cache(
                     states_path,

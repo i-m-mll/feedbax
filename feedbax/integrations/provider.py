@@ -9,6 +9,14 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 import feedbax.analysis as analysis_pkg
+from feedbax.contracts.artifact_custody import (
+    ImmutableArtifactBlobProviderConfig,
+    ImmutableArtifactBlobProviderSpec,
+)
+from feedbax.contracts.staged_execution import (
+    StagedCheckpointCustodySpec,
+    StagedExecutionDescriptor,
+)
 from feedbax.contracts.artifact_schema import ArrayRecord, ArrayStorePayload
 from feedbax.contracts.descriptors import (
     ComponentDescriptor,
@@ -268,6 +276,10 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "SelectorFallbackPolicyIdentity": SelectorFallbackPolicyIdentity,
         "CheckpointSelectionSpec": CheckpointSelectionSpec,
         "SelectionSpec": SelectionSpec,
+        "ImmutableArtifactBlobProviderConfig": ImmutableArtifactBlobProviderConfig,
+        "ImmutableArtifactBlobProviderSpec": ImmutableArtifactBlobProviderSpec,
+        "StagedCheckpointCustodySpec": StagedCheckpointCustodySpec,
+        "StagedExecutionDescriptor": StagedExecutionDescriptor,
         "ArtifactRef": ArtifactRef,
         "ArrayRecord": ArrayRecord,
         "ArrayStorePayload": ArrayStorePayload,
@@ -541,6 +553,40 @@ def provider_manifest() -> ProviderManifest:
     capabilities = {
         "health": CapabilitySpec(output_schema="ProviderHealth", action="inspect"),
         "provider_manifest": CapabilitySpec(output_schema="ProviderManifest", action="inspect"),
+        "open_immutable_artifact_blob_provider": CapabilitySpec(
+            input_schema="ImmutableArtifactBlobProviderSpec",
+            description=(
+                "Bind the portable immutable-blob provider spec to a caller-supplied "
+                "absolute local custody root."
+            ),
+            transports=["python"],
+            action="open",
+            compatibility_predicates=[
+                "spec selects feedbax-local-sha256-cas",
+                "caller supplies an absolute explicit_root at runtime",
+            ],
+            custody_expectations=[
+                "The portable spec never contains a machine-local root.",
+                "Runtime opening never consults cwd, environment, or a provider registry.",
+            ],
+        ),
+        "resolve_staged_execution_context": CapabilitySpec(
+            input_schema="StagedExecutionDescriptor",
+            description=(
+                "Bind a portable staged execution descriptor to explicit runtime-only "
+                "artifact-provider and checkpoint-custody roots."
+            ),
+            transports=["python"],
+            action="open",
+            compatibility_predicates=[
+                "descriptor uses feedbax.spec.staged_execution.v1",
+                "caller supplies exact NAME=ROOT sets for every declared resource",
+            ],
+            custody_expectations=[
+                "Portable descriptors and emitted identities contain no machine-local roots.",
+                "Runtime binding never consults cwd, environment, callbacks, or registries.",
+            ],
+        ),
         "validate_graph_spec": CapabilitySpec(
             input_schema="GraphSpec",
             output_schema="ProviderValidationResult",

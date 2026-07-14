@@ -28,6 +28,7 @@ from feedbax.orchestration.bundle import (
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
+    RowConformanceRuntimeInputs,
     RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
@@ -136,6 +137,8 @@ class StageEngine:
         run_set_id: str | None = None,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
+        row_conformance_inputs: Mapping[str, RowConformanceRuntimeInputs | Mapping[str, Any]]
+        | None = None,
         poll_interval_seconds: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -169,6 +172,10 @@ class StageEngine:
         )
         self.store = store or RunSetStateStore(run_set_dir / "state.json")
         self.conformance_registry = conformance_registry or CheckRegistry()
+        self.row_conformance_inputs = {
+            row_id: RowConformanceRuntimeInputs.model_validate(inputs)
+            for row_id, inputs in (row_conformance_inputs or {}).items()
+        }
         self.poll_interval_seconds = (
             float(getattr(driver, "poll_interval_seconds", 0.05))
             if poll_interval_seconds is None
@@ -495,6 +502,7 @@ class StageEngine:
                 self.assembly_context.schema_registry if self.assembly_context is not None else None
             ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
+            row_status=state.rows[row.row_id].status,
             bundle_row_spec=run_spec,
             recorded_environment_fingerprint=state.environment_fingerprint,
             manifest_path=discovered.get("manifest_path"),
@@ -502,6 +510,8 @@ class StageEngine:
             training_diagnostics=discovered.get("training_diagnostics"),
             checkpoint_custody_root=discovered.get("checkpoint_custody_root"),
             preflight_normalized_payload=preflight_payload,
+            row_state=state.rows.get(row.row_id),
+            runtime_inputs=self.row_conformance_inputs.get(row.row_id),
         )
 
     def _execution_identity_adapter(self) -> Any:
@@ -522,10 +532,18 @@ class StageEngine:
         certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
         certificate = RunConformanceCertificate.model_validate(certificate_payload)
         certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
-        if certificate.overall == "pass":
-            status = "aborted" if state.abort_reason else "completed"
-        else:
+        row_statuses = {row_id: row.status for row_id, row in sorted(state.rows.items())}
+        row_status_set = set(row_statuses.values())
+        if certificate.overall == "fail":
             status = "failed"
+        elif state.abort_reason:
+            status = "aborted"
+        elif row_status_set == {"completed"}:
+            status = "completed"
+        elif row_status_set == {"stopped"}:
+            status = "stopped"
+        else:
+            status = "mixed"
         payload = {
             "run_set_id": self.bundle.run_set_id,
             "status": status,
@@ -536,6 +554,14 @@ class StageEngine:
         }
         if status == "failed":
             payload["failure_reason"] = "conformance-failed"
+        elif status in {"stopped", "mixed"}:
+            payload["row_outcomes"] = {
+                row_id: {
+                    "status": row.status,
+                    **({"reason": row.error} if row.error else {}),
+                }
+                for row_id, row in sorted(state.rows.items())
+            }
         state = state.model_copy(update={"registration_payload": payload, "updated_at": utc_now()})
         register_path = self.bundle.run_set_dir / "registration.json"
         self._write_or_verify_registration(
@@ -699,10 +725,16 @@ class StageEngine:
                 done_sentinel=done,
                 failed_sentinel=failed,
             )
+            terminal_event_without_sentinel = any(
+                item.get("code") == "terminal_event_without_sentinel"
+                for item in reconciled.discrepancies
+            )
             status = row_state.status
             completed_at = row_state.completed_at
             error = row_state.error
-            if reconciled.status == "completed" or probe.status == "completed":
+            if (
+                reconciled.status == "completed" and not terminal_event_without_sentinel
+            ) or probe.status == "completed":
                 terminal_status = (
                     reconciled.terminal_event.payload.get("status")
                     if reconciled.terminal_event is not None
@@ -712,7 +744,9 @@ class StageEngine:
                 completed_at = completed_at or utc_now()
                 if terminal_status == "cancelled":
                     error = "operator-stop-after-checkpoint"
-            elif reconciled.status in ("failed", "error") or probe.status == "failed":
+            elif (
+                reconciled.status in ("failed", "error") and not terminal_event_without_sentinel
+            ) or probe.status == "failed":
                 status = "failed"
                 completed_at = completed_at or utc_now()
                 error = probe.detail or error

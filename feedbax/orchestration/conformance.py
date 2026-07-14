@@ -28,12 +28,14 @@ from feedbax.contracts.spec_storage import (
 )
 from feedbax.contracts.training import OptimizerSpec
 from feedbax.orchestration.bundle import ExecutionIdentityEnvelope, SchemaArtifactRef
+from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES
 from feedbax.orchestration.schedule_eval import (
     _MISSING as _SCHEDULE_MISSING,
     extract_resume_context,
     learning_rate_from_build_optimizer,
     require_schedule_context,
 )
+from feedbax.orchestration.state import RowState
 
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
@@ -46,6 +48,25 @@ CHECK_STATUSES = (CHECK_STATUS_PASS, CHECK_STATUS_FAIL, CHECK_STATUS_SKIPPED)
 CheckStatus = Literal["pass", "fail", "skipped"]
 OverallStatus = Literal["pass", "fail"]
 CheckCallable = Callable[["ConformanceRowArtifacts"], "CheckEntry"]
+
+
+class AuthorizedBatchStop(StrictModel):
+    """Operational authorization to stop one row at a batch checkpoint.
+
+    The limit is runtime control, not authored scientific identity.  Supplying
+    it does not make a short run conformant by itself: the collected manifest,
+    diagnostics, checkpoint evidence, and orchestration row state must all
+    independently agree that the row stopped at this boundary.
+    """
+
+    stop_after_batches: int = Field(gt=0)
+    reason: Literal["stop_after_batches"] = "stop_after_batches"
+
+
+class RowConformanceRuntimeInputs(StrictModel):
+    """Typed operational inputs available only to row conformance checks."""
+
+    authorized_batch_stop: AuthorizedBatchStop | None = None
 
 
 class CheckEntry(StrictModel):
@@ -106,6 +127,7 @@ class ConformanceRowArtifacts:
     execution_identity_adapter: Any = None
     schema_registry: Any = None
     manifest_path: Path | str | None = None
+    row_status: str | None = None
     training_diagnostics: Mapping[str, Any] | None = None
     checkpoint_custody_root: Path | str | None = None
     event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None
@@ -113,6 +135,8 @@ class ConformanceRowArtifacts:
     recorded_environment_fingerprint: Any = None
     preflight_normalized_payload: Mapping[str, Any] | None = None
     manifest_payload: Mapping[str, Any] | None = None
+    row_state: RowState | None = None
+    runtime_inputs: RowConformanceRuntimeInputs | None = None
 
 
 class CheckRegistry:
@@ -551,7 +575,7 @@ def assert_certificate_allows_completed_registration(
 
 
 def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
-    """Verify realized batch count equals the declared count."""
+    """Verify full completion or an authorized, internally consistent stop."""
     check_id = "completed_batches"
     expected = _first_present(
         _path(row.bundle_row_spec, "expected_batches"),
@@ -572,21 +596,123 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, "bundle_row_spec.n_batches")
     if observed is _MISSING:
         return missing_input_check(check_id, "training_diagnostics.completed_batches")
-    if int(observed) == int(expected):
-        return pass_check(check_id, expected=int(expected), observed=int(observed))
-    return fail_check(check_id, expected=int(expected), observed=int(observed))
+    authored_batches = int(expected)
+    observed_batches = int(observed)
+    if observed_batches == authored_batches:
+        return pass_check(check_id, expected=authored_batches, observed=observed_batches)
+
+    authorized_stop = (
+        row.runtime_inputs.authorized_batch_stop if row.runtime_inputs is not None else None
+    )
+    if authorized_stop is None:
+        return fail_check(check_id, expected=authored_batches, observed=observed_batches)
+
+    stop_batches = int(authorized_stop.stop_after_batches)
+    manifest = _manifest_payload(row)
+    diagnostics = row.training_diagnostics
+    row_state = row.row_state
+    checkpoint_coordinates = _checkpoint_coordinates(row)
+    checkpoint_completed_batches = _checkpoint_completed_batches(row)
+    manifest_id = _path(manifest, "id")
+    diagnostics_manifest_id = _path(diagnostics, "manifest_id")
+    diagnostics_status = _path(diagnostics, "terminal_status")
+    manifest_status = _path(manifest, "status")
+    manifest_completed_batches = _first_present(
+        _path(manifest, "completed_batches"),
+        _path(manifest, "summary_metrics", "completed_batches"),
+        _path(manifest, "summary_metrics", "n_batches"),
+    )
+    evidence = {
+        "authorized_stop_after_batches": stop_batches,
+        "diagnostics_completed_batches": observed_batches,
+        "diagnostics_terminal_status": (
+            None if diagnostics_status is _MISSING else diagnostics_status
+        ),
+        "manifest_status": None if manifest_status is _MISSING else manifest_status,
+        "manifest_completed_batches": (
+            None if manifest_completed_batches is _MISSING else manifest_completed_batches
+        ),
+        "manifest_id": None if manifest_id is _MISSING else manifest_id,
+        "diagnostics_manifest_id": (
+            None if diagnostics_manifest_id is _MISSING else diagnostics_manifest_id
+        ),
+        "row_status": None if row_state is None else row_state.status,
+        "row_error": None if row_state is None else row_state.error,
+        "checkpoint_coordinates": checkpoint_coordinates,
+        "checkpoint_completed_batches": checkpoint_completed_batches,
+    }
+    expected_evidence = {
+        "authored_batches": authored_batches,
+        "authorized_stop_after_batches": stop_batches,
+        "terminal_status": "cancelled",
+        "row_status": "stopped",
+        "row_error": "operator-stop-after-checkpoint",
+        "final_checkpoint_batches": stop_batches,
+    }
+    failures: list[str] = []
+    if stop_batches >= authored_batches:
+        failures.append("authorized stop must be earlier than the authored batch budget")
+    if observed_batches != stop_batches:
+        failures.append("diagnostics completed batches do not match the authorized stop")
+    if _canonical_terminal_status(diagnostics_status) != "cancelled":
+        failures.append("training diagnostics do not report cancelled terminal status")
+    if _canonical_terminal_status(manifest_status) != "cancelled":
+        failures.append("training manifest does not report cancelled status")
+    if manifest_completed_batches is _MISSING:
+        failures.append("training manifest completed batch count is missing")
+    elif int(manifest_completed_batches) != stop_batches:
+        failures.append("training manifest completed batches do not match the authorized stop")
+    if manifest_id is _MISSING or diagnostics_manifest_id is _MISSING:
+        failures.append("manifest and training diagnostics require linked manifest ids")
+    elif str(manifest_id) != str(diagnostics_manifest_id):
+        failures.append("training diagnostics manifest id does not match the manifest")
+    if row_state is None:
+        failures.append("orchestration row state is missing")
+    else:
+        if row_state.status != "stopped":
+            failures.append("orchestration row state is not stopped")
+        if row_state.error != "operator-stop-after-checkpoint":
+            failures.append("orchestration row stop reason is not checkpoint-stop")
+    if not checkpoint_coordinates or max(checkpoint_coordinates) != stop_batches:
+        failures.append("final checkpoint coordinate does not match the authorized stop")
+    if not checkpoint_completed_batches or max(checkpoint_completed_batches) != stop_batches:
+        failures.append("checkpoint transaction batch count does not match the authorized stop")
+
+    if failures:
+        return fail_check(
+            check_id,
+            expected=expected_evidence,
+            observed=evidence,
+            detail="; ".join(failures),
+        )
+    return pass_check(check_id, expected=expected_evidence, observed=evidence)
 
 
 def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
     """Verify realized seeds equal declared seeds."""
     check_id = "seeds"
-    expected = _first_present(
+    bundle_seed = _first_present(
         _path(row.bundle_row_spec, "seeds"),
         _path(row.bundle_row_spec, "seed"),
         _path(row.bundle_row_spec, "training", "seeds"),
         _path(row.bundle_row_spec, "metadata", "seeds"),
         _path(row.bundle_row_spec, "metadata", "seed"),
     )
+    provenance_seed = _path(row.execution, "row_provenance", "seed")
+    if provenance_seed is None:
+        provenance_seed = _MISSING
+    if (
+        bundle_seed is not _MISSING
+        and provenance_seed is not _MISSING
+        and _canonical(_seed_sequence(bundle_seed)) != _canonical(_seed_sequence(provenance_seed))
+    ):
+        return fail_check(
+            check_id,
+            expected={"bundle_row_spec": bundle_seed},
+            observed={"execution.row_provenance.seed": provenance_seed},
+            detail="declared seeds disagree between bundle row and execution provenance",
+        )
+    expected = _first_present(bundle_seed, provenance_seed)
     observed = _first_present(
         _path(row.training_diagnostics, "seeds"),
         _path(row.training_diagnostics, "seed"),
@@ -597,7 +723,7 @@ def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, "bundle_row_spec.seeds")
     if observed is _MISSING:
         return missing_input_check(check_id, "manifest/training_diagnostics.seeds")
-    if _canonical(expected) == _canonical(observed):
+    if _canonical(_seed_sequence(expected)) == _canonical(_seed_sequence(observed)):
         return pass_check(check_id, expected=expected, observed=observed)
     return fail_check(check_id, expected=expected, observed=observed)
 
@@ -724,32 +850,90 @@ def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
         )
     terminal_events = [event for event in events if _is_terminal_event(event)]
     observed = {"terminal_count": len(terminal_events), "terminal_events": terminal_events}
-    expected_status = _first_present(
-        _path(row.bundle_row_spec, "expected_terminal_status"),
-        _path(row.bundle_row_spec, "sentinel_status"),
-        _path(row.training_diagnostics, "terminal_status"),
-    )
-    expected_status_value = None if expected_status is _MISSING else expected_status
+    expected_statuses = _expected_terminal_statuses(row)
+    canonical_expected_statuses = {
+        source: _canonical_terminal_status(status) for source, status in expected_statuses.items()
+    }
+    expected_status_value = next(iter(expected_statuses.values()), None)
     if len(terminal_events) != 1:
         return fail_check(
             check_id,
             expected={"terminal_count": 1, "terminal_status": expected_status_value},
             observed=observed,
         )
-    if expected_status is not _MISSING:
-        terminal_status = _event_status(terminal_events[0])
-        if _canonical_terminal_status(terminal_status) != _canonical_terminal_status(
-            expected_status
-        ):
-            return fail_check(
-                check_id,
-                expected={"terminal_count": 1, "terminal_status": expected_status},
-                observed={"terminal_count": 1, "terminal_status": terminal_status},
-            )
+    terminal_event = terminal_events[0]
+    carrier_type = _event_type(terminal_event)
+    terminal_status = _event_status(terminal_event)
+    canonical_terminal_status = _canonical_terminal_status(terminal_status)
+    governed_terminal_status = None if terminal_status is None else terminal_status.lower()
+    if governed_terminal_status not in {"completed", "failed", "cancelled"}:
+        return fail_check(
+            check_id,
+            expected={"terminal_count": 1, "terminal_status": expected_status_value},
+            observed={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": terminal_status,
+            },
+            detail="terminal event payload.status must name a governed terminal status",
+        )
+    allowed_statuses = {
+        "complete": {"completed", "cancelled"},
+        "failed": {"failed"},
+    }
+    if governed_terminal_status not in allowed_statuses[str(carrier_type)]:
+        return fail_check(
+            check_id,
+            expected={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": sorted(allowed_statuses[str(carrier_type)]),
+            },
+            observed={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": terminal_status,
+            },
+            detail="terminal carrier type disagrees with payload.status",
+        )
+    expected_canonical_values = set(canonical_expected_statuses.values())
+    if len(expected_canonical_values) > 1:
+        return fail_check(
+            check_id,
+            expected={"terminal_count": 1, "terminal_statuses_agree": True},
+            observed={
+                "terminal_count": 1,
+                "terminal_statuses": expected_statuses,
+                "event_payload_status": terminal_status,
+            },
+            detail="row and diagnostics terminal statuses disagree",
+        )
+    if expected_canonical_values and canonical_terminal_status not in expected_canonical_values:
+        return fail_check(
+            check_id,
+            expected={
+                "terminal_count": 1,
+                "terminal_status": expected_status_value,
+                "terminal_statuses": expected_statuses,
+            },
+            observed={
+                "terminal_count": 1,
+                "carrier_type": carrier_type,
+                "terminal_status": terminal_status,
+            },
+        )
     return pass_check(
         check_id,
-        expected={"terminal_count": 1, "terminal_status": expected_status_value},
-        observed=observed,
+        expected={
+            "terminal_count": 1,
+            "terminal_status": expected_status_value,
+            "terminal_statuses": expected_statuses,
+        },
+        observed={
+            **observed,
+            "carrier_type": carrier_type,
+            "terminal_status": terminal_status,
+        },
     )
 
 
@@ -911,6 +1095,22 @@ def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
     return coordinates
 
 
+def _checkpoint_completed_batches(row: ConformanceRowArtifacts) -> list[int] | None:
+    transactions = _path(row.training_diagnostics, "checkpoint_transactions")
+    if transactions is _MISSING:
+        return None
+    completed: list[int] = []
+    for transaction in transactions:
+        value = _first_present(
+            _path(transaction, "cumulative_completed_batches"),
+            _path(transaction, "completed_batches"),
+        )
+        if value is _MISSING:
+            return None
+        completed.append(int(value))
+    return completed
+
+
 def _expected_checkpoint_coordinates(interval: int, completed_batches: int) -> list[int]:
     if interval <= 0:
         raise ValueError("checkpoint interval must be positive")
@@ -945,23 +1145,42 @@ def _load_events(
 
 
 def _is_terminal_event(event: Mapping[str, Any]) -> bool:
-    status = _event_status(event)
-    return _canonical_terminal_status(status) in {
-        "complete",
-        "failed",
-        "cancelled",
-        "error",
-    }
+    return _event_type(event) in RUN_EVENT_TERMINAL_TYPES
+
+
+def _event_type(event: Mapping[str, Any]) -> str | None:
+    value = _first_present(_path(event, "type"), _path(event, "event_type"))
+    return None if value is _MISSING else str(value)
 
 
 def _event_status(event: Mapping[str, Any]) -> str | None:
-    value = _first_present(
-        _path(event, "phase"),
-        _path(event, "status"),
-        _path(event, "event_type"),
-        _path(event, "type"),
-    )
+    value = _path(event, "payload", "status")
     return None if value is _MISSING else str(value)
+
+
+def _expected_terminal_statuses(row: ConformanceRowArtifacts) -> dict[str, Any]:
+    candidates = (
+        (
+            "bundle_row_spec.expected_terminal_status",
+            _path(row.bundle_row_spec, "expected_terminal_status"),
+        ),
+        ("bundle_row_spec.sentinel_status", _path(row.bundle_row_spec, "sentinel_status")),
+        ("row_status", _row_terminal_status(row.row_status)),
+        (
+            "training_diagnostics.terminal_status",
+            _path(row.training_diagnostics, "terminal_status"),
+        ),
+    )
+    return {source: status for source, status in candidates if status is not _MISSING}
+
+
+def _row_terminal_status(status: str | None) -> Any:
+    if status is None:
+        return _MISSING
+    canonical = str(status).lower()
+    if canonical == "stopped":
+        return "cancelled"
+    return canonical
 
 
 def _canonical_terminal_status(status: Any) -> str | None:
@@ -1028,6 +1247,17 @@ def _first_present(*values: Any) -> Any:
 
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _seed_sequence(value: Any) -> Any:
+    """Normalize one declared or observed scalar seed to singleton-list form."""
+    if (
+        isinstance(value, Mapping)
+        or isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+    ):
+        return value
+    return [value]
 
 
 def _close(observed: float, expected: float, *, rel_tol: float) -> bool:

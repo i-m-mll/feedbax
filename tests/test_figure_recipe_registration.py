@@ -66,8 +66,9 @@ def test_downstream_computation_recipes_are_listed() -> None:
         run_spec: EvaluationRunSpec,
         root: Path,
         states_path: Path,
+        execution_context,
     ) -> EvaluationRecipeResult:
-        del run_spec, root, states_path
+        del run_spec, root, states_path, execution_context
         return EvaluationRecipeResult(summary_metrics={"value": 1.0})
 
     try:

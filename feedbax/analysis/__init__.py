@@ -7,6 +7,29 @@ from .bundles import (
     execute_staged_analysis_bundle,
     load_analysis_bundle,
 )
+from .exact_parents import (
+    STAGED_EXACT_PARENTS_SCHEMA_ID,
+    STAGED_EXACT_PARENTS_SCHEMA_VERSION,
+    StagedExactParentEntry,
+    StagedExactParents,
+)
+from .execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
+    StagedExecutionContext,
+    StagedExecutionContextError,
+    StagedParentExecutionLocation,
+    resolve_staged_execution_context,
+    with_staged_parent_execution_locations,
+)
+from feedbax.contracts.staged_execution import (
+    STAGED_CHECKPOINT_CUSTODY_BACKEND,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+    StagedCheckpointCustodySpec,
+    StagedExecutionDescriptor,
+)
 from .context import AnalysisRunContext
 from .controller import (
     GraphControllerAdapter,
@@ -28,6 +51,14 @@ from .materialization import (
     manifest_artifact_group,
     materialization_metadata,
     read_json_payload,
+)
+from .manifest_inputs import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    ResolvedManifestInput,
+    authenticated_manifest_ref,
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
 )
 from .specs import (
     AnalysisRecipeResult,
@@ -64,6 +95,17 @@ from .evaluation import (
     registered_evaluation_recipes,
     unregister_evaluation_recipe,
 )
+from .evaluation_inputs import (
+    EvaluationInputAmbiguityError,
+    EvaluationInputCardinalityError,
+    EvaluationInputIntegrityError,
+    EvaluationInputManifestError,
+    EvaluationInputPathError,
+    EvaluationInputReferenceError,
+    EvaluationInputResolutionError,
+    ResolvedEvaluationInput,
+    resolve_evaluation_inputs,
+)
 from .harness import (
     HarnessResult,
     MaterializedRow,
@@ -74,6 +116,8 @@ from .harness import (
 )
 
 __all__ = [
+    "AUTHENTICATED_MANIFEST_REF_SCHEMA_ID",
+    "AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION",
     "AbstractAnalysis",
     "AnalysisBundleSpec",
     "AnalysisArtifactGroup",
@@ -81,12 +125,24 @@ __all__ = [
     "AnalysisRecipeResult",
     "AnalysisRecipeProtocol",
     "AnalysisRunContext",
+    "ResolvedManifestInput",
+    "authenticated_manifest_ref",
+    "is_authenticated_manifest_ref",
+    "resolve_manifest_input",
     "CallWithDeps",
     "ContextMaterializationPending",
     "ContextMaterializer",
     "ContextMaterializerFn",
     "DataContextMaterializerFn",
     "EvaluationRecipeProtocol",
+    "EMPTY_STAGED_EXECUTION_CONTEXT",
+    "EvaluationInputAmbiguityError",
+    "EvaluationInputCardinalityError",
+    "EvaluationInputIntegrityError",
+    "EvaluationInputManifestError",
+    "EvaluationInputPathError",
+    "EvaluationInputReferenceError",
+    "EvaluationInputResolutionError",
     "EvaluationRunMatrixSpec",
     "HarnessResult",
     "ExistingAnalysisArtifact",
@@ -97,12 +153,27 @@ __all__ = [
     "MaterializedRow",
     "MatrixMaterializerHarness",
     "RecipeValidationError",
+    "ResolvedEvaluationInput",
     "ReportRecipeProtocol",
     "ReportRecipeResult",
     "REPORT_RENDER_ROLE",
     "BUNDLE_SUMMARY_REPORT_TYPE",
     "STUDIO_REPORT_TYPE",
+    "STAGED_EXACT_PARENTS_SCHEMA_ID",
+    "STAGED_EXACT_PARENTS_SCHEMA_VERSION",
     "StagedAnalysisBundleExecution",
+    "StagedArtifactProviderRootBinding",
+    "StagedCheckpointCustodyRootBinding",
+    "StagedCheckpointCustodySpec",
+    "StagedExecutionContext",
+    "StagedExecutionContextError",
+    "StagedExecutionDescriptor",
+    "StagedExactParentEntry",
+    "StagedExactParents",
+    "StagedParentExecutionLocation",
+    "STAGED_CHECKPOINT_CUSTODY_BACKEND",
+    "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID",
+    "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
     "SemanticChange",
     "diff_regenerated_archived",
     "diff_resolved_rows",
@@ -124,6 +195,8 @@ __all__ = [
     "register_report_recipe",
     "read_json_payload",
     "registered_evaluation_recipes",
+    "resolve_evaluation_inputs",
+    "resolve_staged_execution_context",
     "registered_report_types",
     "get_evaluation_recipe",
     "unregister_analysis_recipe",
@@ -133,6 +206,7 @@ __all__ = [
     "validate_analysis_recipe",
     "validate_evaluation_recipe",
     "validate_report_recipe",
+    "with_staged_parent_execution_locations",
     "BundleParamsBase",
     "BundleStageSpec",
 ]

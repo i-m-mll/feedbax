@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from feedbax.contracts.artifact_custody import (
+    IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
+    IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
+)
 from feedbax.contracts.migrations import (
     SchemaMigration,
     STUDIO_TASK_BINDING_LEGACY_V1,
@@ -937,6 +941,41 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
             assert policy.supported_old_versions, family.kind
         else:
             assert policy.rejected_old_versions, family.kind
+
+
+def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:
+    family = default_spec_registry.resolve("ImmutableArtifactBlobProviderSpec")
+    policy = family.policy
+    config_family = default_spec_registry.resolve("ImmutableArtifactBlobProviderConfig")
+
+    assert family.identity == IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID
+    assert family.current_version == IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION
+    assert family.namespace == SchemaNamespaceKind.SPEC
+    assert policy is not None
+    assert policy.owner_module == "feedbax.contracts.artifact_custody"
+    assert policy.emitted_by == (
+        "feedbax.persistence.artifact_custody",
+        "feedbax.integrations.provider",
+    )
+    assert policy.consumed_by == (
+        "feedbax.persistence.open_immutable_artifact_blob_provider",
+        "downstream staged execution",
+    )
+    assert policy.stance == "reject"
+    assert policy.supported_old_versions == ()
+    assert policy.rejected_old_versions == ("feedbax.spec.immutable_artifact_blob_provider.v0",)
+    assert default_spec_registry.available_migrations(family.kind) == ()
+    assert config_family.identity == family.identity
+    assert config_family.current_version == family.current_version
+    assert not config_family.durable
+    assert config_family.policy is not None
+    assert config_family.policy.covers == family.kind
+
+    with pytest.raises(UnsupportedSpecVersion, match="current_version"):
+        default_spec_registry.migrate(
+            family.kind,
+            {"schema_version": "feedbax.spec.immutable_artifact_blob_provider.v0"},
+        )
 
 
 def test_default_policy_matrix_covers_provider_schema_exports_and_capability_refs() -> None:

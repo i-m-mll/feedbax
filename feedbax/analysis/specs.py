@@ -17,6 +17,15 @@ from feedbax.analysis.evaluation import (
     write_evaluation_states_cache,
 )
 from feedbax.analysis.execution import run_analyses_with_context
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContext,
+)
+from feedbax.analysis.manifest_inputs import (
+    ResolvedManifestInput,
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
+)
 from feedbax.analysis.validation import (
     AnalysisRecipeProtocol,
     validate_analysis_recipe,
@@ -115,7 +124,9 @@ def get_analysis_recipe(analysis_type: str) -> AnalysisRecipe:
         ) from exc
 
 
-def coerce_analysis_run_spec(value: AnalysisRunSpec | Mapping[str, Any] | Path | str) -> AnalysisRunSpec:
+def coerce_analysis_run_spec(
+    value: AnalysisRunSpec | Mapping[str, Any] | Path | str,
+) -> AnalysisRunSpec:
     """Load an ``AnalysisRunSpec`` from an object, mapping, or JSON file path."""
     if isinstance(value, AnalysisRunSpec):
         return value
@@ -125,7 +136,9 @@ def coerce_analysis_run_spec(value: AnalysisRunSpec | Mapping[str, Any] | Path |
     return AnalysisRunSpec.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def find_manifest_by_id(manifest_id: str, *, root: Path | str | None = None) -> tuple[AnyManifest, Path]:
+def find_manifest_by_id(
+    manifest_id: str, *, root: Path | str | None = None
+) -> tuple[AnyManifest, Path]:
     """Find one manifest by ID under a manifest root."""
     root_path = Path(root) if root is not None else default_manifest_root()
     matches: list[tuple[AnyManifest, Path]] = []
@@ -161,15 +174,24 @@ def resolve_analysis_inputs(
     spec: AnalysisRunSpec,
     *,
     root: Path | str | None = None,
+    authenticated_inputs: Mapping[int, ResolvedManifestInput] | None = None,
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
 ) -> list[ResolvedAnalysisInput]:
     """Resolve ``AnalysisRunSpec.inputs`` to manifests and cached evaluation states."""
     root_path = Path(root) if root is not None else default_manifest_root()
     resolved: list[ResolvedAnalysisInput] = []
-    for ref in spec.inputs:
+    for index, ref in enumerate(spec.inputs):
         manifest: AnyManifest | None = None
         manifest_path: Path | None = None
         states: Any = None
-        if ref.kind.endswith("Manifest"):
+        if is_authenticated_manifest_ref(ref):
+            authenticated = (
+                authenticated_inputs.get(index) if authenticated_inputs is not None else None
+            )
+            if authenticated is None:
+                authenticated = resolve_manifest_input(ref, root_path)
+            manifest, manifest_path = authenticated.manifest, authenticated.path
+        elif ref.kind.endswith("Manifest"):
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
         if ref.kind == "EvaluationRunManifest":
             states_path = evaluation_states_cache_path(ref.id, root=root_path)
@@ -178,7 +200,12 @@ def resolve_analysis_inputs(
                     try:
                         states = load_evaluation_states(manifest, root=root_path)
                     except EvaluationStatesArtifactNotFound:
-                        _rederive_evaluation_states(ref.id, manifest, root=root_path)
+                        _rederive_evaluation_states(
+                            ref.id,
+                            manifest,
+                            root=root_path,
+                            execution_context=execution_context,
+                        )
                     else:
                         states_path.parent.mkdir(parents=True, exist_ok=True)
                         write_evaluation_states_cache(
@@ -187,7 +214,12 @@ def resolve_analysis_inputs(
                             states=states,
                         )
                 else:
-                    _rederive_evaluation_states(ref.id, manifest, root=root_path)
+                    _rederive_evaluation_states(
+                        ref.id,
+                        manifest,
+                        root=root_path,
+                        execution_context=execution_context,
+                    )
             if states is None:
                 states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
         resolved.append(
@@ -206,11 +238,11 @@ def _rederive_evaluation_states(
     manifest: AnyManifest | None,
     *,
     root: Path,
+    execution_context: StagedExecutionContext,
 ) -> None:
     if not isinstance(manifest, EvaluationRunManifest):
         raise TypeError(
-            f"Expected EvaluationRunManifest {manifest_id!r}, got "
-            f"{type(manifest).__name__}"
+            f"Expected EvaluationRunManifest {manifest_id!r}, got {type(manifest).__name__}"
         )
     if manifest.status != "completed":
         raise ValueError(
@@ -218,16 +250,13 @@ def _rederive_evaluation_states(
             f"with status {manifest.status!r}"
         )
     run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
-    metadata = {
-        key: value
-        for key, value in manifest.metadata.items()
-        if key != "cache"
-    }
+    metadata = {key: value for key, value in manifest.metadata.items() if key != "cache"}
     rederived, _path = execute_evaluation_run_spec(
         run_spec,
         root=root,
         provenance=manifest.provenance,
         metadata=metadata,
+        execution_context=execution_context,
     )
     if rederived.id != manifest_id:
         raise ValueError(
@@ -253,6 +282,7 @@ def execute_analysis_run_spec(
     provenance: Provenance | None = None,
     issues: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
     validate_result: AnalysisRecipeResultValidator | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -261,8 +291,12 @@ def execute_analysis_run_spec(
 ) -> tuple[AnalysisRunManifest, Path]:
     """Execute a serialized analysis spec and write an ``AnalysisRunManifest``."""
     run_spec = coerce_analysis_run_spec(spec)
-    recipe = get_analysis_recipe(run_spec.analysis_type)
     root_path = Path(root) if root is not None else default_manifest_root()
+    authenticated_inputs: dict[int, ResolvedManifestInput] = {}
+    for index, input_ref in enumerate(run_spec.inputs):
+        if is_authenticated_manifest_ref(input_ref):
+            authenticated_inputs[index] = resolve_manifest_input(input_ref, root_path)
+    recipe = get_analysis_recipe(run_spec.analysis_type)
     manifest_id = analysis_run_manifest_id(run_spec)
     if use_cache and not force:
         try:
@@ -287,8 +321,13 @@ def execute_analysis_run_spec(
     )
 
     try:
-        resolved_inputs = resolve_analysis_inputs(run_spec, root=root_path)
-        result = recipe(run_spec, root_path, resolved_inputs)
+        resolved_inputs = resolve_analysis_inputs(
+            run_spec,
+            root=root_path,
+            authenticated_inputs=authenticated_inputs,
+            execution_context=execution_context,
+        )
+        result = recipe(run_spec, root_path, resolved_inputs, execution_context)
         if not result.analyses:
             raise ValueError(f"Analysis recipe {run_spec.analysis_type!r} returned no analyses")
         if validate_result is not None:

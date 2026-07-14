@@ -6,11 +6,15 @@ records that describe specs, executions, lineage, and large output artifacts.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,14 +48,17 @@ REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
 ANALYSIS_DATA_PRODUCT_SCHEMA_ID = "feedbax.manifest.analysis_data_product"
 ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION = "feedbax.manifest.analysis_data_product.v1"
 EVALUATION_STATES_CONTAINER_SCHEMA_ID = "feedbax.manifest.evaluation_states_container"
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = (
-    "feedbax.manifest.evaluation_states_container.v1"
-)
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
-    "feedbax.manifest.evaluation_states_container.v2"
-)
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = "feedbax.manifest.evaluation_states_container.v1"
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = "feedbax.manifest.evaluation_states_container.v2"
 FIGURE_MANIFEST_SCHEMA_ID = "feedbax.manifest.figure"
 FIGURE_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.figure.v1"
+TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID = (
+    "feedbax.manifest.training_metadata_projection_custody"
+)
+TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION = (
+    "feedbax.manifest.training_metadata_projection_custody.v1"
+)
+TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projection"
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
@@ -491,6 +498,73 @@ class TrainingRunSetManifest(BaseManifest):
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
+class TrainingManifestMetadataProjectionCustody(StrictModel):
+    """Auditable consistency binding for governed projected metadata.
+
+    The hashes detect partial drift among this record, the embedded source,
+    root metadata, and provenance. They do not prove authorship or authenticity;
+    that requires an external signed or content-addressed custody anchor.
+    """
+
+    schema_id: Literal["feedbax.manifest.training_metadata_projection_custody"] = (
+        TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID
+    )
+    schema_version: str = TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION
+    source_payload_kind: str = Field(min_length=1)
+    source_payload_schema_id: str = Field(min_length=1)
+    source_payload_schema_version: str = Field(min_length=1)
+    source_payload_sha256: str
+    projection_schema_id: str = Field(min_length=1)
+    projection_schema_version: str = Field(min_length=1)
+    values: dict[str, Any]
+    values_sha256: str
+    registration_owner: str = Field(min_length=1)
+    registration_package: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_custody(self) -> "TrainingManifestMetadataProjectionCustody":
+        from feedbax.contracts.spec_storage import (
+            training_spec_canonical_bytes,
+            training_spec_sha256,
+            validate_sha256,
+        )
+
+        if self.schema_version != TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported training metadata projection custody schema_version "
+                f"{self.schema_version!r}; expected "
+                f"{TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        validate_sha256(self.source_payload_sha256, field_name="source_payload_sha256")
+        validate_sha256(self.values_sha256, field_name="values_sha256")
+        canonical_values = json.loads(training_spec_canonical_bytes(self.values))
+        if self.values != canonical_values:
+            raise ValueError("training metadata projection values are not JSON-canonical")
+        expected_digest = training_spec_sha256(self.values)
+        if self.values_sha256 != expected_digest:
+            raise ValueError(
+                "training metadata projection values_sha256 does not match canonical values; "
+                f"expected={expected_digest}, observed={self.values_sha256}"
+            )
+        return self
+
+    def provenance_summary(self) -> dict[str, Any]:
+        """Return the exact compact provenance record bound to this custody envelope."""
+        return {
+            "source_payload_kind": self.source_payload_kind,
+            "source_payload_schema_id": self.source_payload_schema_id,
+            "source_payload_schema_version": self.source_payload_schema_version,
+            "source_payload_sha256": self.source_payload_sha256,
+            "projection_schema_id": self.projection_schema_id,
+            "projection_schema_version": self.projection_schema_version,
+            "projected_keys": sorted(self.values),
+            "values_sha256": self.values_sha256,
+            "registration_owner": self.registration_owner,
+            "registration_package": self.registration_package,
+        }
+
+
 class TrainingRunManifest(BaseManifest):
     kind: Literal["TrainingRunManifest"] = "TrainingRunManifest"
     run_set_id: Optional[str] = None
@@ -511,6 +585,7 @@ class TrainingRunManifest(BaseManifest):
     resolved_semantics_root_hash: Optional[str] = None
     input_data_identities: list[dict[str, Any]] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
+    metadata_projection_custody: TrainingManifestMetadataProjectionCustody | None = None
 
     @model_validator(mode="after")
     def _validate_execution_identity(self) -> "TrainingRunManifest":
@@ -543,6 +618,48 @@ class TrainingRunManifest(BaseManifest):
                     f"computed={expected!r}"
                 )
             self.execution_hash = expected
+        projection = self.metadata_projection_custody
+        if projection is not None:
+            if self.training_spec is None:
+                raise ValueError(
+                    "training metadata projection custody requires embedded training_spec"
+                )
+            training_spec_identity = (
+                self.training_spec.kind,
+                self.training_spec.schema_id,
+                self.training_spec.schema_version,
+            )
+            projection_source_identity = (
+                projection.source_payload_kind,
+                projection.source_payload_schema_id,
+                projection.source_payload_schema_version,
+            )
+            if projection_source_identity != training_spec_identity:
+                raise ValueError(
+                    "training metadata projection source identity disagrees with "
+                    "embedded training_spec"
+                )
+            from feedbax.contracts.spec_storage import training_spec_sha256
+
+            observed_source_sha256 = training_spec_sha256(self.training_spec.inline)
+            if projection.source_payload_sha256 != observed_source_sha256:
+                raise ValueError(
+                    "training metadata projection source hash disagrees with embedded training_spec"
+                )
+            for key, value in projection.values.items():
+                if key not in self.metadata or self.metadata[key] != value:
+                    raise ValueError(
+                        "training metadata projection custody disagrees with root metadata; "
+                        f"key={key!r}"
+                    )
+            expected_provenance = projection.provenance_summary()
+            observed_provenance = self.provenance.metadata.get(
+                TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY
+            )
+            if observed_provenance != expected_provenance:
+                raise ValueError(
+                    "training metadata projection custody disagrees with provenance summary"
+                )
         return self
 
 
@@ -593,7 +710,11 @@ class CheckpointSelectionBank(StrictModel):
     def _validate_bank_status(self) -> "CheckpointSelectionBank":
         if self.status == "available" and self.ref is None:
             raise ValueError("available checkpoint-selection banks must include ref")
-        if self.status != "available" and self.fallback_ref is not None and not self.fallback_reason:
+        if (
+            self.status != "available"
+            and self.fallback_ref is not None
+            and not self.fallback_reason
+        ):
             raise ValueError("checkpoint-selection bank fallback_ref requires fallback_reason")
         return self
 
@@ -642,9 +763,7 @@ class CheckpointSelectionGroup(StrictModel):
         if self.selected_checkpoint is not None:
             candidate_ids = {candidate.id for candidate in self.candidate_checkpoints}
             if self.selected_checkpoint.id not in candidate_ids:
-                raise ValueError(
-                    "selected checkpoint must also appear in candidate_checkpoints"
-                )
+                raise ValueError("selected checkpoint must also appear in candidate_checkpoints")
         return self
 
 
@@ -722,9 +841,7 @@ class AnalysisRunManifest(BaseManifest):
     kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
     analysis_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
-        default_factory=list
-    )
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
     produced_data: list[AnalysisDataProduct] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
@@ -742,9 +859,7 @@ class ReportManifest(BaseManifest):
     kind: Literal["ReportManifest"] = "ReportManifest"
     report_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
-        default_factory=list
-    )
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
 
 
 class FigureBindingRecord(StrictModel):
@@ -783,9 +898,7 @@ class FigureManifest(BaseManifest):
     binding_records: list[FigureBindingRecord] = Field(default_factory=list)
     expression_results_digest: Optional[str] = None
     failure: Optional[dict[str, Any]] = None
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
-        default_factory=list
-    )
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
 
 
 AnyManifest = (
@@ -800,6 +913,7 @@ AnyManifest = (
     | FigureManifest
 )
 
+
 class GraphSpecLoadResult(StrictModel):
     """Migrated GraphSpec payload plus the manifest that owns its migration records."""
 
@@ -810,6 +924,7 @@ class GraphSpecLoadResult(StrictModel):
     applied_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
     downstream_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+
 
 MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "GraphSpecManifest": GraphSpecManifest,
@@ -830,6 +945,7 @@ def _manifest_model_for_kind(kind: str) -> type[BaseModel] | None:
 
         return CheckpointTransactionManifest
     return MANIFEST_MODELS.get(kind)
+
 
 SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     "GraphSpecManifest": ("graph_spec",),
@@ -892,8 +1008,7 @@ def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dic
         "producer_manifest_id": product.producer_manifest_id,
         "producer_manifest_hash": product.producer_manifest_hash,
         "parent_manifests": [
-            parent.model_dump(mode="json", exclude_none=True)
-            for parent in product.parent_manifests
+            parent.model_dump(mode="json", exclude_none=True) for parent in product.parent_manifests
         ],
         "checkpoint_policy": product.checkpoint_policy,
         "rollout_policy": product.rollout_policy,
@@ -955,9 +1070,7 @@ def tree_hash_ref(
 
     entries: list[TreeHashEntry] = []
     total_size = 0
-    for file_path in sorted(
-        candidate for candidate in tree_path.rglob("*") if candidate.is_file()
-    ):
+    for file_path in sorted(candidate for candidate in tree_path.rglob("*") if candidate.is_file()):
         relative_path = str(file_path.relative_to(tree_path))
         stat = file_path.stat()
         total_size += stat.st_size
@@ -1158,6 +1271,358 @@ def _artifact_path(root: Path, digest: str, suffix: str = "") -> Path:
     return root / "artifacts" / "sha256" / digest[:2] / f"{digest}{suffix}"
 
 
+class ArtifactStoreSecurityError(RuntimeError):
+    """Raised when the local artifact store cannot preserve secure CAS semantics."""
+
+
+class ArtifactStoreIntegrityError(ArtifactStoreSecurityError):
+    """Raised when existing content-addressed bytes do not match their identity."""
+
+
+def _require_secure_artifact_store_capabilities() -> None:
+    required_constants = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    missing = [name for name in required_constants if not getattr(os, name, 0)]
+    dir_fd_functions = (os.open, os.mkdir, os.link, os.stat, os.unlink)
+    supports_dir_fd = getattr(os, "supports_dir_fd", set())
+    missing.extend(
+        function.__name__ for function in dir_fd_functions if function not in supports_dir_fd
+    )
+    supports_follow_symlinks = getattr(os, "supports_follow_symlinks", set())
+    if os.stat not in supports_follow_symlinks:
+        missing.append("stat(follow_symlinks=False)")
+    if os.link not in supports_follow_symlinks:
+        missing.append("link(follow_symlinks=False)")
+    if missing:
+        raise ArtifactStoreSecurityError(
+            "secure artifact storage requires descriptor-relative no-follow filesystem "
+            "operations; unavailable: " + ", ".join(sorted(set(missing)))
+        )
+
+
+def _secure_directory_flags() -> int:
+    _require_secure_artifact_store_capabilities()
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _secure_file_flags(*, writable: bool = False) -> int:
+    flags = os.O_RDWR if writable else os.O_RDONLY
+    return flags | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
+def _canonicalize_trusted_system_aliases(path: Path) -> Path:
+    """Canonicalize only Darwin's fixed first-level /tmp and /var aliases."""
+    absolute_path = Path(os.path.abspath(path))
+    if sys.platform != "darwin" or len(absolute_path.parts) < 2:
+        return absolute_path
+    alias_name = absolute_path.parts[1]
+    expected = {
+        "tmp": (Path("/private/tmp"), {"private/tmp", "/private/tmp"}),
+        "var": (Path("/private/var"), {"private/var", "/private/var"}),
+    }.get(alias_name)
+    if expected is None:
+        return absolute_path
+    canonical_prefix, allowed_targets = expected
+    alias_path = Path(absolute_path.anchor) / alias_name
+    try:
+        alias_stat = alias_path.lstat()
+        alias_target = os.readlink(alias_path)
+    except OSError:
+        return absolute_path
+    if not stat.S_ISLNK(alias_stat.st_mode) or alias_target not in allowed_targets:
+        return absolute_path
+    return canonical_prefix.joinpath(*absolute_path.parts[2:])
+
+
+def _open_secure_directory_chain(
+    directory: Path,
+    *,
+    create: bool,
+) -> list[tuple[Path, int, os.stat_result]]:
+    absolute_directory = _canonicalize_trusted_system_aliases(directory)
+    anchor = Path(absolute_directory.anchor)
+    if not anchor.anchor:
+        raise ArtifactStoreSecurityError(
+            f"artifact store directory must resolve to an absolute path: {directory}"
+        )
+
+    records: list[tuple[Path, int, os.stat_result]] = []
+    flags = _secure_directory_flags()
+    try:
+        descriptor = os.open(anchor, flags)
+        anchor_stat = os.fstat(descriptor)
+        if not stat.S_ISDIR(anchor_stat.st_mode):
+            raise ArtifactStoreSecurityError(f"artifact store anchor is not a directory: {anchor}")
+        records.append((anchor, descriptor, anchor_stat))
+        current_path = anchor
+        for component in absolute_directory.parts[1:]:
+            current_path = current_path / component
+            try:
+                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(component, mode=0o777, dir_fd=records[-1][1])
+                except FileExistsError:
+                    pass
+                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
+            next_stat = os.fstat(next_descriptor)
+            if not stat.S_ISDIR(next_stat.st_mode):
+                os.close(next_descriptor)
+                raise ArtifactStoreSecurityError(
+                    f"artifact store component is not a directory: {current_path}"
+                )
+            records.append((current_path, next_descriptor, next_stat))
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            error = ArtifactStoreSecurityError(
+                f"artifact store directory traverses a symlink or non-directory: {directory}"
+            )
+            for _, descriptor, _ in reversed(records):
+                os.close(descriptor)
+            raise error from exc
+        for _, descriptor, _ in reversed(records):
+            os.close(descriptor)
+        raise
+    except Exception:
+        for _, descriptor, _ in reversed(records):
+            os.close(descriptor)
+        raise
+    return records
+
+
+def _recheck_secure_directory_chain(
+    records: list[tuple[Path, int, os.stat_result]],
+) -> None:
+    for path, descriptor, initial_stat in records:
+        descriptor_stat = os.fstat(descriptor)
+        try:
+            path_stat = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise ArtifactStoreSecurityError(
+                f"artifact store directory disappeared during write: {path}"
+            ) from exc
+        expected_identity = (initial_stat.st_dev, initial_stat.st_ino)
+        if (
+            not stat.S_ISDIR(path_stat.st_mode)
+            or (descriptor_stat.st_dev, descriptor_stat.st_ino) != expected_identity
+            or (path_stat.st_dev, path_stat.st_ino) != expected_identity
+        ):
+            raise ArtifactStoreSecurityError(
+                f"artifact store directory identity changed during write: {path}"
+            )
+
+
+def _close_secure_directory_chain(
+    records: list[tuple[Path, int, os.stat_result]],
+) -> None:
+    for _, descriptor, _ in reversed(records):
+        os.close(descriptor)
+
+
+def _write_all_bytes(file_descriptor: int, data: bytes) -> None:
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(file_descriptor, remaining)
+        if written <= 0:
+            raise ArtifactStoreSecurityError("artifact store write made no progress")
+        remaining = remaining[written:]
+
+
+def _read_all_bytes(file_descriptor: int) -> bytes:
+    os.lseek(file_descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while chunk := os.read(file_descriptor, 1024 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _link_artifact_file(
+    temporary_name: str,
+    final_name: str,
+    *,
+    temporary_parent_descriptor: int,
+    parent_descriptor: int,
+) -> None:
+    os.link(
+        temporary_name,
+        final_name,
+        src_dir_fd=temporary_parent_descriptor,
+        dst_dir_fd=parent_descriptor,
+        follow_symlinks=False,
+    )
+
+
+def _open_artifact_staging_container(
+    *,
+    parent_descriptor: int,
+) -> int:
+    """Open the fixed descriptor-pinned private staging container.
+
+    POSIX has no conditional unlink-by-inode operation. Keeping the temporary
+    name inside an owned mode-0700 container gives this operation exclusive
+    name mutation. The public container name is never removed, so a replacement
+    cannot be deleted during cleanup.
+    """
+    directory_name = ".feedbax-artifact-staging"
+    try:
+        os.mkdir(directory_name, mode=0o700, dir_fd=parent_descriptor)
+    except FileExistsError:
+        pass
+    directory_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(
+            directory_name,
+            _secure_directory_flags(),
+            dir_fd=parent_descriptor,
+        )
+        descriptor_stat = os.fstat(directory_descriptor)
+        path_stat = os.stat(
+            directory_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(descriptor_stat.st_mode)
+            or descriptor_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(descriptor_stat.st_mode) & 0o077
+            or (descriptor_stat.st_dev, descriptor_stat.st_ino)
+            != (path_stat.st_dev, path_stat.st_ino)
+        ):
+            raise ArtifactStoreSecurityError(
+                "artifact staging container must be owned, mode-0700, and stable"
+            )
+        return directory_descriptor
+    except Exception:
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+        raise
+
+
+def _remove_private_artifact_staging_name(
+    *,
+    directory_descriptor: int,
+    temporary_name: str,
+) -> None:
+    """Remove one unguessable name from the pinned private container."""
+    try:
+        os.unlink(temporary_name, dir_fd=directory_descriptor)
+    except FileNotFoundError:
+        pass
+    os.close(directory_descriptor)
+
+
+def _secure_store_bytes_artifact(
+    data: bytes,
+    *,
+    destination: Path,
+) -> os.stat_result:
+    records = _open_secure_directory_chain(destination.parent, create=True)
+    parent_descriptor = records[-1][1]
+    final_name = destination.name
+    temporary_name = f"payload-{uuid.uuid4().hex}"
+    staging_descriptor: int | None = None
+    temporary_descriptor: int | None = None
+    final_descriptor: int | None = None
+    try:
+        staging_descriptor = _open_artifact_staging_container(parent_descriptor=parent_descriptor)
+        temporary_descriptor = os.open(
+            temporary_name,
+            _secure_file_flags(writable=True) | os.O_CREAT | os.O_EXCL,
+            0o666,
+            dir_fd=staging_descriptor,
+        )
+        _write_all_bytes(temporary_descriptor, data)
+        os.fsync(temporary_descriptor)
+        if _read_all_bytes(temporary_descriptor) != data:
+            raise ArtifactStoreIntegrityError(
+                f"artifact temporary bytes failed verification: {destination}"
+            )
+
+        try:
+            _link_artifact_file(
+                temporary_name,
+                final_name,
+                temporary_parent_descriptor=staging_descriptor,
+                parent_descriptor=parent_descriptor,
+            )
+        except FileExistsError:
+            pass
+        _remove_private_artifact_staging_name(
+            directory_descriptor=staging_descriptor,
+            temporary_name=temporary_name,
+        )
+        staging_descriptor = None
+
+        for attempt in range(101):
+            final_descriptor = os.open(
+                final_name,
+                _secure_file_flags(),
+                dir_fd=parent_descriptor,
+            )
+            final_stat_before = os.fstat(final_descriptor)
+            if not stat.S_ISREG(final_stat_before.st_mode) or final_stat_before.st_nlink == 1:
+                break
+            os.close(final_descriptor)
+            final_descriptor = None
+            if attempt == 100:
+                raise ArtifactStoreIntegrityError(
+                    f"canonical artifact has mutable hard-link aliases: {destination}"
+                )
+            time.sleep(0.001)
+        if final_descriptor is None:  # pragma: no cover - loop either opens or raises.
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact could not be opened securely: {destination}"
+            )
+        if not stat.S_ISREG(final_stat_before.st_mode):
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact is not a regular file: {destination}"
+            )
+        stored_data = _read_all_bytes(final_descriptor)
+        final_stat_after = os.fstat(final_descriptor)
+        if (
+            (final_stat_before.st_dev, final_stat_before.st_ino)
+            != (final_stat_after.st_dev, final_stat_after.st_ino)
+            or final_stat_before.st_size != final_stat_after.st_size
+            or stored_data != data
+        ):
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact bytes do not match content identity: {destination}"
+            )
+        path_stat = os.stat(final_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (path_stat.st_dev, path_stat.st_ino) != (
+            final_stat_after.st_dev,
+            final_stat_after.st_ino,
+        ):
+            raise ArtifactStoreIntegrityError(
+                f"canonical artifact identity changed during write: {destination}"
+            )
+        _recheck_secure_directory_chain(records)
+        return final_stat_after
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ArtifactStoreSecurityError(
+                f"canonical artifact path traverses a symlink or non-directory: {destination}"
+            ) from exc
+        raise
+    finally:
+        if temporary_descriptor is not None:
+            os.close(temporary_descriptor)
+        if final_descriptor is not None:
+            os.close(final_descriptor)
+        if staging_descriptor is not None:
+            try:
+                _remove_private_artifact_staging_name(
+                    directory_descriptor=staging_descriptor,
+                    temporary_name=temporary_name,
+                )
+            except OSError:
+                # Preserve an exceptional private orphan for diagnosis. Never
+                # widen cleanup to a public canonical name.
+                os.close(staging_descriptor)
+        _close_secure_directory_chain(records)
+
+
 def store_artifact(
     source_path: Path | str,
     *,
@@ -1234,14 +1699,21 @@ def store_bytes_artifact(
     suffix: str = "",
     metadata: Optional[dict[str, Any]] = None,
 ) -> ArtifactRef:
-    """Write opaque bytes into the local content-addressed artifact store."""
+    """Atomically write opaque bytes into the local content-addressed store.
+
+    The canonical name is published only after the exact temporary bytes are
+    flushed and verified. Platforms without descriptor-relative, no-follow
+    operations fail closed with :class:`ArtifactStoreSecurityError`.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("artifact data must be bytes")
+    if not isinstance(suffix, str) or "\0" in suffix or Path(f"x{suffix}").name != f"x{suffix}":
+        raise ValueError("artifact suffix must not contain path components")
     root_path = Path(root) if root is not None else default_manifest_root()
     digest = sha256_bytes(data)
     dest = _artifact_path(root_path, digest, suffix)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if not dest.exists():
-        dest.write_bytes(data)
-    stat = dest.stat()
+    destination = Path(os.path.abspath(dest))
+    artifact_stat = _secure_store_bytes_artifact(data, destination=destination)
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
     return ArtifactRef(
@@ -1250,7 +1722,7 @@ def store_bytes_artifact(
         artifact_id=f"artifact://sha256/{digest}",
         sha256=digest,
         media_type=media_type,
-        size_bytes=stat.st_size,
+        size_bytes=artifact_stat.st_size,
         uri=str(dest),
         metadata=artifact_metadata,
     )
@@ -1562,9 +2034,7 @@ def planned_training_run_manifest_id(
     }
     if row_provenance_identity is not None:
         identity["row_provenance_identity"] = row_provenance_identity
-    digest = sha256_bytes(
-        canonical_json_bytes(identity)
-    )
+    digest = sha256_bytes(canonical_json_bytes(identity))
     return f"feedbax-training-run:{digest[:32]}"
 
 
@@ -1658,9 +2128,9 @@ def write_manifest(
     return path
 
 
-def load_manifest(path: Path | str) -> AnyManifest:
-    """Load a known Feedbax manifest from disk."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def load_manifest_bytes(raw: bytes) -> AnyManifest:
+    """Parse one known Feedbax manifest from already-authenticated raw bytes."""
+    data = json.loads(raw)
     data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_manifest_data_spec_payloads(data)
     data = _validate_retention_artifact_ref_metadata(data)
@@ -1672,6 +2142,11 @@ def load_manifest(path: Path | str) -> AnyManifest:
     if model is None:
         raise ValueError(f"Unknown Feedbax manifest kind: {kind!r}")
     return model.model_validate(data)  # type: ignore[return-value]
+
+
+def load_manifest(path: Path | str) -> AnyManifest:
+    """Load a known Feedbax manifest from disk."""
+    return load_manifest_bytes(Path(path).read_bytes())
 
 
 def load_graph_spec_from_manifest(
@@ -1686,8 +2161,10 @@ def load_graph_spec_from_manifest(
     present on a model artifact remain distinct and are surfaced separately.
     """
     manifest_obj, manifest_path = _load_graph_spec_manifest_source(manifest)
-    base = Path(root) if root is not None else (
-        manifest_path.parent if manifest_path is not None else Path(".")
+    base = (
+        Path(root)
+        if root is not None
+        else (manifest_path.parent if manifest_path is not None else Path("."))
     )
 
     if isinstance(manifest_obj, GraphSpecManifest):
@@ -1727,8 +2204,7 @@ def _load_graph_spec_manifest_source(
     loaded = load_manifest(path)
     if not isinstance(loaded, GraphSpecManifest | ModelArtifactManifest):
         raise TypeError(
-            "Expected GraphSpecManifest or ModelArtifactManifest, "
-            f"got {type(loaded).__name__}."
+            f"Expected GraphSpecManifest or ModelArtifactManifest, got {type(loaded).__name__}."
         )
     return loaded, path
 

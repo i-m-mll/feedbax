@@ -11,10 +11,12 @@ import platform
 import shutil
 import tempfile
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import equinox as eqx
 import jax
@@ -22,7 +24,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jax_cookbook import is_type
 import numpy as np
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from feedbax.contracts.checkpoints import (
     BatchHistory,
@@ -49,7 +51,13 @@ from feedbax.contracts.checkpoints import (
     SlotLeafFingerprint,
     StructuralAbiFingerprint,
 )
-from feedbax.contracts.manifest import canonical_json_bytes, feedbax_version, sha256_bytes
+from feedbax.contracts.manifest import (
+    ArtifactMigrationRecord,
+    ParentRef,
+    canonical_json_bytes,
+    feedbax_version,
+    sha256_bytes,
+)
 from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_VERSION_V1, TrainingRunSpec
 from feedbax.contracts.worker import (
     CheckpointBarrierSpec,
@@ -76,6 +84,51 @@ LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT = (
     "feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint"
 )
 LEGACY_CHECKPOINT_ADOPTION_DOCS = "docs/structure.md#legacy-checkpoint-adoption"
+_RUN_CONTRACT_BINDING_ALGORITHM_V2 = "feedbax.training_checkpoint.run_contract_binding.v2"
+_RUN_CONTRACT_BINDING_ALGORITHM_V3 = "feedbax.training_checkpoint.run_contract_binding.v3"
+_RUN_CONTRACT_HASH_DOMAIN = "migrated-canonical-json"
+_CONTENT_INTEGRITY_SCHEMA_ID = ContentIntegrityDigest.model_fields["schema_id"].default
+_CONTENT_INTEGRITY_SCHEMA_VERSION = ContentIntegrityDigest.model_fields["schema_version"].default
+_STRUCTURAL_ABI_SCHEMA_ID = StructuralAbiFingerprint.model_fields["schema_id"].default
+_STRUCTURAL_ABI_SCHEMA_VERSION = StructuralAbiFingerprint.model_fields["schema_version"].default
+_STRUCTURAL_ABI_ALGORITHM_VERSION = StructuralAbiFingerprint.model_fields[
+    "fingerprint_algorithm_version"
+].default
+_READ_ONLY_MODEL_TYPES: dict[type[BaseModel], type[BaseModel]] = {}
+
+
+def _reject_snapshot_mutation(*_args: Any, **_kwargs: Any) -> None:
+    raise TypeError("verified checkpoint lineage snapshots are immutable")
+
+
+class _FrozenDict(dict[Any, Any]):
+    """A serialization-compatible immutable dictionary snapshot."""
+
+    __setitem__ = _reject_snapshot_mutation
+    __delitem__ = _reject_snapshot_mutation
+    clear = _reject_snapshot_mutation
+    pop = _reject_snapshot_mutation
+    popitem = _reject_snapshot_mutation
+    setdefault = _reject_snapshot_mutation
+    update = _reject_snapshot_mutation
+    __ior__ = _reject_snapshot_mutation
+
+
+class _FrozenList(list[Any]):
+    """A serialization-compatible immutable list snapshot."""
+
+    __setitem__ = _reject_snapshot_mutation
+    __delitem__ = _reject_snapshot_mutation
+    append = _reject_snapshot_mutation
+    clear = _reject_snapshot_mutation
+    extend = _reject_snapshot_mutation
+    insert = _reject_snapshot_mutation
+    pop = _reject_snapshot_mutation
+    remove = _reject_snapshot_mutation
+    reverse = _reject_snapshot_mutation
+    sort = _reject_snapshot_mutation
+    __iadd__ = _reject_snapshot_mutation
+    __imul__ = _reject_snapshot_mutation
 
 
 class CheckpointCustodyError(ValueError):
@@ -110,6 +163,10 @@ def _validate_program_step_units(
 
 class CheckpointIntegrityError(CheckpointCustodyError):
     """Raised when checkpoint bytes or manifests fail integrity validation."""
+
+
+class CheckpointReferenceResolutionError(CheckpointIntegrityError):
+    """Raised when a checkpoint-custody ``ParentRef`` cannot be verified."""
 
 
 class CheckpointCompatibilityError(CheckpointCustodyError):
@@ -204,6 +261,26 @@ class CheckpointCustodyDocuments:
 
 
 @dataclass(frozen=True)
+class ResolvedCheckpointTransaction:
+    """Authenticated checkpoint transaction and its decoded requested slots.
+
+    The manifest remains the lineage authority for transaction, checkpoint,
+    content-root, slot-digest, and structural-ABI identities. Decoding uses
+    pickle only after the caller-provided custody authority, manifest bytes,
+    contained blob paths, and blob hashes have been authenticated. Therefore
+    ``allowed_root`` must designate a trusted custody authority: hashes and
+    containment do not make attacker-authored pickle safe to deserialize.
+    """
+
+    parent_ref: ParentRef
+    manifest_sha256: str
+    manifest: CheckpointTransactionManifest
+    slots: Mapping[str, Any]
+    migration_records: tuple[ArtifactMigrationRecord, ...]
+    provenance_notices: tuple[CheckpointProvenanceNotice, ...]
+
+
+@dataclass(frozen=True)
 class _StructuralAbiLeafDiff:
     path: str
     field: str
@@ -295,6 +372,400 @@ def load_checkpoint_custody_documents(root: str | Path) -> CheckpointCustodyDocu
         manifest_path=manifest_path,
         manifest=manifest,
     )
+
+
+def resolve_checkpoint_custody_ref(
+    ref: ParentRef,
+    *,
+    allowed_root: str | Path,
+    slot_names: Collection[str] | None = None,
+) -> ResolvedCheckpointTransaction:
+    """Resolve an emitted checkpoint-custody reference without resume semantics.
+
+    ``slot_names=None`` decodes every manifest slot. Explicit names are exact
+    and case-sensitive. The function never selects a different checkpoint and
+    never requires or applies caller templates, a training run spec, a phase
+    program, continuation behavior, or resume-only slot migrations.
+
+    Warning:
+        Slot blobs use pickle. ``allowed_root`` must be a trusted checkpoint
+        custody authority. Manifest and blob authentication prevents unnoticed
+        modification but cannot make attacker-authored pickle safe.
+    """
+    try:
+        return _resolve_checkpoint_custody_ref(
+            ref,
+            allowed_root=allowed_root,
+            slot_names=slot_names,
+        )
+    except CheckpointReferenceResolutionError:
+        raise
+    except Exception as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint custody reference resolution failed: {exc}"
+        ) from exc
+
+
+def _resolve_checkpoint_custody_ref(
+    ref: ParentRef,
+    *,
+    allowed_root: str | Path,
+    slot_names: Collection[str] | None,
+) -> ResolvedCheckpointTransaction:
+    if not isinstance(ref, ParentRef):
+        raise CheckpointReferenceResolutionError("ref must be a ParentRef")
+    if ref.kind != "TrainingCheckpointTransactionManifest":
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef kind must be 'TrainingCheckpointTransactionManifest'"
+        )
+    if ref.role != "training_checkpoint_custody":
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef role must be 'training_checkpoint_custody'"
+        )
+    if not ref.id:
+        raise CheckpointReferenceResolutionError("checkpoint custody ParentRef id is empty")
+
+    manifest_sha256 = ref.metadata.get("manifest_sha256")
+    if not _is_sha256(manifest_sha256):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef metadata.manifest_sha256 must be "
+            "64 lowercase hexadecimal characters"
+        )
+
+    root_path = Path(allowed_root).expanduser().resolve()
+    if not root_path.is_dir():
+        raise CheckpointReferenceResolutionError(
+            f"allowed checkpoint custody root is not a directory: {root_path}"
+        )
+    manifest_path = _resolve_checkpoint_parent_ref_uri(ref.uri, root_path)
+    if not manifest_path.is_file():
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint custody ParentRef manifest is missing: {manifest_path}"
+        )
+
+    try:
+        raw_manifest = manifest_path.read_bytes()
+    except OSError as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint custody ParentRef manifest could not be read: {manifest_path}"
+        ) from exc
+    if sha256_bytes(raw_manifest) != manifest_sha256:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef manifest_sha256 does not match raw manifest bytes"
+        )
+
+    try:
+        loaded_manifest = load_checkpoint_transaction_manifest_json(
+            raw_manifest,
+            path=str(manifest_path),
+        )
+    except CheckpointIntegrityError as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint custody ParentRef manifest is invalid: {exc}"
+        ) from exc
+    manifest = loaded_manifest.document
+    if manifest.transaction_id != ref.id:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef id does not match manifest transaction_id"
+        )
+
+    slots_by_name = _validate_checkpoint_transaction_integrity_records(manifest)
+    selected_names = _checkpoint_slot_selection(slot_names, slots_by_name)
+    transaction_dir = manifest_path.parent.resolve()
+    loaded_slots: dict[str, Any] = {}
+    for name in selected_names:
+        slot = slots_by_name[name]
+        blob_path = _resolve_checkpoint_slot_path(
+            slot,
+            transaction_dir=transaction_dir,
+            allowed_root=root_path,
+        )
+        try:
+            value = _deserialize_checkpoint_slot(slot, blob_path)
+        except (CheckpointIntegrityError, OSError) as exc:
+            raise CheckpointReferenceResolutionError(str(exc)) from exc
+        _validate_decoded_slot_integrity(slot, value)
+        loaded_slots[name] = value
+
+    try:
+        provenance_notices, _ = _validate_manifest_structural_abi(manifest, loaded_slots)
+    except CheckpointIntegrityError as exc:
+        raise CheckpointReferenceResolutionError(str(exc)) from exc
+    return ResolvedCheckpointTransaction(
+        parent_ref=_immutable_model_snapshot(ref),
+        manifest_sha256=manifest_sha256,
+        manifest=_immutable_model_snapshot(manifest),
+        slots=MappingProxyType(loaded_slots),
+        migration_records=tuple(
+            _immutable_model_snapshot(record) for record in loaded_manifest.migration_records
+        ),
+        provenance_notices=tuple(
+            _immutable_model_snapshot(notice) for notice in provenance_notices
+        ),
+    )
+
+
+def _resolve_checkpoint_parent_ref_uri(uri: str | None, root_path: Path) -> Path:
+    if not isinstance(uri, str) or not uri or "\x00" in uri:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef uri must be a non-empty filesystem path"
+        )
+    parsed = urlsplit(uri)
+    if parsed.query or parsed.fragment:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef uri must not contain a query or fragment"
+        )
+    if parsed.scheme:
+        if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint custody ParentRef uri must be a local path or file URI"
+            )
+        raw_path = unquote(parsed.path)
+    else:
+        raw_path = uri
+    path = Path(raw_path).expanduser()
+    candidate = (path if path.is_absolute() else root_path / path).resolve()
+    _require_contained_path(
+        candidate,
+        root_path,
+        context="checkpoint custody ParentRef manifest uri",
+    )
+    return candidate
+
+
+def _checkpoint_slot_selection(
+    slot_names: Collection[str] | None,
+    slots_by_name: Mapping[str, CheckpointSlotBlobRef],
+) -> tuple[str, ...]:
+    if slot_names is None:
+        return tuple(slots_by_name)
+    if isinstance(slot_names, (str, bytes, bytearray)):
+        raise CheckpointReferenceResolutionError(
+            "slot_names must be a collection of names, not a bare string"
+        )
+    if not isinstance(slot_names, Collection):
+        raise CheckpointReferenceResolutionError("slot_names must be a collection of strings")
+    requested = list(slot_names)
+    if not requested:
+        raise CheckpointReferenceResolutionError("slot_names must not be empty")
+    if any(not isinstance(name, str) or not name for name in requested):
+        raise CheckpointReferenceResolutionError("slot_names entries must be non-empty strings")
+    if len(requested) != len(set(requested)):
+        raise CheckpointReferenceResolutionError("slot_names contains duplicate names")
+    missing = [name for name in requested if name not in slots_by_name]
+    if missing:
+        raise CheckpointReferenceResolutionError(
+            f"requested checkpoint slots are missing: {missing!r}"
+        )
+    requested_set = set(requested)
+    return tuple(name for name in slots_by_name if name in requested_set)
+
+
+def _validate_checkpoint_transaction_integrity_records(
+    manifest: CheckpointTransactionManifest,
+) -> dict[str, CheckpointSlotBlobRef]:
+    integrity = manifest.content_integrity_digest
+    if integrity.schema_id != _CONTENT_INTEGRITY_SCHEMA_ID:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint content integrity schema_id is unsupported: "
+            f"{integrity.schema_id!r}"
+        )
+    if integrity.schema_version != _CONTENT_INTEGRITY_SCHEMA_VERSION:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint content integrity schema_version is unsupported: "
+            f"{integrity.schema_version!r}"
+        )
+    slots_by_name = {slot.slot: slot for slot in manifest.slots}
+    if len(slots_by_name) != len(manifest.slots):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint transaction manifest slot names are not unique"
+        )
+    digest_records = manifest.content_integrity_digest.slots
+    digests_by_name = {digest.slot: digest for digest in digest_records}
+    if len(digests_by_name) != len(digest_records):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint transaction content digest slot names are not unique"
+        )
+    if set(slots_by_name) != set(digests_by_name):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint transaction slots and content digest records do not correspond"
+        )
+    for name, slot in slots_by_name.items():
+        digest = digests_by_name[name]
+        fingerprint = slot.structural_abi_fingerprint
+        if fingerprint.schema_id != _STRUCTURAL_ABI_SCHEMA_ID:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} structural ABI schema_id is unsupported: "
+                f"{fingerprint.schema_id!r}"
+            )
+        if fingerprint.schema_version != _STRUCTURAL_ABI_SCHEMA_VERSION:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} structural ABI schema_version is unsupported: "
+                f"{fingerprint.schema_version!r}"
+            )
+        if fingerprint.fingerprint_algorithm_version != _STRUCTURAL_ABI_ALGORITHM_VERSION:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} structural ABI algorithm is unsupported: "
+                f"{fingerprint.fingerprint_algorithm_version!r}"
+            )
+        if slot.content_digest != digest:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} embedded and transaction content digests differ"
+            )
+        if digest.blob_sha256 != slot.sha256 or digest.blob_size_bytes != slot.size_bytes:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} blob metadata and content digest differ"
+            )
+        expected_slot_root = _slot_root_sha256(
+            name,
+            digest.blob_sha256,
+            digest.leaf_hashes,
+        )
+        if digest.slot_root_sha256 != expected_slot_root:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} content root is stale"
+            )
+        expected_fingerprint = _canonical_hash(
+            _structural_abi_content_payload(fingerprint.treedef, fingerprint.leaves)
+        )
+        if fingerprint.fingerprint_sha256 != expected_fingerprint:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} structural ABI fingerprint is stale"
+            )
+    expected_transaction_root = _transaction_root_sha256(digest_records)
+    if manifest.content_integrity_digest.transaction_root_sha256 != expected_transaction_root:
+        raise CheckpointReferenceResolutionError("checkpoint transaction content root is stale")
+    return slots_by_name
+
+
+def _resolve_checkpoint_slot_path(
+    slot: CheckpointSlotBlobRef,
+    *,
+    transaction_dir: Path,
+    allowed_root: Path,
+) -> Path:
+    if slot.media_type != "application/x-python-pickle":
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} has unsupported media_type {slot.media_type!r}"
+        )
+    relative = Path(slot.relative_path)
+    if relative.is_absolute():
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} relative_path must be relative"
+        )
+    candidate = (transaction_dir / relative).resolve()
+    _require_contained_path(
+        candidate,
+        allowed_root,
+        context=f"checkpoint slot {slot.slot!r} path",
+    )
+    _require_contained_path(
+        candidate,
+        transaction_dir,
+        context=f"checkpoint slot {slot.slot!r} path",
+    )
+    return candidate
+
+
+def _require_contained_path(candidate: Path, root: Path, *, context: str) -> None:
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise CheckpointReferenceResolutionError(f"{context} escapes allowed custody root") from exc
+
+
+def _validate_decoded_slot_integrity(slot: CheckpointSlotBlobRef, value: Any) -> None:
+    actual = _slot_integrity_records(value)
+    recorded = slot.content_digest
+    if actual.leaf_digests != recorded.leaf_hashes:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} decoded leaf content digest mismatch"
+        )
+    actual_root = _slot_root_sha256(slot.slot, slot.sha256, actual.leaf_digests)
+    if actual_root != recorded.slot_root_sha256:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} decoded content root mismatch"
+        )
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _immutable_model_snapshot(value: BaseModel) -> Any:
+    """Return a recursively immutable, typed snapshot of one verified record."""
+    model_type = type(value)
+    read_only_type = _READ_ONLY_MODEL_TYPES.get(model_type)
+    if read_only_type is None:
+        config_values = dict(model_type.model_config)
+        config_values["frozen"] = True
+        config = ConfigDict(**config_values)
+
+        def snapshot_eq(self: BaseModel, other: Any) -> bool:
+            return isinstance(other, model_type) and _snapshot_comparison_value(
+                self
+            ) == _snapshot_comparison_value(other)
+
+        read_only_type = type(
+            f"_ReadOnly{model_type.__name__}",
+            (model_type,),
+            {
+                "model_config": config,
+                "__module__": __name__,
+                "__eq__": snapshot_eq,
+            },
+        )
+        _READ_ONLY_MODEL_TYPES[model_type] = read_only_type
+    snapshot = read_only_type.model_validate(value.model_dump(mode="python", round_trip=True))
+    for field_name in type(snapshot).model_fields:
+        object.__setattr__(
+            snapshot,
+            field_name,
+            _immutable_snapshot_value(getattr(snapshot, field_name)),
+        )
+    return snapshot
+
+
+def _immutable_snapshot_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return _immutable_model_snapshot(value)
+    if isinstance(value, Mapping):
+        return _FrozenDict(
+            (
+                _immutable_snapshot_value(key),
+                _immutable_snapshot_value(item),
+            )
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return _FrozenList(_immutable_snapshot_value(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_immutable_snapshot_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_immutable_snapshot_value(item) for item in value)
+    return value
+
+
+def _snapshot_comparison_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return {
+            field_name: _snapshot_comparison_value(getattr(value, field_name))
+            for field_name in type(value).model_fields
+        }
+    if isinstance(value, Mapping):
+        return {
+            _snapshot_comparison_value(key): _snapshot_comparison_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return tuple(_snapshot_comparison_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_snapshot_comparison_value(item) for item in value)
+    return value
 
 
 def _load_checkpoint_document_json(
@@ -885,13 +1356,7 @@ def _load_checkpoint_from_pointer(
     transaction_dir = manifest_path.parent
     for slot in manifest.slots:
         blob_path = transaction_dir / slot.relative_path
-        blob_bytes = _read_blob(slot, blob_path)
-        try:
-            loaded_slots[slot.slot] = pickle.loads(blob_bytes)
-        except Exception as exc:
-            raise CheckpointIntegrityError(
-                f"checkpoint slot {slot.slot!r} could not be deserialized"
-            ) from exc
+        loaded_slots[slot.slot] = _deserialize_checkpoint_slot(slot, blob_path)
     provenance_notices, loaded_fingerprints = _validate_manifest_structural_abi(
         manifest,
         loaded_slots,
@@ -1426,13 +1891,7 @@ def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTr
     transaction_dir = manifest_path.parent
     for slot in manifest.slots:
         blob_path = transaction_dir / slot.relative_path
-        blob_bytes = _read_blob(slot, blob_path)
-        try:
-            loaded_slots[slot.slot] = pickle.loads(blob_bytes)
-        except Exception as exc:
-            raise CheckpointIntegrityError(
-                f"checkpoint slot {slot.slot!r} could not be deserialized"
-            ) from exc
+        loaded_slots[slot.slot] = _deserialize_checkpoint_slot(slot, blob_path)
     provenance_notices, _ = _validate_manifest_structural_abi(manifest, loaded_slots)
     return _LoadedCheckpointTransaction(
         root=root_path,
@@ -1932,18 +2391,19 @@ def run_contract_binding(
         for binding in phase_program.optimizer_bindings
     ]
     return RunContractBinding(
+        algorithm_version=_RUN_CONTRACT_BINDING_ALGORITHM_V3,
         training_run_spec_schema_id=training_run_spec["schema_id"],
         training_run_spec_schema_version=training_run_spec["schema_version"],
-        training_run_spec_sha256=_canonical_hash(training_run_spec),
+        training_run_spec_sha256=_run_contract_hash(training_run_spec),
         method_payload_schema_id=method_payload["schema_id"],
         method_payload_schema_version=method_payload["schema_version"],
-        method_payload_sha256=_canonical_hash(method_payload),
-        phase_program_sha256=_canonical_hash(phase_program),
-        objective_sha256=_canonical_hash(objective),
-        graph_sha256=_canonical_hash(graph),
-        optimizer_bindings_sha256=_canonical_hash(optimizer_bindings),
+        method_payload_sha256=_run_contract_hash(method_payload),
+        phase_program_sha256=_run_contract_hash(phase_program),
+        objective_sha256=_run_contract_hash(objective),
+        graph_sha256=_run_contract_hash(graph),
+        optimizer_bindings_sha256=_run_contract_hash(optimizer_bindings),
         canonical_projection=projection,
-        canonical_projection_sha256=_canonical_hash(projection),
+        canonical_projection_sha256=_run_contract_hash(projection),
     )
 
 
@@ -1951,12 +2411,14 @@ def run_contract_canonical_projection(
     run_spec: TrainingRunSpec,
     phase_program: PhaseProgramSpec,
 ) -> dict[str, Any]:
-    """Return the stored semantic projection for run-contract binding v2.
+    """Return the stored semantic projection for run-contract binding v3.
 
     The projection intentionally includes the full migrated ``TrainingRunSpec``
     payload and the phase program used by the checkpoint barrier. No
     non-semantic fields are excluded today; adding exclusions would be a
     binding-algorithm change and must bump ``RunContractBinding.algorithm_version``.
+    The projection-envelope algorithm remains v2 because its selection and
+    shape did not change in v3; v3 normalizes signed zero only while hashing.
     """
     migrated_run_spec = _canonical_training_run_spec_payload(run_spec)
     return {
@@ -2268,10 +2730,23 @@ def _contract_binding_matches(
     expected_phase_program: PhaseProgramSpec,
 ) -> bool:
     if (
+        expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V3
+        or expected.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+        or recorded.algorithm_version
+        not in {_RUN_CONTRACT_BINDING_ALGORITHM_V2, _RUN_CONTRACT_BINDING_ALGORITHM_V3}
+        or recorded.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+    ):
+        return False
+    if (
         recorded.canonical_projection_sha256 is not None
         and expected.canonical_projection_sha256 is not None
     ):
-        return recorded.canonical_projection_sha256 == expected.canonical_projection_sha256
+        if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
+            return (
+                recorded.canonical_projection_sha256
+                == expected.canonical_projection_sha256
+            )
+        return _compatible_stored_canonical_projection(recorded, expected)
 
     if _binding_hash_fields(recorded) == _binding_hash_fields(expected):
         return True
@@ -2293,6 +2768,38 @@ def _binding_hash_fields(binding: RunContractBinding) -> dict[str, str | None]:
         "graph_sha256": binding.graph_sha256,
         "optimizer_bindings_sha256": binding.optimizer_bindings_sha256,
     }
+
+
+def _compatible_stored_canonical_projection(
+    recorded: RunContractBinding,
+    expected: RunContractBinding,
+) -> bool:
+    """Prove equality for a binding stored before signed-zero normalization."""
+    if (
+        recorded.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V2
+        or expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V3
+        or recorded.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+        or expected.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
+    ):
+        return False
+    projection = recorded.canonical_projection
+    recorded_sha256 = recorded.canonical_projection_sha256
+    expected_projection = expected.canonical_projection
+    if projection is None or recorded_sha256 is None or expected_projection is None:
+        return False
+
+    # The stored projection is evidence only when its content agrees with its
+    # binding. Accept either the legacy lexical hash or the normalized current
+    # hash; never use projection equality to excuse a stale or forged digest.
+    valid_projection_hashes = {
+        _canonical_hash(projection),
+        _run_contract_hash(projection),
+    }
+    if recorded_sha256 not in valid_projection_hashes:
+        return False
+    return canonical_json_bytes(_normalize_signed_zero(projection)) == canonical_json_bytes(
+        _normalize_signed_zero(expected_projection)
+    )
 
 
 def _format_binding_hash_field_summary(
@@ -2360,6 +2867,8 @@ def _legacy_binding_hash_fields(
         for binding in expected_phase_program.optimizer_bindings
     ]
     return {
+        # Legacy bindings used lexical canonical JSON, including its signed-zero
+        # spelling. Keep this reconstruction exact for projection-less records.
         "training_run_spec_sha256": _canonical_hash(training_run_spec),
         "method_payload_sha256": _canonical_hash(training_run_spec["method_payload"]),
         "phase_program_sha256": _canonical_hash(expected_phase_program),
@@ -2548,6 +3057,17 @@ def _validate_population_identities(
                 f"population identity mismatch for slot {slot.slot!r}: "
                 f"checkpoint={slot.population.member_ids!r}, expected={expected!r}"
             )
+
+
+def _deserialize_checkpoint_slot(slot: CheckpointSlotBlobRef, path: Path) -> Any:
+    """Deserialize one hash-verified slot blob without resume transformations."""
+    blob_bytes = _read_blob(slot, path)
+    try:
+        return pickle.loads(blob_bytes)
+    except Exception as exc:
+        raise CheckpointIntegrityError(
+            f"checkpoint slot {slot.slot!r} could not be deserialized"
+        ) from exc
 
 
 def _read_blob(slot: CheckpointSlotBlobRef, path: Path) -> bytes:
@@ -2804,6 +3324,26 @@ def _canonical_hash(value: Any) -> str:
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json", exclude_none=True)
     return sha256_bytes(canonical_json_bytes(value))
+
+
+def _run_contract_hash(value: Any) -> str:
+    """Hash run-contract content after normalizing IEEE signed zero."""
+    return _canonical_hash(_normalize_signed_zero(value))
+
+
+def _normalize_signed_zero(value: Any) -> Any:
+    """Return JSON-shaped content with every floating signed zero normalized."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, float):
+        return 0.0 if value == 0.0 else value
+    if isinstance(value, Mapping):
+        return {key: _normalize_signed_zero(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_signed_zero(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_signed_zero(item) for item in value)
+    return value
 
 
 def _qualified_type_name(value: Any) -> str:

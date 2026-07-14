@@ -28,7 +28,17 @@ from feedbax.analysis.execution import (
     check_records_for_analysis,
     run_analysis_module,
 )
-from feedbax.analysis.bundles import execute_analysis_bundle, load_analysis_bundle
+from feedbax.analysis.bundles import (
+    dry_run_staged_analysis_bundle,
+    execute_analysis_bundle,
+    execute_staged_analysis_bundle,
+    load_analysis_bundle,
+)
+from feedbax.analysis.exact_parents import StagedExactParents
+from feedbax.analysis.execution_context import (
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
+)
 from feedbax.config import (
     PATHS,
     PLOTLY_CONFIG,
@@ -37,9 +47,36 @@ from feedbax.config import (
     load_config,
 )
 from feedbax.config.utils import deep_merge
+from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.plugins import EXPERIMENT_REGISTRY
 
 logger = logging.getLogger(os.path.basename(__file__))
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"JSON document contains duplicate key {key!r}")
+        payload[key] = value
+    return payload
+
+
+def _load_json_object(path: Path, *, label: str) -> dict[str, object]:
+    payload = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_json_keys,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} document must be a JSON object")
+    return payload
+
+
+def _binding_parts(value: str, *, option: str) -> tuple[str, str]:
+    name, separator, root = value.partition("=")
+    if not separator or not name or not root:
+        raise ValueError(f"{option} must use NAME=ROOT syntax")
+    return name, root
 
 
 @contextmanager
@@ -127,11 +164,22 @@ def build_arg_parser():
         default=None,
         help="Manifest root used by --bundle and manifest-canonical analysis outputs.",
     )
-    parser.add_argument(
+    parent_selection = parser.add_mutually_exclusive_group()
+    parent_selection.add_argument(
         "--runs",
         type=str,
         default=None,
         help="Comma-separated manifest IDs to constrain --bundle selection.",
+    )
+    parent_selection.add_argument(
+        "--exact-parents",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Versioned exact-parent JSON document for staged --bundle execution; "
+            "requires --manifest-root."
+        ),
     )
     parser.add_argument(
         "--issue",
@@ -139,11 +187,49 @@ def build_arg_parser():
         default=[],
         help="Issue ID to record on AnalysisRunManifest provenance for --bundle.",
     )
+    parser.add_argument(
+        "--execution-descriptor",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Versioned staged execution descriptor JSON for explicit runtime bindings.",
+    )
+    parser.add_argument(
+        "--artifact-provider",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one logical immutable artifact provider to an absolute runtime root.",
+    )
+    parser.add_argument(
+        "--checkpoint-custody",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="Bind one logical checkpoint custody authority to an absolute runtime root.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preflight a staged bundle without recipe, cache, output, or manifest effects.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_arg_parser().parse_args(argv or sys.argv[1:])
+    parser = build_arg_parser()
+    args = parser.parse_args(argv or sys.argv[1:])
+
+    if args.exact_parents is not None and args.bundle is None:
+        parser.error("--exact-parents is only valid with --bundle")
+    if args.exact_parents is not None and args.manifest_root is None:
+        parser.error("--exact-parents requires --manifest-root")
+    if args.execution_descriptor is not None and args.bundle is None:
+        parser.error("--execution-descriptor is only valid with --bundle")
+    if args.dry_run and args.bundle is None:
+        parser.error("--dry-run is only valid with --bundle")
+    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
+        parser.error("--artifact-provider and --checkpoint-custody require --execution-descriptor")
 
     pio.templates.default = args.plotly_template or PLOTLY_CONFIG.templates.default
 
@@ -162,32 +248,97 @@ def main(argv: list[str] | None = None) -> None:
             if args.runs is not None
             else None
         )
-        with _bundle_human_output_to_stderr():
-            outputs = execute_analysis_bundle(
-                bundle,
-                root=Path(args.manifest_root) if args.manifest_root else None,
-                run_ids=run_ids,
-                issues=list(args.issue),
-                fig_dump_path=Path(args.fig_dump_dir),
-                fig_dump_formats=fig_dump_formats,
+        execution_kwargs = {
+            "root": Path(args.manifest_root) if args.manifest_root else None,
+            "run_ids": run_ids,
+            "issues": list(args.issue),
+            "fig_dump_path": Path(args.fig_dump_dir),
+            "fig_dump_formats": fig_dump_formats,
+        }
+        if bundle.templates and not bundle.stages:
+            if args.exact_parents is not None:
+                raise ValueError("--exact-parents is only valid for staged analysis bundles")
+            if args.execution_descriptor is not None:
+                raise ValueError("--execution-descriptor is only valid for staged analysis bundles")
+            if args.dry_run:
+                raise ValueError("--dry-run is only valid for staged analysis bundles")
+            with _bundle_human_output_to_stderr():
+                outputs = execute_analysis_bundle(bundle, **execution_kwargs)
+            payload = [
+                {
+                    "bundle": expansion.bundle_name,
+                    "template": expansion.template_name,
+                    "mode": expansion.mode,
+                    "matched_run_ids": list(expansion.matched_run_ids),
+                    "manifest_id": manifest.id,
+                    "manifest_path": str(path),
+                }
+                for expansion, manifest, path in outputs
+            ]
+        elif bundle.stages and not bundle.templates:
+            exact_parents = None
+            if args.exact_parents is not None:
+                exact_path = Path(args.exact_parents)
+                exact_payload = _load_json_object(exact_path, label="--exact-parents")
+                missing_schema = [
+                    field_name
+                    for field_name in ("schema_id", "schema_version")
+                    if field_name not in exact_payload
+                ]
+                if missing_schema:
+                    raise ValueError(
+                        "--exact-parents document requires explicit schema_id and "
+                        f"schema_version; missing {', '.join(missing_schema)}"
+                    )
+                exact_parents = StagedExactParents.model_validate(exact_payload)
+            execution_descriptor = None
+            if args.execution_descriptor is not None:
+                descriptor_payload = _load_json_object(
+                    Path(args.execution_descriptor),
+                    label="--execution-descriptor",
+                )
+                execution_descriptor = StagedExecutionDescriptor.model_validate(descriptor_payload)
+            artifact_provider_bindings = [
+                StagedArtifactProviderRootBinding(
+                    *_binding_parts(value, option="--artifact-provider")
+                )
+                for value in args.artifact_provider
+            ]
+            checkpoint_custody_bindings = [
+                StagedCheckpointCustodyRootBinding(
+                    *_binding_parts(value, option="--checkpoint-custody")
+                )
+                for value in args.checkpoint_custody
+            ]
+            if args.dry_run:
+                with _bundle_human_output_to_stderr():
+                    dry_run = dry_run_staged_analysis_bundle(
+                        bundle,
+                        root=execution_kwargs["root"],
+                        run_ids=run_ids,
+                        exact_parents=exact_parents,
+                        execution_descriptor=execution_descriptor,
+                        artifact_provider_bindings=artifact_provider_bindings,
+                        checkpoint_custody_bindings=checkpoint_custody_bindings,
+                    )
+                payload = dry_run.model_dump(mode="json", exclude_none=True)
+            else:
+                with _bundle_human_output_to_stderr():
+                    execution = execute_staged_analysis_bundle(
+                        bundle,
+                        exact_parents=exact_parents,
+                        execution_descriptor=execution_descriptor,
+                        artifact_provider_bindings=artifact_provider_bindings,
+                        checkpoint_custody_bindings=checkpoint_custody_bindings,
+                        **execution_kwargs,
+                    )
+                payload = execution.model_dump(mode="json", exclude_none=True)
+        else:
+            raise ValueError(
+                f"Analysis bundle {bundle.name!r} must define exactly one non-empty "
+                "execution shape: templates or stages"
             )
-        print(
-            json.dumps(
-                [
-                    {
-                        "bundle": expansion.bundle_name,
-                        "template": expansion.template_name,
-                        "mode": expansion.mode,
-                        "matched_run_ids": list(expansion.matched_run_ids),
-                        "manifest_id": manifest.id,
-                        "manifest_path": str(path),
-                    }
-                    for expansion, manifest, path in outputs
-                ],
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     # Set states pickle directory

@@ -20,13 +20,18 @@ import jax.tree as jt
 import numpy as np
 from pydantic import ValidationError
 
-from feedbax.contracts.checkpoints import CheckpointLineageRef
+from feedbax.contracts.checkpoints import (
+    CheckpointLineageRef,
+    CheckpointTransactionManifest,
+)
 from feedbax.contracts.manifest import (
     EntrypointRef,
     ManifestStatus,
     ParentRef,
     Provenance,
     TrainingRunManifest,
+    TrainingManifestMetadataProjectionCustody,
+    TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY,
     ArtifactRef,
     canonical_json_bytes,
     default_manifest_root,
@@ -42,9 +47,10 @@ from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     GraphTopologySourceSpec,
     TrainingMethodRegistry,
+    TrainingManifestMetadataProjection,
     TrainingRunSpec,
 )
-from feedbax.contracts.spec_storage import training_spec_canonical_bytes
+from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
 from feedbax.orchestration.events import RunEventEmitter
@@ -83,6 +89,8 @@ ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
 CancellationProbe = Callable[[ProgressCoordinate], CancellationDecision | None]
 _RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
+_FEEDBAX_METADATA_NAMESPACE_PREFIX = "feedbax_"
+_METADATA_VALUE_ABSENT = object()
 
 
 class TrainingRunExecutorError(ValueError):
@@ -249,6 +257,21 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             barrier_spec.artifact_sinks,
             run_id=saved.coordinate.run_id,
         )
+        segment_batch_count = self.segment_batch_count
+        if segment_batch_count is None and self.segment_start_batch > 0:
+            cumulative_completed_batches = _terminal_completed_batches(
+                program=self.phase_program,
+                final_slots=saved.slots,
+                fallback=saved.coordinate.program_step,
+                require_authority=True,
+            )
+            segment_batch_count = cumulative_completed_batches - self.segment_start_batch
+            if segment_batch_count < 0:
+                raise TrainingRunExecutorError(
+                    "resumed checkpoint progress precedes its validated segment start: "
+                    f"completed_batches={cumulative_completed_batches} "
+                    f"segment_start_batch={self.segment_start_batch}"
+                )
         write = write_checkpoint_transaction(
             self.root,
             run_spec=self.run_spec,
@@ -259,7 +282,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             status="partial",
             parent_lineage=self.parent_lineage,
             segment_start_batch=self.segment_start_batch,
-            segment_batch_count=self.segment_batch_count,
+            segment_batch_count=segment_batch_count,
             segment_parent_transaction_id=self.segment_parent_transaction_id,
             history_availability={"progress": True},
             metadata={"barrier_visit_ordinal": saved.visit_ordinal},
@@ -315,6 +338,9 @@ def execute_training_run_spec(
     training_spec_payload_schema_id: str | None = None,
     training_spec_payload_schema_version: str | None = None,
     training_spec_payload_ref: str | None = None,
+    manifest_metadata_projection: TrainingManifestMetadataProjection
+    | Mapping[str, Any]
+    | None = None,
     task_binding_spec: Mapping[str, Any] | None = None,
     resume: bool = False,
     resume_slot_transform: ResumeSlotTransform | None = None,
@@ -359,6 +385,16 @@ def execute_training_run_spec(
         training_spec_payload_ref=training_spec_payload_ref,
         task_binding_spec=task_binding_spec,
     )
+    method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
+    projection_custody = prepare_training_manifest_metadata_projection(
+        manifest_metadata_projection,
+        registry=method_registry,
+        run_spec=run_spec,
+        training_spec_payload=training_spec_payload,
+        training_spec_payload_kind=training_spec_payload_kind,
+        training_spec_payload_schema_id=training_spec_payload_schema_id,
+        training_spec_payload_schema_version=training_spec_payload_schema_version,
+    )
     root_path = (
         Path(manifest_root)
         if manifest_root is not None
@@ -391,10 +427,7 @@ def execute_training_run_spec(
         / "training_runs"
         / f"{exact_manifest_id.replace(':', '_')}.json"
     )
-    if (
-        manifest_conflict_policy == "error"
-        and manifest_output_path.exists()
-    ):
+    if manifest_conflict_policy == "error" and manifest_output_path.exists():
         raise ManifestEmissionConflictError(
             f"Training-run manifest already exists at {manifest_output_path}"
         )
@@ -404,7 +437,6 @@ def execute_training_run_spec(
         collection_root=collection_root,
     )
     _preflight_training_diagnostics_emission(diagnostics_path)
-    method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
     registration = method_registry.resolve(run_spec.method_ref, path="/method_ref")
     method_payload = method_registry.validate_payload(
         run_spec.method_ref,
@@ -475,6 +507,10 @@ def execute_training_run_spec(
             segment_start_batch = continuation.source_completed_batches
             segment_batch_count = continuation.additional_batches
             segment_parent_transaction_id = loaded.manifest.transaction_id
+        else:
+            segment_start_batch = _same_row_resume_start_batch(loaded.manifest)
+            if segment_start_batch > 0:
+                segment_parent_transaction_id = loaded.manifest.transaction_id
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
@@ -567,9 +603,7 @@ def execute_training_run_spec(
             materialize_concatenated_checkpoint_histories(
                 custody_root,
                 custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl",
-                parent_roots={
-                    lineage.transaction_id: custody_root for lineage in parent_lineage
-                },
+                parent_roots={lineage.transaction_id: custody_root for lineage in parent_lineage},
             )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
@@ -614,6 +648,7 @@ def execute_training_run_spec(
             execution_context=producer_context,
             diagnostics_ref=diagnostics_ref,
             completed_batches=diagnostics.completed_batches,
+            projection_custody=projection_custody,
         )
         manifest_output_path = (
             collection_root / "manifest.json" if collection_root is not None else None
@@ -698,6 +733,7 @@ def execute_training_run_spec(
             execution_context=producer_context,
             diagnostics_ref=diagnostics_ref,
             completed_batches=diagnostics.completed_batches,
+            projection_custody=projection_custody,
         )
         manifest_output_path = (
             collection_root / "manifest.json" if collection_root is not None else None
@@ -791,6 +827,131 @@ def _validate_execution_context(
     return validated
 
 
+def prepare_training_manifest_metadata_projection(
+    supplied: TrainingManifestMetadataProjection | Mapping[str, Any] | None,
+    *,
+    registry: TrainingMethodRegistry,
+    run_spec: TrainingRunSpec,
+    training_spec_payload: Mapping[str, Any] | None,
+    training_spec_payload_kind: str,
+    training_spec_payload_schema_id: str | None,
+    training_spec_payload_schema_version: str | None,
+) -> TrainingManifestMetadataProjectionCustody | None:
+    """Validate and bind an explicit metadata projection before any side effect."""
+    if supplied is None:
+        return None
+    raw_projection: Any = (
+        supplied.model_dump(mode="json", exclude_none=True)
+        if isinstance(supplied, TrainingManifestMetadataProjection)
+        else supplied
+    )
+    try:
+        # Canonicalization before Pydantic prevents key coercion and rejects
+        # NaN, infinities, arrays, and other unsupported JSON objects.
+        training_spec_canonical_bytes(raw_projection)
+        projection = TrainingManifestMetadataProjection.model_validate(raw_projection)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise TrainingRunExecutorError(
+            f"/manifest_metadata_projection validation failed: {exc}"
+        ) from exc
+
+    source_payload = dict(training_spec_payload or run_spec.model_dump(mode="json"))
+    source_schema_id = training_spec_payload_schema_id
+    source_schema_version = training_spec_payload_schema_version
+    if training_spec_payload_kind == "TrainingRunSpec":
+        source_schema_id = source_payload.get("schema_id")
+        source_schema_version = source_payload.get("schema_version")
+    if not isinstance(source_schema_id, str) or not isinstance(source_schema_version, str):
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection source payload requires explicit schema identity"
+        )
+    observed_source = (
+        training_spec_payload_kind,
+        source_schema_id,
+        source_schema_version,
+    )
+    declared_source = (
+        projection.source_payload_kind,
+        projection.source_payload_schema_id,
+        projection.source_payload_schema_version,
+    )
+    if declared_source != observed_source:
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection source payload identity mismatch; "
+            f"declared={declared_source!r}, observed={observed_source!r}"
+        )
+    observed_source_sha256 = training_spec_sha256(source_payload)
+    if projection.source_payload_sha256 != observed_source_sha256:
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection source payload sha256 mismatch; "
+            f"declared={projection.source_payload_sha256}, "
+            f"observed={observed_source_sha256}"
+        )
+    try:
+        registration, values = registry.validate_manifest_metadata_projection(
+            projection,
+            path="/manifest_metadata_projection",
+        )
+        canonical_values = json.loads(training_spec_canonical_bytes(values))
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise TrainingRunExecutorError(
+            f"/manifest_metadata_projection validation failed: {exc}"
+        ) from exc
+    owned_keys = _feedbax_owned_training_manifest_metadata(
+        training_run_spec_schema_version=run_spec.schema_version,
+        include_all_owned_keys=True,
+    )
+    collisions = sorted(
+        key
+        for key in canonical_values
+        if key in owned_keys or key.startswith(_FEEDBAX_METADATA_NAMESPACE_PREFIX)
+    )
+    if collisions:
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection reserved Feedbax metadata key collision; "
+            f"keys={collisions!r}"
+        )
+    return TrainingManifestMetadataProjectionCustody(
+        source_payload_kind=projection.source_payload_kind,
+        source_payload_schema_id=projection.source_payload_schema_id,
+        source_payload_schema_version=projection.source_payload_schema_version,
+        source_payload_sha256=projection.source_payload_sha256,
+        projection_schema_id=projection.projection_schema_id,
+        projection_schema_version=projection.projection_schema_version,
+        values=canonical_values,
+        values_sha256=training_spec_sha256(canonical_values),
+        registration_owner=registration.owner,
+        registration_package=registration.package,
+    )
+
+
+def _feedbax_owned_training_manifest_metadata(
+    *,
+    training_run_spec_schema_version: str,
+    environment_fingerprint: Any = _METADATA_VALUE_ABSENT,
+    training_row_provenance: Any = _METADATA_VALUE_ABSENT,
+    runtime_telemetry: Any = _METADATA_VALUE_ABSENT,
+    include_all_owned_keys: bool = False,
+) -> dict[str, Any]:
+    """Build Feedbax-owned root metadata and define its collision policy.
+
+    ``include_all_owned_keys`` exposes the complete key policy before runtime
+    values exist, allowing projection validation to fail before output or
+    training side effects. The ``feedbax_`` namespace is reserved for future
+    Feedbax-owned root metadata so adding a key cannot silently create a
+    downstream collision.
+    """
+    candidates = {
+        "training_run_spec_schema_version": training_run_spec_schema_version,
+        "environment_fingerprint": environment_fingerprint,
+        "training_row_provenance": training_row_provenance,
+        "runtime_telemetry": runtime_telemetry,
+    }
+    if include_all_owned_keys:
+        return candidates
+    return {key: value for key, value in candidates.items() if value is not _METADATA_VALUE_ABSENT}
+
+
 def _validate_execution_payload_binding(
     supplied_spec: TrainingRunSpec | Mapping[str, Any],
     *,
@@ -847,8 +1008,7 @@ def _validate_execution_payload_binding(
         raise
     except OSError as exc:
         raise TrainingRunExecutorError(
-            "/execution_context/execution/payload local custody URI could not be read: "
-            f"{ref.uri!r}"
+            f"/execution_context/execution/payload local custody URI could not be read: {ref.uri!r}"
         ) from exc
     custody_sha256 = hashlib.sha256(custody_bytes).hexdigest()
     if custody_sha256 != ref.sha256:
@@ -1337,6 +1497,29 @@ def _build_training_diagnostics(
     )
 
 
+def _same_row_resume_start_batch(manifest: CheckpointTransactionManifest) -> int:
+    """Return the authoritative segment origin for an operational resume."""
+
+    completed_batches = manifest.completed_training_batches
+    if (
+        isinstance(completed_batches, bool)
+        or not isinstance(completed_batches, int)
+        or completed_batches < 0
+    ):
+        raise TrainingRunExecutorError(
+            "same-row resume checkpoint lacks authoritative completed-training progress"
+        )
+    lineage_total = (
+        manifest.segment_lineage.start_batch + manifest.segment_lineage.segment_batch_count
+    )
+    if lineage_total != completed_batches:
+        raise TrainingRunExecutorError(
+            "same-row resume checkpoint progress disagrees with segment lineage: "
+            f"completed_batches={completed_batches} lineage_total={lineage_total}"
+        )
+    return completed_batches
+
+
 def _terminal_completed_batches(
     *,
     program: Any,
@@ -1368,8 +1551,7 @@ def _terminal_completed_batches(
         elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
             if not isinstance(segment, int) or segment >= len(value):
                 raise TrainingRunExecutorError(
-                    f"{segment_path}={segment!r} is not a valid index in "
-                    f"slot {authority.slot!r}"
+                    f"{segment_path}={segment!r} is not a valid index in slot {authority.slot!r}"
                 )
             value = value[segment]
         else:
@@ -1409,8 +1591,7 @@ def _realized_lr_trace(
             continue
         by_step[int(step)] = float(jax.device_get(learning_rate))
     return [
-        LearningRateDiagnostic(step=step, learning_rate=by_step[step])
-        for step in sorted(by_step)
+        LearningRateDiagnostic(step=step, learning_rate=by_step[step]) for step in sorted(by_step)
     ]
 
 
@@ -1489,6 +1670,7 @@ def _build_manifest(
     execution_context: NativeExecutionProducerContext | None = None,
     diagnostics_ref: ArtifactRef,
     completed_batches: int,
+    projection_custody: TrainingManifestMetadataProjectionCustody | None,
 ) -> TrainingRunManifest:
     artifacts = [*barrier_artifacts, diagnostics_ref]
     if history_events:
@@ -1524,6 +1706,14 @@ def _build_manifest(
         execution_identity.row_provenance.model_dump(mode="json", exclude_none=True)
         if execution_identity is not None and execution_identity.row_provenance is not None
         else None
+    )
+    projection_values = projection_custody.values if projection_custody is not None else {}
+    projection_provenance = (
+        {
+            TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY: projection_custody.provenance_summary()
+        }
+        if projection_custody is not None
+        else {}
     )
     return TrainingRunManifest(
         id=manifest_id,
@@ -1562,11 +1752,7 @@ def _build_manifest(
         ),
         summary_metrics={
             **final_metrics,
-            **(
-                {"runtime_telemetry": dict(runtime_telemetry)}
-                if runtime_telemetry
-                else {}
-            ),
+            **({"runtime_telemetry": dict(runtime_telemetry)} if runtime_telemetry else {}),
         },
         provenance=Provenance(
             entrypoint=EntrypointRef(
@@ -1576,6 +1762,7 @@ def _build_manifest(
             issues=list(issues or ()),
             metadata={
                 "training_executor": "native",
+                **projection_provenance,
                 **(
                     {"environment_fingerprint": execution_context.environment_fingerprint}
                     if execution_context is not None
@@ -1590,17 +1777,23 @@ def _build_manifest(
         ),
         artifacts=artifacts,
         metadata={
-            "training_run_spec_schema_version": spec.schema_version,
-            **(
-                {
-                    "environment_fingerprint": execution_context.environment_fingerprint,
-                    "training_row_provenance": row_provenance,
-                }
-                if execution_context is not None
-                else {}
+            **_feedbax_owned_training_manifest_metadata(
+                training_run_spec_schema_version=spec.schema_version,
+                environment_fingerprint=(
+                    execution_context.environment_fingerprint
+                    if execution_context is not None
+                    else _METADATA_VALUE_ABSENT
+                ),
+                training_row_provenance=(
+                    row_provenance if execution_context is not None else _METADATA_VALUE_ABSENT
+                ),
+                runtime_telemetry=(
+                    dict(runtime_telemetry) if runtime_telemetry else _METADATA_VALUE_ABSENT
+                ),
             ),
-            **({"runtime_telemetry": dict(runtime_telemetry)} if runtime_telemetry else {}),
+            **projection_values,
         },
+        metadata_projection_custody=projection_custody,
     )
 
 
@@ -1611,9 +1804,7 @@ def _emit_manifest(
     conflict_policy: ManifestConflictPolicy,
     path: Path | None = None,
 ) -> Path:
-    path = path or (
-        root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json"
-    )
+    path = path or (root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json")
     _preflight_manifest_emission(
         manifest,
         root=root,
@@ -1637,9 +1828,7 @@ def _preflight_manifest_emission(
     conflict_policy: ManifestConflictPolicy,
     path: Path | None = None,
 ) -> None:
-    path = path or (
-        root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json"
-    )
+    path = path or (root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json")
     if not path.exists():
         return
     payload = manifest.model_dump_json(indent=2, exclude_none=True) + "\n"

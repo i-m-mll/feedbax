@@ -7,6 +7,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from feedbax.contracts.artifact_custody import (
+    IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
+    IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
+)
+from feedbax.contracts.staged_execution import (
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+)
 from feedbax.contracts.checkpoints import (
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
@@ -1879,6 +1887,96 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     execution_emitters = ("feedbax.execution.models", "feedbax.integrations.provider")
 
     families = [
+        _family(
+            "StagedExecutionDescriptor",
+            STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.staged_execution",
+            emitted_by=(
+                "feedbax.analysis.execute_staged_analysis_bundle",
+                "feedbax.integrations.provider",
+            ),
+            consumed_by=(
+                "feedbax.analysis.resolve_staged_execution_context",
+                "feedbax.bin.analysis",
+            ),
+            description=(
+                "Portable root-free logical resource requirements for staged execution."
+            ),
+            rejected_old_versions=(f"{STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_staged_execution_context.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "StagedCheckpointCustodySpec",
+            STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.staged_execution",
+            emitted_by=(
+                "feedbax.analysis.execute_staged_analysis_bundle",
+                "feedbax.integrations.provider",
+            ),
+            consumed_by=(
+                "feedbax.analysis.resolve_staged_execution_context",
+                "feedbax.bin.analysis",
+            ),
+            durable=False,
+            description=(
+                "Nested fixed-backend checkpoint authority covered by the staged descriptor."
+            ),
+            rejected_old_versions=(f"{STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_staged_execution_context.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+            covers="StagedExecutionDescriptor",
+        ),
+        _family(
+            "ImmutableArtifactBlobProviderSpec",
+            IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
+            IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.artifact_custody",
+            emitted_by=(
+                "feedbax.persistence.artifact_custody",
+                "feedbax.integrations.provider",
+            ),
+            consumed_by=(
+                "feedbax.persistence.open_immutable_artifact_blob_provider",
+                "downstream staged execution",
+            ),
+            description=(
+                "Portable root-free selection of the immutable local SHA-256 artifact CAS."
+            ),
+            rejected_old_versions=(f"{IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_artifact_custody.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ImmutableArtifactBlobProviderConfig",
+            IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
+            IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.artifact_custody",
+            emitted_by=(
+                "feedbax.persistence.artifact_custody",
+                "feedbax.integrations.provider",
+            ),
+            consumed_by=(
+                "feedbax.persistence.open_immutable_artifact_blob_provider",
+                "downstream staged execution",
+            ),
+            durable=False,
+            description="Nested fixed-backend config covered by the portable provider spec.",
+            rejected_old_versions=(f"{IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_artifact_custody.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+            covers="ImmutableArtifactBlobProviderSpec",
+        ),
         _family(
             "RunMatrixMaterialization",
             RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,

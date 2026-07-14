@@ -97,7 +97,7 @@ def test_evaluation_matrix_schema_identity_is_pinned() -> None:
 
 
 def test_evaluation_matrix_executes_through_harness(tmp_path: Path) -> None:
-    def recipe(spec, _root, _states_path):
+    def recipe(spec, _root, _states_path, _execution_context):
         return EvaluationRecipeResult(summary_metrics={"gain": spec.params["gain"]})
 
     register_evaluation_recipe("example.evaluate", recipe)

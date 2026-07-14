@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,37 @@ from feedbax.orchestration.state import RunSetState
 
 class LocalDriverError(RuntimeError):
     """Raised when the local driver cannot complete a requested action."""
+
+
+_DEPENDENCY_INVENTORY_SCRIPT = """
+import importlib.metadata
+import json
+import platform
+import sys
+
+inventory = []
+for distribution in importlib.metadata.distributions():
+    name = distribution.metadata["Name"]
+    version = distribution.version
+    if not name or not version:
+        raise RuntimeError("installed distribution lacks required name or version metadata")
+    direct_url_text = distribution.read_text("direct_url.json")
+    direct_url = json.loads(direct_url_text) if direct_url_text is not None else None
+    if direct_url is not None and not isinstance(direct_url, dict):
+        raise RuntimeError(f"distribution {name!r} has invalid direct_url.json")
+    inventory.append({"direct_url": direct_url, "name": name, "version": version})
+payload = {
+    "schema_version": "feedbax.local_dependency_inventory.v1",
+    "interpreter": {
+        "cache_tag": sys.implementation.cache_tag,
+        "executable": sys.executable,
+        "implementation": sys.implementation.name,
+        "version": platform.python_version(),
+    },
+    "distributions": inventory,
+}
+print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+"""
 
 
 class LocalOrchestrationDriver:
@@ -56,10 +88,7 @@ class LocalOrchestrationDriver:
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         inputs_dir = bundle.run_set_dir / "inputs"
         inputs_dir.mkdir(parents=True, exist_ok=True)
-        pins = [
-            pin.model_dump(mode="json", exclude_none=True)
-            for pin in bundle.input_custody_pins
-        ]
+        pins = [pin.model_dump(mode="json", exclude_none=True) for pin in bundle.input_custody_pins]
         (inputs_dir / "custody_pins.json").write_text(
             json.dumps(pins, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -92,8 +121,7 @@ class LocalOrchestrationDriver:
             discrepancy = {
                 "code": "orphaned_launch",
                 "message": (
-                    "orphaned launch: started sentinel present, process dead, "
-                    "no terminal sentinel"
+                    "orphaned launch: started sentinel present, process dead, no terminal sentinel"
                 ),
                 "pid": pid,
             }
@@ -263,9 +291,14 @@ def compute_environment_fingerprint(
 ) -> str:
     """Compute a deterministic local environment fingerprint."""
     root = Path(cwd)
-    package_lines = list(freeze_lines) if freeze_lines is not None else _pip_freeze(python_executable)
+    interpreter, discovered_packages = _probe_dependency_inventory(python_executable)
+    package_lines = list(freeze_lines) if freeze_lines is not None else discovered_packages
     payload: dict[str, Any] = {
-        "python_version": bundle.environment.python_version or sys.version.split()[0],
+        "declared_python_version": bundle.environment.python_version,
+        "dependency_inventory_source": (
+            "provided" if freeze_lines is not None else "importlib.metadata"
+        ),
+        "interpreter": interpreter,
         "packages": sorted(package_lines),
         "repo_revisions": [],
         "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
@@ -320,15 +353,91 @@ def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:
     }
 
 
-def _pip_freeze(python_executable: str | None) -> list[str]:
+def _probe_dependency_inventory(
+    python_executable: str | None,
+) -> tuple[dict[str, str | None], list[str]]:
+    """Read interpreter identity and distribution provenance from the selected Python."""
     executable = python_executable or sys.executable
-    result = subprocess.run(
-        [executable, "-m", "pip", "freeze"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    try:
+        result = subprocess.run(
+            [executable, "-c", _DEPENDENCY_INVENTORY_SCRIPT],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        stderr = getattr(exc, "stderr", None)
+        detail = str(stderr).strip() if stderr else str(exc)
+        raise LocalDriverError(
+            f"dependency inventory failed for interpreter {executable!r}: {detail}"
+        ) from exc
+
+    try:
+        probe = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} was not valid JSON"
+        ) from exc
+    if not isinstance(probe, dict) or set(probe) != {
+        "distributions",
+        "interpreter",
+        "schema_version",
+    }:
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had invalid structure"
+        )
+    if probe["schema_version"] != "feedbax.local_dependency_inventory.v1":
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had unknown schema"
+        )
+    interpreter = probe["interpreter"]
+    if (
+        not isinstance(interpreter, dict)
+        or set(interpreter) != {"cache_tag", "executable", "implementation", "version"}
+        or not isinstance(interpreter["executable"], str)
+        or not interpreter["executable"]
+        or not isinstance(interpreter["implementation"], str)
+        or not interpreter["implementation"]
+        or not isinstance(interpreter["version"], str)
+        or not interpreter["version"]
+        or (interpreter["cache_tag"] is not None and not isinstance(interpreter["cache_tag"], str))
+    ):
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had invalid interpreter identity"
+        )
+    inventory = probe["distributions"]
+    return dict(interpreter), _canonicalize_dependency_inventory(inventory, executable=executable)
+
+
+def _canonicalize_dependency_inventory(inventory: Any, *, executable: str) -> list[str]:
+    """Validate and canonicalize importlib distribution records."""
+    if not isinstance(inventory, list) or any(
+        not isinstance(entry, dict)
+        or set(entry) != {"direct_url", "name", "version"}
+        or not isinstance(entry["name"], str)
+        or not entry["name"]
+        or not isinstance(entry["version"], str)
+        or not entry["version"]
+        or (entry["direct_url"] is not None and not isinstance(entry["direct_url"], dict))
+        for entry in inventory
+    ):
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had invalid structure"
+        )
+    by_name: dict[str, dict[str, Any]] = {}
+    for raw_entry in inventory:
+        entry = dict(raw_entry)
+        entry["name"] = re.sub(r"[-_.]+", "-", entry["name"]).lower()
+        previous = by_name.get(entry["name"])
+        if previous is not None and previous != entry:
+            raise LocalDriverError(
+                "dependency inventory contains conflicting distributions for normalized name "
+                f"{entry['name']!r}"
+            )
+        by_name[entry["name"]] = entry
+    return [
+        json.dumps(by_name[name], sort_keys=True, separators=(",", ":")) for name in sorted(by_name)
+    ]
 
 
 def _git_output(cwd: Path, *args: str) -> str:

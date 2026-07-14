@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Any, Mapping
 
 import pytest
 
+from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.manifest import TrainingRunManifest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
@@ -76,6 +78,7 @@ from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.local import (
     LocalDriverError,
     LocalOrchestrationDriver,
+    _canonicalize_dependency_inventory,
     compute_environment_fingerprint,
 )
 from feedbax.orchestration.stages import (
@@ -469,6 +472,34 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
             "RunBundle",
             {"schema_version": "feedbax.orchestration.run_bundle.v0"},
         )
+
+
+def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformance(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.rows[0]
+    stopped = RowState(
+        status="stopped",
+        completed_at=stages.utc_now(),
+        error="operator-stop-after-checkpoint",
+    )
+    runtime_inputs = RowConformanceRuntimeInputs(
+        authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=50)
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: stopped},
+    )
+
+    artifacts = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        row_conformance_inputs={row.row_id: runtime_inputs},
+    )._conformance_artifacts(row, state)
+
+    assert artifacts.row_state == stopped
+    assert artifacts.runtime_inputs == runtime_inputs
 
 
 @pytest.mark.parametrize("stop_after", STAGE_ORDER[:-1])
@@ -1077,9 +1108,7 @@ def test_conformance_discovery_prefers_typed_diagnostics_over_manifest_metrics(
 
     assert discovered["manifest_payload"] == manifest
     assert discovered["training_diagnostics"] == diagnostics
-    assert discovered["training_diagnostics"]["lr_trace"] == [
-        {"step": 10, "learning_rate": 3e-4}
-    ]
+    assert discovered["training_diagnostics"]["lr_trace"] == [{"step": 10, "learning_rate": 3e-4}]
     assert discovered["training_diagnostics"]["checkpoint_coordinates"] == [10]
     assert discovered["training_diagnostics"]["checkpoint_transactions"] == [
         {
@@ -1551,6 +1580,131 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
         ).run()
 
 
+@pytest.mark.parametrize(
+    ("rows", "abort_reason", "expected_status", "expected_outcomes"),
+    [
+        (
+            {
+                "row-b": RowState(status="completed"),
+                "row-a": RowState(status="completed"),
+            },
+            None,
+            "completed",
+            None,
+        ),
+        (
+            {
+                "row-b": RowState(
+                    status="stopped",
+                    error="operator-stop-after-checkpoint",
+                ),
+                "row-a": RowState(
+                    status="stopped",
+                    error="operator-stop-after-checkpoint",
+                ),
+            },
+            None,
+            "stopped",
+            {
+                "row-a": {
+                    "reason": "operator-stop-after-checkpoint",
+                    "status": "stopped",
+                },
+                "row-b": {
+                    "reason": "operator-stop-after-checkpoint",
+                    "status": "stopped",
+                },
+            },
+        ),
+        (
+            {
+                "row-b": RowState(
+                    status="stopped",
+                    error="operator-stop-after-checkpoint",
+                ),
+                "row-a": RowState(status="completed"),
+            },
+            None,
+            "mixed",
+            {
+                "row-a": {"status": "completed"},
+                "row-b": {
+                    "reason": "operator-stop-after-checkpoint",
+                    "status": "stopped",
+                },
+            },
+        ),
+        (
+            {"row-a": RowState(status="stopped", error="budget-exceeded")},
+            "budget-exceeded",
+            "aborted",
+            None,
+        ),
+    ],
+)
+def test_register_derives_passing_status_from_durable_row_lifecycle(
+    tmp_path: Path,
+    rows: dict[str, RowState],
+    abort_reason: str | None,
+    expected_status: str,
+    expected_outcomes: dict[str, dict[str, str]] | None,
+) -> None:
+    compiled_rows = [_compiled_row(row_id) for row_id in rows]
+    bundle = _bundle(tmp_path, rows=compiled_rows)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows=rows,
+        abort_reason=abort_reason,
+    )
+    state, _ = engine._stage_certify(state)
+
+    registered, payload = engine._stage_register(state)
+
+    assert payload["status"] == expected_status
+    assert payload["abort_reason"] == abort_reason
+    assert payload.get("row_outcomes") == expected_outcomes
+    assert registered.registration_payload == payload
+
+
+def test_register_stopped_payload_reentry_is_idempotent(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    register_path = bundle.run_set_dir / "registration.json"
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={
+            "row-a": RowState(
+                status="stopped",
+                error="operator-stop-after-checkpoint",
+            )
+        },
+    )
+    state, _ = engine._stage_certify(state)
+    state, first_payload = engine._stage_register(state)
+    first_mtime = register_path.stat().st_mtime_ns
+
+    _state, second_payload = engine._stage_register(state)
+
+    assert first_payload["certificate_overall"] == "pass"
+    assert first_payload["certificate_ref"] == state.certificate_ref
+    assert json.loads(register_path.read_text(encoding="utf-8")) == first_payload
+    assert second_payload == first_payload
+    assert register_path.stat().st_mtime_ns == first_mtime
+
+
 def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
     marker = tmp_path / "spawned.txt"
     compiled_row = _compiled_row(
@@ -1726,6 +1880,85 @@ def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
+    ("second_probe_status", "expected_status"),
+    [
+        ("completed", "completed"),
+        ("failed", "failed"),
+    ],
+)
+def test_monitor_reconciles_terminal_event_before_local_sentinel(
+    tmp_path: Path,
+    second_probe_status: str,
+    expected_status: str,
+) -> None:
+    class TerminalEventFirstDriver(FakeDriver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probe_count = 0
+
+        def launch_row(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, Any]:
+            outputs = super().launch_row(bundle, row, state)
+            events = bundle.run_set_dir / "events"
+            events.mkdir(parents=True, exist_ok=True)
+            status = "completed" if second_probe_status == "completed" else "failed"
+            (events / f"{row.row_id}.events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "run_set_id": bundle.run_set_id,
+                        "row_id": row.row_id,
+                        "seq": 0,
+                        "emitted_at_ms": 1,
+                        "type": "complete" if status == "completed" else "failed",
+                        "payload": {"status": status},
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return outputs
+
+        def probe(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> DriverRowProbe:
+            self._call(f"probe:{row.row_id}")
+            self.probe_count += 1
+            if self.probe_count == 1:
+                return DriverRowProbe(status="running")
+            if second_probe_status == "completed":
+                sentinels = bundle.run_set_dir / "sentinels"
+                sentinels.mkdir(parents=True, exist_ok=True)
+                (sentinels / f"{row.row_id}.done").write_text("0\n", encoding="utf-8")
+            return DriverRowProbe(status=second_probe_status)
+
+    bundle = _bundle(tmp_path)
+    driver = TerminalEventFirstDriver()
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+        poll_interval_seconds=0,
+    ).run(stop_after_stage="MONITOR")
+
+    assert driver.probe_count == 2
+    assert state.rows["row-a"].status == expected_status
+    if expected_status == "completed":
+        assert state.rows["row-a"].event_discrepancies == []
+    else:
+        assert state.rows["row-a"].event_discrepancies == [
+            {"code": "terminal_event_without_sentinel", "event_status": "failed"}
+        ]
+
+
+@pytest.mark.parametrize(
     ("first_status", "second_status", "abort_reason", "expected_call"),
     [
         ("ready", "launched", None, "launch:second"),
@@ -1800,3 +2033,150 @@ def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) 
     )
     with pytest.raises(LocalDriverError, match="dirty repo not allowed"):
         compute_environment_fingerprint(disallow_dirty, cwd=repo, freeze_lines=("a==1",))
+
+
+def test_fingerprint_inventory_does_not_require_pip(tmp_path: Path) -> None:
+    site_packages = tmp_path / "site-packages"
+    dist_info = site_packages / "example_pkg-1.2.3.dist-info"
+    dist_info.mkdir(parents=True)
+    metadata = dist_info / "METADATA"
+    metadata.write_text(
+        "Metadata-Version: 2.1\nName: example-pkg\nVersion: 1.2.3\n",
+        encoding="utf-8",
+    )
+    (dist_info / "direct_url.json").write_text(
+        '{"url":"file:///example-pkg","dir_info":{"editable":true}}\n',
+        encoding="utf-8",
+    )
+    python = tmp_path / "pipless-python"
+    python.write_text(
+        (
+            "#!/bin/sh\n"
+            f"PYTHONPATH={shlex.quote(str(site_packages))} "
+            f'exec {shlex.quote(sys.executable)} -S "$@"\n'
+        ),
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    pip_probe = subprocess.run(
+        [str(python), "-c", "import importlib.util; print(importlib.util.find_spec('pip'))"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert pip_probe.stdout.strip() == "None"
+
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+    driver = LocalOrchestrationDriver(
+        cwd=tmp_path,
+        python_executable=str(python),
+    )
+    state = RunSetState(run_set_id=bundle.run_set_id)
+    first = driver.realize_env(bundle, state)
+    second = driver.realize_env(bundle, state)
+    metadata.write_text(
+        "Metadata-Version: 2.1\nName: example-pkg\nVersion: 1.2.4\n",
+        encoding="utf-8",
+    )
+    changed = driver.realize_env(bundle, state)
+
+    assert first == second
+    assert first != changed
+
+
+def test_dependency_inventory_normalizes_names_and_order() -> None:
+    first = [
+        {"direct_url": None, "name": "Z_pkg", "version": "2"},
+        {"direct_url": None, "name": "a.pkg", "version": "1"},
+    ]
+    reordered = [
+        {"direct_url": None, "name": "A-PKG", "version": "1"},
+        {"direct_url": None, "name": "z.pkg", "version": "2"},
+    ]
+
+    assert _canonicalize_dependency_inventory(first, executable="fixture") == (
+        _canonicalize_dependency_inventory(reordered, executable="fixture")
+    )
+
+
+def test_dependency_inventory_rejects_conflicting_normalized_duplicates() -> None:
+    inventory = [
+        {"direct_url": None, "name": "example_pkg", "version": "1"},
+        {"direct_url": None, "name": "example.pkg", "version": "2"},
+    ]
+
+    with pytest.raises(LocalDriverError, match="conflicting distributions"):
+        _canonicalize_dependency_inventory(inventory, executable="fixture")
+
+
+def test_fingerprint_uses_selected_interpreter_identity(tmp_path: Path) -> None:
+    probe_payload = tmp_path / "probe.json"
+    python = tmp_path / "identity-python"
+    python.write_text(
+        f"#!/bin/sh\ncat {shlex.quote(str(probe_payload))}\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+
+    def write_probe(version: str) -> None:
+        probe_payload.write_text(
+            json.dumps(
+                {
+                    "schema_version": "feedbax.local_dependency_inventory.v1",
+                    "interpreter": {
+                        "cache_tag": "cpython-313",
+                        "executable": "/selected/python",
+                        "implementation": "cpython",
+                        "version": version,
+                    },
+                    "distributions": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_probe("3.13.5")
+    first = compute_environment_fingerprint(
+        bundle,
+        cwd=tmp_path,
+        python_executable=str(python),
+    )
+    write_probe("3.13.6")
+    changed = compute_environment_fingerprint(
+        bundle,
+        cwd=tmp_path,
+        python_executable=str(python),
+    )
+
+    assert first != changed
+
+
+def test_fingerprint_rejects_malformed_probe_payload(tmp_path: Path) -> None:
+    python = tmp_path / "malformed-python"
+    python.write_text("#!/bin/sh\necho '{\"distributions\":[]}'\n", encoding="utf-8")
+    python.chmod(0o755)
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+
+    with pytest.raises(LocalDriverError, match="invalid structure"):
+        compute_environment_fingerprint(
+            bundle,
+            cwd=tmp_path,
+            python_executable=str(python),
+        )
+
+
+def test_fingerprint_inventory_failure_is_not_replaced_with_empty_inventory(
+    tmp_path: Path,
+) -> None:
+    broken_python = tmp_path / "broken-python"
+    broken_python.write_text("#!/bin/sh\necho inventory-broken >&2\nexit 17\n", encoding="utf-8")
+    broken_python.chmod(0o755)
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+
+    with pytest.raises(LocalDriverError, match="inventory-broken"):
+        compute_environment_fingerprint(
+            bundle,
+            cwd=tmp_path,
+            python_executable=str(broken_python),
+        )

@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from feedbax.analysis.specs import find_manifest_by_id
+from feedbax.analysis.manifest_inputs import (
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
+)
 from feedbax.analysis.rendering import render_markdown_note
 from feedbax.analysis.validation import (
     ReportRecipeProtocol,
@@ -59,9 +63,7 @@ class ReportRecipeResult:
     artifacts: list[ArtifactRef] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
-        default_factory=list
-    )
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(default_factory=list)
 
 
 ReportRecipe = ReportRecipeProtocol
@@ -138,7 +140,10 @@ def resolve_report_inputs(
         manifest: AnyManifest | None = None
         manifest_path: Path | None = None
         produced_data: list[AnalysisDataProduct] = []
-        if ref.kind.endswith("Manifest"):
+        if is_authenticated_manifest_ref(ref):
+            authenticated = resolve_manifest_input(ref, root_path)
+            manifest, manifest_path = authenticated.manifest, authenticated.path
+        elif ref.kind.endswith("Manifest"):
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
         if isinstance(manifest, AnalysisRunManifest):
             produced_data = list(manifest.produced_data)
@@ -170,11 +175,7 @@ def execute_report_spec(
     root_path = Path(root) if root is not None else default_manifest_root()
     manifest_id = report_manifest_id(report_spec)
 
-    prov = (
-        provenance.model_copy(deep=True)
-        if provenance is not None
-        else collect_git_provenance()
-    )
+    prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     prov.parents = list(report_spec.inputs)
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
@@ -185,8 +186,8 @@ def execute_report_spec(
         )
 
     manifest_metadata = dict(metadata or {})
+    resolved_inputs = resolve_report_inputs(report_spec, root=root_path)
     try:
-        resolved_inputs = resolve_report_inputs(report_spec, root=root_path)
         result = recipe(report_spec, root_path, resolved_inputs)
         _validate_report_result(report_spec.report_type, result)
         manifest = _build_report_manifest(
@@ -224,9 +225,7 @@ def execute_report_spec(
 
 
 def _validate_report_result(report_type: str, result: ReportRecipeResult) -> None:
-    renders = [
-        artifact for artifact in result.artifacts if artifact.role == REPORT_RENDER_ROLE
-    ]
+    renders = [artifact for artifact in result.artifacts if artifact.role == REPORT_RENDER_ROLE]
     if not renders:
         raise ValueError(
             f"Report recipe {report_type!r} must return at least one "

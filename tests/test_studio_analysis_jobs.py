@@ -38,6 +38,7 @@ def _register_job_eval_recipe() -> None:
         spec: EvaluationRunSpec,
         _root: Path,
         _states_path: Path,
+        _execution_context,
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult(
             states={"value": spec.params["value"]},
@@ -48,7 +49,12 @@ def _register_job_eval_recipe() -> None:
 
 
 def _register_job_analysis_recipe() -> None:
-    def recipe(spec: AnalysisRunSpec, _root: Path, inputs) -> AnalysisRecipeResult:
+    def recipe(
+        spec: AnalysisRunSpec,
+        _root: Path,
+        inputs,
+        _execution_context,
+    ) -> AnalysisRecipeResult:
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
             analyses={TOY_JOB_ANALYSIS_TYPE: ToyAnalysis(variant="studio", cache_result=True)},
@@ -60,7 +66,12 @@ def _register_job_analysis_recipe() -> None:
 
 
 def _register_mismatched_job_analysis_recipe() -> None:
-    def recipe(spec: AnalysisRunSpec, _root: Path, inputs) -> AnalysisRecipeResult:
+    def recipe(
+        spec: AnalysisRunSpec,
+        _root: Path,
+        inputs,
+        _execution_context,
+    ) -> AnalysisRecipeResult:
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
             analyses={"actual_output": ToyAnalysis(variant="studio", cache_result=True)},
