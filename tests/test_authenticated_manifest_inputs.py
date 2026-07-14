@@ -237,6 +237,14 @@ def test_authenticated_manifest_ref_rejects_missing_symlink_directory_and_fifo(
         resolve_manifest_input(ref, tmp_path, runtime_locator=fifo.relative_to(tmp_path))
 
 
+def test_authenticated_manifest_ref_rejects_hardlink(tmp_path: Path) -> None:
+    _manifest_obj, path, ref = _manifest(tmp_path)
+    os.link(path, tmp_path / "second-link.json")
+
+    with pytest.raises(ValueError, match="exactly one hard link"):
+        resolve_manifest_input(ref, tmp_path)
+
+
 def test_legacy_manifest_ref_makes_no_authenticated_claim(tmp_path: Path) -> None:
     legacy = ParentRef(
         kind="EvaluationRunManifest",

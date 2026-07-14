@@ -614,6 +614,9 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
         "objective": "minimize",
         "params": {},
     }
+    assert eval_manifest.provenance.parents == EvaluationRunSpec.model_validate(
+        eval_manifest.evaluation_spec.inline
+    ).inputs
     assert first.manifest_refs[0].metadata["parent_refs"][0]["id"] == training_ref.id
     assert first.manifest_refs[0].metadata["spec_hashes"]["evaluation_spec"].startswith("fnv1a:")
     assert eval_manifest.provenance.metadata["checkpoint_policy"]["mode"] == "best-by-metric"

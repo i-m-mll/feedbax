@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -506,25 +506,36 @@ def _resolve_checkpoint_custody_ref(
 
 
 def _resolve_checkpoint_parent_ref_uri(uri: str | None, root_path: Path) -> Path:
-    if not isinstance(uri, str) or not uri or "\x00" in uri:
+    if not isinstance(uri, str) or not uri:
         raise CheckpointReferenceResolutionError(
-            "checkpoint custody ParentRef uri must be a non-empty filesystem path"
+            "checkpoint custody ParentRef uri must be a non-empty root-relative path"
         )
     parsed = urlsplit(uri)
-    if parsed.query or parsed.fragment:
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
         raise CheckpointReferenceResolutionError(
-            "checkpoint custody ParentRef uri must not contain a query or fragment"
+            "checkpoint custody ParentRef uri must be scheme-free, query-free, "
+            "fragment-free, and root-relative"
         )
-    if parsed.scheme:
-        if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
-            raise CheckpointReferenceResolutionError(
-                "checkpoint custody ParentRef uri must be a local path or file URI"
-            )
-        raw_path = unquote(parsed.path)
-    else:
-        raw_path = uri
-    path = Path(raw_path).expanduser()
-    candidate = (path if path.is_absolute() else root_path / path).resolve()
+    decoded = unquote(parsed.path)
+    if "\x00" in decoded or "\\" in decoded:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef uri contains an unsupported path separator"
+        )
+    raw_parts = decoded.split("/")
+    relative = PurePosixPath(decoded)
+    if relative.is_absolute():
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef uri must be root-relative"
+        )
+    if ".." in raw_parts:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef manifest uri escapes its allowed root"
+        )
+    if not relative.parts or any(part in {"", "."} for part in raw_parts):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef uri must not contain empty or dot path segments"
+        )
+    candidate = (root_path / Path(*relative.parts)).resolve()
     _require_contained_path(
         candidate,
         root_path,

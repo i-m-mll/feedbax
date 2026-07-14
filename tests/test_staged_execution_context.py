@@ -26,6 +26,7 @@ from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
     StagedCheckpointCustodyRootBinding,
+    StagedExecutionContext,
     StagedExecutionContextError,
     StagedParentExecutionLocation,
     resolve_staged_execution_context,
@@ -48,6 +49,7 @@ from feedbax.contracts.staged_execution import (
     StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
+from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
 from feedbax.training.checkpoint_custody import write_checkpoint_transaction
 from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 from tests.test_staged_exact_parents import _exact_document, _write_exact_parent
@@ -112,6 +114,32 @@ def _bundle() -> AnalysisBundleSpec:
             )
         ],
     )
+
+
+@pytest.mark.parametrize(
+    "root_identities",
+    [{"other": (1, 2)}, {"primary": (1, 2), "extra": (3, 4)}],
+)
+def test_artifact_provider_root_identity_keys_must_match_opened_providers(
+    tmp_path: Path,
+    root_identities: dict[str, tuple[int, int]],
+) -> None:
+    provider_root = tmp_path / "provider"
+    provider_root.mkdir()
+    provider = open_immutable_artifact_blob_provider(
+        ImmutableArtifactBlobProviderSpec(), explicit_root=provider_root
+    )
+    with pytest.raises(
+        StagedExecutionContextError,
+        match="identities must exactly match opened providers",
+    ):
+        StagedExecutionContext(
+            descriptor=None,
+            opened_artifact_providers={"primary": provider},
+            checkpoint_custody_roots={},
+            parent_execution_locations=(),
+            _artifact_provider_root_identities=root_identities,
+        )
 
 
 def _write_training(root: Path, run_id: str = "feedbax-training-run:context") -> None:
@@ -305,6 +333,43 @@ def test_checkpoint_binding_mismatch_and_malicious_uri_fail_before_resolution(
     with pytest.raises(StagedExecutionContextError, match="disagrees"):
         context.resolve_checkpoint_custody_ref(ref, binding_name="other")
     with pytest.raises(StagedExecutionContextError, match="escapes"):
+        context.resolve_checkpoint_custody_ref(ref)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "transactions//manifest.json",
+        "transactions/./manifest.json",
+        "transactions/%2e/manifest.json",
+        "transactions/%2e%2e/manifest.json",
+        "transactions/%2fmanifest.json",
+        "transactions/%00/manifest.json",
+        "transactions/%5cmanifest.json",
+    ],
+)
+def test_checkpoint_binding_rejects_malformed_relative_uri_before_resolution(
+    tmp_path: Path,
+    uri: str,
+) -> None:
+    _roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    context = resolve_staged_execution_context(
+        _descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+    ref = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id="transaction",
+        role="training_checkpoint_custody",
+        uri=uri,
+        metadata={
+            "checkpoint_custody_binding": "training-checkpoints",
+            "manifest_sha256": "a" * 64,
+        },
+    )
+
+    with pytest.raises(StagedExecutionContextError, match="ParentRef uri|escapes"):
         context.resolve_checkpoint_custody_ref(ref)
 
 

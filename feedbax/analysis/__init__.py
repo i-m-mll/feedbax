@@ -2,6 +2,7 @@ from .types import AnalysisInputData
 from .analysis import AbstractAnalysis, CallWithDeps
 from .bundles import (
     AnalysisBundleSpec,
+    BundlePerInputPrerequisiteBinding,
     StagedAnalysisBundleExecution,
     execute_analysis_bundle,
     execute_staged_analysis_bundle,
@@ -95,6 +96,7 @@ from .evaluation import (
     registered_evaluation_recipes,
     unregister_evaluation_recipe,
 )
+from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
     EvaluationInputAmbiguityError,
     EvaluationInputCardinalityError,
@@ -120,6 +122,7 @@ __all__ = [
     "AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION",
     "AbstractAnalysis",
     "AnalysisBundleSpec",
+    "BundlePerInputPrerequisiteBinding",
     "AnalysisArtifactGroup",
     "AnalysisInputData",
     "AnalysisRecipeResult",
@@ -135,6 +138,7 @@ __all__ = [
     "ContextMaterializerFn",
     "DataContextMaterializerFn",
     "EvaluationRecipeProtocol",
+    "EvaluationParamsBase",
     "EMPTY_STAGED_EXECUTION_CONTEXT",
     "EvaluationInputAmbiguityError",
     "EvaluationInputCardinalityError",
@@ -162,6 +166,7 @@ __all__ = [
     "STAGED_EXACT_PARENTS_SCHEMA_ID",
     "STAGED_EXACT_PARENTS_SCHEMA_VERSION",
     "StagedAnalysisBundleExecution",
+    "StagedEvaluationPrerequisite",
     "StagedArtifactProviderRootBinding",
     "StagedCheckpointCustodyRootBinding",
     "StagedCheckpointCustodySpec",

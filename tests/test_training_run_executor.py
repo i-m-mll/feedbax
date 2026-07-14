@@ -11,6 +11,10 @@ import pytest
 import jax.numpy as jnp
 from pydantic import BaseModel, ConfigDict
 
+from feedbax.analysis.execution_context import (
+    StagedCheckpointCustodyRootBinding,
+    resolve_staged_execution_context,
+)
 from feedbax.contracts.manifest import TrainingRunManifest, load_manifest, sha256_bytes
 from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
@@ -19,6 +23,12 @@ from feedbax.contracts.checkpoints import (
     CheckpointContinuationRequest,
 )
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
+from feedbax.contracts.staged_execution import (
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+    StagedCheckpointCustodySpec,
+    StagedExecutionDescriptor,
+)
 from feedbax.contracts.spec_storage import (
     training_run_execution_hash,
     training_spec_canonical_bytes,
@@ -69,7 +79,6 @@ from feedbax.orchestration.drivers.native_execution import (
     NativeExecutionContextError,
     inject_native_execution_context,
 )
-from feedbax.training import resolve_checkpoint_custody_ref
 from feedbax.training.checkpoint_custody import (
     concatenate_checkpoint_histories,
     load_latest_checkpoint,
@@ -517,19 +526,40 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert manifest.graph_spec.kind == "GraphSpec"
     assert manifest.task_spec.kind == "TaskSpec"
     assert manifest.checkpoint_custody
-    assert Path(manifest.checkpoint_custody[0].uri).is_file()
     assert manifest.summary_metrics["train_loss"] == 1.0
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
 
     emitted_ref = result.manifest.checkpoint_custody[0]
-    resolved = resolve_checkpoint_custody_ref(
-        emitted_ref,
-        allowed_root=checkpoint_root,
+    loaded_ref = manifest.checkpoint_custody[0]
+    assert loaded_ref == emitted_ref
+    assert emitted_ref.uri == result.checkpoint_writes[0].manifest_path.relative_to(
+        checkpoint_root
+    ).as_posix()
+    assert not Path(emitted_ref.uri).is_absolute()
+    staged_context = resolve_staged_execution_context(
+        StagedExecutionDescriptor(
+            schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+            schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+            artifact_providers={},
+            checkpoint_custody={
+                "training-checkpoints": StagedCheckpointCustodySpec(
+                    backend="feedbax-checkpoint-transaction-tree"
+                )
+            },
+        ),
+        checkpoint_custody_bindings=[
+            StagedCheckpointCustodyRootBinding("training-checkpoints", checkpoint_root)
+        ],
+    )
+    resolved = staged_context.resolve_checkpoint_custody_ref(
+        loaded_ref,
+        binding_name="training-checkpoints",
         slot_names=["model"],
     )
     model_slot = next(slot for slot in resolved.manifest.slots if slot.slot == "model")
 
     assert resolved.parent_ref.kind == "TrainingCheckpointTransactionManifest"
+    assert resolved.parent_ref == loaded_ref
     assert resolved.parent_ref.role == "training_checkpoint_custody"
     assert resolved.parent_ref.id == emitted_ref.id
     assert resolved.manifest_sha256 == emitted_ref.metadata["manifest_sha256"]
