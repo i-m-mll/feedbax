@@ -1687,7 +1687,7 @@ def _build_manifest(
             kind="TrainingCheckpointTransactionManifest",
             id=write.manifest.transaction_id,
             role="training_checkpoint_custody",
-            uri=str(write.manifest_path),
+            uri=write.manifest_path.relative_to(write.root).as_posix(),
             metadata={"manifest_sha256": write.latest_pointer.manifest_sha256},
         )
         for write in checkpoint_writes

@@ -201,7 +201,7 @@ def _resolver_parent_ref(result, **updates: object) -> ParentRef:
         "kind": "TrainingCheckpointTransactionManifest",
         "id": result.manifest.transaction_id,
         "role": "training_checkpoint_custody",
-        "uri": str(result.manifest_path),
+        "uri": result.manifest_path.relative_to(result.root).as_posix(),
         "metadata": {"manifest_sha256": _sha256_file(result.manifest_path)},
     }
     values.update(updates)
@@ -2405,19 +2405,50 @@ def test_checkpoint_custody_ref_resolver_returns_immutable_lineage_snapshots(
     assert resolved.manifest.transaction_id == result.manifest.transaction_id
 
 
-def test_checkpoint_custody_ref_resolver_accepts_contained_file_uri(
+@pytest.mark.parametrize("absolute_uri", ["path", "file"])
+def test_checkpoint_custody_ref_resolver_rejects_absolute_uri(
     tmp_path: Path,
+    absolute_uri: str,
 ) -> None:
     result = _write_resolver_checkpoint(tmp_path)
-    ref = _resolver_parent_ref(result, uri=result.manifest_path.as_uri())
-
-    resolved = resolve_checkpoint_custody_ref(
-        ref,
-        allowed_root=tmp_path,
-        slot_names=["controller"],
+    uri = (
+        str(result.manifest_path)
+        if absolute_uri == "path"
+        else result.manifest_path.as_uri()
     )
+    ref = _resolver_parent_ref(result, uri=uri)
 
-    assert resolved.slots["controller"].tolist() == [1.0, 2.0]
+    with pytest.raises(CheckpointReferenceResolutionError, match="root-relative"):
+        resolve_checkpoint_custody_ref(
+            ref,
+            allowed_root=tmp_path,
+            slot_names=["controller"],
+        )
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "transactions//manifest.json",
+        "transactions/./manifest.json",
+        "transactions/%2e/manifest.json",
+        "transactions/%2e%2e/manifest.json",
+        "transactions/%2fmanifest.json",
+        "transactions/%00/manifest.json",
+        "transactions/%5cmanifest.json",
+    ],
+)
+def test_checkpoint_custody_ref_resolver_rejects_malformed_relative_uri(
+    tmp_path: Path,
+    uri: str,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="ParentRef uri|escapes"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(result, uri=uri),
+            allowed_root=tmp_path,
+        )
 
 
 def test_checkpoint_custody_ref_resolver_rejects_absolute_slot_path(
@@ -2588,7 +2619,7 @@ def test_checkpoint_custody_ref_resolver_rejects_manifest_and_slot_path_escape(
     outside.write_bytes(result.manifest_path.read_bytes())
     escaped_ref = _resolver_parent_ref(
         result,
-        uri=str(outside),
+        uri="../outside.json",
         metadata={"manifest_sha256": _sha256_file(outside)},
     )
     with pytest.raises(CheckpointReferenceResolutionError, match="escapes"):

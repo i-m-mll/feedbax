@@ -433,7 +433,7 @@ def _validate_relative_execution_uri(uri: str) -> str:
 
 
 def _validate_checkpoint_ref_uri(uri: str | None) -> None:
-    if uri is None or not uri:
+    if not isinstance(uri, str) or not uri:
         raise StagedExecutionContextError(
             "checkpoint custody ParentRef uri must be a nonempty relative path"
         )
@@ -444,18 +444,23 @@ def _validate_checkpoint_ref_uri(uri: str | None) -> None:
             "fragment-free, and relative"
         )
     decoded = unquote(split.path)
-    if "\\" in decoded:
+    if "\x00" in decoded or "\\" in decoded:
         raise StagedExecutionContextError(
             "checkpoint custody ParentRef uri contains an unsupported path separator"
         )
+    raw_parts = decoded.split("/")
     relative = PurePosixPath(decoded)
-    if (
-        relative.is_absolute()
-        or not relative.parts
-        or any(part in {"", ".", ".."} for part in relative.parts)
-    ):
+    if relative.is_absolute():
+        raise StagedExecutionContextError(
+            "checkpoint custody ParentRef uri must be relative to its bound custody root"
+        )
+    if ".." in raw_parts:
         raise StagedExecutionContextError(
             "checkpoint custody ParentRef uri escapes its bound custody root"
+        )
+    if not relative.parts or any(part in {"", "."} for part in raw_parts):
+        raise StagedExecutionContextError(
+            "checkpoint custody ParentRef uri must not contain empty or dot path segments"
         )
 
 
