@@ -336,6 +336,43 @@ def test_checkpoint_binding_mismatch_and_malicious_uri_fail_before_resolution(
         context.resolve_checkpoint_custody_ref(ref)
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "transactions//manifest.json",
+        "transactions/./manifest.json",
+        "transactions/%2e/manifest.json",
+        "transactions/%2e%2e/manifest.json",
+        "transactions/%2fmanifest.json",
+        "transactions/%00/manifest.json",
+        "transactions/%5cmanifest.json",
+    ],
+)
+def test_checkpoint_binding_rejects_malformed_relative_uri_before_resolution(
+    tmp_path: Path,
+    uri: str,
+) -> None:
+    _roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    context = resolve_staged_execution_context(
+        _descriptor(),
+        artifact_provider_bindings=artifact_bindings,
+        checkpoint_custody_bindings=checkpoint_bindings,
+    )
+    ref = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id="transaction",
+        role="training_checkpoint_custody",
+        uri=uri,
+        metadata={
+            "checkpoint_custody_binding": "training-checkpoints",
+            "manifest_sha256": "a" * 64,
+        },
+    )
+
+    with pytest.raises(StagedExecutionContextError, match="ParentRef uri|escapes"):
+        context.resolve_checkpoint_custody_ref(ref)
+
+
 def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_reference(
     tmp_path: Path,
 ) -> None:
