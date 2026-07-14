@@ -13,6 +13,10 @@ from typing import Any
 import plotly.graph_objs as go
 
 from feedbax.analysis.specs import find_manifest_by_id
+from feedbax.analysis.manifest_inputs import (
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
+)
 from feedbax.contracts.expressions import (
     ContextItem,
     Coalesce,
@@ -136,7 +140,10 @@ def resolve_figure_inputs(
     for ref in spec.inputs:
         manifest: AnyManifest | None = None
         manifest_path: Path | None = None
-        if ref.kind.endswith("Manifest"):
+        if is_authenticated_manifest_ref(ref):
+            authenticated = resolve_manifest_input(ref, root_path)
+            manifest, manifest_path = authenticated.manifest, authenticated.path
+        elif ref.kind.endswith("Manifest"):
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
         resolved.append(ResolvedFigureInput(ref=ref, manifest=manifest, path=manifest_path))
     return resolved
@@ -162,8 +169,8 @@ def execute_figure_spec(
         prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=figure_spec.name)
 
     exec_trace = FigureExecutionTrace()
+    resolved_inputs = resolve_figure_inputs(figure_spec, root=root_path)
     try:
-        resolved_inputs = resolve_figure_inputs(figure_spec, root=root_path)
         context = _figure_expression_context(figure_spec, resolved_inputs)
         if figure_spec.run_condition is not None and not evaluate_expr(
             figure_spec.run_condition,

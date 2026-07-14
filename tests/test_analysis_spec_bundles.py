@@ -48,7 +48,9 @@ from feedbax.analysis.specs import (
     unregister_analysis_recipe,
 )
 from feedbax.analysis.materialization import ContextMaterializer
+from feedbax.analysis.manifest_inputs import authenticated_manifest_ref, resolve_manifest_input
 from feedbax.contracts.expressions import Compare
+from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
@@ -697,9 +699,7 @@ def test_bundle_selection_uses_shared_manifest_predicate_query_terms(tmp_path: P
                 id=run_id,
                 run_set_id=source_set,
                 status=status,
-                checkpoint_custody=[
-                    ParentRef(kind="CheckpointManifest", id=f"{run_id}:checkpoint")
-                ]
+                checkpoint_custody=[ParentRef(kind="CheckpointManifest", id=f"{run_id}:checkpoint")]
                 if checkpoint
                 else [],
                 summary_metrics={"loss": loss},
@@ -854,16 +854,93 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
         assert result.stages[1].regeneration_specs[0].kind == "RegenerationSpec"
         assert result.stages[3].regeneration_specs[0].kind == "RegenerationSpec"
         assert result.report_outputs[0].status == "materialized"
-        report_manifest = load_manifest(result.stages[3].manifest_refs[0].uri)
+        report_manifest = resolve_manifest_input(
+            result.stages[3].manifest_refs[0], tmp_path
+        ).manifest
         assert report_manifest.kind == "ReportManifest"
         assert report_manifest.regeneration_specs[0].kind == "RegenerationSpec"
         report_artifacts = {artifact.role: artifact for artifact in report_manifest.artifacts}
         assert set(report_artifacts) == {"report", REPORT_RENDER_ROLE}
         assert report_artifacts[REPORT_RENDER_ROLE].media_type == "text/markdown"
         assert report_artifacts[REPORT_RENDER_ROLE].sha256 is not None
-        assert Path(report_artifacts[REPORT_RENDER_ROLE].uri or "").read_text(
-            encoding="utf-8"
-        ).startswith("# toy_staged / report")
+        assert (
+            Path(report_artifacts[REPORT_RENDER_ROLE].uri or "")
+            .read_text(encoding="utf-8")
+            .startswith("# toy_staged / report")
+        )
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_authenticates_eval_analysis_figure_report_round_trip(
+    tmp_path: Path,
+) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        _write_toy_training(tmp_path, method="minimax")
+        bundle = AnalysisBundleSpec(
+            name="authenticated_round_trip",
+            predicate=ManifestPredicate(
+                manifest_kind="TrainingRunManifest",
+                metadata_equals={"method": "minimax"},
+            ),
+            stages=[
+                BundleStageSpec(
+                    name="eval",
+                    kind="evaluation",
+                    evaluation_type=TOY_EVALUATION_TYPE,
+                    local_params={"n_trials": 2},
+                ),
+                BundleStageSpec(
+                    name="analysis",
+                    kind="analysis",
+                    depends_on=["eval"],
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                    requested_outputs=["toy"],
+                ),
+                BundleStageSpec(
+                    name="figure",
+                    kind="figure",
+                    depends_on=["analysis"],
+                    figure=FigureSpec(
+                        name="authenticated-blank",
+                        assembler="feedbax.grid_figure",
+                    ),
+                ),
+                BundleStageSpec(
+                    name="report",
+                    kind="report",
+                    depends_on=["figure"],
+                    report_type=BUNDLE_SUMMARY_REPORT_TYPE,
+                ),
+            ],
+        )
+
+        execution = execute_staged_analysis_bundle(bundle, root=tmp_path)
+        assert [stage.kind for stage in execution.stages] == [
+            "evaluation",
+            "analysis",
+            "figure",
+            "report",
+        ]
+        for index, stage in enumerate(execution.stages):
+            ref = stage.manifest_refs[0]
+            resolved = resolve_manifest_input(ref, tmp_path)
+            assert ref.uri is None
+            assert ref.metadata["size_bytes"] == len(resolved.raw_bytes)
+            if index:
+                assert stage.inputs[-1] == execution.stages[index - 1].manifest_refs[0]
+
+        for stage in execution.stages[1:]:
+            embedded = stage.regeneration_specs[0].inline
+            assert embedded["inputs"] == [
+                stage.inputs[0].model_dump(mode="json", exclude_none=True)
+            ]
+            assert all(
+                output.get("kind") != stage.manifest_refs[0].kind for output in embedded["outputs"]
+            )
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
@@ -878,9 +955,7 @@ def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs
     def recipe(spec: AnalysisRunSpec, _root: Path, inputs):
         observed_inputs.append([(item.ref.kind, item.ref.id) for item in inputs])
         eval_values = [
-            int(item.states["value"])
-            for item in inputs
-            if item.ref.kind == "EvaluationRunManifest"
+            int(item.states["value"]) for item in inputs if item.ref.kind == "EvaluationRunManifest"
         ]
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
@@ -946,7 +1021,9 @@ def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs
                 ("EvaluationRunManifest", long_eval_ref.id),
             ]
         ]
-        analysis_manifest = load_manifest(comparison_stage.manifest_refs[0].uri)
+        analysis_manifest = resolve_manifest_input(
+            comparison_stage.manifest_refs[0], tmp_path
+        ).manifest
         assert analysis_manifest.inputs == comparison_stage.inputs
         assert analysis_manifest.provenance.parents == comparison_stage.inputs
     finally:
@@ -1017,6 +1094,24 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(tmp_path: Path) 
         assert analysis_calls == [7]
         assert second.stages[0].manifest_refs == first.stages[0].manifest_refs
         assert second.stages[1].manifest_refs == first.stages[1].manifest_refs
+
+        analysis_manifest = resolve_manifest_input(
+            first.stages[1].manifest_refs[0], tmp_path
+        ).manifest
+        analysis_spec = AnalysisRunSpec.model_validate(analysis_manifest.analysis_spec.inline)
+        evaluation_input = resolve_manifest_input(first.stages[0].manifest_refs[0], tmp_path)
+        evaluation_input.path.write_bytes(evaluation_input.raw_bytes + b"\n")
+        with pytest.raises(ValueError, match="size mismatch"):
+            execute_analysis_run_spec(analysis_spec, root=tmp_path)
+        assert analysis_calls == [7]
+
+        rebuilt_ref = authenticated_manifest_ref(
+            evaluation_input.manifest,
+            evaluation_input.path,
+            "evaluation_run",
+        )
+        rebuilt_spec = analysis_spec.model_copy(update={"inputs": [rebuilt_ref]})
+        assert analysis_run_manifest_id(rebuilt_spec) != analysis_run_manifest_id(analysis_spec)
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
@@ -1055,10 +1150,8 @@ def test_staged_bundle_evaluation_stage_can_request_durable_states(
         eval_stage = result.stages[0]
         assert eval_stage.outputs[0].status == "materialized"
         assert eval_stage.outputs[1].status == "materialized"
-        assert eval_stage.artifact_groups["evaluation_states"][0].role == (
-            "evaluation_states"
-        )
-        eval_manifest = load_manifest(eval_stage.manifest_refs[0].uri)
+        assert eval_stage.artifact_groups["evaluation_states"][0].role == ("evaluation_states")
+        eval_manifest = resolve_manifest_input(eval_stage.manifest_refs[0], tmp_path).manifest
         assert eval_manifest.evaluation_spec.inline["params"]["states_custody"] == "durable"
         assert eval_manifest.artifacts[0].role == "evaluation_states"
     finally:
@@ -1453,7 +1546,7 @@ def test_staged_bundle_materialization_stage_emits_artifact_and_regeneration(
         assert payload_ref.role == "toy_materialized_payload"
         assert json.loads(Path(payload_ref.uri).read_text(encoding="utf-8"))["value"] == 23
         assert stage.regeneration_specs[0].kind == "RegenerationSpec"
-        manifest = load_manifest(stage.manifest_refs[0].uri)
+        manifest = resolve_manifest_input(stage.manifest_refs[0], tmp_path).manifest
         assert manifest.artifacts[0].role == "toy_materialized_payload"
         assert manifest.regeneration_specs[-1].kind == "RegenerationSpec"
         assert manifest.regeneration_specs[-1].inline["parameters"]["stage"]["kind"] == (
@@ -1545,9 +1638,9 @@ def test_staged_bundle_existing_execution_record_omits_new_fields(tmp_path: Path
 
         assert "depends_on_roles" not in json.dumps(payload, sort_keys=True)
         assert "input_artifacts" not in json.dumps(payload, sort_keys=True)
-        stage_payload = payload["stages"][1]["regeneration_specs"][0]["inline"][
-            "parameters"
-        ]["stage"]
+        stage_payload = payload["stages"][1]["regeneration_specs"][0]["inline"]["parameters"][
+            "stage"
+        ]
         assert "depends_on_roles" not in stage_payload
         assert "run_condition" not in stage_payload
     finally:
@@ -1682,9 +1775,7 @@ def test_analysis_cli_runs_staged_bundle_with_addressable_outputs(
             "analysis",
             "report",
         ]
-        assert payload["stages"][0]["manifest_refs"][0]["kind"] == (
-            "EvaluationRunManifest"
-        )
+        assert payload["stages"][0]["manifest_refs"][0]["kind"] == ("EvaluationRunManifest")
         analysis_stage = payload["stages"][1]
         assert analysis_stage["manifest_refs"][0]["kind"] == "AnalysisRunManifest"
         assert analysis_stage["artifact_groups"]["figure"]
@@ -1907,12 +1998,22 @@ def test_bundle_context_projects_figures_through_registered_routing(
         render_path = Path(projection["render_path"])
         symlink_path = Path(projection["symlink_path"])
         assert spec_path == (
-            tmp_path / "toy_bundle_pkg" / "results" / "toy_experiment" / "figures"
-            / "toy_topic" / "spec.json"
+            tmp_path
+            / "toy_bundle_pkg"
+            / "results"
+            / "toy_experiment"
+            / "figures"
+            / "toy_topic"
+            / "spec.json"
         )
         assert render_path == (
-            tmp_path / "toy_bundle_pkg" / "_artifacts" / "toy_experiment" / "figures"
-            / "toy_topic" / "figure.fig.json"
+            tmp_path
+            / "toy_bundle_pkg"
+            / "_artifacts"
+            / "toy_experiment"
+            / "figures"
+            / "toy_topic"
+            / "figure.fig.json"
         )
         assert spec_path.exists()
         assert render_path.exists()

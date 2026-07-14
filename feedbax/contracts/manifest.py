@@ -1765,9 +1765,9 @@ def write_manifest(
     return path
 
 
-def load_manifest(path: Path | str) -> AnyManifest:
-    """Load a known Feedbax manifest from disk."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def load_manifest_bytes(raw: bytes) -> AnyManifest:
+    """Parse one known Feedbax manifest from already-authenticated raw bytes."""
+    data = json.loads(raw)
     data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_manifest_data_spec_payloads(data)
     data = _validate_retention_artifact_ref_metadata(data)
@@ -1779,6 +1779,11 @@ def load_manifest(path: Path | str) -> AnyManifest:
     if model is None:
         raise ValueError(f"Unknown Feedbax manifest kind: {kind!r}")
     return model.model_validate(data)  # type: ignore[return-value]
+
+
+def load_manifest(path: Path | str) -> AnyManifest:
+    """Load a known Feedbax manifest from disk."""
+    return load_manifest_bytes(Path(path).read_bytes())
 
 
 def load_graph_spec_from_manifest(

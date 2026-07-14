@@ -27,13 +27,13 @@ from feedbax.analysis.exact_parents import (
     StagedExactParentEntry,
     StagedExactParents,
 )
+from feedbax.analysis.manifest_inputs import resolve_manifest_input
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE
 from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
     TrainingRunManifest,
     evaluation_run_manifest_id,
-    load_manifest,
     sha256_bytes,
     write_manifest,
 )
@@ -217,7 +217,7 @@ def test_four_exact_parents_remain_per_run_until_grouped_downstream(
     assert len({ref.id for ref in evaluation_stage.manifest_refs}) == 4
     assert all(ref.id for ref in evaluation_stage.manifest_refs)
     for entry, output_ref in zip(entries, evaluation_stage.manifest_refs, strict=True):
-        manifest = load_manifest(output_ref.uri or "")
+        manifest = resolve_manifest_input(output_ref, tmp_path).manifest
         assert manifest.input_training_runs == [entry.parent]
         assert manifest.provenance.parents == [entry.parent]
         assert manifest.evaluation_spec.inline["inputs"] == [
