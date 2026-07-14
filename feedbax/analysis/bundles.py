@@ -1139,6 +1139,40 @@ def _artifact_groups(products: Sequence[StageMaterialization]) -> dict[str, list
     return groups
 
 
+def _with_stage_output_execution_locations(
+    context: StagedExecutionContext,
+    products: Sequence[StageMaterialization],
+    *,
+    root: Path,
+) -> StagedExecutionContext:
+    """Retain completed stage manifests as authority for later stages."""
+    locations = list(context.parent_execution_locations)
+    known_parents = {
+        location.parent.model_dump_json(exclude_none=False) for location in locations
+    }
+    for product in products:
+        if product.manifest_ref is None:
+            continue
+        if product.manifest_path is None:
+            raise ValueError("staged manifest output is missing its execution path")
+        parent_key = product.manifest_ref.model_dump_json(exclude_none=False)
+        if parent_key in known_parents:
+            continue
+        try:
+            execution_uri = product.manifest_path.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError("staged manifest output escapes the execution root") from exc
+        locations.append(
+            StagedParentExecutionLocation(
+                parent=product.manifest_ref,
+                root=root.absolute(),
+                execution_uri=execution_uri,
+            )
+        )
+        known_parents.add(parent_key)
+    return with_staged_parent_execution_locations(context, locations)
+
+
 def _default_outputs_for_stage(stage: BundleStageSpec) -> list[BundleStageOutputSpec]:
     if stage.outputs:
         return list(stage.outputs)
@@ -2250,6 +2284,11 @@ def execute_staged_analysis_bundle(
             if product.regeneration_spec is not None
         ]
         stage_products[stage.name] = products
+        execution_context = _with_stage_output_execution_locations(
+            execution_context,
+            products,
+            root=root_path,
+        )
         stage_records.append(
             BundleStageExecutionRecord(
                 name=stage.name,

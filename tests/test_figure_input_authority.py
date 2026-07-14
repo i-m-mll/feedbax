@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import feedbax.analysis.bundles as bundles_module
+from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.bundles import (
     AnalysisBundleSpec,
     BundleStageSpec,
@@ -16,7 +16,6 @@ from feedbax.analysis.execution_context import (
     StagedArtifactProviderRootBinding,
     StagedExecutionContext,
     StagedParentExecutionLocation,
-    with_staged_parent_execution_locations,
 )
 from feedbax.analysis.figures import (
     FigureInputAuthorityError,
@@ -28,6 +27,11 @@ from feedbax.analysis.manifest_inputs import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
     resolve_manifest_input,
+)
+from feedbax.analysis.specs import (
+    AnalysisRecipeResult,
+    register_analysis_recipe,
+    unregister_analysis_recipe,
 )
 from feedbax.contracts.figures import (
     FigureArtifactPayload,
@@ -49,6 +53,17 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from tests.analysis_fixtures import build_toy_analysis_data
+
+
+_STAGED_PROVIDER_ANALYSIS_TYPE = "feedbax.test.staged_figure_provider"
+
+
+class _ProviderArtifactAnalysis(AbstractAnalysis):
+    """Expose one provider-backed ref for manifest recording."""
+
+    def compute(self, data, artifact, **kwargs):
+        return {"artifact": artifact}
 
 
 def _authority_case(tmp_path: Path):
@@ -152,50 +167,119 @@ def test_direct_execution_records_exact_consumed_artifact(tmp_path: Path) -> Non
     assert manifest.regeneration_specs == [artifact]
 
 
-def test_public_staged_figure_execution_uses_constructed_provider_context(
+def test_staged_figure_resolves_prior_stage_output_through_executor_context(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider, artifact, _certificate, context, spec = _authority_case(tmp_path)
-    stage = BundleStageSpec(name="figure", kind="figure", figure=spec)
-    bundle = AnalysisBundleSpec(
-        name="authority-bundle",
-        predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
-        stages=[stage],
+    provider = ImmutableArtifactBlobProvider(tmp_path / "provider")
+    certificate = {
+        "schema_id": "rlrmp.bridge.certificate",
+        "schema_version": "rlrmp.bridge.certificate.v1",
+        "values": [1, 2, 3],
+    }
+    artifact = provider.store_bytes(
+        json.dumps(certificate).encode(),
+        role="rlrmp-bridge-standard-certificate",
+        logical_name="certificate.json",
+        media_type="application/json",
     )
-    original_resolver = bundles_module.resolve_staged_execution_context
 
-    def resolve_with_parent_location(*args, **kwargs):
-        constructed = original_resolver(*args, **kwargs)
-        return with_staged_parent_execution_locations(
-            constructed,
-            context.parent_execution_locations,
+    def recipe(_spec, _root, _inputs, _execution_context):
+        return AnalysisRecipeResult(
+            analyses={
+                "provider": _ProviderArtifactAnalysis(variant="provider", cache_result=True)
+            },
+            data=build_toy_analysis_data(value=0),
+            common_inputs={"artifact": artifact},
         )
 
-    monkeypatch.setattr(
-        bundles_module,
-        "resolve_staged_execution_context",
-        resolve_with_parent_location,
+    stage_one = BundleStageSpec(
+        name="produce",
+        kind="analysis",
+        mode="grouped",
+        analysis_type=_STAGED_PROVIDER_ANALYSIS_TYPE,
+        requested_outputs=["provider"],
     )
-
-    execution = execute_staged_analysis_bundle(
-        bundle,
-        root=tmp_path / "outputs",
-        execution_descriptor=StagedExecutionDescriptor(
-            schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-            schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-            artifact_providers={"certificates": ImmutableArtifactBlobProviderSpec()},
-            checkpoint_custody={},
-        ),
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding("certificates", provider.root)
-        ],
+    descriptor = StagedExecutionDescriptor(
+        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        artifact_providers={"certificates": ImmutableArtifactBlobProviderSpec()},
+        checkpoint_custody={},
     )
+    bindings = [StagedArtifactProviderRootBinding("certificates", provider.root)]
+    root = tmp_path / "outputs"
+    register_analysis_recipe(_STAGED_PROVIDER_ANALYSIS_TYPE, recipe, replace=True)
+    try:
+        first_execution = execute_staged_analysis_bundle(
+            AnalysisBundleSpec(
+                name="authority-producer",
+                predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
+                stages=[stage_one],
+            ),
+            root=root,
+            execution_descriptor=descriptor,
+            artifact_provider_bindings=bindings,
+        )
+        produced_parent = first_execution.stages[0].manifest_refs[0]
+        selector = FigureArtifactPayload(
+            name="certificate",
+            manifest_role="analysis_run",
+            artifact_role="rlrmp-bridge-standard-certificate",
+            artifact_provider="certificates",
+            payload_schema_id="rlrmp.bridge.certificate",
+            payload_schema_version="rlrmp.bridge.certificate.v1",
+        )
 
-    assert len(execution.stages) == 1
-    manifest_ref = execution.stages[0].manifest_refs[0]
-    staged_manifest = resolve_manifest_input(manifest_ref, tmp_path / "outputs").manifest
-    assert artifact in staged_manifest.regeneration_specs
+        def bundle_for(parent: ParentRef) -> AnalysisBundleSpec:
+            figure = FigureSpec(
+                name="authority",
+                assembler="feedbax.grid_figure",
+                inputs=[parent],
+                input_authorities=[
+                    FigureInputAuthority(parent=parent, artifact_payloads=[selector])
+                ],
+            )
+            return AnalysisBundleSpec(
+                name="authority-bundle",
+                predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
+                stages=[
+                    stage_one,
+                    BundleStageSpec(
+                        name="figure",
+                        kind="figure",
+                        depends_on=["produce"],
+                        figure=figure,
+                    ),
+                ],
+            )
+
+        execution = execute_staged_analysis_bundle(
+            bundle_for(produced_parent),
+            root=root,
+            execution_descriptor=descriptor,
+            artifact_provider_bindings=bindings,
+        )
+        assert execution.stages[0].manifest_refs == [produced_parent]
+        assert execution.stages[1].inputs == [produced_parent]
+        staged_manifest = resolve_manifest_input(
+            execution.stages[1].manifest_refs[0], root
+        ).manifest
+        assert artifact in staged_manifest.regeneration_specs
+
+        missing_parent = produced_parent.model_copy(
+            update={"id": f"{produced_parent.id}:missing"}
+        )
+        with pytest.raises(
+            FigureInputAuthorityError,
+            match="authority rejected exact parent",
+        ):
+            execute_staged_analysis_bundle(
+                bundle_for(missing_parent),
+                root=root,
+                execution_descriptor=descriptor,
+                artifact_provider_bindings=bindings,
+            )
+    finally:
+        unregister_analysis_recipe(_STAGED_PROVIDER_ANALYSIS_TYPE)
 
 
 def test_contained_manifest_hardlink_precedes_direct_figure_effects(tmp_path: Path) -> None:
