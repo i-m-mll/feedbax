@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ from feedbax.analysis import (
     unregister_evaluation_recipe,
     StagedArtifactProviderRootBinding,
 )
-from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.analysis.evaluation import EvaluationRecipeResult, execute_evaluation_run_spec
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
@@ -28,6 +29,7 @@ from feedbax.contracts.manifest import (
     ParentRef,
     TrainingRunManifest,
     sha256_bytes,
+    evaluation_run_manifest_id,
     spec_payload,
     write_manifest,
     safe_manifest_key,
@@ -263,6 +265,119 @@ def test_public_params_base_composes_required_recipe_fields() -> None:
     parsed = RecipeParams.model_validate({"metric": "loss"})
     assert parsed.metric == "loss"
     assert parsed.staged_prerequisites is None
+
+
+def test_direct_execution_accepts_serialized_params_base_without_prerequisites(
+    tmp_path: Path,
+) -> None:
+    parent = _training_parent(tmp_path, 0).parent
+    params = EvaluationParamsBase().model_dump(mode="json")
+    spec = EvaluationRunSpec(
+        evaluation_type=EVALUATION_TYPE,
+        inputs=[parent],
+        params=params,
+    )
+    expected_id = evaluation_run_manifest_id(spec)
+
+    def recipe(run_spec, _root, _states_path, _execution_context):
+        assert run_spec.params == {"staged_prerequisites": None}
+        return EvaluationRecipeResult()
+
+    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
+    try:
+        manifest, _path = execute_evaluation_run_spec(spec, root=tmp_path)
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    assert params == {"staged_prerequisites": None}
+    assert spec.params == params
+    assert manifest.id == expected_id
+    assert manifest.provenance.parents == [parent]
+    assert manifest.evaluation_spec.inline["params"] == params
+
+
+@pytest.mark.parametrize("malformed", [[], ""])
+def test_direct_execution_rejects_falsey_non_mapping_prerequisites(
+    tmp_path: Path,
+    malformed: object,
+) -> None:
+    spec = EvaluationRunSpec(
+        evaluation_type=EVALUATION_TYPE,
+        params={"staged_prerequisites": malformed},
+    )
+    calls = 0
+
+    def recipe(_run_spec, _root, _states_path, _execution_context):
+        nonlocal calls
+        calls += 1
+        return EvaluationRecipeResult()
+
+    register_evaluation_recipe(EVALUATION_TYPE, recipe, replace=True)
+    try:
+        with pytest.raises(TypeError, match="staged_prerequisites must be a mapping or null"):
+            execute_evaluation_run_spec(spec, root=tmp_path)
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+    assert calls == 0
+
+
+def test_cli_dry_run_round_trips_selective_prerequisites_and_expands_24_eval_nodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    entries = [_training_parent(tmp_path, index) for index in range(6)]
+    refs = [_prerequisite(tmp_path, index) for index in range(2)]
+    stages = [
+        BundleStageSpec(
+            name=f"evaluate-{stage_index}",
+            kind="evaluation",
+            mode="per-run",
+            evaluation_type=EVALUATION_TYPE,
+            prerequisite_bindings=[
+                BundlePerInputPrerequisiteBinding(
+                    input_id=entries[index].parent.id,
+                    bind_as="augmented_reference",
+                    parent=refs[index],
+                )
+                for index in range(2)
+            ],
+        )
+        for stage_index in range(4)
+    ]
+    bundle = AnalysisBundleSpec(
+        name="four-by-six-selective-prerequisites",
+        predicate=ManifestPredicate(manifest_kind="TrainingRunManifest"),
+        stages=stages,
+    )
+    round_tripped = AnalysisBundleSpec.model_validate_json(bundle.model_dump_json())
+    exact_parents_path = tmp_path / "exact-parents.json"
+    exact_parents_path.write_text(_exact(entries).model_dump_json(indent=2), encoding="utf-8")
+
+    from feedbax.bin import analysis as analysis_cli
+
+    monkeypatch.setattr(analysis_cli, "load_analysis_bundle", lambda *_args, **_kwargs: round_tripped)
+    analysis_cli.main(
+        [
+            "--bundle",
+            "test/selective",
+            "--manifest-root",
+            str(tmp_path),
+            "--exact-parents",
+            str(exact_parents_path),
+            "--dry-run",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["matched_run_ids"] == [entry.parent.id for entry in entries]
+    assert len(payload["stages"]) == 4
+    assert all(stage["status"] == "would_run" for stage in payload["stages"])
+    assert sum(len(stage["inputs"]) for stage in payload["stages"]) == 24
+    assert [binding.input_id for binding in round_tripped.stages[0].prerequisite_bindings] == [
+        entries[0].parent.id,
+        entries[1].parent.id,
+    ]
 
 
 @pytest.mark.parametrize(

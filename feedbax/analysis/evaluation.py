@@ -319,9 +319,14 @@ def execute_evaluation_run_spec(
         if provenance is not None
         else collect_git_provenance()
     )
+    staged_prerequisites = run_spec.params.get("staged_prerequisites")
+    if staged_prerequisites is None:
+        staged_prerequisites = {}
+    elif not isinstance(staged_prerequisites, Mapping):
+        raise TypeError("evaluation params.staged_prerequisites must be a mapping or null")
     staged_prerequisite_parents = [
         StagedEvaluationPrerequisite.model_validate(value).parent
-        for value in run_spec.params.get("staged_prerequisites", {}).values()
+        for value in staged_prerequisites.values()
     ]
     expected_parents = [*run_spec.inputs, *staged_prerequisite_parents]
     if provenance is not None and prov.parents and prov.parents != expected_parents:
