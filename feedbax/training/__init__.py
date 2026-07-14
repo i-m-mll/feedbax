@@ -5,12 +5,21 @@ from .checkpoint_custody import (
     CheckpointCustodyError,
     CheckpointIntegrityError,
     CheckpointReferenceResolutionError,
+    CheckpointForkPlanBindings,
+    CheckpointForkResult,
+    CheckpointForkTransformRegistration,
+    CheckpointForkTransformRegistry,
+    DEFAULT_CHECKPOINT_FORK_TRANSFORM_REGISTRY,
     CheckpointWriteResult,
     CheckpointCustodyDocuments,
     ResolvedCheckpointTransaction,
     ResumeSlotTransform,
+    checkpoint_fork_plan_canonical_projection,
+    checkpoint_fork_plan_sha256,
+    derive_checkpoint_fork_compatibility_projection,
     checkpoint_slot_names,
     checkpoint_slot_specs,
+    fork_checkpoint_plan,
     load_latest_checkpoint,
     load_checkpoint_custody_documents,
     load_checkpoint_latest_pointer_file,
@@ -47,6 +56,10 @@ from feedbax.contracts.run_matrix import (
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
 )
+from feedbax.contracts.training import (
+    TrainingMethodAuthoringContribution,
+    TrainingMethodAuthoringHook,
+)
 
 try:
     from ..config.hyperparams import load_hps
@@ -80,6 +93,16 @@ try:
         TrainingRowLowerer,
         materialize_adapted_run_matrix,
     )
+    from .authoring import (
+        AUTHORING_RESERVED_METADATA_KEYS,
+        TRAINING_METHOD_AUTHORING_LOWERER_ID,
+        TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY,
+        TRAINING_METHOD_AUTHORING_LOWERER_VERSION,
+        TrainingMethodAuthoringCompilation,
+        TrainingMethodAuthoringError,
+        TrainingMethodAuthoringProjectors,
+        compile_training_method_authoring,
+    )
 except ImportError:
     pass
 
@@ -90,6 +113,11 @@ __all__ = [
     "CheckpointCustodyError",
     "CheckpointIntegrityError",
     "CheckpointReferenceResolutionError",
+    "CheckpointForkPlanBindings",
+    "CheckpointForkResult",
+    "CheckpointForkTransformRegistration",
+    "CheckpointForkTransformRegistry",
+    "DEFAULT_CHECKPOINT_FORK_TRANSFORM_REGISTRY",
     "CheckpointWriteResult",
     "CheckpointCustodyDocuments",
     "ResolvedCheckpointTransaction",
@@ -114,6 +142,15 @@ __all__ = [
     "TrainingRowPlanningProvenance",
     "TrainingRowProvenance",
     "TrainingRunExecutorError",
+    "TrainingMethodAuthoringCompilation",
+    "TrainingMethodAuthoringContribution",
+    "TrainingMethodAuthoringError",
+    "TrainingMethodAuthoringHook",
+    "TrainingMethodAuthoringProjectors",
+    "AUTHORING_RESERVED_METADATA_KEYS",
+    "TRAINING_METHOD_AUTHORING_LOWERER_ID",
+    "TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY",
+    "TRAINING_METHOD_AUTHORING_LOWERER_VERSION",
     "DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY",
     "ExecutionPreparationError",
     "ExecutionPreparationProvider",
@@ -122,10 +159,15 @@ __all__ = [
     "ExecutionPreparationRequest",
     "ExecutionPreparationResult",
     "build_optimizer",
+    "checkpoint_fork_plan_canonical_projection",
+    "checkpoint_fork_plan_sha256",
+    "derive_checkpoint_fork_compatibility_projection",
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
+    "compile_training_method_authoring",
     "execute_training_run_spec",
     "emit_training_run_spec_storage",
+    "fork_checkpoint_plan",
     "grad_wrap_simple_loss_func",
     "load_hps",
     "load_latest_checkpoint",

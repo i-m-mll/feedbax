@@ -9,14 +9,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from feedbax.contracts.training import (
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     LossTermSpec,
     ObjectiveSlotSpec,
+    StandardSupervisedMethodPayload,
     TaskSpec,
     TrainingConfig,
+    TrainingMethodDescriptor,
+    TrainingMethodMetadataProjector,
     TrainingMethodRegistration,
+    TrainingMethodRegistry,
     TrainingRunSpec,
     WorkerExecutionSpec,
     default_training_method_registry,
@@ -36,6 +42,7 @@ from feedbax.training.preparation import (
     ExecutionPreparationResult,
     require_execution_preparation_provider,
 )
+from feedbax.training.worker_validation import WorkerContractValidationError
 
 
 DUMMY_METHOD_REF = "dummy/custom/v1"
@@ -44,7 +51,30 @@ DUMMY_SCHEMA_VERSION = "dummy.spec.training_method.v1"
 
 
 class DummyPayload(BaseModel):
-    pass
+    token: str = "typed"
+
+
+class DummyMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    token_length: int
+
+
+def _dummy_descriptor(**hooks: object) -> TrainingMethodDescriptor[DummyPayload]:
+    return TrainingMethodDescriptor(
+        method_ref=DUMMY_METHOD_REF,
+        payload_schema_id=DUMMY_SCHEMA_ID,
+        payload_schema_version=DUMMY_SCHEMA_VERSION,
+        payload_model=DummyPayload,
+        contract_compiler=lambda _payload: standard_supervised_method_contract().model_copy(
+            update={
+                "method_ref": DUMMY_METHOD_REF,
+                "method_payload_schema_version": DUMMY_SCHEMA_VERSION,
+            }
+        ),
+        update_kernels_factory=standard_supervised_update_kernels,
+        **hooks,
+    )
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -94,7 +124,7 @@ def _dummy_run_spec_payload() -> dict[str, object]:
     payload["method_payload"] = {
         "schema_id": DUMMY_SCHEMA_ID,
         "schema_version": DUMMY_SCHEMA_VERSION,
-        "payload": {},
+        "payload": {"token": "typed"},
     }
     worker_execution = payload["worker_execution"]
     assert isinstance(worker_execution, dict)
@@ -137,6 +167,274 @@ def test_entry_point_can_register_training_method() -> None:
     load_training_method_plugins(registry=registry, entry_points=[entry_point])
 
     assert DUMMY_METHOD_REF in registry.available_keys()
+
+
+def test_low_level_registration_requires_exactly_one_contract_producer() -> None:
+    contract = standard_supervised_method_contract()
+    common = {
+        "method_ref": DUMMY_METHOD_REF,
+        "payload_schema_id": DUMMY_SCHEMA_ID,
+        "payload_schema_version": DUMMY_SCHEMA_VERSION,
+        "payload_model": DummyPayload,
+        "update_kernels_factory": standard_supervised_update_kernels,
+    }
+
+    with pytest.raises(ValueError, match="exactly one contract producer"):
+        TrainingMethodRegistry().register(
+            TrainingMethodRegistration(contract_factory=None, **common)
+        )
+    with pytest.raises(ValueError, match="exactly one contract producer"):
+        TrainingMethodRegistry().register(
+            TrainingMethodRegistration(
+                contract_factory=lambda: contract,
+                contract_compiler=lambda _payload: contract,
+                **common,
+            )
+        )
+
+
+def test_entry_point_descriptor_derives_method_and_preparation_from_one_hook() -> None:
+    method_registry = default_training_method_registry()
+    preparation_registry = ExecutionPreparationProviderRegistry()
+    contract = standard_supervised_method_contract().model_copy(
+        update={
+            "method_ref": DUMMY_METHOD_REF,
+            "method_payload_schema_version": DUMMY_SCHEMA_VERSION,
+        }
+    )
+
+    def register(registry) -> None:
+        registry.register_descriptor(
+            TrainingMethodDescriptor(
+                method_ref=DUMMY_METHOD_REF,
+                payload_schema_id=DUMMY_SCHEMA_ID,
+                payload_schema_version=DUMMY_SCHEMA_VERSION,
+                payload_model=DummyPayload,
+                contract_compiler=lambda payload: contract,
+                update_kernels_factory=standard_supervised_update_kernels,
+                preparation_provider=lambda request: ExecutionPreparationResult(initial_slots={}),
+                owner="dummy-descriptor",
+                package="dummy",
+            )
+        )
+
+    load_training_method_plugins(
+        registry=method_registry,
+        preparation_registry=preparation_registry,
+        entry_points=[
+            SimpleNamespace(
+                name="descriptor",
+                load=lambda: SimpleNamespace(register_feedbax_training_methods=register),
+            )
+        ],
+    )
+
+    assert method_registry.descriptor_keys() == (
+        "dummy/custom/v1",
+        "feedbax/standard_supervised/v1",
+    )
+    assert preparation_registry.available_keys() == (DUMMY_METHOD_REF,)
+
+
+def test_descriptor_binds_existing_row_compiler_boundary() -> None:
+    def lower_row(row):
+        return row
+
+    descriptor = _dummy_descriptor(row_compiler=lower_row)
+
+    registry = TrainingMethodRegistry()
+    registry.register_descriptor(descriptor)
+
+    assert registry.descriptor(DUMMY_METHOD_REF).row_compiler is lower_row
+
+
+def test_metadata_projector_validates_stable_identity_and_output() -> None:
+    projector = TrainingMethodMetadataProjector[DummyPayload](
+        schema_id="dummy.spec.training_metadata",
+        schema_version="dummy.spec.training_metadata.v1",
+        output_model=DummyMetadata,
+        projector=lambda payload: {"token_length": len(payload.token)},
+    )
+    descriptor = _dummy_descriptor(metadata_projector=projector)
+
+    registry = TrainingMethodRegistry()
+    registry.register_descriptor(descriptor)
+
+    assert projector.project(DummyPayload(token="typed")) == DummyMetadata(token_length=5)
+    assert registry.descriptor(DUMMY_METHOD_REF).metadata_projector is projector
+
+
+@pytest.mark.parametrize("field", ["schema_id", "schema_version"])
+def test_metadata_projector_rejects_empty_identity(field: str) -> None:
+    kwargs = {
+        "schema_id": "dummy.spec.training_metadata",
+        "schema_version": "dummy.spec.training_metadata.v1",
+        "output_model": DummyMetadata,
+        "projector": lambda payload: {"token_length": len(payload.token)},
+    }
+    kwargs[field] = " "
+    projector = TrainingMethodMetadataProjector[DummyPayload](**kwargs)
+
+    with pytest.raises(ValueError, match="identity must not be empty"):
+        TrainingMethodRegistry().register_descriptor(
+            _dummy_descriptor(metadata_projector=projector)
+        )
+
+
+def test_metadata_projector_rejects_invalid_model_callable_and_output() -> None:
+    with pytest.raises(TypeError, match="output_model must extend BaseModel"):
+        TrainingMethodRegistry().register_descriptor(
+            _dummy_descriptor(
+                metadata_projector=TrainingMethodMetadataProjector(
+                    schema_id="dummy.spec.training_metadata",
+                    schema_version="dummy.spec.training_metadata.v1",
+                    output_model=dict,
+                    projector=lambda _payload: {},
+                )
+            )
+        )
+
+    with pytest.raises(TypeError, match="projector must be callable"):
+        TrainingMethodRegistry().register_descriptor(
+            _dummy_descriptor(
+                metadata_projector=TrainingMethodMetadataProjector(
+                    schema_id="dummy.spec.training_metadata",
+                    schema_version="dummy.spec.training_metadata.v1",
+                    output_model=DummyMetadata,
+                    projector=None,
+                )
+            )
+        )
+
+    projector = TrainingMethodMetadataProjector[DummyPayload](
+        schema_id="dummy.spec.training_metadata",
+        schema_version="dummy.spec.training_metadata.v1",
+        output_model=DummyMetadata,
+        projector=lambda _payload: {"token_length": "not-an-integer"},
+    )
+    TrainingMethodRegistry().register_descriptor(_dummy_descriptor(metadata_projector=projector))
+    with pytest.raises(ValueError, match="token_length"):
+        projector.project(DummyPayload())
+
+
+def test_metadata_projector_requires_strict_output_model() -> None:
+    class PermissiveMetadata(BaseModel):
+        token_length: int
+
+    with pytest.raises(ValueError, match="extra='forbid'"):
+        TrainingMethodRegistry().register_descriptor(
+            _dummy_descriptor(
+                metadata_projector=TrainingMethodMetadataProjector(
+                    schema_id="dummy.spec.training_metadata",
+                    schema_version="dummy.spec.training_metadata.v1",
+                    output_model=PermissiveMetadata,
+                    projector=lambda payload: {"token_length": len(payload.token)},
+                )
+            )
+        )
+
+    class NonStrictMetadata(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        token_length: int
+
+    with pytest.raises(ValueError, match="strict=True"):
+        TrainingMethodRegistry().register_descriptor(
+            _dummy_descriptor(
+                metadata_projector=TrainingMethodMetadataProjector(
+                    schema_id="dummy.spec.training_metadata",
+                    schema_version="dummy.spec.training_metadata.v1",
+                    output_model=NonStrictMetadata,
+                    projector=lambda payload: {"token_length": len(payload.token)},
+                )
+            )
+        )
+
+
+def test_descriptor_optimizer_hooks_are_callable_and_standard_is_explicit() -> None:
+    registry = default_training_method_registry()
+    standard = registry.descriptor("feedbax/standard_supervised/v1")
+    assert standard is not None
+    assert standard.optimizer_spec_projector is not None
+    assert standard.optimizer_step_extractor is not None
+
+    for hook in ("optimizer_spec_projector", "optimizer_step_extractor"):
+        with pytest.raises(TypeError, match="non-callable hooks"):
+            TrainingMethodRegistry().register_descriptor(
+                _dummy_descriptor(**{hook: "not-callable"})
+            )
+
+
+@pytest.mark.parametrize("invalid_mapping", ["kernel", "guard"])
+def test_descriptor_rejects_invalid_runtime_mapping_before_preparation(
+    tmp_path: Path,
+    invalid_mapping: str,
+) -> None:
+    method_registry = TrainingMethodRegistry()
+    preparation_registry = ExecutionPreparationProviderRegistry()
+    sentinel = tmp_path / "preparation-ran"
+
+    def prepare(_request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
+        sentinel.write_text("unexpected", encoding="utf-8")
+        return ExecutionPreparationResult(initial_slots={})
+
+    def register(registry: TrainingMethodRegistry) -> None:
+        registry.register_descriptor(
+            TrainingMethodDescriptor(
+                method_ref="feedbax/standard_supervised/v1",
+                payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+                payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+                payload_model=StandardSupervisedMethodPayload,
+                contract_compiler=lambda _payload: standard_supervised_method_contract(),
+                update_kernels_factory=(
+                    (
+                        lambda _payload: {
+                            "feedbax.training.standard_supervised.gradient_update": lambda slots: {}
+                        }
+                    )
+                    if invalid_mapping == "kernel"
+                    else standard_supervised_update_kernels
+                ),
+                guard_predicates_factory=(
+                    (lambda _payload: {"tests.invalid_guard": lambda slots: True})
+                    if invalid_mapping == "guard"
+                    else (lambda _payload: {})
+                ),
+                preparation_provider=prepare,
+                owner="invalid-descriptor-test",
+                package="feedbax",
+            )
+        )
+
+    load_training_method_plugins(
+        registry=method_registry,
+        preparation_registry=preparation_registry,
+        entry_points=[
+            SimpleNamespace(
+                name="invalid-descriptor",
+                load=lambda: SimpleNamespace(register_feedbax_training_methods=register),
+            )
+        ],
+    )
+    run_spec = TrainingRunSpec.model_validate(_standard_run_spec_payload())
+
+    with pytest.raises(WorkerContractValidationError, match="must have signature"):
+        resolved = method_registry.resolve_execution(
+            run_spec.method_ref,
+            run_spec.method_payload,
+            worker_execution=run_spec.worker_execution,
+        )
+        preparation_registry.prepare(
+            ExecutionPreparationRequest(
+                run_spec=run_spec,
+                method_payload=resolved.payload,
+                method_contract=resolved.contract,
+                effective_phase=resolved.effective_phase,
+            )
+        )
+
+    assert not sentinel.exists()
+    assert not any(tmp_path.iterdir())
 
 
 def test_entry_point_can_register_execution_preparation() -> None:
@@ -388,7 +686,7 @@ def test_checkpoint_fork_without_plugin_reports_unknown_method(tmp_path: Path) -
     assert "--plugin <module>" in error
 
 
-def test_execute_cli_plugin_prepares_non_json_slots_and_kernel_context(tmp_path: Path) -> None:
+def test_execute_cli_descriptor_plugin_prepares_typed_runtime_objects(tmp_path: Path) -> None:
     spec_path = tmp_path / "dummy-run-spec.json"
     spec_path.write_text(
         json.dumps(_dummy_run_spec_payload(), indent=2, sort_keys=True),
@@ -402,12 +700,11 @@ def test_execute_cli_plugin_prepares_non_json_slots_and_kernel_context(tmp_path:
             from pydantic import BaseModel
 
             from feedbax.contracts.training import (
-                TrainingMethodRegistration,
+                TrainingMethodDescriptor,
                 standard_supervised_method_contract,
                 standard_supervised_update_kernels,
             )
             from feedbax.training.preparation import (
-                ExecutionPreparationRegistration,
                 ExecutionPreparationResult,
             )
 
@@ -416,10 +713,23 @@ def test_execute_cli_plugin_prepares_non_json_slots_and_kernel_context(tmp_path:
 
 
             class DummyPayload(BaseModel):
-                pass
+                token: str
+
+
+            def compile_contract(payload):
+                assert isinstance(payload, DummyPayload)
+                assert payload.token == "typed"
+                return standard_supervised_method_contract().model_copy(
+                    update={{
+                        "method_ref": {DUMMY_METHOD_REF!r},
+                        "method_payload_schema_version": {DUMMY_SCHEMA_VERSION!r},
+                    }}
+                )
 
 
             def update_kernels(payload):
+                assert isinstance(payload, DummyPayload)
+                assert payload.token == "typed"
                 base = standard_supervised_update_kernels(payload)[
                     "feedbax.training.standard_supervised.gradient_update"
                 ]
@@ -433,30 +743,12 @@ def test_execute_cli_plugin_prepares_non_json_slots_and_kernel_context(tmp_path:
 
 
             def register_feedbax_training_methods(registry):
-                contract = standard_supervised_method_contract().model_copy(
-                    update={{
-                        "method_ref": {DUMMY_METHOD_REF!r},
-                        "method_payload_schema_version": {DUMMY_SCHEMA_VERSION!r},
-                    }}
-                )
-                registry.register(
-                    TrainingMethodRegistration(
-                        method_ref={DUMMY_METHOD_REF!r},
-                        payload_schema_id={DUMMY_SCHEMA_ID!r},
-                        payload_schema_version={DUMMY_SCHEMA_VERSION!r},
-                        payload_model=DummyPayload,
-                        contract_factory=lambda: contract,
-                        update_kernels_factory=update_kernels,
-                        owner="dummy_execution_plugin",
-                        package="dummy",
-                        requires_execution_preparation=True,
-                    )
-                )
-
-
-            def register_feedbax_execution_preparations(registry):
                 def prepare(request):
                     assert request.run_id == "prepared-cli"
+                    assert isinstance(request.method_payload, DummyPayload)
+                    assert request.method_payload.token == "typed"
+                    assert request.method_contract == request.run_spec.worker_execution.method_contract
+                    assert request.effective_phase == request.run_spec.worker_execution.effective_phase
                     return ExecutionPreparationResult(
                         initial_slots={{
                             "model": jnp.array([0.0]),
@@ -467,11 +759,17 @@ def test_execute_cli_plugin_prepares_non_json_slots_and_kernel_context(tmp_path:
                         kernel_context={{"plugin_marker": MARKER}},
                     )
 
-                registry.register(
-                    ExecutionPreparationRegistration(
+                registry.register_descriptor(
+                    TrainingMethodDescriptor(
                         method_ref={DUMMY_METHOD_REF!r},
-                        provider=prepare,
+                        payload_schema_id={DUMMY_SCHEMA_ID!r},
+                        payload_schema_version={DUMMY_SCHEMA_VERSION!r},
+                        payload_model=DummyPayload,
+                        contract_compiler=compile_contract,
+                        update_kernels_factory=update_kernels,
+                        preparation_provider=prepare,
                         owner="dummy_execution_plugin",
+                        package="dummy",
                     )
                 )
             """
@@ -533,7 +831,29 @@ def test_execute_cli_plugin_prepares_non_json_slots_and_kernel_context(tmp_path:
 
     missing_plugin_path = tmp_path / "missing_preparation_plugin.py"
     missing_plugin_path.write_text(
-        "from dummy_execution_plugin import register_feedbax_training_methods\n",
+        textwrap.dedent(
+            f"""
+            from dummy_execution_plugin import DummyPayload, compile_contract, update_kernels
+            from feedbax.contracts.training import TrainingMethodRegistration
+
+
+            def register_feedbax_training_methods(registry):
+                registry.register(
+                    TrainingMethodRegistration(
+                        method_ref={DUMMY_METHOD_REF!r},
+                        payload_schema_id={DUMMY_SCHEMA_ID!r},
+                        payload_schema_version={DUMMY_SCHEMA_VERSION!r},
+                        payload_model=DummyPayload,
+                        contract_factory=None,
+                        contract_compiler=compile_contract,
+                        update_kernels_factory=update_kernels,
+                        requires_execution_preparation=True,
+                        owner="missing_preparation_plugin",
+                        package="dummy",
+                    )
+                )
+            """
+        ),
         encoding="utf-8",
     )
     missing = subprocess.run(

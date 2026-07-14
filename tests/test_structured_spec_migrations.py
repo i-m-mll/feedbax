@@ -6,6 +6,10 @@ from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
 )
+from feedbax.contracts.checkpoints import (
+    CHECKPOINT_FORK_PLAN_SCHEMA_ID,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+)
 from feedbax.contracts.migrations import (
     SchemaMigration,
     STUDIO_TASK_BINDING_LEGACY_V1,
@@ -25,6 +29,8 @@ from feedbax.contracts.training import (
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION,
     LOSS_TERM_SPEC_SCHEMA_VERSION_V1,
+    RUN_CONTROL_SPEC_SCHEMA_ID,
+    RUN_CONTROL_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
 )
@@ -565,6 +571,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
     assert families["TrainingRunSpec"].current_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    assert families["RunControlSpec"].identity == RUN_CONTROL_SPEC_SCHEMA_ID
+    assert families["RunControlSpec"].current_version == RUN_CONTROL_SPEC_SCHEMA_VERSION
     assert families["TrainingRunMatrixSpec"].identity == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     assert (
         families["TrainingRunMatrixSpec"].current_version == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
@@ -868,6 +876,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "GraphSpec",
         "PopulationStructureSpec",
         "TrainingRunSpec",
+        "RunControlSpec",
         "TrainingRunMatrixSpec",
         "TrainingSpec",
         "LrScheduleSpec",
@@ -941,6 +950,22 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
             assert policy.supported_old_versions, family.kind
         else:
             assert policy.rejected_old_versions, family.kind
+
+
+def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:
+    family = default_spec_registry.resolve("CheckpointForkPlan")
+    assert family.identity == CHECKPOINT_FORK_PLAN_SCHEMA_ID
+    assert family.current_version == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
+    current = default_spec_registry.migrate(
+        "CheckpointForkPlan",
+        {"schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION},
+    )
+    assert not current.migrated
+    with pytest.raises(UnsupportedSpecVersion, match="current_version"):
+        default_spec_registry.migrate(
+            "CheckpointForkPlan",
+            {"schema_version": "feedbax.spec.training_checkpoint_fork_plan.v0"},
+        )
 
 
 def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:

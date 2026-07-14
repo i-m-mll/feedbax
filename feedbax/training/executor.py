@@ -46,6 +46,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     GraphTopologySourceSpec,
+    ResolvedTrainingMethod,
     TrainingMethodRegistry,
     TrainingManifestMetadataProjection,
     TrainingRunSpec,
@@ -70,6 +71,7 @@ from feedbax.training.phase_executor import (
 from feedbax.training.manifest_preflight import (
     build_training_run_manifest_spec_payloads,
     preflight_training_run_manifest_payloads,
+    resolve_training_spec_payload_ref,
     validate_training_run_spec,
 )
 from feedbax.training.interruption import CancellationDecision
@@ -221,6 +223,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         segment_start_batch: int = 0,
         segment_batch_count: int | None = None,
         segment_parent_transaction_id: str | None = None,
+        resolved_method: ResolvedTrainingMethod[Any],
         run_event_emitter: RunEventEmitter | None = None,
     ) -> None:
         super().__init__()
@@ -232,6 +235,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self.segment_start_batch = segment_start_batch
         self.segment_batch_count = segment_batch_count
         self.segment_parent_transaction_id = segment_parent_transaction_id
+        self.resolved_method = resolved_method
         self.run_event_emitter = run_event_emitter
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -272,6 +276,14 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                     f"completed_batches={cumulative_completed_batches} "
                     f"segment_start_batch={self.segment_start_batch}"
                 )
+        checkpoint_metadata: dict[str, Any] = {"barrier_visit_ordinal": saved.visit_ordinal}
+        descriptor = self.resolved_method.descriptor
+        if descriptor is not None and descriptor.optimizer_step_extractor is not None:
+            checkpoint_metadata["optimizer_step"] = _validated_optimizer_step(
+                descriptor.optimizer_step_extractor,
+                self.resolved_method.payload,
+                saved.slots,
+            )
         write = write_checkpoint_transaction(
             self.root,
             run_spec=self.run_spec,
@@ -285,7 +297,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             segment_batch_count=segment_batch_count,
             segment_parent_transaction_id=self.segment_parent_transaction_id,
             history_availability={"progress": True},
-            metadata={"barrier_visit_ordinal": saved.visit_ordinal},
+            metadata=checkpoint_metadata,
         )
         self._writes.append(write)
         if self.run_event_emitter is not None:
@@ -376,24 +388,56 @@ def execute_training_run_spec(
         run_spec=run_spec,
         execution_context=producer_context,
     )
+    method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
+    resolved_method = (
+        run_spec.resolved_method
+        if method_registry is DEFAULT_TRAINING_METHOD_REGISTRY
+        else method_registry.resolve_execution(
+            run_spec.method_ref,
+            run_spec.method_payload,
+            worker_execution=run_spec.worker_execution,
+        )
+    )
+    embedded_training_spec_payload = (
+        dict(training_spec_payload)
+        if training_spec_payload is not None
+        else run_spec.model_dump(
+            mode="json",
+            exclude_none=producer_context is not None,
+        )
+    )
+    authoritative_training_spec_ref = _authoritative_training_spec_payload_ref(
+        run_spec,
+        training_spec_payload=embedded_training_spec_payload,
+        training_spec_payload_kind=training_spec_payload_kind,
+        training_spec_payload_schema_id=training_spec_payload_schema_id,
+        training_spec_payload_schema_version=training_spec_payload_schema_version,
+        execution_context=producer_context,
+        explicit_ref=training_spec_payload_ref,
+    )
     preflight_training_run_manifest_payloads(
         run_spec,
-        training_spec_payload=training_spec_payload,
+        training_spec_payload=embedded_training_spec_payload,
         training_spec_payload_kind=training_spec_payload_kind,
         training_spec_payload_schema_id=training_spec_payload_schema_id,
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=training_spec_payload_ref,
+        authoritative_training_spec_payload_ref=authoritative_training_spec_ref,
         task_binding_spec=task_binding_spec,
     )
-    method_registry = registry or DEFAULT_TRAINING_METHOD_REGISTRY
+    effective_training_spec_ref = resolve_training_spec_payload_ref(
+        training_spec_payload_ref,
+        authoritative_ref=authoritative_training_spec_ref,
+    )
     projection_custody = prepare_training_manifest_metadata_projection(
         manifest_metadata_projection,
         registry=method_registry,
         run_spec=run_spec,
-        training_spec_payload=training_spec_payload,
+        training_spec_payload=embedded_training_spec_payload,
         training_spec_payload_kind=training_spec_payload_kind,
         training_spec_payload_schema_id=training_spec_payload_schema_id,
         training_spec_payload_schema_version=training_spec_payload_schema_version,
+        resolved_method=resolved_method,
     )
     root_path = (
         Path(manifest_root)
@@ -437,13 +481,8 @@ def execute_training_run_spec(
         collection_root=collection_root,
     )
     _preflight_training_diagnostics_emission(diagnostics_path)
-    registration = method_registry.resolve(run_spec.method_ref, path="/method_ref")
-    method_payload = method_registry.validate_payload(
-        run_spec.method_ref,
-        run_spec.method_payload,
-        path="/method_payload",
-    )
-    method_contract = registration.contract_factory()
+    method_payload = resolved_method.payload
+    method_contract = resolved_method.contract
     _validate_declarations_match_spec(run_spec, method_contract.method_ref)
 
     graph_inline = _graph_inline(run_spec.graph)
@@ -452,15 +491,23 @@ def execute_training_run_spec(
         graph_inline=graph_inline,
         loss_service=loss_service or LossService(),
     )
-    kernels = dict(registration.update_kernels_factory(method_payload))
-    guards = dict(registration.guard_predicates_factory(method_payload))
+    kernels = dict(resolved_method.update_kernels)
+    guards = dict(resolved_method.guard_predicates)
     effective_phase = validate_worker_contract(
         method_contract,
         environment=environment,
         update_kernels=kernels,
+        guard_predicates=guards,
         task_binding_spec=task_binding_spec,
         objective_requirements=lowered.requirements,
     )
+    if (
+        resolved_method.descriptor is not None
+        and effective_phase != run_spec.worker_execution.effective_phase
+    ):
+        raise TrainingRunExecutorError(
+            "/worker_execution/effective_phase does not match the executable method contract"
+        )
     program = effective_phase.phase_program
     slots = _initial_slots(initial_slots, lowered_objective=lowered.loss)
     slots = _normalize_batch_progress_slot(slots, program=program)
@@ -521,6 +568,7 @@ def execute_training_run_spec(
         segment_start_batch=segment_start_batch,
         segment_batch_count=segment_batch_count,
         segment_parent_transaction_id=segment_parent_transaction_id,
+        resolved_method=resolved_method,
         run_event_emitter=run_event_emitter,
     )
     if loaded_resume_checkpoint is not None:
@@ -631,11 +679,11 @@ def execute_training_run_spec(
             run_id=resolved_run_id,
             manifest_id=exact_manifest_id,
             root_path=root_path,
-            training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
+            training_spec_payload=embedded_training_spec_payload,
             training_spec_payload_kind=training_spec_payload_kind,
             training_spec_payload_schema_id=training_spec_payload_schema_id,
             training_spec_payload_schema_version=training_spec_payload_schema_version,
-            training_spec_payload_ref=training_spec_payload_ref,
+            training_spec_payload_ref=effective_training_spec_ref,
             task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
             barrier_artifacts=barrier_artifacts,
@@ -716,11 +764,11 @@ def execute_training_run_spec(
             run_id=resolved_run_id,
             manifest_id=exact_manifest_id,
             root_path=root_path,
-            training_spec_payload=dict(training_spec_payload or run_spec.model_dump(mode="json")),
+            training_spec_payload=embedded_training_spec_payload,
             training_spec_payload_kind=training_spec_payload_kind,
             training_spec_payload_schema_id=training_spec_payload_schema_id,
             training_spec_payload_schema_version=training_spec_payload_schema_version,
-            training_spec_payload_ref=training_spec_payload_ref,
+            training_spec_payload_ref=effective_training_spec_ref,
             task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
             barrier_artifacts=barrier_artifacts,
@@ -836,10 +884,49 @@ def prepare_training_manifest_metadata_projection(
     training_spec_payload_kind: str,
     training_spec_payload_schema_id: str | None,
     training_spec_payload_schema_version: str | None,
+    resolved_method: ResolvedTrainingMethod[Any] | None = None,
 ) -> TrainingManifestMetadataProjectionCustody | None:
-    """Validate and bind an explicit metadata projection before any side effect."""
+    """Validate and bind explicit or descriptor metadata before any side effect."""
     if supplied is None:
-        return None
+        descriptor = resolved_method.descriptor if resolved_method is not None else None
+        projector = descriptor.metadata_projector if descriptor is not None else None
+        if projector is None:
+            return None
+        if not descriptor.package:
+            raise TrainingRunExecutorError(
+                "descriptor metadata projection requires a non-empty package identity"
+            )
+        try:
+            projected = projector.project(resolved_method.payload)
+            canonical_values = json.loads(
+                training_spec_canonical_bytes(projected.model_dump(mode="json", exclude_none=True))
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise TrainingRunExecutorError(
+                f"/descriptor/metadata_projector validation failed: {exc}"
+            ) from exc
+        _reject_reserved_projection_keys(canonical_values, run_spec=run_spec)
+        source_payload, source_schema_id, source_schema_version = (
+            _training_manifest_source_payload_identity(
+                run_spec,
+                training_spec_payload=training_spec_payload,
+                training_spec_payload_kind=training_spec_payload_kind,
+                training_spec_payload_schema_id=training_spec_payload_schema_id,
+                training_spec_payload_schema_version=training_spec_payload_schema_version,
+            )
+        )
+        return TrainingManifestMetadataProjectionCustody(
+            source_payload_kind=training_spec_payload_kind,
+            source_payload_schema_id=source_schema_id,
+            source_payload_schema_version=source_schema_version,
+            source_payload_sha256=training_spec_sha256(source_payload),
+            projection_schema_id=projector.schema_id,
+            projection_schema_version=projector.schema_version,
+            values=canonical_values,
+            values_sha256=training_spec_sha256(canonical_values),
+            registration_owner=descriptor.owner,
+            registration_package=descriptor.package,
+        )
     raw_projection: Any = (
         supplied.model_dump(mode="json", exclude_none=True)
         if isinstance(supplied, TrainingManifestMetadataProjection)
@@ -855,16 +942,15 @@ def prepare_training_manifest_metadata_projection(
             f"/manifest_metadata_projection validation failed: {exc}"
         ) from exc
 
-    source_payload = dict(training_spec_payload or run_spec.model_dump(mode="json"))
-    source_schema_id = training_spec_payload_schema_id
-    source_schema_version = training_spec_payload_schema_version
-    if training_spec_payload_kind == "TrainingRunSpec":
-        source_schema_id = source_payload.get("schema_id")
-        source_schema_version = source_payload.get("schema_version")
-    if not isinstance(source_schema_id, str) or not isinstance(source_schema_version, str):
-        raise TrainingRunExecutorError(
-            "/manifest_metadata_projection source payload requires explicit schema identity"
+    source_payload, source_schema_id, source_schema_version = (
+        _training_manifest_source_payload_identity(
+            run_spec,
+            training_spec_payload=training_spec_payload,
+            training_spec_payload_kind=training_spec_payload_kind,
+            training_spec_payload_schema_id=training_spec_payload_schema_id,
+            training_spec_payload_schema_version=training_spec_payload_schema_version,
         )
+    )
     observed_source = (
         training_spec_payload_kind,
         source_schema_id,
@@ -897,6 +983,48 @@ def prepare_training_manifest_metadata_projection(
         raise TrainingRunExecutorError(
             f"/manifest_metadata_projection validation failed: {exc}"
         ) from exc
+    _reject_reserved_projection_keys(canonical_values, run_spec=run_spec)
+    return TrainingManifestMetadataProjectionCustody(
+        source_payload_kind=projection.source_payload_kind,
+        source_payload_schema_id=projection.source_payload_schema_id,
+        source_payload_schema_version=projection.source_payload_schema_version,
+        source_payload_sha256=projection.source_payload_sha256,
+        projection_schema_id=projection.projection_schema_id,
+        projection_schema_version=projection.projection_schema_version,
+        values=canonical_values,
+        values_sha256=training_spec_sha256(canonical_values),
+        registration_owner=registration.owner,
+        registration_package=registration.package,
+    )
+
+
+def _training_manifest_source_payload_identity(
+    run_spec: TrainingRunSpec,
+    *,
+    training_spec_payload: Mapping[str, Any] | None,
+    training_spec_payload_kind: str,
+    training_spec_payload_schema_id: str | None,
+    training_spec_payload_schema_version: str | None,
+) -> tuple[dict[str, Any], str, str]:
+    """Return the exact embedded payload and its validated schema identity."""
+    source_payload = dict(training_spec_payload or run_spec.model_dump(mode="json"))
+    schema_id = training_spec_payload_schema_id
+    schema_version = training_spec_payload_schema_version
+    if training_spec_payload_kind == "TrainingRunSpec":
+        schema_id = source_payload.get("schema_id")
+        schema_version = source_payload.get("schema_version")
+    if not isinstance(schema_id, str) or not isinstance(schema_version, str):
+        raise TrainingRunExecutorError(
+            "/manifest_metadata_projection source payload requires explicit schema identity"
+        )
+    return source_payload, schema_id, schema_version
+
+
+def _reject_reserved_projection_keys(
+    canonical_values: Mapping[str, Any],
+    *,
+    run_spec: TrainingRunSpec,
+) -> None:
     owned_keys = _feedbax_owned_training_manifest_metadata(
         training_run_spec_schema_version=run_spec.schema_version,
         include_all_owned_keys=True,
@@ -911,18 +1039,6 @@ def prepare_training_manifest_metadata_projection(
             "/manifest_metadata_projection reserved Feedbax metadata key collision; "
             f"keys={collisions!r}"
         )
-    return TrainingManifestMetadataProjectionCustody(
-        source_payload_kind=projection.source_payload_kind,
-        source_payload_schema_id=projection.source_payload_schema_id,
-        source_payload_schema_version=projection.source_payload_schema_version,
-        source_payload_sha256=projection.source_payload_sha256,
-        projection_schema_id=projection.projection_schema_id,
-        projection_schema_version=projection.projection_schema_version,
-        values=canonical_values,
-        values_sha256=training_spec_sha256(canonical_values),
-        registration_owner=registration.owner,
-        registration_package=registration.package,
-    )
 
 
 def _feedbax_owned_training_manifest_metadata(
@@ -1027,6 +1143,67 @@ def _validate_execution_payload_binding(
             "/execution_context/execution/payload custody document differs from the "
             "executed TrainingRunSpec"
         )
+
+
+def _authoritative_training_spec_payload_ref(
+    run_spec: TrainingRunSpec,
+    *,
+    training_spec_payload: Mapping[str, Any] | None,
+    training_spec_payload_kind: str,
+    training_spec_payload_schema_id: str | None,
+    training_spec_payload_schema_version: str | None,
+    execution_context: NativeExecutionProducerContext | None,
+    explicit_ref: str | None,
+) -> str | None:
+    """Return the execution-envelope ref only for the same embedded payload."""
+    if execution_context is None:
+        return None
+    payload = dict(training_spec_payload or run_spec.model_dump(mode="json"))
+    if training_spec_payload_kind == "TrainingRunSpec":
+        schema_id = payload.get("schema_id")
+        schema_version = payload.get("schema_version")
+    else:
+        schema_id = training_spec_payload_schema_id
+        schema_version = training_spec_payload_schema_version
+    authoritative = execution_context.execution.payload
+    identities_match = (
+        schema_id == authoritative.schema_id
+        and schema_version == authoritative.schema_version
+        and training_spec_sha256(payload) == authoritative.sha256
+    )
+    if identities_match:
+        return authoritative.artifact_id
+    if explicit_ref is not None:
+        raise TrainingRunExecutorError(
+            "/training_spec_payload_ref cannot identify a payload that disagrees with "
+            "the authoritative execution envelope"
+        )
+    return None
+
+
+def _validated_optimizer_step(
+    extractor: Callable[[Any, Mapping[str, Any]], int],
+    payload: Any,
+    runtime: Mapping[str, Any],
+) -> int:
+    """Invoke a descriptor extractor and enforce its runtime-only int contract."""
+    try:
+        value = extractor(payload, runtime)
+    except Exception as exc:
+        raise TrainingRunExecutorError(
+            f"/descriptor/optimizer_step_extractor failed: {exc}"
+        ) from exc
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TrainingRunExecutorError(
+            "/descriptor/optimizer_step_extractor must return a non-bool integer; "
+            f"observed={value!r}"
+        )
+    if value < 0:
+        raise TrainingRunExecutorError(
+            "/descriptor/optimizer_step_extractor must return a non-negative integer; "
+            f"observed={value}"
+        )
+    return value
 
 
 def _local_custody_path(uri: str) -> Path | None:

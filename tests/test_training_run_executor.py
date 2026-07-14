@@ -5,6 +5,7 @@ import os
 import pickle
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ from feedbax.contracts.training import (
     TaskSpec,
     TrainingConfig,
     TrainingMethodRegistration,
+    TrainingMethodMetadataProjector,
     TrainingMethodRegistry,
     TrainingManifestMetadataProjection,
     TrainingManifestMetadataProjectionRegistration,
@@ -50,6 +52,7 @@ from feedbax.contracts.training import (
     standard_supervised_update_kernels,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
+    standard_supervised_method_descriptor,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
     default_training_method_registry,
@@ -517,6 +520,7 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert result.final_slots["model"] == 1
     assert result.final_slots["optimizer"]["count"] == 2
     assert result.final_slots["train_loss"] == 1.0
+    assert result.checkpoint_writes[0].manifest.metadata["optimizer_step"] == 2
     assert result.history_events[0]["metrics"] == {"train_loss": 1.0}
     assert result.history_events[0]["coordinate"]["metrics"] == {"train_loss": 1.0}
     assert result.manifest_path.is_relative_to(tmp_path)
@@ -609,6 +613,70 @@ def test_governed_manifest_metadata_projection_round_trips_deterministically(
     assert result.manifest_path.read_text(encoding="utf-8") == (
         loaded.model_dump_json(indent=2, exclude_none=True) + "\n"
     )
+
+
+def test_descriptor_metadata_projection_is_the_default_custody_provider(tmp_path: Path) -> None:
+    class MethodMetadata(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        optimizer_kind: str
+
+    descriptor = replace(
+        standard_supervised_method_descriptor(),
+        metadata_projector=TrainingMethodMetadataProjector(
+            schema_id="feedbax.tests.standard_metadata",
+            schema_version="feedbax.tests.standard_metadata.v1",
+            output_model=MethodMetadata,
+            projector=lambda payload: {"optimizer_kind": payload.optimizer.type},
+        ),
+    )
+    registry = TrainingMethodRegistry()
+    registry.register_descriptor(descriptor)
+
+    result = execute_training_run_spec(
+        _run_spec(),
+        run_id="descriptor-metadata",
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path,
+        registry=registry,
+    )
+
+    custody = result.manifest.metadata_projection_custody
+    assert custody is not None
+    assert custody.values == {"optimizer_kind": "adamw"}
+    assert custody.source_payload_kind == "TrainingRunSpec"
+    assert custody.schema_version == "feedbax.manifest.training_metadata_projection_custody.v1"
+
+
+def test_descriptor_metadata_projection_rejects_reserved_collision_before_output(
+    tmp_path: Path,
+) -> None:
+    class CollisionMetadata(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        runtime_telemetry: bool
+
+    descriptor = replace(
+        standard_supervised_method_descriptor(),
+        metadata_projector=TrainingMethodMetadataProjector(
+            schema_id="feedbax.tests.collision_metadata",
+            schema_version="feedbax.tests.collision_metadata.v1",
+            output_model=CollisionMetadata,
+            projector=lambda _payload: {"runtime_telemetry": True},
+        ),
+    )
+    registry = TrainingMethodRegistry()
+    registry.register_descriptor(descriptor)
+
+    with pytest.raises(TrainingRunExecutorError, match="reserved.*collision"):
+        execute_training_run_spec(
+            _run_spec(),
+            run_id="descriptor-collision",
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path,
+            registry=registry,
+        )
+    assert not any(tmp_path.rglob("*"))
 
 
 def test_projection_free_manifest_serialization_remains_absent(tmp_path: Path) -> None:
@@ -967,6 +1035,7 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
     assert manifest.execution_hash == context.execution.execution_capsule.execution_hash
     assert manifest.resolved_semantics_root_hash == context.execution.resolved_snapshot.root_hash
     assert manifest.input_data_identities == []
+    assert manifest.training_spec.ref == context.execution.payload.artifact_id
     assert manifest.completed_batches == 1
     assert manifest.metadata["environment_fingerprint"] == "environment:fixture"
     provenance = manifest.metadata["training_row_provenance"]
@@ -1058,6 +1127,51 @@ def test_native_execution_rejects_payload_binding_drift_before_side_effects(
     assert not collection_root.exists()
     assert not (tmp_path / "manifest-root").exists()
     assert not (tmp_path / "checkpoint-root").exists()
+
+
+def test_native_execution_rejects_explicit_payload_ref_drift_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    collection_root = tmp_path / "row"
+    with pytest.raises(
+        TrainingRunManifestPreflightError,
+        match="disagrees with authoritative execution payload",
+    ):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=_execution_context(collection_root=collection_root),
+            training_spec_payload_ref="artifact://sha256/" + "f" * 64,
+        )
+    assert not collection_root.exists()
+    assert not (tmp_path / "manifest-root").exists()
+    assert not (tmp_path / "checkpoint-root").exists()
+
+
+@pytest.mark.parametrize("invalid", [True, -1, 1.5, [1]])
+def test_optimizer_step_extractor_rejects_invalid_output_before_checkpoint_write(
+    tmp_path: Path,
+    invalid: object,
+) -> None:
+    descriptor = replace(
+        standard_supervised_method_descriptor(),
+        optimizer_step_extractor=lambda _payload, _runtime: invalid,
+    )
+    registry = TrainingMethodRegistry()
+    registry.register_descriptor(descriptor)
+    checkpoint_root = tmp_path / "checkpoint-root"
+
+    with pytest.raises(TrainingRunExecutorError, match="optimizer_step_extractor"):
+        execute_training_run_spec(
+            _run_spec(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=checkpoint_root,
+            registry=registry,
+        )
+    assert not checkpoint_root.exists()
 
 
 @pytest.mark.parametrize("case", ["missing", "tampered"])

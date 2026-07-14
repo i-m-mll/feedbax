@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import numbers
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from feedbax.contracts.graph import GraphSpec, ParamValue, RetentionPolicySpec
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
@@ -30,10 +32,16 @@ from feedbax.contracts.worker import (
     derive_consistency_predicate,
 )
 
+if TYPE_CHECKING:
+    from feedbax.training.preparation import ExecutionPreparationProvider
+    from feedbax.training.run_matrix import TrainingRowLowerer
+
 
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run.v1"
 TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v2"
+RUN_CONTROL_SPEC_SCHEMA_ID = "feedbax.spec.training.run_control"
+RUN_CONTROL_SPEC_SCHEMA_VERSION = "feedbax.spec.training.run_control.v1"
 LR_SCHEDULE_SPEC_SCHEMA_ID = "feedbax.spec.training.lr_schedule"
 LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training.lr_schedule.v1"
 LR_SCHEDULE_SPEC_SCHEMA_VERSION = "feedbax.spec.training.lr_schedule.v2"
@@ -273,6 +281,34 @@ class TrainingRunContractModel(StrictModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RunControlSpec(TrainingRunContractModel):
+    """Small, method-agnostic control surface for one training segment."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_id: Literal["feedbax.spec.training.run_control"] = RUN_CONTROL_SPEC_SCHEMA_ID
+    schema_version: str = RUN_CONTROL_SPEC_SCHEMA_VERSION
+    n_batches: int = Field(gt=0)
+    batch_size: int = Field(gt=0)
+    checkpoint_interval: int | None = Field(default=None, gt=0)
+    progress_interval: int | None = Field(default=None, gt=0)
+    continuation: CheckpointContinuationRequest | None = None
+
+    @model_validator(mode="after")
+    def _validate_control(self) -> "RunControlSpec":
+        if self.schema_version != RUN_CONTROL_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                "/schema_version unsupported RunControlSpec schema_version "
+                f"{self.schema_version!r}; expected {RUN_CONTROL_SPEC_SCHEMA_VERSION!r}; "
+                "migration_intentionally_absent=yes"
+            )
+        if self.continuation is not None and self.continuation.additional_batches != self.n_batches:
+            raise ValueError(
+                "/n_batches must equal /continuation/additional_batches for a continuation"
+            )
+        return self
+
+
 class MethodRefSpec(TrainingRunContractModel):
     """Durable namespaced/versioned method identity."""
 
@@ -359,6 +395,19 @@ class MethodExtensionsSpec(TrainingRunContractModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class TrainingMethodAuthoringContribution(BaseModel):
+    """Runtime-only method values consumed by the typed authoring compiler.
+
+    This hook result is not a durable spec. The authoring compiler embeds its
+    values in the existing ``TrainingRunSpec`` v2 contract.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    training_config: TrainingConfig
+    method_extensions: MethodExtensionsSpec = Field(default_factory=MethodExtensionsSpec)
+
+
 class StandardSupervisedMethodPayload(TrainingRunContractModel):
     """Payload owned by Feedbax's standard supervised training method."""
 
@@ -413,13 +462,13 @@ class CheckpointProgressPolicySpec(TrainingRunContractModel):
 
 @dataclass(frozen=True)
 class TrainingMethodRegistration:
-    """One method-ref keyed payload governance registration."""
+    """Low-level method registration retained for direct runtime adapters."""
 
     method_ref: str
     payload_schema_id: str
     payload_schema_version: str
     payload_model: type[BaseModel]
-    contract_factory: Callable[[], MethodContractSpec]
+    contract_factory: Callable[[], MethodContractSpec] | None
     update_kernels_factory: Callable[[BaseModel], Mapping[str, Callable[..., Mapping[str, Any]]]]
     guard_predicates_factory: Callable[
         [BaseModel], Mapping[str, Callable[..., Mapping[str, Any]]]
@@ -428,6 +477,127 @@ class TrainingMethodRegistration:
     owner: str = "feedbax"
     package: str | None = None
     requires_execution_preparation: bool = False
+    contract_compiler: Callable[[BaseModel], MethodContractSpec] | None = None
+
+    def compile_contract(self, payload: BaseModel) -> MethodContractSpec:
+        """Compile the worker contract, preserving legacy zero-argument factories."""
+        if self.contract_compiler is not None:
+            return self.contract_compiler(payload)
+        if self.contract_factory is None:
+            raise ValueError(
+                f"training method {self.method_ref!r} has no payload-aware contract compiler"
+            )
+        return self.contract_factory()
+
+
+PayloadT = TypeVar("PayloadT", bound=BaseModel)
+
+TrainingMethodOptimizerSpecProjector = Callable[[PayloadT], OptimizerSpec | Mapping[str, Any]]
+TrainingMethodOptimizerStepExtractor = Callable[[PayloadT, Mapping[str, Any]], int]
+
+
+@dataclass(frozen=True)
+class TrainingMethodAuthoringHook(Generic[PayloadT]):
+    """Stable runtime hook for method-owned authoring contributions."""
+
+    lowerer_id: str
+    lowerer_version: str
+    compile: Callable[[PayloadT], TrainingMethodAuthoringContribution]
+
+    def validate_structure(self) -> None:
+        """Validate the stable lowerer identity and callable boundary."""
+        identities = (self.lowerer_id, self.lowerer_version)
+        if any(not isinstance(value, str) or not value.strip() for value in identities):
+            raise ValueError("training method authoring hook identity must not be empty")
+        if not callable(self.compile):
+            raise TypeError("training method authoring hook compile must be callable")
+
+
+@dataclass(frozen=True)
+class TrainingMethodMetadataProjector(Generic[PayloadT]):
+    """Typed runtime hook for projecting method-owned manifest metadata."""
+
+    schema_id: str
+    schema_version: str
+    output_model: type[BaseModel]
+    projector: Callable[[PayloadT], object]
+
+    def validate_structure(self) -> None:
+        """Validate the stable projection identity and callable boundary."""
+        identities = (self.schema_id, self.schema_version)
+        if any(not isinstance(value, str) or not value.strip() for value in identities):
+            raise ValueError("training method metadata projector identity must not be empty")
+        if not isinstance(self.output_model, type) or not issubclass(self.output_model, BaseModel):
+            raise TypeError("training method metadata projector output_model must extend BaseModel")
+        if self.output_model.model_config.get("extra") != "forbid":
+            raise ValueError("training method metadata projector output_model must set extra='forbid'")
+        if self.output_model.model_config.get("strict") is not True:
+            raise ValueError("training method metadata projector output_model must set strict=True")
+        if not callable(self.projector):
+            raise TypeError("training method metadata projector projector must be callable")
+
+    def project(self, payload: PayloadT) -> BaseModel:
+        """Project and validate metadata through the declared output model."""
+        self.validate_structure()
+        return self.output_model.model_validate(self.projector(payload))
+
+
+@dataclass(frozen=True)
+class TrainingMethodDescriptor(Generic[PayloadT]):
+    """Atomic runtime extension surface for one typed training method.
+
+    Descriptor hooks are runtime-only. They do not alter ``TrainingRunSpec`` or
+    any other durable schema.
+    """
+
+    method_ref: str
+    payload_schema_id: str
+    payload_schema_version: str
+    payload_model: type[PayloadT]
+    contract_compiler: Callable[[PayloadT], MethodContractSpec]
+    update_kernels_factory: Callable[[PayloadT], Mapping[str, Callable[..., Mapping[str, Any]]]]
+    guard_predicates_factory: Callable[
+        [PayloadT], Mapping[str, Callable[..., Mapping[str, Any]]]
+    ] = lambda _payload: {}
+    preparation_provider: ExecutionPreparationProvider | None = None
+    row_compiler: TrainingRowLowerer | None = None
+    authoring_hook: TrainingMethodAuthoringHook[PayloadT] | None = None
+    metadata_projector: TrainingMethodMetadataProjector[PayloadT] | None = None
+    optimizer_spec_projector: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None
+    optimizer_step_extractor: TrainingMethodOptimizerStepExtractor[PayloadT] | None = None
+    rejected_payload_versions: tuple[str, ...] = ()
+    owner: str = "feedbax"
+    package: str | None = None
+
+    def registration(self) -> TrainingMethodRegistration:
+        """Derive the single low-level registry row for this descriptor."""
+        return TrainingMethodRegistration(
+            method_ref=self.method_ref,
+            payload_schema_id=self.payload_schema_id,
+            payload_schema_version=self.payload_schema_version,
+            payload_model=self.payload_model,
+            contract_factory=None,
+            contract_compiler=self.contract_compiler,
+            update_kernels_factory=self.update_kernels_factory,
+            guard_predicates_factory=self.guard_predicates_factory,
+            rejected_payload_versions=self.rejected_payload_versions,
+            owner=self.owner,
+            package=self.package,
+            requires_execution_preparation=self.preparation_provider is not None,
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedTrainingMethod(Generic[PayloadT]):
+    """Typed, identity-checked runtime projection of one method request."""
+
+    descriptor: TrainingMethodDescriptor[PayloadT] | None
+    registration: TrainingMethodRegistration
+    payload: PayloadT
+    contract: MethodContractSpec
+    effective_phase: EffectivePhaseSpec
+    update_kernels: Mapping[str, Callable[..., Mapping[str, Any]]] = field(compare=False)
+    guard_predicates: Mapping[str, Callable[..., Mapping[str, Any]]] = field(compare=False)
 
 
 class TrainingManifestMetadataProjection(TrainingRunContractModel):
@@ -489,6 +659,7 @@ class TrainingMethodRegistry:
 
     def __init__(self) -> None:
         self._registrations: dict[str, TrainingMethodRegistration] = {}
+        self._descriptors: dict[str, TrainingMethodDescriptor[Any]] = {}
         self._metadata_projection_registrations: dict[
             tuple[str, str, str], TrainingManifestMetadataProjectionRegistration
         ] = {}
@@ -497,7 +668,73 @@ class TrainingMethodRegistry:
         """Register one method payload governance row."""
         if registration.method_ref in self._registrations:
             raise ValueError(f"training method already registered: {registration.method_ref!r}")
+        producer_count = sum(
+            producer is not None
+            for producer in (registration.contract_factory, registration.contract_compiler)
+        )
+        if producer_count != 1:
+            raise ValueError(
+                f"training method {registration.method_ref!r} must define exactly one contract "
+                "producer: contract_factory or contract_compiler"
+            )
         self._registrations[registration.method_ref] = registration
+
+    def register_descriptor(self, descriptor: TrainingMethodDescriptor[Any]) -> None:
+        """Atomically register one descriptor and its derived low-level row."""
+        required = {
+            "method_ref": descriptor.method_ref,
+            "payload_schema_id": descriptor.payload_schema_id,
+            "payload_schema_version": descriptor.payload_schema_version,
+            "owner": descriptor.owner,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(f"training method descriptor has empty fields={missing!r}")
+        if descriptor.method_ref in self._descriptors:
+            raise ValueError(
+                f"training method descriptor already registered: {descriptor.method_ref!r}"
+            )
+        if not issubclass(descriptor.payload_model, BaseModel):
+            raise TypeError("training method descriptor payload_model must extend BaseModel")
+        hooks = {
+            "contract_compiler": descriptor.contract_compiler,
+            "update_kernels_factory": descriptor.update_kernels_factory,
+            "guard_predicates_factory": descriptor.guard_predicates_factory,
+            "preparation_provider": descriptor.preparation_provider,
+            "row_compiler": descriptor.row_compiler,
+            "optimizer_spec_projector": descriptor.optimizer_spec_projector,
+            "optimizer_step_extractor": descriptor.optimizer_step_extractor,
+        }
+        invalid_hooks = [
+            name for name, hook in hooks.items() if hook is not None and not callable(hook)
+        ]
+        if invalid_hooks:
+            raise TypeError(f"training method descriptor has non-callable hooks={invalid_hooks!r}")
+        if descriptor.authoring_hook is not None:
+            if not isinstance(descriptor.authoring_hook, TrainingMethodAuthoringHook):
+                raise TypeError(
+                    "training method descriptor authoring_hook must be a "
+                    "TrainingMethodAuthoringHook"
+                )
+            descriptor.authoring_hook.validate_structure()
+        if descriptor.metadata_projector is not None:
+            if not isinstance(descriptor.metadata_projector, TrainingMethodMetadataProjector):
+                raise TypeError(
+                    "training method descriptor metadata_projector must be a "
+                    "TrainingMethodMetadataProjector"
+                )
+            descriptor.metadata_projector.validate_structure()
+        self.register(descriptor.registration())
+        self._descriptors[descriptor.method_ref] = descriptor
+
+    def descriptor_keys(self) -> tuple[str, ...]:
+        """Return method refs backed by atomic descriptors."""
+        return tuple(sorted(self._descriptors))
+
+    def descriptor(self, method_ref: MethodRefSpec | str) -> TrainingMethodDescriptor[Any] | None:
+        """Return the descriptor for a method ref, if its row is descriptor-backed."""
+        key = method_ref.key if isinstance(method_ref, MethodRefSpec) else method_ref
+        return self._descriptors.get(key)
 
     def available_keys(self) -> tuple[str, ...]:
         """Return method refs known to this registry."""
@@ -547,6 +784,91 @@ class TrainingMethodRegistry:
                 f"available registry keys={list(self.available_keys())!r}"
             )
         return registration.payload_model.model_validate(envelope.payload)
+
+    def resolve_execution(
+        self,
+        method_ref: MethodRefSpec,
+        envelope: MethodPayloadEnvelope,
+        *,
+        worker_execution: WorkerExecutionSpec | None = None,
+    ) -> ResolvedTrainingMethod[Any]:
+        """Resolve and construct one method exactly once for runtime execution."""
+        registration = self.resolve(method_ref, path="/method_ref")
+        payload = self.validate_payload(method_ref, envelope, path="/method_payload")
+        method_key = method_ref.key
+        if worker_execution is not None:
+            if worker_execution.method_contract.method_ref != method_key:
+                raise ValueError(
+                    "/worker_execution/method_contract/method_ref must match /method_ref; "
+                    f"found {worker_execution.method_contract.method_ref!r}, "
+                    f"expected {method_key!r}"
+                )
+            if worker_execution.effective_phase.method_ref != method_key:
+                raise ValueError(
+                    "/worker_execution/effective_phase/method_ref must match /method_ref; "
+                    f"found {worker_execution.effective_phase.method_ref!r}, "
+                    f"expected {method_key!r}"
+                )
+            if (
+                worker_execution.method_contract.method_payload_schema_version
+                != envelope.schema_version
+            ):
+                raise ValueError(
+                    "/worker_execution/method_contract/method_payload_schema_version must "
+                    "match /method_payload/schema_version; found "
+                    f"{worker_execution.method_contract.method_payload_schema_version!r}, "
+                    f"expected {envelope.schema_version!r}"
+                )
+        contract = registration.compile_contract(payload)
+        if contract.method_ref != method_key:
+            raise ValueError(
+                "/worker_execution/method_contract/method_ref compiled by registry must "
+                f"match /method_ref; found {contract.method_ref!r}, expected {method_key!r}"
+            )
+        if contract.method_payload_schema_version != envelope.schema_version:
+            raise ValueError(
+                "/worker_execution/method_contract/method_payload_schema_version compiled by "
+                "registry must match /method_payload/schema_version; found "
+                f"{contract.method_payload_schema_version!r}, expected {envelope.schema_version!r}"
+            )
+        descriptor = self.descriptor(method_key)
+        if worker_execution is not None and descriptor is not None:
+            if worker_execution.method_contract != contract:
+                raise ValueError(
+                    "/worker_execution/method_contract must exactly match the payload-compiled "
+                    f"contract for method_ref {method_key!r}"
+                )
+        update_kernels = registration.update_kernels_factory(payload)
+        guard_predicates = registration.guard_predicates_factory(payload)
+        if not isinstance(update_kernels, Mapping):
+            raise TypeError(f"training method {method_key!r} returned non-mapping update kernels")
+        if not isinstance(guard_predicates, Mapping):
+            raise TypeError(f"training method {method_key!r} returned non-mapping guard predicates")
+        from feedbax.training.worker_validation import validate_worker_contract
+
+        effective_phase = validate_worker_contract(
+            contract,
+            update_kernels=update_kernels,
+            guard_predicates=guard_predicates,
+        )
+        if (
+            worker_execution is not None
+            and descriptor is not None
+            and worker_execution.effective_phase != effective_phase
+        ):
+            raise ValueError(
+                "/worker_execution/effective_phase must exactly match the validated "
+                f"effective phase for method_ref {method_key!r}"
+            )
+        return ResolvedTrainingMethod(
+            descriptor=descriptor,
+            registration=registration,
+            payload=payload,
+            contract=contract,
+            effective_phase=effective_phase,
+            update_kernels=dict(update_kernels),
+            guard_predicates=dict(guard_predicates),
+        )
 
     def register_manifest_metadata_projection(
         self,
@@ -754,24 +1076,64 @@ def standard_supervised_update_kernels(
     return {"feedbax.training.standard_supervised.gradient_update": gradient_update}
 
 
+def standard_supervised_method_descriptor() -> TrainingMethodDescriptor[
+    StandardSupervisedMethodPayload
+]:
+    """Return the atomic descriptor for Feedbax's standard supervised method."""
+    return TrainingMethodDescriptor(
+        method_ref=STANDARD_SUPERVISED_METHOD_REF,
+        payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+        payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+        payload_model=StandardSupervisedMethodPayload,
+        contract_compiler=lambda _payload: standard_supervised_method_contract(),
+        update_kernels_factory=standard_supervised_update_kernels,
+        optimizer_spec_projector=lambda payload: payload.optimizer,
+        optimizer_step_extractor=_standard_supervised_optimizer_step,
+        rejected_payload_versions=("feedbax.spec.training_method.standard_supervised_payload.v0",),
+        owner="feedbax.contracts.training",
+        package="feedbax",
+    )
+
+
+def _standard_supervised_optimizer_step(
+    payload: StandardSupervisedMethodPayload,
+    runtime: Mapping[str, Any],
+) -> int:
+    """Extract the standard method's declared optimizer count without tree search."""
+    value: Any
+    metadata = runtime.get("metadata")
+    if isinstance(metadata, Mapping) and "optimizer_step" in metadata:
+        value = metadata["optimizer_step"]
+    elif "optimizer_step" in runtime:
+        value = runtime["optimizer_step"]
+    else:
+        optimizer = runtime.get(payload.optimizer_slot)
+        if not isinstance(optimizer, Mapping) or "count" not in optimizer:
+            raise ValueError(
+                "standard supervised optimizer step requires either checkpoint "
+                "/metadata/optimizer_step or the declared optimizer slot count"
+            )
+        value = optimizer["count"]
+    item = getattr(value, "item", None)
+    if callable(item):
+        size = getattr(value, "size", 1)
+        if size != 1:
+            raise ValueError("standard supervised optimizer count must contain one scalar")
+        value = item()
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError("standard supervised optimizer count must be numeric")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("standard supervised optimizer count must be integer-valued")
+    step = int(value)
+    if step < 0:
+        raise ValueError("standard supervised optimizer count must be non-negative")
+    return step
+
+
 def default_training_method_registry() -> TrainingMethodRegistry:
     """Return the default method-ref keyed payload registry."""
     registry = TrainingMethodRegistry()
-    registry.register(
-        TrainingMethodRegistration(
-            method_ref=STANDARD_SUPERVISED_METHOD_REF,
-            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
-            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
-            payload_model=StandardSupervisedMethodPayload,
-            contract_factory=standard_supervised_method_contract,
-            update_kernels_factory=standard_supervised_update_kernels,
-            rejected_payload_versions=(
-                "feedbax.spec.training_method.standard_supervised_payload.v0",
-            ),
-            owner="feedbax.contracts.training",
-            package="feedbax",
-        )
-    )
+    registry.register_descriptor(standard_supervised_method_descriptor())
     return registry
 
 
@@ -799,6 +1161,37 @@ class TrainingRunSpec(TrainingRunContractModel):
         default_factory=CheckpointProgressPolicySpec
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
+    _resolved_method: ResolvedTrainingMethod[Any] | None = PrivateAttr(default=None)
+    _resolved_method_cache_key: tuple[str, str, str] | None = PrivateAttr(default=None)
+
+    def _method_resolution_cache_key(self) -> tuple[str, str, str]:
+        """Return a deterministic key for all method-resolution inputs."""
+
+        def canonical(value: BaseModel) -> str:
+            return json.dumps(
+                value.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        return (
+            self.method_ref.key,
+            canonical(self.method_payload),
+            canonical(self.worker_execution),
+        )
+
+    @property
+    def resolved_method(self) -> ResolvedTrainingMethod[Any]:
+        """Lazily return the strict, validated runtime-only method projection."""
+        cache_key = self._method_resolution_cache_key()
+        if self._resolved_method is None or self._resolved_method_cache_key != cache_key:
+            self._resolved_method = DEFAULT_TRAINING_METHOD_REGISTRY.resolve_execution(
+                self.method_ref,
+                self.method_payload,
+                worker_execution=self.worker_execution,
+            )
+            self._resolved_method_cache_key = cache_key
+        return self._resolved_method
 
     @model_validator(mode="after")
     def _validate_contract(self) -> "TrainingRunSpec":
@@ -813,7 +1206,7 @@ class TrainingRunSpec(TrainingRunContractModel):
                 f"{self.schema_version!r}; expected {TRAINING_RUN_SPEC_SCHEMA_VERSION!r}"
             )
 
-        registration = DEFAULT_TRAINING_METHOD_REGISTRY.resolve(
+        DEFAULT_TRAINING_METHOD_REGISTRY.resolve(
             self.method_ref,
             path="/method_ref",
         )
@@ -847,11 +1240,6 @@ class TrainingRunSpec(TrainingRunContractModel):
         if not method_contract.state_slots:
             raise ValueError(
                 "/worker_execution/method_contract/state_slots must declare worker state slots"
-            )
-        expected_contract = registration.contract_factory()
-        if not expected_contract.axes or not expected_contract.state_slots:
-            raise ValueError(
-                f"/method_ref {method_key!r} registry row has incomplete worker declaration"
             )
         return self
 
