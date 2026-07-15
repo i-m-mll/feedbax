@@ -116,6 +116,7 @@ from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
     _build_materialized_execution_preparation,
+    _freeze_runtime_value,
     _identity_fingerprint,
     _run_spec_sha256,
     ScalarInstancePreparationResult,
@@ -370,7 +371,7 @@ def test_mapped_preflight_failure_has_no_publication_side_effects(
 def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees() -> None:
     spec = _mapped_run_spec()
     requests = []
-    optimizer = optax.adam(1e-3)
+    optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=1e-3)
 
     def materialize(request):
         requests.append(request)
@@ -404,6 +405,51 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
         getattr(leaf, "shape", None) == (5,)
         for leaf in jax.tree.leaves(prepared.initial_slots["optimizer"])
     )
+    assert isinstance(
+        prepared.initial_slots["optimizer"],
+        optax.schedules.InjectStatefulHyperparamsState,
+    )
+    instance_model = jax.tree.map(lambda leaf: leaf[0], prepared.initial_slots["model"])
+    instance_state = jax.tree.map(lambda leaf: leaf[0], prepared.initial_slots["optimizer"])
+    updates, updated_state = optimizer.update(
+        jax.tree.map(jnp.ones_like, instance_model),
+        instance_state,
+        instance_model,
+    )
+    assert jax.tree.leaves(updates)
+    assert updated_state.count == 1
+
+
+def test_runtime_freeze_preserves_optax_tuple_pytree_types() -> None:
+    parameters = {"weight": jnp.array(1.0)}
+    transformation = optax.adam(1e-3)
+    injected = optax.inject_hyperparams(optax.adam)(learning_rate=1e-3)
+
+    frozen_transformation = _freeze_runtime_value(transformation)
+    frozen_state = _freeze_runtime_value(injected.init(parameters))
+
+    assert type(frozen_transformation) is type(transformation)
+    assert callable(frozen_transformation.update)
+    assert isinstance(frozen_state, optax.schedules.InjectStatefulHyperparamsState)
+    assert frozen_state.hyperparams["learning_rate"] == pytest.approx(1e-3)
+    updates, updated_state = frozen_transformation.update(
+        {"weight": jnp.array(1.0)},
+        frozen_transformation.init(parameters),
+        parameters,
+    )
+    assert updates["weight"] < 0
+    assert jax.tree.leaves(updated_state)
+
+    source_array = np.array([1.0])
+    ordinary = _freeze_runtime_value((["item"], {"array": source_array}, 3))
+    source_array[0] = 9.0
+    assert type(ordinary) is tuple
+    assert ordinary[0] == ("item",)
+    assert ordinary[1]["array"].tolist() == [1.0]
+    assert not ordinary[1]["array"].flags.writeable
+    assert ordinary[2] == 3
+    with pytest.raises(ValueError, match="object-backed NumPy"):
+        _freeze_runtime_value(np.array([object()], dtype=object))
 
 
 def test_mapped_plan_rejects_batch_history_immediately() -> None:
