@@ -8,9 +8,10 @@ spec paths use `row_id` by default; callers may explicitly override a path where
 
 ## Schemas
 
-- Evaluation matrices use `feedbax.spec.evaluation_run_matrix.v2`. Version 2 retains
-  explicit base-plus-row authoring and adds a content-pinned JSON base plus ordered
-  axes of named delta sets. The registry mechanically migrates explicit v1 payloads;
+- Evaluation matrices use `feedbax.spec.evaluation_run_matrix.v3`. Version 2 added
+  authenticated staged-parent bindings. Version 3 combines those bindings with either
+  explicit base-plus-row authoring or a content-pinned JSON base plus ordered axes of
+  named delta sets. The registry migrates v1 through v2 to v3 and v2 directly to v3;
   v0 and unknown versions remain rejected.
 - Analysis bundles use `feedbax.spec.analysis_bundle.v3`. The registry mechanically
   migrates v2 stages to the shared-base/per-stage-patch representation and rejects

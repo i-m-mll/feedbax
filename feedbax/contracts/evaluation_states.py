@@ -13,7 +13,7 @@ import jax
 import jax.tree as jt
 import jax.tree_util as jtu
 import numpy as np
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
@@ -43,6 +43,25 @@ class EvaluationStatesContainerError(ValueError):
 
 class EvaluationStatesHashMismatch(EvaluationStatesContainerError):
     """Raised when artifact bytes do not match the pinned SHA-256 digest."""
+
+
+class EvaluationStatesCustodyUnavailable(EvaluationStatesContainerError):
+    """Raised when durable evaluation-state custody cannot be authenticated."""
+
+
+class EvaluationStatesSchemaMismatch(EvaluationStatesContainerError):
+    """Raised when durable evaluation-state schema evidence is unsupported."""
+
+
+class EvaluationStatesProvenanceMismatch(EvaluationStatesContainerError):
+    """Raised when durable evaluation-state bytes do not name their supplier."""
+
+
+class EvaluationStatesSizeMismatch(
+    EvaluationStatesHashMismatch,
+    EvaluationStatesCustodyUnavailable,
+):
+    """Raised when authenticated bytes disagree with their declared size."""
 
 
 class EvaluationStatesLeafError(EvaluationStatesContainerError):
@@ -146,6 +165,112 @@ def load_evaluation_states_artifact(
             f"computed={digest!r}"
         )
     return load_evaluation_states_container_bytes(data)
+
+
+def load_authenticated_evaluation_states_artifact(
+    artifact: ArtifactRef,
+    *,
+    root: Path | str | None = None,
+    manifest_id: str,
+    data: bytes | None = None,
+) -> Any:
+    """Load states only after authenticating custody, schema, and provenance evidence."""
+
+    if artifact.role != EVALUATION_STATES_ARTIFACT_ROLE:
+        raise EvaluationStatesProvenanceMismatch(
+            f"Expected artifact role {EVALUATION_STATES_ARTIFACT_ROLE!r}; got {artifact.role!r}."
+        )
+    if not artifact.artifact_id or not artifact.sha256:
+        raise EvaluationStatesCustodyUnavailable(
+            "Durable evaluation states require artifact_id and sha256 custody identity."
+        )
+    if artifact.size_bytes is None or artifact.size_bytes < 0:
+        raise EvaluationStatesCustodyUnavailable(
+            "Durable evaluation states require a nonnegative declared byte size."
+        )
+    expected_artifact_id = f"artifact://sha256/{artifact.sha256}"
+    if artifact.artifact_id != expected_artifact_id:
+        raise EvaluationStatesCustodyUnavailable(
+            "Evaluation-state artifact identity disagrees with its SHA-256: "
+            f"artifact_id={artifact.artifact_id!r}, expected={expected_artifact_id!r}."
+        )
+    if artifact.media_type != EVALUATION_STATES_MEDIA_TYPE:
+        raise EvaluationStatesSchemaMismatch(
+            "Evaluation-state artifact has unsupported media type: "
+            f"{artifact.media_type!r}; expected {EVALUATION_STATES_MEDIA_TYPE!r}."
+        )
+
+    metadata = artifact.metadata
+    if metadata.get("manifest_id") != manifest_id:
+        raise EvaluationStatesProvenanceMismatch(
+            "Evaluation-state artifact provenance does not name its supplying manifest: "
+            f"metadata.manifest_id={metadata.get('manifest_id')!r}, expected={manifest_id!r}."
+        )
+    schema_version = metadata.get("schema_version")
+    expected_storage = {
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1: EVALUATION_STATES_STORAGE_BACKEND_V1,
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION: EVALUATION_STATES_STORAGE_BACKEND,
+    }
+    if (
+        metadata.get("schema_id") != EVALUATION_STATES_CONTAINER_SCHEMA_ID
+        or schema_version not in expected_storage
+        or metadata.get("storage_backend") != expected_storage.get(schema_version)
+    ):
+        raise EvaluationStatesSchemaMismatch(
+            "Evaluation-state artifact schema/storage metadata is unsupported: "
+            f"schema_id={metadata.get('schema_id')!r}, schema_version={schema_version!r}, "
+            f"storage_backend={metadata.get('storage_backend')!r}."
+        )
+
+    if data is None:
+        if root is None:
+            raise EvaluationStatesCustodyUnavailable(
+                "Evaluation-state artifact requires explicit custody root or pre-read bytes."
+            )
+        try:
+            path = _artifact_path(artifact, root=Path(root))
+            data = path.read_bytes()
+        except (FileNotFoundError, OSError) as exc:
+            raise EvaluationStatesCustodyUnavailable(
+                f"Evaluation-state artifact bytes are unavailable: {exc}"
+            ) from exc
+    if len(data) != artifact.size_bytes:
+        raise EvaluationStatesSizeMismatch(
+            "Evaluation states artifact byte-size mismatch: "
+            f"logical_name={artifact.logical_name!r}, expected={artifact.size_bytes}, "
+            f"computed={len(data)}"
+        )
+    digest = sha256_bytes(data)
+    if digest != artifact.sha256:
+        raise EvaluationStatesHashMismatch(
+            "Evaluation states artifact SHA-256 mismatch: "
+            f"logical_name={artifact.logical_name!r}, expected={artifact.sha256!r}, "
+            f"computed={digest!r}"
+        )
+
+    try:
+        return load_evaluation_states_container_bytes(data)
+    except UnsupportedSpecVersion as exc:
+        raise EvaluationStatesSchemaMismatch(str(exc)) from exc
+    except ValidationError as exc:
+        schema_fields = {"schema_id", "schema_version", "storage_backend"}
+        error_fields = {error["loc"][0] for error in exc.errors() if error["loc"]}
+        error_type = (
+            EvaluationStatesSchemaMismatch
+            if error_fields.intersection(schema_fields)
+            else EvaluationStatesCustodyUnavailable
+        )
+        raise error_type(f"Evaluation-state container header is invalid: {exc}") from exc
+    except (
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        KeyError,
+        EvaluationStatesContainerError,
+    ) as exc:
+        raise EvaluationStatesCustodyUnavailable(
+            f"Evaluation-state container bytes could not be verified: {exc}"
+        ) from exc
 
 
 def evaluation_states_container_bytes(

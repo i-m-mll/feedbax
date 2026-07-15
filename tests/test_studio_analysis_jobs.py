@@ -17,6 +17,7 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
+from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
@@ -24,6 +25,8 @@ from feedbax.contracts.manifest import (
     analysis_run_manifest_id,
     load_manifest,
 )
+from feedbax.contracts.studio_api import GenerateAnalysisRequest
+from feedbax.web.api.analysis import _spec_for_analysis_request
 from feedbax.web.app import create_app
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
@@ -82,7 +85,7 @@ def _register_mismatched_job_analysis_recipe() -> None:
     register_analysis_recipe(MISMATCHED_JOB_ANALYSIS_TYPE, recipe, replace=True)
 
 
-def _execute_eval(root: Path):
+def _execute_eval(root: Path, *, durable: bool = False):
     spec = EvaluationRunSpec(
         evaluation_type=TOY_JOB_EVAL_TYPE,
         inputs=[
@@ -92,7 +95,7 @@ def _execute_eval(root: Path):
                 role="training_run",
             )
         ],
-        params={"value": 5},
+        params={"value": 5, **({"states_custody": "durable"} if durable else {})},
     )
     return execute_evaluation_run_spec(spec, root=root, issues=["studio-eval-fixture"])
 
@@ -168,6 +171,48 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
             fig_dump_formats=("json",),
         )
         assert rerun_manifest.id == manifest.id
+    finally:
+        unregister_analysis_recipe(TOY_JOB_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_JOB_EVAL_TYPE)
+
+
+def test_studio_analysis_job_executes_require_durable_with_exact_authority(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    _register_job_eval_recipe()
+    _register_job_analysis_recipe()
+    try:
+        evaluation, _ = _execute_eval(tmp_path, durable=True)
+        request = GenerateAnalysisRequest(
+            node_id=TOY_JOB_ANALYSIS_TYPE,
+            eval_run_id=evaluation.id,
+            evaluation_states_policy="require_durable",
+        )
+        spec = _spec_for_analysis_request(request, root=tmp_path)
+        assert spec.evaluation_states_policy == "require_durable"
+        assert is_authenticated_manifest_ref(spec.inputs[0])
+
+        with TestClient(create_app()) as client:
+            response = client.post("/api/analyses/jobs", json=request.model_dump(mode="json"))
+            assert response.status_code == 200
+            request_id = response.json()["data"]["request_id"]
+            status_payload = None
+            for _ in range(50):
+                status_response = client.get(f"/api/analyses/jobs/status/{request_id}")
+                status_payload = status_response.json()["data"]
+                if status_payload["status"] in {"complete", "error"}:
+                    break
+                time.sleep(0.05)
+
+        assert status_payload is not None
+        assert status_payload["status"] == "complete", status_payload.get("error")
+        analysis = load_manifest(status_payload["manifest_path"])
+        assert analysis.evaluation_state_sources[0].source_kind == "durable"
+        assert is_authenticated_manifest_ref(
+            analysis.evaluation_state_sources[0].evaluation_manifest_authority
+        )
     finally:
         unregister_analysis_recipe(TOY_JOB_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_JOB_EVAL_TYPE)

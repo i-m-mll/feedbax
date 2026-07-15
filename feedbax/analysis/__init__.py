@@ -95,6 +95,7 @@ from .evaluation import (
     materialize_evaluation_run_matrix,
     register_evaluation_recipe,
     registered_evaluation_recipes,
+    resolve_staged_evaluation_prerequisite,
     unregister_evaluation_recipe,
 )
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
@@ -188,6 +189,7 @@ __all__ = [
     "execute_analysis_bundle",
     "execute_analysis_run_spec",
     "execute_evaluation_run_matrix",
+    "resolve_staged_evaluation_prerequisite",
     "execute_report_spec",
     "execute_staged_analysis_bundle",
     "existing_file_artifact_group",
