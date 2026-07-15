@@ -6,8 +6,10 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
 from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_ID,
     RUN_EVENT_SCHEMA_VERSION,
@@ -17,6 +19,7 @@ from feedbax.orchestration.events import (
     RunEventProtocolError,
     RunEventReader,
     format_batch_line,
+    normalize_serialized_metrics,
 )
 
 
@@ -91,6 +94,73 @@ def test_run_event_registry_declares_reject_policy() -> None:
 
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate("RunEvent", {"schema_version": "feedbax.run_event.v1"})
+
+
+def test_metric_normalization_preserves_scalar_bytes_and_envelopes_mapped_values() -> None:
+    coordinate = ProgressCoordinate(
+        run_id="row",
+        phase="train",
+        program_step=3,
+        metrics={"train_loss": 1.0},
+    )
+    scalar_coordinate, scalar_metrics = normalize_serialized_metrics(
+        coordinate,
+        coordinate.metrics,
+        {},
+    )
+    assert scalar_coordinate == coordinate.model_dump(mode="json", exclude_none=True)
+    assert scalar_metrics == dict(coordinate.metrics)
+
+    axes = (
+        MaterializedSlotAxisBinding(
+            axis="ensemble",
+            role="replicate",
+            size=2,
+            level=0,
+            mode="mapped",
+            array_axis=0,
+        ),
+    )
+    mapped_runtime = coordinate.model_copy(
+        update={"metrics": {"train_loss": np.array([1.0, 2.0])}}
+    )
+    mapped_coordinate, mapped_metrics = normalize_serialized_metrics(
+        mapped_runtime,
+        mapped_runtime.metrics,
+        {"train_loss": axes},
+    )
+    assert "train_loss" not in mapped_coordinate["metrics"]
+    assert mapped_metrics["train_loss"] == {
+        "schema_id": "feedbax.manifest.mapped_metric_value",
+        "schema_version": "feedbax.manifest.mapped_metric_value.v1",
+        "value": [1.0, 2.0],
+        "shape": [2],
+        "dtype": "float64",
+        "axes": [axes[0].model_dump(mode="json")],
+    }
+
+
+def test_metric_normalization_rejects_non_json_mapped_values() -> None:
+    coordinate = ProgressCoordinate(
+        run_id="row",
+        phase="train",
+        program_step=1,
+        metrics={"train_loss": np.array([object()], dtype=object)},
+    )
+    binding = MaterializedSlotAxisBinding(
+        axis="ensemble",
+        role="replicate",
+        size=1,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+    with pytest.raises(RunEventProtocolError, match="finite JSON representation"):
+        normalize_serialized_metrics(
+            coordinate,
+            coordinate.metrics,
+            {"train_loss": (binding,)},
+        )
 
 
 def test_reader_rejects_non_monotonic_seq(tmp_path: Path) -> None:

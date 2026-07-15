@@ -52,9 +52,14 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
 )
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
-from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
+from feedbax.contracts.worker import (
+    AxisCoordinateSpec,
+    BarrierArtifactSinkSpec,
+    MaterializedSlotAxisBinding,
+    ProgressCoordinate,
+)
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
-from feedbax.orchestration.events import RunEventEmitter
+from feedbax.orchestration.events import RunEventEmitter, normalize_serialized_metrics
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
     ResumeSlotTransform,
@@ -75,6 +80,13 @@ from feedbax.training.manifest_preflight import (
     validate_training_run_spec,
 )
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.preparation import (
+    ExecutionPreparationResult,
+    MaterializedExecutionPreparation,
+    executor_owned_initial_slot_names,
+    validate_materialized_execution_slots,
+    validate_materialized_execution_preparation,
+)
 from feedbax.training.diagnostics import (
     CheckpointTransactionDiagnostic,
     LearningRateDiagnostic,
@@ -83,6 +95,7 @@ from feedbax.training.diagnostics import (
 )
 from feedbax.training.worker_validation import (
     WorkerExecutabilityEnvironment,
+    resolve_execution_mapping,
     validate_worker_contract,
 )
 
@@ -224,6 +237,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         segment_batch_count: int | None = None,
         segment_parent_transaction_id: str | None = None,
         resolved_method: ResolvedTrainingMethod[Any],
+        slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
         run_event_emitter: RunEventEmitter | None = None,
     ) -> None:
         super().__init__()
@@ -236,6 +250,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self.segment_batch_count = segment_batch_count
         self.segment_parent_transaction_id = segment_parent_transaction_id
         self.resolved_method = resolved_method
+        self.slot_axis_bindings = dict(slot_axis_bindings or {})
         self.run_event_emitter = run_event_emitter
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -268,6 +283,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                 final_slots=saved.slots,
                 fallback=saved.coordinate.program_step,
                 require_authority=True,
+                slot_axis_bindings=self.slot_axis_bindings,
             )
             segment_batch_count = cumulative_completed_batches - self.segment_start_batch
             if segment_batch_count < 0:
@@ -279,10 +295,11 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         checkpoint_metadata: dict[str, Any] = {"barrier_visit_ordinal": saved.visit_ordinal}
         descriptor = self.resolved_method.descriptor
         if descriptor is not None and descriptor.optimizer_step_extractor is not None:
-            checkpoint_metadata["optimizer_step"] = _validated_optimizer_step(
+            checkpoint_metadata["optimizer_step"] = _synchronized_optimizer_step(
                 descriptor.optimizer_step_extractor,
                 self.resolved_method.payload,
                 saved.slots,
+                self.slot_axis_bindings,
             )
         write = write_checkpoint_transaction(
             self.root,
@@ -301,15 +318,28 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         )
         self._writes.append(write)
         if self.run_event_emitter is not None:
+            coordinate_payload, checkpoint_metrics = normalize_serialized_metrics(
+                saved.coordinate,
+                saved.coordinate.metrics,
+                self.slot_axis_bindings,
+            )
+            checkpoint_payload: dict[str, Any] = {
+                "barrier": saved.barrier,
+                "barrier_visit_ordinal": saved.visit_ordinal,
+                "transaction_id": write.manifest.transaction_id,
+                "coordinate": coordinate_payload,
+                "program_step": saved.coordinate.program_step,
+            }
+            if any(
+                name in saved.coordinate.metrics
+                and bindings
+                and bindings[0].mode == "mapped"
+                for name, bindings in self.slot_axis_bindings.items()
+            ):
+                checkpoint_payload["metrics"] = checkpoint_metrics
             self.run_event_emitter.emit(
                 "checkpoint_written",
-                {
-                    "barrier": saved.barrier,
-                    "barrier_visit_ordinal": saved.visit_ordinal,
-                    "transaction_id": write.manifest.transaction_id,
-                    "coordinate": saved.coordinate.model_dump(mode="json", exclude_none=True),
-                    "program_step": saved.coordinate.program_step,
-                },
+                checkpoint_payload,
             )
         for prepared in prepared_artifacts:
             self._barrier_artifacts.append(
@@ -338,6 +368,7 @@ def execute_training_run_spec(
     spec: TrainingRunSpec | Mapping[str, Any],
     *,
     run_id: str | None = None,
+    preparation: ExecutionPreparationResult | MaterializedExecutionPreparation | None = None,
     initial_slots: Mapping[str, Any] | None = None,
     kernel_context: Mapping[str, Any] | None = None,
     manifest_root: Path | str | None = None,
@@ -382,6 +413,41 @@ def execute_training_run_spec(
     manifest; ``terminate`` emits a cancelled manifest immediately.
     """
     run_spec = _validate_spec(spec)
+    mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
+    loose_preparation = any(
+        value is not None
+        for value in (initial_slots, kernel_context, loss_service, resume_slot_transform)
+    )
+    if preparation is not None and loose_preparation:
+        raise TrainingRunExecutorError(
+            "preparation is mutually exclusive with initial_slots, kernel_context, "
+            "loss_service, and resume_slot_transform"
+        )
+    if mapping_levels:
+        if not isinstance(preparation, MaterializedExecutionPreparation):
+            raise TrainingRunExecutorError(
+                "active mapping levels require a Feedbax-materialized execution preparation; "
+                "loose, scalar, and pre-stacked inputs are not accepted"
+            )
+        try:
+            validate_materialized_execution_preparation(preparation, run_spec=run_spec)
+        except ValueError as exc:
+            raise TrainingRunExecutorError(
+                f"mapped execution preparation validation failed: {exc}"
+            ) from exc
+        initial_slots = preparation.initial_slots
+        kernel_context = preparation.kernel_context
+        loss_service = preparation.loss_service
+        resume_slot_transform = preparation.resume_slot_transform
+    elif isinstance(preparation, MaterializedExecutionPreparation):
+        raise TrainingRunExecutorError(
+            "MaterializedExecutionPreparation is invalid when mapping_levels are absent"
+        )
+    elif isinstance(preparation, ExecutionPreparationResult):
+        initial_slots = preparation.initial_slots
+        kernel_context = preparation.kernel_context
+        loss_service = preparation.loss_service
+        resume_slot_transform = preparation.resume_slot_transform
     _validate_checkpoint_progress_policy(run_spec)
     producer_context = _validate_execution_context(execution_context)
     _validate_execution_payload_binding(
@@ -501,6 +567,7 @@ def execute_training_run_spec(
         guard_predicates=guards,
         task_binding_spec=task_binding_spec,
         objective_requirements=lowered.requirements,
+        active_mapping_axes=tuple(level.axis for level in mapping_levels),
     )
     if (
         resolved_method.descriptor is not None
@@ -510,8 +577,37 @@ def execute_training_run_spec(
             "/worker_execution/effective_phase does not match the executable method contract"
         )
     program = effective_phase.phase_program
-    slots = _initial_slots(initial_slots, lowered_objective=lowered.loss)
+    executor_owned_slots = executor_owned_initial_slot_names(run_spec, slot_axis_bindings)
+    slots = _initial_slots(
+        initial_slots,
+        lowered_objective=lowered.loss,
+        executor_owned_slots=executor_owned_slots,
+    )
     slots = _normalize_batch_progress_slot(slots, program=program)
+    if mapping_levels:
+        try:
+            validate_materialized_execution_slots(
+                slots,
+                slot_axis_bindings,
+                required_slots={slot.name for slot in effective_phase.state_slots if slot.required},
+            )
+        except ValueError as exc:
+            raise TrainingRunExecutorError(
+                f"mapped execution state validation failed after executor slot merge: {exc}"
+            ) from exc
+    caller_kernel_context = dict(kernel_context or {})
+    reserved_context_keys = sorted(
+        set(caller_kernel_context).intersection(_RESERVED_KERNEL_CONTEXT_KEYS)
+    )
+    if reserved_context_keys:
+        raise TrainingRunExecutorError(
+            f"kernel_context contains executor-reserved keys: {reserved_context_keys!r}"
+        )
+    executor_context = {
+        **caller_kernel_context,
+        "run_spec": run_spec,
+        "method_payload": method_payload,
+    }
     custody_root = _checkpoint_root(
         root_path=root_path,
         configured_root=checkpoint_root or run_spec.artifacts.artifact_root,
@@ -570,18 +666,28 @@ def execute_training_run_spec(
         segment_batch_count=segment_batch_count,
         segment_parent_transaction_id=segment_parent_transaction_id,
         resolved_method=resolved_method,
+        slot_axis_bindings=slot_axis_bindings,
         run_event_emitter=run_event_emitter,
     )
-    if loaded_resume_checkpoint is not None:
-        checkpoint_store.remember(loaded_resume_checkpoint)
-
     executor = PhaseProgramExecutor(
         program,
         kernels,
         guard_predicates=guards,
         checkpoint_store=checkpoint_store,
         state_slots=effective_phase.state_slots,
+        mapping_levels=mapping_levels,
+        slot_axis_bindings=slot_axis_bindings,
     )
+    try:
+        executor.preflight(
+            loaded_resume_checkpoint.slots if loaded_resume_checkpoint is not None else slots,
+            run_id=resolved_run_id,
+            context=executor_context,
+        )
+    except ValueError as exc:
+        raise TrainingRunExecutorError(f"mapped execution preflight failed: {exc}") from exc
+    if loaded_resume_checkpoint is not None:
+        checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
     total_batches = int(run_spec.training_config.n_batches or 0)
     started_at = (
@@ -591,19 +697,6 @@ def execute_training_run_spec(
     )
     cache_before = _compilation_cache_snapshot()
     runtime_telemetry: dict[str, Any] = {}
-    caller_kernel_context = dict(kernel_context or {})
-    reserved_context_keys = sorted(
-        set(caller_kernel_context).intersection(_RESERVED_KERNEL_CONTEXT_KEYS)
-    )
-    if reserved_context_keys:
-        raise TrainingRunExecutorError(
-            f"kernel_context contains executor-reserved keys: {reserved_context_keys!r}"
-        )
-    executor_context = {
-        **caller_kernel_context,
-        "run_spec": run_spec,
-        "method_payload": method_payload,
-    }
     cancellation: CancellationDecision | None = None
 
     def observe_cancellation(coordinate: ProgressCoordinate) -> None:
@@ -636,6 +729,7 @@ def execute_training_run_spec(
                     runtime_telemetry=runtime_telemetry,
                     cache_before=cache_before,
                     start_semantics=execution_start_semantics,
+                    slot_axis_bindings=slot_axis_bindings,
                 )
             ),
             step_guard=_executor_nan_guard(
@@ -658,7 +752,11 @@ def execute_training_run_spec(
             )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
-        final_metrics = _final_metrics(execution.slots, execution.coordinate)
+        final_metrics = _final_metrics(
+            execution.slots,
+            execution.coordinate,
+            slot_axis_bindings,
+        )
         diagnostics = _build_training_diagnostics(
             manifest_id=exact_manifest_id,
             run_id=resolved_run_id,
@@ -670,6 +768,7 @@ def execute_training_run_spec(
             segment_start_batch=segment_start_batch,
             history_events=history_events,
             execution_context=producer_context,
+            slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
             root_path=root_path,
@@ -718,15 +817,17 @@ def execute_training_run_spec(
             path=manifest_output_path,
         )
         if run_event_emitter is not None:
+            terminal_coordinate, _ = normalize_serialized_metrics(
+                execution.coordinate,
+                execution.coordinate.metrics,
+                slot_axis_bindings,
+            )
             run_event_emitter.emit_terminal(
                 "complete",
                 {
                     "run_id": resolved_run_id,
                     "status": "cancelled" if cancellation is not None else "completed",
-                    "coordinate": execution.coordinate.model_dump(
-                        mode="json",
-                        exclude_none=True,
-                    ),
+                    "coordinate": terminal_coordinate,
                     "program_step": execution.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
@@ -743,7 +844,7 @@ def execute_training_run_spec(
         checkpoint_writes = checkpoint_store.writes
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
-        final_metrics = _final_metrics({}, interrupted.coordinate)
+        final_metrics = _final_metrics({}, interrupted.coordinate, slot_axis_bindings)
         diagnostics = _build_training_diagnostics(
             manifest_id=exact_manifest_id,
             run_id=resolved_run_id,
@@ -755,6 +856,7 @@ def execute_training_run_spec(
             segment_start_batch=segment_start_batch,
             history_events=history_events,
             execution_context=producer_context,
+            slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
             root_path=root_path,
@@ -803,12 +905,17 @@ def execute_training_run_spec(
             path=manifest_output_path,
         )
         if run_event_emitter is not None:
+            terminal_coordinate, _ = normalize_serialized_metrics(
+                interrupted.coordinate,
+                interrupted.coordinate.metrics,
+                slot_axis_bindings,
+            )
             run_event_emitter.emit_terminal(
                 "complete",
                 {
                     "run_id": resolved_run_id,
                     "status": "cancelled",
-                    "coordinate": interrupted.coordinate.model_dump(mode="json", exclude_none=True),
+                    "coordinate": terminal_coordinate,
                     "program_step": interrupted.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
@@ -1232,6 +1339,53 @@ def _validated_optimizer_step(
     return value
 
 
+def _instance_runtime_slots(
+    runtime: Mapping[str, Any],
+    bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    instance: int,
+) -> dict[str, Any]:
+    mapped = {
+        name
+        for name, slot_bindings in bindings.items()
+        if slot_bindings and slot_bindings[0].mode == "mapped"
+    }
+    return {
+        name: jt.map(
+            lambda leaf: leaf[instance] if isinstance(leaf, (jax.Array, np.ndarray)) else leaf,
+            value,
+        )
+        if name in mapped
+        else value
+        for name, value in runtime.items()
+    }
+
+
+def _synchronized_optimizer_step(
+    extractor: Callable[[Any, Mapping[str, Any]], int],
+    payload: Any,
+    runtime: Mapping[str, Any],
+    bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> int:
+    mapped_bindings = [
+        value[0] for value in bindings.values() if value and value[0].mode == "mapped"
+    ]
+    if not mapped_bindings:
+        return _validated_optimizer_step(extractor, payload, runtime)
+    values = [
+        _validated_optimizer_step(
+            extractor,
+            payload,
+            _instance_runtime_slots(runtime, bindings, instance),
+        )
+        for instance in range(mapped_bindings[0].size)
+    ]
+    if any(value != values[0] for value in values[1:]):
+        raise TrainingRunExecutorError(
+            f"/descriptor/optimizer_step_extractor mapped authorities diverged: {values!r}"
+        )
+    return values[0]
+
+
 def _local_custody_path(uri: str) -> Path | None:
     """Resolve locally addressable custody URIs and ignore remote registry schemes."""
 
@@ -1301,11 +1455,13 @@ def _initial_slots(
     initial_slots: Mapping[str, Any] | None,
     *,
     lowered_objective: Any,
+    executor_owned_slots: Sequence[str],
 ) -> dict[str, Any]:
     if initial_slots is None:
         raise TrainingRunExecutorError("/initial_slots are required for native execution")
     slots = dict(initial_slots)
-    slots.setdefault("objective", lowered_objective)
+    for slot in executor_owned_slots:
+        slots.setdefault(slot, lowered_objective)
     return slots
 
 
@@ -1423,11 +1579,19 @@ def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:
     return value if isinstance(value, int) and value >= 0 else None
 
 
-def _history_event(coordinate: ProgressCoordinate) -> dict[str, Any]:
+def _history_event(
+    coordinate: ProgressCoordinate,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> dict[str, Any]:
+    coordinate_payload, metrics = normalize_serialized_metrics(
+        coordinate,
+        coordinate.metrics,
+        slot_axis_bindings,
+    )
     return {
         "type": "training_progress",
-        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
-        "metrics": dict(coordinate.metrics),
+        "coordinate": coordinate_payload,
+        "metrics": metrics,
     }
 
 
@@ -1442,12 +1606,14 @@ def _live_progress_callback(
     runtime_telemetry: dict[str, Any] | None = None,
     cache_before: Mapping[str, Any] | None = None,
     start_semantics: str = "executor_entry",
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
     ready_emitted = False
 
     def emit(coordinate: ProgressCoordinate) -> None:
         nonlocal ready_emitted
-        event = _history_event(coordinate)
+        bindings = dict(slot_axis_bindings or {})
+        event = _history_event(coordinate, bindings)
         if runtime_telemetry is not None and not runtime_telemetry:
             runtime_telemetry.update(
                 _first_progress_telemetry(
@@ -1461,15 +1627,28 @@ def _live_progress_callback(
         if run_event_emitter is not None:
             if not ready_emitted:
                 ready_emitted = True
+                ready_coordinate, ready_metrics = normalize_serialized_metrics(
+                    coordinate,
+                    coordinate.metrics,
+                    bindings,
+                )
+                ready_payload: dict[str, Any] = {
+                    "run_id": coordinate.run_id,
+                    "phase": coordinate.phase,
+                    "program_step": coordinate.program_step,
+                    "coordinate": ready_coordinate,
+                    "runtime_telemetry": deepcopy(runtime_telemetry or {}),
+                }
+                if any(
+                    name in coordinate.metrics
+                    and axis_bindings
+                    and axis_bindings[0].mode == "mapped"
+                    for name, axis_bindings in bindings.items()
+                ):
+                    ready_payload["metrics"] = ready_metrics
                 run_event_emitter.emit(
                     "ready",
-                    {
-                        "run_id": coordinate.run_id,
-                        "phase": coordinate.phase,
-                        "program_step": coordinate.program_step,
-                        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
-                        "runtime_telemetry": deepcopy(runtime_telemetry or {}),
-                    },
+                    ready_payload,
                 )
             elapsed_seconds = time.perf_counter() - started_at if started_at is not None else None
             payload = _run_progress_event_payload(
@@ -1500,19 +1679,23 @@ def _run_progress_event_payload(
 ) -> dict[str, Any]:
     metrics = event.get("metrics", {})
     metrics = metrics if isinstance(metrics, Mapping) else {}
+    coordinate_payload = event.get("coordinate")
     payload: dict[str, Any] = {
         "run_id": coordinate.run_id,
         "phase": coordinate.phase,
         "program_step": coordinate.program_step,
         "total_batches": total_batches,
-        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
+        "coordinate": coordinate_payload,
         "metrics": dict(metrics),
         "status": "running",
     }
     if elapsed_seconds is not None:
         payload["elapsed_seconds"] = elapsed_seconds
     loss = metrics.get("train_loss")
-    if loss is not None:
+    if loss is not None and not (
+        isinstance(loss, Mapping)
+        and loss.get("schema_id") == "feedbax.manifest.mapped_metric_value"
+    ):
         try:
             payload["loss"] = float(jax.device_get(loss))
         except (TypeError, ValueError):
@@ -1613,7 +1796,11 @@ def _barrier_artifact_logical_name(
     return "_".join(parts) + suffix
 
 
-def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> dict[str, Any]:
+def _final_metrics(
+    slots: Mapping[str, Any],
+    coordinate: ProgressCoordinate,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> dict[str, Any]:
     metrics = dict(coordinate.metrics)
     for key, value in slots.items():
         if key.endswith("loss"):
@@ -1622,7 +1809,8 @@ def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> 
             except (TypeError, ValueError):
                 metrics[key] = value
     metrics.setdefault("program_step", coordinate.program_step)
-    return metrics
+    _, normalized = normalize_serialized_metrics(coordinate, metrics, slot_axis_bindings)
+    return normalized
 
 
 def _build_training_diagnostics(
@@ -1637,6 +1825,7 @@ def _build_training_diagnostics(
     segment_start_batch: int,
     history_events: Sequence[Mapping[str, Any]],
     execution_context: NativeExecutionProducerContext | None,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> TrainingDiagnostics:
     transactions: list[CheckpointTransactionDiagnostic] = []
     for write in checkpoint_writes:
@@ -1663,6 +1852,7 @@ def _build_training_diagnostics(
             else final_coordinate.program_step
         ),
         require_authority=status == "completed",
+        slot_axis_bindings=slot_axis_bindings,
     )
     segment_completed_batches = max(
         0,
@@ -1729,6 +1919,7 @@ def _terminal_completed_batches(
     final_slots: Mapping[str, Any],
     fallback: int,
     require_authority: bool,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> int:
     """Read the terminal cumulative batch count from the declared authority."""
 
@@ -1742,6 +1933,21 @@ def _terminal_completed_batches(
         raise TrainingRunExecutorError(
             f"{path}/slot={authority.slot!r} is missing from terminal slots"
         )
+    bindings = dict(slot_axis_bindings or {})
+    authority_bindings = bindings.get(authority.slot, ())
+    if authority_bindings and authority_bindings[0].mode == "mapped":
+        values = [
+            _terminal_completed_batches(
+                program=program,
+                final_slots=_instance_runtime_slots(final_slots, bindings, instance),
+                fallback=fallback,
+                require_authority=require_authority,
+            )
+            for instance in range(authority_bindings[0].size)
+        ]
+        if any(value != values[0] for value in values[1:]):
+            raise TrainingRunExecutorError(f"{path} mapped authorities diverged: {values!r}")
+        return values[0]
     value = final_slots[authority.slot]
     for index, segment in enumerate(authority.field_path):
         segment_path = f"{path}/field_path/{index}"
@@ -1782,7 +1988,22 @@ def _realized_lr_trace(
     *,
     declared: Sequence[LearningRateDiagnostic],
 ) -> list[LearningRateDiagnostic]:
-    by_step = {sample.step: sample.learning_rate for sample in declared}
+    observed: dict[tuple[tuple[tuple[str, int], ...], int], LearningRateDiagnostic] = {}
+
+    def add(sample: LearningRateDiagnostic) -> None:
+        coordinates = tuple(
+            (coordinate.axis, coordinate.index)
+            for coordinate in (sample.axis_coordinates or ())
+        )
+        key = (coordinates, sample.step)
+        if key in observed:
+            raise TrainingRunExecutorError(
+                f"learning-rate diagnostics duplicate coordinate/step identity {key!r}"
+            )
+        observed[key] = sample
+
+    for sample in declared:
+        add(sample)
     for event in history_events:
         coordinate = event.get("coordinate")
         metrics = event.get("metrics")
@@ -1792,10 +2013,37 @@ def _realized_lr_trace(
         learning_rate = metrics.get("learning_rate", metrics.get("lr"))
         if step is None or learning_rate is None:
             continue
-        by_step[int(step)] = float(jax.device_get(learning_rate))
-    return [
-        LearningRateDiagnostic(step=step, learning_rate=by_step[step]) for step in sorted(by_step)
-    ]
+        if (
+            isinstance(learning_rate, Mapping)
+            and learning_rate.get("schema_id") == "feedbax.manifest.mapped_metric_value"
+        ):
+            axes = learning_rate.get("axes")
+            values = np.asarray(learning_rate.get("value"))
+            if not isinstance(axes, list) or len(axes) != 1:
+                raise TrainingRunExecutorError("mapped learning-rate metric requires one axis")
+            axis = axes[0]
+            if values.ndim < 1 or values.shape[0] != axis.get("size"):
+                raise TrainingRunExecutorError(
+                    "mapped learning-rate metric does not cover every axis coordinate"
+                )
+            for index in range(values.shape[0]):
+                add(
+                    LearningRateDiagnostic(
+                        step=int(step),
+                        learning_rate=float(values[index]),
+                        axis_coordinates=(
+                            AxisCoordinateSpec(axis=str(axis["axis"]), index=index),
+                        ),
+                    )
+                )
+        else:
+            add(
+                LearningRateDiagnostic(
+                    step=int(step),
+                    learning_rate=float(jax.device_get(learning_rate)),
+                )
+            )
+    return [observed[key] for key in sorted(observed)]
 
 
 def _diagnostics_output_path(

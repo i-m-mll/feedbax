@@ -33,6 +33,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -420,6 +421,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     )
 
 
@@ -456,6 +458,7 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v4-to-v5-program-coordinate",
             "training-checkpoint-transaction-v5-to-v6-batch-history",
             "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+            "training-checkpoint-transaction-v7-to-v8-mapped-axes",
     ]
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
@@ -1254,6 +1257,41 @@ def test_checkpoint_fork_hardlinks_three_targets_and_survives_source_quarantine(
             expected_population_member_ids={"adversary_population": ["adv-a", "adv-b"]},
         )
         assert loaded.slots["rng"].tolist() == [11, 22]
+
+
+@pytest.mark.parametrize("field", ["schema_id", "schema_version"])
+def test_v8_transaction_rejects_unknown_nested_fork_provenance_identity(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    forked = fork_checkpoint_transaction(
+        source_root,
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        expected_slots=_minimax_slots(),
+    )
+    payload = json.loads(forked.manifest_path.read_text())
+    payload["fork_provenance"][field] += ".unknown"
+    _rewrite_manifest_and_latest(forked, payload)
+
+    with pytest.raises(CheckpointIntegrityError, match=field):
+        load_latest_checkpoint(
+            forked.root,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
 
 
 def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
@@ -3273,7 +3311,8 @@ def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
     assert resolved.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert resolved.manifest.segment_lineage.start_batch == 0
     assert [record.migration_id for record in resolved.migration_records] == [
-        "training-checkpoint-transaction-v6-to-v7-segment-lineage"
+        "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+        "training-checkpoint-transaction-v7-to-v8-mapped-axes",
     ]
 
 
@@ -3305,6 +3344,7 @@ def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
     assert [record.migration_id for record in resolved.migration_records] == [
         "training-checkpoint-transaction-v5-to-v6-batch-history",
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+        "training-checkpoint-transaction-v7-to-v8-mapped-axes",
     ]
 
 

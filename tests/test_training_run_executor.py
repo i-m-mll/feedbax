@@ -3,13 +3,19 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import shutil
 import subprocess
 import sys
+from copy import copy, deepcopy
 from dataclasses import replace
 from pathlib import Path
 
+import equinox as eqx
+import jax
+import numpy as np
 import pytest
 import jax.numpy as jnp
+import optax
 from pydantic import BaseModel, ConfigDict
 
 from feedbax.analysis.execution_context import (
@@ -33,6 +39,7 @@ from feedbax.contracts.staged_execution import (
 from feedbax.contracts.spec_storage import (
     training_run_execution_hash,
     training_spec_canonical_bytes,
+    training_spec_sha256,
 )
 from feedbax.contracts.training import (
     LossTermSpec,
@@ -58,11 +65,15 @@ from feedbax.contracts.training import (
     default_training_method_registry,
 )
 from feedbax.contracts.worker import (
+    AxisCoordinateSpec,
+    AxisSpec,
     BarrierArtifactSinkSpec,
     CheckpointSlotSpec,
+    MappingLevelSpec,
     MetricGuardSpec,
     PhaseTransitionSpec,
     StateSlotSpec,
+    SlotAxisBindingSpec,
 )
 from feedbax.orchestration.events import RunEventEmitter, RunEventReader
 from feedbax.orchestration.conformance import (
@@ -83,7 +94,9 @@ from feedbax.orchestration.drivers.native_execution import (
     inject_native_execution_context,
 )
 from feedbax.training.checkpoint_custody import (
+    CheckpointCompatibilityError,
     concatenate_checkpoint_histories,
+    fork_checkpoint_transaction,
     load_latest_checkpoint,
 )
 from feedbax.training.executor import (
@@ -93,7 +106,26 @@ from feedbax.training.executor import (
     _feedbax_owned_training_manifest_metadata,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
+    _realized_lr_trace,
+    _synchronized_optimizer_step,
     execute_training_run_spec,
+)
+from feedbax.training.preparation import (
+    ExecutionPreparationRequest,
+    ExecutionPreparationPlan,
+    ExecutionPreparationResult,
+    MaterializedExecutionPreparation,
+    _build_materialized_execution_preparation,
+    _identity_fingerprint,
+    _run_spec_sha256,
+    ScalarInstancePreparationResult,
+    materialize_execution_preparation,
+)
+from feedbax.training.phase_executor import PhaseProgramExecutor
+from feedbax.training.worker_validation import (
+    WorkerContractValidationError,
+    resolve_execution_mapping,
+    validate_worker_contract,
 )
 from feedbax.training.manifest_preflight import (
     TrainingRunManifestPreflightError,
@@ -148,6 +180,791 @@ def _run_spec() -> TrainingRunSpec:
             effective_phase=standard_supervised_effective_phase_spec(),
         ),
     )
+
+
+def _mapped_run_spec() -> TrainingRunSpec:
+    spec = _run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    contract = worker.method_contract
+    contract.axes.append(AxisSpec(name="ensemble", role="replicate", size=5))
+    for slot in contract.state_slots:
+        slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)]
+    for step in contract.phase_program.update_steps:
+        step.axes.append("ensemble")
+    worker.mapping_levels = [MappingLevelSpec(axis="ensemble")]
+    return spec.model_copy(update={"worker_execution": worker})
+
+
+def _mapped_shared_objective_run_spec(kernel) -> TrainingRunSpec:
+    spec = _mapped_run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    contract = worker.method_contract
+    for slot in contract.state_slots:
+        if slot.name == "objective":
+            slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="shared")]
+    program = contract.phase_program
+    program.phases[0].writes.remove("train_loss")
+    program.phases[0].checkpoint_barrier = None
+    program.update_steps[0].writes.remove("train_loss")
+    program.checkpoint_barriers = []
+    kernels = {"feedbax.training.standard_supervised.gradient_update": kernel}
+    worker.effective_phase = validate_worker_contract(contract, update_kernels=kernels)
+    return spec.model_copy(update={"worker_execution": worker})
+
+
+def _mapped_test_registry(spec: TrainingRunSpec, kernel) -> TrainingMethodRegistry:
+    registry = TrainingMethodRegistry()
+    registry.register(
+        TrainingMethodRegistration(
+            method_ref=standard_supervised_method_ref().key,
+            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            payload_model=StandardSupervisedMethodPayload,
+            contract_factory=lambda: spec.worker_execution.method_contract,
+            update_kernels_factory=lambda _payload: {
+                "feedbax.training.standard_supervised.gradient_update": kernel
+            },
+        )
+    )
+    return registry
+
+
+def _valid_materialized_preparation(
+    spec: TrainingRunSpec,
+) -> MaterializedExecutionPreparation:
+    slots = {
+        slot.name: jnp.zeros((5,), dtype=jnp.float32)
+        for slot in spec.worker_execution.method_contract.state_slots
+    }
+    coordinates = tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5))
+    return _build_materialized_execution_preparation(
+        request=ExecutionPreparationRequest(run_spec=spec),
+        provider_identity="tests.mapped_preparation",
+        initial_slots=slots,
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        coordinate_order=coordinates,
+    )
+
+
+def _mapped_plan(materializer) -> ExecutionPreparationPlan:
+    return ExecutionPreparationPlan(
+        shared_slots={},
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(7)},
+        materialize_instance=materializer,
+    )
+
+
+def _shared_objective_materializer(request):
+    index = request.axis_coordinates[0].index
+    return ScalarInstancePreparationResult(
+        mapped_slots={
+            "model": jnp.array(float(index)),
+            "optimizer": jnp.array(0),
+            "prng": request.rng.keys["model"],
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
+        }
+    )
+
+
+def _shared_objective_kernel(slots, coordinate, context):
+    del coordinate, context
+    assert "objective" in slots
+    return {
+        "model": slots["model"] + 1,
+        "optimizer": slots["optimizer"] + 1,
+        "prng": slots["prng"],
+        "batch_counter": slots["batch_counter"] + 1,
+    }
+
+
+def test_executor_injects_declared_shared_objective_before_mapped_preflight(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_shared_objective_run_spec(_shared_objective_kernel)
+    preparation = materialize_execution_preparation(
+        ExecutionPreparationRequest(run_spec=spec),
+        _mapped_plan(_shared_objective_materializer),
+        provider_identity="tests.shared_objective",
+    )
+    assert "objective" not in preparation.initial_slots
+
+    result = execute_training_run_spec(
+        spec,
+        preparation=preparation,
+        registry=_mapped_test_registry(spec, _shared_objective_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoints",
+        run_id="mapped-shared-objective",
+    )
+
+    assert result.final_slots["model"].tolist() == [1, 2, 3, 4, 5]
+    assert "objective" in result.final_slots
+
+
+def test_mapped_plan_still_rejects_missing_provider_owned_shared_slot() -> None:
+    spec = _mapped_run_spec()
+    for slot in spec.worker_execution.method_contract.state_slots:
+        if slot.name == "objective":
+            slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="shared")]
+    spec.worker_execution.method_contract.state_slots.append(
+        StateSlotSpec(
+            name="shared_config",
+            role="auxiliary",
+            axis_bindings=[SlotAxisBindingSpec(axis="ensemble", mode="shared")],
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"missing_required=\['shared_config'\]"):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=spec),
+            _mapped_plan(_shared_objective_materializer),
+            provider_identity="tests.missing_shared",
+        )
+
+
+def test_mapped_preflight_failure_has_no_publication_side_effects(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def unsafe_kernel(slots, coordinate, context):
+        del coordinate, context
+        return {"model": int(slots["model"])}
+
+    spec = _mapped_shared_objective_run_spec(unsafe_kernel)
+    preparation = materialize_execution_preparation(
+        ExecutionPreparationRequest(run_spec=spec),
+        _mapped_plan(_shared_objective_materializer),
+        provider_identity="tests.preflight_failure",
+    )
+    emitter = RunEventEmitter(
+        run_set_id="mapped-preflight",
+        row_id="row",
+        heartbeat_seconds=None,
+    )
+    events = []
+    monkeypatch.setattr(emitter, "emit", lambda event_type, payload=None: events.append(event_type))
+    manifest_root = tmp_path / "manifest"
+    checkpoint_root = tmp_path / "checkpoints"
+
+    with pytest.raises(TrainingRunExecutorError, match="mapped execution preflight failed"):
+        execute_training_run_spec(
+            spec,
+            preparation=preparation,
+            registry=_mapped_test_registry(spec, unsafe_kernel),
+            manifest_root=manifest_root,
+            checkpoint_root=checkpoint_root,
+            run_id="mapped-preflight-failure",
+            run_event_emitter=emitter,
+        )
+
+    assert events == []
+    assert not manifest_root.exists()
+    assert not checkpoint_root.exists()
+
+
+def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees() -> None:
+    spec = _mapped_run_spec()
+    requests = []
+    optimizer = optax.adam(1e-3)
+
+    def materialize(request):
+        requests.append(request)
+        key = request.rng.keys["model"]
+        linear = eqx.nn.Linear(1, 1, key=key)
+        return ScalarInstancePreparationResult(
+            mapped_slots={
+                "model": linear,
+                "optimizer": optimizer.init(linear),
+                "prng": key,
+                "objective": jnp.array(0.0),
+                "train_loss": np.array(0.0, dtype=np.float32),
+                "batch_counter": jnp.array(0, dtype=jnp.int32),
+            }
+        )
+
+    prepared = materialize_execution_preparation(
+        ExecutionPreparationRequest(run_spec=spec),
+        _mapped_plan(materialize),
+        provider_identity="tests.mapped_plan",
+    )
+
+    assert [item.axis_coordinates[0].index for item in requests] == list(range(5))
+    assert (
+        len({tuple(map(int, jax.random.key_data(item.rng.keys["model"]))) for item in requests})
+        == 5
+    )
+    assert prepared.initial_slots["model"].weight.shape[0] == 5
+    assert not prepared.initial_slots["train_loss"].flags.writeable
+    assert any(
+        getattr(leaf, "shape", None) == (5,)
+        for leaf in jax.tree.leaves(prepared.initial_slots["optimizer"])
+    )
+
+
+def test_mapped_plan_rejects_batch_history_immediately() -> None:
+    calls = []
+
+    def materialize(request):
+        calls.append(request)
+        return ScalarInstancePreparationResult(
+            mapped_slots={
+                "model": BatchHistory(jnp.zeros((1,))),
+                **{
+                    name: jnp.array(0)
+                    for name in {"optimizer", "prng", "objective", "train_loss", "batch_counter"}
+                },
+            }
+        )
+
+    with pytest.raises(ValueError, match="contains BatchHistory"):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=_mapped_run_spec()),
+            _mapped_plan(materialize),
+            provider_identity="tests.mapped_history",
+        )
+    assert len(calls) == 1
+
+
+def test_mapped_plan_rejects_optional_presence_and_leaf_drift() -> None:
+    spec = _mapped_run_spec()
+    slots = spec.worker_execution.method_contract.state_slots
+    slots[-2].required = False
+    calls = 0
+
+    def materialize(_request):
+        nonlocal calls
+        calls += 1
+        values = {name: jnp.zeros((2,)) for name in {slot.name for slot in slots}}
+        if calls == 2:
+            values.pop("train_loss")
+        return ScalarInstancePreparationResult(mapped_slots=values)
+
+    with pytest.raises(ValueError, match="optional mapped slots"):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=spec),
+            _mapped_plan(materialize),
+            provider_identity="tests.optional_drift",
+        )
+
+
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    [
+        ("shape", "changes shape or dtype"),
+        ("type", "changes array/static type"),
+        ("tree", "divergent PyTree"),
+        ("static", "divergent static values"),
+    ],
+)
+def test_mapped_plan_rejects_tree_shape_type_and_static_drift(drift, message) -> None:
+    calls = 0
+
+    def materialize(_request):
+        nonlocal calls
+        calls += 1
+        model = (jnp.zeros((2,)), "same") if drift == "static" else jnp.zeros((2,))
+        if calls == 2:
+            if drift == "shape":
+                model = jnp.zeros((3,))
+            elif drift == "type":
+                model = 1
+            elif drift == "tree":
+                model = {"array": jnp.zeros((2,))}
+            else:
+                model = (jnp.zeros((2,)), "different")
+        return ScalarInstancePreparationResult(
+            mapped_slots={
+                name: model if name == "model" else jnp.array(0)
+                for name in {
+                    "model",
+                    "optimizer",
+                    "prng",
+                    "objective",
+                    "train_loss",
+                    "batch_counter",
+                }
+            }
+        )
+
+    with pytest.raises(ValueError, match=message):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=_mapped_run_spec()),
+            _mapped_plan(materialize),
+            provider_identity="tests.tree_drift",
+        )
+    assert calls == 2
+
+
+def _mapped_phase_executor(kernel):
+    spec = _mapped_run_spec()
+    levels, bindings = resolve_execution_mapping(spec.worker_execution)
+    return PhaseProgramExecutor(
+        spec.worker_execution.method_contract.phase_program,
+        {"feedbax.training.standard_supervised.gradient_update": kernel},
+        state_slots=spec.worker_execution.method_contract.state_slots,
+        mapping_levels=levels,
+        slot_axis_bindings=bindings,
+    ), bindings
+
+
+def _mapped_scalar_kernel(slots, coordinate, context):
+    del coordinate, context
+    return {
+        "model": slots["model"] + 1,
+        "optimizer": slots["optimizer"] + 1,
+        "prng": slots["prng"],
+        "train_loss": slots["model"] * 2,
+        "batch_counter": slots["batch_counter"] + 1,
+    }
+
+
+def _mapped_slots() -> dict[str, object]:
+    return {
+        "model": jnp.arange(5.0),
+        "optimizer": jnp.zeros((5,)),
+        "prng": jnp.zeros((5, 2), dtype=jnp.uint32),
+        "objective": jnp.zeros((5,)),
+        "train_loss": jnp.zeros((5,)),
+        "batch_counter": jnp.zeros((5,), dtype=jnp.int32),
+    }
+
+
+def test_mapped_executor_preflight_and_execution_match_manual_scalar_loop() -> None:
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    slots = _mapped_slots()
+    executor.preflight(slots, run_id="mapped", context={})
+    result = executor.run(slots, run_id="mapped")
+
+    assert result.slots["model"].tolist() == [1, 2, 3, 4, 5]
+    assert result.slots["train_loss"].tolist() == [0, 2, 4, 6, 8]
+    assert result.slots["batch_counter"].tolist() == [1] * 5
+
+
+def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate_arrays(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_run_spec()
+    emitter = RunEventEmitter(
+        run_set_id="mapped",
+        row_id="row",
+        path=tmp_path / "events.jsonl",
+        heartbeat_seconds=None,
+    )
+    try:
+        result = execute_training_run_spec(
+            spec,
+            preparation=_valid_materialized_preparation(spec),
+            registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+            manifest_root=tmp_path / "manifest",
+            checkpoint_root=tmp_path / "checkpoint",
+            run_id="mapped-evidence",
+            run_event_emitter=emitter,
+        )
+    finally:
+        emitter.close()
+
+    history = result.history_events[0]
+    assert "train_loss" not in history["coordinate"]["metrics"]
+    assert history["metrics"]["train_loss"]["value"] == [0.0] * 5
+    assert result.manifest.summary_metrics["train_loss"]["axes"][0]["axis"] == "ensemble"
+    checkpoint = result.checkpoint_writes[0].manifest
+    assert "train_loss" not in checkpoint.completed_coordinate.metrics
+    assert all(slot.materialized_axes for slot in checkpoint.slots)
+    events = RunEventReader(tmp_path / "events.jsonl").read_all()
+    progress = next(event for event in events if event.type == "progress")
+    assert "loss" not in progress.payload
+    assert "train_loss" not in progress.payload["coordinate"]["metrics"]
+    terminal = next(event for event in events if event.type == "complete")
+    terminal_loss = terminal.payload["metrics"]["train_loss"]
+    assert terminal_loss["value"] == [0.0] * 5
+    assert terminal_loss["shape"] == [5]
+    assert terminal_loss["dtype"] == "float32"
+    assert [axis["axis"] for axis in terminal_loss["axes"]] == ["ensemble"]
+    assert not isinstance(terminal_loss["value"], dict)
+
+    loaded = load_latest_checkpoint(
+        tmp_path / "checkpoint",
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=result.final_slots,
+    )
+    assert loaded.slots["model"].shape == (5,)
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="structural ABI mismatch|does not materialize axis",
+    ):
+        load_latest_checkpoint(
+            tmp_path / "checkpoint",
+            expected_run_spec=spec,
+            expected_phase_program=spec.worker_execution.method_contract.phase_program,
+            expected_slots=result.final_slots,
+            resume_slot_transform=lambda slots: {**slots, "model": slots["model"][:4]},
+        )
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+    )
+    assert all(
+        slot.source_axes == slot.target_axes
+        for slot in forked.manifest.fork_provenance.slots
+    )
+
+    def copy_blob(source, target):
+        shutil.copy2(source, target)
+        return "copy"
+
+    copied = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-copy",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+        link_strategy=copy_blob,
+    )
+    assert set(copied.slot_transfer_modes.values()) == {"copy"}
+    load_latest_checkpoint(
+        copied.root,
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=result.final_slots,
+    )
+
+    serialized = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-serialized",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+        source_slot_transforms={"model": lambda slots: dict(slots)},
+        source_transform_metadata={
+            "model": {"identity": "tests.identity", "parameters": {}}
+        },
+    )
+    assert serialized.slot_transfer_modes["model"] == "serialized"
+    model_provenance = next(
+        item for item in serialized.manifest.fork_provenance.slots if item.slot == "model"
+    )
+    assert model_provenance.source_axes == model_provenance.target_axes
+    load_latest_checkpoint(
+        serialized.root,
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=result.final_slots,
+    )
+    mismatched = spec.model_copy(deep=True)
+    mismatched.worker_execution.method_contract.axes[-1].size = 4
+    mismatched_slots = {
+        name: value[:4] if hasattr(value, "shape") else value
+        for name, value in result.final_slots.items()
+    }
+    with pytest.raises(CheckpointCompatibilityError, match="mapped-axis evidence mismatch"):
+        load_latest_checkpoint(
+            tmp_path / "checkpoint",
+            expected_run_spec=mismatched,
+            expected_phase_program=mismatched.worker_execution.method_contract.phase_program,
+            expected_slots=mismatched_slots,
+            allow_new_lineage_override=True,
+        )
+    with pytest.raises(CheckpointCompatibilityError, match="mapped axes differ"):
+        fork_checkpoint_transaction(
+            tmp_path / "checkpoint",
+            tmp_path / "fork-mismatch",
+            target_run_spec=mismatched,
+            expected_slots=mismatched_slots,
+        )
+
+    add_state = spec.model_copy(deep=True)
+    add_state.worker_execution.method_contract.state_slots.append(
+        StateSlotSpec(
+            name="adaptive_state",
+            role="auxiliary",
+            axis_bindings=[
+                SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)
+            ],
+        )
+    )
+    add_state.worker_execution.method_contract.phase_program.checkpoint_barriers[0].slots.append(
+        CheckpointSlotSpec(slot="adaptive_state")
+    )
+    adaptive = jnp.zeros((5,))
+    added = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-add-state",
+        target_run_spec=add_state,
+        expected_slots={**result.final_slots, "adaptive_state": adaptive},
+        target_slot_transform=lambda slots: {**slots, "adaptive_state": adaptive},
+        target_transform_metadata={"identity": "tests.add_adaptive_state", "parameters": {}},
+        target_transformed_slots=(),
+        target_only_slots={"adaptive_state": {"reason": "sanctioned add-state"}},
+    )
+    adaptive_provenance = next(
+        slot
+        for slot in added.manifest.fork_provenance.slots
+        if slot.slot == "adaptive_state"
+    )
+    assert adaptive_provenance.source_axes is None
+    assert adaptive_provenance.target_axes[0].axis == "ensemble"
+
+    extra = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-extra-corruption",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+    )
+    corruptions = (
+        (forked, lambda records: records.append(dict(records[0]))),
+        (copied, lambda records: records[0].update({"source_relative_path": None})),
+        (serialized, lambda records: records.pop()),
+        (
+            added,
+            lambda records: next(
+                item for item in records if item["slot"] == "adaptive_state"
+            ).update(
+                {
+                    "source_axes": next(
+                        item for item in records if item["slot"] == "adaptive_state"
+                    )["target_axes"]
+                }
+            ),
+        ),
+        (
+            extra,
+            lambda records: records.append(
+                {**records[0], "slot": "undeclared_extra_slot"}
+            ),
+        ),
+    )
+    for fork_result, corrupt in corruptions:
+        payload = json.loads(fork_result.manifest_path.read_text())
+        corrupt(payload["fork_provenance"]["slots"])
+        fork_result.manifest_path.write_text(json.dumps(payload, sort_keys=True, indent=2))
+        latest = json.loads(fork_result.latest_pointer_path.read_text())
+        latest["manifest_sha256"] = sha256_bytes(fork_result.manifest_path.read_bytes())
+        fork_result.latest_pointer_path.write_text(json.dumps(latest, sort_keys=True, indent=2))
+        with pytest.raises(
+            CheckpointCompatibilityError, match="fork provenance|target-only fork"
+        ):
+            load_latest_checkpoint(
+                fork_result.root,
+                expected_run_spec=(add_state if fork_result is added else spec),
+                expected_phase_program=(
+                    add_state.worker_execution.method_contract.phase_program
+                    if fork_result is added
+                    else spec.worker_execution.method_contract.phase_program
+                ),
+                expected_slots=(
+                    {**result.final_slots, "adaptive_state": adaptive}
+                    if fork_result is added
+                    else result.final_slots
+                ),
+            )
+
+
+def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:
+    axis = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+        "leaf_policy": "all_array_leaves",
+    }
+    event = {
+        "coordinate": {"program_step": 3},
+        "metrics": {
+            "learning_rate": {
+                "schema_id": "feedbax.manifest.mapped_metric_value",
+                "schema_version": "feedbax.manifest.mapped_metric_value.v1",
+                "value": [0.1, 0.2],
+                "shape": [2],
+                "dtype": "float64",
+                "axes": [axis],
+            }
+        },
+    }
+    trace = _realized_lr_trace([event], declared=())
+    assert [sample.learning_rate for sample in trace] == [0.1, 0.2]
+    assert [sample.axis_coordinates[0].index for sample in trace] == [0, 1]
+    with pytest.raises(TrainingRunExecutorError, match="duplicate coordinate/step"):
+        _realized_lr_trace([event, event], declared=())
+
+
+def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync() -> None:
+    def tracer_unsafe(slots, coordinate, context):
+        del coordinate, context
+        return {"model": int(slots["model"])}
+
+    executor, _ = _mapped_phase_executor(tracer_unsafe)
+    with pytest.raises(WorkerContractValidationError, match="preflight failed"):
+        executor.preflight(_mapped_slots(), run_id="mapped", context={})
+
+    def divergent(slots, coordinate, context):
+        updates = _mapped_scalar_kernel(slots, coordinate, context)
+        updates["batch_counter"] = slots["batch_counter"] + slots["model"].astype(jnp.int32)
+        return updates
+
+    executor, _ = _mapped_phase_executor(divergent)
+    with pytest.raises(WorkerContractValidationError, match="authorities diverged"):
+        executor.run(_mapped_slots(), run_id="mapped")
+
+
+@pytest.mark.parametrize("boundary", ["preflight", "runtime"])
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    [
+        ("tree", "PyTree definition"),
+        ("shape", "shape or dtype"),
+        ("dtype", "shape or dtype"),
+        ("category", "array/static leaf category"),
+    ],
+)
+def test_mapped_write_rejects_full_destination_abi_drift(boundary, drift, message) -> None:
+    def drifting(slots, coordinate, context):
+        updates = _mapped_scalar_kernel(slots, coordinate, context)
+        if drift == "tree":
+            updates["model"] = {"value": slots["model"]}
+        elif drift == "shape":
+            updates["model"] = slots["model"][None]
+        elif drift == "category":
+            updates["model"] = 1.0
+        else:
+            updates["model"] = slots["model"].astype(jnp.int32)
+        return updates
+
+    executor, _ = _mapped_phase_executor(drifting)
+    call = executor.preflight if boundary == "preflight" else executor.run
+    with pytest.raises(WorkerContractValidationError, match=message):
+        call(_mapped_slots(), run_id="mapped")
+
+
+def test_mapped_optimizer_authority_uses_instance_slots_and_requires_equality() -> None:
+    _, bindings = _mapped_phase_executor(_mapped_scalar_kernel)
+    runtime = _mapped_slots()
+
+    def extractor(_payload, slots):
+        return int(slots["optimizer"])
+
+    assert _synchronized_optimizer_step(extractor, None, runtime, bindings) == 0
+
+    runtime["optimizer"] = jnp.arange(5)
+    with pytest.raises(TrainingRunExecutorError, match="authorities diverged"):
+        _synchronized_optimizer_step(extractor, None, runtime, bindings)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"initial_slots": {"model": jnp.zeros((5,))}},
+        {"preparation": ExecutionPreparationResult(initial_slots={})},
+    ],
+)
+def test_mapped_executor_rejects_loose_prestacked_and_scalar_preparation(kwargs) -> None:
+    with pytest.raises(
+        TrainingRunExecutorError,
+        match="active mapping levels require a Feedbax-materialized execution preparation",
+    ):
+        execute_training_run_spec(_mapped_run_spec(), **kwargs)
+
+
+def test_mapped_executor_rejects_public_construction_and_forged_no_seal() -> None:
+    with pytest.raises(TypeError):
+        MaterializedExecutionPreparation()
+    forged = object.__new__(MaterializedExecutionPreparation)
+
+    with pytest.raises(TrainingRunExecutorError, match="lacks Feedbax provenance seal"):
+        execute_training_run_spec(_mapped_run_spec(), preparation=forged)
+
+
+def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> None:
+    spec = _mapped_run_spec()
+    preparation = _valid_materialized_preparation(spec)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy(preparation)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        deepcopy(preparation)
+
+    immutable_mapping = type(preparation.initial_slots)
+    nested = _valid_materialized_preparation(spec)
+    object.__setattr__(
+        nested,
+        "initial_slots",
+        immutable_mapping({**nested.initial_slots, "model": {"value": jnp.zeros((5,))}}),
+    )
+    with pytest.raises(TrainingRunExecutorError, match="mutable mapping"):
+        execute_training_run_spec(spec, preparation=nested)
+
+    history = _valid_materialized_preparation(spec)
+    object.__setattr__(
+        history,
+        "initial_slots",
+        immutable_mapping(
+            {**history.initial_slots, "model": BatchHistory(jnp.zeros((5,)))}
+        ),
+    )
+    with pytest.raises(TrainingRunExecutorError, match="contains BatchHistory"):
+        execute_training_run_spec(spec, preparation=history)
+
+    wrong_shape = _valid_materialized_preparation(spec)
+    object.__setattr__(
+        wrong_shape,
+        "initial_slots",
+        immutable_mapping({**wrong_shape.initial_slots, "model": jnp.zeros((4,))}),
+    )
+    with pytest.raises(TrainingRunExecutorError, match="leading axis size 5"):
+        execute_training_run_spec(spec, preparation=wrong_shape)
+
+
+def test_materialized_preparation_digest_uses_canonical_training_spec_identity() -> None:
+    spec = _mapped_run_spec()
+
+    assert _run_spec_sha256(spec) == training_spec_sha256(
+        spec.model_dump(mode="json", exclude_none=True)
+    )
+
+
+def test_mapped_executor_rejects_stale_fingerprint_and_run_spec_identity() -> None:
+    spec = _mapped_run_spec()
+    stale = _valid_materialized_preparation(spec)
+    object.__setattr__(stale, "identity", replace(stale.identity, fingerprint="0" * 64))
+    with pytest.raises(TrainingRunExecutorError, match="fingerprint is stale"):
+        execute_training_run_spec(spec, preparation=stale)
+
+    valid = _valid_materialized_preparation(spec)
+    changed_spec = spec.model_copy(update={"metadata": {"identity_drift": True}})
+    with pytest.raises(TrainingRunExecutorError, match="does not match TrainingRunSpec"):
+        execute_training_run_spec(changed_spec, preparation=valid)
+
+
+@pytest.mark.parametrize(
+    ("identity_update", "message"),
+    [
+        (
+            {"coordinate_order": ((AxisCoordinateSpec(axis="ensemble", index=0),),)},
+            "coordinate identity mismatch",
+        ),
+        ({"rng_algorithm_version": "feedbax.preparation_rng_scope.fold_in.v0"}, "unsupported"),
+        ({"provider_identity": ""}, "provider_identity"),
+    ],
+)
+def test_mapped_executor_rejects_stale_coordinate_rng_and_provider_identity(
+    identity_update,
+    message: str,
+) -> None:
+    spec = _mapped_run_spec()
+    preparation = _valid_materialized_preparation(spec)
+    identity = replace(preparation.identity, **identity_update)
+    identity = replace(identity, fingerprint=_identity_fingerprint(identity))
+    object.__setattr__(preparation, "identity", identity)
+
+    with pytest.raises(TrainingRunExecutorError, match=message):
+        execute_training_run_spec(spec, preparation=preparation)
 
 
 def _initial_slots(*, arrays: bool = False) -> dict[str, object]:
@@ -559,9 +1376,10 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     emitted_ref = result.manifest.checkpoint_custody[0]
     loaded_ref = manifest.checkpoint_custody[0]
     assert loaded_ref == emitted_ref
-    assert emitted_ref.uri == result.checkpoint_writes[0].manifest_path.relative_to(
-        checkpoint_root
-    ).as_posix()
+    assert (
+        emitted_ref.uri
+        == result.checkpoint_writes[0].manifest_path.relative_to(checkpoint_root).as_posix()
+    )
     assert not Path(emitted_ref.uri).is_absolute()
     staged_context = resolve_staged_execution_context(
         StagedExecutionDescriptor(
@@ -1079,7 +1897,7 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
 
     diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
     assert diagnostics["kind"] == "TrainingDiagnostics"
-    assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v1"
+    assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v2"
     assert diagnostics["manifest_id"] == manifest.id
     assert diagnostics["completed_batches"] == 1
     assert diagnostics["segment_completed_batches"] == 1
@@ -1112,7 +1930,7 @@ def test_native_execution_context_and_diagnostics_reject_unknown_schema_versions
         "completed_batches": 0,
         "segment_completed_batches": 0,
     }
-    with pytest.raises(ValueError, match="training_diagnostics.v1"):
+    with pytest.raises(ValueError, match="training_diagnostics.v2"):
         TrainingDiagnostics.model_validate(diagnostics_payload)
 
 

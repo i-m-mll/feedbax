@@ -18,7 +18,8 @@ from feedbax.contracts.manifest import StrictModel
 
 
 WORKER_CONTRACT_SCHEMA_ID = "feedbax.spec.worker.execution_program"
-WORKER_CONTRACT_SCHEMA_VERSION = "feedbax.spec.worker.execution_program.v1"
+WORKER_CONTRACT_SCHEMA_VERSION_V1 = "feedbax.spec.worker.execution_program.v1"
+WORKER_CONTRACT_SCHEMA_VERSION = "feedbax.spec.worker.execution_program.v2"
 CONSISTENCY_PREDICATE_SCHEMA_ID = "feedbax.manifest.worker.consistency_predicate"
 CONSISTENCY_PREDICATE_SCHEMA_VERSION = "feedbax.manifest.worker.consistency_predicate.v2"
 FIXED_UPDATE_KERNEL_SIGNATURE = ("slots", "coordinate", "context")
@@ -143,6 +144,80 @@ class AxisSpec(StrictModel):
         return value
 
 
+class AxisCoordinateSpec(StrictModel):
+    """One coordinate in ordered declared-axis space."""
+
+    axis: str
+    index: int = Field(ge=0)
+
+    @field_validator("axis")
+    @classmethod
+    def _validate_axis(cls, value: str) -> str:
+        return validate_worker_identifier(value, path="axis_coordinate.axis")
+
+
+class SlotAxisBindingSpec(StrictModel):
+    """Authored binding between one state slot and one declared axis."""
+
+    axis: str
+    mode: Literal["mapped", "shared"]
+    array_axis: int | None = None
+    leaf_policy: Literal["all_array_leaves"] = "all_array_leaves"
+
+    @field_validator("axis")
+    @classmethod
+    def _validate_axis(cls, value: str) -> str:
+        return validate_worker_identifier(value, path="axis_binding.axis")
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "SlotAxisBindingSpec":
+        if self.mode == "mapped" and self.array_axis is None:
+            raise ValueError("mapped slot-axis binding requires array_axis")
+        if self.mode == "shared" and self.array_axis is not None:
+            raise ValueError("shared slot-axis binding forbids array_axis")
+        return self
+
+
+class MappingLevelSpec(StrictModel):
+    """One authored execution mapping level, ordered outermost first."""
+
+    axis: str
+
+    @field_validator("axis")
+    @classmethod
+    def _validate_axis(cls, value: str) -> str:
+        return validate_worker_identifier(value, path="mapping_level.axis")
+
+
+class MaterializedMappingLevelSpec(StrictModel):
+    """One mapping level resolved against a sized declared axis."""
+
+    axis: str
+    role: AxisRole
+    size: int = Field(gt=0)
+    level: int = Field(ge=0)
+
+
+class MaterializedSlotAxisBinding(StrictModel):
+    """One slot binding resolved against a materialized mapping level."""
+
+    axis: str
+    role: AxisRole
+    size: int = Field(gt=0)
+    level: int = Field(ge=0)
+    mode: Literal["mapped", "shared"]
+    array_axis: int | None = None
+    leaf_policy: Literal["all_array_leaves"] = "all_array_leaves"
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "MaterializedSlotAxisBinding":
+        if self.mode == "mapped" and self.array_axis is None:
+            raise ValueError("mapped materialized binding requires array_axis")
+        if self.mode == "shared" and self.array_axis is not None:
+            raise ValueError("shared materialized binding forbids array_axis")
+        return self
+
+
 class StateSlotSpec(StrictModel):
     """Opaque state slot declared by a training method."""
 
@@ -150,6 +225,7 @@ class StateSlotSpec(StrictModel):
     role: StateSlotRole
     required: bool = True
     axis: str | None = None
+    axis_bindings: list[SlotAxisBindingSpec] | None = None
     shape: tuple[int | str, ...] | None = None
     dtype: str | None = None
     lifetime: SlotLifetime = "persistent"
@@ -159,6 +235,27 @@ class StateSlotSpec(StrictModel):
     @classmethod
     def _validate_name(cls, value: str) -> str:
         return validate_worker_identifier(value, path="state_slot.name")
+
+    @model_validator(mode="after")
+    def _validate_axis_bindings(self) -> "StateSlotSpec":
+        bindings = self.axis_bindings or ()
+        seen_axes: set[str] = set()
+        seen_array_axes: set[int] = set()
+        for index, binding in enumerate(bindings):
+            if binding.axis in seen_axes:
+                raise ValueError(
+                    f"axis_bindings/{index}/axis duplicates axis {binding.axis!r}"
+                )
+            seen_axes.add(binding.axis)
+            if binding.mode == "mapped":
+                assert binding.array_axis is not None
+                if binding.array_axis in seen_array_axes:
+                    raise ValueError(
+                        f"axis_bindings/{index}/array_axis overlaps array position "
+                        f"{binding.array_axis}"
+                    )
+                seen_array_axes.add(binding.array_axis)
+        return self
 
 
 class OptimizerTargetBinding(StrictModel):

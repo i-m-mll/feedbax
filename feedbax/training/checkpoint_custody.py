@@ -66,11 +66,14 @@ from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_VERSION_V1, Trai
 from feedbax.contracts.worker import (
     CheckpointBarrierSpec,
     CheckpointSlotSpec,
+    MaterializedSlotAxisBinding,
     PhaseProgramSpec,
     ProgressCoordinate,
     StateSlotSpec,
     derive_consistency_predicate,
 )
+from feedbax.orchestration.events import normalize_serialized_metrics
+from feedbax.training.worker_validation import resolve_execution_mapping
 
 
 LATEST_POINTER_NAME = "latest.json"
@@ -193,6 +196,102 @@ class CheckpointWriteResult:
 
 ResumeSlotTransform = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 CheckpointBlobLinkStrategy = Callable[[Path, Path], str]
+
+
+def _resolved_slot_axes(
+    run_spec: TrainingRunSpec,
+) -> dict[str, tuple[MaterializedSlotAxisBinding, ...]]:
+    """Return target-derived axis evidence, omitting scalar declarations."""
+    levels, bindings = resolve_execution_mapping(run_spec.worker_execution)
+    return dict(bindings) if levels else {}
+
+
+def _checkpoint_coordinate(
+    coordinate: ProgressCoordinate,
+    axes: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> ProgressCoordinate:
+    payload, _ = normalize_serialized_metrics(coordinate, coordinate.metrics, axes)
+    return ProgressCoordinate.model_validate(payload)
+
+
+def _validate_slot_axes(
+    slot: str,
+    value: Any,
+    axes: tuple[MaterializedSlotAxisBinding, ...] | None,
+    *,
+    error_cls: type[CheckpointCustodyError],
+) -> None:
+    """Validate actual dynamic leaves against one resolved slot-axis record."""
+    if axes is None:
+        return
+    mapped = [axis for axis in axes if axis.mode == "mapped"]
+    if not mapped:
+        return
+    arrays = [leaf for leaf in jt.leaves(value) if eqx.is_array(leaf)]
+    if not arrays:
+        raise error_cls(f"checkpoint slot {slot!r} has mapped axes but no dynamic array leaves")
+    for axis in mapped:
+        assert axis.array_axis is not None
+        for index, leaf in enumerate(arrays):
+            shape = np.shape(leaf)
+            if len(shape) <= axis.array_axis or shape[axis.array_axis] != axis.size:
+                raise error_cls(
+                    f"checkpoint slot {slot!r} leaf {index} does not materialize axis "
+                    f"{axis.axis!r} at position {axis.array_axis} with size {axis.size}; "
+                    f"shape={shape!r}"
+                )
+
+
+def _validate_recorded_slot_axes(
+    manifest: CheckpointTransactionManifest,
+    expected_axes: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    values: Mapping[str, Any] | None = None,
+) -> None:
+    provenance = manifest.fork_provenance
+    if provenance is not None:
+        target_records = {record.slot: record.materialized_axes for record in manifest.slots}
+        provenance_names = [record.slot for record in provenance.slots]
+        if len(provenance_names) != len(set(provenance_names)):
+            raise CheckpointCompatibilityError("fork provenance contains duplicate slot records")
+        if set(provenance_names) != set(target_records):
+            raise CheckpointCompatibilityError(
+                "fork provenance slot records are missing or extra; "
+                f"recorded={sorted(provenance_names)!r} target={sorted(target_records)!r}"
+            )
+        for record in provenance.slots:
+            target = target_records[record.slot]
+            if record.target_axes != target:
+                raise CheckpointCompatibilityError(
+                    f"fork provenance target axes mismatch for slot {record.slot!r}"
+                )
+            has_sha = record.source_sha256 is not None
+            has_path = record.source_relative_path is not None
+            if has_sha != has_path:
+                raise CheckpointCompatibilityError(
+                    f"fork provenance source record is partial for slot {record.slot!r}"
+                )
+            if has_sha and record.source_axes != record.target_axes:
+                raise CheckpointCompatibilityError(
+                    f"fork provenance cannot remap axes for slot {record.slot!r}"
+                )
+            if not has_sha and record.source_axes is not None:
+                raise CheckpointCompatibilityError(
+                    f"target-only fork slot {record.slot!r} must not record source axes"
+                )
+    for record in manifest.slots:
+        target = expected_axes.get(record.slot)
+        if record.materialized_axes != target:
+            raise CheckpointCompatibilityError(
+                f"checkpoint slot {record.slot!r} mapped-axis evidence mismatch; "
+                f"recorded={record.materialized_axes!r} target={target!r}"
+            )
+        if values is not None and record.slot in values:
+            _validate_slot_axes(
+                record.slot,
+                values[record.slot],
+                target,
+                error_cls=CheckpointCompatibilityError,
+            )
 
 
 @dataclass(frozen=True)
@@ -962,6 +1061,7 @@ def _completed_training_batches(
 def _declared_batch_progress(
     phase_program: PhaseProgramSpec,
     slots: Mapping[str, Any],
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> int | None:
     """Read completed batches from the method-declared bookkeeping authority."""
     authority = phase_program.batch_progress
@@ -972,6 +1072,26 @@ def _declared_batch_progress(
         raise CheckpointConsistencyError(
             f"{path}/slot={authority.slot!r} is missing from checkpoint slots"
         )
+    bindings = dict(slot_axis_bindings or {}).get(authority.slot, ())
+    if bindings and bindings[0].mode == "mapped":
+        values = [
+            _declared_batch_progress(
+                phase_program,
+                {
+                    **slots,
+                    authority.slot: jt.map(
+                        lambda leaf: leaf[index] if eqx.is_array(leaf) else leaf,
+                        slots[authority.slot],
+                    ),
+                },
+            )
+            for index in range(bindings[0].size)
+        ]
+        if any(value != values[0] for value in values[1:]):
+            raise CheckpointConsistencyError(
+                f"{path} mapped authorities diverged: {values!r}"
+            )
+        return values[0]
     value = slots[authority.slot]
     for index, segment in enumerate(authority.field_path):
         segment_path = f"{path}/field_path/{index}"
@@ -1015,10 +1135,15 @@ def _resolve_completed_training_batches(
     explicit: int | None,
     metadata: Mapping[str, Any],
     default: int | None = None,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> int | None:
     """Resolve custody batch total and fail closed on authority disagreement."""
     declared = _completed_training_batches(explicit, metadata, default=default)
-    authoritative = _declared_batch_progress(phase_program, slots)
+    authoritative = _declared_batch_progress(
+        phase_program,
+        slots,
+        slot_axis_bindings,
+    )
     if authoritative is None:
         return declared
     if declared is not None and declared != authoritative:
@@ -1221,6 +1346,8 @@ def write_checkpoint_transaction(
     if status not in {"partial", "final"}:
         raise CheckpointCustodyError("checkpoint status must be 'partial' or 'final'")
     barrier = checkpoint_barrier(phase_program, barrier_name)
+    resolved_axes = _resolved_slot_axes(run_spec)
+    coordinate = _checkpoint_coordinate(coordinate, resolved_axes)
     slot_specs = tuple(barrier.slots)
     _validate_required_slots(slot_specs, slots)
     root_path = Path(root)
@@ -1242,6 +1369,13 @@ def write_checkpoint_transaction(
             if spec.slot not in slots and not spec.required:
                 continue
             value = slots[spec.slot]
+            materialized_axes = resolved_axes.get(spec.slot)
+            _validate_slot_axes(
+                spec.slot,
+                value,
+                materialized_axes,
+                error_cls=CheckpointCompatibilityError,
+            )
             blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
             blob_sha256 = sha256_bytes(blob_bytes)
             blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
@@ -1271,9 +1405,13 @@ def write_checkpoint_transaction(
                 relative_path=str(blob_path.relative_to(tmp_dir)),
                 sha256=blob_sha256,
                 size_bytes=len(blob_bytes),
-                coordinate=(slot_coordinates or {}).get(spec.slot, coordinate),
+                coordinate=_checkpoint_coordinate(
+                    (slot_coordinates or {}).get(spec.slot, coordinate),
+                    resolved_axes,
+                ),
                 structural_abi_fingerprint=integrity.structural_abi_fingerprint,
                 content_digest=content_digest,
+                materialized_axes=materialized_axes,
                 population=population,
                 metadata=dict(spec.metadata),
             )
@@ -1298,6 +1436,7 @@ def write_checkpoint_transaction(
             slots=slots,
             explicit=completed_training_batches,
             metadata=manifest_metadata,
+            slot_axis_bindings=resolved_axes,
         )
         resolved_segment_batches = (
             segment_batch_count if segment_batch_count is not None else completed_batches
@@ -1431,6 +1570,8 @@ def _load_checkpoint_from_pointer(
             "checkpoint consistency predicate does not match expected phase program"
         )
     barrier = checkpoint_barrier(expected_phase_program, manifest.barrier)
+    expected_axes = _resolved_slot_axes(expected_run_spec)
+    _validate_recorded_slot_axes(manifest, expected_axes)
     _validate_slot_coordinate_consistency(
         barrier=barrier,
         completed_coordinate=manifest.completed_coordinate,
@@ -1496,6 +1637,7 @@ def _load_checkpoint_from_pointer(
         loaded_slots,
         loaded_fingerprints=loaded_fingerprints,
     )
+    _validate_recorded_slot_axes(manifest, expected_axes, loaded_slots)
 
     return CheckpointResumeResult(
         manifest=manifest,
@@ -1814,6 +1956,12 @@ def _prepare_checkpoint_fork_plan(
             )
 
     source = _load_latest_checkpoint_transaction(source_root)
+    source_axes = {
+        record.slot: record.materialized_axes
+        for record in source.manifest.slots
+        if record.materialized_axes is not None
+    }
+    _validate_recorded_slot_axes(source.manifest, source_axes, source.slots)
     if (
         plan.source.expected_transaction_id is not None
         and source.manifest.transaction_id != plan.source.expected_transaction_id
@@ -2071,6 +2219,12 @@ def fork_checkpoint_transaction(
     Callers must not supply both forms.
     """
     source = _load_latest_checkpoint_transaction(source_root)
+    source_axes = {
+        record.slot: record.materialized_axes
+        for record in source.manifest.slots
+        if record.materialized_axes is not None
+    }
+    _validate_recorded_slot_axes(source.manifest, source_axes, source.slots)
     _validate_program_step_units(
         source.manifest.completed_coordinate,
         source.manifest.metadata,
@@ -2079,6 +2233,7 @@ def fork_checkpoint_transaction(
     phase_program = target_phase_program or (
         target_run_spec.worker_execution.method_contract.phase_program
     )
+    target_axes = _resolved_slot_axes(target_run_spec)
     resolved_barrier_mapping = _coerce_barrier_mapping(barrier_mapping)
     if resolved_barrier_mapping is None:
         barrier = checkpoint_barrier(phase_program, source.manifest.barrier)
@@ -2113,6 +2268,7 @@ def fork_checkpoint_transaction(
                 f"coordinate.completed_barrier={coordinate.completed_barrier!r} "
                 f"target_barrier={barrier.name!r}"
             )
+    coordinate = _checkpoint_coordinate(coordinate, target_axes)
     if slot_transforms is not None and source_slot_transforms is not None:
         raise CheckpointCompatibilityError(
             "checkpoint fork received both slot_transforms and source_slot_transforms; "
@@ -2188,6 +2344,15 @@ def fork_checkpoint_transaction(
         error_cls=CheckpointCompatibilityError,
     )
     _validate_expected_slot_set(barrier, validation_slots)
+    mapped_source_drops = sorted(
+        slot
+        for slot, axes in source_axes.items()
+        if axes and slot not in {spec.slot for spec in barrier.slots}
+    )
+    if mapped_source_drops:
+        raise CheckpointCompatibilityError(
+            f"checkpoint fork cannot drop mapped source slots {mapped_source_drops!r}"
+        )
 
     target_root_path = Path(target_root)
     target_root_path.mkdir(parents=True, exist_ok=True)
@@ -2258,6 +2423,12 @@ def fork_checkpoint_transaction(
                 )
             if spec.slot in transformed_slots:
                 source_slot = source_slots_by_name.get(spec.slot)
+                expected_axes = target_axes.get(spec.slot)
+                if source_slot is not None and source_slot.materialized_axes != expected_axes:
+                    raise CheckpointCompatibilityError(
+                        f"checkpoint fork slot {spec.slot!r} cannot change mapped axes; "
+                        f"source={source_slot.materialized_axes!r} target={expected_axes!r}"
+                    )
                 slot_record, content_digest = _write_fresh_slot_blob(
                     spec,
                     prepared_slots[spec.slot],
@@ -2267,6 +2438,7 @@ def fork_checkpoint_transaction(
                     slot_roles=slot_roles,
                     population_slots=population_slots,
                     population_member_ids=expected_population_member_ids or {},
+                    materialized_axes=expected_axes,
                 )
                 provenance = CheckpointForkSlotProvenance(
                     slot=spec.slot,
@@ -2281,6 +2453,10 @@ def fork_checkpoint_transaction(
                         spec.slot,
                         transform_stages[spec.slot],
                     ),
+                    source_axes=(
+                        source_slot.materialized_axes if source_slot is not None else None
+                    ),
+                    target_axes=expected_axes,
                 )
             else:
                 source_slot = source_slots_by_name.get(spec.slot)
@@ -2288,6 +2464,19 @@ def fork_checkpoint_transaction(
                     raise CheckpointCompatibilityError(
                         f"source checkpoint does not contain target slot {spec.slot!r}"
                     )
+                expected_axes = target_axes.get(spec.slot)
+                if source_slot.materialized_axes != expected_axes:
+                    raise CheckpointCompatibilityError(
+                        f"checkpoint fork slot {spec.slot!r} mapped axes differ for exact "
+                        f"transfer; source={source_slot.materialized_axes!r} "
+                        f"target={expected_axes!r}"
+                    )
+                _validate_slot_axes(
+                    spec.slot,
+                    prepared_slots[spec.slot],
+                    expected_axes,
+                    error_cls=CheckpointCompatibilityError,
+                )
                 source_blob_path = source_transaction_dir / source_slot.relative_path
                 _verify_source_blob_before_transfer(source_slot, source_blob_path)
                 target_blob_path = blob_dir / Path(source_slot.relative_path).name
@@ -2311,6 +2500,7 @@ def fork_checkpoint_transaction(
                     coordinate=coordinate,
                     structural_abi_fingerprint=source_slot.structural_abi_fingerprint,
                     content_digest=source_slot.content_digest,
+                    materialized_axes=expected_axes,
                     population=_population_record(
                         spec.slot,
                         prepared_slots[spec.slot],
@@ -2327,6 +2517,8 @@ def fork_checkpoint_transaction(
                     source_relative_path=source_slot.relative_path,
                     target_relative_path=slot_record.relative_path,
                     transfer_mode=mode,  # type: ignore[arg-type]
+                    source_axes=source_slot.materialized_axes,
+                    target_axes=expected_axes,
                 )
             slot_records.append(slot_record)
             slot_digests.append(content_digest)
@@ -2366,6 +2558,7 @@ def fork_checkpoint_transaction(
             explicit=request.target_total if request is not None else None,
             metadata=manifest_metadata,
             default=None if request is not None else source.manifest.completed_training_batches,
+            slot_axis_bindings=target_axes,
         )
         _validate_batch_histories(
             prepared_slots,
@@ -2833,7 +3026,14 @@ def _write_fresh_slot_blob(
     slot_roles: Mapping[str, str],
     population_slots: set[str],
     population_member_ids: Mapping[str, Sequence[str]],
+    materialized_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None,
 ) -> tuple[CheckpointSlotBlobRef, SlotContentDigest]:
+    _validate_slot_axes(
+        spec.slot,
+        value,
+        materialized_axes,
+        error_cls=CheckpointCompatibilityError,
+    )
     blob_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
     blob_sha256 = sha256_bytes(blob_bytes)
     blob_path = blob_dir / f"{spec.slot}-{blob_sha256}.pkl"
@@ -2860,6 +3060,7 @@ def _write_fresh_slot_blob(
         coordinate=coordinate,
         structural_abi_fingerprint=integrity.structural_abi_fingerprint,
         content_digest=content_digest,
+        materialized_axes=materialized_axes,
         population=_population_record(
             spec.slot,
             value,

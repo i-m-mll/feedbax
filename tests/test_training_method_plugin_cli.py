@@ -8,9 +8,13 @@ import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
+import equinox as eqx
+import jax
+import numpy as np
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+import feedbax.__main__ as cli_module
 from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
@@ -32,14 +36,21 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
     standard_supervised_update_kernels,
 )
+from feedbax.contracts.worker import AxisCoordinateSpec
 from feedbax.plugins.discovery import load_training_method_plugins
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.training.preparation import (
     ExecutionPreparationError,
+    ExecutionPreparationPlan,
     ExecutionPreparationProviderRegistry,
     ExecutionPreparationRegistration,
     ExecutionPreparationRequest,
     ExecutionPreparationResult,
+    PREPARATION_RNG_ALGORITHM_VERSION,
+    ScalarInstancePreparationResult,
+    derive_preparation_rng_scope,
+    lower_zero_level_preparation_plan,
+    preparation_rng_token,
     require_execution_preparation_provider,
 )
 from feedbax.training.worker_validation import WorkerContractValidationError
@@ -58,6 +69,23 @@ class DummyMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     token_length: int
+
+
+class _NumpyModule(eqx.Module):
+    value: np.ndarray
+
+
+@jax.tree_util.register_pytree_node_class
+class _NumpyCustomTree:
+    def __init__(self, value):
+        self.value = value
+
+    def tree_flatten(self):
+        return (self.value,), None
+
+    @classmethod
+    def tree_unflatten(cls, _aux, children):
+        return cls(children[0])
 
 
 def _dummy_descriptor(**hooks: object) -> TrainingMethodDescriptor[DummyPayload]:
@@ -167,6 +195,178 @@ def test_entry_point_can_register_training_method() -> None:
     load_training_method_plugins(registry=registry, entry_points=[entry_point])
 
     assert DUMMY_METHOD_REF in registry.available_keys()
+
+
+def test_preparation_rng_algorithm_has_frozen_tokens_and_key_vectors() -> None:
+    assert preparation_rng_token("algorithm", PREPARATION_RNG_ALGORITHM_VERSION) == 3959945493
+    assert preparation_rng_token("root", "model") == 2366028346
+    assert preparation_rng_token("axis", "ensemble") == 3470389890
+
+    cases = (
+        (0, "model", 0, (4211853719, 2725690202)),
+        (0, "model", 4, (1509863984, 1304489815)),
+        (17, "runtime", 2, (3131609803, 682786736)),
+    )
+    for seed, root, index, expected in cases:
+        scope = derive_preparation_rng_scope(
+            {root: jax.random.key(seed)},
+            (AxisCoordinateSpec(axis="ensemble", index=index),),
+        )
+        assert tuple(map(int, jax.random.key_data(scope.keys[root]))) == expected
+
+
+def test_preparation_plan_defensively_freezes_containers_and_numpy_storage() -> None:
+    source = np.arange(3, dtype=np.float32)
+    plan = ExecutionPreparationPlan(
+        shared_slots={"array": source, "nested": [{1: "integer-key"}]},
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(0)},
+        materialize_instance=lambda _request: ScalarInstancePreparationResult(mapped_slots={}),
+    )
+
+    source[0] = 99
+    frozen = plan.shared_slots["array"]
+    assert frozen.tolist() == [0.0, 1.0, 2.0]
+    assert not frozen.flags.writeable
+    assert isinstance(plan.shared_slots["nested"], tuple)
+    assert plan.shared_slots["nested"][0] == {1: "integer-key"}
+    with pytest.raises(TypeError, match="immutable Feedbax preparation mapping"):
+        plan.shared_slots["new"] = object()
+    with pytest.raises(ValueError, match="read-only"):
+        frozen[0] = 5
+    with pytest.raises(ExecutionPreparationError, match="object-backed"):
+        ExecutionPreparationPlan(
+            shared_slots={"bad": np.array([object()], dtype=object)},
+            kernel_context={},
+            loss_service=None,
+            resume_slot_transform=None,
+            rng_roots={"model": jax.random.key(0)},
+            materialize_instance=lambda _request: ScalarInstancePreparationResult(
+                mapped_slots={}
+            ),
+        )
+
+
+def test_preparation_freezes_numpy_leaves_in_custom_and_equinox_pytrees() -> None:
+    custom_source = np.arange(2, dtype=np.float32)
+    module_source = np.arange(3, dtype=np.float32)
+    plan = ExecutionPreparationPlan(
+        shared_slots={
+            "custom": _NumpyCustomTree(custom_source),
+            "module": _NumpyModule(module_source),
+        },
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(0)},
+        materialize_instance=lambda _request: ScalarInstancePreparationResult(mapped_slots={}),
+    )
+    custom_source[:] = -1
+    module_source[:] = -1
+
+    for frozen, expected in (
+        (plan.shared_slots["custom"].value, [0.0, 1.0]),
+        (plan.shared_slots["module"].value, [0.0, 1.0, 2.0]),
+    ):
+        assert frozen.tolist() == expected
+        assert not frozen.flags.writeable
+    with pytest.raises(ExecutionPreparationError, match="must be a string identifier"):
+        ExecutionPreparationPlan(
+            shared_slots={1: "invalid-root-name"},
+            kernel_context={},
+            loss_service=None,
+            resume_slot_transform=None,
+            rng_roots={"model": jax.random.key(0)},
+            materialize_instance=lambda _request: ScalarInstancePreparationResult(
+                mapped_slots={}
+            ),
+        )
+
+
+def test_zero_level_plan_materializes_once_through_scalar_compatibility() -> None:
+    requests = []
+
+    def materialize(request):
+        requests.append(request)
+        return ScalarInstancePreparationResult(mapped_slots={"model": np.array([2.0])})
+
+    plan = ExecutionPreparationPlan(
+        shared_slots={"objective": "shared"},
+        kernel_context={"token": "context"},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(0)},
+        materialize_instance=materialize,
+    )
+
+    default_result = lower_zero_level_preparation_plan(plan)
+    assert requests[-1].resume_template is False
+    result = lower_zero_level_preparation_plan(plan, resume_template=True)
+
+    assert len(requests) == 2
+    assert requests[-1].axis_coordinates == ()
+    assert requests[-1].rng.axis_coordinates == ()
+    assert requests[-1].resume_template is True
+    assert default_result.initial_slots.keys() == result.initial_slots.keys()
+    assert set(result.initial_slots) == {"model", "objective"}
+    assert result.kernel_context == {"token": "context"}
+
+
+def test_execute_cli_routes_resume_to_zero_level_plan(monkeypatch, tmp_path, capsys) -> None:
+    plan = ExecutionPreparationPlan(
+        shared_slots={},
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(0)},
+        materialize_instance=lambda _request: ScalarInstancePreparationResult(mapped_slots={}),
+    )
+    registration = SimpleNamespace(owner="tests.cli", requires_execution_preparation=True)
+    resolved = SimpleNamespace(
+        registration=SimpleNamespace(requires_execution_preparation=True),
+        payload=None,
+        contract=None,
+        effective_phase=None,
+    )
+    run_spec = SimpleNamespace(
+        method_ref=SimpleNamespace(key="tests/zero-level/v1"),
+        resolved_method=resolved,
+        worker_execution=object(),
+    )
+    registry = SimpleNamespace(
+        get=lambda _key: registration,
+        prepare=lambda _request: plan,
+    )
+    routed = []
+
+    monkeypatch.setattr(cli_module, "_load_training_method_plugins", lambda _plugins: None)
+    monkeypatch.setattr(cli_module, "_read_json", lambda _path: {})
+    monkeypatch.setattr(cli_module, "validate_training_run_spec", lambda _payload: run_spec)
+    monkeypatch.setattr(cli_module, "resolve_execution_mapping", lambda _worker: ((), {}))
+    monkeypatch.setattr(cli_module, "require_execution_preparation_provider", lambda **_kw: None)
+    monkeypatch.setattr(cli_module, "DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY", registry)
+    monkeypatch.setattr(
+        cli_module,
+        "lower_zero_level_preparation_plan",
+        lambda _plan, *, resume_template=False: (
+            routed.append(resume_template) or ExecutionPreparationResult(initial_slots={})
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "execute_training_run_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            run_id="run", status="completed", manifest_path=tmp_path / "manifest.json",
+            manifest=SimpleNamespace(model_dump=lambda **_kwargs: {}),
+        ),
+    )
+    monkeypatch.setattr(cli_module.RunEventEmitter, "from_env", lambda **_kwargs: None)
+
+    assert cli_module.main(["execute-training-run-spec", "spec.json", "--resume"]) == 0
+    assert routed == [True]
+    capsys.readouterr()
 
 
 def test_low_level_registration_requires_exactly_one_contract_producer() -> None:
