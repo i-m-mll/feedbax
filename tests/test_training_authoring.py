@@ -36,6 +36,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
     standard_supervised_update_kernels,
 )
+from feedbax.contracts.worker import AxisSpec, MappingLevelSpec, SlotAxisBindingSpec
 from feedbax.training.authoring import (
     TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY,
     TrainingMethodAuthoringError,
@@ -43,6 +44,10 @@ from feedbax.training.authoring import (
     compile_training_method_authoring,
 )
 from feedbax.training.run_matrix import materialize_adapted_run_matrix
+from feedbax.training.worker_validation import (
+    WorkerContractValidationError,
+    resolve_execution_mapping,
+)
 
 
 METHOD_REF = "example/typed/v1"
@@ -107,7 +112,19 @@ def _method_contract():
     )
 
 
-def _contribution() -> TrainingMethodAuthoringContribution:
+def _mapped_method_contract():
+    contract = _method_contract()
+    contract.axes.append(AxisSpec(name="ensemble", role="replicate", size=5))
+    for slot in contract.state_slots:
+        slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)]
+    for step in contract.phase_program.update_steps:
+        step.axes.append("ensemble")
+    return contract
+
+
+def _contribution(
+    *, mapping_levels: list[MappingLevelSpec] | None = None
+) -> TrainingMethodAuthoringContribution:
     return TrainingMethodAuthoringContribution(
         training_config=TrainingConfig(
             n_batches=999,
@@ -116,6 +133,7 @@ def _contribution() -> TrainingMethodAuthoringContribution:
             hidden_dim=32,
         ),
         method_extensions=MethodExtensionsSpec(metadata={"method_family": "typed-toy"}),
+        mapping_levels=mapping_levels,
     )
 
 
@@ -164,6 +182,7 @@ def authoring_registry(monkeypatch: pytest.MonkeyPatch):
         "row_compiler_calls": 0,
         "mutate_payload": False,
         "return_value": default_result,
+        "contract": _method_contract(),
     }
 
     def low_level_lower(_row: AuthoredTrainingRow) -> TrainingRowLoweringResult:
@@ -191,7 +210,7 @@ def authoring_registry(monkeypatch: pytest.MonkeyPatch):
             payload_schema_id=PAYLOAD_SCHEMA_ID,
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
             payload_model=TypedPayload,
-            contract_compiler=lambda _payload: _method_contract(),
+            contract_compiler=lambda _payload: holder["contract"].model_copy(deep=True),
             update_kernels_factory=standard_supervised_update_kernels,
             row_compiler=low_level_lower,
             authoring_hook=TrainingMethodAuthoringHook(
@@ -291,7 +310,10 @@ def test_compile_authoring_projects_once_and_returns_canonical_contracts(
     assert set(TrainingMethodAuthoringContribution.model_fields) == {
         "training_config",
         "method_extensions",
+        "mapping_levels",
     }
+    assert compiled.worker_execution.mapping_levels is None
+    assert "mapping_levels" not in compiled.lowering_result.execution_payload["worker_execution"]
     assert compiled.lowering_result.execution_payload == compiled.run_spec.model_dump(
         mode="json", exclude_none=True
     )
@@ -300,6 +322,72 @@ def test_compile_authoring_projects_once_and_returns_canonical_contracts(
         holder["hook_identity"],
     ]
     assert TrainingRowLoweringResult.model_validate(compiled) == compiled.lowering_result
+
+
+def test_compile_authoring_carries_one_mapping_level_without_row_compiler(
+    authoring_registry,
+) -> None:
+    _registry, holder = authoring_registry
+    holder["contract"] = _mapped_method_contract()
+    mapping_levels = [MappingLevelSpec(axis="ensemble")]
+    holder["return_value"] = _contribution(mapping_levels=mapping_levels)
+
+    compiled = compile_training_method_authoring(
+        _authored_row(),
+        method_ref=METHOD_REF,
+        run_control=_run_control(),
+        projectors=_projectors(),
+    )
+
+    assert compiled.worker_execution.mapping_levels == mapping_levels
+    assert compiled.lowering_result.execution_payload["worker_execution"]["mapping_levels"] == [
+        {"axis": "ensemble"}
+    ]
+    levels, _bindings = resolve_execution_mapping(compiled.worker_execution)
+    assert [(level.axis, level.role, level.size) for level in levels] == [
+        ("ensemble", "replicate", 5)
+    ]
+    assert holder["row_compiler_calls"] == 0
+
+
+def test_compile_authoring_preserves_empty_mapping_as_scalar(authoring_registry) -> None:
+    _registry, holder = authoring_registry
+    holder["return_value"] = _contribution(mapping_levels=[])
+
+    compiled = compile_training_method_authoring(
+        _authored_row(),
+        method_ref=METHOD_REF,
+        run_control=_run_control(),
+        projectors=_projectors(),
+    )
+
+    assert compiled.worker_execution.mapping_levels == []
+    assert resolve_execution_mapping(compiled.worker_execution) == ((), {})
+    assert holder["row_compiler_calls"] == 0
+
+
+def test_compile_authoring_leaves_mapping_validation_to_worker_contract(
+    authoring_registry,
+) -> None:
+    _registry, holder = authoring_registry
+    holder["contract"] = _mapped_method_contract()
+    holder["return_value"] = _contribution(
+        mapping_levels=[
+            MappingLevelSpec(axis="ensemble"),
+            MappingLevelSpec(axis="ensemble"),
+        ]
+    )
+
+    compiled = compile_training_method_authoring(
+        _authored_row(),
+        method_ref=METHOD_REF,
+        run_control=_run_control(),
+        projectors=_projectors(),
+    )
+
+    with pytest.raises(WorkerContractValidationError, match="exactly one mapping level"):
+        resolve_execution_mapping(compiled.worker_execution)
+    assert holder["row_compiler_calls"] == 0
 
 
 def test_compile_authoring_owns_default_and_explicit_policies(authoring_registry) -> None:
