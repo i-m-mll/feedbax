@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +14,7 @@ from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.evaluation import (
     EvaluationStatesArtifactNotFound,
+    EVALUATION_STATES_CACHE_SCHEMA_VERSION,
     execute_evaluation_run_spec,
     load_evaluation_states,
     load_evaluation_states_cache,
@@ -22,14 +22,11 @@ from feedbax.analysis.evaluation import (
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
-    EVALUATION_STATES_CONTAINER_SCHEMA_ID,
-    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
-    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
-    EVALUATION_STATES_MEDIA_TYPE,
-    EVALUATION_STATES_STORAGE_BACKEND,
-    EVALUATION_STATES_STORAGE_BACKEND_V1,
-    EvaluationStatesContainerError,
+    EvaluationStatesCustodyUnavailable,
     EvaluationStatesHashMismatch,
+    EvaluationStatesProvenanceMismatch,
+    EvaluationStatesSchemaMismatch,
+    load_authenticated_evaluation_states_artifact,
 )
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.execution_context import (
@@ -38,6 +35,7 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
+    authenticated_manifest_ref,
     is_authenticated_manifest_ref,
     resolve_manifest_input,
 )
@@ -229,12 +227,37 @@ def resolve_analysis_inputs(
         manifest_path: Path | None = None
         states: Any = None
         state_source: AnalysisEvaluationStateSource | None = None
-        if is_authenticated_manifest_ref(ref):
+        requires_authenticated_evaluation = (
+            ref.kind == "EvaluationRunManifest"
+            and spec.evaluation_states_policy == "require_durable"
+        )
+        try:
+            has_authenticated_claim = is_authenticated_manifest_ref(ref)
+        except ValueError as exc:
+            if requires_authenticated_evaluation:
+                raise _authenticated_manifest_resolution_error(ref, exc) from exc
+            raise
+        if requires_authenticated_evaluation and not has_authenticated_claim:
+            raise _resolution_error(
+                code="custody_unavailable",
+                manifest_id=ref.id,
+                message=(
+                    "require_durable requires a content-authenticated EvaluationRunManifest "
+                    "authority with schema, version, SHA-256, and byte-size evidence."
+                ),
+                details={"required_ref_schema": "feedbax.ref.authenticated_manifest.v1"},
+            )
+        if has_authenticated_claim:
             authenticated = (
                 authenticated_inputs.get(index) if authenticated_inputs is not None else None
             )
             if authenticated is None:
-                authenticated = resolve_manifest_input(ref, root_path)
+                try:
+                    authenticated = resolve_manifest_input(ref, root_path)
+                except Exception as exc:
+                    if requires_authenticated_evaluation:
+                        raise _authenticated_manifest_resolution_error(ref, exc) from exc
+                    raise
             manifest, manifest_path = authenticated.manifest, authenticated.path
         elif ref.kind.endswith("Manifest"):
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
@@ -265,13 +288,15 @@ def resolve_analysis_inputs(
                     supplying_evaluation_manifest_id=(
                         manifest.id if isinstance(manifest, EvaluationRunManifest) else None
                     ),
+                    cache_schema_version=EVALUATION_STATES_CACHE_SCHEMA_VERSION,
+                    cache_key=ref.id,
                 )
             else:
                 if isinstance(manifest, EvaluationRunManifest):
                     try:
                         states = load_evaluation_states(manifest, root=root_path)
                     except EvaluationStatesArtifactNotFound:
-                        rederived = _rederive_evaluation_states(
+                        rederived, rederived_path = _rederive_evaluation_states(
                             ref.id,
                             manifest,
                             root=root_path,
@@ -283,6 +308,11 @@ def resolve_analysis_inputs(
                             evaluation_manifest_authority=_portable_manifest_authority(ref),
                             supplying_evaluation_manifest_id=manifest.id,
                             resulting_evaluation_manifest_id=rederived.id,
+                            resulting_evaluation_manifest_authority=authenticated_manifest_ref(
+                                rederived,
+                                rederived_path,
+                                "evaluation_run",
+                            ),
                         )
                     else:
                         states_path.parent.mkdir(parents=True, exist_ok=True)
@@ -293,7 +323,7 @@ def resolve_analysis_inputs(
                         )
                         state_source = _durable_state_source(ref, manifest)
                 else:
-                    rederived = _rederive_evaluation_states(
+                    rederived, rederived_path = _rederive_evaluation_states(
                         ref.id,
                         manifest,
                         root=root_path,
@@ -304,6 +334,11 @@ def resolve_analysis_inputs(
                         requested_evaluation_manifest_id=ref.id,
                         evaluation_manifest_authority=_portable_manifest_authority(ref),
                         resulting_evaluation_manifest_id=rederived.id,
+                        resulting_evaluation_manifest_authority=authenticated_manifest_ref(
+                            rederived,
+                            rederived_path,
+                            "evaluation_run",
+                        ),
                     )
             if states is None:
                 states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
@@ -322,6 +357,29 @@ def resolve_analysis_inputs(
 def _portable_manifest_authority(ref: ParentRef) -> ParentRef:
     """Preserve authored authority fields without persisting a machine-local locator."""
     return ref.model_copy(update={"uri": None})
+
+
+def _authenticated_manifest_resolution_error(
+    ref: ParentRef,
+    cause: BaseException,
+) -> AnalysisEvaluationStatesResolutionError:
+    message = str(cause)
+    if isinstance(cause, (UnsupportedSpecVersion, ValidationError)):
+        code: AnalysisEvaluationStateResolutionCode = "schema_mismatch"
+    elif " kind mismatch" in message or " id mismatch" in message:
+        code = "provenance_mismatch"
+    else:
+        code = "custody_unavailable"
+    return _resolution_error(
+        code=code,
+        manifest_id=ref.id,
+        message=(
+            "require_durable could not authenticate the authored EvaluationRunManifest "
+            f"authority: {cause}"
+        ),
+        details={"authority_failure_type": type(cause).__name__},
+        cause=cause,
+    )
 
 
 def _resolution_error(
@@ -405,97 +463,6 @@ def _evaluation_states_artifact_for_durable_policy(
     return manifest, matches[0]
 
 
-def _validate_durable_artifact_evidence(
-    ref: ParentRef,
-    manifest: EvaluationRunManifest,
-    artifact: ArtifactRef,
-) -> None:
-    if not artifact.artifact_id or not artifact.sha256:
-        raise _resolution_error(
-            code="custody_unavailable",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=(
-                f"Durable evaluation states for {ref.id!r} lack content-addressed custody "
-                "identity (artifact_id and sha256 are required)."
-            ),
-        )
-    if artifact.size_bytes is None or artifact.size_bytes < 0:
-        raise _resolution_error(
-            code="custody_unavailable",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=(
-                f"Durable evaluation states for {ref.id!r} lack a nonnegative declared "
-                "artifact size."
-            ),
-            details={"artifact_size_bytes": artifact.size_bytes},
-        )
-    expected_artifact_id = f"artifact://sha256/{artifact.sha256}"
-    if artifact.artifact_id != expected_artifact_id:
-        raise _resolution_error(
-            code="custody_unavailable",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=(
-                "Durable evaluation-state artifact identity does not match its sha256: "
-                f"artifact_id={artifact.artifact_id!r}, expected={expected_artifact_id!r}."
-            ),
-        )
-    metadata = artifact.metadata
-    metadata_manifest_id = metadata.get("manifest_id")
-    if metadata_manifest_id != manifest.id:
-        raise _resolution_error(
-            code="provenance_mismatch",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=(
-                "Durable evaluation-state artifact provenance does not name its supplying "
-                f"manifest: metadata.manifest_id={metadata_manifest_id!r}, "
-                f"expected={manifest.id!r}."
-            ),
-            details={"artifact_manifest_id": metadata_manifest_id},
-        )
-    schema_id = metadata.get("schema_id")
-    schema_version = metadata.get("schema_version")
-    storage_backend = metadata.get("storage_backend")
-    expected_storage = {
-        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1: EVALUATION_STATES_STORAGE_BACKEND_V1,
-        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION: EVALUATION_STATES_STORAGE_BACKEND,
-    }
-    if (
-        schema_id != EVALUATION_STATES_CONTAINER_SCHEMA_ID
-        or schema_version not in expected_storage
-        or storage_backend != expected_storage.get(schema_version)
-    ):
-        raise _resolution_error(
-            code="schema_mismatch",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=(
-                "Durable evaluation-state artifact schema/storage metadata is unsupported: "
-                f"schema_id={schema_id!r}, schema_version={schema_version!r}, "
-                f"storage_backend={storage_backend!r}."
-            ),
-            details={
-                "schema_id": schema_id,
-                "schema_version": schema_version,
-                "storage_backend": storage_backend,
-            },
-        )
-    if artifact.media_type != EVALUATION_STATES_MEDIA_TYPE:
-        raise _resolution_error(
-            code="schema_mismatch",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=(
-                "Durable evaluation-state artifact has unsupported media type: "
-                f"{artifact.media_type!r}; expected {EVALUATION_STATES_MEDIA_TYPE!r}."
-            ),
-            details={"media_type": artifact.media_type},
-        )
-
-
 def _durable_state_source(
     ref: ParentRef,
     manifest: EvaluationRunManifest,
@@ -526,46 +493,29 @@ def _load_required_durable_evaluation_states(
     root: Path,
 ) -> tuple[Any, AnalysisEvaluationStateSource]:
     manifest, artifact = _evaluation_states_artifact_for_durable_policy(ref, manifest)
-    _validate_durable_artifact_evidence(ref, manifest, artifact)
     try:
-        states = load_evaluation_states(manifest, root=root)
-    except UnsupportedSpecVersion as exc:
+        states = load_authenticated_evaluation_states_artifact(
+            artifact,
+            root=root,
+            manifest_id=manifest.id,
+        )
+    except EvaluationStatesSchemaMismatch as exc:
         raise _resolution_error(
             code="schema_mismatch",
             manifest_id=ref.id,
             artifact_id=artifact.artifact_id,
-            message=f"Durable evaluation-state container schema is unsupported: {exc}",
+            message=f"Durable evaluation-state schema for {ref.id!r} is invalid: {exc}",
             cause=exc,
         ) from exc
-    except ValidationError as exc:
-        schema_fields = {"schema_id", "schema_version", "storage_backend"}
-        if any(error["loc"] and error["loc"][0] in schema_fields for error in exc.errors()):
-            raise _resolution_error(
-                code="schema_mismatch",
-                manifest_id=ref.id,
-                artifact_id=artifact.artifact_id,
-                message=f"Durable evaluation-state container header is inconsistent: {exc}",
-                cause=exc,
-            ) from exc
+    except EvaluationStatesProvenanceMismatch as exc:
         raise _resolution_error(
-            code="custody_unavailable",
+            code="provenance_mismatch",
             manifest_id=ref.id,
             artifact_id=artifact.artifact_id,
-            message=(
-                f"Durable evaluation-state container for {ref.id!r} is malformed: {exc}"
-            ),
+            message=f"Durable evaluation-state provenance for {ref.id!r} is invalid: {exc}",
             cause=exc,
         ) from exc
-    except (
-        FileNotFoundError,
-        OSError,
-        zipfile.BadZipFile,
-        json.JSONDecodeError,
-        UnicodeDecodeError,
-        KeyError,
-        EvaluationStatesHashMismatch,
-        EvaluationStatesContainerError,
-    ) as exc:
+    except (EvaluationStatesCustodyUnavailable, EvaluationStatesHashMismatch) as exc:
         raise _resolution_error(
             code="custody_unavailable",
             manifest_id=ref.id,
@@ -584,7 +534,7 @@ def _rederive_evaluation_states(
     *,
     root: Path,
     execution_context: StagedExecutionContext,
-) -> EvaluationRunManifest:
+) -> tuple[EvaluationRunManifest, Path]:
     if not isinstance(manifest, EvaluationRunManifest):
         raise TypeError(
             f"Expected EvaluationRunManifest {manifest_id!r}, got {type(manifest).__name__}"
@@ -596,7 +546,7 @@ def _rederive_evaluation_states(
         )
     run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
     metadata = {key: value for key, value in manifest.metadata.items() if key != "cache"}
-    rederived, _path = execute_evaluation_run_spec(
+    rederived, path = execute_evaluation_run_spec(
         run_spec,
         root=root,
         provenance=manifest.provenance,
@@ -607,7 +557,7 @@ def _rederive_evaluation_states(
         raise ValueError(
             f"Evaluation spec for {manifest_id!r} re-derived manifest {rederived.id!r}"
         )
-    return rederived
+    return rederived, path
 
 
 def requested_outputs_from_spec(spec: AnalysisRunSpec) -> set[str] | None:
@@ -619,6 +569,46 @@ def requested_outputs_from_spec(spec: AnalysisRunSpec) -> set[str] | None:
         raise ValueError("AnalysisRunSpec params requested_outputs/outputs must be a list")
     outputs = {str(item) for item in raw}
     return outputs or None
+
+
+def _resolve_authenticated_input_authorities(
+    spec: AnalysisRunSpec,
+    *,
+    root: Path,
+) -> dict[int, ResolvedManifestInput]:
+    """Authenticate authored manifest authorities before cache or recipe effects."""
+
+    authenticated_inputs: dict[int, ResolvedManifestInput] = {}
+    for index, ref in enumerate(spec.inputs):
+        requires_authenticated_evaluation = (
+            ref.kind == "EvaluationRunManifest"
+            and spec.evaluation_states_policy == "require_durable"
+        )
+        try:
+            has_authenticated_claim = is_authenticated_manifest_ref(ref)
+        except ValueError as exc:
+            if requires_authenticated_evaluation:
+                raise _authenticated_manifest_resolution_error(ref, exc) from exc
+            raise
+        if requires_authenticated_evaluation and not has_authenticated_claim:
+            raise _resolution_error(
+                code="custody_unavailable",
+                manifest_id=ref.id,
+                message=(
+                    "require_durable requires a content-authenticated EvaluationRunManifest "
+                    "authority with schema, version, SHA-256, and byte-size evidence."
+                ),
+                details={"required_ref_schema": "feedbax.ref.authenticated_manifest.v1"},
+            )
+        if not has_authenticated_claim:
+            continue
+        try:
+            authenticated_inputs[index] = resolve_manifest_input(ref, root)
+        except Exception as exc:
+            if requires_authenticated_evaluation:
+                raise _authenticated_manifest_resolution_error(ref, exc) from exc
+            raise
+    return authenticated_inputs
 
 
 def execute_analysis_run_spec(
@@ -638,24 +628,6 @@ def execute_analysis_run_spec(
     """Execute a serialized analysis spec and write an ``AnalysisRunManifest``."""
     run_spec = coerce_analysis_run_spec(spec)
     root_path = Path(root) if root is not None else default_manifest_root()
-    authenticated_inputs: dict[int, ResolvedManifestInput] = {}
-    for index, input_ref in enumerate(run_spec.inputs):
-        if is_authenticated_manifest_ref(input_ref):
-            authenticated_inputs[index] = resolve_manifest_input(input_ref, root_path)
-    recipe = get_analysis_recipe(run_spec.analysis_type)
-    manifest_id = analysis_run_manifest_id(run_spec)
-    if use_cache and not force:
-        try:
-            existing_manifest, existing_path = find_manifest_by_id(manifest_id, root=root_path)
-        except FileNotFoundError:
-            pass
-        else:
-            if (
-                isinstance(existing_manifest, AnalysisRunManifest)
-                and existing_manifest.status == "completed"
-            ):
-                return existing_manifest, existing_path
-
     context = AnalysisRunContext(
         spec=run_spec,
         root=root_path,
@@ -667,6 +639,27 @@ def execute_analysis_run_spec(
     )
 
     try:
+        authenticated_inputs = _resolve_authenticated_input_authorities(
+            run_spec,
+            root=root_path,
+        )
+        recipe = get_analysis_recipe(run_spec.analysis_type)
+        manifest_id = analysis_run_manifest_id(run_spec)
+        if use_cache and not force:
+            try:
+                existing_manifest, existing_path = find_manifest_by_id(
+                    manifest_id,
+                    root=root_path,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    isinstance(existing_manifest, AnalysisRunManifest)
+                    and existing_manifest.status == "completed"
+                ):
+                    return existing_manifest, existing_path
+
         resolved_inputs = resolve_analysis_inputs(
             run_spec,
             root=root_path,

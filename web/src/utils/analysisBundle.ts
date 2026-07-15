@@ -22,12 +22,13 @@ export type AnalysisBundleStageStatus =
   | 'not_applicable';
 
 export interface AnalysisBundleSpecWire {
-  schema_id: typeof ANALYSIS_BUNDLE_SCHEMA_ID;
-  schema_version: typeof ANALYSIS_BUNDLE_SCHEMA_VERSION;
+  schema_id: string;
+  schema_version: string;
   name: string;
   description?: string | null;
   predicate: ManifestPredicate;
   templates: unknown[];
+  params_base?: Record<string, unknown>;
   stages: Array<Record<string, unknown>>;
   metadata: Record<string, unknown>;
 }
@@ -194,14 +195,21 @@ function authoredBundles(
 function coerceBundle(value: unknown): AnalysisBundleSpecWire | null {
   const record = recordValue(value);
   if (!record || typeof record.name !== 'string') return null;
+  const schemaVersion = stringValue(record.schema_version) ?? 'feedbax.spec.analysis_bundle.v2';
+  const isCurrent = schemaVersion === ANALYSIS_BUNDLE_SCHEMA_VERSION;
   return {
-    schema_id: ANALYSIS_BUNDLE_SCHEMA_ID,
-    schema_version: ANALYSIS_BUNDLE_SCHEMA_VERSION,
+    schema_id: stringValue(record.schema_id) ?? ANALYSIS_BUNDLE_SCHEMA_ID,
+    schema_version: schemaVersion,
     name: record.name,
     description: typeof record.description === 'string' ? record.description : null,
     predicate: manifestPredicateValue(record.predicate),
-    templates: arrayValue(record.templates).map(stampAnalysisPolicy),
-    stages: arrayValue(record.stages).filter(isRecord).map(stampStageAnalysisPolicy),
+    templates: isCurrent
+      ? arrayValue(record.templates).map(stampAnalysisPolicy)
+      : arrayValue(record.templates),
+    stages: isCurrent
+      ? arrayValue(record.stages).filter(isRecord).map(stampStageAnalysisPolicy)
+      : arrayValue(record.stages).filter(isRecord),
+    params_base: recordValue(record.params_base) ?? undefined,
     metadata: recordValue(record.metadata) ?? {},
   };
 }
@@ -219,6 +227,7 @@ function synthesizedBundle(
     description: 'Analysis DAG draft',
     predicate: bundlePredicateFromSelection(selectionSpec),
     templates: [],
+    params_base: { params: {} },
     stages: [
       {
         name: 'analysis-dag',
@@ -226,11 +235,12 @@ function synthesizedBundle(
         mode: 'grouped',
         analysis_type: 'studio.analysis_dag',
         evaluation_states_policy: 'recompute',
-        params: {
+        local_params: {
           page_count: pages.length,
           active_page_id:
             typeof analysisSpec?.active_page_id === 'string' ? analysisSpec.active_page_id : null,
         },
+        params_patches: [],
         outputs: [{ role: 'manifest', required: true }],
       },
     ],

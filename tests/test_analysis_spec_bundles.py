@@ -165,7 +165,13 @@ def _register_toy_evaluation_recipe() -> None:
     register_evaluation_recipe(TOY_EVALUATION_TYPE, recipe, replace=True)
 
 
-def _execute_toy_eval(root: Path, *, n_trials: int, method: str):
+def _execute_toy_eval(
+    root: Path,
+    *,
+    n_trials: int,
+    method: str,
+    durable: bool = False,
+):
     parent = ParentRef(
         kind="TrainingRunManifest",
         id=f"feedbax-training-run:{method}-{n_trials}",
@@ -174,7 +180,10 @@ def _execute_toy_eval(root: Path, *, n_trials: int, method: str):
     spec = EvaluationRunSpec(
         evaluation_type=TOY_EVALUATION_TYPE,
         inputs=[parent],
-        params={"n_trials": n_trials},
+        params={
+            "n_trials": n_trials,
+            **({"states_custody": "durable"} if durable else {}),
+        },
     )
     return execute_evaluation_run_spec(
         spec,
@@ -834,6 +843,35 @@ def test_simple_bundle_rejects_explicit_unsupported_old_schema_version() -> None
         )
 
 
+def test_studio_synthesized_v5_bundle_payload_validates_current_stage_shape() -> None:
+    bundle = AnalysisBundleSpec.model_validate(
+        {
+            "schema_id": "feedbax.spec.analysis_bundle",
+            "schema_version": "feedbax.spec.analysis_bundle.v5",
+            "name": "studio-analysis-dag",
+            "predicate": {"manifest_kind": "EvaluationRunManifest", "run_ids": ["eval-a"]},
+            "templates": [],
+            "params_base": {"params": {}},
+            "stages": [
+                {
+                    "name": "analysis-dag",
+                    "kind": "analysis",
+                    "mode": "grouped",
+                    "analysis_type": "studio.analysis_dag",
+                    "evaluation_states_policy": "recompute",
+                    "local_params": {"page_count": 1, "active_page_id": None},
+                    "params_patches": [],
+                    "outputs": [{"role": "manifest", "required": True}],
+                }
+            ],
+            "metadata": {"source": "studio_analysis_stage", "page_count": 1},
+        }
+    )
+
+    assert bundle.stages[0].local_params == {"page_count": 1, "active_page_id": None}
+    assert bundle.stages[0].params_patches == []
+
+
 def test_bundle_templates_preserve_authored_evaluation_states_policy() -> None:
     bundle = AnalysisBundleSpec(
         name="policy_templates",
@@ -860,6 +898,44 @@ def test_bundle_templates_preserve_authored_evaluation_states_policy() -> None:
         "require_durable",
         "require_durable",
     ]
+
+
+def test_bundle_executes_require_durable_with_authenticated_selected_manifest(
+    tmp_path: Path,
+) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        evaluation, _ = _execute_toy_eval(
+            tmp_path,
+            n_trials=9,
+            method="durable",
+            durable=True,
+        )
+        bundle = AnalysisBundleSpec(
+            name="require_durable_bundle",
+            predicate=ManifestPredicate(
+                manifest_kind="EvaluationRunManifest",
+                run_ids=[evaluation.id],
+            ),
+            templates=[
+                AnalysisSpecTemplate(
+                    name="durable",
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                    evaluation_states_policy="require_durable",
+                )
+            ],
+        )
+
+        [(expansion, analysis, _)] = execute_analysis_bundle(bundle, root=tmp_path)
+
+        assert expansion.spec.inputs[0].metadata["ref_schema_version"] == (
+            "feedbax.ref.authenticated_manifest.v1"
+        )
+        assert analysis.evaluation_state_sources[0].source_kind == "durable"
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 
 @pytest.mark.parametrize(

@@ -56,8 +56,11 @@ ANALYSIS_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_run.v2"
 ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID = (
     "feedbax.manifest.analysis_evaluation_state_source"
 )
-ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION = (
+ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.analysis_evaluation_state_source.v1"
+)
+ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION = (
+    "feedbax.manifest.analysis_evaluation_state_source.v2"
 )
 ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID = (
     "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic"
@@ -897,13 +900,16 @@ class AnalysisEvaluationStateSource(StrictModel):
         "feedbax.manifest.analysis_evaluation_state_source"
     ] = ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID
     schema_version: Literal[
-        "feedbax.manifest.analysis_evaluation_state_source.v1"
+        "feedbax.manifest.analysis_evaluation_state_source.v2"
     ] = ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION
     source_kind: Literal["evaluation_cache", "durable", "analysis_time_recompute"]
     requested_evaluation_manifest_id: str
     evaluation_manifest_authority: Optional[ParentRef] = None
     supplying_evaluation_manifest_id: Optional[str] = None
     resulting_evaluation_manifest_id: Optional[str] = None
+    resulting_evaluation_manifest_authority: Optional[ParentRef] = None
+    cache_schema_version: Optional[str] = None
+    cache_key: Optional[str] = None
     artifact_id: Optional[str] = None
     artifact_sha256: Optional[str] = None
     artifact_size_bytes: Optional[int] = Field(default=None, ge=0)
@@ -937,9 +943,18 @@ class AnalysisEvaluationStateSource(StrictModel):
                     f"{missing}"
                 )
         elif self.source_kind == "analysis_time_recompute":
-            if not self.resulting_evaluation_manifest_id:
+            if (
+                not self.resulting_evaluation_manifest_id
+                or self.resulting_evaluation_manifest_authority is None
+            ):
                 raise ValueError(
-                    "analysis_time_recompute source requires resulting evaluation identity"
+                    "analysis_time_recompute source requires authenticated resulting "
+                    "evaluation authority"
+                )
+        elif self.source_kind == "evaluation_cache":
+            if not self.cache_schema_version or not self.cache_key:
+                raise ValueError(
+                    "evaluation_cache source requires its stable schema version and key"
                 )
         return self
 
@@ -2067,19 +2082,15 @@ def _normalize_training_run_set_manifest_data(data: dict[str, Any]) -> dict[str,
 def _normalize_analysis_run_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
     if data.get("kind") != "AnalysisRunManifest":
         return data
+    from feedbax.contracts.migrations import default_spec_registry
+
     schema_version = data.get("schema_version", ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1)
-    if schema_version == ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION:
-        return data
-    if schema_version != ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1:
-        raise ValueError(
-            "Unsupported AnalysisRunManifest schema_version: "
-            f"{schema_version!r}; expected {ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION!r}"
-        )
-    migrated = dict(data)
-    migrated["schema_version"] = ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
-    migrated.setdefault("evaluation_state_sources", [])
-    migrated.setdefault("evaluation_state_resolution_diagnostics", [])
-    return migrated
+    result = default_spec_registry.migrate(
+        "AnalysisRunManifest",
+        data,
+        source_version=schema_version if isinstance(schema_version, str) else None,
+    )
+    return result.payload
 
 
 def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:

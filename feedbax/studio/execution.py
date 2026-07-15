@@ -32,6 +32,7 @@ from feedbax.analysis.evaluation import (
     execute_evaluation_run_spec,
 )
 from feedbax.analysis.reports import STUDIO_REPORT_TYPE, execute_report_spec
+from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
@@ -2492,6 +2493,12 @@ def _materialize_eval_stage(
         workspace.scenarios[eval_scenario.id] = eval_scenario
 
     input_refs = _collection_manifest_parents(training_collection)
+    analysis_stage = _select_stage_by_kind(workspace, "analysis")
+    analysis_scenario = workspace.scenarios.get(analysis_stage.scenario_id or "")
+    downstream_states_policy = (analysis_scenario.analysis_spec or {}).get(
+        "evaluation_states_policy",
+        "recompute",
+    ) if analysis_scenario is not None else "recompute"
     spec = EvaluationRunSpec(
         evaluation_type="feedbax.studio.default_eval",
         training_run_ids=[ref.id for ref in input_refs if ref.kind == "TrainingRunManifest"],
@@ -2504,6 +2511,11 @@ def _materialize_eval_stage(
             "inherited_from_scenario_id": eval_scenario.parent_scenario_id
             if eval_scenario is not None
             else train_stage.scenario_id,
+            **(
+                {"states_custody": "durable"}
+                if downstream_states_policy == "require_durable"
+                else {}
+            ),
         },
     )
     manifest, path = execute_evaluation_run_spec(
@@ -2562,7 +2574,10 @@ def _materialize_analysis_stage(
         analysis_stage.input_collections,
         evaluation_collection,
     )
-    input_refs = _collection_manifest_parents(evaluation_collection)
+    input_refs = _collection_manifest_parents(
+        evaluation_collection,
+        authenticated_kind="EvaluationRunManifest",
+    )
     scenario = workspace.scenarios.get(analysis_stage.scenario_id or "")
     analysis_spec_payload = scenario.analysis_spec if scenario is not None else None
     analysis_type = (analysis_spec_payload or {}).get("analysis_type")
@@ -2768,9 +2783,14 @@ def _require_collection_items(
         )
 
 
-def _collection_manifest_parents(collection: StudioCollectionRef) -> list[ParentRef]:
-    return [
-        ParentRef(
+def _collection_manifest_parents(
+    collection: StudioCollectionRef,
+    *,
+    authenticated_kind: str | None = None,
+) -> list[ParentRef]:
+    parents: list[ParentRef] = []
+    for ref in collection.item_refs:
+        parent = ParentRef(
             kind=ref.kind,
             id=ref.id,
             role=ref.role,
@@ -2782,8 +2802,22 @@ def _collection_manifest_parents(collection: StudioCollectionRef) -> list[Parent
                 "collection_kind": collection.kind,
             },
         )
-        for ref in collection.item_refs
-    ]
+        if ref.kind == authenticated_kind:
+            if not ref.uri:
+                raise StudioExecutionPreparationError(
+                    f"Studio manifest ref {ref.id!r} has no exact runtime path to authenticate"
+                )
+            manifest = load_manifest(ref.uri)
+            if manifest.kind != ref.kind or manifest.id != ref.id:
+                raise StudioExecutionPreparationError(
+                    f"Studio manifest ref {ref.id!r} disagrees with its exact runtime bytes"
+                )
+            authority = authenticated_manifest_ref(manifest, ref.uri, ref.role)
+            parent = authority.model_copy(
+                update={"metadata": {**authority.metadata, **parent.metadata}}
+            )
+        parents.append(parent)
+    return parents
 
 
 def _stage_provenance(

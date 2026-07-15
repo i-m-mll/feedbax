@@ -72,6 +72,8 @@ describe('analysis bundle UI helpers', () => {
       scenario({
         bundles: [
           {
+            schema_id: 'feedbax.spec.analysis_bundle',
+            schema_version: 'feedbax.spec.analysis_bundle.v5',
             name: 'authored',
             predicate: { manifest_kind: 'EvaluationRunManifest', run_ids: ['eval-a'] },
             stages: [
@@ -85,6 +87,8 @@ describe('analysis bundle UI helpers', () => {
             ],
           },
           {
+            schema_id: 'feedbax.spec.analysis_bundle',
+            schema_version: 'feedbax.spec.analysis_bundle.v5',
             name: 'authored-templates',
             predicate: { manifest_kind: 'EvaluationRunManifest', run_ids: ['eval-a'] },
             templates: [
@@ -124,8 +128,42 @@ describe('analysis bundle UI helpers', () => {
       schema_version: 'feedbax.spec.analysis_bundle.v5',
       name: 'studio-analysis-dag',
       predicate: { run_ids: ['eval-a'] },
-      stages: [{ evaluation_states_policy: 'recompute' }],
+      params_base: { params: {} },
+      stages: [
+        {
+          evaluation_states_policy: 'recompute',
+          local_params: { page_count: 1 },
+          params_patches: [],
+        },
+      ],
     });
+    expect(synthesized[0].bundle.stages[0]).not.toHaveProperty('params');
+  });
+
+  it('preserves legacy bundle versions for server-owned migration', () => {
+    const cards = analysisBundleCards(
+      scenario({
+        bundle: {
+          schema_id: 'feedbax.spec.analysis_bundle',
+          schema_version: 'feedbax.spec.analysis_bundle.v2',
+          name: 'legacy-v2',
+          stages: [
+            {
+              name: 'analysis',
+              kind: 'analysis',
+              analysis_type: 'studio.analysis_dag',
+              params: { page_count: 1 },
+            },
+          ],
+        },
+      }),
+      stage({}),
+    );
+
+    expect(cards[0].bundle.schema_version).toBe('feedbax.spec.analysis_bundle.v2');
+    expect(cards[0].bundle.stages[0]).toMatchObject({ params: { page_count: 1 } });
+    expect(cards[0].bundle.stages[0]).not.toHaveProperty('local_params');
+    expect(cards[0].bundle.stages[0]).not.toHaveProperty('evaluation_states_policy');
   });
 
   it('keeps distinct predicates for authored bundle cards', () => {

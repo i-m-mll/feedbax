@@ -523,6 +523,7 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
             parent_ref_fields=[
                 "inputs",
                 "evaluation_state_sources[].evaluation_manifest_authority",
+                "evaluation_state_sources[].resulting_evaluation_manifest_authority",
                 "provenance.parents",
             ],
             opaque_domain_fields=[

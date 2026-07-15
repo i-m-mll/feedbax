@@ -7,8 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-import feedbax.studio.execution as studio_execution
-
 from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
@@ -31,7 +29,6 @@ from feedbax.analysis.evaluation import (
 )
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
-    execute_analysis_run_spec,
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
@@ -1177,7 +1174,6 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
     tmp_path: Path,
     studio_default_eval_recipe,
     studio_default_analysis_recipe,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = _workspace_with_analysis_type("feedbax.analysis.activity")
     analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
@@ -1186,16 +1182,6 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
         **(scenario.analysis_spec or {}),
         "evaluation_states_policy": "require_durable",
     }
-    captured_policies: list[str] = []
-
-    def capture_analysis_spec(spec, **kwargs):
-        captured_policies.append(spec.evaluation_states_policy)
-        return execute_analysis_run_spec(
-            spec.model_copy(update={"evaluation_states_policy": "recompute"}),
-            **kwargs,
-        )
-
-    monkeypatch.setattr(studio_execution, "execute_analysis_run_spec", capture_analysis_spec)
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=workspace,
@@ -1205,7 +1191,7 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
         )
     )
 
-    materialize_studio_pipeline(
+    materialized = materialize_studio_pipeline(
         StudioPipelineMaterializationRequest(
             workspace=training.workspace,
             job_id="studio-policy",
@@ -1214,7 +1200,16 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
         )
     )
 
-    assert captured_policies == ["require_durable"]
+    evaluation = load_manifest(materialized.manifest_paths["stage:eval"])
+    analysis = load_manifest(materialized.manifest_paths["stage:analysis"])
+    assert evaluation.evaluation_spec.inline["params"]["states_custody"] == "durable"
+    assert analysis.analysis_spec.inline["evaluation_states_policy"] == "require_durable"
+    source = analysis.evaluation_state_sources[0]
+    assert source.source_kind == "durable"
+    assert source.evaluation_manifest_authority.metadata["ref_schema_version"] == (
+        "feedbax.ref.authenticated_manifest.v1"
+    )
+    assert source.evaluation_manifest_authority.uri is None
 
 
 def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(

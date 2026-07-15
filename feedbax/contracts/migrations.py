@@ -146,6 +146,7 @@ from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
     ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID,
     ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION,
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
@@ -2839,7 +2840,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("AnalysisRunManifest.evaluation_state_sources",),
             consumed_by=("analysis manifest readers", "provider manifest compilation"),
             description="Queryable supplier evidence for analysis evaluation-state inputs.",
-            rejected_old_versions=(f"{ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID}.v0",
+                ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
+            ),
             required_tests=("tests/test_analysis_evaluation_states_policy.py",),
         ),
         _family(

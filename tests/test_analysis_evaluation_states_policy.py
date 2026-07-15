@@ -22,15 +22,25 @@ from feedbax.analysis.specs import (
     AnalysisRecipeResult,
     coerce_analysis_run_spec,
     execute_analysis_run_spec,
+    find_manifest_by_id,
     register_analysis_recipe,
     resolve_analysis_inputs,
     unregister_analysis_recipe,
 )
-from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
-from feedbax.contracts.evaluation_states import EVALUATION_STATES_METADATA_KEY
+from feedbax.analysis.manifest_inputs import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    authenticated_manifest_ref,
+    is_authenticated_manifest_ref,
+)
+from feedbax.contracts.evaluation_states import (
+    EVALUATION_STATES_METADATA_KEY,
+    EvaluationStatesCustodyUnavailable,
+    EvaluationStatesSizeMismatch,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION,
     ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,
     AnalysisRunSpec,
@@ -100,7 +110,11 @@ def _analysis_spec(
     *,
     policy: str,
     ref: ParentRef | None = None,
+    root: Path | None = None,
 ) -> AnalysisRunSpec:
+    if policy == "require_durable" and ref is None and root is not None:
+        manifest, path = find_manifest_by_id(manifest_id, root=root)
+        ref = authenticated_manifest_ref(manifest, path, "evaluation_run")
     return AnalysisRunSpec(
         analysis_type=ANALYSIS_TYPE,
         inputs=[
@@ -165,7 +179,7 @@ def test_require_durable_bypasses_cache_and_never_recomputes(tmp_path: Path) -> 
             pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo,
         ):
             resolve_analysis_inputs(
-                _analysis_spec(manifest.id, policy="require_durable"),
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path),
                 root=tmp_path,
             )
 
@@ -194,7 +208,7 @@ def test_require_durable_classifies_schema_and_provenance_failures(
 
         with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
             resolve_analysis_inputs(
-                _analysis_spec(manifest.id, policy="require_durable"),
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path),
                 root=tmp_path,
             )
 
@@ -218,12 +232,13 @@ def test_require_durable_classifies_missing_custody_bytes(tmp_path: Path) -> Non
 
         with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
             resolve_analysis_inputs(
-                _analysis_spec(manifest.id, policy="require_durable"),
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path),
                 root=tmp_path,
             )
 
         assert excinfo.value.diagnostic.code == "custody_unavailable"
-        assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+        assert isinstance(excinfo.value.__cause__, EvaluationStatesCustodyUnavailable)
+        assert isinstance(excinfo.value.__cause__.__cause__, FileNotFoundError)
     finally:
         unregister_evaluation_recipe(EVALUATION_TYPE)
 
@@ -248,7 +263,7 @@ def test_recompute_preserves_legacy_durable_loader_metadata_tolerance(tmp_path: 
 
         with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
             resolve_analysis_inputs(
-                _analysis_spec(manifest.id, policy="require_durable"),
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path),
                 root=tmp_path,
             )
         assert excinfo.value.diagnostic.code == "provenance_mismatch"
@@ -271,7 +286,7 @@ def test_require_durable_classifies_embedded_container_schema_mismatch(tmp_path:
 
         with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
             resolve_analysis_inputs(
-                _analysis_spec(manifest.id, policy="require_durable"),
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path),
                 root=tmp_path,
             )
 
@@ -291,6 +306,10 @@ def test_all_recompute_supplier_paths_are_truthfully_stamped(tmp_path: Path) -> 
         )[0]
         assert cached_input.evaluation_state_source is not None
         assert cached_input.evaluation_state_source.source_kind == "evaluation_cache"
+        assert cached_input.evaluation_state_source.cache_schema_version == (
+            "feedbax.analysis.evaluation-states-cache.v1"
+        )
+        assert cached_input.evaluation_state_source.cache_key == cached.id
 
         durable, _ = _evaluation(tmp_path, value=5, durable=True)
         evaluation_states_cache_path(durable.id, root=tmp_path).unlink()
@@ -309,6 +328,14 @@ def test_all_recompute_supplier_paths_are_truthfully_stamped(tmp_path: Path) -> 
         assert recomputed_input.evaluation_state_source is not None
         assert recomputed_input.evaluation_state_source.source_kind == "analysis_time_recompute"
         assert recomputed_input.evaluation_state_source.resulting_evaluation_manifest_id == rederived.id
+        resulting_authority = (
+            recomputed_input.evaluation_state_source.resulting_evaluation_manifest_authority
+        )
+        assert resulting_authority is not None
+        assert is_authenticated_manifest_ref(resulting_authority)
+        assert resulting_authority.metadata["ref_schema_version"] == (
+            AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION
+        )
     finally:
         unregister_evaluation_recipe(EVALUATION_TYPE)
 
@@ -329,7 +356,7 @@ def test_completed_analysis_manifests_round_trip_all_supplier_kinds(tmp_path: Pa
         )
         for evaluation, policy, expected_kind in cases:
             manifest, path = execute_analysis_run_spec(
-                _analysis_spec(evaluation.id, policy=policy),
+                _analysis_spec(evaluation.id, policy=policy, root=tmp_path),
                 root=tmp_path,
                 fig_dump_formats=("json",),
             )
@@ -345,7 +372,7 @@ def test_source_evidence_round_trips_and_historical_manifest_has_none(tmp_path: 
     try:
         evaluation, _ = _evaluation(tmp_path, durable=True)
         evaluation_states_cache_path(evaluation.id, root=tmp_path).unlink()
-        spec = _analysis_spec(evaluation.id, policy="require_durable")
+        spec = _analysis_spec(evaluation.id, policy="require_durable", root=tmp_path)
         resolved = resolve_analysis_inputs(spec, root=tmp_path)[0]
         assert resolved.evaluation_state_source is not None
 
@@ -360,10 +387,17 @@ def test_source_evidence_round_trips_and_historical_manifest_has_none(tmp_path: 
         historical["schema_version"] = ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1
         historical.pop("evaluation_state_sources")
         historical.pop("evaluation_state_resolution_diagnostics")
+        registry_migration = default_spec_registry.migrate(
+            "AnalysisRunManifest",
+            historical,
+            source_version=ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,
+        )
         migrated = load_manifest_bytes(json.dumps(historical).encode())
         assert migrated.schema_version == ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
         assert migrated.evaluation_state_sources == []
         assert migrated.evaluation_state_resolution_diagnostics == []
+        assert registry_migration.payload["evaluation_state_sources"] == []
+        assert registry_migration.payload["evaluation_state_resolution_diagnostics"] == []
     finally:
         unregister_evaluation_recipe(EVALUATION_TYPE)
 
@@ -408,6 +442,137 @@ def test_authenticated_manifest_authority_round_trips_in_source_evidence(
         unregister_evaluation_recipe(EVALUATION_TYPE)
 
 
+def test_require_durable_rejects_declared_artifact_size_mismatch(tmp_path: Path) -> None:
+    _register_evaluation()
+    try:
+        evaluation, _ = _evaluation(tmp_path, durable=True)
+        artifact = evaluation.artifacts[0]
+        assert artifact.size_bytes is not None
+        mismatched = artifact.model_copy(update={"size_bytes": artifact.size_bytes + 1})
+        write_manifest(evaluation.model_copy(update={"artifacts": [mismatched]}), root=tmp_path)
+
+        with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
+            resolve_analysis_inputs(
+                _analysis_spec(evaluation.id, policy="require_durable", root=tmp_path),
+                root=tmp_path,
+            )
+
+        assert excinfo.value.diagnostic.code == "custody_unavailable"
+        assert isinstance(excinfo.value.__cause__, EvaluationStatesSizeMismatch)
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
+def test_recompute_preserves_legacy_declared_size_tolerance(tmp_path: Path) -> None:
+    _register_evaluation()
+    try:
+        evaluation, _ = _evaluation(tmp_path, durable=True)
+        artifact = evaluation.artifacts[0]
+        assert artifact.size_bytes is not None
+        mismatched = artifact.model_copy(update={"size_bytes": artifact.size_bytes + 1})
+        write_manifest(evaluation.model_copy(update={"artifacts": [mismatched]}), root=tmp_path)
+        evaluation_states_cache_path(evaluation.id, root=tmp_path).unlink()
+
+        resolved = resolve_analysis_inputs(
+            _analysis_spec(evaluation.id, policy="recompute"),
+            root=tmp_path,
+        )[0]
+
+        assert resolved.evaluation_state_source is not None
+        assert resolved.evaluation_state_source.source_kind == "durable"
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
+@pytest.mark.parametrize("authority_failure", ["missing", "hash", "size", "unsafe_uri"])
+def test_authenticated_authority_failures_are_guarded_and_stamped(
+    tmp_path: Path,
+    authority_failure: str,
+) -> None:
+    _register_evaluation()
+
+    def unreachable_recipe(*_args):
+        raise AssertionError("authority failure must precede recipe execution")
+
+    register_analysis_recipe(ANALYSIS_TYPE, unreachable_recipe, replace=True)
+    try:
+        evaluation, evaluation_path = _evaluation(tmp_path, durable=True)
+        authority = authenticated_manifest_ref(evaluation, evaluation_path, "evaluation_run")
+        if authority_failure == "missing":
+            evaluation_path.unlink()
+        elif authority_failure == "hash":
+            authority = authority.model_copy(
+                update={
+                    "metadata": {
+                        **authority.metadata,
+                        "manifest_sha256": "0" * 64,
+                    }
+                }
+            )
+        elif authority_failure == "size":
+            authority = authority.model_copy(
+                update={
+                    "metadata": {
+                        **authority.metadata,
+                        "size_bytes": authority.metadata["size_bytes"] + 1,
+                    }
+                }
+            )
+        else:
+            authority = authority.model_copy(update={"uri": "../unsafe.json"})
+
+        with (
+            patch(
+                "feedbax.analysis.specs.execute_evaluation_run_spec",
+                side_effect=AssertionError("require_durable must not recompute"),
+            ) as execute,
+            pytest.raises(AnalysisRecipeExecutionError) as excinfo,
+        ):
+            execute_analysis_run_spec(
+                _analysis_spec(
+                    evaluation.id,
+                    policy="require_durable",
+                    ref=authority,
+                ),
+                root=tmp_path,
+            )
+
+        failed = load_manifest(excinfo.value.path)
+        diagnostic = failed.evaluation_state_resolution_diagnostics[0]
+        assert diagnostic.code == "custody_unavailable"
+        assert diagnostic.details["authority_failure_type"] in {
+            "FileNotFoundError",
+            "ValueError",
+        }
+        execute.assert_not_called()
+    finally:
+        unregister_analysis_recipe(ANALYSIS_TYPE)
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
+def test_id_only_require_durable_ref_is_guarded_and_stamped(tmp_path: Path) -> None:
+    _register_evaluation()
+    register_analysis_recipe(
+        ANALYSIS_TYPE,
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("ID-only authority must fail before recipe execution")
+        ),
+        replace=True,
+    )
+    try:
+        evaluation, _ = _evaluation(tmp_path, durable=True)
+        with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+            execute_analysis_run_spec(
+                _analysis_spec(evaluation.id, policy="require_durable"),
+                root=tmp_path,
+            )
+        failed = load_manifest(excinfo.value.path)
+        assert failed.evaluation_state_resolution_diagnostics[0].code == "custody_unavailable"
+    finally:
+        unregister_analysis_recipe(ANALYSIS_TYPE)
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
 def test_failed_manifest_carries_resolution_diagnostic_without_recompute(tmp_path: Path) -> None:
     _register_evaluation()
 
@@ -425,7 +590,7 @@ def test_failed_manifest_carries_resolution_diagnostic_without_recompute(tmp_pat
             pytest.raises(AnalysisRecipeExecutionError) as excinfo,
         ):
             execute_analysis_run_spec(
-                _analysis_spec(evaluation.id, policy="require_durable"),
+                _analysis_spec(evaluation.id, policy="require_durable", root=tmp_path),
                 root=tmp_path,
             )
 
@@ -455,4 +620,19 @@ def test_analysis_run_spec_v1_migrates_and_unknown_old_version_rejects() -> None
         default_spec_registry.migrate(
             "AnalysisRunSpec",
             {**v1, "schema_version": "feedbax.spec.analysis_run.v0"},
+        )
+
+
+def test_legacy_state_source_version_is_explicitly_rejected() -> None:
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "AnalysisEvaluationStateSource",
+            {
+                "schema_id": "feedbax.manifest.analysis_evaluation_state_source",
+                "schema_version": ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
+                "source_kind": "analysis_time_recompute",
+                "requested_evaluation_manifest_id": "evaluation",
+                "resulting_evaluation_manifest_id": "evaluation",
+            },
+            source_version=ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
         )

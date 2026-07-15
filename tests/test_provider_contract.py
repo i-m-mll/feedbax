@@ -529,6 +529,10 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
         "evaluation_state_sources[].evaluation_manifest_authority"
         in analysis.parent_ref_fields
     )
+    assert (
+        "evaluation_state_sources[].resulting_evaluation_manifest_authority"
+        in analysis.parent_ref_fields
+    )
 
 
 def test_provider_analysis_schema_exposes_evaluation_states_policy() -> None:
