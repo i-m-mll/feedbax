@@ -202,12 +202,14 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
     LossTermSpec,
     TrainingRunSpec,
 )
 from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
     WORKER_CONTRACT_SCHEMA_VERSION,
+    WORKER_CONTRACT_SCHEMA_VERSION_V1,
 )
 from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_ID,
@@ -1177,7 +1179,40 @@ def _migrate_lr_schedule_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[
 def _migrate_training_run_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     migrated.setdefault("schema_id", TRAINING_RUN_SPEC_SCHEMA_ID)
+    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V2
     migrated.setdefault("on_nan", "raise")
+    return migrated
+
+
+def _migrate_worker_execution_program_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_id"] = WORKER_CONTRACT_SCHEMA_ID
+    migrated["schema_version"] = WORKER_CONTRACT_SCHEMA_VERSION
+    phase_program = migrated.get("phase_program")
+    if isinstance(phase_program, dict):
+        migrated["phase_program"] = _migrate_worker_execution_program_v1_to_v2_payload(
+            phase_program
+        )
+    return migrated
+
+
+def _migrate_training_run_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_id"] = TRAINING_RUN_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION
+    execution = migrated.get("worker_execution")
+    if isinstance(execution, dict):
+        migrated_execution = dict(execution)
+        for field_name in ("method_contract", "effective_phase"):
+            embedded = migrated_execution.get(field_name)
+            if isinstance(embedded, dict):
+                migrated_execution[field_name] = (
+                    _migrate_worker_execution_program_v1_to_v2_payload(embedded)
+                )
+        migrated_execution.setdefault("mapping_levels", None)
+        migrated["worker_execution"] = migrated_execution
     return migrated
 
 
@@ -2356,7 +2391,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "worker, execution, artifact, checkpoint, and progress policy."
             ),
             stance="migrate",
-            supported_old_versions=(TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+                TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=("feedbax.spec.training_run.v0",),
             required_tests=(
                 "tests/test_training_run_spec.py",
@@ -2909,6 +2947,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("method registry", "TrainingRunSpec.method_ref resolution"),
             consumed_by=("feedbax.training.worker_validation", "training executor"),
             description="Method-neutral worker axis/state/phase execution declaration.",
+            stance="migrate",
+            supported_old_versions=(WORKER_CONTRACT_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(f"{WORKER_CONTRACT_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_worker_contract.py",
                 "tests/test_structured_spec_migrations.py",
@@ -3971,10 +4012,30 @@ default_spec_registry.register_migration(
     "TrainingRunSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
-        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION,
+        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
         migration_id="training-run-spec-v1-to-v2-nan-policy",
         migrate=_migrate_training_run_spec_v1_to_v2_payload,
         description="Add fail-loud executor NaN policy to durable training run specs.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-spec-v2-to-v3-mapped-axis-vocabulary",
+        migrate=_migrate_training_run_spec_v2_to_v3_payload,
+        description="Add optional mapping levels and migrate embedded worker contracts to v2.",
+    ),
+)
+default_spec_registry.register_migration(
+    "WorkerMethodContractSpec",
+    SchemaMigration(
+        source_version=WORKER_CONTRACT_SCHEMA_VERSION_V1,
+        target_version=WORKER_CONTRACT_SCHEMA_VERSION,
+        migration_id="worker-execution-program-v1-to-v2-slot-axis-bindings",
+        migrate=_migrate_worker_execution_program_v1_to_v2_payload,
+        description="Add optional slot-to-axis bindings for scalar-compatible worker programs.",
     ),
 )
 default_spec_registry.register_migration(

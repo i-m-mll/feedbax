@@ -14,6 +14,7 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
     LossTermSpec,
     ObjectiveSlotSpec,
     TaskSpec,
@@ -110,7 +111,7 @@ def test_training_run_spec_old_version_rejection_policy_is_explicit() -> None:
     assert "migration_intentionally_absent=yes" in message
 
 
-def test_training_run_spec_v1_migrates_to_v2_with_fail_loud_nan_policy() -> None:
+def test_training_run_spec_v1_migrates_through_v3_with_fail_loud_nan_policy() -> None:
     payload = _training_run_payload()
     payload.pop("on_nan")
     payload["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V1
@@ -122,9 +123,39 @@ def test_training_run_spec_v1_migrates_to_v2_with_fail_loud_nan_policy() -> None
     assert result.payload["schema_version"] == TRAINING_RUN_SPEC_SCHEMA_VERSION
     assert result.payload["on_nan"] == "raise"
     assert [record.migration_id for record in result.migration_records] == [
-        "training-run-spec-v1-to-v2-nan-policy"
+        "training-run-spec-v1-to-v2-nan-policy",
+        "training-run-spec-v2-to-v3-mapped-axis-vocabulary",
     ]
     assert TrainingRunSpec.model_validate(result.payload).on_nan == "raise"
+
+
+def test_training_run_spec_v2_migrates_embedded_worker_contracts_to_v2() -> None:
+    payload = _training_run_payload()
+    payload["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V2
+    worker = payload["worker_execution"]
+    assert isinstance(worker, dict)
+    worker.pop("mapping_levels", None)
+    for field_name in ("method_contract", "effective_phase"):
+        embedded = worker[field_name]
+        assert isinstance(embedded, dict)
+        embedded["schema_version"] = "feedbax.spec.worker.execution_program.v1"
+        phase_program = embedded["phase_program"]
+        assert isinstance(phase_program, dict)
+        phase_program["schema_version"] = "feedbax.spec.worker.execution_program.v1"
+
+    result = default_spec_registry.migrate("TrainingRunSpec", payload)
+
+    assert result.payload["schema_version"] == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    migrated_worker = result.payload["worker_execution"]
+    assert migrated_worker["mapping_levels"] is None
+    for field_name in ("method_contract", "effective_phase"):
+        embedded = migrated_worker[field_name]
+        assert embedded["schema_version"] == "feedbax.spec.worker.execution_program.v2"
+        assert (
+            embedded["phase_program"]["schema_version"]
+            == "feedbax.spec.worker.execution_program.v2"
+        )
+    assert TrainingRunSpec.model_validate(result.payload).worker_execution.mapping_levels is None
 
 
 def test_standard_supervised_method_payload_validates_and_round_trips() -> None:

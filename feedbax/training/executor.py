@@ -75,6 +75,11 @@ from feedbax.training.manifest_preflight import (
     validate_training_run_spec,
 )
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.preparation import (
+    ExecutionPreparationResult,
+    MaterializedExecutionPreparation,
+    validate_materialized_execution_preparation,
+)
 from feedbax.training.diagnostics import (
     CheckpointTransactionDiagnostic,
     LearningRateDiagnostic,
@@ -83,6 +88,7 @@ from feedbax.training.diagnostics import (
 )
 from feedbax.training.worker_validation import (
     WorkerExecutabilityEnvironment,
+    resolve_execution_mapping,
     validate_worker_contract,
 )
 
@@ -338,6 +344,7 @@ def execute_training_run_spec(
     spec: TrainingRunSpec | Mapping[str, Any],
     *,
     run_id: str | None = None,
+    preparation: ExecutionPreparationResult | MaterializedExecutionPreparation | None = None,
     initial_slots: Mapping[str, Any] | None = None,
     kernel_context: Mapping[str, Any] | None = None,
     manifest_root: Path | str | None = None,
@@ -382,6 +389,43 @@ def execute_training_run_spec(
     manifest; ``terminate`` emits a cancelled manifest immediately.
     """
     run_spec = _validate_spec(spec)
+    mapping_levels, _slot_axis_bindings = resolve_execution_mapping(
+        run_spec.worker_execution
+    )
+    loose_preparation = any(
+        value is not None
+        for value in (initial_slots, kernel_context, loss_service, resume_slot_transform)
+    )
+    if preparation is not None and loose_preparation:
+        raise TrainingRunExecutorError(
+            "preparation is mutually exclusive with initial_slots, kernel_context, "
+            "loss_service, and resume_slot_transform"
+        )
+    if mapping_levels:
+        if not isinstance(preparation, MaterializedExecutionPreparation):
+            raise TrainingRunExecutorError(
+                "active mapping levels require a Feedbax-materialized execution preparation; "
+                "loose, scalar, and pre-stacked inputs are not accepted"
+            )
+        try:
+            validate_materialized_execution_preparation(preparation, run_spec=run_spec)
+        except ValueError as exc:
+            raise TrainingRunExecutorError(
+                f"mapped execution preparation validation failed: {exc}"
+            ) from exc
+        initial_slots = preparation.initial_slots
+        kernel_context = preparation.kernel_context
+        loss_service = preparation.loss_service
+        resume_slot_transform = preparation.resume_slot_transform
+    elif isinstance(preparation, MaterializedExecutionPreparation):
+        raise TrainingRunExecutorError(
+            "MaterializedExecutionPreparation is invalid when mapping_levels are absent"
+        )
+    elif isinstance(preparation, ExecutionPreparationResult):
+        initial_slots = preparation.initial_slots
+        kernel_context = preparation.kernel_context
+        loss_service = preparation.loss_service
+        resume_slot_transform = preparation.resume_slot_transform
     _validate_checkpoint_progress_policy(run_spec)
     producer_context = _validate_execution_context(execution_context)
     _validate_execution_payload_binding(

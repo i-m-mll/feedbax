@@ -21,9 +21,12 @@ from feedbax.training.executor import (
 from feedbax.training.interruption import RunInterruptionController
 from feedbax.training.preparation import (
     DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+    ExecutionPreparationPlan,
     ExecutionPreparationRequest,
+    lower_zero_level_preparation_plan,
     require_execution_preparation_provider,
 )
+from feedbax.training.worker_validation import resolve_execution_mapping
 from feedbax.training.manifest_preflight import (
     preflight_training_run_manifest_payloads,
     validate_training_run_spec,
@@ -419,10 +422,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         preparation_registration = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.get(
             run_spec.method_ref.key
         )
+        mapping_levels, _slot_axis_bindings = resolve_execution_mapping(
+            run_spec.worker_execution
+        )
         if method_registration.requires_execution_preparation:
             require_execution_preparation_provider(
                 method_ref=run_spec.method_ref.key,
                 preparation_registry=DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY,
+            )
+        if mapping_levels and args.initial_slots:
+            raise ValueError(
+                "--initial-slots is invalid when mapping_levels are active; mapped runs require "
+                "a Feedbax-owned execution-preparation plan"
             )
         if preparation_registration is not None and args.initial_slots:
             raise ValueError(
@@ -430,9 +441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"method_ref {run_spec.method_ref.key!r}"
             )
         initial_slots = _read_json(args.initial_slots) if args.initial_slots else None
-        kernel_context = None
-        loss_service = None
-        resume_slot_transform = None
+        preparation = None
         if preparation_registration is not None:
             prepared = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.prepare(
                 ExecutionPreparationRequest(
@@ -444,10 +453,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     resume=args.resume,
                 )
             )
-            initial_slots = prepared.initial_slots
-            kernel_context = prepared.kernel_context
-            loss_service = prepared.loss_service
-            resume_slot_transform = prepared.resume_slot_transform
+            if isinstance(prepared, ExecutionPreparationPlan):
+                if mapping_levels:
+                    raise ValueError(
+                        "mapped execution-preparation plan reached the Part-2 materialization "
+                        "hook before scalar instance stacking was installed"
+                    )
+                prepared = lower_zero_level_preparation_plan(prepared)
+            preparation = prepared
+            initial_slots = None
         training_payload = _read_json(args.training_payload) if args.training_payload else None
         metadata_projection = (
             _read_json(args.manifest_metadata_projection)
@@ -466,9 +480,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = execute_training_run_spec(
                     run_spec,
                     run_id=args.run_id,
+                    preparation=preparation,
                     initial_slots=initial_slots,
-                    kernel_context=kernel_context,
-                    loss_service=loss_service,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
                     registry=DEFAULT_TRAINING_METHOD_REGISTRY,
@@ -479,7 +492,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     training_spec_payload_ref=args.training_payload_ref,
                     manifest_metadata_projection=metadata_projection,
                     resume=args.resume,
-                    resume_slot_transform=resume_slot_transform,
                     stop_after_barrier=args.stop_after_barrier,
                     progress_callback=(
                         None if args.no_progress else _console_progress_printer(started_at)

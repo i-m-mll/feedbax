@@ -33,6 +33,7 @@ from feedbax.contracts.staged_execution import (
 from feedbax.contracts.spec_storage import (
     training_run_execution_hash,
     training_spec_canonical_bytes,
+    training_spec_sha256,
 )
 from feedbax.contracts.training import (
     LossTermSpec,
@@ -58,11 +59,15 @@ from feedbax.contracts.training import (
     default_training_method_registry,
 )
 from feedbax.contracts.worker import (
+    AxisCoordinateSpec,
+    AxisSpec,
     BarrierArtifactSinkSpec,
     CheckpointSlotSpec,
+    MappingLevelSpec,
     MetricGuardSpec,
     PhaseTransitionSpec,
     StateSlotSpec,
+    SlotAxisBindingSpec,
 )
 from feedbax.orchestration.events import RunEventEmitter, RunEventReader
 from feedbax.orchestration.conformance import (
@@ -94,6 +99,14 @@ from feedbax.training.executor import (
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
     execute_training_run_spec,
+)
+from feedbax.training.preparation import (
+    ExecutionPreparationRequest,
+    ExecutionPreparationResult,
+    MaterializedExecutionPreparation,
+    _build_materialized_execution_preparation,
+    _identity_fingerprint,
+    _run_spec_sha256,
 )
 from feedbax.training.manifest_preflight import (
     TrainingRunManifestPreflightError,
@@ -148,6 +161,116 @@ def _run_spec() -> TrainingRunSpec:
             effective_phase=standard_supervised_effective_phase_spec(),
         ),
     )
+
+
+def _mapped_run_spec() -> TrainingRunSpec:
+    spec = _run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    contract = worker.method_contract
+    contract.axes.append(AxisSpec(name="ensemble", role="replicate", size=5))
+    for slot in contract.state_slots:
+        slot.axis_bindings = [
+            SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)
+        ]
+    for step in contract.phase_program.update_steps:
+        step.axes.append("ensemble")
+    worker.mapping_levels = [MappingLevelSpec(axis="ensemble")]
+    return spec.model_copy(update={"worker_execution": worker})
+
+
+def _valid_materialized_preparation(
+    spec: TrainingRunSpec,
+) -> MaterializedExecutionPreparation:
+    slots = {
+        slot.name: jnp.zeros((5,), dtype=jnp.float32)
+        for slot in spec.worker_execution.method_contract.state_slots
+    }
+    coordinates = tuple(
+        (AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5)
+    )
+    return _build_materialized_execution_preparation(
+        request=ExecutionPreparationRequest(run_spec=spec),
+        provider_identity="tests.mapped_preparation",
+        initial_slots=slots,
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        coordinate_order=coordinates,
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"initial_slots": {"model": jnp.zeros((5,))}},
+        {"preparation": ExecutionPreparationResult(initial_slots={})},
+    ],
+)
+def test_mapped_executor_rejects_loose_prestacked_and_scalar_preparation(kwargs) -> None:
+    with pytest.raises(
+        TrainingRunExecutorError,
+        match="active mapping levels require a Feedbax-materialized execution preparation",
+    ):
+        execute_training_run_spec(_mapped_run_spec(), **kwargs)
+
+
+def test_mapped_executor_rejects_public_construction_and_forged_no_seal() -> None:
+    with pytest.raises(TypeError):
+        MaterializedExecutionPreparation()
+    forged = object.__new__(MaterializedExecutionPreparation)
+
+    with pytest.raises(TrainingRunExecutorError, match="lacks Feedbax provenance seal"):
+        execute_training_run_spec(_mapped_run_spec(), preparation=forged)
+
+
+def test_materialized_preparation_digest_uses_canonical_training_spec_identity() -> None:
+    spec = _mapped_run_spec()
+
+    assert _run_spec_sha256(spec) == training_spec_sha256(
+        spec.model_dump(mode="json", exclude_none=True)
+    )
+
+
+def test_mapped_executor_rejects_stale_fingerprint_and_run_spec_identity() -> None:
+    spec = _mapped_run_spec()
+    stale = _valid_materialized_preparation(spec)
+    object.__setattr__(stale, "identity", replace(stale.identity, fingerprint="0" * 64))
+    with pytest.raises(TrainingRunExecutorError, match="fingerprint is stale"):
+        execute_training_run_spec(spec, preparation=stale)
+
+    valid = _valid_materialized_preparation(spec)
+    changed_spec = spec.model_copy(update={"metadata": {"identity_drift": True}})
+    with pytest.raises(TrainingRunExecutorError, match="does not match TrainingRunSpec"):
+        execute_training_run_spec(changed_spec, preparation=valid)
+
+
+@pytest.mark.parametrize(
+    ("identity_update", "message"),
+    [
+        (
+            {
+                "coordinate_order": (
+                    (AxisCoordinateSpec(axis="ensemble", index=0),),
+                )
+            },
+            "coordinate identity mismatch",
+        ),
+        ({"rng_algorithm_version": "feedbax.preparation_rng_scope.fold_in.v0"}, "unsupported"),
+        ({"provider_identity": ""}, "provider_identity"),
+    ],
+)
+def test_mapped_executor_rejects_stale_coordinate_rng_and_provider_identity(
+    identity_update,
+    message: str,
+) -> None:
+    spec = _mapped_run_spec()
+    preparation = _valid_materialized_preparation(spec)
+    identity = replace(preparation.identity, **identity_update)
+    identity = replace(identity, fingerprint=_identity_fingerprint(identity))
+    object.__setattr__(preparation, "identity", identity)
+
+    with pytest.raises(TrainingRunExecutorError, match=message):
+        execute_training_run_spec(spec, preparation=preparation)
 
 
 def _initial_slots(*, arrays: bool = False) -> dict[str, object]:

@@ -14,6 +14,8 @@ from feedbax.contracts.worker import (
     AxisRole,
     CheckpointSlotManifest,
     EffectivePhaseSpec,
+    MaterializedMappingLevelSpec,
+    MaterializedSlotAxisBinding,
     MethodContractSpec,
     PhaseKind,
     ProgressCoordinate,
@@ -133,6 +135,187 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def resolve_execution_mapping(
+    worker_execution: Any,
+) -> tuple[
+    tuple[MaterializedMappingLevelSpec, ...],
+    dict[str, tuple[MaterializedSlotAxisBinding, ...]],
+]:
+    """Resolve and validate the stage-2 single-level execution declaration.
+
+    The authored list shapes remain general. This interpreter deliberately
+    admits zero or one active level and position zero only; later composition
+    can lift those restrictions without replacing the durable vocabulary.
+    """
+    levels = tuple(_field(worker_execution, "mapping_levels", None) or ())
+    contract = _field(worker_execution, "method_contract")
+    if contract is None:
+        raise WorkerContractValidationError(
+            "/worker_execution/method_contract", "missing method contract"
+        )
+    if not levels:
+        return (), {}
+    if len(levels) > 1:
+        raise WorkerContractValidationError(
+            "/worker_execution/mapping_levels",
+            "stage-2 execution supports exactly one mapping level; nested or multiple "
+            "levels are deferred",
+        )
+    level = levels[0]
+    axes = _unique_by_name(contract.axes, "/worker_execution/method_contract/axes")
+    axis = axes.get(level.axis)
+    _require(
+        axis is not None,
+        "/worker_execution/mapping_levels/0/axis",
+        f"unknown declared axis {level.axis!r}",
+    )
+    assert axis is not None
+    _require(
+        axis.size is not None,
+        "/worker_execution/mapping_levels/0/axis",
+        f"mapped axis {level.axis!r} must declare a size",
+    )
+    _require(
+        axis.reducer is None,
+        "/worker_execution/method_contract/axes",
+        f"mapped-axis reducer for {level.axis!r} is deferred",
+    )
+    materialized_level = MaterializedMappingLevelSpec(
+        axis=axis.name,
+        role=axis.role,
+        size=axis.size,
+        level=0,
+    )
+
+    _unique_by_name(contract.state_slots, "/worker_execution/method_contract/state_slots")
+    program = contract.phase_program
+    reachable: set[str] = set()
+    for phase in program.phases:
+        reachable.update(phase.reads)
+        reachable.update(phase.writes)
+        reachable.update(phase.initializes)
+    for step in program.update_steps:
+        reachable.update(step.reads)
+        reachable.update(step.writes)
+    for binding in program.optimizer_bindings:
+        reachable.update((binding.optimizer_slot, binding.target_slot))
+        reachable.update(binding.objective_reads)
+    if program.batch_progress is not None:
+        reachable.add(program.batch_progress.slot)
+    for barrier in program.checkpoint_barriers:
+        reachable.update(slot.slot for slot in barrier.slots)
+        reachable.update(sink.slot for sink in barrier.artifact_sinks)
+    # Preparation may initialize a declared persistent slot before any phase
+    # mentions it. Treat every required slot as reachable at admission.
+    reachable.update(slot.name for slot in contract.state_slots if slot.required)
+
+    resolved: dict[str, tuple[MaterializedSlotAxisBinding, ...]] = {}
+    for slot_index, slot in enumerate(contract.state_slots):
+        bindings = tuple(slot.axis_bindings or ())
+        for binding_index, binding in enumerate(bindings):
+            path = (
+                f"/worker_execution/method_contract/state_slots/{slot_index}/"
+                f"axis_bindings/{binding_index}"
+            )
+            _require(binding.axis in axes, f"{path}/axis", f"unknown axis {binding.axis!r}")
+            _require(
+                binding.axis == axis.name,
+                f"{path}/axis",
+                f"binding for inactive axis {binding.axis!r} is not executable in this stage",
+            )
+            if binding.mode == "mapped":
+                _require(
+                    binding.array_axis == 0,
+                    f"{path}/array_axis",
+                    "stage-2 execution supports mapped array_axis=0 only",
+                )
+        active = [binding for binding in bindings if binding.axis == axis.name]
+        if slot.name in reachable:
+            _require(
+                len(active) == 1,
+                f"/worker_execution/method_contract/state_slots/{slot_index}/axis_bindings",
+                f"reachable slot {slot.name!r} must bind active axis {axis.name!r} exactly once",
+            )
+        if not active:
+            continue
+        _require(
+            slot.axis != axis.name,
+            f"/worker_execution/method_contract/state_slots/{slot_index}/axis",
+            "active mapped axis cannot also use legacy StateSlotSpec.axis",
+        )
+        binding = active[0]
+        resolved[slot.name] = (
+            MaterializedSlotAxisBinding(
+                axis=axis.name,
+                role=axis.role,
+                size=axis.size,
+                level=0,
+                mode=binding.mode,
+                array_axis=binding.array_axis,
+                leaf_policy=binding.leaf_policy,
+            ),
+        )
+
+    for step_index, step in enumerate(program.update_steps):
+        path = f"/worker_execution/method_contract/phase_program/update_steps/{step_index}"
+        mapped_step = axis.name in step.axes
+        touched = set(step.reads) | set(step.writes)
+        unresolved = sorted(name for name in touched if name not in resolved)
+        _require(
+            not unresolved,
+            path,
+            f"step touches slots absent from resolved axis declarations {unresolved!r}",
+        )
+        mapped_touched = {
+            name for name in touched if resolved[name][0].mode == "mapped"
+        }
+        if not mapped_step:
+            _require(
+                not mapped_touched,
+                path,
+                f"unmapped step touches mapped slots {sorted(mapped_touched)!r}",
+            )
+        else:
+            shared_writes = {
+                name for name in step.writes if resolved[name][0].mode == "shared"
+            }
+            _require(
+                not shared_writes,
+                f"{path}/writes",
+                f"mapped step writes shared slots {sorted(shared_writes)!r}",
+            )
+            _require(
+                step.kind not in {"control", "reduce"},
+                f"{path}/kind",
+                f"mapped {step.kind!r} steps are deferred",
+            )
+
+    for transition_index, transition in enumerate(program.transitions):
+        if transition.guard is not None:
+            raise WorkerContractValidationError(
+                f"/worker_execution/method_contract/phase_program/transitions/"
+                f"{transition_index}/guard",
+                "metric guards with an active mapped level are deferred",
+            )
+    for barrier_index, barrier in enumerate(program.checkpoint_barriers):
+        for slot_index, checkpoint_slot in enumerate(barrier.slots):
+            _require(
+                checkpoint_slot.axis != axis.name,
+                f"/worker_execution/method_contract/phase_program/checkpoint_barriers/"
+                f"{barrier_index}/slots/{slot_index}/axis",
+                "active mapped axis cannot also use legacy CheckpointSlotSpec.axis",
+            )
+        for sink_index, sink in enumerate(barrier.artifact_sinks):
+            binding = resolved.get(sink.slot)
+            _require(
+                binding is None or binding[0].mode != "mapped",
+                f"/worker_execution/method_contract/phase_program/checkpoint_barriers/"
+                f"{barrier_index}/artifact_sinks/{sink_index}/slot",
+                "artifact sinks for mapped slots are deferred",
+            )
+    return (materialized_level,), resolved
 
 
 def _metadata(value: Any) -> dict[str, Any]:

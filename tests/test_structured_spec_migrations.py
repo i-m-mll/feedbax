@@ -33,6 +33,7 @@ from feedbax.contracts.training import (
     RUN_CONTROL_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.run_matrix import (
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
@@ -1117,7 +1118,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     lr_schedule_policy = default_spec_registry.resolve("LrScheduleSpec").policy
     assert training_run_policy is not None
     assert training_run_policy.stance == "migrate"
-    assert training_run_policy.supported_old_versions == (TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,)
+    assert training_run_policy.supported_old_versions == (
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+    )
     assert lr_schedule_policy is not None
     assert lr_schedule_policy.stance == "migrate"
     assert lr_schedule_policy.supported_old_versions == (

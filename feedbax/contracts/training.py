@@ -20,6 +20,7 @@ from feedbax.contracts.worker import (
     CheckpointSlotSpec,
     EffectivePhaseSpec,
     MethodContractSpec,
+    MappingLevelSpec,
     OptimizerTargetBinding,
     PhaseProgramSpec,
     PhaseSpec,
@@ -39,7 +40,8 @@ if TYPE_CHECKING:
 
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run.v1"
-TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v2"
+TRAINING_RUN_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run.v2"
+TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v3"
 RUN_CONTROL_SPEC_SCHEMA_ID = "feedbax.spec.training.run_control"
 RUN_CONTROL_SPEC_SCHEMA_VERSION = "feedbax.spec.training.run_control.v1"
 LR_SCHEDULE_SPEC_SCHEMA_ID = "feedbax.spec.training.lr_schedule"
@@ -424,6 +426,7 @@ class WorkerExecutionSpec(TrainingRunContractModel):
 
     method_contract: MethodContractSpec
     effective_phase: EffectivePhaseSpec
+    mapping_levels: list[MappingLevelSpec] | None = None
     checkpoint_slots: CheckpointSlotManifest | None = None
     resume: ResumeCoordinateSpec | None = None
     progress: ProgressCoordinate | None = None

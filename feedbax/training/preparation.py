@@ -2,19 +2,53 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+import json
+from collections.abc import Mapping, Sequence, Set
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+import jax
+import numpy as np
 from pydantic import BaseModel
 
 from feedbax.contracts.training import TrainingRunSpec
-from feedbax.contracts.worker import EffectivePhaseSpec, MethodContractSpec
+from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.worker import (
+    AxisCoordinateSpec,
+    EffectivePhaseSpec,
+    MaterializedMappingLevelSpec,
+    MaterializedSlotAxisBinding,
+    MethodContractSpec,
+    validate_worker_identifier,
+)
 from feedbax.objectives.service import LossService
 from feedbax.training.checkpoint_custody import ResumeSlotTransform
+from feedbax.training.worker_validation import resolve_execution_mapping
 
 _RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
+PREPARATION_RNG_ALGORITHM_VERSION = "feedbax.preparation_rng_scope.fold_in.v1"
+_PREPARATION_RNG_DOMAIN = b"feedbax.preparation_rng_scope\0"
+_MATERIALIZED_PREPARATION_SEAL = object()
+
+
+class _ImmutableDict(dict[Any, Any]):
+    """Recursively frozen mapping that remains PyTree/deepcopy compatible."""
+
+    def _reject(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("immutable Feedbax preparation mapping")
+
+    __setitem__ = _reject
+    __delitem__ = _reject
+    clear = _reject
+    pop = _reject
+    popitem = _reject
+    setdefault = _reject
+    update = _reject
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> "_ImmutableDict":
+        return self
 
 
 class ExecutionPreparationError(ValueError):
@@ -42,12 +76,388 @@ class ExecutionPreparationResult:
     loss_service: LossService | None = None
     resume_slot_transform: ResumeSlotTransform | None = None
 
+@dataclass(frozen=True)
+class PreparationRngScope:
+    """Immutable named keys derived for one scalar axis coordinate."""
+
+    algorithm_version: str
+    axis_coordinates: tuple[AxisCoordinateSpec, ...]
+    keys: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if self.algorithm_version != PREPARATION_RNG_ALGORITHM_VERSION:
+            raise ExecutionPreparationError(
+                f"unsupported preparation RNG algorithm {self.algorithm_version!r}"
+            )
+        object.__setattr__(self, "axis_coordinates", tuple(self.axis_coordinates))
+        object.__setattr__(self, "keys", _freeze_rng_roots(self.keys, path="rng.keys"))
+
+
+@dataclass(frozen=True)
+class ScalarInstancePreparationRequest:
+    """One scalar materializer request with Feedbax-owned RNG authority."""
+
+    axis_coordinates: tuple[AxisCoordinateSpec, ...]
+    rng: PreparationRngScope
+    resume_template: bool
+
+    def __post_init__(self) -> None:
+        coordinates = tuple(self.axis_coordinates)
+        if coordinates != self.rng.axis_coordinates:
+            raise ExecutionPreparationError(
+                "scalar preparation coordinates do not match their RNG scope"
+            )
+        object.__setattr__(self, "axis_coordinates", coordinates)
+
+
+@dataclass(frozen=True)
+class ScalarInstancePreparationResult:
+    """Mapped state slots produced for one scalar coordinate."""
+
+    mapped_slots: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "mapped_slots",
+            _freeze_named_mapping(self.mapped_slots, path="mapped_slots"),
+        )
+
+
+class ScalarInstanceMaterializer(Protocol):
+    """Callable that prepares one scalar instance only."""
+
+    def __call__(
+        self, request: ScalarInstancePreparationRequest
+    ) -> ScalarInstancePreparationResult:
+        """Prepare mapped slots for exactly one Feedbax-derived coordinate."""
+        ...
+
+
+@dataclass(frozen=True)
+class ExecutionPreparationPlan:
+    """One-call provider plan consumed by Feedbax's instance materializer."""
+
+    shared_slots: Mapping[str, Any]
+    kernel_context: Mapping[str, Any]
+    loss_service: LossService | None
+    resume_slot_transform: ResumeSlotTransform | None
+    rng_roots: Mapping[str, Any]
+    materialize_instance: ScalarInstanceMaterializer
+
+    def __post_init__(self) -> None:
+        if not callable(self.materialize_instance):
+            raise TypeError("materialize_instance must be callable")
+        if self.loss_service is not None and not isinstance(self.loss_service, LossService):
+            raise TypeError("loss_service must be a LossService when provided")
+        if self.resume_slot_transform is not None and not callable(self.resume_slot_transform):
+            raise TypeError("resume_slot_transform must be callable when provided")
+        object.__setattr__(
+            self,
+            "shared_slots",
+            _freeze_named_mapping(self.shared_slots, path="shared_slots"),
+        )
+        object.__setattr__(
+            self,
+            "kernel_context",
+            _freeze_named_mapping(self.kernel_context, path="kernel_context"),
+        )
+        object.__setattr__(
+            self,
+            "rng_roots",
+            _freeze_rng_roots(self.rng_roots, path="rng_roots"),
+        )
+
+
+@dataclass(frozen=True)
+class MaterializedPreparationIdentity:
+    """Runtime identity binding a materialized preparation to one request."""
+
+    run_spec_sha256: str
+    method_ref: str
+    provider_identity: str
+    mapping_levels: tuple[MaterializedMappingLevelSpec, ...]
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]]
+    coordinate_order: tuple[tuple[AxisCoordinateSpec, ...], ...]
+    rng_algorithm_version: str
+    fingerprint: str
+
+
+@dataclass(frozen=True, init=False)
+class MaterializedExecutionPreparation:
+    """Sealed runtime handoff admitted by mapped executor calls."""
+
+    initial_slots: Mapping[str, Any]
+    kernel_context: Mapping[str, Any]
+    loss_service: LossService | None
+    resume_slot_transform: ResumeSlotTransform | None
+    mapping_levels: tuple[MaterializedMappingLevelSpec, ...]
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]]
+    identity: MaterializedPreparationIdentity
+    _seal: object = field(repr=False, compare=False)
+
+    def __new__(cls) -> "MaterializedExecutionPreparation":
+        raise TypeError(
+            "MaterializedExecutionPreparation is created only by Feedbax materialization"
+        )
+
+
+def _freeze_runtime_value(value: Any) -> Any:
+    """Defensively freeze runtime containers and copy NumPy storage."""
+    if isinstance(value, np.ndarray):
+        if value.dtype.hasobject:
+            raise ExecutionPreparationError("object-backed NumPy arrays are not admissible")
+        copied = np.array(value, copy=True)
+        copied.flags.writeable = False
+        return copied
+    if isinstance(value, jax.Array):
+        return value
+    if isinstance(value, Mapping):
+        return _ImmutableDict(
+            {key: _freeze_runtime_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, tuple):
+        return tuple(_freeze_runtime_value(item) for item in value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(_freeze_runtime_value(item) for item in value)
+    if isinstance(value, Set) and not isinstance(value, (str, bytes, bytearray)):
+        return frozenset(_freeze_runtime_value(item) for item in value)
+    if isinstance(value, (bytearray, memoryview)):
+        raise ExecutionPreparationError("mutable buffer-backed values are not admissible")
+    return value
+
+
+def _freeze_named_mapping(value: Mapping[str, Any], *, path: str) -> Mapping[str, Any]:
+    """Freeze a mapping whose top-level keys are stable Feedbax names."""
+    if not isinstance(value, Mapping):
+        raise ExecutionPreparationError(f"{path} must be a mapping")
+    frozen: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ExecutionPreparationError(f"{path} key {key!r} must be a string identifier")
+        validate_worker_identifier(key, path=f"{path}.name")
+        if key in frozen:
+            raise ExecutionPreparationError(f"{path} contains duplicate name {key!r}")
+        frozen[key] = _freeze_runtime_value(item)
+    return _ImmutableDict(frozen)
+
+
+def _freeze_rng_roots(value: Mapping[str, Any], *, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ExecutionPreparationError(f"{path} must be a mapping")
+    frozen: dict[str, Any] = {}
+    for name, key in value.items():
+        validate_worker_identifier(name, path=f"{path}.name")
+        if name in frozen:
+            raise ExecutionPreparationError(f"{path} contains duplicate root {name!r}")
+        try:
+            data = jax.random.key_data(key)
+        except (TypeError, ValueError) as exc:
+            raise ExecutionPreparationError(
+                f"{path}[{name!r}] is not a JAX PRNG key"
+            ) from exc
+        if tuple(data.shape) != (2,):
+            raise ExecutionPreparationError(
+                f"{path}[{name!r}] must contain one scalar PRNG key"
+            )
+        frozen[name] = key
+    return _ImmutableDict(frozen)
+
+
+def preparation_rng_token(label: str, value: str) -> int:
+    """Return the frozen unsigned token for one preparation RNG component."""
+    validate_worker_identifier(label, path="rng token label")
+    digest = hashlib.sha256(
+        _PREPARATION_RNG_DOMAIN
+        + label.encode("utf-8")
+        + b"\0"
+        + value.encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest[:4], byteorder="big", signed=False)
+
+
+def derive_preparation_rng_scope(
+    roots: Mapping[str, Any],
+    axis_coordinates: tuple[AxisCoordinateSpec, ...],
+) -> PreparationRngScope:
+    """Derive named scalar keys by the frozen coordinate-folding algorithm."""
+    frozen_roots = _freeze_rng_roots(roots, path="rng_roots")
+    coordinates = tuple(axis_coordinates)
+    derived: dict[str, Any] = {}
+    for root_name, root_key in frozen_roots.items():
+        key = jax.random.fold_in(
+            root_key,
+            preparation_rng_token("algorithm", PREPARATION_RNG_ALGORITHM_VERSION),
+        )
+        key = jax.random.fold_in(key, preparation_rng_token("root", root_name))
+        for level, coordinate in enumerate(coordinates):
+            if level > 0xFFFFFFFF or coordinate.index > 0xFFFFFFFF:
+                raise ExecutionPreparationError("axis coordinate exceeds unsigned 32-bit range")
+            key = jax.random.fold_in(key, level)
+            key = jax.random.fold_in(key, preparation_rng_token("axis", coordinate.axis))
+            key = jax.random.fold_in(key, coordinate.index)
+        derived[root_name] = key
+    return PreparationRngScope(
+        algorithm_version=PREPARATION_RNG_ALGORITHM_VERSION,
+        axis_coordinates=coordinates,
+        keys=derived,
+    )
+
+
+def _run_spec_sha256(run_spec: TrainingRunSpec) -> str:
+    return training_spec_sha256(run_spec.model_dump(mode="json", exclude_none=True))
+
+
+def _identity_projection(identity: MaterializedPreparationIdentity) -> dict[str, Any]:
+    return {
+        "run_spec_sha256": identity.run_spec_sha256,
+        "method_ref": identity.method_ref,
+        "provider_identity": identity.provider_identity,
+        "mapping_levels": [item.model_dump(mode="json") for item in identity.mapping_levels],
+        "slot_axis_bindings": {
+            name: [item.model_dump(mode="json") for item in bindings]
+            for name, bindings in sorted(identity.slot_axis_bindings.items())
+        },
+        "coordinate_order": [
+            [item.model_dump(mode="json") for item in coordinates]
+            for coordinates in identity.coordinate_order
+        ],
+        "rng_algorithm_version": identity.rng_algorithm_version,
+    }
+
+
+def _identity_fingerprint(identity: MaterializedPreparationIdentity) -> str:
+    payload = json.dumps(
+        _identity_projection(identity), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _expected_coordinate_order(
+    levels: tuple[MaterializedMappingLevelSpec, ...],
+) -> tuple[tuple[AxisCoordinateSpec, ...], ...]:
+    if len(levels) != 1:
+        raise ExecutionPreparationError("materialized preparation requires one mapping level")
+    level = levels[0]
+    return tuple(
+        (AxisCoordinateSpec(axis=level.axis, index=index),)
+        for index in range(level.size)
+    )
+
+
+def _build_materialized_execution_preparation(
+    *,
+    request: ExecutionPreparationRequest,
+    provider_identity: str,
+    initial_slots: Mapping[str, Any],
+    kernel_context: Mapping[str, Any],
+    loss_service: LossService | None,
+    resume_slot_transform: ResumeSlotTransform | None,
+    coordinate_order: tuple[tuple[AxisCoordinateSpec, ...], ...],
+) -> MaterializedExecutionPreparation:
+    """Build the sealed Part-2 handoff after scalar instances are stacked."""
+    levels, bindings = resolve_execution_mapping(request.run_spec.worker_execution)
+    if not levels:
+        raise ExecutionPreparationError(
+            "MaterializedExecutionPreparation is reserved for active mapped execution"
+        )
+    try:
+        validate_worker_identifier(provider_identity, path="provider_identity")
+    except ValueError as exc:
+        raise ExecutionPreparationError(str(exc)) from exc
+    expected_coordinates = _expected_coordinate_order(levels)
+    if coordinate_order != expected_coordinates:
+        raise ExecutionPreparationError(
+            "coordinate_order must equal the complete ordered mapped-axis grid"
+        )
+    immutable_bindings = _ImmutableDict(
+        {name: tuple(items) for name, items in sorted(bindings.items())}
+    )
+    provisional = MaterializedPreparationIdentity(
+        run_spec_sha256=_run_spec_sha256(request.run_spec),
+        method_ref=request.run_spec.method_ref.key,
+        provider_identity=provider_identity,
+        mapping_levels=levels,
+        slot_axis_bindings=immutable_bindings,
+        coordinate_order=tuple(tuple(items) for items in coordinate_order),
+        rng_algorithm_version=PREPARATION_RNG_ALGORITHM_VERSION,
+        fingerprint="",
+    )
+    identity = MaterializedPreparationIdentity(
+        **{
+            **provisional.__dict__,
+            "fingerprint": _identity_fingerprint(provisional),
+        }
+    )
+    instance = object.__new__(MaterializedExecutionPreparation)
+    for name, value in {
+        "initial_slots": _freeze_named_mapping(initial_slots, path="initial_slots"),
+        "kernel_context": _freeze_named_mapping(kernel_context, path="kernel_context"),
+        "loss_service": loss_service,
+        "resume_slot_transform": resume_slot_transform,
+        "mapping_levels": levels,
+        "slot_axis_bindings": immutable_bindings,
+        "identity": identity,
+        "_seal": _MATERIALIZED_PREPARATION_SEAL,
+    }.items():
+        object.__setattr__(instance, name, value)
+    return instance
+
+
+def validate_materialized_execution_preparation(
+    preparation: MaterializedExecutionPreparation,
+    *,
+    run_spec: TrainingRunSpec,
+) -> None:
+    """Revalidate provenance identity before mapped executor admission."""
+    if getattr(preparation, "_seal", None) is not _MATERIALIZED_PREPARATION_SEAL:
+        raise ExecutionPreparationError("materialized preparation lacks Feedbax provenance seal")
+    levels, bindings = resolve_execution_mapping(run_spec.worker_execution)
+    identity = getattr(preparation, "identity", None)
+    if not isinstance(identity, MaterializedPreparationIdentity):
+        raise ExecutionPreparationError("materialized preparation identity is missing or invalid")
+    if identity.rng_algorithm_version != PREPARATION_RNG_ALGORITHM_VERSION:
+        raise ExecutionPreparationError("materialized preparation RNG algorithm is unsupported")
+    try:
+        validate_worker_identifier(identity.provider_identity, path="provider_identity")
+        observed_fingerprint = _identity_fingerprint(identity)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ExecutionPreparationError(
+            f"materialized preparation identity is malformed: {exc}"
+        ) from exc
+    if identity.fingerprint != observed_fingerprint:
+        raise ExecutionPreparationError("materialized preparation identity fingerprint is stale")
+    if identity.run_spec_sha256 != _run_spec_sha256(run_spec):
+        raise ExecutionPreparationError("materialized preparation does not match TrainingRunSpec")
+    if identity.method_ref != run_spec.method_ref.key:
+        raise ExecutionPreparationError("materialized preparation method identity mismatch")
+    if identity.coordinate_order != _expected_coordinate_order(levels):
+        raise ExecutionPreparationError("materialized preparation coordinate identity mismatch")
+    if identity.mapping_levels != levels or dict(identity.slot_axis_bindings) != bindings:
+        raise ExecutionPreparationError("materialized preparation mapping identity mismatch")
+    preparation_levels = getattr(preparation, "mapping_levels", None)
+    preparation_bindings = getattr(preparation, "slot_axis_bindings", None)
+    if preparation_levels != levels or not isinstance(preparation_bindings, Mapping):
+        raise ExecutionPreparationError("materialized preparation mapping structure is stale")
+    if dict(preparation_bindings) != bindings:
+        raise ExecutionPreparationError("materialized preparation mapping structure is stale")
+    initial_slots = getattr(preparation, "initial_slots", None)
+    if not isinstance(initial_slots, Mapping):
+        raise ExecutionPreparationError("materialized preparation initial_slots are invalid")
+    missing = sorted(set(bindings) - set(initial_slots))
+    if missing:
+        raise ExecutionPreparationError(
+            f"materialized preparation is missing declared slots {missing!r}"
+        )
+
 
 @runtime_checkable
 class ExecutionPreparationProvider(Protocol):
     """Callable that prepares runtime-only inputs for one training method."""
 
-    def __call__(self, request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
+    def __call__(
+        self, request: ExecutionPreparationRequest
+    ) -> ExecutionPreparationResult | ExecutionPreparationPlan:
         """Prepare executor inputs without mutating ``request.run_spec``."""
         ...
 
@@ -92,7 +502,9 @@ class ExecutionPreparationProviderRegistry:
         """Return a provider registration when one exists for ``method_ref``."""
         return self._registrations.get(method_ref)
 
-    def prepare(self, request: ExecutionPreparationRequest) -> ExecutionPreparationResult:
+    def prepare(
+        self, request: ExecutionPreparationRequest
+    ) -> ExecutionPreparationResult | ExecutionPreparationPlan:
         """Invoke the matching provider while enforcing immutability and result shape."""
         method_ref = request.run_spec.method_ref.key
         registration = self.get(method_ref)
@@ -110,6 +522,9 @@ class ExecutionPreparationProviderRegistry:
                 f"descriptor-backed preparation for {method_ref!r} requires the resolved "
                 "method payload, contract, and effective phase"
             )
+        # Mapping declarations fail before provider invocation. This keeps
+        # provider side effects behind the same static gate as executor calls.
+        resolve_execution_mapping(request.run_spec.worker_execution)
         if (
             request.method_contract is not None
             and request.method_contract != request.run_spec.worker_execution.method_contract
@@ -184,15 +599,22 @@ class ExecutionPreparationProviderRegistry:
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} mutated effective phase"
             )
-        if not isinstance(result, ExecutionPreparationResult):
+        if not isinstance(result, (ExecutionPreparationResult, ExecutionPreparationPlan)):
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} returned "
-                f"{type(result).__name__}; expected ExecutionPreparationResult"
+                f"{type(result).__name__}; expected ExecutionPreparationResult or "
+                "ExecutionPreparationPlan"
             )
-        if not isinstance(result.initial_slots, Mapping):
+        if isinstance(result, ExecutionPreparationResult):
+            slots = result.initial_slots
+            slots_name = "initial_slots"
+        else:
+            slots = result.shared_slots
+            slots_name = "shared_slots"
+        if not isinstance(slots, Mapping):
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} returned non-mapping "
-                "initial_slots"
+                f"{slots_name}"
             )
         if not isinstance(result.kernel_context, Mapping):
             raise ExecutionPreparationError(
@@ -215,6 +637,36 @@ class ExecutionPreparationProviderRegistry:
                 "resume_slot_transform"
             )
         return result
+
+
+def lower_zero_level_preparation_plan(
+    plan: ExecutionPreparationPlan,
+) -> ExecutionPreparationResult:
+    """Materialize one zero-level plan through the scalar compatibility path."""
+    scope = derive_preparation_rng_scope(plan.rng_roots, ())
+    raw = plan.materialize_instance(
+        ScalarInstancePreparationRequest(
+            axis_coordinates=(),
+            rng=scope,
+            resume_template=False,
+        )
+    )
+    if not isinstance(raw, ScalarInstancePreparationResult):
+        raise ExecutionPreparationError(
+            "scalar materializer returned "
+            f"{type(raw).__name__}; expected ScalarInstancePreparationResult"
+        )
+    overlap = sorted(set(plan.shared_slots).intersection(raw.mapped_slots))
+    if overlap:
+        raise ExecutionPreparationError(
+            f"zero-level preparation duplicates shared and scalar slots {overlap!r}"
+        )
+    return ExecutionPreparationResult(
+        initial_slots={**plan.shared_slots, **raw.mapped_slots},
+        kernel_context=plan.kernel_context,
+        loss_service=plan.loss_service,
+        resume_slot_transform=plan.resume_slot_transform,
+    )
 
 
 DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY = ExecutionPreparationProviderRegistry()

@@ -3,18 +3,24 @@ from __future__ import annotations
 import jax.numpy as jnp
 import pytest
 from pydantic import ValidationError
+from types import SimpleNamespace
+
+from feedbax.contracts.training import standard_supervised_method_contract
 
 from feedbax.contracts.worker import (
     CONSISTENCY_PREDICATE_GENERATOR_HASH,
     CONSISTENCY_PREDICATE_SCHEMA_VERSION,
     PPO_MAPPING_TABLE,
     AxisReducerSpec,
+    AxisSpec,
     BarrierArtifactSinkSpec,
     CheckpointSlotManifest,
     CheckpointSlotRecord,
     MethodContractSpec,
+    MappingLevelSpec,
     ReducerRequirement,
     StateSlotSpec,
+    SlotAxisBindingSpec,
     UpdateKernelSpec,
     supervised_executor_mapping,
     toy_adaptive_curriculum_method_contract,
@@ -27,11 +33,27 @@ from feedbax.training.worker_validation import (
     WorkerExecutabilityEnvironment,
     validate_checkpoint_population_payload,
     validate_per_trial_bindings,
+    resolve_execution_mapping,
     validate_resume_checkpoint_pairing,
     validate_worker_contract,
 )
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.worker_contract]
+
+
+def _mapped_worker_execution():
+    contract = standard_supervised_method_contract().model_copy(deep=True)
+    contract.axes.append(AxisSpec(name="ensemble", role="replicate", size=5))
+    for slot in contract.state_slots:
+        slot.axis_bindings = [
+            SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)
+        ]
+    for step in contract.phase_program.update_steps:
+        step.axes.append("ensemble")
+    return SimpleNamespace(
+        method_contract=contract,
+        mapping_levels=[MappingLevelSpec(axis="ensemble")],
+    )
 
 
 def _warmup_update(slots, coordinate, context):
@@ -108,6 +130,82 @@ def test_supervised_executor_and_ppo_map_to_worker_vocabulary() -> None:
     ppo_axes = {axis for row in PPO_MAPPING_TABLE for axis in row.axes}
     assert {"environment", "rollout", "epoch", "minibatch", "replicate"} <= ppo_axes
     assert any("observation_norm" in row.state_slots for row in PPO_MAPPING_TABLE)
+
+
+def test_single_mapping_level_resolves_role_agnostic_slot_bindings() -> None:
+    worker_execution = _mapped_worker_execution()
+
+    levels, bindings = resolve_execution_mapping(worker_execution)
+
+    assert [(level.axis, level.role, level.size, level.level) for level in levels] == [
+        ("ensemble", "replicate", 5, 0)
+    ]
+    assert set(bindings) == {
+        slot.name for slot in worker_execution.method_contract.state_slots
+    }
+    assert all(binding[0].mode == "mapped" for binding in bindings.values())
+
+
+def test_slot_axis_binding_rejects_duplicates_and_overlapping_positions() -> None:
+    with pytest.raises(ValidationError, match="duplicates axis"):
+        StateSlotSpec(
+            name="model",
+            role="model",
+            axis_bindings=[
+                {"axis": "ensemble", "mode": "mapped", "array_axis": 0},
+                {"axis": "ensemble", "mode": "shared"},
+            ],
+        )
+    with pytest.raises(ValidationError, match="overlaps array position"):
+        StateSlotSpec(
+            name="model",
+            role="model",
+            axis_bindings=[
+                {"axis": "ensemble", "mode": "mapped", "array_axis": 0},
+                {"axis": "member", "mode": "mapped", "array_axis": 0},
+            ],
+        )
+
+
+def test_single_level_interpreter_rejects_partial_nested_and_nonzero_declarations() -> None:
+    partial = _mapped_worker_execution()
+    partial.method_contract.state_slots[0].axis_bindings = None
+    with pytest.raises(WorkerContractValidationError, match="must bind active axis"):
+        resolve_execution_mapping(partial)
+
+    nested = _mapped_worker_execution()
+    nested.mapping_levels.append(MappingLevelSpec(axis="ensemble"))
+    with pytest.raises(WorkerContractValidationError, match="exactly one mapping level"):
+        resolve_execution_mapping(nested)
+
+    nonzero = _mapped_worker_execution()
+    nonzero.method_contract.state_slots[0].axis_bindings[0].array_axis = 1
+    with pytest.raises(WorkerContractValidationError, match="array_axis=0"):
+        resolve_execution_mapping(nonzero)
+
+
+def test_mapped_step_cannot_write_a_shared_slot() -> None:
+    worker_execution = _mapped_worker_execution()
+    model = next(
+        slot for slot in worker_execution.method_contract.state_slots if slot.name == "model"
+    )
+    model.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="shared")]
+
+    with pytest.raises(WorkerContractValidationError, match="writes shared slots"):
+        resolve_execution_mapping(worker_execution)
+
+
+def test_mapping_resolution_reports_undeclared_step_slot_without_key_error() -> None:
+    worker_execution = _mapped_worker_execution()
+    worker_execution.method_contract.phase_program.update_steps[0].reads.append(
+        "undeclared_slot"
+    )
+
+    with pytest.raises(
+        WorkerContractValidationError,
+        match="slots absent from resolved axis declarations.*undeclared_slot",
+    ):
+        resolve_execution_mapping(worker_execution)
 
 
 def test_toy_minimax_contract_validates_and_emits_governed_predicate() -> None:

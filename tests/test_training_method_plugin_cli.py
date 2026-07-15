@@ -8,6 +8,8 @@ import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
+import jax
+import numpy as np
 import pytest
 from pydantic import BaseModel, ConfigDict
 
@@ -32,14 +34,21 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
     standard_supervised_update_kernels,
 )
+from feedbax.contracts.worker import AxisCoordinateSpec
 from feedbax.plugins.discovery import load_training_method_plugins
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.training.preparation import (
     ExecutionPreparationError,
+    ExecutionPreparationPlan,
     ExecutionPreparationProviderRegistry,
     ExecutionPreparationRegistration,
     ExecutionPreparationRequest,
     ExecutionPreparationResult,
+    PREPARATION_RNG_ALGORITHM_VERSION,
+    ScalarInstancePreparationResult,
+    derive_preparation_rng_scope,
+    lower_zero_level_preparation_plan,
+    preparation_rng_token,
     require_execution_preparation_provider,
 )
 from feedbax.training.worker_validation import WorkerContractValidationError
@@ -167,6 +176,94 @@ def test_entry_point_can_register_training_method() -> None:
     load_training_method_plugins(registry=registry, entry_points=[entry_point])
 
     assert DUMMY_METHOD_REF in registry.available_keys()
+
+
+def test_preparation_rng_algorithm_has_frozen_tokens_and_key_vectors() -> None:
+    assert preparation_rng_token("algorithm", PREPARATION_RNG_ALGORITHM_VERSION) == 3959945493
+    assert preparation_rng_token("root", "model") == 2366028346
+    assert preparation_rng_token("axis", "ensemble") == 3470389890
+
+    cases = (
+        (0, "model", 0, (4211853719, 2725690202)),
+        (0, "model", 4, (1509863984, 1304489815)),
+        (17, "runtime", 2, (3131609803, 682786736)),
+    )
+    for seed, root, index, expected in cases:
+        scope = derive_preparation_rng_scope(
+            {root: jax.random.key(seed)},
+            (AxisCoordinateSpec(axis="ensemble", index=index),),
+        )
+        assert tuple(map(int, jax.random.key_data(scope.keys[root]))) == expected
+
+
+def test_preparation_plan_defensively_freezes_containers_and_numpy_storage() -> None:
+    source = np.arange(3, dtype=np.float32)
+    plan = ExecutionPreparationPlan(
+        shared_slots={"array": source, "nested": [{1: "integer-key"}]},
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(0)},
+        materialize_instance=lambda _request: ScalarInstancePreparationResult(mapped_slots={}),
+    )
+
+    source[0] = 99
+    frozen = plan.shared_slots["array"]
+    assert frozen.tolist() == [0.0, 1.0, 2.0]
+    assert not frozen.flags.writeable
+    assert isinstance(plan.shared_slots["nested"], tuple)
+    assert plan.shared_slots["nested"][0] == {1: "integer-key"}
+    with pytest.raises(TypeError, match="immutable Feedbax preparation mapping"):
+        plan.shared_slots["new"] = object()
+    with pytest.raises(ValueError, match="read-only"):
+        frozen[0] = 5
+    with pytest.raises(ExecutionPreparationError, match="object-backed"):
+        ExecutionPreparationPlan(
+            shared_slots={"bad": np.array([object()], dtype=object)},
+            kernel_context={},
+            loss_service=None,
+            resume_slot_transform=None,
+            rng_roots={"model": jax.random.key(0)},
+            materialize_instance=lambda _request: ScalarInstancePreparationResult(
+                mapped_slots={}
+            ),
+        )
+    with pytest.raises(ExecutionPreparationError, match="must be a string identifier"):
+        ExecutionPreparationPlan(
+            shared_slots={1: "invalid-root-name"},
+            kernel_context={},
+            loss_service=None,
+            resume_slot_transform=None,
+            rng_roots={"model": jax.random.key(0)},
+            materialize_instance=lambda _request: ScalarInstancePreparationResult(
+                mapped_slots={}
+            ),
+        )
+
+
+def test_zero_level_plan_materializes_once_through_scalar_compatibility() -> None:
+    requests = []
+
+    def materialize(request):
+        requests.append(request)
+        return ScalarInstancePreparationResult(mapped_slots={"model": np.array([2.0])})
+
+    plan = ExecutionPreparationPlan(
+        shared_slots={"objective": "shared"},
+        kernel_context={"token": "context"},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(0)},
+        materialize_instance=materialize,
+    )
+
+    result = lower_zero_level_preparation_plan(plan)
+
+    assert len(requests) == 1
+    assert requests[0].axis_coordinates == ()
+    assert requests[0].rng.axis_coordinates == ()
+    assert set(result.initial_slots) == {"model", "objective"}
+    assert result.kernel_context == {"token": "context"}
 
 
 def test_low_level_registration_requires_exactly_one_contract_producer() -> None:
