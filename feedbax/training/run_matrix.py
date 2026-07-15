@@ -13,6 +13,8 @@ import random
 import sys
 from typing import Any, Callable, Protocol
 
+import equinox as eqx
+import jax.tree as jt
 from feedbax.contracts.expressions import evaluate_query
 from feedbax.contracts.extraction import load_expression_context, set_dotted_path
 from feedbax.contracts.manifest import (
@@ -70,6 +72,7 @@ from feedbax.training.checkpoint_custody import (
     fork_checkpoint_plan,
     fork_checkpoint_transaction,
     run_contract_binding,
+    _load_latest_checkpoint_transaction,
 )
 from feedbax.training.optimizers import learning_rate_at_step
 from feedbax.training.schedule_clocks import resolve_schedule_window
@@ -84,6 +87,14 @@ class RunMatrixError(ValueError):
 
 class ForkParityError(RunMatrixError):
     """Raised when forked checkpoint slot parity fails."""
+
+
+class _LoadedSourceManifest(dict[str, Any]):
+    """Ephemeral manifest view carrying verified decoded source slots."""
+
+    def __init__(self, manifest: Mapping[str, Any], slots: Mapping[str, Any]) -> None:
+        super().__init__(manifest)
+        self.slots = dict(slots)
 
 
 @dataclass(frozen=True)
@@ -250,7 +261,7 @@ class StandardLrContinuationReporter:
                 "scheduled LR continuation requires the method descriptor to define "
                 "optimizer_spec_projector, or the caller to supply an explicit lr_reporter"
             )
-        segment_start = _source_completed_step(source_manifest)
+        segment_start = _source_completed_step(source_manifest, row_spec)
         current_step = segment_start
         recorded_optimizer_step = _recorded_optimizer_step(
             row_spec,
@@ -633,6 +644,7 @@ def fork_matrix_checkpoints(
             spec,
             materialized,
             source_manifest=_read_latest_manifest(source_checkpoint_root),
+            source_checkpoint_root=source_checkpoint_root,
             reporter=reporter,
         )
         results = fork_checkpoint_plan(
@@ -726,6 +738,7 @@ def fork_matrix_checkpoints(
             spec,
             materialized,
             source_manifest=_read_latest_manifest(source_checkpoint_root),
+            source_checkpoint_root=source_checkpoint_root,
             reporter=reporter,
         )
     )
@@ -1702,11 +1715,15 @@ def _preflight_lr_continuation_points(
     materialized: MaterializedRunMatrix,
     *,
     source_manifest: Mapping[str, Any],
+    source_checkpoint_root: Path,
     reporter: LrContinuationReporter,
 ) -> dict[str, list[dict[str, Any]]]:
     """Resolve and validate all continuation report points before fork writes."""
     if spec.fork is None:
         raise RunMatrixError("matrix spec has no fork block")
+    if source_manifest.get("schema_id"):
+        loaded = _load_latest_checkpoint_transaction(source_checkpoint_root)
+        source_manifest = _LoadedSourceManifest(source_manifest, loaded.slots)
     cached: dict[str, list[dict[str, Any]]] = {}
     for row in materialized.rows:
         if row.spec is None:
@@ -1785,17 +1802,28 @@ def _recorded_optimizer_step(
     extractor = descriptor.optimizer_step_extractor if descriptor is not None else None
     if extractor is None:
         return None
+    slots = getattr(source_manifest, "slots", None)
+    if not isinstance(slots, Mapping):
+        if source_manifest.get("schema_id"):
+            raise ForkParityError("optimizer parity requires verified decoded source slots")
+        slots = source_manifest
     try:
-        value = extractor(payload, source_manifest)
+        values = [
+            extractor(payload, instance)
+            for instance in _loaded_slot_instances(source_manifest, slots)
+        ]
     except Exception as exc:
         raise ForkParityError(
             f"method {row_spec.method_ref.key!r} optimizer step extraction failed: {exc}"
         ) from exc
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
         raise ForkParityError(
             "optimizer_step_extractor must return a non-bool non-negative integer; "
-            f"observed={value!r}"
+            f"observed={values!r}"
         )
+    if any(value != values[0] for value in values[1:]):
+        raise ForkParityError(f"mapped optimizer steps diverge: {values!r}")
+    value = values[0]
     if value != metadata["optimizer_step"]:
         raise ForkParityError(
             "recorded optimizer step disagrees with descriptor extraction; "
@@ -1804,7 +1832,28 @@ def _recorded_optimizer_step(
     return value
 
 
-def _source_completed_step(source_manifest: Mapping[str, Any]) -> int:
+def _source_completed_step(
+    source_manifest: Mapping[str, Any],
+    row_spec: TrainingRunSpec,
+) -> int:
+    slots = getattr(source_manifest, "slots", None)
+    authority = row_spec.worker_execution.method_contract.phase_program.batch_progress
+    if isinstance(slots, Mapping) and authority is not None and authority.slot in slots:
+        values = []
+        for instance in _loaded_slot_instances(source_manifest, slots):
+            value = instance[authority.slot]
+            for segment in authority.field_path:
+                value = value[segment]
+            values.append(int(value))
+        if any(item != values[0] for item in values[1:]):
+            raise ForkParityError(f"mapped batch authorities diverge: {values!r}")
+        recorded = source_manifest.get("completed_training_batches")
+        if recorded != values[0]:
+            raise ForkParityError(
+                "recorded batch authority disagrees with loaded state: "
+                f"metadata={recorded!r}, loaded={values[0]!r}"
+            )
+        return values[0]
     value = source_manifest.get("completed_training_batches")
     if isinstance(value, int) and value >= 0:
         return value
@@ -1813,6 +1862,31 @@ def _source_completed_step(source_manifest: Mapping[str, Any]) -> int:
         "/completed_training_batches authority; a program coordinate cannot be "
         "used for LR-continuation arithmetic"
     )
+
+
+def _loaded_slot_instances(
+    manifest: Mapping[str, Any],
+    slots: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    records = {
+        str(record["slot"]): record.get("materialized_axes")
+        for record in manifest.get("slots", ())
+        if isinstance(record, Mapping) and "slot" in record
+    }
+    mapped = [axes[0] for axes in records.values() if axes]
+    if not mapped:
+        return [dict(slots)]
+    return [
+        {
+            name: (
+                jt.map(lambda leaf: leaf[index] if eqx.is_array(leaf) else leaf, value)
+                if records.get(name) and records[name][0]["mode"] == "mapped"
+                else value
+            )
+            for name, value in slots.items()
+        }
+        for index in range(int(mapped[0]["size"]))
+    ]
 
 
 def _load_spec(path: Path) -> TrainingRunMatrixSpec:

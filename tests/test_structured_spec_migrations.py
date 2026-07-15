@@ -103,6 +103,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
 )
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.execution.models import (
@@ -275,7 +276,9 @@ def test_default_registry_registers_assemble_contract_families(
     assert family.identity == schema_id
     assert family.current_version == current_version
     assert family.policy is not None
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == (
+        "migrate" if kind == "TrainingDiagnostics" else "reject"
+    )
     accepted = default_spec_registry.migrate(
         kind,
         {"schema_id": schema_id, "schema_version": current_version},
@@ -335,7 +338,9 @@ def test_native_execution_documents_have_explicit_rejection_policy(
     assert family.current_version == current_version
     assert family.policy is not None
     assert family.policy.owner_module.startswith("feedbax.training.diagnostics.")
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == (
+        "migrate" if kind == "TrainingDiagnostics" else "reject"
+    )
     assert family.policy.emitted_by
     assert family.policy.consumed_by
 
@@ -348,6 +353,40 @@ def test_native_execution_documents_have_explicit_rejection_policy(
         default_spec_registry.migrate(
             kind,
             {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
+        )
+
+
+def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v0() -> None:
+    diagnostics = default_spec_registry.migrate(
+        "TrainingDiagnostics",
+        {
+            "schema_id": "feedbax.manifest.training_diagnostics",
+            "schema_version": "feedbax.manifest.training_diagnostics.v1",
+            "lr_trace": [{"step": 1, "learning_rate": 0.1}],
+        },
+    )
+    assert diagnostics.payload["schema_version"].endswith(".v2")
+    assert diagnostics.payload["lr_trace"][0]["axis_coordinates"] is None
+
+    provenance = default_spec_registry.migrate(
+        "CheckpointForkProvenance",
+        {
+            "schema_id": "feedbax.manifest.training_checkpoint.fork_provenance",
+            "schema_version": "feedbax.manifest.training_checkpoint.fork_provenance.v1",
+            "slots": [{"slot": "model"}],
+        },
+    )
+    assert provenance.payload["schema_version"].endswith(".v2")
+    assert provenance.payload["slots"][0]["source_axes"] is None
+    assert provenance.payload["slots"][0]["target_axes"] is None
+
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "MappedMetricValue",
+            {
+                "schema_id": "feedbax.manifest.mapped_metric_value",
+                "schema_version": "feedbax.manifest.mapped_metric_value.v0",
+            },
         )
 
 
@@ -1137,6 +1176,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     )
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)

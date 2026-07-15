@@ -32,6 +32,9 @@ from feedbax.training.run_matrix import (
     ForkParityError,
     MaterializedRunMatrix,
     RunMatrixError,
+    _LoadedSourceManifest,
+    _recorded_optimizer_step,
+    _source_completed_step,
     fork_matrix_checkpoints,
     main,
 )
@@ -58,6 +61,48 @@ def _write_latest(root: Path, *, transaction_id: str, digest: str) -> None:
         json.dumps({"manifest_relative_path": f"transactions/{transaction_id}/manifest.json"}),
         encoding="utf-8",
     )
+
+
+def _mapped_source_view(slots: dict[str, object]) -> _LoadedSourceManifest:
+    binding = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+        "leaf_policy": "all_array_leaves",
+    }
+    return _LoadedSourceManifest(
+        {
+            "schema_id": "feedbax.manifest.training_checkpoint_transaction",
+            "completed_training_batches": 4,
+            "metadata": {"optimizer_step": 4},
+            "slots": [
+                {"slot": name, "materialized_axes": [binding]} for name in slots
+            ],
+        },
+        slots,
+    )
+
+
+def test_fork_parity_reads_actual_mapped_batch_and_optimizer_state() -> None:
+    spec = _run_spec()
+    batch_diverged = _mapped_source_view(
+        {"batch_counter": jnp.array([4, 5]), "optimizer": {"count": jnp.array([4, 4])}}
+    )
+    with pytest.raises(ForkParityError, match="batch authorities diverge"):
+        _source_completed_step(batch_diverged, spec)
+
+    optimizer_diverged = _mapped_source_view(
+        {"batch_counter": jnp.array([4, 4]), "optimizer": {"count": jnp.array([4, 5])}}
+    )
+    with pytest.raises(ForkParityError, match="optimizer steps diverge"):
+        _recorded_optimizer_step(
+            spec,
+            optimizer_diverged,
+            registry=default_training_method_registry(),
+        )
 
 
 def _write_topology_latest(

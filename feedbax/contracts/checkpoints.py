@@ -14,7 +14,11 @@ from typing import Any, Generic, Literal, TypeVar
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import ArtifactMigrationRecord, ArtifactRef, ParentRef, StrictModel
-from feedbax.contracts.worker import ConsistencyPredicateSpec, ProgressCoordinate
+from feedbax.contracts.worker import (
+    ConsistencyPredicateSpec,
+    MaterializedSlotAxisBinding,
+    ProgressCoordinate,
+)
 
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = "feedbax.manifest.training_checkpoint_transaction"
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1 = (
@@ -35,8 +39,11 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5 = (
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6 = (
     "feedbax.manifest.training_checkpoint_transaction.v6"
 )
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7 = (
     "feedbax.manifest.training_checkpoint_transaction.v7"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint_transaction.v8"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = "feedbax.manifest.training_checkpoint_latest_pointer"
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2 = (
@@ -347,6 +354,7 @@ class CheckpointSlotBlobRef(StrictModel):
     coordinate: ProgressCoordinate
     structural_abi_fingerprint: StructuralAbiFingerprint
     content_digest: SlotContentDigest
+    materialized_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None
     population: PopulationIdentityRecord | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -603,6 +611,8 @@ class CheckpointForkSlotProvenance(StrictModel):
     target_relative_path: str
     transfer_mode: Literal["hardlink", "copy", "serialized"]
     transform: CheckpointForkTransformRecord | None = None
+    source_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None
+    target_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -610,7 +620,7 @@ class CheckpointForkProvenance(StrictModel):
     """Provenance for a checkpoint transaction forked from an existing one."""
 
     schema_id: str = "feedbax.manifest.training_checkpoint.fork_provenance"
-    schema_version: str = "feedbax.manifest.training_checkpoint.fork_provenance.v1"
+    schema_version: str = "feedbax.manifest.training_checkpoint.fork_provenance.v2"
     source: CheckpointForkSourceRecord
     slots: list[CheckpointForkSlotProvenance]
     tool_version: str

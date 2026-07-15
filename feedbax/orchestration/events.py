@@ -12,9 +12,13 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Literal, TextIO
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+
+from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
 
 
 RUN_EVENT_SCHEMA_ID = "feedbax.run_event"
@@ -32,6 +36,61 @@ RUN_EVENT_CORE_TYPES = frozenset(
         "failed",
     }
 )
+MAPPED_METRIC_VALUE_SCHEMA_ID = "feedbax.manifest.mapped_metric_value"
+MAPPED_METRIC_VALUE_SCHEMA_VERSION = "feedbax.manifest.mapped_metric_value.v1"
+
+
+class MappedMetricValue(StrictModel):
+    """Lossless JSON envelope for one metric retaining declared mapped axes."""
+
+    schema_id: Literal["feedbax.manifest.mapped_metric_value"] = (
+        MAPPED_METRIC_VALUE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.manifest.mapped_metric_value.v1"] = (
+        MAPPED_METRIC_VALUE_SCHEMA_VERSION
+    )
+    value: Any
+    shape: tuple[int, ...]
+    dtype: str
+    axes: tuple[MaterializedSlotAxisBinding, ...]
+
+
+def normalize_serialized_metrics(
+    coordinate: ProgressCoordinate,
+    named_metrics: Mapping[str, Any],
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Strip mapped metrics from a coordinate and envelope them in their carrier."""
+    mapped = {
+        name: bindings
+        for name, bindings in slot_axis_bindings.items()
+        if bindings and bindings[0].mode == "mapped" and name in named_metrics
+    }
+    if not mapped:
+        return coordinate.model_dump(mode="json", exclude_none=True), dict(named_metrics)
+    coordinate_metrics = {
+        name: value for name, value in coordinate.metrics.items() if name not in mapped
+    }
+    coordinate_payload = coordinate.model_copy(
+        update={"metrics": coordinate_metrics}
+    ).model_dump(mode="json", exclude_none=True)
+    normalized = dict(named_metrics)
+    for name, axes in mapped.items():
+        try:
+            array = np.asarray(named_metrics[name])
+            value = array.tolist()
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise RunEventProtocolError(
+                f"mapped metric {name!r} must have a finite JSON representation"
+            ) from exc
+        normalized[name] = MappedMetricValue(
+            value=value,
+            shape=array.shape,
+            dtype=str(array.dtype),
+            axes=axes,
+        ).model_dump(mode="json")
+    return coordinate_payload, normalized
 
 
 class RunEventProtocolError(ValueError):

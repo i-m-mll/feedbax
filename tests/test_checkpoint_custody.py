@@ -33,6 +33,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -420,6 +421,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     )
 
 
@@ -456,6 +458,7 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v4-to-v5-program-coordinate",
             "training-checkpoint-transaction-v5-to-v6-batch-history",
             "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+            "training-checkpoint-transaction-v7-to-v8-mapped-axes",
     ]
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
@@ -3273,7 +3276,8 @@ def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
     assert resolved.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert resolved.manifest.segment_lineage.start_batch == 0
     assert [record.migration_id for record in resolved.migration_records] == [
-        "training-checkpoint-transaction-v6-to-v7-segment-lineage"
+        "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+        "training-checkpoint-transaction-v7-to-v8-mapped-axes",
     ]
 
 
@@ -3305,6 +3309,7 @@ def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
     assert [record.migration_id for record in resolved.migration_records] == [
         "training-checkpoint-transaction-v5-to-v6-batch-history",
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
+        "training-checkpoint-transaction-v7-to-v8-mapped-axes",
     ]
 
 

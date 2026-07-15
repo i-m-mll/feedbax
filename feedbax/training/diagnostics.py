@@ -7,12 +7,13 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel
-from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.contracts.worker import AxisCoordinateSpec, ProgressCoordinate
 from feedbax.orchestration.bundle import ExecutionIdentityEnvelope
 
 
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
-TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v1"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v2"
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID = "feedbax.spec.native_execution_context"
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
     "feedbax.spec.native_execution_context.v1"
@@ -24,6 +25,7 @@ class LearningRateDiagnostic(StrictModel):
 
     step: int = Field(ge=0)
     learning_rate: float
+    axis_coordinates: tuple[AxisCoordinateSpec, ...] | None = None
 
 
 class ScheduleContextDiagnostic(StrictModel):
@@ -87,7 +89,7 @@ class TrainingDiagnostics(StrictModel):
     schema_id: Literal["feedbax.manifest.training_diagnostics"] = (
         TRAINING_DIAGNOSTICS_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.manifest.training_diagnostics.v1"] = (
+    schema_version: Literal["feedbax.manifest.training_diagnostics.v2"] = (
         TRAINING_DIAGNOSTICS_SCHEMA_VERSION
     )
     manifest_id: str = Field(min_length=1)

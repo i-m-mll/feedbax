@@ -32,6 +32,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -244,6 +245,10 @@ from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
 )
+from feedbax.orchestration.events import (
+    MAPPED_METRIC_VALUE_SCHEMA_ID,
+    MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+)
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
@@ -255,7 +260,15 @@ NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
     "feedbax.spec.native_execution_context.v1"
 )
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
-TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v1"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v2"
+CHECKPOINT_FORK_PROVENANCE_SCHEMA_ID = "feedbax.manifest.training_checkpoint.fork_provenance"
+CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION_V1 = (
+    "feedbax.manifest.training_checkpoint.fork_provenance.v1"
+)
+CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint.fork_provenance.v2"
+)
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -913,7 +926,48 @@ def _migrate_checkpoint_lineage_v6_to_v7_payload(
         "segment_batch_count": completed,
         "history_granularities": {},
     }
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7
+    return migrated
+
+
+def _migrate_checkpoint_axes_v7_to_v8_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add optional resolved axis evidence without inferring it from shape."""
+    migrated = dict(payload)
+    migrated["slots"] = [
+        {**dict(slot), "materialized_axes": None}
+        for slot in migrated.get("slots", ())
+    ]
+    provenance = migrated.get("fork_provenance")
+    if isinstance(provenance, Mapping):
+        migrated_provenance = _migrate_checkpoint_fork_provenance_v1_to_v2_payload(provenance)
+        migrated["fork_provenance"] = migrated_provenance
     migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_checkpoint_fork_provenance_v1_to_v2_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["slots"] = [
+        {**dict(slot), "source_axes": None, "target_axes": None}
+        for slot in migrated.get("slots", ())
+    ]
+    migrated["schema_version"] = CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_training_diagnostics_v1_to_v2_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["lr_trace"] = [
+        {**dict(sample), "axis_coordinates": None}
+        for sample in migrated.get("lr_trace", ())
+    ]
+    migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION
     return migrated
 
 
@@ -2158,11 +2212,25 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Typed cumulative and segment-level observations emitted beside the sole "
                 "native training-run manifest."
             ),
+            stance="migrate",
+            supported_old_versions=(TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,),
             rejected_old_versions=(f"{TRAINING_DIAGNOSTICS_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_training_run_executor.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "MappedMetricValue",
+            MAPPED_METRIC_VALUE_SCHEMA_ID,
+            MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.events.MappedMetricValue",
+            emitted_by=("feedbax.training.executor",),
+            consumed_by=("training history, events, manifests, and diagnostics",),
+            description="Lossless JSON metric value carrying resolved mapped-axis evidence.",
+            stance="reject",
+            rejected_old_versions=(f"{MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "StudioTrainingAssemblySpec",
@@ -2513,11 +2581,24 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "CheckpointForkProvenance",
+            CHECKPOINT_FORK_PROVENANCE_SCHEMA_ID,
+            CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoints.CheckpointForkProvenance",
+            emitted_by=("feedbax.training.checkpoint_custody",),
+            consumed_by=("checkpoint fork and resume validation",),
+            description="Per-slot source and target mapped-axis provenance for checkpoint forks.",
+            stance="migrate",
+            supported_old_versions=(CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION_V1,),
+            required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
             "TrainingCheckpointLatestPointer",
@@ -3992,10 +4073,40 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
         migration_id="training-checkpoint-transaction-v6-to-v7-segment-lineage",
         migrate=_migrate_checkpoint_lineage_v6_to_v7_payload,
         description="Backfill self-contained checkpoints as root segment lineages.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v7-to-v8-mapped-axes",
+        migrate=_migrate_checkpoint_axes_v7_to_v8_payload,
+        description="Add optional resolved mapped-axis evidence to checkpoint slots.",
+    ),
+)
+default_spec_registry.register_migration(
+    "CheckpointForkProvenance",
+    SchemaMigration(
+        source_version=CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION_V1,
+        target_version=CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION,
+        migration_id="checkpoint-fork-provenance-v1-to-v2-mapped-axes",
+        migrate=_migrate_checkpoint_fork_provenance_v1_to_v2_payload,
+        description="Add optional source and target mapped-axis evidence to fork slots.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingDiagnostics",
+    SchemaMigration(
+        source_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,
+        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        migration_id="training-diagnostics-v1-to-v2-axis-coordinates",
+        migrate=_migrate_training_diagnostics_v1_to_v2_payload,
+        description="Add optional mapped-axis coordinates to learning-rate samples.",
     ),
 )
 default_spec_registry.register_migration(

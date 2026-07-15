@@ -53,12 +53,13 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 from feedbax.contracts.worker import (
+    AxisCoordinateSpec,
     BarrierArtifactSinkSpec,
     MaterializedSlotAxisBinding,
     ProgressCoordinate,
 )
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
-from feedbax.orchestration.events import RunEventEmitter
+from feedbax.orchestration.events import RunEventEmitter, normalize_serialized_metrics
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
     ResumeSlotTransform,
@@ -317,15 +318,28 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         )
         self._writes.append(write)
         if self.run_event_emitter is not None:
+            coordinate_payload, checkpoint_metrics = normalize_serialized_metrics(
+                saved.coordinate,
+                saved.coordinate.metrics,
+                self.slot_axis_bindings,
+            )
+            checkpoint_payload: dict[str, Any] = {
+                "barrier": saved.barrier,
+                "barrier_visit_ordinal": saved.visit_ordinal,
+                "transaction_id": write.manifest.transaction_id,
+                "coordinate": coordinate_payload,
+                "program_step": saved.coordinate.program_step,
+            }
+            if any(
+                name in saved.coordinate.metrics
+                and bindings
+                and bindings[0].mode == "mapped"
+                for name, bindings in self.slot_axis_bindings.items()
+            ):
+                checkpoint_payload["metrics"] = checkpoint_metrics
             self.run_event_emitter.emit(
                 "checkpoint_written",
-                {
-                    "barrier": saved.barrier,
-                    "barrier_visit_ordinal": saved.visit_ordinal,
-                    "transaction_id": write.manifest.transaction_id,
-                    "coordinate": saved.coordinate.model_dump(mode="json", exclude_none=True),
-                    "program_step": saved.coordinate.program_step,
-                },
+                checkpoint_payload,
             )
         for prepared in prepared_artifacts:
             self._barrier_artifacts.append(
@@ -714,6 +728,7 @@ def execute_training_run_spec(
                     runtime_telemetry=runtime_telemetry,
                     cache_before=cache_before,
                     start_semantics=execution_start_semantics,
+                    slot_axis_bindings=slot_axis_bindings,
                 )
             ),
             step_guard=_executor_nan_guard(
@@ -736,7 +751,11 @@ def execute_training_run_spec(
             )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
-        final_metrics = _final_metrics(execution.slots, execution.coordinate)
+        final_metrics = _final_metrics(
+            execution.slots,
+            execution.coordinate,
+            slot_axis_bindings,
+        )
         diagnostics = _build_training_diagnostics(
             manifest_id=exact_manifest_id,
             run_id=resolved_run_id,
@@ -797,15 +816,17 @@ def execute_training_run_spec(
             path=manifest_output_path,
         )
         if run_event_emitter is not None:
+            terminal_coordinate, _ = normalize_serialized_metrics(
+                execution.coordinate,
+                execution.coordinate.metrics,
+                slot_axis_bindings,
+            )
             run_event_emitter.emit_terminal(
                 "complete",
                 {
                     "run_id": resolved_run_id,
                     "status": "cancelled" if cancellation is not None else "completed",
-                    "coordinate": execution.coordinate.model_dump(
-                        mode="json",
-                        exclude_none=True,
-                    ),
+                    "coordinate": terminal_coordinate,
                     "program_step": execution.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
@@ -822,7 +843,7 @@ def execute_training_run_spec(
         checkpoint_writes = checkpoint_store.writes
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
-        final_metrics = _final_metrics({}, interrupted.coordinate)
+        final_metrics = _final_metrics({}, interrupted.coordinate, slot_axis_bindings)
         diagnostics = _build_training_diagnostics(
             manifest_id=exact_manifest_id,
             run_id=resolved_run_id,
@@ -883,12 +904,17 @@ def execute_training_run_spec(
             path=manifest_output_path,
         )
         if run_event_emitter is not None:
+            terminal_coordinate, _ = normalize_serialized_metrics(
+                interrupted.coordinate,
+                interrupted.coordinate.metrics,
+                slot_axis_bindings,
+            )
             run_event_emitter.emit_terminal(
                 "complete",
                 {
                     "run_id": resolved_run_id,
                     "status": "cancelled",
-                    "coordinate": interrupted.coordinate.model_dump(mode="json", exclude_none=True),
+                    "coordinate": terminal_coordinate,
                     "program_step": interrupted.coordinate.program_step,
                     "manifest_path": str(manifest_path),
                     "manifest_id": manifest.id,
@@ -1552,11 +1578,19 @@ def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:
     return value if isinstance(value, int) and value >= 0 else None
 
 
-def _history_event(coordinate: ProgressCoordinate) -> dict[str, Any]:
+def _history_event(
+    coordinate: ProgressCoordinate,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> dict[str, Any]:
+    coordinate_payload, metrics = normalize_serialized_metrics(
+        coordinate,
+        coordinate.metrics,
+        slot_axis_bindings,
+    )
     return {
         "type": "training_progress",
-        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
-        "metrics": dict(coordinate.metrics),
+        "coordinate": coordinate_payload,
+        "metrics": metrics,
     }
 
 
@@ -1571,12 +1605,14 @@ def _live_progress_callback(
     runtime_telemetry: dict[str, Any] | None = None,
     cache_before: Mapping[str, Any] | None = None,
     start_semantics: str = "executor_entry",
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
     ready_emitted = False
 
     def emit(coordinate: ProgressCoordinate) -> None:
         nonlocal ready_emitted
-        event = _history_event(coordinate)
+        bindings = dict(slot_axis_bindings or {})
+        event = _history_event(coordinate, bindings)
         if runtime_telemetry is not None and not runtime_telemetry:
             runtime_telemetry.update(
                 _first_progress_telemetry(
@@ -1590,15 +1626,28 @@ def _live_progress_callback(
         if run_event_emitter is not None:
             if not ready_emitted:
                 ready_emitted = True
+                ready_coordinate, ready_metrics = normalize_serialized_metrics(
+                    coordinate,
+                    coordinate.metrics,
+                    bindings,
+                )
+                ready_payload: dict[str, Any] = {
+                    "run_id": coordinate.run_id,
+                    "phase": coordinate.phase,
+                    "program_step": coordinate.program_step,
+                    "coordinate": ready_coordinate,
+                    "runtime_telemetry": deepcopy(runtime_telemetry or {}),
+                }
+                if any(
+                    name in coordinate.metrics
+                    and axis_bindings
+                    and axis_bindings[0].mode == "mapped"
+                    for name, axis_bindings in bindings.items()
+                ):
+                    ready_payload["metrics"] = ready_metrics
                 run_event_emitter.emit(
                     "ready",
-                    {
-                        "run_id": coordinate.run_id,
-                        "phase": coordinate.phase,
-                        "program_step": coordinate.program_step,
-                        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
-                        "runtime_telemetry": deepcopy(runtime_telemetry or {}),
-                    },
+                    ready_payload,
                 )
             elapsed_seconds = time.perf_counter() - started_at if started_at is not None else None
             payload = _run_progress_event_payload(
@@ -1629,19 +1678,23 @@ def _run_progress_event_payload(
 ) -> dict[str, Any]:
     metrics = event.get("metrics", {})
     metrics = metrics if isinstance(metrics, Mapping) else {}
+    coordinate_payload = event.get("coordinate")
     payload: dict[str, Any] = {
         "run_id": coordinate.run_id,
         "phase": coordinate.phase,
         "program_step": coordinate.program_step,
         "total_batches": total_batches,
-        "coordinate": coordinate.model_dump(mode="json", exclude_none=True),
+        "coordinate": coordinate_payload,
         "metrics": dict(metrics),
         "status": "running",
     }
     if elapsed_seconds is not None:
         payload["elapsed_seconds"] = elapsed_seconds
     loss = metrics.get("train_loss")
-    if loss is not None:
+    if loss is not None and not (
+        isinstance(loss, Mapping)
+        and loss.get("schema_id") == "feedbax.manifest.mapped_metric_value"
+    ):
         try:
             payload["loss"] = float(jax.device_get(loss))
         except (TypeError, ValueError):
@@ -1742,7 +1795,11 @@ def _barrier_artifact_logical_name(
     return "_".join(parts) + suffix
 
 
-def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> dict[str, Any]:
+def _final_metrics(
+    slots: Mapping[str, Any],
+    coordinate: ProgressCoordinate,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> dict[str, Any]:
     metrics = dict(coordinate.metrics)
     for key, value in slots.items():
         if key.endswith("loss"):
@@ -1751,7 +1808,8 @@ def _final_metrics(slots: Mapping[str, Any], coordinate: ProgressCoordinate) -> 
             except (TypeError, ValueError):
                 metrics[key] = value
     metrics.setdefault("program_step", coordinate.program_step)
-    return metrics
+    _, normalized = normalize_serialized_metrics(coordinate, metrics, slot_axis_bindings)
+    return normalized
 
 
 def _build_training_diagnostics(
@@ -1929,7 +1987,22 @@ def _realized_lr_trace(
     *,
     declared: Sequence[LearningRateDiagnostic],
 ) -> list[LearningRateDiagnostic]:
-    by_step = {sample.step: sample.learning_rate for sample in declared}
+    observed: dict[tuple[tuple[tuple[str, int], ...], int], LearningRateDiagnostic] = {}
+
+    def add(sample: LearningRateDiagnostic) -> None:
+        coordinates = tuple(
+            (coordinate.axis, coordinate.index)
+            for coordinate in (sample.axis_coordinates or ())
+        )
+        key = (coordinates, sample.step)
+        if key in observed:
+            raise TrainingRunExecutorError(
+                f"learning-rate diagnostics duplicate coordinate/step identity {key!r}"
+            )
+        observed[key] = sample
+
+    for sample in declared:
+        add(sample)
     for event in history_events:
         coordinate = event.get("coordinate")
         metrics = event.get("metrics")
@@ -1939,10 +2012,37 @@ def _realized_lr_trace(
         learning_rate = metrics.get("learning_rate", metrics.get("lr"))
         if step is None or learning_rate is None:
             continue
-        by_step[int(step)] = float(jax.device_get(learning_rate))
-    return [
-        LearningRateDiagnostic(step=step, learning_rate=by_step[step]) for step in sorted(by_step)
-    ]
+        if (
+            isinstance(learning_rate, Mapping)
+            and learning_rate.get("schema_id") == "feedbax.manifest.mapped_metric_value"
+        ):
+            axes = learning_rate.get("axes")
+            values = np.asarray(learning_rate.get("value"))
+            if not isinstance(axes, list) or len(axes) != 1:
+                raise TrainingRunExecutorError("mapped learning-rate metric requires one axis")
+            axis = axes[0]
+            if values.ndim < 1 or values.shape[0] != axis.get("size"):
+                raise TrainingRunExecutorError(
+                    "mapped learning-rate metric does not cover every axis coordinate"
+                )
+            for index in range(values.shape[0]):
+                add(
+                    LearningRateDiagnostic(
+                        step=int(step),
+                        learning_rate=float(values[index]),
+                        axis_coordinates=(
+                            AxisCoordinateSpec(axis=str(axis["axis"]), index=index),
+                        ),
+                    )
+                )
+        else:
+            add(
+                LearningRateDiagnostic(
+                    step=int(step),
+                    learning_rate=float(jax.device_get(learning_rate)),
+                )
+            )
+    return [observed[key] for key in sorted(observed)]
 
 
 def _diagnostics_output_path(

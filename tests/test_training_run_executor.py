@@ -91,7 +91,9 @@ from feedbax.orchestration.drivers.native_execution import (
     inject_native_execution_context,
 )
 from feedbax.training.checkpoint_custody import (
+    CheckpointCompatibilityError,
     concatenate_checkpoint_histories,
+    fork_checkpoint_transaction,
     load_latest_checkpoint,
 )
 from feedbax.training.executor import (
@@ -101,6 +103,7 @@ from feedbax.training.executor import (
     _feedbax_owned_training_manifest_metadata,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
+    _realized_lr_trace,
     _synchronized_optimizer_step,
     execute_training_run_spec,
 )
@@ -536,6 +539,162 @@ def test_mapped_executor_preflight_and_execution_match_manual_scalar_loop() -> N
     assert result.slots["model"].tolist() == [1, 2, 3, 4, 5]
     assert result.slots["train_loss"].tolist() == [0, 2, 4, 6, 8]
     assert result.slots["batch_counter"].tolist() == [1] * 5
+
+
+def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate_arrays(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_run_spec()
+    emitter = RunEventEmitter(
+        run_set_id="mapped",
+        row_id="row",
+        path=tmp_path / "events.jsonl",
+        heartbeat_seconds=None,
+    )
+    try:
+        result = execute_training_run_spec(
+            spec,
+            preparation=_valid_materialized_preparation(spec),
+            registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+            manifest_root=tmp_path / "manifest",
+            checkpoint_root=tmp_path / "checkpoint",
+            run_id="mapped-evidence",
+            run_event_emitter=emitter,
+        )
+    finally:
+        emitter.close()
+
+    history = result.history_events[0]
+    assert "train_loss" not in history["coordinate"]["metrics"]
+    assert history["metrics"]["train_loss"]["value"] == [0.0] * 5
+    assert result.manifest.summary_metrics["train_loss"]["axes"][0]["axis"] == "ensemble"
+    checkpoint = result.checkpoint_writes[0].manifest
+    assert "train_loss" not in checkpoint.completed_coordinate.metrics
+    assert all(slot.materialized_axes for slot in checkpoint.slots)
+    events = RunEventReader(tmp_path / "events.jsonl").read_all()
+    progress = next(event for event in events if event.type == "progress")
+    assert "loss" not in progress.payload
+    assert "train_loss" not in progress.payload["coordinate"]["metrics"]
+    terminal = next(event for event in events if event.type == "complete")
+    terminal_loss = terminal.payload["metrics"]["train_loss"]
+    assert terminal_loss["value"] == [0.0] * 5
+    assert terminal_loss["shape"] == [5]
+    assert terminal_loss["dtype"] == "float32"
+    assert [axis["axis"] for axis in terminal_loss["axes"]] == ["ensemble"]
+    assert not isinstance(terminal_loss["value"], dict)
+
+    loaded = load_latest_checkpoint(
+        tmp_path / "checkpoint",
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=result.final_slots,
+    )
+    assert loaded.slots["model"].shape == (5,)
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="structural ABI mismatch|does not materialize axis",
+    ):
+        load_latest_checkpoint(
+            tmp_path / "checkpoint",
+            expected_run_spec=spec,
+            expected_phase_program=spec.worker_execution.method_contract.phase_program,
+            expected_slots=result.final_slots,
+            resume_slot_transform=lambda slots: {**slots, "model": slots["model"][:4]},
+        )
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+    )
+    assert all(
+        slot.source_axes == slot.target_axes
+        for slot in forked.manifest.fork_provenance.slots
+    )
+    mismatched = spec.model_copy(deep=True)
+    mismatched.worker_execution.method_contract.axes[-1].size = 4
+    mismatched_slots = {
+        name: value[:4] if hasattr(value, "shape") else value
+        for name, value in result.final_slots.items()
+    }
+    with pytest.raises(CheckpointCompatibilityError, match="mapped-axis evidence mismatch"):
+        load_latest_checkpoint(
+            tmp_path / "checkpoint",
+            expected_run_spec=mismatched,
+            expected_phase_program=mismatched.worker_execution.method_contract.phase_program,
+            expected_slots=mismatched_slots,
+            allow_new_lineage_override=True,
+        )
+    with pytest.raises(CheckpointCompatibilityError, match="mapped axes differ"):
+        fork_checkpoint_transaction(
+            tmp_path / "checkpoint",
+            tmp_path / "fork-mismatch",
+            target_run_spec=mismatched,
+            expected_slots=mismatched_slots,
+        )
+
+    add_state = spec.model_copy(deep=True)
+    add_state.worker_execution.method_contract.state_slots.append(
+        StateSlotSpec(
+            name="adaptive_state",
+            role="auxiliary",
+            axis_bindings=[
+                SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)
+            ],
+        )
+    )
+    add_state.worker_execution.method_contract.phase_program.checkpoint_barriers[0].slots.append(
+        CheckpointSlotSpec(slot="adaptive_state")
+    )
+    adaptive = jnp.zeros((5,))
+    added = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-add-state",
+        target_run_spec=add_state,
+        expected_slots={**result.final_slots, "adaptive_state": adaptive},
+        target_slot_transform=lambda slots: {**slots, "adaptive_state": adaptive},
+        target_transform_metadata={"identity": "tests.add_adaptive_state", "parameters": {}},
+        target_transformed_slots=(),
+        target_only_slots={"adaptive_state": {"reason": "sanctioned add-state"}},
+    )
+    adaptive_provenance = next(
+        slot
+        for slot in added.manifest.fork_provenance.slots
+        if slot.slot == "adaptive_state"
+    )
+    assert adaptive_provenance.source_axes is None
+    assert adaptive_provenance.target_axes[0].axis == "ensemble"
+
+
+def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:
+    axis = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+        "leaf_policy": "all_array_leaves",
+    }
+    event = {
+        "coordinate": {"program_step": 3},
+        "metrics": {
+            "learning_rate": {
+                "schema_id": "feedbax.manifest.mapped_metric_value",
+                "schema_version": "feedbax.manifest.mapped_metric_value.v1",
+                "value": [0.1, 0.2],
+                "shape": [2],
+                "dtype": "float64",
+                "axes": [axis],
+            }
+        },
+    }
+    trace = _realized_lr_trace([event], declared=())
+    assert [sample.learning_rate for sample in trace] == [0.1, 0.2]
+    assert [sample.axis_coordinates[0].index for sample in trace] == [0, 1]
+    with pytest.raises(TrainingRunExecutorError, match="duplicate coordinate/step"):
+        _realized_lr_trace([event, event], declared=())
 
 
 def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync() -> None:
@@ -1571,7 +1730,7 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
 
     diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
     assert diagnostics["kind"] == "TrainingDiagnostics"
-    assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v1"
+    assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v2"
     assert diagnostics["manifest_id"] == manifest.id
     assert diagnostics["completed_batches"] == 1
     assert diagnostics["segment_completed_batches"] == 1
@@ -1604,7 +1763,7 @@ def test_native_execution_context_and_diagnostics_reject_unknown_schema_versions
         "completed_batches": 0,
         "segment_completed_batches": 0,
     }
-    with pytest.raises(ValueError, match="training_diagnostics.v1"):
+    with pytest.raises(ValueError, match="training_diagnostics.v2"):
         TrainingDiagnostics.model_validate(diagnostics_payload)
 
 

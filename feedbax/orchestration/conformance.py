@@ -958,17 +958,29 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     try:
         eval_context = require_schedule_context(context, label="resume_context")
         optimizer_spec = OptimizerSpec.model_validate(optimizer_spec_payload)
-        samples = _selected_lr_samples(trace, optimizer_spec)
-        expected = {
-            step: learning_rate_from_build_optimizer(
-                optimizer_spec,
-                sample_step=step,
-                schedule_origin_step=eval_context.schedule_origin_step,
-                current_step=eval_context.current_step,
-                optimizer_count_at_current_step=eval_context.optimizer_count_at_current_step,
+        declared_coordinates = _declared_mapping_coordinates(row)
+        if declared_coordinates is not None and set(trace) != declared_coordinates:
+            raise ValueError(
+                "lr_trace mapped coordinate coverage mismatch; "
+                f"declared={sorted(declared_coordinates)!r} observed={sorted(trace)!r}"
             )
-            for step in samples
-        }
+        expected = {}
+        observed = {}
+        for coordinates, coordinate_trace in trace.items():
+            samples = _selected_lr_samples(coordinate_trace, optimizer_spec)
+            expected[coordinates] = {
+                step: learning_rate_from_build_optimizer(
+                    optimizer_spec,
+                    sample_step=step,
+                    schedule_origin_step=eval_context.schedule_origin_step,
+                    current_step=eval_context.current_step,
+                    optimizer_count_at_current_step=eval_context.optimizer_count_at_current_step,
+                )
+                for step in samples
+            }
+            observed[coordinates] = {
+                step: float(coordinate_trace[step]) for step in samples
+            }
     except Exception as exc:
         return fail_check(
             check_id,
@@ -977,14 +989,30 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
             detail=str(exc),
         )
 
-    observed = {step: float(trace[step]) for step in samples}
     mismatches = {
-        step: {"expected": expected[step], "observed": observed[step]}
-        for step in samples
-        if not _close(observed[step], expected[step], rel_tol=1e-6)
+        f"{coordinates!r}@{step}": {
+            "expected": coordinate_expected[step],
+            "observed": observed[coordinates][step],
+        }
+        for coordinates, coordinate_expected in expected.items()
+        for step in coordinate_expected
+        if not _close(observed[coordinates][step], coordinate_expected[step], rel_tol=1e-6)
     }
     if not mismatches:
-        return pass_check(check_id, expected=expected, observed=observed)
+        if set(trace) == {()}:
+            return pass_check(check_id, expected=expected[()], observed=observed[()])
+        return pass_check(
+            check_id,
+            expected={repr(key): value for key, value in expected.items()},
+            observed={repr(key): value for key, value in observed.items()},
+        )
+    if set(trace) == {()}:
+        return fail_check(
+            check_id,
+            expected=expected[()],
+            observed=observed[()],
+            detail=str(mismatches),
+        )
     return fail_check(check_id, expected=expected, observed=observed, detail=str(mismatches))
 
 
@@ -1035,7 +1063,9 @@ def _optimizer_spec_payload(row: ConformanceRowArtifacts) -> Any:
     )
 
 
-def _lr_trace(row: ConformanceRowArtifacts) -> dict[int, float] | None:
+def _lr_trace(
+    row: ConformanceRowArtifacts,
+) -> dict[tuple[tuple[str, int], ...], dict[int, float]] | None:
     raw = _first_present(
         _path(row.training_diagnostics, "lr_trace"),
         _path(row.training_diagnostics, "learning_rate_trace"),
@@ -1043,15 +1073,48 @@ def _lr_trace(row: ConformanceRowArtifacts) -> dict[int, float] | None:
     if raw is _MISSING:
         return None
     if isinstance(raw, Mapping):
-        return {int(step): float(value) for step, value in raw.items()}
-    trace: dict[int, float] = {}
+        return {(): {int(step): float(value) for step, value in raw.items()}}
+    trace: dict[tuple[tuple[str, int], ...], dict[int, float]] = {}
     for item in raw:
         step = _first_present(_path(item, "step"), _path(item, "batch"), _path(item, "coordinate"))
         value = _first_present(_path(item, "learning_rate"), _path(item, "lr"))
         if step is _MISSING or value is _MISSING:
             raise ValueError(f"invalid lr_trace item {item!r}")
-        trace[int(step)] = float(value)
+        raw_coordinates = _path(item, "axis_coordinates")
+        if raw_coordinates is _MISSING or raw_coordinates is None:
+            raw_coordinates = ()
+        coordinates = tuple(
+            (str(coordinate["axis"]), int(coordinate["index"]))
+            for coordinate in raw_coordinates
+        )
+        coordinate_trace = trace.setdefault(coordinates, {})
+        if int(step) in coordinate_trace:
+            raise ValueError(
+                f"duplicate lr_trace coordinate/step identity {(coordinates, int(step))!r}"
+            )
+        coordinate_trace[int(step)] = float(value)
     return trace
+
+
+def _declared_mapping_coordinates(
+    row: ConformanceRowArtifacts,
+) -> set[tuple[tuple[str, int], ...]] | None:
+    training = _training_spec_payload(_manifest_payload(row))
+    worker = _first_present(
+        _path(row.bundle_row_spec, "worker_execution"),
+        _path(training, "worker_execution"),
+    )
+    levels = _path(worker, "mapping_levels")
+    axes = _path(worker, "method_contract", "axes")
+    if not isinstance(levels, list) or not levels:
+        return None
+    if len(levels) != 1 or not isinstance(axes, list):
+        raise ValueError("lr_trace conformance supports exactly one declared mapping level")
+    axis_name = str(levels[0]["axis"])
+    declaration = next((axis for axis in axes if axis.get("name") == axis_name), None)
+    if not isinstance(declaration, Mapping) or not isinstance(declaration.get("size"), int):
+        raise ValueError(f"mapped axis {axis_name!r} lacks a declared size")
+    return {((axis_name, index),) for index in range(int(declaration["size"]))}
 
 
 def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
