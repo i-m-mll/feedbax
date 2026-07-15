@@ -121,6 +121,7 @@ from feedbax.training.preparation import (
     _run_spec_sha256,
     ScalarInstancePreparationResult,
     materialize_execution_preparation,
+    validate_materialized_execution_preparation,
 )
 from feedbax.training.phase_executor import PhaseProgramExecutor
 from feedbax.training.worker_validation import (
@@ -371,7 +372,7 @@ def test_mapped_preflight_failure_has_no_publication_side_effects(
 def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees() -> None:
     spec = _mapped_run_spec()
     requests = []
-    optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=1e-3)
+    optimizer = optax.inject_hyperparams(optax.adamw)(learning_rate=1e-3)
 
     def materialize(request):
         requests.append(request)
@@ -409,6 +410,7 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
         prepared.initial_slots["optimizer"],
         optax.schedules.InjectStatefulHyperparamsState,
     )
+    validate_materialized_execution_preparation(prepared, run_spec=spec)
     instance_model = jax.tree.map(lambda leaf: leaf[0], prepared.initial_slots["model"])
     instance_state = jax.tree.map(lambda leaf: leaf[0], prepared.initial_slots["optimizer"])
     updates, updated_state = optimizer.update(
@@ -423,7 +425,7 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
 def test_runtime_freeze_preserves_optax_tuple_pytree_types() -> None:
     parameters = {"weight": jnp.array(1.0)}
     transformation = optax.adam(1e-3)
-    injected = optax.inject_hyperparams(optax.adam)(learning_rate=1e-3)
+    injected = optax.inject_hyperparams(optax.adamw)(learning_rate=1e-3)
 
     frozen_transformation = _freeze_runtime_value(transformation)
     frozen_state = _freeze_runtime_value(injected.init(parameters))
@@ -432,6 +434,8 @@ def test_runtime_freeze_preserves_optax_tuple_pytree_types() -> None:
     assert callable(frozen_transformation.update)
     assert isinstance(frozen_state, optax.schedules.InjectStatefulHyperparamsState)
     assert frozen_state.hyperparams["learning_rate"] == pytest.approx(1e-3)
+    with pytest.raises(TypeError):
+        frozen_state.hyperparams["learning_rate"] = 2e-3
     updates, updated_state = frozen_transformation.update(
         {"weight": jnp.array(1.0)},
         frozen_transformation.init(parameters),

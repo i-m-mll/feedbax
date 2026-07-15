@@ -235,7 +235,7 @@ def _freeze_runtime_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return _ImmutableDict({key: _freeze_runtime_value(item) for key, item in value.items()})
     if isinstance(value, tuple) and type(value) is not tuple:
-        leaves, treedef = jt.flatten(value)
+        leaves, treedef = jt.flatten(value, is_leaf=lambda item: item is not value)
         return jt.unflatten(treedef, [_freeze_runtime_value(leaf) for leaf in leaves])
     if isinstance(value, tuple):
         return tuple(_freeze_runtime_value(item) for item in value)
