@@ -363,6 +363,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     assert list(collection_root.glob("*manifest*.json")) == [result.manifest_path]
 
     diagnostics = result.diagnostics.model_dump(mode="json", exclude_none=True)
+    assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v2"
     assert diagnostics["manifest_id"] == result.manifest.id
     assert diagnostics["completed_batches"] == 1
     assert diagnostics["segment_completed_batches"] == 1

@@ -810,6 +810,52 @@ def test_lr_trace_uses_optimizer_builder_resume_context_and_rejects_flat_termina
     assert failed.observed[100] == pytest.approx(0.02)
 
 
+def test_lr_trace_conforms_each_declared_mapped_coordinate_and_rejects_missing() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.1,
+            total_steps=10,
+            constant_lr_iterations=4,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.2,
+        ),
+    ).model_dump(mode="json")
+    bundle = {
+        "optimizer": optimizer,
+        "resume_context": {
+            "schedule_origin_step": 100,
+            "current_step": 100,
+            "optimizer_count_at_current_step": 12_000,
+        },
+        "worker_execution": {
+            "mapping_levels": [{"axis": "ensemble"}],
+            "method_contract": {"axes": [{"name": "ensemble", "size": 2}]},
+        },
+    }
+    trace = [
+        {
+            "step": step,
+            "learning_rate": value,
+            "axis_coordinates": [{"axis": "ensemble", "index": index}],
+        }
+        for index in range(2)
+        for step, value in ((100, 0.01), (104, 0.1), (110, 0.02))
+    ]
+    passing = check_lr_trace(
+        _row(bundle_row_spec=bundle, training_diagnostics={"lr_trace": trace})
+    )
+    assert passing.status == "pass"
+
+    missing = check_lr_trace(
+        _row(bundle_row_spec=bundle, training_diagnostics={"lr_trace": trace[:3]})
+    )
+    assert missing.status == "fail"
+    assert "coordinate coverage mismatch" in str(missing.detail)
+
+
 def test_lr_trace_discovers_controller_optimizer_and_compares_realized_samples() -> None:
     optimizer = OptimizerSpec(
         type="adamw",

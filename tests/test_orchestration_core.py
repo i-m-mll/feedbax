@@ -590,13 +590,13 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "training": executable_payload,
     }
     expected_intent_hash = "da602d442a5356281bf648ca49032739ba6255cdb427bb0da09cfa65bb4d332f"
-    expected_root_hash = "0d41d0f6fed921a7092f9a2a6d1ed349fc890f6c1c3f7074d32b4d8d806a9b96"
-    expected_execution_hash = "fb332b40b7e18210f18e15172fdf86137a750e8f076da8f68122c77a90cd4f73"
+    expected_root_hash = "7fbfbc6adbd201d33b7ecb5660c3b79256717e999d59b67bdc62ce3ab28103f7"
+    expected_execution_hash = "23ce65b81f2d24fbd8eb9184e98643dc7e21d6569426af76c6106d6783703863"
     expected_artifact_hashes = {
         "authored": "e1aeb77d847c6b24011becca0db24da2f25e68f3cf542fdb4639615a266f8dc9",
-        "payload": "c479f4c01118bcb1c5b2d72ae190cde4bd594fe1b8a80df592c126042e922e94",
-        "snapshot": "aeb7acfcdde86b680403131d81367e38d0742369a92411096ba068f3f799c5d7",
-        "capsule": "cc26ba45b954643009fb4a9498b68a6512993c588a543d3cd34192e072bb17bf",
+        "payload": "4120b4037484a529dd76c0d1a56e4fdd7c3287311bf01d44341acb8338e1957f",
+        "snapshot": "785c84ce6d89ef77e5503673fd3979d69f835b9e12fa43114798393e47d5368e",
+        "capsule": "754e6dc16f630dfd1069a423d60278893ffb07a60d46ac8768f881836fadec08",
     }
     assert (
         training_spec_sha256(StudioTrainingAssemblySpec.model_validate(authored).worker_payload())

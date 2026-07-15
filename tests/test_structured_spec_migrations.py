@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
@@ -9,6 +10,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+    CheckpointForkProvenance,
 )
 from feedbax.contracts.migrations import (
     SchemaMigration,
@@ -33,6 +35,7 @@ from feedbax.contracts.training import (
     RUN_CONTROL_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.run_matrix import (
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
@@ -102,6 +105,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
 )
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.execution.models import (
@@ -274,7 +278,9 @@ def test_default_registry_registers_assemble_contract_families(
     assert family.identity == schema_id
     assert family.current_version == current_version
     assert family.policy is not None
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == (
+        "migrate" if kind == "TrainingDiagnostics" else "reject"
+    )
     accepted = default_spec_registry.migrate(
         kind,
         {"schema_id": schema_id, "schema_version": current_version},
@@ -334,7 +340,9 @@ def test_native_execution_documents_have_explicit_rejection_policy(
     assert family.current_version == current_version
     assert family.policy is not None
     assert family.policy.owner_module.startswith("feedbax.training.diagnostics.")
-    assert family.policy.stance == "reject"
+    assert family.policy.stance == (
+        "migrate" if kind == "TrainingDiagnostics" else "reject"
+    )
     assert family.policy.emitted_by
     assert family.policy.consumed_by
 
@@ -347,6 +355,64 @@ def test_native_execution_documents_have_explicit_rejection_policy(
         default_spec_registry.migrate(
             kind,
             {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
+        )
+
+
+def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v0() -> None:
+    diagnostics = default_spec_registry.migrate(
+        "TrainingDiagnostics",
+        {
+            "schema_id": "feedbax.manifest.training_diagnostics",
+            "schema_version": "feedbax.manifest.training_diagnostics.v1",
+            "lr_trace": [{"step": 1, "learning_rate": 0.1}],
+        },
+    )
+    assert diagnostics.payload["schema_version"].endswith(".v2")
+    assert diagnostics.payload["lr_trace"][0]["axis_coordinates"] is None
+
+    provenance = default_spec_registry.migrate(
+        "CheckpointForkProvenance",
+        {
+            "schema_id": "feedbax.manifest.training_checkpoint.fork_provenance",
+            "schema_version": "feedbax.manifest.training_checkpoint.fork_provenance.v1",
+            "slots": [{"slot": "model"}],
+        },
+    )
+    assert provenance.payload["schema_version"].endswith(".v2")
+    assert provenance.payload["slots"][0]["source_axes"] is None
+    assert provenance.payload["slots"][0]["target_axes"] is None
+
+    nested = {
+        **provenance.payload,
+        "source": {
+            "transaction_id": "source",
+            "run_id": "run",
+            "manifest_sha256": "0" * 64,
+            "transaction_root_sha256": "1" * 64,
+        },
+        "slots": [
+            {
+                "slot": "model",
+                "target_sha256": "2" * 64,
+                "target_relative_path": "blobs/model.pkl",
+                "transfer_mode": "serialized",
+            }
+        ],
+        "tool_version": "test",
+    }
+    for field in ("schema_id", "schema_version"):
+        invalid = dict(nested)
+        invalid[field] = f"{invalid[field]}.unknown"
+        with pytest.raises(ValidationError, match=field):
+            CheckpointForkProvenance.model_validate(invalid)
+
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "MappedMetricValue",
+            {
+                "schema_id": "feedbax.manifest.mapped_metric_value",
+                "schema_version": "feedbax.manifest.mapped_metric_value.v0",
+            },
         )
 
 
@@ -1117,7 +1183,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     lr_schedule_policy = default_spec_registry.resolve("LrScheduleSpec").policy
     assert training_run_policy is not None
     assert training_run_policy.stance == "migrate"
-    assert training_run_policy.supported_old_versions == (TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,)
+    assert training_run_policy.supported_old_versions == (
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+    )
     assert lr_schedule_policy is not None
     assert lr_schedule_policy.stance == "migrate"
     assert lr_schedule_policy.supported_old_versions == (
@@ -1133,6 +1202,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
             TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     )
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
