@@ -247,6 +247,37 @@ def _validate_recorded_slot_axes(
     expected_axes: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
     values: Mapping[str, Any] | None = None,
 ) -> None:
+    provenance = manifest.fork_provenance
+    if provenance is not None:
+        target_records = {record.slot: record.materialized_axes for record in manifest.slots}
+        provenance_names = [record.slot for record in provenance.slots]
+        if len(provenance_names) != len(set(provenance_names)):
+            raise CheckpointCompatibilityError("fork provenance contains duplicate slot records")
+        if set(provenance_names) != set(target_records):
+            raise CheckpointCompatibilityError(
+                "fork provenance slot records are missing or extra; "
+                f"recorded={sorted(provenance_names)!r} target={sorted(target_records)!r}"
+            )
+        for record in provenance.slots:
+            target = target_records[record.slot]
+            if record.target_axes != target:
+                raise CheckpointCompatibilityError(
+                    f"fork provenance target axes mismatch for slot {record.slot!r}"
+                )
+            has_sha = record.source_sha256 is not None
+            has_path = record.source_relative_path is not None
+            if has_sha != has_path:
+                raise CheckpointCompatibilityError(
+                    f"fork provenance source record is partial for slot {record.slot!r}"
+                )
+            if has_sha and record.source_axes != record.target_axes:
+                raise CheckpointCompatibilityError(
+                    f"fork provenance cannot remap axes for slot {record.slot!r}"
+                )
+            if not has_sha and record.source_axes is not None:
+                raise CheckpointCompatibilityError(
+                    f"target-only fork slot {record.slot!r} must not record source axes"
+                )
     for record in manifest.slots:
         target = expected_axes.get(record.slot)
         if record.materialized_axes != target:

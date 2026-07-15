@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any
 
 from pydantic import Field
@@ -188,6 +188,7 @@ def resolve_execution_mapping(
         size=axis.size,
         level=0,
     )
+    _validate_reducers(contract, axes, active_mapped_axes={axis.name})
 
     _unique_by_name(contract.state_slots, "/worker_execution/method_contract/state_slots")
     program = contract.phase_program
@@ -409,6 +410,7 @@ def _validate_reducers(
     contract: MethodContractSpec,
     axes: Mapping[str, Any],
     objective_requirements: Any | None = None,
+    active_mapped_axes: Collection[str] = (),
 ) -> None:
     requirements: list[ReducerRequirement] = []
     requirements.extend(contract.objective_reducers)
@@ -442,6 +444,11 @@ def _validate_reducers(
             requirement.axis in axes,
             requirement.path,
             f"reducer references unknown axis {requirement.axis!r}",
+        )
+        _require(
+            requirement.axis not in active_mapped_axes,
+            requirement.path,
+            f"mapped-axis reducer for {requirement.axis!r} is deferred",
         )
         existing = by_axis.get(requirement.axis)
         if existing is not None:
@@ -520,6 +527,7 @@ def validate_worker_contract(
     guard_predicates: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
     task_binding_spec: Any | None = None,
     objective_requirements: Any | None = None,
+    active_mapping_axes: Collection[str] = (),
 ) -> EffectivePhaseSpec:
     """Validate a method declaration for executability before launch."""
     env = environment or WorkerExecutabilityEnvironment()
@@ -855,7 +863,12 @@ def validate_worker_contract(
                     f"{barrier.resume_coordinate.completed_barrier!r}",
                 )
 
-    _validate_reducers(contract, axes, objective_requirements)
+    _validate_reducers(
+        contract,
+        axes,
+        objective_requirements,
+        active_mapped_axes=active_mapping_axes,
+    )
     _validate_dry_run(contract, environment=env, dry_run_shape_check=dry_run_shape_check)
 
     if task_binding_spec is not None:

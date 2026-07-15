@@ -467,7 +467,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         provider_identity=preparation_registration.owner,
                     )
                 else:
-                    prepared = lower_zero_level_preparation_plan(prepared)
+                    prepared = lower_zero_level_preparation_plan(
+                        prepared, resume_template=args.resume
+                    )
             preparation = prepared
             initial_slots = None
         training_payload = _read_json(args.training_payload) if args.training_payload else None

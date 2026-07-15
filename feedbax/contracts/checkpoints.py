@@ -619,8 +619,12 @@ class CheckpointForkSlotProvenance(StrictModel):
 class CheckpointForkProvenance(StrictModel):
     """Provenance for a checkpoint transaction forked from an existing one."""
 
-    schema_id: str = "feedbax.manifest.training_checkpoint.fork_provenance"
-    schema_version: str = "feedbax.manifest.training_checkpoint.fork_provenance.v2"
+    schema_id: Literal["feedbax.manifest.training_checkpoint.fork_provenance"] = (
+        "feedbax.manifest.training_checkpoint.fork_provenance"
+    )
+    schema_version: Literal["feedbax.manifest.training_checkpoint.fork_provenance.v2"] = (
+        "feedbax.manifest.training_checkpoint.fork_provenance.v2"
+    )
     source: CheckpointForkSourceRecord
     slots: list[CheckpointForkSlotProvenance]
     tool_version: str

@@ -263,7 +263,9 @@ class PhaseProgramExecutor:
                         coordinate.model_copy(update={"phase": phase.name}),
                         dict(context or {}),
                     )
-                    self._validate_mapped_updates(step.name, step.writes, updates)
+                    self._validate_mapped_updates(
+                        step.name, step.writes, updates, {**shared, **mapped}
+                    )
                 except Exception as exc:
                     raise WorkerContractValidationError(
                         f"/phase_program/phases/{phase.name}/update_steps/{step.name}",
@@ -356,7 +358,9 @@ class PhaseProgramExecutor:
                             coordinate,
                             checkpoint_context,
                         )
-                        self._validate_mapped_updates(step.name, step.writes, updates)
+                        self._validate_mapped_updates(
+                            step.name, step.writes, updates, current_slots
+                        )
                     else:
                         updates = kernel(current_slots, coordinate, checkpoint_context)
                     unknown = sorted(set(updates) - set(step.writes))
@@ -481,6 +485,7 @@ class PhaseProgramExecutor:
         step_name: str,
         declared_writes: Sequence[str],
         updates: Mapping[str, Any],
+        input_slots: Mapping[str, Any],
     ) -> None:
         unknown = sorted(set(updates) - set(declared_writes))
         if unknown:
@@ -488,19 +493,39 @@ class PhaseProgramExecutor:
                 f"/phase_program/update_steps/{step_name}/writes",
                 f"kernel returned undeclared writes {unknown!r}",
             )
+        array_types = (jax.Array, np.ndarray, jax.ShapeDtypeStruct)
         for slot, value in updates.items():
-            arrays = [
-                leaf
-                for leaf in jt.leaves(value)
-                if isinstance(leaf, (jax.Array, np.ndarray, jax.ShapeDtypeStruct))
-            ]
-            if not arrays or any(
-                not leaf.shape or leaf.shape[0] != self._mapped_size for leaf in arrays
-            ):
+            if slot not in input_slots:
                 raise WorkerContractValidationError(
                     f"/phase_program/update_steps/{step_name}/writes/{slot}",
-                    f"mapped write must retain leading axis size {self._mapped_size}",
+                    "mapped write destination is absent from executor state",
                 )
+            output_leaves, output_def = jt.flatten(value)
+            input_leaves, input_def = jt.flatten(input_slots[slot])
+            if output_def != input_def:
+                raise WorkerContractValidationError(
+                    f"/phase_program/update_steps/{step_name}/writes/{slot}",
+                    "mapped write must retain destination PyTree definition",
+                )
+            for leaf_index, (source, target) in enumerate(
+                zip(input_leaves, output_leaves, strict=True)
+            ):
+                source_array = isinstance(source, array_types)
+                target_array = isinstance(target, array_types)
+                if source_array != target_array:
+                    raise WorkerContractValidationError(
+                        f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
+                        "mapped write changes array/static leaf category",
+                    )
+                if source_array and (
+                    source.shape != target.shape or source.dtype != target.dtype
+                ):
+                    raise WorkerContractValidationError(
+                        f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
+                        "mapped write changes destination shape or dtype; "
+                        f"expected={source.shape!r}/{source.dtype}, "
+                        f"observed={target.shape!r}/{target.dtype}",
+                    )
 
     def _result(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
@@ -9,6 +10,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+    CheckpointForkProvenance,
 )
 from feedbax.contracts.migrations import (
     SchemaMigration,
@@ -379,6 +381,30 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
     assert provenance.payload["schema_version"].endswith(".v2")
     assert provenance.payload["slots"][0]["source_axes"] is None
     assert provenance.payload["slots"][0]["target_axes"] is None
+
+    nested = {
+        **provenance.payload,
+        "source": {
+            "transaction_id": "source",
+            "run_id": "run",
+            "manifest_sha256": "0" * 64,
+            "transaction_root_sha256": "1" * 64,
+        },
+        "slots": [
+            {
+                "slot": "model",
+                "target_sha256": "2" * 64,
+                "target_relative_path": "blobs/model.pkl",
+                "transfer_mode": "serialized",
+            }
+        ],
+        "tool_version": "test",
+    }
+    for field in ("schema_id", "schema_version"):
+        invalid = dict(nested)
+        invalid[field] = f"{invalid[field]}.unknown"
+        with pytest.raises(ValidationError, match=field):
+            CheckpointForkProvenance.model_validate(invalid)
 
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(

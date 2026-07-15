@@ -567,6 +567,7 @@ def execute_training_run_spec(
         guard_predicates=guards,
         task_binding_spec=task_binding_spec,
         objective_requirements=lowered.requirements,
+        active_mapping_axes=tuple(level.axis for level in mapping_levels),
     )
     if (
         resolved_method.descriptor is not None

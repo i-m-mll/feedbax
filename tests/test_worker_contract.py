@@ -208,6 +208,37 @@ def test_mapping_resolution_reports_undeclared_step_slot_without_key_error() -> 
         resolve_execution_mapping(worker_execution)
 
 
+@pytest.mark.parametrize("owner", ["axis", "objective", "worker"])
+def test_active_mapping_axis_rejects_every_authored_reducer_owner(owner) -> None:
+    worker_execution = _mapped_worker_execution()
+    contract = worker_execution.method_contract
+    if owner == "axis":
+        contract.axes[-1].reducer = AxisReducerSpec(
+            owner="worker", reduction="mean", path="/axes/ensemble/reducer"
+        )
+    else:
+        requirement = ReducerRequirement(
+            axis="ensemble", owner=owner, path=f"/{owner}/reducers/0"
+        )
+        getattr(contract, f"{owner}_reducers").append(requirement)
+
+    with pytest.raises(WorkerContractValidationError, match="mapped-axis reducer"):
+        resolve_execution_mapping(worker_execution)
+
+
+def test_active_mapping_axis_rejects_objective_derived_reducer() -> None:
+    contract = _mapped_worker_execution().method_contract
+    requirements = SimpleNamespace(
+        requires_axes=("ensemble",), aggregation_semantics={"ensemble": "mean"}
+    )
+    with pytest.raises(WorkerContractValidationError, match="mapped-axis reducer"):
+        validate_worker_contract(
+            contract,
+            objective_requirements=requirements,
+            active_mapping_axes=("ensemble",),
+        )
+
+
 def test_toy_minimax_contract_validates_and_emits_governed_predicate() -> None:
     contract = toy_minimax_method_contract()
 

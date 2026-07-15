@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import shutil
 import subprocess
 import sys
+from copy import copy, deepcopy
 from dataclasses import replace
 from pathlib import Path
 
 import equinox as eqx
 import jax
+import numpy as np
 import pytest
 import jax.numpy as jnp
 import optax
@@ -379,7 +382,7 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
                 "optimizer": optimizer.init(linear),
                 "prng": key,
                 "objective": jnp.array(0.0),
-                "train_loss": jnp.array(0.0),
+                "train_loss": np.array(0.0, dtype=np.float32),
                 "batch_counter": jnp.array(0, dtype=jnp.int32),
             }
         )
@@ -396,6 +399,7 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
         == 5
     )
     assert prepared.initial_slots["model"].weight.shape[0] == 5
+    assert not prepared.initial_slots["train_loss"].flags.writeable
     assert any(
         getattr(leaf, "shape", None) == (5,)
         for leaf in jax.tree.leaves(prepared.initial_slots["optimizer"])
@@ -612,6 +616,47 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         slot.source_axes == slot.target_axes
         for slot in forked.manifest.fork_provenance.slots
     )
+
+    def copy_blob(source, target):
+        shutil.copy2(source, target)
+        return "copy"
+
+    copied = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-copy",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+        link_strategy=copy_blob,
+    )
+    assert set(copied.slot_transfer_modes.values()) == {"copy"}
+    load_latest_checkpoint(
+        copied.root,
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=result.final_slots,
+    )
+
+    serialized = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-serialized",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+        source_slot_transforms={"model": lambda slots: dict(slots)},
+        source_transform_metadata={
+            "model": {"identity": "tests.identity", "parameters": {}}
+        },
+    )
+    assert serialized.slot_transfer_modes["model"] == "serialized"
+    model_provenance = next(
+        item for item in serialized.manifest.fork_provenance.slots if item.slot == "model"
+    )
+    assert model_provenance.source_axes == model_provenance.target_axes
+    load_latest_checkpoint(
+        serialized.root,
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=result.final_slots,
+    )
     mismatched = spec.model_copy(deep=True)
     mismatched.worker_execution.method_contract.axes[-1].size = 4
     mismatched_slots = {
@@ -666,6 +711,60 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
     assert adaptive_provenance.source_axes is None
     assert adaptive_provenance.target_axes[0].axis == "ensemble"
 
+    extra = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork-extra-corruption",
+        target_run_spec=spec,
+        expected_slots=result.final_slots,
+    )
+    corruptions = (
+        (forked, lambda records: records.append(dict(records[0]))),
+        (copied, lambda records: records[0].update({"source_relative_path": None})),
+        (serialized, lambda records: records.pop()),
+        (
+            added,
+            lambda records: next(
+                item for item in records if item["slot"] == "adaptive_state"
+            ).update(
+                {
+                    "source_axes": next(
+                        item for item in records if item["slot"] == "adaptive_state"
+                    )["target_axes"]
+                }
+            ),
+        ),
+        (
+            extra,
+            lambda records: records.append(
+                {**records[0], "slot": "undeclared_extra_slot"}
+            ),
+        ),
+    )
+    for fork_result, corrupt in corruptions:
+        payload = json.loads(fork_result.manifest_path.read_text())
+        corrupt(payload["fork_provenance"]["slots"])
+        fork_result.manifest_path.write_text(json.dumps(payload, sort_keys=True, indent=2))
+        latest = json.loads(fork_result.latest_pointer_path.read_text())
+        latest["manifest_sha256"] = sha256_bytes(fork_result.manifest_path.read_bytes())
+        fork_result.latest_pointer_path.write_text(json.dumps(latest, sort_keys=True, indent=2))
+        with pytest.raises(
+            CheckpointCompatibilityError, match="fork provenance|target-only fork"
+        ):
+            load_latest_checkpoint(
+                fork_result.root,
+                expected_run_spec=(add_state if fork_result is added else spec),
+                expected_phase_program=(
+                    add_state.worker_execution.method_contract.phase_program
+                    if fork_result is added
+                    else spec.worker_execution.method_contract.phase_program
+                ),
+                expected_slots=(
+                    {**result.final_slots, "adaptive_state": adaptive}
+                    if fork_result is added
+                    else result.final_slots
+                ),
+            )
+
 
 def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:
     axis = {
@@ -716,6 +815,35 @@ def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync()
         executor.run(_mapped_slots(), run_id="mapped")
 
 
+@pytest.mark.parametrize("boundary", ["preflight", "runtime"])
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    [
+        ("tree", "PyTree definition"),
+        ("shape", "shape or dtype"),
+        ("dtype", "shape or dtype"),
+        ("category", "array/static leaf category"),
+    ],
+)
+def test_mapped_write_rejects_full_destination_abi_drift(boundary, drift, message) -> None:
+    def drifting(slots, coordinate, context):
+        updates = _mapped_scalar_kernel(slots, coordinate, context)
+        if drift == "tree":
+            updates["model"] = {"value": slots["model"]}
+        elif drift == "shape":
+            updates["model"] = slots["model"][None]
+        elif drift == "category":
+            updates["model"] = 1.0
+        else:
+            updates["model"] = slots["model"].astype(jnp.int32)
+        return updates
+
+    executor, _ = _mapped_phase_executor(drifting)
+    call = executor.preflight if boundary == "preflight" else executor.run
+    with pytest.raises(WorkerContractValidationError, match=message):
+        call(_mapped_slots(), run_id="mapped")
+
+
 def test_mapped_optimizer_authority_uses_instance_slots_and_requires_equality() -> None:
     _, bindings = _mapped_phase_executor(_mapped_scalar_kernel)
     runtime = _mapped_slots()
@@ -752,6 +880,45 @@ def test_mapped_executor_rejects_public_construction_and_forged_no_seal() -> Non
 
     with pytest.raises(TrainingRunExecutorError, match="lacks Feedbax provenance seal"):
         execute_training_run_spec(_mapped_run_spec(), preparation=forged)
+
+
+def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> None:
+    spec = _mapped_run_spec()
+    preparation = _valid_materialized_preparation(spec)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy(preparation)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        deepcopy(preparation)
+
+    immutable_mapping = type(preparation.initial_slots)
+    nested = _valid_materialized_preparation(spec)
+    object.__setattr__(
+        nested,
+        "initial_slots",
+        immutable_mapping({**nested.initial_slots, "model": {"value": jnp.zeros((5,))}}),
+    )
+    with pytest.raises(TrainingRunExecutorError, match="mutable mapping"):
+        execute_training_run_spec(spec, preparation=nested)
+
+    history = _valid_materialized_preparation(spec)
+    object.__setattr__(
+        history,
+        "initial_slots",
+        immutable_mapping(
+            {**history.initial_slots, "model": BatchHistory(jnp.zeros((5,)))}
+        ),
+    )
+    with pytest.raises(TrainingRunExecutorError, match="contains BatchHistory"):
+        execute_training_run_spec(spec, preparation=history)
+
+    wrong_shape = _valid_materialized_preparation(spec)
+    object.__setattr__(
+        wrong_shape,
+        "initial_slots",
+        immutable_mapping({**wrong_shape.initial_slots, "model": jnp.zeros((4,))}),
+    )
+    with pytest.raises(TrainingRunExecutorError, match="leading axis size 5"):
+        execute_training_run_spec(spec, preparation=wrong_shape)
 
 
 def test_materialized_preparation_digest_uses_canonical_training_spec_identity() -> None:

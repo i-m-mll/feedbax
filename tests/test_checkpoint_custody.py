@@ -1259,6 +1259,41 @@ def test_checkpoint_fork_hardlinks_three_targets_and_survives_source_quarantine(
         assert loaded.slots["rng"].tolist() == [11, 22]
 
 
+@pytest.mark.parametrize("field", ["schema_id", "schema_version"])
+def test_v8_transaction_rejects_unknown_nested_fork_provenance_identity(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    source_root = tmp_path / "source"
+    write_checkpoint_transaction(
+        source_root,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    forked = fork_checkpoint_transaction(
+        source_root,
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        expected_slots=_minimax_slots(),
+    )
+    payload = json.loads(forked.manifest_path.read_text())
+    payload["fork_provenance"][field] += ".unknown"
+    _rewrite_manifest_and_latest(forked, payload)
+
+    with pytest.raises(CheckpointIntegrityError, match=field):
+        load_latest_checkpoint(
+            forked.root,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
 def test_checkpoint_fork_transform_rewrites_only_transformed_slot(
     tmp_path: Path,
 ) -> None:

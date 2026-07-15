@@ -215,6 +215,12 @@ class MaterializedExecutionPreparation:
             "MaterializedExecutionPreparation is created only by Feedbax materialization"
         )
 
+    def __copy__(self) -> "MaterializedExecutionPreparation":
+        raise TypeError("sealed materialized preparations cannot be copied")
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> "MaterializedExecutionPreparation":
+        raise TypeError("sealed materialized preparations cannot be copied")
+
 
 def _freeze_runtime_value(value: Any) -> Any:
     """Defensively freeze runtime containers and copy NumPy storage."""
@@ -236,7 +242,42 @@ def _freeze_runtime_value(value: Any) -> Any:
         return frozenset(_freeze_runtime_value(item) for item in value)
     if isinstance(value, (bytearray, memoryview)):
         raise ExecutionPreparationError("mutable buffer-backed values are not admissible")
+    leaves, treedef = jt.flatten(value)
+    if len(leaves) != 1 or not leaves or leaves[0] is not value:
+        return jt.unflatten(treedef, [_freeze_runtime_value(leaf) for leaf in leaves])
     return value
+
+
+def _validate_frozen_runtime_value(value: Any, *, path: str) -> None:
+    """Fail closed if sealed runtime content is mutable or buffer-backed."""
+    if isinstance(value, np.ndarray):
+        if value.dtype.hasobject or value.flags.writeable:
+            raise ExecutionPreparationError(f"{path} contains mutable NumPy storage")
+        return
+    if isinstance(value, jax.Array):
+        return
+    if isinstance(value, Mapping):
+        if not isinstance(value, _ImmutableDict):
+            raise ExecutionPreparationError(f"{path} contains a mutable mapping")
+        for key, item in value.items():
+            _validate_frozen_runtime_value(item, path=f"{path}[{key!r}]")
+        return
+    if isinstance(value, tuple):
+        for index, item in enumerate(value):
+            _validate_frozen_runtime_value(item, path=f"{path}[{index}]")
+        return
+    if isinstance(value, frozenset):
+        for item in value:
+            _validate_frozen_runtime_value(item, path=path)
+        return
+    if isinstance(value, (Sequence, Set, bytearray, memoryview)) and not isinstance(
+        value, (str, bytes)
+    ):
+        raise ExecutionPreparationError(f"{path} contains a mutable container")
+    leaves = jt.leaves(value)
+    if len(leaves) != 1 or not leaves or leaves[0] is not value:
+        for index, leaf in enumerate(leaves):
+            _validate_frozen_runtime_value(leaf, path=f"{path}/leaf/{index}")
 
 
 def _freeze_named_mapping(value: Mapping[str, Any], *, path: str) -> Mapping[str, Any]:
@@ -446,6 +487,13 @@ def validate_materialized_execution_preparation(
     initial_slots = getattr(preparation, "initial_slots", None)
     if not isinstance(initial_slots, Mapping):
         raise ExecutionPreparationError("materialized preparation initial_slots are invalid")
+    _validate_frozen_runtime_value(initial_slots, path="initial_slots")
+    kernel_context = getattr(preparation, "kernel_context", None)
+    if not isinstance(kernel_context, Mapping):
+        raise ExecutionPreparationError("materialized preparation kernel_context is invalid")
+    _validate_frozen_runtime_value(kernel_context, path="kernel_context")
+    for slot, value in initial_slots.items():
+        _validate_no_batch_history(value, slot=slot)
     executor_owned = executor_owned_initial_slot_names(run_spec, bindings)
     required = {
         slot.name
@@ -456,6 +504,11 @@ def validate_materialized_execution_preparation(
     if missing:
         raise ExecutionPreparationError(
             f"materialized preparation is missing declared slots {missing!r}"
+        )
+    unknown = sorted(set(initial_slots) - set(bindings))
+    if unknown:
+        raise ExecutionPreparationError(
+            f"materialized preparation contains undeclared slots {unknown!r}"
         )
     _validate_materialized_slot_shapes(initial_slots, bindings)
 
@@ -854,6 +907,8 @@ class ExecutionPreparationProviderRegistry:
 
 def lower_zero_level_preparation_plan(
     plan: ExecutionPreparationPlan,
+    *,
+    resume_template: bool = False,
 ) -> ExecutionPreparationResult:
     """Materialize one zero-level plan through the scalar compatibility path."""
     scope = derive_preparation_rng_scope(plan.rng_roots, ())
@@ -861,7 +916,7 @@ def lower_zero_level_preparation_plan(
         ScalarInstancePreparationRequest(
             axis_coordinates=(),
             rng=scope,
-            resume_template=False,
+            resume_template=resume_template,
         )
     )
     if not isinstance(raw, ScalarInstancePreparationResult):
