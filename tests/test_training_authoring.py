@@ -278,7 +278,7 @@ def test_compile_authoring_projects_once_and_returns_canonical_contracts(
     assert holder["authoring_calls"] == 1
     assert holder["row_compiler_calls"] == 0
     assert row.model_dump(mode="python") == before
-    assert compiled.run_spec.schema_version == "feedbax.spec.training_run.v2"
+    assert compiled.run_spec.schema_version == "feedbax.spec.training_run.v3"
     assert compiled.worker_execution == holder["worker"]
     assert compiled.run_spec.metadata == {"domain_family": "toy", "authored_gain": 3}
     assert compiled.run_spec.training_config.n_batches == 4
