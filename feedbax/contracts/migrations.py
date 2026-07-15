@@ -156,6 +156,7 @@ from feedbax.contracts.manifest import (
     ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
@@ -1864,6 +1865,15 @@ def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str
     return migrated
 
 
+def _migrate_evaluation_run_matrix_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Add the authored staged-parent map introduced by matrix schema v2."""
+    migrated = dict(payload)
+    migrated.setdefault("staged_parents", {})
+    return migrated
+
+
 def _migrate_analysis_run_spec_v1(payload: dict[str, Any]) -> dict[str, Any]:
     """Make the historical implicit recomputation behavior explicit."""
     migrated = dict(payload)
@@ -2562,7 +2572,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Governed evaluation conditions expressed as one typed base plus "
                 "ordered row deltas and post-delta derivations."
             ),
-            stance="reject",
+            stance="migrate",
+            supported_old_versions=(EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,),
             rejected_old_versions=("feedbax.spec.evaluation_run_matrix.v0",),
             required_tests=("tests/test_evaluation_matrix.py",),
         ),
@@ -4022,6 +4033,16 @@ default_spec_registry.register_migration(
             "Preserve v2 stage-local params explicitly while introducing the shared typed "
             "parameter base and per-stage patches."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationRunMatrixSpec",
+    SchemaMigration(
+        source_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="evaluation-run-matrix-v1-to-v2-staged-parents",
+        migrate=_migrate_evaluation_run_matrix_v1_to_v2_payload,
+        description="Add the empty matrix-level staged-parent binding map.",
     ),
 )
 default_spec_registry.register_migration(

@@ -99,7 +99,11 @@ def _local_context(
 
 def test_load_evaluation_states_uses_retained_local_authority(tmp_path: Path) -> None:
     expected = {"trajectory": np.arange(4, dtype=np.float32)}
-    artifact = store_evaluation_states_artifact(expected, root=tmp_path, manifest_id="eval")
+    artifact = store_evaluation_states_artifact(
+        expected,
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
     artifact = artifact.model_copy(update={"uri": artifact.metadata["relative_path"]})
     manifest = _manifest(artifact)
     path = write_manifest(manifest, root=tmp_path, index=False)
@@ -133,13 +137,27 @@ def test_load_evaluation_states_uses_bound_provider_after_source_deletion(
     source_artifact = store_evaluation_states_artifact(
         {"value": np.asarray([3, 5])},
         root=source_cache_root,
-        manifest_id="provider-source",
+        manifest_id="feedbax-evaluation-run:authority-test",
     )
     states_bytes = (source_cache_root / source_artifact.metadata["relative_path"]).read_bytes()
     artifact = provider.store_bytes(
         states_bytes,
         role="evaluation_states",
         logical_name="states.npz",
+        media_type=source_artifact.media_type,
+        metadata={
+            key: value
+            for key, value in source_artifact.metadata.items()
+            if key not in {"relative_path", "storage_backend"}
+        },
+    ).model_copy(
+        update={
+            "metadata": {
+                key: value
+                for key, value in source_artifact.metadata.items()
+                if key != "relative_path"
+            }
+        }
     )
     manifest = _manifest(artifact)
     source_manifest_path = write_manifest(manifest, root=source_cache_root, index=False)
@@ -170,7 +188,10 @@ def test_load_evaluation_states_uses_bound_provider_after_source_deletion(
     states = context.load_evaluation_states(parent)
     np.testing.assert_array_equal(states["value"], np.asarray([3, 5]))
 
-    artifact_path = provider_root / provider.canonical_relative_path(artifact)
+    artifact_path = provider_root / provider.canonical_relative_path(
+        artifact.artifact_id,
+        size_bytes=artifact.size_bytes,
+    )
     original = artifact_path.read_bytes()
     artifact_path.write_bytes(b"x" * len(original))
     with pytest.raises(ValueError, match="sha256 mismatch"):

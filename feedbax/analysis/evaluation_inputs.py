@@ -21,6 +21,7 @@ from feedbax.analysis.execution_context import (
     StagedExecutionContext,
     StagedExecutionContextError,
 )
+from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
 from feedbax.contracts.manifest import EvaluationRunSpec, ParentRef, TrainingRunManifest
 
 
@@ -62,10 +63,11 @@ class EvaluationInputManifestError(EvaluationInputResolutionError):
 class ResolvedEvaluationInput:
     """A verified training-run parent declared by an evaluation spec.
 
-    ``path`` is canonical and contained by the explicitly allowed manifest root.
-    ``reference`` is its stable POSIX path relative to that root. ``sha256`` is
-    computed from the same bytes used to validate ``manifest``; ``size_bytes``
-    is the length of that same descriptor read.
+    For context-free and legacy resolution, ``path`` is canonical beneath the
+    explicit manifest root and ``reference`` is relative to that root. A complete
+    authenticated ref with a matching staged location instead uses that separately
+    retained exact authority, which may differ from the row/output root. ``sha256``
+    and ``size_bytes`` describe the same bytes used to validate ``manifest``.
     """
 
     ref: ParentRef
@@ -103,13 +105,15 @@ def resolve_evaluation_inputs(
 ) -> tuple[ResolvedEvaluationInput, ...]:
     """Resolve the exact training manifest declared by an evaluation run spec.
 
-    Resolution is read-only and considers only ``run_spec.inputs`` beneath the
-    mandatory ``manifest_root``. It never consults an index, an ambient default
-    root, ``training_run_ids``, or a latest pointer.
+    Resolution is read-only. Context-free and legacy inputs resolve beneath the
+    mandatory ``manifest_root``. A complete authenticated ref with a matching
+    staged location resolves through that separately retained exact authority,
+    which may differ from the row/output root. Resolution never consults an index,
+    an ambient default root, ``training_run_ids``, or a latest pointer.
 
     Args:
         run_spec: Registered evaluation recipe's validated run specification.
-        manifest_root: Explicit filesystem root allowed to contain manifests.
+        manifest_root: Explicit filesystem root mandatory for non-staged resolution.
         require_unique_manifest_id: Whether an explicit URI must also be the
             only manifest under ``manifest_root/manifests`` with the declared
             ID. Disable only when a separate frozen authority already binds an
@@ -139,6 +143,34 @@ def resolve_evaluation_inputs(
 
     ref = refs[0]
     _validate_training_ref(ref)
+    try:
+        authenticated = is_authenticated_manifest_ref(ref)
+    except ValueError as exc:
+        raise EvaluationInputReferenceError(str(exc)) from exc
+    if authenticated and execution_context.parent_execution_locations:
+        try:
+            resolved = execution_context.resolve_manifest_input(ref)
+            location = execution_context.parent_execution_location(ref)
+        except (StagedExecutionContextError, ValueError) as exc:
+            raise EvaluationInputReferenceError(
+                "authenticated evaluation input requires its matching complete-ParentRef "
+                "staged execution authority"
+            ) from exc
+        if not isinstance(resolved.manifest, TrainingRunManifest):
+            raise EvaluationInputManifestError(
+                "Staged evaluation input did not resolve to a TrainingRunManifest"
+            )
+        digest = hashlib.sha256(resolved.raw_bytes).hexdigest()
+        return (
+            ResolvedEvaluationInput(
+                ref=ref,
+                manifest=resolved.manifest,
+                path=resolved.path,
+                reference=location.execution_uri,
+                sha256=digest,
+                size_bytes=len(resolved.raw_bytes),
+            ),
+        )
     effective_ref = ref
     requested_root = _resolve_root(manifest_root)
     if (ref.uri or "").startswith("artifact://sha256/"):

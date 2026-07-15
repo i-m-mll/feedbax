@@ -170,8 +170,9 @@ def load_evaluation_states_artifact(
 def load_authenticated_evaluation_states_artifact(
     artifact: ArtifactRef,
     *,
-    root: Path | str,
+    root: Path | str | None = None,
     manifest_id: str,
+    data: bytes | None = None,
 ) -> Any:
     """Load states only after authenticating custody, schema, and provenance evidence."""
 
@@ -221,13 +222,18 @@ def load_authenticated_evaluation_states_artifact(
             f"storage_backend={metadata.get('storage_backend')!r}."
         )
 
-    try:
-        path = _artifact_path(artifact, root=Path(root))
-        data = path.read_bytes()
-    except (FileNotFoundError, OSError) as exc:
-        raise EvaluationStatesCustodyUnavailable(
-            f"Evaluation-state artifact bytes are unavailable: {exc}"
-        ) from exc
+    if data is None:
+        if root is None:
+            raise EvaluationStatesCustodyUnavailable(
+                "Evaluation-state artifact requires explicit custody root or pre-read bytes."
+            )
+        try:
+            path = _artifact_path(artifact, root=Path(root))
+            data = path.read_bytes()
+        except (FileNotFoundError, OSError) as exc:
+            raise EvaluationStatesCustodyUnavailable(
+                f"Evaluation-state artifact bytes are unavailable: {exc}"
+            ) from exc
     if len(data) != artifact.size_bytes:
         raise EvaluationStatesSizeMismatch(
             "Evaluation states artifact byte-size mismatch: "
