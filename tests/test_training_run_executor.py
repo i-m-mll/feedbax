@@ -449,6 +449,33 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
     )
     assert result.final_slots["optimizer"].count.tolist() == [1] * 5
     assert type(result.final_slots["optimizer"].hyperparams) is dict
+    loaded = load_latest_checkpoint(
+        tmp_path / "checkpoint",
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=prepared.initial_slots,
+    )
+    assert jax.tree.structure(loaded.slots["optimizer"]) == jax.tree.structure(
+        result.final_slots["optimizer"]
+    )
+    forked = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork",
+        target_run_spec=spec,
+        expected_slots=prepared.initial_slots,
+        source_slot_transforms={"optimizer": lambda slots: dict(slots)},
+        source_transform_metadata={"optimizer": {"identity": "tests.identity", "parameters": {}}},
+    )
+    assert forked.slot_transfer_modes["optimizer"] == "serialized"
+    reloaded = load_latest_checkpoint(
+        forked.root,
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=prepared.initial_slots,
+    )
+    assert jax.tree.structure(reloaded.slots["optimizer"]) == jax.tree.structure(
+        result.final_slots["optimizer"]
+    )
 
 
 def test_runtime_freeze_preserves_optax_tuple_pytree_types() -> None:
