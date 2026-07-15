@@ -656,7 +656,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.spec.training_method.standard_supervised_payload"
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
-    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v4"
+    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v5"
     assert families["PathExpression"].identity == PATH_EXPRESSION_SCHEMA_ID
     assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
     assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID
@@ -713,6 +713,75 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["SpecPayload"].namespace == SchemaNamespaceKind.MANIFEST
     assert not families["RegistryEntry"].durable
     assert not families["StudioSchemaRegistry"].durable
+
+
+@pytest.mark.parametrize(
+    ("source_version", "stage_payload"),
+    [
+        (
+            "feedbax.spec.analysis_bundle.v2",
+            {"name": "analysis", "kind": "analysis", "params": {}},
+        ),
+        (
+            "feedbax.spec.analysis_bundle.v3",
+            {"name": "analysis", "kind": "analysis", "local_params": {}},
+        ),
+    ],
+)
+def test_analysis_bundle_old_version_chain_stamps_recompute_policy(
+    source_version: str,
+    stage_payload: dict[str, object],
+) -> None:
+    result = migrate_structured_spec_payload(
+        "AnalysisBundleSpec",
+        {
+            "schema_id": "feedbax.spec.analysis_bundle",
+            "schema_version": source_version,
+            "name": "legacy",
+            "templates": [{"name": "template", "analysis_type": "demo"}],
+            "stages": [stage_payload],
+        },
+    )
+
+    assert result.target_version == "feedbax.spec.analysis_bundle.v5"
+    assert result.payload["templates"][0]["evaluation_states_policy"] == "recompute"
+    assert result.payload["stages"][0]["evaluation_states_policy"] == "recompute"
+
+
+def test_analysis_bundle_v4_to_v5_preserves_authored_policy_and_stage_scope() -> None:
+    result = migrate_structured_spec_payload(
+        "AnalysisBundleSpec",
+        {
+            "schema_id": "feedbax.spec.analysis_bundle",
+            "schema_version": "feedbax.spec.analysis_bundle.v4",
+            "name": "policy",
+            "templates": [
+                {"name": "legacy", "analysis_type": "demo"},
+                {
+                    "name": "strict",
+                    "analysis_type": "demo",
+                    "evaluation_states_policy": "require_durable",
+                },
+            ],
+            "stages": [
+                {"name": "evaluation", "kind": "evaluation"},
+                {"name": "analysis", "kind": "analysis"},
+                {
+                    "name": "materialize",
+                    "kind": "materialization",
+                    "evaluation_states_policy": "require_durable",
+                },
+                {"name": "report", "kind": "report"},
+            ],
+        },
+    )
+
+    assert result.payload["templates"][0]["evaluation_states_policy"] == "recompute"
+    assert result.payload["templates"][1]["evaluation_states_policy"] == "require_durable"
+    assert "evaluation_states_policy" not in result.payload["stages"][0]
+    assert result.payload["stages"][1]["evaluation_states_policy"] == "recompute"
+    assert result.payload["stages"][2]["evaluation_states_policy"] == "require_durable"
+    assert "evaluation_states_policy" not in result.payload["stages"][3]
 
 
 def test_loss_term_spec_v1_migrates_to_v2_schema_identity() -> None:

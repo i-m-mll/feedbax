@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 
 from feedbax.persistence.database import EvaluationRecord, ModelRecord, add_evaluation_figure
 from feedbax.contracts.manifest import (
+    AnalysisEvaluationStateResolutionDiagnostic,
+    AnalysisEvaluationStateSource,
     AnalysisRunManifest,
     AnalysisRunSpec,
     ArtifactRef,
@@ -92,6 +94,13 @@ class AnalysisRunContext:
         init=False,
     )
     _manifest_path: Path | None = field(default=None, init=False)
+    _evaluation_state_sources: list[AnalysisEvaluationStateSource] = field(
+        default_factory=list,
+        init=False,
+    )
+    _evaluation_state_resolution_diagnostics: list[
+        AnalysisEvaluationStateResolutionDiagnostic
+    ] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root) if self.root is not None else default_manifest_root()
@@ -128,6 +137,20 @@ class AnalysisRunContext:
     def regeneration_specs(self) -> tuple[SpecPayload | ParentRef | ArtifactRef, ...]:
         """Return regeneration specs recorded so far."""
         return tuple(self._regeneration_specs)
+
+    def record_evaluation_state_sources(
+        self,
+        sources: Iterable[AnalysisEvaluationStateSource],
+    ) -> None:
+        """Record truthful suppliers for evaluation states consumed by this run."""
+        self._evaluation_state_sources.extend(sources)
+
+    def record_evaluation_state_resolution_diagnostic(
+        self,
+        diagnostic: AnalysisEvaluationStateResolutionDiagnostic,
+    ) -> None:
+        """Record one fail-closed evaluation-state resolution diagnostic."""
+        self._evaluation_state_resolution_diagnostics.append(diagnostic)
 
     def record_artifact(
         self,
@@ -345,6 +368,10 @@ class AnalysisRunContext:
                 self.spec.model_dump(mode="json", exclude_none=True),
             ),
             inputs=list(self.spec.inputs),
+            evaluation_state_sources=list(self._evaluation_state_sources),
+            evaluation_state_resolution_diagnostics=list(
+                self._evaluation_state_resolution_diagnostics
+            ),
             summary_metrics={
                 "artifact_count": len(self._artifacts),
                 "figure_count": sum(artifact.role == "figure" for artifact in self._artifacts),

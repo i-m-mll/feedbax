@@ -57,6 +57,20 @@ beforeEach(() => {
 });
 
 describe('useAnalysisStore stage ownership', () => {
+  it('preserves the authored evaluation-states policy in the persisted analysis draft', () => {
+    const workspace = useWorkspaceStore.getState().workspace!;
+    const analysisStage = getStageByKind(workspace, 'analysis')!;
+    workspace.scenarios[analysisStage.scenario_id!].analysis_spec = {
+      evaluation_states_policy: 'require_durable',
+    };
+
+    useAnalysisStore.getState().addPage('Durable states');
+
+    const analysisSpec = workspace.scenarios[analysisStage.scenario_id!]
+      .analysis_spec as Record<string, unknown>;
+    expect(analysisSpec.evaluation_states_policy).toBe('require_durable');
+  });
+
   it('mirrors eval selection and page params into the analysis stage spec', () => {
     useAnalysisStore.getState().addPage('Endpoint figures');
     useAnalysisStore.getState().setEvalParams({ perturbation_type: 'curl_field' });
