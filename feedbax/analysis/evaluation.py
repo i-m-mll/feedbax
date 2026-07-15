@@ -22,9 +22,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import dill as pickle
+from pydantic import Field, model_validator
 
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -55,9 +56,25 @@ from feedbax.contracts.matrix_core import (
     RowMatrixSpec,
     materialize_matrix_rows,
 )
+from feedbax.contracts.migrations import default_spec_registry
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedArtifactProviderRootBinding,
+    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
+    StagedExecutionContextError,
+    StagedParentExecutionLocation,
+    resolve_staged_execution_context,
+    with_staged_parent_execution_locations,
+)
+from feedbax.analysis.manifest_inputs import (
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
+)
+from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
+from feedbax.contracts.staged_execution import (
+    StagedExecutionDescriptor,
+    validate_staged_binding_name,
 )
 from feedbax.analysis.validation import (
     EvaluationRecipeProtocol,
@@ -93,6 +110,7 @@ class EvaluationRunMatrixSpec(RowMatrixSpec[EvaluationRunSpec]):
 
     schema_id: str = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID
     schema_version: str = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    staged_parents: dict[str, StagedEvaluationPrerequisite] = Field(default_factory=dict)
 
     def model_post_init(self, __context: Any) -> None:
         if self.schema_id != EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID:
@@ -102,6 +120,34 @@ class EvaluationRunMatrixSpec(RowMatrixSpec[EvaluationRunSpec]):
                 f"unsupported EvaluationRunMatrixSpec schema_version {self.schema_version!r}"
             )
 
+    @model_validator(mode="after")
+    def _validate_staged_parents(self) -> "EvaluationRunMatrixSpec":
+        serialized_parents: set[str] = set()
+        for name, prerequisite in self.staged_parents.items():
+            validate_staged_binding_name(name)
+            if not is_authenticated_manifest_ref(prerequisite.parent):
+                raise ValueError(
+                    f"matrix staged parent {name!r} requires an authenticated ParentRef"
+                )
+            parent_key = prerequisite.parent.model_dump_json(exclude_none=False)
+            if parent_key in serialized_parents:
+                raise ValueError("matrix staged parents must contain unique complete ParentRefs")
+            serialized_parents.add(parent_key)
+        return self
+
+
+def _coerce_evaluation_run_matrix_spec(
+    spec: EvaluationRunMatrixSpec | Mapping[str, Any],
+) -> EvaluationRunMatrixSpec:
+    if isinstance(spec, EvaluationRunMatrixSpec):
+        return spec
+    migrated = default_spec_registry.migrate(
+        "EvaluationRunMatrixSpec",
+        spec,
+        assume_current=True,
+    )
+    return EvaluationRunMatrixSpec.model_validate(migrated.payload)
+
 
 def materialize_evaluation_run_matrix(
     spec: EvaluationRunMatrixSpec | Mapping[str, Any],
@@ -109,12 +155,10 @@ def materialize_evaluation_run_matrix(
     repo_root: Path | str | None = None,
 ) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
     """Resolve an evaluation matrix into executable evaluation requests."""
-    matrix = (
-        spec
-        if isinstance(spec, EvaluationRunMatrixSpec)
-        else EvaluationRunMatrixSpec.model_validate(spec)
-    )
-    return materialize_matrix_rows(matrix, repo_root=repo_root)
+    matrix = _coerce_evaluation_run_matrix_spec(spec)
+    rows = materialize_matrix_rows(matrix, repo_root=repo_root)
+    _validate_matrix_staged_parent_references(matrix, rows)
+    return rows
 
 
 def execute_evaluation_run_matrix(
@@ -123,6 +167,10 @@ def execute_evaluation_run_matrix(
     root: Path | str,
     repo_root: Path | str | None = None,
     escape_hatch_reason: str | None = None,
+    parent_manifest_root: Path | str | None = None,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ):
     """Resolve and execute every evaluation condition through the shared harness."""
     from feedbax.analysis.harness import MatrixMaterializerHarness
@@ -138,16 +186,36 @@ def execute_evaluation_run_matrix(
             spec if isinstance(spec, EvaluationRunSpec) else EvaluationRunSpec.model_validate(spec)
         )
         rows = [("flat", run_spec.model_dump(mode="python"))]
-    else:
-        matrix = (
-            spec
-            if isinstance(spec, EvaluationRunMatrixSpec)
-            else EvaluationRunMatrixSpec.model_validate(spec)
+        matrix_metadata: dict[str, Any] = {}
+        execution_context = resolve_staged_execution_context(
+            execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
+    else:
+        matrix = _coerce_evaluation_run_matrix_spec(spec)
+        materialized_rows = materialize_evaluation_run_matrix(matrix, repo_root=repo_root)
         rows = [
             (row.row_id, row.payload.model_dump(mode="python"))
-            for row in materialize_matrix_rows(matrix, repo_root=repo_root)
+            for row in materialized_rows
         ]
+        execution_context = _resolve_matrix_staged_parents(
+            matrix,
+            parent_manifest_root=parent_manifest_root,
+            execution_descriptor=execution_descriptor,
+            artifact_provider_bindings=artifact_provider_bindings,
+            checkpoint_custody_bindings=checkpoint_custody_bindings,
+        )
+        matrix_metadata = (
+            {
+                "staged_parents": {
+                    name: prerequisite.model_dump(mode="json", exclude_none=True)
+                    for name, prerequisite in matrix.staged_parents.items()
+                }
+            }
+            if matrix.staged_parents
+            else {}
+        )
 
     def execute(row_id: str, resolved: Mapping[str, Any], row_root: Path):
         manifest, path = execute_evaluation_run_spec(
@@ -159,6 +227,7 @@ def execute_evaluation_run_matrix(
                     "escape_hatch_reason": escape_hatch_reason,
                 }
             },
+            execution_context=execution_context,
         )
         return manifest, path
 
@@ -169,7 +238,104 @@ def execute_evaluation_run_matrix(
         title="Evaluation run matrix",
         source="EvaluationRunMatrixSpec",
         escape_hatch_reason=escape_hatch_reason,
+        matrix_metadata=matrix_metadata,
     )
+
+
+def _validate_matrix_staged_parent_references(
+    matrix: EvaluationRunMatrixSpec,
+    rows: Sequence[MaterializedMatrixRow[EvaluationRunSpec]],
+) -> None:
+    """Require every row to consume every matrix-level staged parent."""
+    for row in rows:
+        staged = row.payload.params.get("staged_prerequisites") or {}
+        if not isinstance(staged, Mapping):
+            raise TypeError("evaluation params.staged_prerequisites must be a mapping or null")
+        for name, prerequisite in matrix.staged_parents.items():
+            input_match = prerequisite.parent in row.payload.inputs
+            staged_match = name in staged and (
+                StagedEvaluationPrerequisite.model_validate(staged[name]) == prerequisite
+            )
+            if not input_match and not staged_match:
+                raise ValueError(
+                    f"matrix row {row.row_id!r} does not reference staged parent {name!r}"
+                )
+
+
+def _resolve_matrix_staged_parents(
+    matrix: EvaluationRunMatrixSpec,
+    *,
+    parent_manifest_root: Path | str | None,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding],
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding],
+) -> StagedExecutionContext:
+    """Bind and authenticate matrix parents before any row root or recipe effect."""
+    context = resolve_staged_execution_context(
+        execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+    )
+    locations: list[StagedParentExecutionLocation] = []
+    local_root: Path | None = None
+    for name, prerequisite in matrix.staged_parents.items():
+        parent = prerequisite.parent
+        if prerequisite.artifact_provider is None:
+            if parent_manifest_root is None:
+                raise StagedExecutionContextError(
+                    f"local matrix staged parent {name!r} requires parent_manifest_root"
+                )
+            if local_root is None:
+                local_root = Path(parent_manifest_root)
+                if not local_root.is_absolute() or ".." in local_root.parts:
+                    raise StagedExecutionContextError(
+                        "matrix parent manifest root must be absolute and contain no '..'"
+                    )
+                try:
+                    resolved_root = local_root.resolve(strict=True)
+                except OSError as exc:
+                    raise StagedExecutionContextError(
+                        f"matrix parent manifest root is unavailable: {local_root}"
+                    ) from exc
+                if resolved_root != local_root:
+                    raise StagedExecutionContextError(
+                        "matrix parent manifest root must not traverse symbolic links"
+                    )
+            if parent.kind == "TrainingRunManifest":
+                resolved_training = resolve_evaluation_inputs(
+                    EvaluationRunSpec(
+                        evaluation_type="feedbax.internal.matrix_parent_preflight",
+                        inputs=[parent],
+                    ),
+                    manifest_root=local_root,
+                )[0]
+                execution_uri = resolved_training.reference
+            else:
+                resolved = resolve_manifest_input(parent, local_root)
+                execution_uri = resolved.path.relative_to(local_root).as_posix()
+            location_root = local_root
+        else:
+            provider = context.artifact_provider(prerequisite.artifact_provider)
+            digest = str(parent.metadata["manifest_sha256"])
+            size_bytes = int(parent.metadata["size_bytes"])
+            artifact_id = f"artifact://sha256/{digest}"
+            execution_uri = provider.canonical_relative_path(
+                artifact_id,
+                size_bytes=size_bytes,
+            ).as_posix()
+            location_root = Path(provider.root)
+        locations.append(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=location_root,
+                execution_uri=execution_uri,
+                artifact_provider=prerequisite.artifact_provider,
+            )
+        )
+    context = with_staged_parent_execution_locations(context, locations)
+    for prerequisite in matrix.staged_parents.values():
+        context.resolve_manifest_input(prerequisite.parent)
+    return context
 
 
 class EvaluationRecipeExecutionError(RuntimeError):

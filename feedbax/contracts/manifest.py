@@ -703,7 +703,8 @@ class EvaluationRunSpec(StrictModel):
 
 
 EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.evaluation_run_matrix"
-EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run_matrix.v1"
+EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.evaluation_run_matrix.v1"
+EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run_matrix.v2"
 
 
 class EvaluationRunManifest(BaseManifest):
