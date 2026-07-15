@@ -83,6 +83,7 @@ from feedbax.training.interruption import CancellationDecision
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
+    _thaw_runtime_value,
     executor_owned_initial_slot_names,
     validate_materialized_execution_slots,
     validate_materialized_execution_preparation,
@@ -435,7 +436,7 @@ def execute_training_run_spec(
             raise TrainingRunExecutorError(
                 f"mapped execution preparation validation failed: {exc}"
             ) from exc
-        initial_slots = preparation.initial_slots
+        initial_slots = _thaw_runtime_value(preparation.initial_slots)
         kernel_context = preparation.kernel_context
         loss_service = preparation.loss_service
         resume_slot_transform = preparation.resume_slot_transform

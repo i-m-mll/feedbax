@@ -251,6 +251,18 @@ def _freeze_runtime_value(value: Any) -> Any:
     return value
 
 
+def _thaw_runtime_value(value: Any) -> Any:
+    """Restore canonical mutable mapping nodes at the execution boundary."""
+    if isinstance(value, _ImmutableDict):
+        return {key: _thaw_runtime_value(item) for key, item in value.items()}
+    if isinstance(value, tuple) and type(value) is not tuple:
+        leaves, treedef = jt.flatten(value, is_leaf=lambda item: item is not value)
+        return jt.unflatten(treedef, [_thaw_runtime_value(leaf) for leaf in leaves])
+    if isinstance(value, tuple):
+        return tuple(_thaw_runtime_value(item) for item in value)
+    return value
+
+
 def _validate_frozen_runtime_value(value: Any, *, path: str) -> None:
     """Fail closed if sealed runtime content is mutable or buffer-backed."""
     if isinstance(value, np.ndarray):

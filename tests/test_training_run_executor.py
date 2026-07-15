@@ -369,7 +369,9 @@ def test_mapped_preflight_failure_has_no_publication_side_effects(
     assert not checkpoint_root.exists()
 
 
-def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees() -> None:
+def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
+    tmp_path: Path,
+) -> None:
     spec = _mapped_run_spec()
     requests = []
     optimizer = optax.inject_hyperparams(optax.adamw)(learning_rate=1e-3)
@@ -382,7 +384,7 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
             mapped_slots={
                 "model": linear,
                 "optimizer": optimizer.init(linear),
-                "prng": key,
+                "prng": jax.random.key_data(key),
                 "objective": jnp.array(0.0),
                 "train_loss": np.array(0.0, dtype=np.float32),
                 "batch_counter": jnp.array(0, dtype=jnp.int32),
@@ -420,6 +422,33 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
     )
     assert jax.tree.leaves(updates)
     assert updated_state.count == 1
+
+    def gradient_update(slots, coordinate, context):
+        del coordinate, context
+        gradients = jax.tree.map(jnp.ones_like, slots["model"])
+        model_updates, optimizer_state = optimizer.update(
+            gradients,
+            slots["optimizer"],
+            slots["model"],
+        )
+        return {
+            "model": optax.apply_updates(slots["model"], model_updates),
+            "optimizer": optimizer_state,
+            "prng": slots["prng"],
+            "train_loss": jnp.asarray(0.0),
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    result = execute_training_run_spec(
+        spec,
+        preparation=prepared,
+        registry=_mapped_test_registry(spec, gradient_update),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id="mapped-injected-adamw",
+    )
+    assert result.final_slots["optimizer"].count.tolist() == [1] * 5
+    assert type(result.final_slots["optimizer"].hyperparams) is dict
 
 
 def test_runtime_freeze_preserves_optax_tuple_pytree_types() -> None:
