@@ -56,7 +56,12 @@ class _ImmutableDict(dict[Any, Any]):
         return self
 
     def tree_flatten_with_keys(self):
-        keys = tuple(self)
+        sentinel = object()
+        key_paths, _ = jt.flatten_with_path(
+            {key: sentinel for key in self},
+            is_leaf=lambda item: item is sentinel,
+        )
+        keys = tuple(path[0].key for path, _ in key_paths)
         return tuple((jtu.DictKey(key), self[key]) for key in keys), keys
 
     @classmethod

@@ -3216,6 +3216,10 @@ def run_contract_canonical_projection(
 
 def structural_abi_fingerprint(value: Any) -> StructuralAbiFingerprint:
     """Return a structural PyTree ABI fingerprint for a slot value."""
+    # This local import avoids the preparation/checkpoint-custody import cycle.
+    from feedbax.training.preparation import _thaw_runtime_value
+
+    value = _thaw_runtime_value(value)
     pairs, treedef = jt.flatten_with_path(value)
     leaves = [_leaf_fingerprint(path, leaf) for path, leaf in pairs]
     return _structural_abi_fingerprint_from_leaves(str(treedef), leaves)
