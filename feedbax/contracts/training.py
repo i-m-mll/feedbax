@@ -401,13 +401,14 @@ class TrainingMethodAuthoringContribution(BaseModel):
     """Runtime-only method values consumed by the typed authoring compiler.
 
     This hook result is not a durable spec. The authoring compiler embeds its
-    values in the existing ``TrainingRunSpec`` v2 contract.
+    values in the existing ``TrainingRunSpec`` contract.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     training_config: TrainingConfig
     method_extensions: MethodExtensionsSpec = Field(default_factory=MethodExtensionsSpec)
+    mapping_levels: list[MappingLevelSpec] | None = None
 
 
 class StandardSupervisedMethodPayload(TrainingRunContractModel):

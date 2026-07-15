@@ -317,11 +317,6 @@ def compile_training_method_authoring(
         raise TrainingMethodAuthoringError(
             f"/method_ref registry execution resolution failed: {exc}"
         ) from exc
-    expected_worker = WorkerExecutionSpec(
-        method_contract=resolved.contract,
-        effective_phase=resolved.effective_phase,
-    )
-
     callback_payload = typed_payload.model_copy(deep=True)
     callback_snapshot = callback_payload.model_dump(mode="python")
     try:
@@ -350,6 +345,11 @@ def compile_training_method_authoring(
             "n_batches": control.n_batches,
             "batch_size": control.batch_size,
         }
+    )
+    expected_worker = WorkerExecutionSpec(
+        method_contract=resolved.contract,
+        effective_phase=resolved.effective_phase,
+        mapping_levels=contribution.mapping_levels,
     )
     run_spec = TrainingRunSpec(
         graph=graph,
