@@ -212,6 +212,35 @@ def _single_manifest_match(
     return matches[0]
 
 
+def _analysis_input_authentication(
+    spec: AnalysisRunSpec,
+    ref: ParentRef,
+) -> tuple[bool, bool]:
+    """Return whether one input requires and declares manifest authentication."""
+
+    requires_authenticated_evaluation = (
+        ref.kind == "EvaluationRunManifest"
+        and spec.evaluation_states_policy == "require_durable"
+    )
+    try:
+        has_authenticated_claim = is_authenticated_manifest_ref(ref)
+    except ValueError as exc:
+        if requires_authenticated_evaluation:
+            raise _authenticated_manifest_resolution_error(ref, exc) from exc
+        raise
+    if requires_authenticated_evaluation and not has_authenticated_claim:
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            message=(
+                "require_durable requires a content-authenticated EvaluationRunManifest "
+                "authority with schema, version, SHA-256, and byte-size evidence."
+            ),
+            details={"required_ref_schema": "feedbax.ref.authenticated_manifest.v1"},
+        )
+    return requires_authenticated_evaluation, has_authenticated_claim
+
+
 def resolve_analysis_inputs(
     spec: AnalysisRunSpec,
     *,
@@ -227,26 +256,9 @@ def resolve_analysis_inputs(
         manifest_path: Path | None = None
         states: Any = None
         state_source: AnalysisEvaluationStateSource | None = None
-        requires_authenticated_evaluation = (
-            ref.kind == "EvaluationRunManifest"
-            and spec.evaluation_states_policy == "require_durable"
+        requires_authenticated_evaluation, has_authenticated_claim = (
+            _analysis_input_authentication(spec, ref)
         )
-        try:
-            has_authenticated_claim = is_authenticated_manifest_ref(ref)
-        except ValueError as exc:
-            if requires_authenticated_evaluation:
-                raise _authenticated_manifest_resolution_error(ref, exc) from exc
-            raise
-        if requires_authenticated_evaluation and not has_authenticated_claim:
-            raise _resolution_error(
-                code="custody_unavailable",
-                manifest_id=ref.id,
-                message=(
-                    "require_durable requires a content-authenticated EvaluationRunManifest "
-                    "authority with schema, version, SHA-256, and byte-size evidence."
-                ),
-                details={"required_ref_schema": "feedbax.ref.authenticated_manifest.v1"},
-            )
         if has_authenticated_claim:
             authenticated = (
                 authenticated_inputs.get(index) if authenticated_inputs is not None else None
@@ -321,7 +333,11 @@ def resolve_analysis_inputs(
                             manifest_id=ref.id,
                             states=states,
                         )
-                        state_source = _durable_state_source(ref, manifest)
+                        state_source = _durable_state_source(
+                            ref,
+                            manifest,
+                            manifest_path=manifest_path,
+                        )
                 else:
                     rederived, rederived_path = _rederive_evaluation_states(
                         ref.id,
@@ -466,15 +482,28 @@ def _evaluation_states_artifact_for_durable_policy(
 def _durable_state_source(
     ref: ParentRef,
     manifest: EvaluationRunManifest,
+    *,
+    manifest_path: Path | None = None,
 ) -> AnalysisEvaluationStateSource:
     artifacts = [
         artifact for artifact in manifest.artifacts if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
     ]
     artifact = artifacts[0]
+    authority = _portable_manifest_authority(ref)
+    if not is_authenticated_manifest_ref(authority):
+        if manifest_path is None:
+            raise ValueError(
+                "durable evaluation-state provenance requires the supplying manifest path"
+            )
+        authority = authenticated_manifest_ref(
+            manifest,
+            manifest_path,
+            "evaluation_run",
+        )
     return AnalysisEvaluationStateSource(
         source_kind="durable",
         requested_evaluation_manifest_id=ref.id,
-        evaluation_manifest_authority=_portable_manifest_authority(ref),
+        evaluation_manifest_authority=authority,
         supplying_evaluation_manifest_id=manifest.id,
         artifact_id=artifact.artifact_id,
         artifact_sha256=artifact.sha256,
@@ -580,26 +609,9 @@ def _resolve_authenticated_input_authorities(
 
     authenticated_inputs: dict[int, ResolvedManifestInput] = {}
     for index, ref in enumerate(spec.inputs):
-        requires_authenticated_evaluation = (
-            ref.kind == "EvaluationRunManifest"
-            and spec.evaluation_states_policy == "require_durable"
+        requires_authenticated_evaluation, has_authenticated_claim = (
+            _analysis_input_authentication(spec, ref)
         )
-        try:
-            has_authenticated_claim = is_authenticated_manifest_ref(ref)
-        except ValueError as exc:
-            if requires_authenticated_evaluation:
-                raise _authenticated_manifest_resolution_error(ref, exc) from exc
-            raise
-        if requires_authenticated_evaluation and not has_authenticated_claim:
-            raise _resolution_error(
-                code="custody_unavailable",
-                manifest_id=ref.id,
-                message=(
-                    "require_durable requires a content-authenticated EvaluationRunManifest "
-                    "authority with schema, version, SHA-256, and byte-size evidence."
-                ),
-                details={"required_ref_schema": "feedbax.ref.authenticated_manifest.v1"},
-            )
         if not has_authenticated_claim:
             continue
         try:

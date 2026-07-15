@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.evaluation import (
@@ -28,6 +29,7 @@ from feedbax.analysis.specs import (
     unregister_analysis_recipe,
 )
 from feedbax.analysis.manifest_inputs import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
     authenticated_manifest_ref,
     is_authenticated_manifest_ref,
@@ -43,6 +45,7 @@ from feedbax.contracts.manifest import (
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,
+    AnalysisEvaluationStateSource,
     AnalysisRunSpec,
     EvaluationRunSpec,
     ParentRef,
@@ -127,6 +130,101 @@ def _analysis_spec(
         ],
         evaluation_states_policy=policy,
     )
+
+
+def _authenticated_evaluation_authority() -> ParentRef:
+    return ParentRef(
+        kind="EvaluationRunManifest",
+        id="feedbax-evaluation-run:source-model-authority",
+        role="evaluation_run",
+        metadata={
+            "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+            "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+            "manifest_sha256": "a" * 64,
+            "size_bytes": 123,
+        },
+    )
+
+
+def _evaluation_state_source(
+    source_kind: str,
+    authority: ParentRef,
+) -> AnalysisEvaluationStateSource:
+    if source_kind == "durable":
+        return AnalysisEvaluationStateSource(
+            source_kind="durable",
+            requested_evaluation_manifest_id=authority.id,
+            evaluation_manifest_authority=authority,
+            supplying_evaluation_manifest_id=authority.id,
+            artifact_id="artifact:sha256:states",
+            artifact_sha256="b" * 64,
+            artifact_size_bytes=456,
+            artifact_storage_backend="feedbax-local",
+            container_schema_id="feedbax.manifest.evaluation_states_container",
+            container_schema_version="feedbax.manifest.evaluation_states_container.v2",
+            container_storage_backend="npz.v2",
+        )
+    return AnalysisEvaluationStateSource(
+        source_kind="analysis_time_recompute",
+        requested_evaluation_manifest_id=authority.id,
+        resulting_evaluation_manifest_id=authority.id,
+        resulting_evaluation_manifest_authority=authority,
+    )
+
+
+def _invalid_evaluation_authority(profile_case: str) -> ParentRef:
+    authority = _authenticated_evaluation_authority()
+    metadata = dict(authority.metadata)
+    uri = None
+    if profile_case == "id-only":
+        metadata = {}
+    elif profile_case == "partial":
+        metadata = {"ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID}
+    elif profile_case == "malformed":
+        metadata = {"manifest_sha256": "a" * 64, "size_bytes": 123}
+    elif profile_case == "uri-bearing":
+        uri = "/machine/local/evaluation.json"
+    elif profile_case == "wrong-schema":
+        metadata["ref_schema_id"] = "feedbax.ref.other"
+    elif profile_case == "wrong-version":
+        metadata["ref_schema_version"] = "feedbax.ref.authenticated_manifest.v0"
+    elif profile_case == "invalid-hash":
+        metadata["manifest_sha256"] = "not-a-sha256"
+    elif profile_case == "invalid-size":
+        metadata["size_bytes"] = True
+    else:  # pragma: no cover - parametrization controls this helper.
+        raise AssertionError(f"unknown profile case: {profile_case}")
+    return authority.model_copy(update={"metadata": metadata, "uri": uri})
+
+
+@pytest.mark.parametrize("source_kind", ["durable", "analysis_time_recompute"])
+def test_evaluation_state_source_accepts_complete_authenticated_authorities(
+    source_kind: str,
+) -> None:
+    source = _evaluation_state_source(source_kind, _authenticated_evaluation_authority())
+    assert source.source_kind == source_kind
+
+
+@pytest.mark.parametrize("source_kind", ["durable", "analysis_time_recompute"])
+@pytest.mark.parametrize(
+    "profile_case",
+    [
+        "id-only",
+        "partial",
+        "malformed",
+        "uri-bearing",
+        "wrong-schema",
+        "wrong-version",
+        "invalid-hash",
+        "invalid-size",
+    ],
+)
+def test_evaluation_state_source_rejects_incomplete_authenticated_authorities(
+    source_kind: str,
+    profile_case: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        _evaluation_state_source(source_kind, _invalid_evaluation_authority(profile_case))
 
 
 def _write_mutated_artifact_metadata(root: Path, manifest, **updates: object) -> None:
@@ -319,6 +417,9 @@ def test_all_recompute_supplier_paths_are_truthfully_stamped(tmp_path: Path) -> 
         assert durable_input.evaluation_state_source is not None
         assert durable_input.evaluation_state_source.source_kind == "durable"
         assert durable_input.evaluation_state_source.artifact_id == durable.artifacts[0].artifact_id
+        durable_authority = durable_input.evaluation_state_source.evaluation_manifest_authority
+        assert durable_authority is not None
+        assert is_authenticated_manifest_ref(durable_authority)
 
         rederived, _ = _evaluation(tmp_path, value=6)
         evaluation_states_cache_path(rederived.id, root=tmp_path).unlink()

@@ -83,6 +83,16 @@ STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID = "feedbax.spec.staged_evaluation_prere
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = (
     "feedbax.spec.staged_evaluation_prerequisite.v1"
 )
+AUTHENTICATED_MANIFEST_REF_SCHEMA_ID = "feedbax.ref.authenticated_manifest"
+AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION = "feedbax.ref.authenticated_manifest.v1"
+
+_AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS = frozenset(
+    {"ref_schema_id", "ref_schema_version"}
+)
+_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS = (
+    _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS
+    | {"manifest_sha256", "size_bytes"}
+)
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
 
@@ -185,6 +195,47 @@ class ParentRef(StrictModel):
     role: Optional[str] = None
     uri: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def authenticated_manifest_ref_profile(ref: ParentRef) -> tuple[str, int] | None:
+    """Return one ref's authenticated byte profile, if it declares one.
+
+    Partial or unsupported authenticated profiles raise rather than degrading to
+    an unauthenticated manifest reference.
+    """
+
+    discriminators = _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS.intersection(
+        ref.metadata
+    )
+    if not discriminators:
+        return None
+    present = _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS.intersection(ref.metadata)
+    if present != _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS:
+        missing = ", ".join(
+            sorted(_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS - present)
+        )
+        raise ValueError(f"Authenticated manifest ref {ref.id!r} is incomplete: {missing}")
+    schema_id = ref.metadata["ref_schema_id"]
+    schema_version = ref.metadata["ref_schema_version"]
+    digest = ref.metadata["manifest_sha256"]
+    size = ref.metadata["size_bytes"]
+    if schema_id != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID:
+        raise ValueError(f"Unsupported authenticated manifest ref schema_id: {schema_id!r}")
+    if schema_version != AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported authenticated manifest ref schema_version: {schema_version!r}"
+        )
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid SHA-256")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid byte size")
+    if ref.uri is not None:
+        raise ValueError("Authenticated manifest refs must keep machine-local locators out of uri")
+    return digest, size
 
 
 class StagedEvaluationPrerequisite(StrictModel):
@@ -942,6 +993,12 @@ class AnalysisEvaluationStateSource(StrictModel):
                     "durable analysis evaluation-state source is missing evidence: "
                     f"{missing}"
                 )
+            assert self.evaluation_manifest_authority is not None
+            if authenticated_manifest_ref_profile(self.evaluation_manifest_authority) is None:
+                raise ValueError(
+                    "durable analysis evaluation-state source requires a complete "
+                    "authenticated evaluation_manifest_authority"
+                )
         elif self.source_kind == "analysis_time_recompute":
             if (
                 not self.resulting_evaluation_manifest_id
@@ -950,6 +1007,16 @@ class AnalysisEvaluationStateSource(StrictModel):
                 raise ValueError(
                     "analysis_time_recompute source requires authenticated resulting "
                     "evaluation authority"
+                )
+            if (
+                authenticated_manifest_ref_profile(
+                    self.resulting_evaluation_manifest_authority
+                )
+                is None
+            ):
+                raise ValueError(
+                    "analysis_time_recompute source requires a complete authenticated "
+                    "resulting_evaluation_manifest_authority"
                 )
         elif self.source_kind == "evaluation_cache":
             if not self.cache_schema_version or not self.cache_key:
