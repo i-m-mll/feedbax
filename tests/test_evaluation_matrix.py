@@ -8,13 +8,16 @@ from pydantic import ValidationError
 
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
+    EvaluationRecipeExecutionError,
     EvaluationRunMatrixSpec,
     execute_evaluation_run_matrix,
     execute_evaluation_run_spec,
     materialize_evaluation_run_matrix,
     register_evaluation_recipe,
+    resolve_staged_evaluation_prerequisite,
     unregister_evaluation_recipe,
 )
+from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
@@ -22,7 +25,11 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
-from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
+from feedbax.contracts.evaluation_states import (
+    EvaluationStatesProvenanceMismatch,
+    EvaluationStatesSchemaMismatch,
+    store_evaluation_states_artifact,
+)
 from feedbax.contracts.expressions import ValueQuery
 from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -191,6 +198,7 @@ def test_public_exports_include_matrix_and_harness_apis() -> None:
         "EvaluationRunMatrixSpec",
         "MatrixMaterializerHarness",
         "execute_evaluation_run_matrix",
+        "resolve_staged_evaluation_prerequisite",
     } <= set(analysis.__all__)
     assert {"MatrixRow", "RowDerivation", "RowMatrixSpec"} <= set(contracts.__all__)
 
@@ -251,12 +259,16 @@ def _run_staged_matrix(
     observed: list[tuple[Path, str, list[int]]] = []
 
     def recipe(spec, root, _states_path, execution_context):
-        training = execution_context.resolve_manifest_input(spec.inputs[0])
-        bank = StagedEvaluationPrerequisite.model_validate(
-            spec.params["staged_prerequisites"]["paired_bank"]
+        training = resolve_evaluation_inputs(
+            spec,
+            manifest_root=root,
+            execution_context=execution_context,
+        )[0]
+        states = resolve_staged_evaluation_prerequisite(
+            spec.params["staged_prerequisites"]["paired_bank"],
+            execution_context=execution_context,
         )
-        states = execution_context.load_evaluation_states(bank.parent)
-        observed.append((root, training.manifest.id, states["pair"].tolist()))
+        observed.append((root, training.id, states["pair"].tolist()))
         return EvaluationRecipeResult(summary_metrics={"pair_count": len(states["pair"])})
 
     register_evaluation_recipe("example.staged_matrix", recipe)
@@ -278,7 +290,7 @@ def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
     artifact = store_evaluation_states_artifact(
         {"pair": np.asarray([3, 5])},
         root=parent_root,
-        manifest_id="paired-bank",
+        manifest_id="feedbax-evaluation-run:paired-bank",
     )
     artifact = artifact.model_copy(update={"uri": artifact.metadata["relative_path"]})
     bank = _evaluation_manifest(artifact)
@@ -304,9 +316,37 @@ def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
         assert row.result.metadata["matrix_harness"]["staged_parents"] == (
             result.metadata["staged_parents"]
         )
+        assert row.regeneration is not None
+        assert row.regeneration.parameters["executable_spec"] == matrix.model_dump(
+            mode="json", exclude_none=True
+        )
+        assert row.regeneration.parameters["manifest_root"] == str(tmp_path / "rows")
+        assert row.regeneration.parameters["parent_manifest_root"] == str(parent_root)
+        assert row.regeneration.parameters["execution_descriptor"] is None
+        assert row.regeneration.parameters["artifact_provider_bindings"] == []
+        assert row.regeneration.parameters["checkpoint_custody_bindings"] == []
+        assert row.regeneration.parameters["staged_parents"] == result.metadata["staged_parents"]
+        assert row.result.metadata["matrix_harness"]["regeneration_spec"] == (
+            row.regeneration.model_dump(mode="json", exclude_none=True)
+        )
 
 
-def test_matrix_resolves_shared_provider_parents_and_durable_bank(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("metadata_update", "error_type"),
+    [
+        ({}, None),
+        (
+            {"schema_version": "feedbax.spec.evaluation_states_container.v999"},
+            EvaluationStatesSchemaMismatch,
+        ),
+        ({"manifest_id": "feedbax-evaluation-run:tampered"}, EvaluationStatesProvenanceMismatch),
+    ],
+)
+def test_matrix_resolves_shared_provider_parents_and_validates_durable_bank(
+    tmp_path: Path,
+    metadata_update: dict[str, str],
+    error_type: type[ValueError] | None,
+) -> None:
     provider_root = tmp_path / "provider"
     provider_root.mkdir()
     provider = open_immutable_artifact_blob_provider(
@@ -320,11 +360,29 @@ def test_matrix_resolves_shared_provider_parents_and_durable_bank(tmp_path: Path
     provider.store_bytes(training_bytes, role="training_run", logical_name="training.json")
     training_ref = authenticated_manifest_ref(training, training_path, "training_run")
     source_artifact = store_evaluation_states_artifact(
-        {"pair": np.asarray([8, 13])}, root=source_root, manifest_id="provider-bank"
+        {"pair": np.asarray([8, 13])},
+        root=source_root,
+        manifest_id="feedbax-evaluation-run:paired-bank",
     )
     state_bytes = (source_root / source_artifact.metadata["relative_path"]).read_bytes()
     provider_artifact = provider.store_bytes(
-        state_bytes, role="evaluation_states", logical_name="states.npz"
+        state_bytes,
+        role="evaluation_states",
+        logical_name="states.npz",
+        media_type=source_artifact.media_type,
+        metadata={
+            key: value
+            for key, value in source_artifact.metadata.items()
+            if key not in {"relative_path", "storage_backend"}
+        },
+    ).model_copy(
+        update={
+            "metadata": {
+                key: value
+                for key, value in {**source_artifact.metadata, **metadata_update}.items()
+                if key != "relative_path"
+            }
+        }
     )
     bank = _evaluation_manifest(provider_artifact)
     bank_path = write_manifest(bank, root=source_root, index=False)
@@ -338,17 +396,25 @@ def test_matrix_resolves_shared_provider_parents_and_durable_bank(tmp_path: Path
         checkpoint_custody={},
     )
 
-    result, observed = _run_staged_matrix(
-        _staged_matrix(training_ref, bank_ref, artifact_provider="shared"),
-        output_root=tmp_path / "rows",
-        execution_descriptor=descriptor,
-        artifact_provider_bindings=[
-            StagedArtifactProviderRootBinding("shared", provider_root)
-        ],
-    )
+    kwargs = {
+        "output_root": tmp_path / "rows",
+        "execution_descriptor": descriptor,
+        "artifact_provider_bindings": [StagedArtifactProviderRootBinding("shared", provider_root)],
+    }
+    matrix = _staged_matrix(training_ref, bank_ref, artifact_provider="shared")
+    if error_type is not None:
+        with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
+            _run_staged_matrix(matrix, **kwargs)
+        assert isinstance(exc_info.value.__cause__, error_type)
+        return
+
+    result, observed = _run_staged_matrix(matrix, **kwargs)
 
     assert [item[2] for item in observed] == [[8, 13], [8, 13]]
     assert result.metadata["staged_parents"]["paired_bank"]["artifact_provider"] == "shared"
+    replay = result.metadata["regeneration_parameters"]
+    assert replay["execution_descriptor"] == descriptor.model_dump(mode="json", exclude_none=True)
+    assert replay["artifact_provider_bindings"] == [{"name": "shared", "root": str(provider_root)}]
 
 
 def test_matrix_staged_parent_contract_fails_closed_before_row_creation(

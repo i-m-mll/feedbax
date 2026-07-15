@@ -121,6 +121,7 @@ class MatrixMaterializerHarness:
         source: str,
         escape_hatch_reason: str | None = None,
         matrix_metadata: Mapping[str, Any] | None = None,
+        regeneration_parameters: Mapping[str, Any] | None = None,
     ) -> HarnessResult:
         """Execute resolved rows and emit standard custody and regeneration records."""
         if not rows:
@@ -129,6 +130,7 @@ class MatrixMaterializerHarness:
             raise ValueError("flat-spec escape hatch requires a stated non-empty reason")
         materialized: list[MaterializedRow] = []
         shared_metadata = dict(matrix_metadata or {})
+        replay_parameters = dict(regeneration_parameters or {})
         for row_id, resolved in rows:
             if not row_id:
                 raise ValueError("materializer row_id must be non-empty")
@@ -137,7 +139,11 @@ class MatrixMaterializerHarness:
             result, manifest_path = execute(row_id, resolved, row_root)
             regeneration = RegenerationSpec(
                 command=RegenerationCommand(argv=list(command)),
-                parameters={"row_id": row_id, "resolved": dict(resolved)},
+                parameters={
+                    **replay_parameters,
+                    "row_id": row_id,
+                    "resolved": dict(resolved),
+                },
                 metadata={
                     "source": source,
                     "custody": self.custody,
@@ -221,7 +227,10 @@ class MatrixMaterializerHarness:
             tuple(materialized),
             note,
             escape_hatch_reason,
-            metadata=shared_metadata,
+            metadata={
+                **shared_metadata,
+                "regeneration_parameters": replay_parameters,
+            },
         )
 
 

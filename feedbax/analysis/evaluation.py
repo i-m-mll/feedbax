@@ -187,6 +187,8 @@ def execute_evaluation_run_matrix(
         )
         rows = [("flat", run_spec.model_dump(mode="python"))]
         matrix_metadata: dict[str, Any] = {}
+        executable_spec = run_spec.model_dump(mode="json", exclude_none=True)
+        staged_parents: dict[str, Any] = {}
         execution_context = resolve_staged_execution_context(
             execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
@@ -194,6 +196,7 @@ def execute_evaluation_run_matrix(
         )
     else:
         matrix = _coerce_evaluation_run_matrix_spec(spec)
+        executable_spec = matrix.model_dump(mode="json", exclude_none=True)
         materialized_rows = materialize_evaluation_run_matrix(matrix, repo_root=repo_root)
         rows = [
             (row.row_id, row.payload.model_dump(mode="python"))
@@ -216,6 +219,7 @@ def execute_evaluation_run_matrix(
             if matrix.staged_parents
             else {}
         )
+        staged_parents = matrix_metadata.get("staged_parents", {})
 
     def execute(row_id: str, resolved: Mapping[str, Any], row_root: Path):
         manifest, path = execute_evaluation_run_spec(
@@ -239,7 +243,43 @@ def execute_evaluation_run_matrix(
         source="EvaluationRunMatrixSpec",
         escape_hatch_reason=escape_hatch_reason,
         matrix_metadata=matrix_metadata,
+        regeneration_parameters={
+            "executable_spec": executable_spec,
+            "manifest_root": str(Path(root).resolve()),
+            "parent_manifest_root": (
+                str(Path(parent_manifest_root)) if parent_manifest_root is not None else None
+            ),
+            "execution_descriptor": (
+                execution_context.descriptor.model_dump(mode="json", exclude_none=True)
+                if execution_context.descriptor is not None
+                else None
+            ),
+            "artifact_provider_bindings": [
+                {"name": name, "root": str(provider.root)}
+                for name, provider in execution_context.opened_artifact_providers.items()
+            ],
+            "checkpoint_custody_bindings": [
+                {"name": name, "root": str(bound_root)}
+                for name, bound_root in execution_context.checkpoint_custody_roots.items()
+            ],
+            "staged_parents": staged_parents,
+        },
     )
+
+
+def resolve_staged_evaluation_prerequisite(
+    prerequisite: StagedEvaluationPrerequisite | Mapping[str, Any],
+    *,
+    execution_context: StagedExecutionContext,
+) -> Any:
+    """Resolve one staged evaluation-state prerequisite through retained authority."""
+    declared = StagedEvaluationPrerequisite.model_validate(prerequisite)
+    location = execution_context.parent_execution_location(declared.parent)
+    if location.artifact_provider != declared.artifact_provider:
+        raise StagedExecutionContextError(
+            "staged evaluation prerequisite provider disagrees with retained authority"
+        )
+    return execution_context.load_evaluation_states(declared.parent)
 
 
 def _validate_matrix_staged_parent_references(
