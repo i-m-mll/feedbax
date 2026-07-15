@@ -8,8 +8,11 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import equinox as eqx
+import jax
 import pytest
 import jax.numpy as jnp
+import optax
 from pydantic import BaseModel, ConfigDict
 
 from feedbax.analysis.execution_context import (
@@ -98,15 +101,25 @@ from feedbax.training.executor import (
     _feedbax_owned_training_manifest_metadata,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
+    _synchronized_optimizer_step,
     execute_training_run_spec,
 )
 from feedbax.training.preparation import (
     ExecutionPreparationRequest,
+    ExecutionPreparationPlan,
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
     _build_materialized_execution_preparation,
     _identity_fingerprint,
     _run_spec_sha256,
+    ScalarInstancePreparationResult,
+    materialize_execution_preparation,
+)
+from feedbax.training.phase_executor import PhaseProgramExecutor
+from feedbax.training.worker_validation import (
+    WorkerContractValidationError,
+    resolve_execution_mapping,
+    validate_worker_contract,
 )
 from feedbax.training.manifest_preflight import (
     TrainingRunManifestPreflightError,
@@ -169,13 +182,45 @@ def _mapped_run_spec() -> TrainingRunSpec:
     contract = worker.method_contract
     contract.axes.append(AxisSpec(name="ensemble", role="replicate", size=5))
     for slot in contract.state_slots:
-        slot.axis_bindings = [
-            SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)
-        ]
+        slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)]
     for step in contract.phase_program.update_steps:
         step.axes.append("ensemble")
     worker.mapping_levels = [MappingLevelSpec(axis="ensemble")]
     return spec.model_copy(update={"worker_execution": worker})
+
+
+def _mapped_shared_objective_run_spec(kernel) -> TrainingRunSpec:
+    spec = _mapped_run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    contract = worker.method_contract
+    for slot in contract.state_slots:
+        if slot.name == "objective":
+            slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="shared")]
+    program = contract.phase_program
+    program.phases[0].writes.remove("train_loss")
+    program.phases[0].checkpoint_barrier = None
+    program.update_steps[0].writes.remove("train_loss")
+    program.checkpoint_barriers = []
+    kernels = {"feedbax.training.standard_supervised.gradient_update": kernel}
+    worker.effective_phase = validate_worker_contract(contract, update_kernels=kernels)
+    return spec.model_copy(update={"worker_execution": worker})
+
+
+def _mapped_test_registry(spec: TrainingRunSpec, kernel) -> TrainingMethodRegistry:
+    registry = TrainingMethodRegistry()
+    registry.register(
+        TrainingMethodRegistration(
+            method_ref=standard_supervised_method_ref().key,
+            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            payload_model=StandardSupervisedMethodPayload,
+            contract_factory=lambda: spec.worker_execution.method_contract,
+            update_kernels_factory=lambda _payload: {
+                "feedbax.training.standard_supervised.gradient_update": kernel
+            },
+        )
+    )
+    return registry
 
 
 def _valid_materialized_preparation(
@@ -185,9 +230,7 @@ def _valid_materialized_preparation(
         slot.name: jnp.zeros((5,), dtype=jnp.float32)
         for slot in spec.worker_execution.method_contract.state_slots
     }
-    coordinates = tuple(
-        (AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5)
-    )
+    coordinates = tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5))
     return _build_materialized_execution_preparation(
         request=ExecutionPreparationRequest(run_spec=spec),
         provider_identity="tests.mapped_preparation",
@@ -197,6 +240,335 @@ def _valid_materialized_preparation(
         resume_slot_transform=None,
         coordinate_order=coordinates,
     )
+
+
+def _mapped_plan(materializer) -> ExecutionPreparationPlan:
+    return ExecutionPreparationPlan(
+        shared_slots={},
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        rng_roots={"model": jax.random.key(7)},
+        materialize_instance=materializer,
+    )
+
+
+def _shared_objective_materializer(request):
+    index = request.axis_coordinates[0].index
+    return ScalarInstancePreparationResult(
+        mapped_slots={
+            "model": jnp.array(float(index)),
+            "optimizer": jnp.array(0),
+            "prng": request.rng.keys["model"],
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
+        }
+    )
+
+
+def _shared_objective_kernel(slots, coordinate, context):
+    del coordinate, context
+    assert "objective" in slots
+    return {
+        "model": slots["model"] + 1,
+        "optimizer": slots["optimizer"] + 1,
+        "prng": slots["prng"],
+        "batch_counter": slots["batch_counter"] + 1,
+    }
+
+
+def test_executor_injects_declared_shared_objective_before_mapped_preflight(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_shared_objective_run_spec(_shared_objective_kernel)
+    preparation = materialize_execution_preparation(
+        ExecutionPreparationRequest(run_spec=spec),
+        _mapped_plan(_shared_objective_materializer),
+        provider_identity="tests.shared_objective",
+    )
+    assert "objective" not in preparation.initial_slots
+
+    result = execute_training_run_spec(
+        spec,
+        preparation=preparation,
+        registry=_mapped_test_registry(spec, _shared_objective_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoints",
+        run_id="mapped-shared-objective",
+    )
+
+    assert result.final_slots["model"].tolist() == [1, 2, 3, 4, 5]
+    assert "objective" in result.final_slots
+
+
+def test_mapped_plan_still_rejects_missing_provider_owned_shared_slot() -> None:
+    spec = _mapped_run_spec()
+    for slot in spec.worker_execution.method_contract.state_slots:
+        if slot.name == "objective":
+            slot.axis_bindings = [SlotAxisBindingSpec(axis="ensemble", mode="shared")]
+    spec.worker_execution.method_contract.state_slots.append(
+        StateSlotSpec(
+            name="shared_config",
+            role="auxiliary",
+            axis_bindings=[SlotAxisBindingSpec(axis="ensemble", mode="shared")],
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"missing_required=\['shared_config'\]"):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=spec),
+            _mapped_plan(_shared_objective_materializer),
+            provider_identity="tests.missing_shared",
+        )
+
+
+def test_mapped_preflight_failure_has_no_publication_side_effects(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def unsafe_kernel(slots, coordinate, context):
+        del coordinate, context
+        return {"model": int(slots["model"])}
+
+    spec = _mapped_shared_objective_run_spec(unsafe_kernel)
+    preparation = materialize_execution_preparation(
+        ExecutionPreparationRequest(run_spec=spec),
+        _mapped_plan(_shared_objective_materializer),
+        provider_identity="tests.preflight_failure",
+    )
+    emitter = RunEventEmitter(
+        run_set_id="mapped-preflight",
+        row_id="row",
+        heartbeat_seconds=None,
+    )
+    events = []
+    monkeypatch.setattr(emitter, "emit", lambda event_type, payload=None: events.append(event_type))
+    manifest_root = tmp_path / "manifest"
+    checkpoint_root = tmp_path / "checkpoints"
+
+    with pytest.raises(TrainingRunExecutorError, match="mapped execution preflight failed"):
+        execute_training_run_spec(
+            spec,
+            preparation=preparation,
+            registry=_mapped_test_registry(spec, unsafe_kernel),
+            manifest_root=manifest_root,
+            checkpoint_root=checkpoint_root,
+            run_id="mapped-preflight-failure",
+            run_event_emitter=emitter,
+        )
+
+    assert events == []
+    assert not manifest_root.exists()
+    assert not checkpoint_root.exists()
+
+
+def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees() -> None:
+    spec = _mapped_run_spec()
+    requests = []
+    optimizer = optax.adam(1e-3)
+
+    def materialize(request):
+        requests.append(request)
+        key = request.rng.keys["model"]
+        linear = eqx.nn.Linear(1, 1, key=key)
+        return ScalarInstancePreparationResult(
+            mapped_slots={
+                "model": linear,
+                "optimizer": optimizer.init(linear),
+                "prng": key,
+                "objective": jnp.array(0.0),
+                "train_loss": jnp.array(0.0),
+                "batch_counter": jnp.array(0, dtype=jnp.int32),
+            }
+        )
+
+    prepared = materialize_execution_preparation(
+        ExecutionPreparationRequest(run_spec=spec),
+        _mapped_plan(materialize),
+        provider_identity="tests.mapped_plan",
+    )
+
+    assert [item.axis_coordinates[0].index for item in requests] == list(range(5))
+    assert (
+        len({tuple(map(int, jax.random.key_data(item.rng.keys["model"]))) for item in requests})
+        == 5
+    )
+    assert prepared.initial_slots["model"].weight.shape[0] == 5
+    assert any(
+        getattr(leaf, "shape", None) == (5,)
+        for leaf in jax.tree.leaves(prepared.initial_slots["optimizer"])
+    )
+
+
+def test_mapped_plan_rejects_batch_history_immediately() -> None:
+    calls = []
+
+    def materialize(request):
+        calls.append(request)
+        return ScalarInstancePreparationResult(
+            mapped_slots={
+                "model": BatchHistory(jnp.zeros((1,))),
+                **{
+                    name: jnp.array(0)
+                    for name in {"optimizer", "prng", "objective", "train_loss", "batch_counter"}
+                },
+            }
+        )
+
+    with pytest.raises(ValueError, match="contains BatchHistory"):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=_mapped_run_spec()),
+            _mapped_plan(materialize),
+            provider_identity="tests.mapped_history",
+        )
+    assert len(calls) == 1
+
+
+def test_mapped_plan_rejects_optional_presence_and_leaf_drift() -> None:
+    spec = _mapped_run_spec()
+    slots = spec.worker_execution.method_contract.state_slots
+    slots[-2].required = False
+    calls = 0
+
+    def materialize(_request):
+        nonlocal calls
+        calls += 1
+        values = {name: jnp.zeros((2,)) for name in {slot.name for slot in slots}}
+        if calls == 2:
+            values.pop("train_loss")
+        return ScalarInstancePreparationResult(mapped_slots=values)
+
+    with pytest.raises(ValueError, match="optional mapped slots"):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=spec),
+            _mapped_plan(materialize),
+            provider_identity="tests.optional_drift",
+        )
+
+
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    [
+        ("shape", "changes shape or dtype"),
+        ("type", "changes array/static type"),
+        ("tree", "divergent PyTree"),
+        ("static", "divergent static values"),
+    ],
+)
+def test_mapped_plan_rejects_tree_shape_type_and_static_drift(drift, message) -> None:
+    calls = 0
+
+    def materialize(_request):
+        nonlocal calls
+        calls += 1
+        model = (jnp.zeros((2,)), "same") if drift == "static" else jnp.zeros((2,))
+        if calls == 2:
+            if drift == "shape":
+                model = jnp.zeros((3,))
+            elif drift == "type":
+                model = 1
+            elif drift == "tree":
+                model = {"array": jnp.zeros((2,))}
+            else:
+                model = (jnp.zeros((2,)), "different")
+        return ScalarInstancePreparationResult(
+            mapped_slots={
+                name: model if name == "model" else jnp.array(0)
+                for name in {
+                    "model",
+                    "optimizer",
+                    "prng",
+                    "objective",
+                    "train_loss",
+                    "batch_counter",
+                }
+            }
+        )
+
+    with pytest.raises(ValueError, match=message):
+        materialize_execution_preparation(
+            ExecutionPreparationRequest(run_spec=_mapped_run_spec()),
+            _mapped_plan(materialize),
+            provider_identity="tests.tree_drift",
+        )
+    assert calls == 2
+
+
+def _mapped_phase_executor(kernel):
+    spec = _mapped_run_spec()
+    levels, bindings = resolve_execution_mapping(spec.worker_execution)
+    return PhaseProgramExecutor(
+        spec.worker_execution.method_contract.phase_program,
+        {"feedbax.training.standard_supervised.gradient_update": kernel},
+        state_slots=spec.worker_execution.method_contract.state_slots,
+        mapping_levels=levels,
+        slot_axis_bindings=bindings,
+    ), bindings
+
+
+def _mapped_scalar_kernel(slots, coordinate, context):
+    del coordinate, context
+    return {
+        "model": slots["model"] + 1,
+        "optimizer": slots["optimizer"] + 1,
+        "prng": slots["prng"],
+        "train_loss": slots["model"] * 2,
+        "batch_counter": slots["batch_counter"] + 1,
+    }
+
+
+def _mapped_slots() -> dict[str, object]:
+    return {
+        "model": jnp.arange(5.0),
+        "optimizer": jnp.zeros((5,)),
+        "prng": jnp.zeros((5, 2), dtype=jnp.uint32),
+        "objective": jnp.zeros((5,)),
+        "train_loss": jnp.zeros((5,)),
+        "batch_counter": jnp.zeros((5,), dtype=jnp.int32),
+    }
+
+
+def test_mapped_executor_preflight_and_execution_match_manual_scalar_loop() -> None:
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    slots = _mapped_slots()
+    executor.preflight(slots, run_id="mapped", context={})
+    result = executor.run(slots, run_id="mapped")
+
+    assert result.slots["model"].tolist() == [1, 2, 3, 4, 5]
+    assert result.slots["train_loss"].tolist() == [0, 2, 4, 6, 8]
+    assert result.slots["batch_counter"].tolist() == [1] * 5
+
+
+def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync() -> None:
+    def tracer_unsafe(slots, coordinate, context):
+        del coordinate, context
+        return {"model": int(slots["model"])}
+
+    executor, _ = _mapped_phase_executor(tracer_unsafe)
+    with pytest.raises(WorkerContractValidationError, match="preflight failed"):
+        executor.preflight(_mapped_slots(), run_id="mapped", context={})
+
+    def divergent(slots, coordinate, context):
+        updates = _mapped_scalar_kernel(slots, coordinate, context)
+        updates["batch_counter"] = slots["batch_counter"] + slots["model"].astype(jnp.int32)
+        return updates
+
+    executor, _ = _mapped_phase_executor(divergent)
+    with pytest.raises(WorkerContractValidationError, match="authorities diverged"):
+        executor.run(_mapped_slots(), run_id="mapped")
+
+
+def test_mapped_optimizer_authority_uses_instance_slots_and_requires_equality() -> None:
+    _, bindings = _mapped_phase_executor(_mapped_scalar_kernel)
+    runtime = _mapped_slots()
+
+    def extractor(_payload, slots):
+        return int(slots["optimizer"])
+
+    assert _synchronized_optimizer_step(extractor, None, runtime, bindings) == 0
+
+    runtime["optimizer"] = jnp.arange(5)
+    with pytest.raises(TrainingRunExecutorError, match="authorities diverged"):
+        _synchronized_optimizer_step(extractor, None, runtime, bindings)
 
 
 @pytest.mark.parametrize(
@@ -248,11 +620,7 @@ def test_mapped_executor_rejects_stale_fingerprint_and_run_spec_identity() -> No
     ("identity_update", "message"),
     [
         (
-            {
-                "coordinate_order": (
-                    (AxisCoordinateSpec(axis="ensemble", index=0),),
-                )
-            },
+            {"coordinate_order": ((AxisCoordinateSpec(axis="ensemble", index=0),),)},
             "coordinate identity mismatch",
         ),
         ({"rng_algorithm_version": "feedbax.preparation_rng_scope.fold_in.v0"}, "unsupported"),
@@ -682,9 +1050,10 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     emitted_ref = result.manifest.checkpoint_custody[0]
     loaded_ref = manifest.checkpoint_custody[0]
     assert loaded_ref == emitted_ref
-    assert emitted_ref.uri == result.checkpoint_writes[0].manifest_path.relative_to(
-        checkpoint_root
-    ).as_posix()
+    assert (
+        emitted_ref.uri
+        == result.checkpoint_writes[0].manifest_path.relative_to(checkpoint_root).as_posix()
+    )
     assert not Path(emitted_ref.uri).is_absolute()
     staged_context = resolve_staged_execution_context(
         StagedExecutionDescriptor(

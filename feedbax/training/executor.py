@@ -52,7 +52,11 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
 )
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
-from feedbax.contracts.worker import BarrierArtifactSinkSpec, ProgressCoordinate
+from feedbax.contracts.worker import (
+    BarrierArtifactSinkSpec,
+    MaterializedSlotAxisBinding,
+    ProgressCoordinate,
+)
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
 from feedbax.orchestration.events import RunEventEmitter
 from feedbax.training.checkpoint_custody import (
@@ -78,6 +82,8 @@ from feedbax.training.interruption import CancellationDecision
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
+    executor_owned_initial_slot_names,
+    validate_materialized_execution_slots,
     validate_materialized_execution_preparation,
 )
 from feedbax.training.diagnostics import (
@@ -230,6 +236,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         segment_batch_count: int | None = None,
         segment_parent_transaction_id: str | None = None,
         resolved_method: ResolvedTrainingMethod[Any],
+        slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
         run_event_emitter: RunEventEmitter | None = None,
     ) -> None:
         super().__init__()
@@ -242,6 +249,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self.segment_batch_count = segment_batch_count
         self.segment_parent_transaction_id = segment_parent_transaction_id
         self.resolved_method = resolved_method
+        self.slot_axis_bindings = dict(slot_axis_bindings or {})
         self.run_event_emitter = run_event_emitter
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
@@ -274,6 +282,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                 final_slots=saved.slots,
                 fallback=saved.coordinate.program_step,
                 require_authority=True,
+                slot_axis_bindings=self.slot_axis_bindings,
             )
             segment_batch_count = cumulative_completed_batches - self.segment_start_batch
             if segment_batch_count < 0:
@@ -285,10 +294,11 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         checkpoint_metadata: dict[str, Any] = {"barrier_visit_ordinal": saved.visit_ordinal}
         descriptor = self.resolved_method.descriptor
         if descriptor is not None and descriptor.optimizer_step_extractor is not None:
-            checkpoint_metadata["optimizer_step"] = _validated_optimizer_step(
+            checkpoint_metadata["optimizer_step"] = _synchronized_optimizer_step(
                 descriptor.optimizer_step_extractor,
                 self.resolved_method.payload,
                 saved.slots,
+                self.slot_axis_bindings,
             )
         write = write_checkpoint_transaction(
             self.root,
@@ -389,9 +399,7 @@ def execute_training_run_spec(
     manifest; ``terminate`` emits a cancelled manifest immediately.
     """
     run_spec = _validate_spec(spec)
-    mapping_levels, _slot_axis_bindings = resolve_execution_mapping(
-        run_spec.worker_execution
-    )
+    mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
     loose_preparation = any(
         value is not None
         for value in (initial_slots, kernel_context, loss_service, resume_slot_transform)
@@ -554,8 +562,37 @@ def execute_training_run_spec(
             "/worker_execution/effective_phase does not match the executable method contract"
         )
     program = effective_phase.phase_program
-    slots = _initial_slots(initial_slots, lowered_objective=lowered.loss)
+    executor_owned_slots = executor_owned_initial_slot_names(run_spec, slot_axis_bindings)
+    slots = _initial_slots(
+        initial_slots,
+        lowered_objective=lowered.loss,
+        executor_owned_slots=executor_owned_slots,
+    )
     slots = _normalize_batch_progress_slot(slots, program=program)
+    if mapping_levels:
+        try:
+            validate_materialized_execution_slots(
+                slots,
+                slot_axis_bindings,
+                required_slots={slot.name for slot in effective_phase.state_slots if slot.required},
+            )
+        except ValueError as exc:
+            raise TrainingRunExecutorError(
+                f"mapped execution state validation failed after executor slot merge: {exc}"
+            ) from exc
+    caller_kernel_context = dict(kernel_context or {})
+    reserved_context_keys = sorted(
+        set(caller_kernel_context).intersection(_RESERVED_KERNEL_CONTEXT_KEYS)
+    )
+    if reserved_context_keys:
+        raise TrainingRunExecutorError(
+            f"kernel_context contains executor-reserved keys: {reserved_context_keys!r}"
+        )
+    executor_context = {
+        **caller_kernel_context,
+        "run_spec": run_spec,
+        "method_payload": method_payload,
+    }
     custody_root = _checkpoint_root(
         root_path=root_path,
         configured_root=checkpoint_root or run_spec.artifacts.artifact_root,
@@ -614,18 +651,28 @@ def execute_training_run_spec(
         segment_batch_count=segment_batch_count,
         segment_parent_transaction_id=segment_parent_transaction_id,
         resolved_method=resolved_method,
+        slot_axis_bindings=slot_axis_bindings,
         run_event_emitter=run_event_emitter,
     )
-    if loaded_resume_checkpoint is not None:
-        checkpoint_store.remember(loaded_resume_checkpoint)
-
     executor = PhaseProgramExecutor(
         program,
         kernels,
         guard_predicates=guards,
         checkpoint_store=checkpoint_store,
         state_slots=effective_phase.state_slots,
+        mapping_levels=mapping_levels,
+        slot_axis_bindings=slot_axis_bindings,
     )
+    try:
+        executor.preflight(
+            loaded_resume_checkpoint.slots if loaded_resume_checkpoint is not None else slots,
+            run_id=resolved_run_id,
+            context=executor_context,
+        )
+    except ValueError as exc:
+        raise TrainingRunExecutorError(f"mapped execution preflight failed: {exc}") from exc
+    if loaded_resume_checkpoint is not None:
+        checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
     total_batches = int(run_spec.training_config.n_batches or 0)
     started_at = (
@@ -635,19 +682,6 @@ def execute_training_run_spec(
     )
     cache_before = _compilation_cache_snapshot()
     runtime_telemetry: dict[str, Any] = {}
-    caller_kernel_context = dict(kernel_context or {})
-    reserved_context_keys = sorted(
-        set(caller_kernel_context).intersection(_RESERVED_KERNEL_CONTEXT_KEYS)
-    )
-    if reserved_context_keys:
-        raise TrainingRunExecutorError(
-            f"kernel_context contains executor-reserved keys: {reserved_context_keys!r}"
-        )
-    executor_context = {
-        **caller_kernel_context,
-        "run_spec": run_spec,
-        "method_payload": method_payload,
-    }
     cancellation: CancellationDecision | None = None
 
     def observe_cancellation(coordinate: ProgressCoordinate) -> None:
@@ -714,6 +748,7 @@ def execute_training_run_spec(
             segment_start_batch=segment_start_batch,
             history_events=history_events,
             execution_context=producer_context,
+            slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
             root_path=root_path,
@@ -799,6 +834,7 @@ def execute_training_run_spec(
             segment_start_batch=segment_start_batch,
             history_events=history_events,
             execution_context=producer_context,
+            slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
             root_path=root_path,
@@ -1276,6 +1312,53 @@ def _validated_optimizer_step(
     return value
 
 
+def _instance_runtime_slots(
+    runtime: Mapping[str, Any],
+    bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    instance: int,
+) -> dict[str, Any]:
+    mapped = {
+        name
+        for name, slot_bindings in bindings.items()
+        if slot_bindings and slot_bindings[0].mode == "mapped"
+    }
+    return {
+        name: jt.map(
+            lambda leaf: leaf[instance] if isinstance(leaf, (jax.Array, np.ndarray)) else leaf,
+            value,
+        )
+        if name in mapped
+        else value
+        for name, value in runtime.items()
+    }
+
+
+def _synchronized_optimizer_step(
+    extractor: Callable[[Any, Mapping[str, Any]], int],
+    payload: Any,
+    runtime: Mapping[str, Any],
+    bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> int:
+    mapped_bindings = [
+        value[0] for value in bindings.values() if value and value[0].mode == "mapped"
+    ]
+    if not mapped_bindings:
+        return _validated_optimizer_step(extractor, payload, runtime)
+    values = [
+        _validated_optimizer_step(
+            extractor,
+            payload,
+            _instance_runtime_slots(runtime, bindings, instance),
+        )
+        for instance in range(mapped_bindings[0].size)
+    ]
+    if any(value != values[0] for value in values[1:]):
+        raise TrainingRunExecutorError(
+            f"/descriptor/optimizer_step_extractor mapped authorities diverged: {values!r}"
+        )
+    return values[0]
+
+
 def _local_custody_path(uri: str) -> Path | None:
     """Resolve locally addressable custody URIs and ignore remote registry schemes."""
 
@@ -1345,11 +1428,13 @@ def _initial_slots(
     initial_slots: Mapping[str, Any] | None,
     *,
     lowered_objective: Any,
+    executor_owned_slots: Sequence[str],
 ) -> dict[str, Any]:
     if initial_slots is None:
         raise TrainingRunExecutorError("/initial_slots are required for native execution")
     slots = dict(initial_slots)
-    slots.setdefault("objective", lowered_objective)
+    for slot in executor_owned_slots:
+        slots.setdefault(slot, lowered_objective)
     return slots
 
 
@@ -1681,6 +1766,7 @@ def _build_training_diagnostics(
     segment_start_batch: int,
     history_events: Sequence[Mapping[str, Any]],
     execution_context: NativeExecutionProducerContext | None,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> TrainingDiagnostics:
     transactions: list[CheckpointTransactionDiagnostic] = []
     for write in checkpoint_writes:
@@ -1707,6 +1793,7 @@ def _build_training_diagnostics(
             else final_coordinate.program_step
         ),
         require_authority=status == "completed",
+        slot_axis_bindings=slot_axis_bindings,
     )
     segment_completed_batches = max(
         0,
@@ -1773,6 +1860,7 @@ def _terminal_completed_batches(
     final_slots: Mapping[str, Any],
     fallback: int,
     require_authority: bool,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> int:
     """Read the terminal cumulative batch count from the declared authority."""
 
@@ -1786,6 +1874,21 @@ def _terminal_completed_batches(
         raise TrainingRunExecutorError(
             f"{path}/slot={authority.slot!r} is missing from terminal slots"
         )
+    bindings = dict(slot_axis_bindings or {})
+    authority_bindings = bindings.get(authority.slot, ())
+    if authority_bindings and authority_bindings[0].mode == "mapped":
+        values = [
+            _terminal_completed_batches(
+                program=program,
+                final_slots=_instance_runtime_slots(final_slots, bindings, instance),
+                fallback=fallback,
+                require_authority=require_authority,
+            )
+            for instance in range(authority_bindings[0].size)
+        ]
+        if any(value != values[0] for value in values[1:]):
+            raise TrainingRunExecutorError(f"{path} mapped authorities diverged: {values!r}")
+        return values[0]
     value = final_slots[authority.slot]
     for index, segment in enumerate(authority.field_path):
         segment_path = f"{path}/field_path/{index}"

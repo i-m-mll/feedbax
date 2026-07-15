@@ -24,6 +24,7 @@ from feedbax.training.preparation import (
     ExecutionPreparationPlan,
     ExecutionPreparationRequest,
     lower_zero_level_preparation_plan,
+    materialize_execution_preparation,
     require_execution_preparation_provider,
 )
 from feedbax.training.worker_validation import resolve_execution_mapping
@@ -422,9 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         preparation_registration = DEFAULT_EXECUTION_PREPARATION_PROVIDER_REGISTRY.get(
             run_spec.method_ref.key
         )
-        mapping_levels, _slot_axis_bindings = resolve_execution_mapping(
-            run_spec.worker_execution
-        )
+        mapping_levels, _slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
         if method_registration.requires_execution_preparation:
             require_execution_preparation_provider(
                 method_ref=run_spec.method_ref.key,
@@ -455,11 +454,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if isinstance(prepared, ExecutionPreparationPlan):
                 if mapping_levels:
-                    raise ValueError(
-                        "mapped execution-preparation plan reached the Part-2 materialization "
-                        "hook before scalar instance stacking was installed"
+                    prepared = materialize_execution_preparation(
+                        ExecutionPreparationRequest(
+                            run_spec=run_spec,
+                            method_payload=resolved_method.payload,
+                            method_contract=resolved_method.contract,
+                            effective_phase=resolved_method.effective_phase,
+                            run_id=args.run_id,
+                            resume=args.resume,
+                        ),
+                        prepared,
+                        provider_identity=preparation_registration.owner,
                     )
-                prepared = lower_zero_level_preparation_plan(prepared)
+                else:
+                    prepared = lower_zero_level_preparation_plan(prepared)
             preparation = prepared
             initial_slots = None
         training_payload = _read_json(args.training_payload) if args.training_payload else None

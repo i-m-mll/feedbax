@@ -10,9 +10,13 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 import jax
+import jax.numpy as jnp
+import jax.tree as jt
+import jax.tree_util as jtu
 import numpy as np
 from pydantic import BaseModel
 
+from feedbax.contracts.checkpoint_history import BatchHistory
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.worker import (
@@ -33,6 +37,7 @@ _PREPARATION_RNG_DOMAIN = b"feedbax.preparation_rng_scope\0"
 _MATERIALIZED_PREPARATION_SEAL = object()
 
 
+@jtu.register_pytree_with_keys_class
 class _ImmutableDict(dict[Any, Any]):
     """Recursively frozen mapping that remains PyTree/deepcopy compatible."""
 
@@ -49,6 +54,14 @@ class _ImmutableDict(dict[Any, Any]):
 
     def __deepcopy__(self, _memo: dict[int, Any]) -> "_ImmutableDict":
         return self
+
+    def tree_flatten_with_keys(self):
+        keys = tuple(self)
+        return tuple((jtu.DictKey(key), self[key]) for key in keys), keys
+
+    @classmethod
+    def tree_unflatten(cls, keys, values):
+        return cls(zip(keys, values, strict=True))
 
 
 class ExecutionPreparationError(ValueError):
@@ -75,6 +88,7 @@ class ExecutionPreparationResult:
     kernel_context: Mapping[str, Any] = field(default_factory=dict)
     loss_service: LossService | None = None
     resume_slot_transform: ResumeSlotTransform | None = None
+
 
 @dataclass(frozen=True)
 class PreparationRngScope:
@@ -213,9 +227,7 @@ def _freeze_runtime_value(value: Any) -> Any:
     if isinstance(value, jax.Array):
         return value
     if isinstance(value, Mapping):
-        return _ImmutableDict(
-            {key: _freeze_runtime_value(item) for key, item in value.items()}
-        )
+        return _ImmutableDict({key: _freeze_runtime_value(item) for key, item in value.items()})
     if isinstance(value, tuple):
         return tuple(_freeze_runtime_value(item) for item in value)
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
@@ -253,13 +265,9 @@ def _freeze_rng_roots(value: Mapping[str, Any], *, path: str) -> Mapping[str, An
         try:
             data = jax.random.key_data(key)
         except (TypeError, ValueError) as exc:
-            raise ExecutionPreparationError(
-                f"{path}[{name!r}] is not a JAX PRNG key"
-            ) from exc
+            raise ExecutionPreparationError(f"{path}[{name!r}] is not a JAX PRNG key") from exc
         if tuple(data.shape) != (2,):
-            raise ExecutionPreparationError(
-                f"{path}[{name!r}] must contain one scalar PRNG key"
-            )
+            raise ExecutionPreparationError(f"{path}[{name!r}] must contain one scalar PRNG key")
         frozen[name] = key
     return _ImmutableDict(frozen)
 
@@ -268,10 +276,7 @@ def preparation_rng_token(label: str, value: str) -> int:
     """Return the frozen unsigned token for one preparation RNG component."""
     validate_worker_identifier(label, path="rng token label")
     digest = hashlib.sha256(
-        _PREPARATION_RNG_DOMAIN
-        + label.encode("utf-8")
-        + b"\0"
-        + value.encode("utf-8")
+        _PREPARATION_RNG_DOMAIN + label.encode("utf-8") + b"\0" + value.encode("utf-8")
     ).digest()
     return int.from_bytes(digest[:4], byteorder="big", signed=False)
 
@@ -339,10 +344,7 @@ def _expected_coordinate_order(
     if len(levels) != 1:
         raise ExecutionPreparationError("materialized preparation requires one mapping level")
     level = levels[0]
-    return tuple(
-        (AxisCoordinateSpec(axis=level.axis, index=index),)
-        for index in range(level.size)
-    )
+    return tuple((AxisCoordinateSpec(axis=level.axis, index=index),) for index in range(level.size))
 
 
 def _build_materialized_execution_preparation(
@@ -444,11 +446,228 @@ def validate_materialized_execution_preparation(
     initial_slots = getattr(preparation, "initial_slots", None)
     if not isinstance(initial_slots, Mapping):
         raise ExecutionPreparationError("materialized preparation initial_slots are invalid")
-    missing = sorted(set(bindings) - set(initial_slots))
+    executor_owned = executor_owned_initial_slot_names(run_spec, bindings)
+    required = {
+        slot.name
+        for slot in run_spec.worker_execution.method_contract.state_slots
+        if slot.required and slot.name in bindings
+    }
+    missing = sorted(required - set(initial_slots) - executor_owned)
     if missing:
         raise ExecutionPreparationError(
             f"materialized preparation is missing declared slots {missing!r}"
         )
+    _validate_materialized_slot_shapes(initial_slots, bindings)
+
+
+def executor_owned_initial_slot_names(
+    run_spec: TrainingRunSpec,
+    bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> frozenset[str]:
+    """Return declared slots populated by Feedbax after provider materialization."""
+    return frozenset(
+        slot.name
+        for slot in run_spec.worker_execution.method_contract.state_slots
+        if slot.role == "objective"
+        and (slot.name not in bindings or bindings[slot.name][0].mode == "shared")
+    )
+
+
+def _is_array(value: Any) -> bool:
+    return isinstance(value, (jax.Array, np.ndarray))
+
+
+def _validate_no_batch_history(value: Any, *, slot: str) -> None:
+    leaves = jt.leaves(value, is_leaf=lambda leaf: isinstance(leaf, BatchHistory))
+    if any(isinstance(leaf, BatchHistory) for leaf in leaves):
+        raise ExecutionPreparationError(
+            f"mapped slot {slot!r} contains BatchHistory; mapped histories are deferred"
+        )
+
+
+def _same_static_value(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    try:
+        equal = left == right
+    except Exception:
+        return left is right
+    return equal if isinstance(equal, bool) else left is right
+
+
+def _stack_mapped_slot(slot: str, values: Sequence[Any]) -> Any:
+    flattened = [jt.flatten(value) for value in values]
+    treedef = flattened[0][1]
+    if any(item[1] != treedef for item in flattened[1:]):
+        raise ExecutionPreparationError(
+            f"mapped slot {slot!r} has divergent PyTree definitions or static fields"
+        )
+    leaf_columns = zip(*(item[0] for item in flattened), strict=True)
+    stacked_leaves: list[Any] = []
+    array_count = 0
+    for leaf_index, column in enumerate(leaf_columns):
+        first = column[0]
+        array_flags = tuple(_is_array(leaf) for leaf in column)
+        if any(array_flags):
+            if not all(array_flags):
+                raise ExecutionPreparationError(
+                    f"mapped slot {slot!r} leaf {leaf_index} changes array/static type"
+                )
+            if any(type(leaf) is not type(first) for leaf in column[1:]):
+                raise ExecutionPreparationError(
+                    f"mapped slot {slot!r} leaf {leaf_index} changes array type"
+                )
+            if any(leaf.shape != first.shape or leaf.dtype != first.dtype for leaf in column[1:]):
+                raise ExecutionPreparationError(
+                    f"mapped slot {slot!r} leaf {leaf_index} changes shape or dtype"
+                )
+            stacked_leaves.append(
+                np.stack(column, axis=0)
+                if isinstance(first, np.ndarray)
+                else jnp.stack(column, axis=0)
+            )
+            array_count += 1
+        else:
+            if any(not _same_static_value(first, leaf) for leaf in column[1:]):
+                raise ExecutionPreparationError(
+                    f"mapped slot {slot!r} leaf {leaf_index} has divergent static values"
+                )
+            stacked_leaves.append(first)
+    if array_count == 0:
+        raise ExecutionPreparationError(
+            f"mapped slot {slot!r} must contain at least one JAX or NumPy array leaf"
+        )
+    return jt.unflatten(treedef, stacked_leaves)
+
+
+def _validate_materialized_slot_shapes(
+    slots: Mapping[str, Any],
+    bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> None:
+    for slot, slot_bindings in bindings.items():
+        if slot not in slots or slot_bindings[0].mode == "shared":
+            continue
+        expected_size = slot_bindings[0].size
+        leaves = jt.leaves(slots[slot])
+        arrays = [leaf for leaf in leaves if _is_array(leaf)]
+        if not arrays:
+            raise ExecutionPreparationError(
+                f"mapped slot {slot!r} must contain at least one array leaf"
+            )
+        for leaf_index, leaf in enumerate(arrays):
+            if leaf.ndim < 1 or leaf.shape[0] != expected_size:
+                raise ExecutionPreparationError(
+                    f"mapped slot {slot!r} array leaf {leaf_index} must have leading "
+                    f"axis size {expected_size}; observed shape={leaf.shape!r}"
+                )
+
+
+def validate_materialized_execution_slots(
+    slots: Mapping[str, Any],
+    bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    *,
+    required_slots: Set[str],
+) -> None:
+    """Validate the complete post-merge executor state against resolved bindings."""
+    missing = sorted(set(required_slots).intersection(bindings) - set(slots))
+    if missing:
+        raise ExecutionPreparationError(
+            f"materialized execution state is missing declared slots {missing!r}"
+        )
+    _validate_materialized_slot_shapes(slots, bindings)
+
+
+def materialize_execution_preparation(
+    request: ExecutionPreparationRequest,
+    plan: ExecutionPreparationPlan,
+    *,
+    provider_identity: str,
+) -> MaterializedExecutionPreparation:
+    """Materialize one complete single-level plan into a sealed executor handoff."""
+    levels, bindings = resolve_execution_mapping(request.run_spec.worker_execution)
+    if len(levels) != 1:
+        raise ExecutionPreparationError(
+            "mapped execution preparation requires exactly one resolved mapping level"
+        )
+    state_specs = {
+        slot.name: slot for slot in request.run_spec.worker_execution.method_contract.state_slots
+    }
+    mapped_names = {name for name, value in bindings.items() if value[0].mode == "mapped"}
+    shared_names = {name for name, value in bindings.items() if value[0].mode == "shared"}
+    executor_owned = executor_owned_initial_slot_names(request.run_spec, bindings)
+    unknown_shared = sorted(set(plan.shared_slots) - shared_names)
+    missing_shared = sorted(
+        name
+        for name in shared_names
+        if state_specs[name].required
+        and name not in plan.shared_slots
+        and name not in executor_owned
+    )
+    if unknown_shared or missing_shared:
+        raise ExecutionPreparationError(
+            "preparation plan shared-slot declarations do not match resolved bindings; "
+            f"unknown={unknown_shared!r}, missing_required={missing_shared!r}"
+        )
+
+    coordinate_order = _expected_coordinate_order(levels)
+    results: list[Mapping[str, Any]] = []
+    optional_presence: dict[str, bool] | None = None
+    required_mapped = {name for name in mapped_names if state_specs[name].required}
+    for coordinate_index, coordinates in enumerate(coordinate_order):
+        raw = plan.materialize_instance(
+            ScalarInstancePreparationRequest(
+                axis_coordinates=coordinates,
+                rng=derive_preparation_rng_scope(plan.rng_roots, coordinates),
+                resume_template=request.resume,
+            )
+        )
+        if not isinstance(raw, ScalarInstancePreparationResult):
+            raise ExecutionPreparationError(
+                f"scalar materializer coordinate {coordinate_index} returned "
+                f"{type(raw).__name__}; expected ScalarInstancePreparationResult"
+            )
+        observed = set(raw.mapped_slots)
+        unknown = sorted(observed - mapped_names)
+        missing = sorted(required_mapped - observed)
+        if unknown or missing:
+            raise ExecutionPreparationError(
+                f"scalar materializer coordinate {coordinate_index} mapped-slot mismatch; "
+                f"unknown={unknown!r}, missing_required={missing!r}"
+            )
+        for slot, value in raw.mapped_slots.items():
+            _validate_no_batch_history(value, slot=slot)
+        presence = {
+            name: name in observed for name in mapped_names if not state_specs[name].required
+        }
+        if optional_presence is None:
+            optional_presence = presence
+        elif presence != optional_presence:
+            raise ExecutionPreparationError(
+                "optional mapped slots must be present for every coordinate or none"
+            )
+        if results:
+            for slot in observed:
+                _stack_mapped_slot(slot, (results[0][slot], raw.mapped_slots[slot]))
+        results.append(raw.mapped_slots)
+
+    present_mapped = sorted(
+        required_mapped | {name for name, present in (optional_presence or {}).items() if present}
+    )
+    stacked = {
+        name: _stack_mapped_slot(name, [result[name] for result in results])
+        for name in present_mapped
+    }
+    initial_slots = {**plan.shared_slots, **stacked}
+    _validate_materialized_slot_shapes(initial_slots, bindings)
+    return _build_materialized_execution_preparation(
+        request=request,
+        provider_identity=provider_identity,
+        initial_slots=initial_slots,
+        kernel_context=plan.kernel_context,
+        loss_service=plan.loss_service,
+        resume_slot_transform=plan.resume_slot_transform,
+        coordinate_order=coordinate_order,
+    )
 
 
 @runtime_checkable
@@ -578,17 +797,11 @@ class ExecutionPreparationProviderRegistry:
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} mutated TrainingRunSpec"
             )
-        if (
-            provider_payload is not None
-            and provider_payload.model_dump_json() != payload_before
-        ):
+        if provider_payload is not None and provider_payload.model_dump_json() != payload_before:
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} mutated method payload"
             )
-        if (
-            provider_contract is not None
-            and provider_contract.model_dump_json() != contract_before
-        ):
+        if provider_contract is not None and provider_contract.model_dump_json() != contract_before:
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} mutated method contract"
             )

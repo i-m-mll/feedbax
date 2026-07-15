@@ -8,10 +8,14 @@ from dataclasses import dataclass, field
 from operator import index
 from typing import Any, Protocol
 
+import equinox as eqx
 import jax
 import jax.tree as jt
+import numpy as np
 
 from feedbax.contracts.worker import (
+    MaterializedMappingLevelSpec,
+    MaterializedSlotAxisBinding,
     PhaseProgramSpec,
     ProgressCoordinate,
     StateSlotSpec,
@@ -186,12 +190,26 @@ class PhaseProgramExecutor:
         guard_predicates: Mapping[str, UpdateKernel] | None = None,
         checkpoint_store: PhaseCheckpointStore | None = None,
         state_slots: Sequence[StateSlotSpec] = (),
+        mapping_levels: Sequence[MaterializedMappingLevelSpec] = (),
+        slot_axis_bindings: Mapping[str, Sequence[MaterializedSlotAxisBinding]] | None = None,
     ) -> None:
         self.program = program
         self.kernels = dict(kernels)
         self.guard_predicates = dict(guard_predicates or {})
         self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
         self._metric_slots = tuple(slot.name for slot in state_slots if slot.role == "metric")
+        self.mapping_levels = tuple(mapping_levels)
+        self.slot_axis_bindings = {
+            name: tuple(bindings) for name, bindings in (slot_axis_bindings or {}).items()
+        }
+        self._active_axis = self.mapping_levels[0].axis if self.mapping_levels else None
+        self._mapped_size = self.mapping_levels[0].size if self.mapping_levels else None
+        self._mapped_slots = frozenset(
+            name
+            for name, bindings in self.slot_axis_bindings.items()
+            if bindings and bindings[0].mode == "mapped"
+        )
+        self._shared_slots = frozenset(self.slot_axis_bindings) - self._mapped_slots
         self._phases = {phase.name: phase for phase in program.phases}
         self._steps = {step.name: step for step in program.update_steps}
         self._transitions = {
@@ -202,6 +220,55 @@ class PhaseProgramExecutor:
             validate_update_kernel_callable(kernel, path=f"/kernels/{kernel_ref}")
         for predicate_ref, predicate in self.guard_predicates.items():
             validate_update_kernel_callable(predicate, path=f"/guard_predicates/{predicate_ref}")
+
+    def _mapped_kernel(self, kernel: UpdateKernel) -> Callable[..., Mapping[str, Any]]:
+        def scalar_call(
+            mapped_slots: Mapping[str, Any],
+            shared_slots: Mapping[str, Any],
+            coordinate: ProgressCoordinate,
+            context: Mapping[str, Any],
+        ) -> Mapping[str, Any]:
+            return kernel({**shared_slots, **mapped_slots}, coordinate, context)
+
+        return eqx.filter_vmap(
+            scalar_call,
+            in_axes=(eqx.if_array(0), None, None, None),
+            out_axes=eqx.if_array(0),
+        )
+
+    def preflight(
+        self,
+        slots: Mapping[str, Any],
+        *,
+        run_id: str,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Shape-check every mapped kernel through its exact execution wrapper."""
+        if self._active_axis is None:
+            return
+        coordinate = ProgressCoordinate(run_id=run_id, phase=self.program.initial_phase)
+        mapped = {name: slots[name] for name in self._mapped_slots if name in slots}
+        shared = {name: slots[name] for name in self._shared_slots if name in slots}
+        for phase in self.program.phases:
+            for step_name in phase.update_steps:
+                step = self._steps[step_name]
+                if self._active_axis not in step.axes:
+                    continue
+                kernel = self.kernels[step.kernel.kernel_ref]
+                try:
+                    updates = eqx.filter_eval_shape(
+                        self._mapped_kernel(kernel),
+                        mapped,
+                        shared,
+                        coordinate.model_copy(update={"phase": phase.name}),
+                        dict(context or {}),
+                    )
+                    self._validate_mapped_updates(step.name, step.writes, updates)
+                except Exception as exc:
+                    raise WorkerContractValidationError(
+                        f"/phase_program/phases/{phase.name}/update_steps/{step.name}",
+                        f"mapped filtered-vmap preflight failed: {exc}",
+                    ) from exc
 
     def run(
         self,
@@ -274,7 +341,24 @@ class PhaseProgramExecutor:
                             f"/phase_program/update_steps/{step_name}/kernel_ref",
                             f"missing callable for kernel_ref {step.kernel.kernel_ref!r}",
                         )
-                    updates = kernel(current_slots, coordinate, checkpoint_context)
+                    if self._active_axis is not None and self._active_axis in step.axes:
+                        updates = self._mapped_kernel(kernel)(
+                            {
+                                name: current_slots[name]
+                                for name in self._mapped_slots
+                                if name in current_slots
+                            },
+                            {
+                                name: current_slots[name]
+                                for name in self._shared_slots
+                                if name in current_slots
+                            },
+                            coordinate,
+                            checkpoint_context,
+                        )
+                        self._validate_mapped_updates(step.name, step.writes, updates)
+                    else:
+                        updates = kernel(current_slots, coordinate, checkpoint_context)
                     unknown = sorted(set(updates) - set(step.writes))
                     if unknown:
                         raise WorkerContractValidationError(
@@ -392,6 +476,32 @@ class PhaseProgramExecutor:
 
         return self._result(current_slots, coordinate, progress)
 
+    def _validate_mapped_updates(
+        self,
+        step_name: str,
+        declared_writes: Sequence[str],
+        updates: Mapping[str, Any],
+    ) -> None:
+        unknown = sorted(set(updates) - set(declared_writes))
+        if unknown:
+            raise WorkerContractValidationError(
+                f"/phase_program/update_steps/{step_name}/writes",
+                f"kernel returned undeclared writes {unknown!r}",
+            )
+        for slot, value in updates.items():
+            arrays = [
+                leaf
+                for leaf in jt.leaves(value)
+                if isinstance(leaf, (jax.Array, np.ndarray, jax.ShapeDtypeStruct))
+            ]
+            if not arrays or any(
+                not leaf.shape or leaf.shape[0] != self._mapped_size for leaf in arrays
+            ):
+                raise WorkerContractValidationError(
+                    f"/phase_program/update_steps/{step_name}/writes/{slot}",
+                    f"mapped write must retain leading axis size {self._mapped_size}",
+                )
+
     def _result(
         self,
         slots: Mapping[str, Any],
@@ -437,27 +547,57 @@ class PhaseProgramExecutor:
                 f"{path}/slot",
                 f"declared batch-progress slot {authority.slot!r} is missing",
             )
-        value = slots[authority.slot]
-        for position, segment in enumerate(authority.field_path):
+        values = (
+            [
+                self._slice_mapped_value(slots[authority.slot], instance)
+                for instance in range(self._mapped_size or 0)
+            ]
+            if authority.slot in self._mapped_slots
+            else [slots[authority.slot]]
+        )
+        batches = [
+            self._batch_progress_value(value, authority.field_path, path) for value in values
+        ]
+        if any(value != batches[0] for value in batches[1:]):
+            raise WorkerContractValidationError(
+                path,
+                f"mapped batch-progress authorities diverged: {batches!r}",
+            )
+        return batches[0]
+
+    @staticmethod
+    def _slice_mapped_value(value: Any, instance: int) -> Any:
+        return jt.map(
+            lambda leaf: leaf[instance] if isinstance(leaf, (jax.Array, np.ndarray)) else leaf,
+            value,
+        )
+
+    @staticmethod
+    def _batch_progress_value(
+        value: Any,
+        field_path: Sequence[str | int],
+        path: str,
+    ) -> int:
+        for position, segment in enumerate(field_path):
             segment_path = f"{path}/field_path/{position}"
             if isinstance(value, Mapping):
                 if segment not in value:
                     raise WorkerContractValidationError(
                         segment_path,
-                        f"key {segment!r} is missing from slot {authority.slot!r}",
+                        f"key {segment!r} is missing from batch-progress slot",
                     )
                 value = value[segment]
             elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
                 if not isinstance(segment, int) or segment >= len(value):
                     raise WorkerContractValidationError(
                         segment_path,
-                        f"index {segment!r} is invalid for slot {authority.slot!r}",
+                        f"index {segment!r} is invalid for batch-progress slot",
                     )
                 value = value[segment]
             else:
                 raise WorkerContractValidationError(
                     segment_path,
-                    f"cannot traverse non-container in slot {authority.slot!r}",
+                    "cannot traverse non-container in batch-progress slot",
                 )
         try:
             scalar = jax.device_get(value)
@@ -469,12 +609,12 @@ class PhaseProgramExecutor:
         except (AttributeError, TypeError, ValueError, OverflowError) as exc:
             raise WorkerContractValidationError(
                 path,
-                f"slot {authority.slot!r} must resolve to one integer scalar",
+                "batch-progress slot must resolve to one integer scalar",
             ) from exc
         if batches < 0:
             raise WorkerContractValidationError(
                 path,
-                f"slot {authority.slot!r} resolved to negative batches={batches}",
+                f"batch-progress slot resolved to negative batches={batches}",
             )
         return batches
 

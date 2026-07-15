@@ -48,6 +48,7 @@ from .preparation import (
     ScalarInstancePreparationResult,
     derive_preparation_rng_scope,
     lower_zero_level_preparation_plan,
+    materialize_execution_preparation,
     preparation_rng_token,
     require_execution_preparation_provider,
 )
@@ -197,6 +198,7 @@ __all__ = [
     "resolve_checkpoint_custody_ref",
     "load_training_run_spec",
     "lower_zero_level_preparation_plan",
+    "materialize_execution_preparation",
     "learning_rate_at_step",
     "learning_rate_schedule",
     "materialize_adapted_run_matrix",
