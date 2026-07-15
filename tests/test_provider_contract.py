@@ -298,6 +298,11 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "array_store" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
     assert "TrainingRunSpec" in manifest.schemas
+    assert "EvaluationRunMatrixSpec" in manifest.schemas
+    matrix_properties = manifest.schemas["EvaluationRunMatrixSpec"]["properties"]
+    assert matrix_properties["schema_version"]["default"] == (
+        "feedbax.spec.evaluation_run_matrix.v2"
+    )
     assert "ModelArtifactManifest" in manifest.schemas
     assert "CheckpointSelectionManifest" in manifest.schemas
     assert "CheckpointSelectionSpec" in manifest.schemas

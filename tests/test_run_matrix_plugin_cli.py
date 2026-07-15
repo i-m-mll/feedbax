@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,4 +99,29 @@ def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Pa
             "--plugin",
             "downstream.recipes",
         ]
+    ]
+
+
+def test_matrix_harness_cli_preserves_serialized_v1_and_v2_payloads(
+    monkeypatch, tmp_path: Path
+) -> None:
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        "feedbax.analysis.evaluation.execute_evaluation_run_matrix",
+        lambda payload, **_kwargs: seen.append(payload),
+    )
+    for version in ("feedbax.spec.evaluation_run_matrix.v1", "feedbax.spec.evaluation_run_matrix.v2"):
+        payload = {"schema_version": version, "base": {}, "rows": []}
+        path = tmp_path / f"{version.rsplit('.', 1)[-1]}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert harness.main([str(path), "--manifest-root", str(tmp_path / "runs")]) == 0
+
+    assert seen == [
+        {"schema_version": "feedbax.spec.evaluation_run_matrix.v1", "base": {}, "rows": []},
+        {"schema_version": "feedbax.spec.evaluation_run_matrix.v2", "base": {}, "rows": []},
     ]

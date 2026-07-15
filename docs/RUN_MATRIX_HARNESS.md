@@ -8,8 +8,10 @@ spec paths use `row_id` by default; callers may explicitly override a path where
 
 ## Schemas
 
-- Evaluation matrices use `feedbax.spec.evaluation_run_matrix.v1`. It is a new schema
-  family and rejects unknown IDs or versions.
+- Evaluation matrices use `feedbax.spec.evaluation_run_matrix.v2`. Version 2 retains
+  explicit base-plus-row authoring and adds a content-pinned JSON base plus ordered
+  axes of named delta sets. The registry mechanically migrates explicit v1 payloads;
+  v0 and unknown versions remain rejected.
 - Analysis bundles use `feedbax.spec.analysis_bundle.v3`. The registry mechanically
   migrates v2 stages to the shared-base/per-stage-patch representation and rejects
   unsupported versions.
@@ -17,6 +19,14 @@ spec paths use `row_id` by default; callers may explicitly override a path where
 These identities are registered in `feedbax.contracts.migrations`; consumers should
 route durable payloads through that registry rather than validating an arbitrary model
 directly.
+
+Axis products compile in authored axis/value order to the same explicit rows consumed
+by the harness. Generated row IDs join axis/value IDs, and collisions, repeated delta
+paths, invalid JSON values, missing bases, path escapes, and hash mismatches fail closed.
+Each axis-authored row manifest embeds `feedbax.manifest.evaluation_axis_expansion_provenance.v1`
+under `matrix_harness.axis_expansion`, including the authored matrix hash, pinned-base
+authority, ordered coordinates, canonical row order, and canonical payload hashes.
+Explicit-row manifests do not gain this metadata.
 
 ## Harness responsibilities
 
