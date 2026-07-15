@@ -144,6 +144,16 @@ from feedbax.contracts.representation import (
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
+    ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID,
+    ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION,
+    ANALYSIS_RUN_SPEC_SCHEMA_ID,
+    ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
+    ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,
+    ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION,
+    ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
@@ -1854,6 +1864,22 @@ def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str
     return migrated
 
 
+def _migrate_analysis_run_spec_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Make the historical implicit recomputation behavior explicit."""
+    migrated = dict(payload)
+    migrated["schema_id"] = ANALYSIS_RUN_SPEC_SCHEMA_ID
+    migrated.setdefault("evaluation_states_policy", "recompute")
+    return migrated
+
+
+def _migrate_analysis_run_manifest_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept historical manifests without inventing state-source evidence."""
+    migrated = dict(payload)
+    migrated.setdefault("evaluation_state_sources", [])
+    migrated.setdefault("evaluation_state_resolution_diagnostics", [])
+    return migrated
+
+
 def _migrate_training_run_matrix_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Promote the untyped v1 base locator to the fail-closed v2 union."""
     migrated = dict(payload)
@@ -2792,12 +2818,46 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "AnalysisRunSpec",
-            "feedbax.spec.analysis_run",
-            "feedbax.spec.analysis_run.v1",
+            ANALYSIS_RUN_SPEC_SCHEMA_ID,
+            ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.manifest",
             emitted_by=("AnalysisRunManifest.analysis_spec", "provider_manifest.schemas"),
             consumed_by=("feedbax.analysis.specs",),
             description="Declarative analysis run request.",
+            stance="migrate",
+            supported_old_versions=(ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(f"{ANALYSIS_RUN_SPEC_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_analysis_evaluation_states_policy.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "AnalysisEvaluationStateSource",
+            ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
+            ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.manifest",
+            emitted_by=("AnalysisRunManifest.evaluation_state_sources",),
+            consumed_by=("analysis manifest readers", "provider manifest compilation"),
+            description="Queryable supplier evidence for analysis evaluation-state inputs.",
+            rejected_old_versions=(
+                f"{ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID}.v0",
+                ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
+            ),
+            required_tests=("tests/test_analysis_evaluation_states_policy.py",),
+        ),
+        _family(
+            "AnalysisEvaluationStateResolutionDiagnostic",
+            ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID,
+            ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.manifest",
+            emitted_by=("AnalysisRunManifest.evaluation_state_resolution_diagnostics",),
+            consumed_by=("analysis manifest readers", "provider manifest compilation"),
+            description="Actionable fail-closed evaluation-state resolution evidence.",
+            rejected_old_versions=(
+                f"{ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID}.v0",
+            ),
+            required_tests=("tests/test_analysis_evaluation_states_policy.py",),
         ),
         _family(
             "AnalysisDataProductRequirement",
@@ -2893,7 +2953,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
-            "feedbax.spec.analysis_bundle.v4",
+            "feedbax.spec.analysis_bundle.v5",
             owner_module="feedbax.analysis.bundles",
             emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
             consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
@@ -2905,9 +2965,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 "feedbax.spec.analysis_bundle.v2",
                 "feedbax.spec.analysis_bundle.v3",
+                "feedbax.spec.analysis_bundle.v4",
             ),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
-            required_tests=("tests/test_analysis_bundle_base_patches.py",),
+            required_tests=(
+                "tests/test_analysis_bundle_base_patches.py",
+                "tests/test_analysis_spec_bundles.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "PathExpression",
@@ -3170,12 +3235,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "FigureManifest"
                     else TRAINING_RUN_SET_SCHEMA_VERSION
                     if kind == "TrainingRunSetManifest"
+                    else ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
+                    if kind == "AnalysisRunManifest"
                     else MANIFEST_SCHEMA_VERSION
                 ),
-                stance="migrate" if kind == "TrainingRunSetManifest" else "reject",
+                stance=(
+                    "migrate"
+                    if kind in {"TrainingRunSetManifest", "AnalysisRunManifest"}
+                    else "reject"
+                ),
                 supported_old_versions=(
                     (TRAINING_RUN_SET_SCHEMA_VERSION_V1,)
                     if kind == "TrainingRunSetManifest"
+                    else (ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,)
+                    if kind == "AnalysisRunManifest"
                     else ()
                 ),
                 owner_module="feedbax.contracts.manifest",
@@ -3780,6 +3853,36 @@ def _migrate_analysis_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_analysis_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Make historical analysis-state recomputation explicit at authored boundaries."""
+    migrated = dict(payload)
+    raw_templates = migrated.get("templates", [])
+    if isinstance(raw_templates, list):
+        templates: list[Any] = []
+        for raw_template in raw_templates:
+            if not isinstance(raw_template, Mapping):
+                templates.append(raw_template)
+                continue
+            template = dict(raw_template)
+            template.setdefault("evaluation_states_policy", "recompute")
+            templates.append(template)
+        migrated["templates"] = templates
+
+    raw_stages = migrated.get("stages", [])
+    if isinstance(raw_stages, list):
+        stages: list[Any] = []
+        for raw_stage in raw_stages:
+            if not isinstance(raw_stage, Mapping):
+                stages.append(raw_stage)
+                continue
+            stage = dict(raw_stage)
+            if stage.get("kind") in {"analysis", "materialization"}:
+                stage.setdefault("evaluation_states_policy", "recompute")
+            stages.append(stage)
+        migrated["stages"] = stages
+    return migrated
+
+
 def _migrate_run_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Mark provenance as unavailable on bundles emitted before row handoff v1."""
     migrated = dict(payload)
@@ -3853,6 +3956,19 @@ default_spec_registry.register_migration(
         description=(
             "Preserve envelopes from compiler families that predate typed training-row "
             "provenance and mark that provenance explicitly unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisBundleSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.analysis_bundle.v4",
+        target_version="feedbax.spec.analysis_bundle.v5",
+        migration_id="analysis-bundle-v4-to-v5-evaluation-states-policy",
+        migrate=_migrate_analysis_bundle_v4_to_v5_payload,
+        description=(
+            "Preserve historical recomputation behavior by making the evaluation-states "
+            "policy explicit on analysis templates and analysis/materialization stages."
         ),
     ),
 )
@@ -4179,6 +4295,31 @@ default_spec_registry.register_migration(
         description=(
             "Stamp legacy loss-term payloads with schema identity after verifying "
             "they route through ObjectiveSpec/ReductionSpec lowering."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisRunManifest",
+    SchemaMigration(
+        source_version=ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,
+        target_version=ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION,
+        migration_id="analysis-run-manifest-v1-to-v2-evaluation-state-evidence",
+        migrate=_migrate_analysis_run_manifest_v1,
+        description=(
+            "Accept historical analysis manifests with explicitly unavailable state-source "
+            "evidence."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisRunSpec",
+    SchemaMigration(
+        source_version=ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,
+        target_version=ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
+        migration_id="analysis-run-spec-v1-to-v2-evaluation-states-policy",
+        migrate=_migrate_analysis_run_spec_v1,
+        description=(
+            "Make the historical analysis-time evaluation-state recomputation policy explicit."
         ),
     ),
 )

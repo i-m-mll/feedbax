@@ -31,7 +31,11 @@ from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref, resolve_manifest_input
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, execute_report_spec
-from feedbax.analysis.specs import AnalysisRecipeResult, execute_analysis_run_spec
+from feedbax.analysis.specs import (
+    AnalysisRecipeResult,
+    execute_analysis_run_spec,
+    find_manifest_by_id,
+)
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.expressions import (
     ContextItem,
@@ -44,6 +48,7 @@ from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
+    EvaluationStatesConsumptionPolicy,
     ArtifactRef,
     AnyManifest,
     EvaluationRunManifest,
@@ -91,7 +96,8 @@ from feedbax.plugins.registry import ExperimentRegistry
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.spec.analysis_bundle.v2"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.spec.analysis_bundle.v3"
-ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v4"
+ANALYSIS_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.spec.analysis_bundle.v4"
+ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v5"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v1"
 
@@ -126,6 +132,7 @@ class AnalysisSpecTemplate(StrictModel):
     requested_outputs: list[str] = Field(default_factory=list)
     input_requirements: list[Any] = Field(default_factory=list)
     inputs: list[ParentRef] = Field(default_factory=list)
+    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
 
 
 class BundleStageOutputSpec(StrictModel):
@@ -180,6 +187,7 @@ class BundleStageSpec(StrictModel):
     params_patches: list[OverridePatch] = Field(default_factory=list)
     local_params: dict[str, Any] | None = None
     states_custody: Literal["cache", "durable"] | None = None
+    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
     requested_outputs: list[str] = Field(default_factory=list)
     input_requirements: list[Any] = Field(default_factory=list)
     outputs: list[BundleStageOutputSpec] = Field(default_factory=list)
@@ -218,6 +226,14 @@ class BundleStageSpec(StrictModel):
             raise ValueError(f"figure bundle stage {self.name!r} requires figure")
         if self.kind == "report" and not self.report_type and no_static_status:
             raise ValueError(f"report bundle stage {self.name!r} requires report_type")
+        if (
+            self.kind not in {"analysis", "materialization"}
+            and self.evaluation_states_policy != "recompute"
+        ):
+            raise ValueError(
+                f"bundle stage {self.name!r} evaluation_states_policy is only meaningful "
+                "for analysis or materialization stages"
+            )
         if self.skip_reason and any(output.required for output in self.outputs):
             raise ValueError(f"bundle stage {self.name!r} cannot skip required outputs")
         if self.run_condition is not None and self.skip_reason is not None:
@@ -587,6 +603,21 @@ def _parent_ref_for_manifest(manifest: AnyManifest) -> ParentRef:
         id=manifest.id,
         role=role_by_kind.get(manifest.kind, "run_manifest"),
     )
+
+
+def _execution_parent_ref_for_manifest(
+    manifest: AnyManifest,
+    *,
+    root: Path,
+) -> ParentRef:
+    """Compile exact evaluation authority for execution without guessing its path."""
+
+    if not isinstance(manifest, EvaluationRunManifest):
+        return _parent_ref_for_manifest(manifest)
+    resolved, path = find_manifest_by_id(manifest.id, root=root)
+    if not isinstance(resolved, EvaluationRunManifest):
+        raise TypeError(f"Expected EvaluationRunManifest, got {type(resolved).__name__}")
+    return authenticated_manifest_ref(resolved, path, "evaluation_run")
 
 
 def _params_for_template(template: AnalysisSpecTemplate) -> dict[str, Any]:
@@ -1376,6 +1407,7 @@ def _execute_analysis_stage(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
+            evaluation_states_policy=stage.evaluation_states_policy,
             params=_params_for_stage(stage, bundle.params_base),
         )
 
@@ -1453,6 +1485,7 @@ def _execute_materialization_stage(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
+            evaluation_states_policy=stage.evaluation_states_policy,
             params=_params_for_stage(stage, bundle.params_base),
         )
 
@@ -1673,6 +1706,8 @@ def _execute_stage_common(
 def expand_analysis_bundle(
     bundle: AnalysisBundleSpec,
     matched_manifests: Sequence[AnyManifest],
+    *,
+    execution_parent_refs: Mapping[str, ParentRef] | None = None,
 ) -> list[BundleExpansion]:
     """Expand bundle templates into executable analysis run specs."""
     if not bundle.templates:
@@ -1684,11 +1719,17 @@ def expand_analysis_bundle(
     for template in bundle.templates:
         if template.mode == "per-run":
             for manifest in matched_manifests:
-                inputs = [*template.inputs, _parent_ref_for_manifest(manifest)]
+                input_ref = (
+                    execution_parent_refs.get(manifest.id)
+                    if execution_parent_refs is not None
+                    else None
+                ) or _parent_ref_for_manifest(manifest)
+                inputs = [*template.inputs, input_ref]
                 spec = AnalysisRunSpec(
                     analysis_type=template.analysis_type,
                     inputs=inputs,
                     input_requirements=template.input_requirements,
+                    evaluation_states_policy=template.evaluation_states_policy,
                     params=_params_for_template(template),
                 )
                 expansions.append(
@@ -1703,12 +1744,21 @@ def expand_analysis_bundle(
         else:
             inputs = [
                 *template.inputs,
-                *[_parent_ref_for_manifest(manifest) for manifest in matched_manifests],
+                *[
+                    (
+                        execution_parent_refs.get(manifest.id)
+                        if execution_parent_refs is not None
+                        else None
+                    )
+                    or _parent_ref_for_manifest(manifest)
+                    for manifest in matched_manifests
+                ],
             ]
             spec = AnalysisRunSpec(
                 analysis_type=template.analysis_type,
                 inputs=inputs,
                 input_requirements=template.input_requirements,
+                evaluation_states_policy=template.evaluation_states_policy,
                 params=_params_for_template(template),
             )
             expansions.append(
@@ -1735,7 +1785,15 @@ def execute_analysis_bundle(
     """Apply a bundle to a manifest root and execute all generated specs."""
     root_path = Path(root) if root is not None else default_manifest_root()
     matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
-    expansions = expand_analysis_bundle(bundle, matched_manifests)
+    execution_parent_refs = {
+        manifest.id: _execution_parent_ref_for_manifest(manifest, root=root_path)
+        for manifest in matched_manifests
+    }
+    expansions = expand_analysis_bundle(
+        bundle,
+        matched_manifests,
+        execution_parent_refs=execution_parent_refs,
+    )
     outputs: list[tuple[BundleExpansion, AnalysisRunManifest, Path]] = []
     for expansion in expansions:
         manifest, path = execute_analysis_run_spec(
@@ -2125,7 +2183,10 @@ def execute_staged_analysis_bundle(
     issue_refs = list(issues or [])
     if exact_parents is None:
         matched_manifests = select_bundle_manifests(bundle, root_path, run_ids=run_ids)
-        bundle_parent_refs = None
+        bundle_parent_refs = [
+            _execution_parent_ref_for_manifest(manifest, root=root_path)
+            for manifest in matched_manifests
+        ]
     else:
         matched_manifests, bundle_parent_refs, parent_locations = _preflight_staged_exact_parents(
             bundle,

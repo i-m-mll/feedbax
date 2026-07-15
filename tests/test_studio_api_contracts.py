@@ -15,6 +15,7 @@ from feedbax.contracts.studio_api import (
     AnalysisPackagesResponse,
     AnalysisPackagesPayload,
     ComponentListResponse,
+    GenerateAnalysisRequest,
     GraphListResponse,
     GraphListPayload,
     STUDIO_API_TRANSPORT_SCHEMA_ID,
@@ -74,6 +75,18 @@ def test_studio_api_openapi_uses_plural_analysis_jobs_route() -> None:
     assert "/api/analyses/jobs" in paths
     assert "/api/analyses/jobs/status/{request_id}" in paths
     assert "/api/analysis/generate" not in paths
+
+
+def test_generate_analysis_request_defaults_and_preserves_states_policy() -> None:
+    defaulted = GenerateAnalysisRequest(node_id="analysis", eval_run_id="evaluation")
+    authored = GenerateAnalysisRequest(
+        node_id="analysis",
+        eval_run_id="evaluation",
+        evaluation_states_policy="require_durable",
+    )
+
+    assert defaulted.evaluation_states_policy == "recompute"
+    assert authored.evaluation_states_policy == "require_durable"
 
 
 def test_studio_api_envelopes_are_data_wrapped() -> None:

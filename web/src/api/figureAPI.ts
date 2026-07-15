@@ -21,11 +21,16 @@ async function requestUnknown(path: string, options?: RequestInit): Promise<unkn
 /** Trigger demand-driven figure generation for an analysis node. */
 export async function generateFigure(
   nodeId: string,
-  options?: { forceRerun?: boolean; evalRunId?: string | null }
+  options?: {
+    forceRerun?: boolean;
+    evalRunId?: string | null;
+    evaluationStatesPolicy?: 'recompute' | 'require_durable';
+  }
 ): Promise<GenerateFigureResponse> {
   const body: Record<string, unknown> = {
     node_id: nodeId,
     force_rerun: options?.forceRerun ?? false,
+    evaluation_states_policy: options?.evaluationStatesPolicy ?? 'recompute',
   };
   if (options?.evalRunId) {
     body.eval_run_id = options.evalRunId;

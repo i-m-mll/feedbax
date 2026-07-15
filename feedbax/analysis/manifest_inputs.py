@@ -10,18 +10,16 @@ import stat
 from urllib.parse import unquote, urlsplit
 
 from feedbax.contracts.manifest import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
     AnyManifest,
     ParentRef,
+    authenticated_manifest_ref_profile,
     load_manifest_bytes,
     safe_manifest_key,
 )
 
 
-AUTHENTICATED_MANIFEST_REF_SCHEMA_ID = "feedbax.ref.authenticated_manifest"
-AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION = "feedbax.ref.authenticated_manifest.v1"
-
-_PROFILE_DISCRIMINATORS = frozenset({"ref_schema_id", "ref_schema_version"})
-_PROFILE_KEYS = _PROFILE_DISCRIMINATORS | {"manifest_sha256", "size_bytes"}
 _MANIFEST_DIRECTORIES = {
     "EvaluationRunManifest": "evaluation_runs",
     "AnalysisRunManifest": "analysis_runs",
@@ -40,44 +38,13 @@ class ResolvedManifestInput:
     raw_bytes: bytes
 
 
-def _authenticated_profile(ref: ParentRef) -> tuple[str, int] | None:
-    discriminators = _PROFILE_DISCRIMINATORS.intersection(ref.metadata)
-    if not discriminators:
-        return None
-    present = _PROFILE_KEYS.intersection(ref.metadata)
-    if present != _PROFILE_KEYS:
-        missing = ", ".join(sorted(_PROFILE_KEYS - present))
-        raise ValueError(f"Authenticated manifest ref {ref.id!r} is incomplete: {missing}")
-    schema_id = ref.metadata["ref_schema_id"]
-    schema_version = ref.metadata["ref_schema_version"]
-    digest = ref.metadata["manifest_sha256"]
-    size = ref.metadata["size_bytes"]
-    if schema_id != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID:
-        raise ValueError(f"Unsupported authenticated manifest ref schema_id: {schema_id!r}")
-    if schema_version != AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION:
-        raise ValueError(
-            f"Unsupported authenticated manifest ref schema_version: {schema_version!r}"
-        )
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
-        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid SHA-256")
-    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
-        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid byte size")
-    if ref.uri is not None:
-        raise ValueError("Authenticated manifest refs must keep machine-local locators out of uri")
-    return digest, size
-
-
 def is_authenticated_manifest_ref(ref: ParentRef) -> bool:
     """Return whether *ref* declares the complete supported authentication profile.
 
     Partial and unknown profiles raise instead of silently degrading to legacy lookup.
     """
 
-    return _authenticated_profile(ref) is not None
+    return authenticated_manifest_ref_profile(ref) is not None
 
 
 def authenticated_manifest_ref(
@@ -195,7 +162,7 @@ def resolve_manifest_input(
 ) -> ResolvedManifestInput:
     """Resolve and authenticate one staged manifest ref before downstream effects."""
 
-    profile = _authenticated_profile(ref)
+    profile = authenticated_manifest_ref_profile(ref)
     if profile is None:
         raise ValueError(f"Manifest ref {ref.id!r} makes no authenticated claim")
     digest, expected_size = profile

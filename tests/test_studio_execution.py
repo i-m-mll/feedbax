@@ -1170,6 +1170,48 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     assert future_stage.metadata["later_product_surface"]["keep"] is True
 
 
+def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
+    tmp_path: Path,
+    studio_default_eval_recipe,
+    studio_default_analysis_recipe,
+) -> None:
+    workspace = _workspace_with_analysis_type("feedbax.analysis.activity")
+    analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
+    scenario = workspace.scenarios[analysis_stage.scenario_id]
+    scenario.analysis_spec = {
+        **(scenario.analysis_spec or {}),
+        "evaluation_states_policy": "require_durable",
+    }
+    training = run_studio_training_local_execution(
+        StudioTrainingLocalRunRequest(
+            workspace=workspace,
+            job_id="studio-policy-train",
+            root=str(tmp_path),
+            issues=["b594b56"],
+        )
+    )
+
+    materialized = materialize_studio_pipeline(
+        StudioPipelineMaterializationRequest(
+            workspace=training.workspace,
+            job_id="studio-policy",
+            root=str(tmp_path),
+            issues=["b594b56"],
+        )
+    )
+
+    evaluation = load_manifest(materialized.manifest_paths["stage:eval"])
+    analysis = load_manifest(materialized.manifest_paths["stage:analysis"])
+    assert evaluation.evaluation_spec.inline["params"]["states_custody"] == "durable"
+    assert analysis.analysis_spec.inline["evaluation_states_policy"] == "require_durable"
+    source = analysis.evaluation_state_sources[0]
+    assert source.source_kind == "durable"
+    assert source.evaluation_manifest_authority.metadata["ref_schema_version"] == (
+        "feedbax.ref.authenticated_manifest.v1"
+    )
+    assert source.evaluation_manifest_authority.uri is None
+
+
 def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
     tmp_path: Path,
     studio_default_eval_recipe,
