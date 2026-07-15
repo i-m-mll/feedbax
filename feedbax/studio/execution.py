@@ -2575,6 +2575,9 @@ def _materialize_analysis_stage(
         analysis_type=str(analysis_type),
         inputs=input_refs,
         input_requirements=list((analysis_spec_payload or {}).get("input_requirements", [])),
+        evaluation_states_policy=(analysis_spec_payload or {}).get(
+            "evaluation_states_policy", "recompute"
+        ),
         params={
             "stage_id": analysis_stage.id,
             "scenario_id": analysis_stage.scenario_id,

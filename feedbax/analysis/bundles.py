@@ -44,6 +44,7 @@ from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
+    EvaluationStatesConsumptionPolicy,
     ArtifactRef,
     AnyManifest,
     EvaluationRunManifest,
@@ -91,7 +92,8 @@ from feedbax.plugins.registry import ExperimentRegistry
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.spec.analysis_bundle.v2"
 ANALYSIS_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.spec.analysis_bundle.v3"
-ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v4"
+ANALYSIS_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.spec.analysis_bundle.v4"
+ANALYSIS_BUNDLE_SCHEMA_VERSION = "feedbax.spec.analysis_bundle.v5"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_ID = "feedbax.manifest.analysis_bundle_execution"
 ANALYSIS_BUNDLE_EXECUTION_SCHEMA_VERSION = "feedbax.manifest.analysis_bundle_execution.v1"
 
@@ -126,6 +128,7 @@ class AnalysisSpecTemplate(StrictModel):
     requested_outputs: list[str] = Field(default_factory=list)
     input_requirements: list[Any] = Field(default_factory=list)
     inputs: list[ParentRef] = Field(default_factory=list)
+    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
 
 
 class BundleStageOutputSpec(StrictModel):
@@ -180,6 +183,7 @@ class BundleStageSpec(StrictModel):
     params_patches: list[OverridePatch] = Field(default_factory=list)
     local_params: dict[str, Any] | None = None
     states_custody: Literal["cache", "durable"] | None = None
+    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
     requested_outputs: list[str] = Field(default_factory=list)
     input_requirements: list[Any] = Field(default_factory=list)
     outputs: list[BundleStageOutputSpec] = Field(default_factory=list)
@@ -218,6 +222,14 @@ class BundleStageSpec(StrictModel):
             raise ValueError(f"figure bundle stage {self.name!r} requires figure")
         if self.kind == "report" and not self.report_type and no_static_status:
             raise ValueError(f"report bundle stage {self.name!r} requires report_type")
+        if (
+            self.kind not in {"analysis", "materialization"}
+            and self.evaluation_states_policy != "recompute"
+        ):
+            raise ValueError(
+                f"bundle stage {self.name!r} evaluation_states_policy is only meaningful "
+                "for analysis or materialization stages"
+            )
         if self.skip_reason and any(output.required for output in self.outputs):
             raise ValueError(f"bundle stage {self.name!r} cannot skip required outputs")
         if self.run_condition is not None and self.skip_reason is not None:
@@ -1376,6 +1388,7 @@ def _execute_analysis_stage(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
+            evaluation_states_policy=stage.evaluation_states_policy,
             params=_params_for_stage(stage, bundle.params_base),
         )
 
@@ -1453,6 +1466,7 @@ def _execute_materialization_stage(
             analysis_type=str(stage.analysis_type),
             inputs=list(inputs),
             input_requirements=stage.input_requirements,
+            evaluation_states_policy=stage.evaluation_states_policy,
             params=_params_for_stage(stage, bundle.params_base),
         )
 
@@ -1689,6 +1703,7 @@ def expand_analysis_bundle(
                     analysis_type=template.analysis_type,
                     inputs=inputs,
                     input_requirements=template.input_requirements,
+                    evaluation_states_policy=template.evaluation_states_policy,
                     params=_params_for_template(template),
                 )
                 expansions.append(
@@ -1709,6 +1724,7 @@ def expand_analysis_bundle(
                 analysis_type=template.analysis_type,
                 inputs=inputs,
                 input_requirements=template.input_requirements,
+                evaluation_states_policy=template.evaluation_states_policy,
                 params=_params_for_template(template),
             )
             expansions.append(

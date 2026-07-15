@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
@@ -15,6 +19,17 @@ from feedbax.analysis.evaluation import (
     load_evaluation_states,
     load_evaluation_states_cache,
     write_evaluation_states_cache,
+)
+from feedbax.contracts.evaluation_states import (
+    EVALUATION_STATES_ARTIFACT_ROLE,
+    EVALUATION_STATES_CONTAINER_SCHEMA_ID,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
+    EVALUATION_STATES_MEDIA_TYPE,
+    EVALUATION_STATES_STORAGE_BACKEND,
+    EVALUATION_STATES_STORAGE_BACKEND_V1,
+    EvaluationStatesContainerError,
+    EvaluationStatesHashMismatch,
 )
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.execution_context import (
@@ -32,9 +47,13 @@ from feedbax.analysis.validation import (
     validate_namespaced_type_key,
 )
 from feedbax.contracts.manifest import (
+    AnalysisEvaluationStateResolutionCode,
+    AnalysisEvaluationStateResolutionDiagnostic,
+    AnalysisEvaluationStateSource,
     AnalysisRunManifest,
     AnalysisRunSpec,
     AnyManifest,
+    ArtifactRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
     ParentRef,
@@ -44,6 +63,7 @@ from feedbax.contracts.manifest import (
     evaluation_states_cache_path,
     load_manifest,
 )
+from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
 from feedbax.analysis.types import AnalysisInputData
 
@@ -56,6 +76,7 @@ class ResolvedAnalysisInput:
     manifest: AnyManifest | None
     path: Path | None
     states: Any = None
+    evaluation_state_source: AnalysisEvaluationStateSource | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +105,20 @@ class AnalysisRecipeExecutionError(RuntimeError):
         self.manifest = manifest
         self.path = path
         self.__cause__ = cause
+
+
+class AnalysisEvaluationStatesResolutionError(RuntimeError):
+    """Raised when authored evaluation-state consumption policy cannot be satisfied."""
+
+    def __init__(
+        self,
+        diagnostic: AnalysisEvaluationStateResolutionDiagnostic,
+        cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(diagnostic.message)
+        self.diagnostic = diagnostic
+        if cause is not None:
+            self.__cause__ = cause
 
 
 def register_analysis_recipe(
@@ -130,10 +165,19 @@ def coerce_analysis_run_spec(
     """Load an ``AnalysisRunSpec`` from an object, mapping, or JSON file path."""
     if isinstance(value, AnalysisRunSpec):
         return value
+    raw: Mapping[str, Any]
     if isinstance(value, Mapping):
-        return AnalysisRunSpec.model_validate(value)
-    path = Path(value)
-    return AnalysisRunSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        raw = value
+    else:
+        raw = json.loads(Path(value).read_text(encoding="utf-8"))
+    source_version = raw.get("schema_version")
+    result = default_spec_registry.migrate(
+        "AnalysisRunSpec",
+        raw,
+        source_version=source_version if isinstance(source_version, str) else None,
+        assume_current=source_version is None,
+    )
+    return AnalysisRunSpec.model_validate(result.payload)
 
 
 def find_manifest_by_id(
@@ -184,6 +228,7 @@ def resolve_analysis_inputs(
         manifest: AnyManifest | None = None
         manifest_path: Path | None = None
         states: Any = None
+        state_source: AnalysisEvaluationStateSource | None = None
         if is_authenticated_manifest_ref(ref):
             authenticated = (
                 authenticated_inputs.get(index) if authenticated_inputs is not None else None
@@ -194,17 +239,50 @@ def resolve_analysis_inputs(
         elif ref.kind.endswith("Manifest"):
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
         if ref.kind == "EvaluationRunManifest":
+            if spec.evaluation_states_policy == "require_durable":
+                states, state_source = _load_required_durable_evaluation_states(
+                    ref,
+                    manifest,
+                    root=root_path,
+                )
+                resolved.append(
+                    ResolvedAnalysisInput(
+                        ref=ref,
+                        manifest=manifest,
+                        path=manifest_path,
+                        states=states,
+                        evaluation_state_source=state_source,
+                    )
+                )
+                continue
             states_path = evaluation_states_cache_path(ref.id, root=root_path)
-            if not states_path.exists():
+            if states_path.exists():
+                states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
+                state_source = AnalysisEvaluationStateSource(
+                    source_kind="evaluation_cache",
+                    requested_evaluation_manifest_id=ref.id,
+                    evaluation_manifest_authority=_portable_manifest_authority(ref),
+                    supplying_evaluation_manifest_id=(
+                        manifest.id if isinstance(manifest, EvaluationRunManifest) else None
+                    ),
+                )
+            else:
                 if isinstance(manifest, EvaluationRunManifest):
                     try:
                         states = load_evaluation_states(manifest, root=root_path)
                     except EvaluationStatesArtifactNotFound:
-                        _rederive_evaluation_states(
+                        rederived = _rederive_evaluation_states(
                             ref.id,
                             manifest,
                             root=root_path,
                             execution_context=execution_context,
+                        )
+                        state_source = AnalysisEvaluationStateSource(
+                            source_kind="analysis_time_recompute",
+                            requested_evaluation_manifest_id=ref.id,
+                            evaluation_manifest_authority=_portable_manifest_authority(ref),
+                            supplying_evaluation_manifest_id=manifest.id,
+                            resulting_evaluation_manifest_id=rederived.id,
                         )
                     else:
                         states_path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,12 +291,19 @@ def resolve_analysis_inputs(
                             manifest_id=ref.id,
                             states=states,
                         )
+                        state_source = _durable_state_source(ref, manifest)
                 else:
-                    _rederive_evaluation_states(
+                    rederived = _rederive_evaluation_states(
                         ref.id,
                         manifest,
                         root=root_path,
                         execution_context=execution_context,
+                    )
+                    state_source = AnalysisEvaluationStateSource(
+                        source_kind="analysis_time_recompute",
+                        requested_evaluation_manifest_id=ref.id,
+                        evaluation_manifest_authority=_portable_manifest_authority(ref),
+                        resulting_evaluation_manifest_id=rederived.id,
                     )
             if states is None:
                 states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
@@ -228,9 +313,269 @@ def resolve_analysis_inputs(
                 manifest=manifest,
                 path=manifest_path,
                 states=states,
+                evaluation_state_source=state_source,
             )
         )
     return resolved
+
+
+def _portable_manifest_authority(ref: ParentRef) -> ParentRef:
+    """Preserve authored authority fields without persisting a machine-local locator."""
+    return ref.model_copy(update={"uri": None})
+
+
+def _resolution_error(
+    *,
+    code: AnalysisEvaluationStateResolutionCode,
+    manifest_id: str,
+    message: str,
+    artifact_id: str | None = None,
+    details: dict[str, Any] | None = None,
+    cause: BaseException | None = None,
+) -> AnalysisEvaluationStatesResolutionError:
+    return AnalysisEvaluationStatesResolutionError(
+        AnalysisEvaluationStateResolutionDiagnostic(
+            code=code,
+            evaluation_manifest_id=manifest_id,
+            message=message,
+            artifact_id=artifact_id,
+            details=details or {},
+        ),
+        cause,
+    )
+
+
+def _evaluation_states_artifact_for_durable_policy(
+    ref: ParentRef,
+    manifest: AnyManifest | None,
+) -> tuple[EvaluationRunManifest, ArtifactRef]:
+    if not isinstance(manifest, EvaluationRunManifest):
+        raise _resolution_error(
+            code="provenance_mismatch",
+            manifest_id=ref.id,
+            message=(
+                "require_durable expected an EvaluationRunManifest matching the authored "
+                f"input {ref.id!r}; found {type(manifest).__name__}."
+            ),
+            details={"resolved_manifest_kind": type(manifest).__name__},
+        )
+    if manifest.id != ref.id:
+        raise _resolution_error(
+            code="provenance_mismatch",
+            manifest_id=ref.id,
+            message=(
+                "require_durable resolved an evaluation manifest with different identity: "
+                f"requested={ref.id!r}, resolved={manifest.id!r}."
+            ),
+            details={"resolved_evaluation_manifest_id": manifest.id},
+        )
+    if manifest.status != "completed":
+        raise _resolution_error(
+            code="provenance_mismatch",
+            manifest_id=ref.id,
+            message=(
+                "require_durable only accepts completed evaluation authority; "
+                f"manifest {ref.id!r} has status {manifest.status!r}."
+            ),
+            details={"evaluation_manifest_status": manifest.status},
+        )
+    matches = [
+        artifact for artifact in manifest.artifacts if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+    ]
+    if not matches:
+        raise _resolution_error(
+            code="missing_durable_states",
+            manifest_id=ref.id,
+            message=(
+                f"Evaluation manifest {ref.id!r} has no durable evaluation_states artifact; "
+                "rerun evaluation with params.states_custody='durable' or select "
+                "evaluation_states_policy='recompute'."
+            ),
+        )
+    if len(matches) != 1:
+        raise _resolution_error(
+            code="provenance_mismatch",
+            manifest_id=ref.id,
+            message=(
+                f"Evaluation manifest {ref.id!r} has {len(matches)} evaluation_states "
+                "artifacts; durable authority must be unique."
+            ),
+            details={"artifact_count": len(matches)},
+        )
+    return manifest, matches[0]
+
+
+def _validate_durable_artifact_evidence(
+    ref: ParentRef,
+    manifest: EvaluationRunManifest,
+    artifact: ArtifactRef,
+) -> None:
+    if not artifact.artifact_id or not artifact.sha256:
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                f"Durable evaluation states for {ref.id!r} lack content-addressed custody "
+                "identity (artifact_id and sha256 are required)."
+            ),
+        )
+    if artifact.size_bytes is None or artifact.size_bytes < 0:
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                f"Durable evaluation states for {ref.id!r} lack a nonnegative declared "
+                "artifact size."
+            ),
+            details={"artifact_size_bytes": artifact.size_bytes},
+        )
+    expected_artifact_id = f"artifact://sha256/{artifact.sha256}"
+    if artifact.artifact_id != expected_artifact_id:
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                "Durable evaluation-state artifact identity does not match its sha256: "
+                f"artifact_id={artifact.artifact_id!r}, expected={expected_artifact_id!r}."
+            ),
+        )
+    metadata = artifact.metadata
+    metadata_manifest_id = metadata.get("manifest_id")
+    if metadata_manifest_id != manifest.id:
+        raise _resolution_error(
+            code="provenance_mismatch",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                "Durable evaluation-state artifact provenance does not name its supplying "
+                f"manifest: metadata.manifest_id={metadata_manifest_id!r}, "
+                f"expected={manifest.id!r}."
+            ),
+            details={"artifact_manifest_id": metadata_manifest_id},
+        )
+    schema_id = metadata.get("schema_id")
+    schema_version = metadata.get("schema_version")
+    storage_backend = metadata.get("storage_backend")
+    expected_storage = {
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1: EVALUATION_STATES_STORAGE_BACKEND_V1,
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION: EVALUATION_STATES_STORAGE_BACKEND,
+    }
+    if (
+        schema_id != EVALUATION_STATES_CONTAINER_SCHEMA_ID
+        or schema_version not in expected_storage
+        or storage_backend != expected_storage.get(schema_version)
+    ):
+        raise _resolution_error(
+            code="schema_mismatch",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                "Durable evaluation-state artifact schema/storage metadata is unsupported: "
+                f"schema_id={schema_id!r}, schema_version={schema_version!r}, "
+                f"storage_backend={storage_backend!r}."
+            ),
+            details={
+                "schema_id": schema_id,
+                "schema_version": schema_version,
+                "storage_backend": storage_backend,
+            },
+        )
+    if artifact.media_type != EVALUATION_STATES_MEDIA_TYPE:
+        raise _resolution_error(
+            code="schema_mismatch",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                "Durable evaluation-state artifact has unsupported media type: "
+                f"{artifact.media_type!r}; expected {EVALUATION_STATES_MEDIA_TYPE!r}."
+            ),
+            details={"media_type": artifact.media_type},
+        )
+
+
+def _durable_state_source(
+    ref: ParentRef,
+    manifest: EvaluationRunManifest,
+) -> AnalysisEvaluationStateSource:
+    artifacts = [
+        artifact for artifact in manifest.artifacts if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+    ]
+    artifact = artifacts[0]
+    return AnalysisEvaluationStateSource(
+        source_kind="durable",
+        requested_evaluation_manifest_id=ref.id,
+        evaluation_manifest_authority=_portable_manifest_authority(ref),
+        supplying_evaluation_manifest_id=manifest.id,
+        artifact_id=artifact.artifact_id,
+        artifact_sha256=artifact.sha256,
+        artifact_size_bytes=artifact.size_bytes,
+        artifact_storage_backend=artifact.storage_backend,
+        container_schema_id=artifact.metadata.get("schema_id"),
+        container_schema_version=artifact.metadata.get("schema_version"),
+        container_storage_backend=artifact.metadata.get("storage_backend"),
+    )
+
+
+def _load_required_durable_evaluation_states(
+    ref: ParentRef,
+    manifest: AnyManifest | None,
+    *,
+    root: Path,
+) -> tuple[Any, AnalysisEvaluationStateSource]:
+    manifest, artifact = _evaluation_states_artifact_for_durable_policy(ref, manifest)
+    _validate_durable_artifact_evidence(ref, manifest, artifact)
+    try:
+        states = load_evaluation_states(manifest, root=root)
+    except UnsupportedSpecVersion as exc:
+        raise _resolution_error(
+            code="schema_mismatch",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=f"Durable evaluation-state container schema is unsupported: {exc}",
+            cause=exc,
+        ) from exc
+    except ValidationError as exc:
+        schema_fields = {"schema_id", "schema_version", "storage_backend"}
+        if any(error["loc"] and error["loc"][0] in schema_fields for error in exc.errors()):
+            raise _resolution_error(
+                code="schema_mismatch",
+                manifest_id=ref.id,
+                artifact_id=artifact.artifact_id,
+                message=f"Durable evaluation-state container header is inconsistent: {exc}",
+                cause=exc,
+            ) from exc
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                f"Durable evaluation-state container for {ref.id!r} is malformed: {exc}"
+            ),
+            cause=exc,
+        ) from exc
+    except (
+        FileNotFoundError,
+        OSError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        KeyError,
+        EvaluationStatesHashMismatch,
+        EvaluationStatesContainerError,
+    ) as exc:
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                f"Durable evaluation-state custody for {ref.id!r} could not be verified: {exc}"
+            ),
+            cause=exc,
+        ) from exc
+    return states, _durable_state_source(ref, manifest)
 
 
 def _rederive_evaluation_states(
@@ -239,7 +584,7 @@ def _rederive_evaluation_states(
     *,
     root: Path,
     execution_context: StagedExecutionContext,
-) -> None:
+) -> EvaluationRunManifest:
     if not isinstance(manifest, EvaluationRunManifest):
         raise TypeError(
             f"Expected EvaluationRunManifest {manifest_id!r}, got {type(manifest).__name__}"
@@ -262,6 +607,7 @@ def _rederive_evaluation_states(
         raise ValueError(
             f"Evaluation spec for {manifest_id!r} re-derived manifest {rederived.id!r}"
         )
+    return rederived
 
 
 def requested_outputs_from_spec(spec: AnalysisRunSpec) -> set[str] | None:
@@ -327,6 +673,11 @@ def execute_analysis_run_spec(
             authenticated_inputs=authenticated_inputs,
             execution_context=execution_context,
         )
+        context.record_evaluation_state_sources(
+            source
+            for resolved_input in resolved_inputs
+            if (source := resolved_input.evaluation_state_source) is not None
+        )
         result = recipe(run_spec, root_path, resolved_inputs, execution_context)
         if not result.analyses:
             raise ValueError(f"Analysis recipe {run_spec.analysis_type!r} returned no analyses")
@@ -343,6 +694,8 @@ def execute_analysis_run_spec(
             **result.common_inputs,
         )
     except Exception as exc:
+        if isinstance(exc, AnalysisEvaluationStatesResolutionError):
+            context.record_evaluation_state_resolution_diagnostic(exc.diagnostic)
         if context.manifest_path is None:
             manifest, path = context.finalize(
                 status="failed",

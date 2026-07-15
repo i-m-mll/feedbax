@@ -71,6 +71,7 @@ def _spec_for_analysis_request(payload: GenerateAnalysisRequest) -> AnalysisRunS
                 role="evaluation_run",
             )
         ],
+        evaluation_states_policy=payload.evaluation_states_policy,
         params={
             "requested_outputs": [payload.node_id],
             "studio": {

@@ -522,6 +522,22 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
     )
     assert "scorer" in checkpoint_selection.opaque_domain_fields
 
+    analysis = mappings["AnalysisRunManifest"]
+    assert "evaluation_state_sources[]" in analysis.spec_fields
+    assert "evaluation_state_resolution_diagnostics[]" in analysis.spec_fields
+    assert (
+        "evaluation_state_sources[].evaluation_manifest_authority"
+        in analysis.parent_ref_fields
+    )
+
+
+def test_provider_analysis_schema_exposes_evaluation_states_policy() -> None:
+    schema = provider_manifest().schemas["AnalysisRunSpec"]
+    policy = schema["properties"]["evaluation_states_policy"]
+
+    assert policy["default"] == "recompute"
+    assert policy["enum"] == ["recompute", "require_durable"]
+
 
 def test_training_run_manifest_mandible_mapping_fixture_preserves_local_refs() -> None:
     run = TrainingRunManifest(

@@ -13,7 +13,7 @@ import {
 } from '@/utils/selectionSpec';
 
 export const ANALYSIS_BUNDLE_SCHEMA_ID = 'feedbax.spec.analysis_bundle';
-export const ANALYSIS_BUNDLE_SCHEMA_VERSION = 'feedbax.spec.analysis_bundle.v2';
+export const ANALYSIS_BUNDLE_SCHEMA_VERSION = 'feedbax.spec.analysis_bundle.v5';
 
 export type AnalysisBundleStageStatus =
   | 'would_run'
@@ -200,8 +200,8 @@ function coerceBundle(value: unknown): AnalysisBundleSpecWire | null {
     name: record.name,
     description: typeof record.description === 'string' ? record.description : null,
     predicate: manifestPredicateValue(record.predicate),
-    templates: arrayValue(record.templates),
-    stages: arrayValue(record.stages).filter(isRecord),
+    templates: arrayValue(record.templates).map(stampAnalysisPolicy),
+    stages: arrayValue(record.stages).filter(isRecord).map(stampStageAnalysisPolicy),
     metadata: recordValue(record.metadata) ?? {},
   };
 }
@@ -225,6 +225,7 @@ function synthesizedBundle(
         kind: 'analysis',
         mode: 'grouped',
         analysis_type: 'studio.analysis_dag',
+        evaluation_states_policy: 'recompute',
         params: {
           page_count: pages.length,
           active_page_id:
@@ -238,6 +239,22 @@ function synthesizedBundle(
       page_count: pages.length,
     },
   };
+}
+
+function stampAnalysisPolicy(value: unknown): unknown {
+  const record = recordValue(value);
+  if (!record || 'evaluation_states_policy' in record) return value;
+  return { ...record, evaluation_states_policy: 'recompute' };
+}
+
+function stampStageAnalysisPolicy(stage: Record<string, unknown>): Record<string, unknown> {
+  if (
+    (stage.kind !== 'analysis' && stage.kind !== 'materialization') ||
+    'evaluation_states_policy' in stage
+  ) {
+    return stage;
+  }
+  return { ...stage, evaluation_states_policy: 'recompute' };
 }
 
 function analysisPages(spec: Record<string, unknown> | null): AnalysisPageWire[] {

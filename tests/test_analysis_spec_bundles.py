@@ -17,6 +17,7 @@ import feedbax.analysis.bundles as bundle_module
 from feedbax.analysis.bundles import (
     ANALYSIS_BUNDLE_SCHEMA_VERSION,
     AnalysisBundleSpec,
+    AnalysisSpecTemplate,
     BundleStageOutputSpec,
     BundleStageSpec,
     StageArtifactDependency,
@@ -830,6 +831,85 @@ def test_simple_bundle_rejects_explicit_unsupported_old_schema_version() -> None
                     }
                 ],
             }
+        )
+
+
+def test_bundle_templates_preserve_authored_evaluation_states_policy() -> None:
+    bundle = AnalysisBundleSpec(
+        name="policy_templates",
+        templates=[
+            AnalysisSpecTemplate(
+                name="per_run",
+                mode="per-run",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                evaluation_states_policy="require_durable",
+            ),
+            AnalysisSpecTemplate(
+                name="grouped",
+                mode="grouped",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                evaluation_states_policy="require_durable",
+            ),
+        ],
+    )
+    matched = [TrainingRunManifest(id="feedbax-training-run:policy", run_set_id="policy")]
+
+    expansions = expand_analysis_bundle(bundle, matched)
+
+    assert [entry.spec.evaluation_states_policy for entry in expansions] == [
+        "require_durable",
+        "require_durable",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "executor_name"),
+    [
+        ("analysis", "_execute_analysis_stage"),
+        ("materialization", "_execute_materialization_stage"),
+    ],
+)
+def test_staged_bundle_lowering_preserves_authored_evaluation_states_policy(
+    kind: str,
+    executor_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_specs: list[AnalysisRunSpec] = []
+
+    def capture_stage_common(_stage, input_groups, **kwargs):
+        captured_specs.append(kwargs["build_spec"](input_groups[0], 0))
+        return []
+
+    monkeypatch.setattr(bundle_module, "_execute_stage_common", capture_stage_common)
+    stage = BundleStageSpec(
+        name=kind,
+        kind=kind,
+        analysis_type=TOY_ANALYSIS_TYPE,
+        evaluation_states_policy="require_durable",
+    )
+    executor = getattr(bundle_module, executor_name)
+    executor(
+        stage,
+        [[ParentRef(kind="EvaluationRunManifest", id="evaluation", role="evaluation_run")]],
+        root=tmp_path,
+        issues=[],
+        bundle=AnalysisBundleSpec(name="policy_stage", stages=[stage]),
+        fig_dump_path=None,
+        fig_dump_formats=("json",),
+        execution_context=None,
+    )
+
+    assert captured_specs[0].evaluation_states_policy == "require_durable"
+
+
+def test_non_analysis_bundle_stage_rejects_require_durable_policy() -> None:
+    with pytest.raises(ValueError, match="only meaningful for analysis or materialization"):
+        BundleStageSpec(
+            name="evaluation",
+            kind="evaluation",
+            evaluation_type=TOY_EVALUATION_TYPE,
+            evaluation_states_policy="require_durable",
         )
 
 

@@ -23,7 +23,7 @@ from feedbax.contracts.graph import (
     GraphUIState,
     StudioWorkspaceSpec,
 )
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy, ParentRef
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
 
@@ -376,6 +376,7 @@ class GenerateAnalysisRequest(StudioApiModel):
     job_kind: Literal["analysis", "figure"] = "analysis"
     force_rerun: bool = False
     eval_run_id: Optional[str] = None
+    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
     figure_spec: Optional[dict[str, Any]] = None
 
 

@@ -24,6 +24,8 @@ from feedbax.contracts.manifest import (
     analysis_run_manifest_id,
     load_manifest,
 )
+from feedbax.contracts.studio_api import GenerateAnalysisRequest
+from feedbax.web.api.analysis import _spec_for_analysis_request
 from feedbax.web.app import create_app
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
@@ -171,6 +173,18 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
     finally:
         unregister_analysis_recipe(TOY_JOB_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_JOB_EVAL_TYPE)
+
+
+def test_studio_analysis_job_compilation_preserves_authored_states_policy() -> None:
+    spec = _spec_for_analysis_request(
+        GenerateAnalysisRequest(
+            node_id=TOY_JOB_ANALYSIS_TYPE,
+            eval_run_id="feedbax-evaluation-run:studio-job",
+            evaluation_states_policy="require_durable",
+        )
+    )
+
+    assert spec.evaluation_states_policy == "require_durable"
 
 
 def test_studio_analysis_job_errors_when_requested_node_matches_no_analysis_key(

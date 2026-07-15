@@ -513,8 +513,18 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
                     ),
                 ),
             ],
-            spec_fields=["analysis_spec", "regeneration_specs[]", "produced_data[]"],
-            parent_ref_fields=["inputs", "provenance.parents"],
+            spec_fields=[
+                "analysis_spec",
+                "evaluation_state_sources[]",
+                "evaluation_state_resolution_diagnostics[]",
+                "regeneration_specs[]",
+                "produced_data[]",
+            ],
+            parent_ref_fields=[
+                "inputs",
+                "evaluation_state_sources[].evaluation_manifest_authority",
+                "provenance.parents",
+            ],
             opaque_domain_fields=[
                 "analysis_spec.inline",
                 "produced_data[].parameters",

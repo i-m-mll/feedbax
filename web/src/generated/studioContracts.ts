@@ -1423,6 +1423,7 @@ export interface GenerateAnalysisRequest {
   job_kind?: "analysis" | "figure";
   force_rerun?: boolean;
   eval_run_id?: string | null;
+  evaluation_states_policy?: "recompute" | "require_durable";
   figure_spec?: Record<string, unknown> | null;
 }
 
@@ -3889,6 +3890,7 @@ export const GenerateAnalysisRequestSchema: z.ZodType<GenerateAnalysisRequest> =
       "job_kind": z.union([z.literal("analysis"), z.literal("figure")]).optional(),
       "force_rerun": z.boolean().optional(),
       "eval_run_id": z.string().nullable().optional(),
+      "evaluation_states_policy": z.union([z.literal("recompute"), z.literal("require_durable")]).optional(),
       "figure_spec": z.record(z.string(), z.unknown()).nullable().optional(),
     })
     .strict()

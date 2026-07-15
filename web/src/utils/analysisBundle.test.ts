@@ -70,11 +70,33 @@ describe('analysis bundle UI helpers', () => {
   it('uses authored bundle cards and synthesizes a DAG card when absent', () => {
     const authored = analysisBundleCards(
       scenario({
-        bundle: {
-          name: 'authored',
-          predicate: { manifest_kind: 'EvaluationRunManifest', run_ids: ['eval-a'] },
-          stages: [{ name: 'stage-a', kind: 'analysis' }],
-        },
+        bundles: [
+          {
+            name: 'authored',
+            predicate: { manifest_kind: 'EvaluationRunManifest', run_ids: ['eval-a'] },
+            stages: [
+              {
+                name: 'stage-a',
+                kind: 'analysis',
+                evaluation_states_policy: 'require_durable',
+              },
+              { name: 'stage-b', kind: 'materialization' },
+              { name: 'stage-c', kind: 'report' },
+            ],
+          },
+          {
+            name: 'authored-templates',
+            predicate: { manifest_kind: 'EvaluationRunManifest', run_ids: ['eval-a'] },
+            templates: [
+              {
+                name: 'strict-template',
+                analysis_type: 'strict',
+                evaluation_states_policy: 'require_durable',
+              },
+              { name: 'legacy-template', analysis_type: 'legacy' },
+            ],
+          },
+        ],
         pages: [{ id: 'page-a', name: 'Page A' }],
       }),
       stage({ eval_run_ids: ['eval-a'] }),
@@ -84,10 +106,25 @@ describe('analysis bundle UI helpers', () => {
       stage({ eval_run_ids: ['eval-a'] }),
     );
 
-    expect(authored[0]).toMatchObject({ title: 'authored', stageCount: 1, pageCount: 1 });
+    expect(authored[0]).toMatchObject({ title: 'authored', stageCount: 3, pageCount: 1 });
+    expect(authored[0].bundle).toMatchObject({
+      schema_version: 'feedbax.spec.analysis_bundle.v5',
+      stages: [
+        { evaluation_states_policy: 'require_durable' },
+        { evaluation_states_policy: 'recompute' },
+        { kind: 'report' },
+      ],
+    });
+    expect(authored[0].bundle.stages[2]).not.toHaveProperty('evaluation_states_policy');
+    expect(authored[1].bundle.templates).toMatchObject([
+      { evaluation_states_policy: 'require_durable' },
+      { evaluation_states_policy: 'recompute' },
+    ]);
     expect(synthesized[0].bundle).toMatchObject({
+      schema_version: 'feedbax.spec.analysis_bundle.v5',
       name: 'studio-analysis-dag',
       predicate: { run_ids: ['eval-a'] },
+      stages: [{ evaluation_states_policy: 'recompute' }],
     });
   });
 

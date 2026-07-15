@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+import feedbax.studio.execution as studio_execution
+
 from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
@@ -29,6 +31,7 @@ from feedbax.analysis.evaluation import (
 )
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
+    execute_analysis_run_spec,
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
@@ -1168,6 +1171,50 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
         if stage.id == "stage:future-report-packaging"
     )
     assert future_stage.metadata["later_product_surface"]["keep"] is True
+
+
+def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
+    tmp_path: Path,
+    studio_default_eval_recipe,
+    studio_default_analysis_recipe,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace_with_analysis_type("feedbax.analysis.activity")
+    analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
+    scenario = workspace.scenarios[analysis_stage.scenario_id]
+    scenario.analysis_spec = {
+        **(scenario.analysis_spec or {}),
+        "evaluation_states_policy": "require_durable",
+    }
+    captured_policies: list[str] = []
+
+    def capture_analysis_spec(spec, **kwargs):
+        captured_policies.append(spec.evaluation_states_policy)
+        return execute_analysis_run_spec(
+            spec.model_copy(update={"evaluation_states_policy": "recompute"}),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(studio_execution, "execute_analysis_run_spec", capture_analysis_spec)
+    training = run_studio_training_local_execution(
+        StudioTrainingLocalRunRequest(
+            workspace=workspace,
+            job_id="studio-policy-train",
+            root=str(tmp_path),
+            issues=["b594b56"],
+        )
+    )
+
+    materialize_studio_pipeline(
+        StudioPipelineMaterializationRequest(
+            workspace=training.workspace,
+            job_id="studio-policy",
+            root=str(tmp_path),
+            issues=["b594b56"],
+        )
+    )
+
+    assert captured_policies == ["require_durable"]
 
 
 def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
