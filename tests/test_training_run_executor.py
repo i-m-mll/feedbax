@@ -116,10 +116,12 @@ from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
     _build_materialized_execution_preparation,
+    _freeze_runtime_value,
     _identity_fingerprint,
     _run_spec_sha256,
     ScalarInstancePreparationResult,
     materialize_execution_preparation,
+    validate_materialized_execution_preparation,
 )
 from feedbax.training.phase_executor import PhaseProgramExecutor
 from feedbax.training.worker_validation import (
@@ -367,10 +369,12 @@ def test_mapped_preflight_failure_has_no_publication_side_effects(
     assert not checkpoint_root.exists()
 
 
-def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees() -> None:
+def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
+    tmp_path: Path,
+) -> None:
     spec = _mapped_run_spec()
     requests = []
-    optimizer = optax.adam(1e-3)
+    optimizer = optax.inject_hyperparams(optax.adamw)(learning_rate=1e-3)
 
     def materialize(request):
         requests.append(request)
@@ -380,7 +384,7 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
             mapped_slots={
                 "model": linear,
                 "optimizer": optimizer.init(linear),
-                "prng": key,
+                "prng": jax.random.key_data(key),
                 "objective": jnp.array(0.0),
                 "train_loss": np.array(0.0, dtype=np.float32),
                 "batch_counter": jnp.array(0, dtype=jnp.int32),
@@ -404,6 +408,108 @@ def test_mapped_plan_materializes_ordered_distinct_instances_and_stacks_pytrees(
         getattr(leaf, "shape", None) == (5,)
         for leaf in jax.tree.leaves(prepared.initial_slots["optimizer"])
     )
+    assert isinstance(
+        prepared.initial_slots["optimizer"],
+        optax.schedules.InjectStatefulHyperparamsState,
+    )
+    validate_materialized_execution_preparation(prepared, run_spec=spec)
+    instance_model = jax.tree.map(lambda leaf: leaf[0], prepared.initial_slots["model"])
+    instance_state = jax.tree.map(lambda leaf: leaf[0], prepared.initial_slots["optimizer"])
+    updates, updated_state = optimizer.update(
+        jax.tree.map(jnp.ones_like, instance_model),
+        instance_state,
+        instance_model,
+    )
+    assert jax.tree.leaves(updates)
+    assert updated_state.count == 1
+
+    def gradient_update(slots, coordinate, context):
+        del coordinate, context
+        gradients = jax.tree.map(jnp.ones_like, slots["model"])
+        model_updates, optimizer_state = optimizer.update(
+            gradients,
+            slots["optimizer"],
+            slots["model"],
+        )
+        return {
+            "model": optax.apply_updates(slots["model"], model_updates),
+            "optimizer": optimizer_state,
+            "prng": slots["prng"],
+            "train_loss": jnp.asarray(0.0),
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    result = execute_training_run_spec(
+        spec,
+        preparation=prepared,
+        registry=_mapped_test_registry(spec, gradient_update),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id="mapped-injected-adamw",
+    )
+    assert result.final_slots["optimizer"].count.tolist() == [1] * 5
+    assert type(result.final_slots["optimizer"].hyperparams) is dict
+    loaded = load_latest_checkpoint(
+        tmp_path / "checkpoint",
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=prepared.initial_slots,
+    )
+    assert jax.tree.structure(loaded.slots["optimizer"]) == jax.tree.structure(
+        result.final_slots["optimizer"]
+    )
+    forked = fork_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        tmp_path / "fork",
+        target_run_spec=spec,
+        expected_slots=prepared.initial_slots,
+        source_slot_transforms={"optimizer": lambda slots: dict(slots)},
+        source_transform_metadata={"optimizer": {"identity": "tests.identity", "parameters": {}}},
+    )
+    assert forked.slot_transfer_modes["optimizer"] == "serialized"
+    reloaded = load_latest_checkpoint(
+        forked.root,
+        expected_run_spec=spec,
+        expected_phase_program=spec.worker_execution.method_contract.phase_program,
+        expected_slots=prepared.initial_slots,
+    )
+    assert jax.tree.structure(reloaded.slots["optimizer"]) == jax.tree.structure(
+        result.final_slots["optimizer"]
+    )
+
+
+def test_runtime_freeze_preserves_optax_tuple_pytree_types() -> None:
+    parameters = {"weight": jnp.array(1.0)}
+    transformation = optax.adam(1e-3)
+    injected = optax.inject_hyperparams(optax.adamw)(learning_rate=1e-3)
+
+    frozen_transformation = _freeze_runtime_value(transformation)
+    frozen_state = _freeze_runtime_value(injected.init(parameters))
+
+    assert type(frozen_transformation) is type(transformation)
+    assert callable(frozen_transformation.update)
+    assert isinstance(frozen_state, optax.schedules.InjectStatefulHyperparamsState)
+    assert frozen_state.hyperparams["learning_rate"] == pytest.approx(1e-3)
+    with pytest.raises(TypeError):
+        frozen_state.hyperparams["learning_rate"] = 2e-3
+    updates, updated_state = frozen_transformation.update(
+        {"weight": jnp.array(1.0)},
+        frozen_transformation.init(parameters),
+        parameters,
+    )
+    assert updates["weight"] < 0
+    assert jax.tree.leaves(updated_state)
+
+    source_array = np.array([1.0])
+    ordinary = _freeze_runtime_value((["item"], {"array": source_array}, 3))
+    source_array[0] = 9.0
+    assert type(ordinary) is tuple
+    assert ordinary[0] == ("item",)
+    assert ordinary[1]["array"].tolist() == [1.0]
+    assert not ordinary[1]["array"].flags.writeable
+    assert ordinary[2] == 3
+    with pytest.raises(ValueError, match="object-backed NumPy"):
+        _freeze_runtime_value(np.array([object()], dtype=object))
 
 
 def test_mapped_plan_rejects_batch_history_immediately() -> None:

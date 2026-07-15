@@ -56,7 +56,12 @@ class _ImmutableDict(dict[Any, Any]):
         return self
 
     def tree_flatten_with_keys(self):
-        keys = tuple(self)
+        sentinel = object()
+        key_paths, _ = jt.flatten_with_path(
+            {key: sentinel for key in self},
+            is_leaf=lambda item: item is sentinel,
+        )
+        keys = tuple(path[0].key for path, _ in key_paths)
         return tuple((jtu.DictKey(key), self[key]) for key in keys), keys
 
     @classmethod
@@ -234,6 +239,9 @@ def _freeze_runtime_value(value: Any) -> Any:
         return value
     if isinstance(value, Mapping):
         return _ImmutableDict({key: _freeze_runtime_value(item) for key, item in value.items()})
+    if isinstance(value, tuple) and type(value) is not tuple:
+        leaves, treedef = jt.flatten(value, is_leaf=lambda item: item is not value)
+        return jt.unflatten(treedef, [_freeze_runtime_value(leaf) for leaf in leaves])
     if isinstance(value, tuple):
         return tuple(_freeze_runtime_value(item) for item in value)
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
@@ -245,6 +253,18 @@ def _freeze_runtime_value(value: Any) -> Any:
     leaves, treedef = jt.flatten(value)
     if len(leaves) != 1 or not leaves or leaves[0] is not value:
         return jt.unflatten(treedef, [_freeze_runtime_value(leaf) for leaf in leaves])
+    return value
+
+
+def _thaw_runtime_value(value: Any) -> Any:
+    """Restore canonical mutable mapping nodes at the execution boundary."""
+    if isinstance(value, _ImmutableDict):
+        return {key: _thaw_runtime_value(item) for key, item in value.items()}
+    if isinstance(value, tuple) and type(value) is not tuple:
+        leaves, treedef = jt.flatten(value, is_leaf=lambda item: item is not value)
+        return jt.unflatten(treedef, [_thaw_runtime_value(leaf) for leaf in leaves])
+    if isinstance(value, tuple):
+        return tuple(_thaw_runtime_value(item) for item in value)
     return value
 
 
