@@ -409,14 +409,31 @@ def _array(value: Any) -> np.ndarray:
 
 def _profile_band(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
     p = ProfileParams.model_validate(params.model_dump())
-    y = _array(data.get("y", data.get("values", [])))
-    if y.ndim == 1:
-        y = y[None, :]
-    x = _array(data.get("x", np.arange(y.shape[-1])))
-    mean = _array(data.get("mean", np.nanmean(y, axis=0)))
-    std = _array(data.get("std", np.nanstd(y, axis=0)))
-    upper = _array(data.get("upper", mean + p.n_std_plot * std))
-    lower = _array(data.get("lower", mean - p.n_std_plot * std))
+    has_mean = "mean" in data
+    has_std = "std" in data
+    if has_mean != has_std:
+        raise ValueError("profile_band requires both 'mean' and 'std' when either is supplied")
+
+    if has_mean:
+        mean = _array(data["mean"])
+        std = _array(data["std"])
+        error_bars_alpha = p.error_bars_alpha
+    else:
+        raw_key = "y" if "y" in data else "values" if "values" in data else None
+        if raw_key is None:
+            raise ValueError(
+                "profile_band requires both 'mean' and 'std' or raw 'y'/'values' samples"
+            )
+        y = _array(data[raw_key])
+        if y.ndim == 1:
+            y = y[None, :]
+        mean = np.nanmean(y, axis=0)
+        std = np.nanstd(y, axis=0)
+        error_bars_alpha = p.error_bars_alpha / max(1.0, y.shape[0] ** 0.5)
+
+    x = _array(data["x"] if "x" in data else np.arange(mean.shape[-1]))
+    upper = _array(data["upper"] if "upper" in data else mean + p.n_std_plot * std)
+    lower = _array(data["lower"] if "lower" in data else mean - p.n_std_plot * std)
     label = p.label or str(data.get("label", "Profile"))
     color = p.color or str(data.get("color", "rgb(31,119,180)"))
     return [
@@ -444,7 +461,7 @@ def _profile_band(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]
             y=lower,
             line={"color": "rgba(255,255,255,0)"},
             fill="tonexty",
-            fillcolor=color_add_alpha(color, p.error_bars_alpha / max(1.0, y.shape[0] ** 0.5)),
+            fillcolor=color_add_alpha(color, error_bars_alpha),
             hoverinfo="skip",
             showlegend=False,
         ),

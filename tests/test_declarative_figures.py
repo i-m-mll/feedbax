@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -148,6 +149,72 @@ def test_constructor_registry_validates_tiers_and_duplicates() -> None:
             constructor=trace,
             description="test trace",
         )
+
+
+def test_profile_band_uses_supplied_statistics_without_touching_raw_samples() -> None:
+    class ExplosiveRawSamples:
+        def __array__(self, *_args, **_kwargs):
+            raise AssertionError("raw samples were evaluated")
+
+    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+    params = constructor.params({"error_bars_alpha": 0.6, "n_std_plot": 2.0})
+    derived = {"mean": [2.0, 4.0, 6.0], "std": [0.5, 1.0, 1.5]}
+
+    for data in (derived, {**derived, "y": ExplosiveRawSamples()}):
+        traces = constructor.callable(data, params)
+        np.testing.assert_allclose(traces[0].x, [0.0, 1.0, 2.0])
+        np.testing.assert_allclose(traces[0].y, [2.0, 4.0, 6.0])
+        np.testing.assert_allclose(traces[1].y, [3.0, 6.0, 9.0])
+        np.testing.assert_allclose(traces[2].y, [1.0, 2.0, 3.0])
+        assert traces[2].fillcolor == "rgba(31,119,180, 0.6)"
+
+
+def test_profile_band_raw_samples_preserve_statistics_and_alpha_scaling() -> None:
+    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+    params = constructor.params({"error_bars_alpha": 0.8, "n_std_plot": 2.0})
+    samples = np.array(
+        [
+            [1.0, np.nan, 3.0],
+            [3.0, 5.0, 7.0],
+            [5.0, 7.0, 11.0],
+            [7.0, 9.0, 15.0],
+        ]
+    )
+
+    traces = constructor.callable({"y": samples}, params)
+    expected_mean = np.nanmean(samples, axis=0)
+    expected_std = np.nanstd(samples, axis=0)
+    np.testing.assert_allclose(traces[0].y, expected_mean)
+    np.testing.assert_allclose(traces[1].y, expected_mean + 2.0 * expected_std)
+    np.testing.assert_allclose(traces[2].y, expected_mean - 2.0 * expected_std)
+    assert traces[2].fillcolor == "rgba(31,119,180, 0.4)"
+
+    single_traces = constructor.callable({"values": [1.0, 2.0, 3.0]}, params)
+    np.testing.assert_allclose(single_traces[0].y, [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(single_traces[1].y, [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(single_traces[2].y, [1.0, 2.0, 3.0])
+    assert single_traces[2].fillcolor == "rgba(31,119,180, 0.8)"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"mean": [1.0, 2.0], "y": [[1.0, 2.0]]},
+        {"std": [0.1, 0.2]},
+    ],
+)
+def test_profile_band_rejects_partial_derived_statistics(data) -> None:
+    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+
+    with pytest.raises(ValueError, match="requires both 'mean' and 'std'"):
+        constructor.callable(data, constructor.params())
+
+
+def test_profile_band_rejects_missing_statistics_and_samples() -> None:
+    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+
+    with pytest.raises(ValueError, match="or raw 'y'/'values' samples"):
+        constructor.callable({}, constructor.params())
 
 
 def test_execute_figure_spec_records_optional_omission_and_custody(tmp_path: Path) -> None:
