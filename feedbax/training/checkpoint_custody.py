@@ -398,6 +398,7 @@ class _PreparedForkPlanTarget:
     prepared_slots: Mapping[str, Any]
     segment_history_templates: Mapping[str, Any] | None
     continuation_request: CheckpointContinuationRequest | None
+    continuation_applied: bool
     barrier_mapping: CheckpointForkBarrierMapping | None
     target_coordinate: ProgressCoordinate | None
     transformed_slots: frozenset[str]
@@ -2880,15 +2881,24 @@ def _prepare_checkpoint_fork_plan(
             request = None
             history_templates = None
         else:
+            if policy.mode == "prepare_continuation" and declared_continuation is None:
+                raise CheckpointCompatibilityError(
+                    f"checkpoint fork target {target.target_id!r} prepare_continuation "
+                    "requires the target run spec to declare continuation"
+                )
             request = _resolve_fork_continuation_request(
                 target_run_spec=run_spec,
                 continuation_request=policy.continuation_request,
             )
             assert request is not None
-            history_templates = _require_plan_binding(
-                bindings.segment_history_templates,
-                policy.segment_history_template_ref or "",
-                kind="segment history template",
+            history_templates = (
+                _require_plan_binding(
+                    bindings.segment_history_templates,
+                    policy.segment_history_template_ref or "",
+                    kind="segment history template",
+                )
+                if policy.mode == "continue_segment"
+                else None
             )
             source_total = (
                 source.manifest.segment_lineage.start_batch
@@ -2899,14 +2909,21 @@ def _prepare_checkpoint_fork_plan(
                     "checkpoint continuation source offset mismatch; "
                     f"lineage_total={source_total} requested={request.source_completed_batches}"
                 )
-            slots, _ = _allocate_segment_histories(slots, dict(history_templates))
+            if history_templates is not None:
+                slots, _ = _allocate_segment_histories(slots, dict(history_templates))
 
         for step in (item for item in target.transforms if item.stage == "target_post"):
             slots, changed = _apply_registered_fork_step(slots, step, registry)
             changed_slots.update(changed)
             target_only.update(step.target_only_slots)
             _plan_step_records(records, step)
-        _validate_prepared_fork_templates(target.target_id, barrier, slots, expected_slots)
+        if policy.mode == "prepare_continuation":
+            _validate_required_slots(
+                tuple(barrier.slots), slots, error_cls=CheckpointCompatibilityError
+            )
+            _validate_expected_slot_set(barrier, expected_slots)
+        else:
+            _validate_prepared_fork_templates(target.target_id, barrier, slots, expected_slots)
         population_slots = _population_slot_names(run_spec)
         for slot in sorted(population_slots | set(population_ids)):
             if slot not in slots:
@@ -2930,6 +2947,7 @@ def _prepare_checkpoint_fork_plan(
                 prepared_slots=slots,
                 segment_history_templates=history_templates,
                 continuation_request=request,
+                continuation_applied=policy.mode != "prepare_continuation",
                 barrier_mapping=target.barrier_mapping,
                 target_coordinate=target.target_coordinate,
                 transformed_slots=frozenset(changed_slots),
@@ -3004,6 +3022,7 @@ def fork_checkpoint_plan(
             ),
             target_only_slots=prepared.target_only_slots or None,
             continuation_request=prepared.continuation_request,
+            continuation_applied=prepared.continuation_applied,
             tool_version=tool_version,
             metadata={"checkpoint_fork_plan_target_id": prepared.target_id},
             fork_provenance_metadata={
@@ -3038,6 +3057,7 @@ def fork_checkpoint_transaction(
     target_transformed_slots: Sequence[str] | None = None,
     target_only_slots: Mapping[str, Mapping[str, Any]] | None = None,
     continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
+    continuation_applied: bool = True,
     link_strategy: CheckpointBlobLinkStrategy | None = None,
     tool_version: str | None = None,
     metadata: Mapping[str, Any] | None = None,
@@ -3170,9 +3190,25 @@ def fork_checkpoint_transaction(
                 "checkpoint continuation source offset mismatch; "
                 f"lineage_total={source_total} requested={request.source_completed_batches}"
             )
-        prepared_slots, continuation_transformed_slots = _allocate_segment_histories(
-            prepared_slots,
-            dict(segment_history_templates or validation_slots),
+        if not continuation_applied:
+            if segment_history_templates is not None:
+                raise CheckpointCompatibilityError(
+                    "pending checkpoint continuation cannot allocate segment history templates"
+                )
+            if source.manifest.completed_training_batches != request.source_completed_batches:
+                raise CheckpointCompatibilityError(
+                    "checkpoint pending continuation progress mismatch; "
+                    f"source_completed={source.manifest.completed_training_batches} "
+                    f"requested={request.source_completed_batches}"
+                )
+        else:
+            prepared_slots, continuation_transformed_slots = _allocate_segment_histories(
+                prepared_slots,
+                dict(segment_history_templates or validation_slots),
+            )
+    elif not continuation_applied:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation cannot be pending without a continuation request"
         )
     target_post_transformed_slots: set[str] = set()
     if target_slot_transform is not None:
@@ -3384,7 +3420,7 @@ def fork_checkpoint_transaction(
                 mode="json",
                 exclude_none=True,
             )
-            manifest_metadata["checkpoint_continuation_applied"] = True
+            manifest_metadata["checkpoint_continuation_applied"] = continuation_applied
         else:
             manifest_metadata.pop("checkpoint_continuation_applied", None)
         _validate_program_step_units(
@@ -3399,14 +3435,22 @@ def fork_checkpoint_transaction(
             # manifest records the completed source prefix and must never be
             # reused as the target custody total.  The target's declared
             # bookkeeping slot remains an equality assertion below.
-            explicit=request.target_total if request is not None else None,
+            explicit=(
+                request.target_total
+                if request is not None and continuation_applied
+                else request.source_completed_batches if request is not None else None
+            ),
             metadata=manifest_metadata,
             default=None if request is not None else source.manifest.completed_training_batches,
             slot_axis_bindings=target_axes,
         )
         _validate_batch_histories(
             prepared_slots,
-            segment_batch_count=(request.additional_batches if request else completed_batches),
+            segment_batch_count=(
+                request.additional_batches
+                if request is not None and continuation_applied
+                else completed_batches
+            ),
         )
         manifest = CheckpointTransactionManifest(
             transaction_id=transaction_id,
@@ -3416,10 +3460,20 @@ def fork_checkpoint_transaction(
             completed_coordinate=coordinate,
             completed_training_batches=completed_batches,
             segment_lineage=CheckpointSegmentLineage(
-                parent_transaction_id=(source.manifest.transaction_id if request else None),
-                start_batch=(request.source_completed_batches if request else 0),
+                parent_transaction_id=(
+                    source.manifest.transaction_id
+                    if request is not None and continuation_applied
+                    else None
+                ),
+                start_batch=(
+                    request.source_completed_batches
+                    if request is not None and continuation_applied
+                    else 0
+                ),
                 segment_batch_count=(
-                    request.additional_batches if request else (completed_batches or 0)
+                    request.additional_batches
+                    if request is not None and continuation_applied
+                    else (completed_batches or 0)
                 ),
                 history_granularities=_history_granularities(prepared_slots),
             ),
@@ -3480,7 +3534,7 @@ def fork_checkpoint_transaction(
             expected_phase_program=phase_program,
             expected_slots=validation_slots,
             expected_population_member_ids=expected_population_member_ids,
-            continuation_request=None,
+            continuation_request=(request if request is not None and not continuation_applied else None),
             allow_new_lineage_override=False,
         )
         latest_path = target_root_path / LATEST_POINTER_NAME
@@ -3794,32 +3848,34 @@ def _continuation_was_applied(
 ) -> bool:
     """Return whether this fork already applied exactly ``request``."""
     marker = manifest.metadata.get("checkpoint_continuation_applied")
-    if marker is None or marker is False:
+    if marker is None:
         return False
-    if marker is not True:
+    if not isinstance(marker, bool):
         raise CheckpointCompatibilityError(
-            "checkpoint continuation applied marker must be boolean true; "
+            "checkpoint continuation applied marker must be boolean true or false; "
             f"value={marker!r}"
         )
     recorded_payload = manifest.metadata.get("checkpoint_continuation")
+    state = "applied" if marker else "pending"
     if not isinstance(recorded_payload, Mapping):
         raise CheckpointCompatibilityError(
-            "checkpoint continuation is marked applied but recorded request is missing"
+            f"checkpoint continuation is marked {state} but recorded request is missing"
         )
     try:
         recorded = CheckpointContinuationRequest.model_validate(recorded_payload)
     except ValidationError as exc:
         raise CheckpointCompatibilityError(
-            "checkpoint continuation is marked applied but recorded request is invalid"
+            f"checkpoint continuation is marked {state} but recorded request is invalid"
         ) from exc
     if recorded != request:
         raise CheckpointCompatibilityError(
-            "checkpoint continuation request does not match the already-applied "
+            "checkpoint continuation request does not match the "
+            f"{'already-applied' if marker else 'pending'} "
             "fork contract; "
             f"recorded={recorded.model_dump(mode='json', exclude_none=True)!r} "
             f"requested={request.model_dump(mode='json', exclude_none=True)!r}"
         )
-    return True
+    return marker
 
 
 def _coerce_barrier_mapping(

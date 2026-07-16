@@ -10,6 +10,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
     CheckpointForkProvenance,
 )
 from feedbax.contracts.migrations import (
@@ -1124,6 +1125,30 @@ def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:
             "CheckpointForkPlan",
             {"schema_version": "feedbax.spec.training_checkpoint_fork_plan.v0"},
         )
+
+
+def test_checkpoint_fork_plan_v1_migration_preserves_modes_and_guards_v2_mode() -> None:
+    for mode in (None, "preserve", "continue_segment"):
+        policy = {} if mode is None else {"mode": mode}
+        result = default_spec_registry.migrate(
+            "CheckpointForkPlan",
+            {
+                "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+                "targets": [{"history_policy": policy}],
+            },
+        )
+        assert result.payload["schema_version"] == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
+        assert result.payload["targets"][0]["history_policy"] == policy
+
+    for mode in ("prepare_continuation", "unknown"):
+        with pytest.raises(ValueError, match="unsupported history mode"):
+            default_spec_registry.migrate(
+                "CheckpointForkPlan",
+                {
+                    "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+                    "targets": [{"history_policy": {"mode": mode}}],
+                },
+            )
 
 
 def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:

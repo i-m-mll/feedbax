@@ -76,7 +76,8 @@ CheckpointSlotRole = Literal[
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_continuation"
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v2"
 CHECKPOINT_FORK_PLAN_SCHEMA_ID = "feedbax.spec.training_checkpoint_fork_plan"
-CHECKPOINT_FORK_PLAN_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_fork_plan.v1"
+CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.training_checkpoint_fork_plan.v1"
+CHECKPOINT_FORK_PLAN_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_fork_plan.v2"
 
 
 CheckpointDocumentT = TypeVar("CheckpointDocumentT")
@@ -466,7 +467,7 @@ class CheckpointForkTransformStep(StrictModel):
 class CheckpointForkHistoryPolicy(StrictModel):
     """Explicit target history behavior for a checkpoint fork."""
 
-    mode: Literal["preserve", "continue_segment"] = "preserve"
+    mode: Literal["preserve", "continue_segment", "prepare_continuation"] = "preserve"
     continuation_request: CheckpointContinuationRequest | None = None
     segment_history_template_ref: str | None = None
 
@@ -478,10 +479,17 @@ class CheckpointForkHistoryPolicy(StrictModel):
                 or self.segment_history_template_ref is not None
             ):
                 raise ValueError("preserve history policy cannot declare continuation inputs")
-        elif self.continuation_request is None or not self.segment_history_template_ref:
+        elif self.mode == "continue_segment":
+            if self.continuation_request is None or not self.segment_history_template_ref:
+                raise ValueError(
+                    "continue_segment history policy requires continuation_request and "
+                    "segment_history_template_ref"
+                )
+        elif self.continuation_request is None:
+            raise ValueError("prepare_continuation history policy requires continuation_request")
+        elif self.segment_history_template_ref is not None:
             raise ValueError(
-                "continue_segment history policy requires continuation_request and "
-                "segment_history_template_ref"
+                "prepare_continuation history policy cannot declare segment_history_template_ref"
             )
         return self
 
