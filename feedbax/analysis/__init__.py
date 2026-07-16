@@ -88,15 +88,18 @@ from .validation import (
     validate_report_recipe,
 )
 from .evaluation import (
+    EvaluationAuthoringSchema,
     EvaluationRunMatrixSpec,
     compile_evaluation_run_matrix,
     execute_evaluation_run_matrix,
     get_evaluation_recipe,
     materialize_evaluation_run_matrix,
+    register_evaluation_authoring_schema,
     register_evaluation_recipe,
     registered_evaluation_recipes,
     resolve_staged_evaluation_prerequisite,
     unregister_evaluation_recipe,
+    unregister_evaluation_authoring_schema,
 )
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
@@ -149,6 +152,7 @@ __all__ = [
     "EvaluationInputPathError",
     "EvaluationInputReferenceError",
     "EvaluationInputResolutionError",
+    "EvaluationAuthoringSchema",
     "EvaluationRunMatrixSpec",
     "compile_evaluation_run_matrix",
     "HarnessResult",
@@ -200,6 +204,7 @@ __all__ = [
     "materialization_metadata",
     "materialize_evaluation_run_matrix",
     "register_analysis_recipe",
+    "register_evaluation_authoring_schema",
     "register_evaluation_recipe",
     "register_report_recipe",
     "read_json_payload",
@@ -209,6 +214,7 @@ __all__ = [
     "registered_report_types",
     "get_evaluation_recipe",
     "unregister_analysis_recipe",
+    "unregister_evaluation_authoring_schema",
     "unregister_evaluation_recipe",
     "unregister_report_recipe",
     "validate_namespaced_type_key",

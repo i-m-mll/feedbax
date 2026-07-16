@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from feedbax.analysis.evaluation import (
+    EvaluationAuthoringSchema,
     EvaluationRecipeResult,
     EvaluationRecipeExecutionError,
     EvaluationRunMatrixSpec,
+    compile_evaluation_run_matrix,
     execute_evaluation_run_matrix,
     execute_evaluation_run_spec,
     materialize_evaluation_run_matrix,
+    register_evaluation_authoring_schema,
     register_evaluation_recipe,
     resolve_staged_evaluation_prerequisite,
     unregister_evaluation_recipe,
+    unregister_evaluation_authoring_schema,
 )
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.execution_context import (
@@ -163,11 +168,7 @@ def test_evaluation_matrix_schema_accepts_current_and_rejects_legacy() -> None:
     assert result.target_version == EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION
     assert not result.migrated
 
-    v1 = {
-        key: value
-        for key, value in payload.items()
-        if key != "staged_parents"
-    }
+    v1 = {key: value for key, value in payload.items() if key != "staged_parents"}
     v1["schema_version"] = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1
     migrated = default_spec_registry.migrate("EvaluationRunMatrixSpec", v1)
     assert migrated.migrated
@@ -313,9 +314,9 @@ def test_axis_product_matches_equivalent_explicit_rows_and_hashes(tmp_path: Path
 
     assert [row.row_id for row in axis_rows] == [row.row_id for row in explicit_rows]
     assert [row.payload for row in axis_rows] == [row.payload for row in explicit_rows]
-    assert [
-        sha256_bytes(canonical_json_bytes(row.payload)) for row in axis_rows
-    ] == [sha256_bytes(canonical_json_bytes(row.payload)) for row in explicit_rows]
+    assert [sha256_bytes(canonical_json_bytes(row.payload)) for row in axis_rows] == [
+        sha256_bytes(canonical_json_bytes(row.payload)) for row in explicit_rows
+    ]
 
 
 def test_axis_product_manifest_records_canonical_expansion_provenance(
@@ -331,13 +332,16 @@ def test_axis_product_manifest_records_canonical_expansion_provenance(
             root=tmp_path / "runs",
             repo_root=tmp_path,
         )
-        explicit_result = execute_evaluation_run_matrix(
-            _matrix(), root=tmp_path / "explicit"
-        )
+        explicit_result = execute_evaluation_run_matrix(_matrix(), root=tmp_path / "explicit")
     finally:
         unregister_evaluation_recipe("example.evaluate")
 
-    expected_order = ["gain-low--mode-a", "gain-low--mode-b", "gain-high--mode-a", "gain-high--mode-b"]
+    expected_order = [
+        "gain-low--mode-a",
+        "gain-low--mode-b",
+        "gain-high--mode-a",
+        "gain-high--mode-b",
+    ]
     for row in result.rows:
         manifest = load_manifest(row.manifest_path)
         provenance = manifest.metadata["matrix_harness"]["axis_expansion"]
@@ -377,6 +381,118 @@ def test_axis_contract_rejects_duplicate_ids_and_incomplete_products(monkeypatch
                 MatrixAxis(id="b", values=[MatrixAxisValue(id="y")]),
             ]
         )
+
+
+class _ChannelTaxonomy(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    sensory_standard: Literal["feedback_disturbance"]
+    process_standard: Literal["disturbance"]
+
+
+class _ExpectedZeros(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    command_disturbance: Literal["task.plant.command_dim"]
+    feedback_disturbance: Literal["task.plant.observation_dim"]
+
+
+class _ComparatorAuthoringParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    arm_id: Literal["extlqg", "hinf"]
+    target_index: int
+    channels: _ChannelTaxonomy
+    expected_zeros: _ExpectedZeros
+
+
+def _schema_matrix(
+    tmp_path: Path,
+    *,
+    command_dimension: str = "task.plant.command_dim",
+) -> EvaluationRunMatrixSpec:
+    base = EvaluationRunSpec(
+        evaluation_type="example.schema_validated",
+        params={
+            "arm_id": "extlqg",
+            "target_index": 0,
+            "channels": {
+                "sensory_standard": "feedback_disturbance",
+                "process_standard": "disturbance",
+            },
+            "expected_zeros": {
+                "command_disturbance": command_dimension,
+                "feedback_disturbance": "task.plant.observation_dim",
+            },
+        },
+    ).model_dump(mode="json", exclude_none=True)
+    base_path = tmp_path / f"schema-base-{command_dimension.rsplit('.', 1)[-1]}.json"
+    base_path.write_text(json.dumps(base), encoding="utf-8")
+    return EvaluationRunMatrixSpec(
+        base={
+            "ref": base_path.name,
+            "sha256": sha256_bytes(canonical_json_bytes(base)),
+        },
+        rows=[],
+        axes=[
+            MatrixAxis(
+                id="arm",
+                values=[
+                    MatrixAxisValue(
+                        id=arm,
+                        deltas=[OverridePatch(path="params.arm_id", value=arm)],
+                    )
+                    for arm in ("extlqg", "hinf")
+                ],
+            ),
+            MatrixAxis(
+                id="target",
+                values=[
+                    MatrixAxisValue(
+                        id=str(index),
+                        deltas=[OverridePatch(path="params.target_index", value=index)],
+                    )
+                    for index in range(2)
+                ],
+            ),
+        ],
+    )
+
+
+def test_runtime_authoring_schema_validates_taxonomy_grid_without_changing_hashes(
+    tmp_path: Path,
+) -> None:
+    matrix = _schema_matrix(tmp_path)
+    before = compile_evaluation_run_matrix(matrix, repo_root=tmp_path)
+    authored_bytes = canonical_json_bytes(matrix.model_dump(mode="json", exclude_none=True))
+    compiled_bytes = canonical_json_bytes(before.model_dump(mode="json", exclude_none=True))
+    schema = EvaluationAuthoringSchema(
+        schema_id="example.spec.evaluation.schema_validated",
+        schema_version="example.spec.evaluation.schema_validated.v1",
+        params_model=_ComparatorAuthoringParams,
+        axes={"arm": ("extlqg", "hinf"), "target": ("0", "1")},
+    )
+    register_evaluation_authoring_schema("example.schema_validated", schema)
+    try:
+        after = compile_evaluation_run_matrix(matrix, repo_root=tmp_path)
+        assert (
+            canonical_json_bytes(matrix.model_dump(mode="json", exclude_none=True))
+            == authored_bytes
+        )
+        assert (
+            canonical_json_bytes(after.model_dump(mode="json", exclude_none=True)) == compiled_bytes
+        )
+
+        invalid = _schema_matrix(tmp_path, command_dimension="wrong")
+        with pytest.raises(ValueError, match="do not match schema"):
+            compile_evaluation_run_matrix(invalid, repo_root=tmp_path)
+
+        wrong_grid = matrix.model_copy(deep=True)
+        wrong_grid.axes[1].values.pop()
+        with pytest.raises(ValueError, match="do not match schema"):
+            compile_evaluation_run_matrix(wrong_grid, repo_root=tmp_path)
+    finally:
+        unregister_evaluation_authoring_schema("example.schema_validated")
 
 
 def test_axis_contract_rejects_collisions_deltas_and_non_json_values() -> None:
@@ -465,7 +581,9 @@ def test_training_cross_group_delegates_to_matrix_core_and_matches_axis_order(
         coordinate.value_indices
         for coordinate in expand_matrix_axes(
             [
-                MatrixAxis(id="gain", values=[MatrixAxisValue(id="low"), MatrixAxisValue(id="high")]),
+                MatrixAxis(
+                    id="gain", values=[MatrixAxisValue(id="low"), MatrixAxisValue(id="high")]
+                ),
                 MatrixAxis(id="mode", values=[MatrixAxisValue(id="a"), MatrixAxisValue(id="b")]),
             ]
         )
@@ -638,8 +756,9 @@ def test_matrix_resolves_shared_local_parents_before_distinct_row_roots(
     )
     for row in result.rows:
         assert row.result.provenance.parents == [training_ref, bank_ref]
-        assert row.result.metadata["matrix_harness"]["staged_parents"] == (
-            result.metadata["staged_parents"]
+        assert (
+            row.result.metadata["matrix_harness"]["staged_parents"]
+            == (result.metadata["staged_parents"])
         )
         axis_provenance = row.result.metadata["matrix_harness"]["axis_expansion"]
         assert axis_provenance["authored_matrix_sha256"] == sha256_bytes(
