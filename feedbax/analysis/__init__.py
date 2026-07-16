@@ -32,6 +32,12 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from .context import AnalysisRunContext
+from .channel_evidence import (
+    AuthenticatedEvaluationChannels,
+    EvaluationChannelEvidence,
+    EvaluationChannelEvidenceError,
+    resolve_authenticated_evaluation_channels,
+)
 from .controller import (
     GraphControllerAdapter,
     GraphControllerStep,
@@ -133,6 +139,7 @@ __all__ = [
     "AnalysisRecipeResult",
     "AnalysisRecipeProtocol",
     "AnalysisRunContext",
+    "AuthenticatedEvaluationChannels",
     "ResolvedManifestInput",
     "authenticated_manifest_ref",
     "is_authenticated_manifest_ref",
@@ -143,6 +150,8 @@ __all__ = [
     "ContextMaterializerFn",
     "DataContextMaterializerFn",
     "EvaluationRecipeProtocol",
+    "EvaluationChannelEvidence",
+    "EvaluationChannelEvidenceError",
     "EvaluationParamsBase",
     "EMPTY_STAGED_EXECUTION_CONTEXT",
     "EvaluationInputAmbiguityError",
@@ -210,6 +219,7 @@ __all__ = [
     "read_json_payload",
     "registered_evaluation_recipes",
     "resolve_evaluation_inputs",
+    "resolve_authenticated_evaluation_channels",
     "resolve_staged_execution_context",
     "registered_report_types",
     "get_evaluation_recipe",
