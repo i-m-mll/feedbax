@@ -8,7 +8,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec, ReportSpec
+import jax.tree_util as jtu
+
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    ReportSpec,
+)
 
 if TYPE_CHECKING:
     from feedbax.analysis.execution_context import StagedExecutionContext
@@ -87,6 +94,13 @@ class AnalysisRecipeProtocol(Protocol):
         """Build executable analyses for one analysis run spec."""
 
 
+class EvaluationStatesStructureProviderProtocol(Protocol):
+    """Callable protocol for supplying a typed evaluation-states structure."""
+
+    def __call__(self, manifest: EvaluationRunManifest, /) -> jtu.PyTreeDef:
+        """Return the trusted pytree structure for one evaluation manifest."""
+
+
 class ReportRecipeProtocol(Protocol):
     """Callable protocol for registered executable ``ReportSpec`` recipes."""
 
@@ -130,6 +144,21 @@ def validate_analysis_recipe(
         expected="(run_spec, root, inputs, execution_context)",
     )
     return recipe
+
+
+def validate_evaluation_states_structure_provider(
+    analysis_type: str,
+    provider: Any,
+) -> EvaluationStatesStructureProviderProtocol:
+    """Validate and return an evaluation-states structure provider callable."""
+    _validate_callable_shape(
+        kind="Evaluation states structure provider",
+        type_key=analysis_type,
+        recipe=provider,
+        example_args=(object(),),
+        expected="(evaluation_manifest)",
+    )
+    return provider
 
 
 def validate_report_recipe(

@@ -19,13 +19,15 @@ from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
+    EVALUATION_STATES_STORAGE_BACKEND_V3,
     ArtifactRef,
     StrictModel,
     safe_manifest_key,
     sha256_bytes,
     store_bytes_artifact,
 )
-from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.migrations import UnsupportedSpecVersion
 
 
 EVALUATION_STATES_ARTIFACT_ROLE = "evaluation_states"
@@ -118,6 +120,20 @@ class EvaluationStatesContainerPayloadV2(StrictModel):
     metadata_sha256: str | None = None
 
 
+class EvaluationStatesContainerPayloadV3(StrictModel):
+    """Metadata envelope for the v3 leaves-only evaluation-states container."""
+
+    schema_id: Literal[
+        "feedbax.manifest.evaluation_states_container"
+    ] = EVALUATION_STATES_CONTAINER_SCHEMA_ID
+    schema_version: Literal[
+        "feedbax.manifest.evaluation_states_container.v3"
+    ] = EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
+    storage_backend: Literal["npz.v3"] = EVALUATION_STATES_STORAGE_BACKEND_V3
+    leaves: list[EvaluationStatesLeafRecord] = Field(default_factory=list)
+    metadata_sha256: str | None = None
+
+
 EvaluationStatesContainerPayload = EvaluationStatesContainerPayloadV2
 
 
@@ -128,7 +144,13 @@ def store_evaluation_states_artifact(
     manifest_id: str,
 ) -> ArtifactRef:
     """Store evaluation states as a governed artifact and return its ref."""
-    data, payload = evaluation_states_container_bytes(states)
+    treedef = jt.structure(states)
+    writer = (
+        evaluation_states_container_bytes
+        if _treedef_is_proto_serializable(treedef)
+        else evaluation_states_container_bytes_v3
+    )
+    data, payload = writer(states)
     return store_bytes_artifact(
         data,
         root=root,
@@ -173,6 +195,7 @@ def load_authenticated_evaluation_states_artifact(
     root: Path | str | None = None,
     manifest_id: str,
     data: bytes | None = None,
+    structure: jtu.PyTreeDef | None = None,
 ) -> Any:
     """Load states only after authenticating custody, schema, and provenance evidence."""
 
@@ -210,6 +233,7 @@ def load_authenticated_evaluation_states_artifact(
     expected_storage = {
         EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1: EVALUATION_STATES_STORAGE_BACKEND_V1,
         EVALUATION_STATES_CONTAINER_SCHEMA_VERSION: EVALUATION_STATES_STORAGE_BACKEND,
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3: EVALUATION_STATES_STORAGE_BACKEND_V3,
     }
     if (
         metadata.get("schema_id") != EVALUATION_STATES_CONTAINER_SCHEMA_ID
@@ -249,7 +273,7 @@ def load_authenticated_evaluation_states_artifact(
         )
 
     try:
-        return load_evaluation_states_container_bytes(data)
+        return load_evaluation_states_container_bytes(data, structure=structure)
     except UnsupportedSpecVersion as exc:
         raise EvaluationStatesSchemaMismatch(str(exc)) from exc
     except ValidationError as exc:
@@ -284,49 +308,42 @@ def evaluation_states_container_bytes(
             "JSON-serializable metadata leaves."
         )
 
-    arrays: dict[str, np.ndarray] = {}
-    leaves: list[EvaluationStatesLeafRecord] = []
-    metadata_values: list[dict[str, Any]] = []
-    for index, (path, leaf) in enumerate(path_leaves):
-        leaf_path = _leaf_path(path)
-        if isinstance(leaf, (jax.Array, np.ndarray)):
-            array = np.asarray(leaf)
-            storage_key = EVALUATION_STATES_ARRAY_KEY_TEMPLATE.format(index=index)
-            arrays[storage_key] = array
-            leaves.append(
-                EvaluationStatesLeafRecord(
-                    path=leaf_path,
-                    kind="array",
-                    storage_key=storage_key,
-                    dtype=str(array.dtype),
-                    shape=tuple(int(dim) for dim in array.shape),
-                    sha256=_array_digest(array),
-                )
-            )
-            continue
-
-        value_bytes = _canonical_metadata_leaf_bytes(leaf, leaf_path)
-        value = json.loads(value_bytes.decode("utf-8"))
-        metadata_values.append({"index": index, "path": leaf_path, "value": value})
-        leaves.append(
-            EvaluationStatesLeafRecord(
-                path=leaf_path,
-                kind="metadata",
-                sha256=sha256_bytes(value_bytes),
-            )
-        )
-
-    metadata_bytes = (
-        _canonical_json_bytes(metadata_values) + b"\n"
-        if metadata_values
-        else None
-    )
+    arrays, leaves, metadata_bytes = _encode_mixed_leaves(path_leaves)
     payload = EvaluationStatesContainerPayloadV2(
         treedef_proto_b64=base64.b64encode(treedef.serialize_using_proto()).decode("ascii"),
         leaves=leaves,
         metadata_sha256=sha256_bytes(metadata_bytes) if metadata_bytes is not None else None,
     )
     return _npz_bytes(payload, arrays, metadata_bytes=metadata_bytes), payload
+
+
+def evaluation_states_container_bytes_v3(
+    states: Any,
+) -> tuple[bytes, EvaluationStatesContainerPayloadV3]:
+    """Serialize mixed leaves without embedding a caller-specific pytree definition."""
+    path_leaves, _ = jt.flatten_with_path(states)
+    if not path_leaves:
+        raise EvaluationStatesLeafError(
+            "states_custody='durable' requires a non-empty pytree of array or "
+            "JSON-serializable metadata leaves."
+        )
+    arrays, leaves, metadata_bytes = _encode_mixed_leaves(path_leaves)
+    payload = EvaluationStatesContainerPayloadV3(
+        leaves=leaves,
+        metadata_sha256=sha256_bytes(metadata_bytes) if metadata_bytes is not None else None,
+    )
+    return _npz_bytes(payload, arrays, metadata_bytes=metadata_bytes), payload
+
+
+def _treedef_is_proto_serializable(treedef: jtu.PyTreeDef) -> bool:
+    """Return whether JAX's proto codec supports this pytree structure."""
+    try:
+        treedef.serialize_using_proto()
+    except ValueError as exc:
+        if "User-defined nodes are not supported" in str(exc):
+            return False
+        raise
+    return True
 
 
 def evaluation_states_container_bytes_v1(
@@ -368,7 +385,11 @@ def evaluation_states_container_bytes_v1(
     return _npz_bytes(payload, arrays), payload
 
 
-def load_evaluation_states_container_bytes(data: bytes) -> Any:
+def load_evaluation_states_container_bytes(
+    data: bytes,
+    *,
+    structure: jtu.PyTreeDef | None = None,
+) -> Any:
     """Load evaluation states from verified NPZ container bytes."""
     with zipfile.ZipFile(io.BytesIO(data), mode="r") as archive:
         names = set(archive.namelist())
@@ -390,6 +411,25 @@ def load_evaluation_states_container_bytes(data: bytes) -> Any:
         elif schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION:
             payload = EvaluationStatesContainerPayloadV2.model_validate(payload_data)
             leaves, seen = _load_v2_leaves(archive, names, payload)
+        elif schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3:
+            payload = EvaluationStatesContainerPayloadV3.model_validate(payload_data)
+            if structure is None:
+                raise EvaluationStatesContainerError(
+                    "Evaluation states container v3 requires caller-supplied structure."
+                )
+            if structure.num_leaves != len(payload.leaves):
+                raise EvaluationStatesContainerError(
+                    "Evaluation states container v3 leaf count does not match caller structure: "
+                    f"stored={len(payload.leaves)}, structure={structure.num_leaves}."
+                )
+            structure_paths = _treedef_leaf_paths(structure)
+            stored_paths = [record.path for record in payload.leaves]
+            if stored_paths != structure_paths:
+                raise EvaluationStatesContainerError(
+                    "Evaluation states container v3 leaf paths do not match caller structure: "
+                    f"stored={stored_paths!r}, structure={structure_paths!r}."
+                )
+            leaves, seen = _load_v2_leaves(archive, names, payload)
         else:  # pragma: no cover - _validate_payload_version raises first.
             raise UnsupportedSpecVersion(
                 f"Unsupported evaluation states container version {schema_version!r}."
@@ -401,8 +441,15 @@ def load_evaluation_states_container_bytes(data: bytes) -> Any:
                 f"Evaluation states container has unknown members: {extra}"
             )
 
+    if schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3:
+        assert structure is not None
+        return structure.unflatten(leaves)
     treedef_proto = base64.b64decode(payload.treedef_proto_b64.encode("ascii"))
     treedef = jtu.PyTreeDef.deserialize_using_proto(jtu.default_registry, treedef_proto)
+    if structure is not None and treedef != structure:
+        raise EvaluationStatesContainerError(
+            "Evaluation states container pytree does not match caller-supplied structure."
+        )
     return treedef.unflatten(leaves)
 
 
@@ -420,7 +467,7 @@ def _load_v1_leaves(
 def _load_v2_leaves(
     archive: zipfile.ZipFile,
     names: set[str],
-    payload: EvaluationStatesContainerPayloadV2,
+    payload: EvaluationStatesContainerPayloadV2 | EvaluationStatesContainerPayloadV3,
 ) -> tuple[list[Any], set[str]]:
     seen = {EVALUATION_STATES_METADATA_KEY}
     metadata_by_index: dict[int, Any] = {}
@@ -569,11 +616,66 @@ def _validate_payload_version(payload: dict[str, Any]) -> None:
             f"schema_id={schema_id!r}, expected={EVALUATION_STATES_CONTAINER_SCHEMA_ID!r}"
         )
     schema_version = payload.get("schema_version")
-    default_spec_registry.migrate(
-        "EvaluationStatesContainer",
-        payload,
-        source_version=schema_version if isinstance(schema_version, str) else None,
+    accepted_versions = {
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
+    }
+    if schema_version not in accepted_versions:
+        raise UnsupportedSpecVersion(
+            "Unsupported EvaluationStatesContainer version: "
+            f"schema_version={schema_version!r}, accepted={sorted(accepted_versions)!r}."
+        )
+
+
+def _encode_mixed_leaves(
+    path_leaves: list[tuple[tuple[Any, ...], Any]],
+) -> tuple[dict[str, np.ndarray], list[EvaluationStatesLeafRecord], bytes | None]:
+    arrays: dict[str, np.ndarray] = {}
+    leaves: list[EvaluationStatesLeafRecord] = []
+    metadata_values: list[dict[str, Any]] = []
+    for index, (path, leaf) in enumerate(path_leaves):
+        leaf_path = _leaf_path(path)
+        if isinstance(leaf, (jax.Array, np.ndarray)):
+            array = np.asarray(leaf)
+            storage_key = EVALUATION_STATES_ARRAY_KEY_TEMPLATE.format(index=index)
+            arrays[storage_key] = array
+            leaves.append(
+                EvaluationStatesLeafRecord(
+                    path=leaf_path,
+                    kind="array",
+                    storage_key=storage_key,
+                    dtype=str(array.dtype),
+                    shape=tuple(int(dim) for dim in array.shape),
+                    sha256=_array_digest(array),
+                )
+            )
+            continue
+        value_bytes = _canonical_metadata_leaf_bytes(leaf, leaf_path)
+        metadata_values.append(
+            {"index": index, "path": leaf_path, "value": json.loads(value_bytes)}
+        )
+        leaves.append(
+            EvaluationStatesLeafRecord(
+                path=leaf_path,
+                kind="metadata",
+                sha256=sha256_bytes(value_bytes),
+            )
+        )
+    metadata_bytes = (
+        _canonical_json_bytes(metadata_values) + b"\n" if metadata_values else None
     )
+    return arrays, leaves, metadata_bytes
+
+
+def _treedef_leaf_paths(structure: jtu.PyTreeDef) -> list[str]:
+    prototype = structure.unflatten([object() for _ in range(structure.num_leaves)])
+    path_leaves, derived = jt.flatten_with_path(prototype)
+    if derived != structure:
+        raise EvaluationStatesContainerError(
+            "Caller-supplied evaluation states structure cannot be flattened consistently."
+        )
+    return [_leaf_path(path) for path, _ in path_leaves]
 
 
 def _array_digest(array: np.ndarray) -> str:
@@ -602,7 +704,11 @@ def _canonical_json_bytes(value: Any) -> bytes:
 
 
 def _npz_bytes(
-    payload: EvaluationStatesContainerPayloadV1 | EvaluationStatesContainerPayloadV2,
+    payload: (
+        EvaluationStatesContainerPayloadV1
+        | EvaluationStatesContainerPayloadV2
+        | EvaluationStatesContainerPayloadV3
+    ),
     arrays: dict[str, np.ndarray],
     *,
     metadata_bytes: bytes | None = None,

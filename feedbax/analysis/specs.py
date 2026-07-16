@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import jax.tree_util as jtu
 from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
@@ -41,7 +42,9 @@ from feedbax.analysis.manifest_inputs import (
 )
 from feedbax.analysis.validation import (
     AnalysisRecipeProtocol,
+    EvaluationStatesStructureProviderProtocol,
     validate_analysis_recipe,
+    validate_evaluation_states_structure_provider,
     validate_namespaced_type_key,
 )
 from feedbax.contracts.manifest import (
@@ -91,6 +94,9 @@ AnalysisRecipe = AnalysisRecipeProtocol
 AnalysisRecipeResultValidator = Callable[[str, AnalysisRecipeResult], None]
 
 _ANALYSIS_RECIPES: dict[str, AnalysisRecipe] = {}
+_EVALUATION_STATES_STRUCTURE_PROVIDERS: dict[
+    str, EvaluationStatesStructureProviderProtocol
+] = {}
 
 
 class AnalysisRecipeExecutionError(RuntimeError):
@@ -124,6 +130,7 @@ def register_analysis_recipe(
     recipe: AnalysisRecipe,
     *,
     replace: bool = False,
+    evaluation_states_structure: EvaluationStatesStructureProviderProtocol | None = None,
 ) -> None:
     """Register an executable analysis recipe by stable type key."""
     analysis_type = validate_namespaced_type_key(
@@ -132,12 +139,26 @@ def register_analysis_recipe(
     )
     if analysis_type in _ANALYSIS_RECIPES and not replace:
         raise ValueError(f"Analysis recipe {analysis_type!r} is already registered")
-    _ANALYSIS_RECIPES[analysis_type] = validate_analysis_recipe(analysis_type, recipe)
+    validated_recipe = validate_analysis_recipe(analysis_type, recipe)
+    validated_structure = (
+        validate_evaluation_states_structure_provider(
+            analysis_type,
+            evaluation_states_structure,
+        )
+        if evaluation_states_structure is not None
+        else None
+    )
+    _ANALYSIS_RECIPES[analysis_type] = validated_recipe
+    if validated_structure is None:
+        _EVALUATION_STATES_STRUCTURE_PROVIDERS.pop(analysis_type, None)
+    else:
+        _EVALUATION_STATES_STRUCTURE_PROVIDERS[analysis_type] = validated_structure
 
 
 def unregister_analysis_recipe(analysis_type: str) -> None:
     """Remove a previously registered analysis recipe."""
     _ANALYSIS_RECIPES.pop(analysis_type, None)
+    _EVALUATION_STATES_STRUCTURE_PROVIDERS.pop(analysis_type, None)
 
 
 def registered_analysis_types() -> tuple[str, ...]:
@@ -155,6 +176,12 @@ def get_analysis_recipe(analysis_type: str) -> AnalysisRecipe:
             f"Analysis recipe {analysis_type!r} is not registered. "
             f"Registered analysis recipes: {available}."
         ) from exc
+
+
+def _get_evaluation_states_structure_provider(
+    analysis_type: str,
+) -> EvaluationStatesStructureProviderProtocol | None:
+    return _EVALUATION_STATES_STRUCTURE_PROVIDERS.get(analysis_type)
 
 
 def coerce_analysis_run_spec(
@@ -279,6 +306,9 @@ def resolve_analysis_inputs(
                     ref,
                     manifest,
                     root=root_path,
+                    structure_provider=_get_evaluation_states_structure_provider(
+                        spec.analysis_type
+                    ),
                 )
                 resolved.append(
                     ResolvedAnalysisInput(
@@ -520,13 +550,26 @@ def _load_required_durable_evaluation_states(
     manifest: AnyManifest | None,
     *,
     root: Path,
+    structure_provider: EvaluationStatesStructureProviderProtocol | None,
 ) -> tuple[Any, AnalysisEvaluationStateSource]:
     manifest, artifact = _evaluation_states_artifact_for_durable_policy(ref, manifest)
+    structure = structure_provider(manifest) if structure_provider is not None else None
+    if structure is not None and not isinstance(structure, jtu.PyTreeDef):
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=(
+                "Evaluation states structure provider returned "
+                f"{type(structure).__name__}, expected PyTreeDef."
+            ),
+        )
     try:
         states = load_authenticated_evaluation_states_artifact(
             artifact,
             root=root,
             manifest_id=manifest.id,
+            structure=structure,
         )
     except EvaluationStatesSchemaMismatch as exc:
         raise _resolution_error(
