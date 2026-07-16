@@ -119,6 +119,7 @@ CancellationProbe = Callable[[ProgressCoordinate], CancellationDecision | None]
 _RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
 _FEEDBAX_METADATA_NAMESPACE_PREFIX = "feedbax_"
 _METADATA_VALUE_ABSENT = object()
+_METHOD_OBSERVATION_BUFFER_CAP = 500
 
 
 class TrainingRunExecutorError(ValueError):
@@ -139,6 +140,110 @@ class _ImmediateCancellation(Exception):
     def __init__(self, coordinate: ProgressCoordinate, decision: CancellationDecision) -> None:
         self.coordinate = coordinate
         self.decision = decision
+
+
+@dataclass
+class _BufferedStaticValues:
+    """Non-array leaves retained in update order across one buffered chunk."""
+
+    values: tuple[Any, ...]
+
+
+@dataclass
+class _MethodObservationBuffer:
+    """Bound raw method observations until an evidence publication boundary."""
+
+    observations: list[dict[str, Any]]
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]]
+    capacity: int = _METHOD_OBSERVATION_BUFFER_CAP
+
+    def __post_init__(self) -> None:
+        if self.capacity <= 0:
+            raise ValueError("method observation buffer capacity must be positive")
+        self._coordinates: list[ProgressCoordinate] = []
+        self.flush_sizes: list[int] = []
+        self.peak_buffered_updates = 0
+
+    @property
+    def buffered_updates(self) -> int:
+        """Return the number of raw updates awaiting materialization."""
+        return len(self._coordinates)
+
+    def append(self, coordinate: ProgressCoordinate) -> None:
+        """Retain one immutable raw coordinate, flushing only at hard capacity."""
+        self._coordinates.append(coordinate)
+        self.peak_buffered_updates = max(
+            self.peak_buffered_updates,
+            len(self._coordinates),
+        )
+        if len(self._coordinates) >= self.capacity:
+            self.flush()
+
+    def flush(self) -> None:
+        """Materialize one stacked metrics PyTree and normalize each host record."""
+        if not self._coordinates:
+            return
+        coordinates = tuple(self._coordinates)
+        metrics = tuple(coordinate.metrics for coordinate in coordinates)
+
+        def stack_leaves(*leaves: Any) -> Any:
+            if all(leaf is None for leaf in leaves):
+                return None
+            try:
+                return jnp.stack(leaves)
+            except (TypeError, ValueError):
+                if any(isinstance(leaf, (jax.Array, np.ndarray)) for leaf in leaves):
+                    raise
+                return _BufferedStaticValues(tuple(leaves))
+
+        try:
+            expected_structure = jt.structure(metrics[0], is_leaf=lambda item: item is None)
+            if any(
+                jt.structure(item, is_leaf=lambda value: value is None) != expected_structure
+                for item in metrics[1:]
+            ):
+                raise TrainingRunExecutorError(
+                    "buffered method observations changed metrics PyTree structure"
+                )
+            stacked_metrics = jt.map(
+                stack_leaves,
+                *metrics,
+                is_leaf=lambda item: item is None,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TrainingRunExecutorError(
+                "buffered method observations could not be stacked by corresponding leaf"
+            ) from exc
+        host_metrics = jax.device_get(stacked_metrics)
+        normalized: list[dict[str, Any]] = []
+        for index, coordinate in enumerate(coordinates):
+            record_metrics = jt.map(
+                lambda leaf: (
+                    None
+                    if leaf is None
+                    else leaf.values[index]
+                    if isinstance(leaf, _BufferedStaticValues)
+                    else leaf[index]
+                ),
+                host_metrics,
+                is_leaf=lambda item: item is None or isinstance(item, _BufferedStaticValues),
+            )
+            normalized.append(
+                _history_event(
+                    coordinate.model_copy(update={"metrics": record_metrics}),
+                    self.slot_axis_bindings,
+                )
+            )
+        self.observations.extend(normalized)
+        self.flush_sizes.append(len(coordinates))
+        self._coordinates.clear()
+
+    def assert_empty(self) -> None:
+        """Reject an execution result that omitted a buffered observation tail."""
+        if self._coordinates:
+            raise TrainingRunExecutorError(
+                f"{len(self._coordinates)} method observations remain unflushed"
+            )
 
 
 def _compilation_cache_snapshot() -> dict[str, Any]:
@@ -270,6 +375,11 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         }
         self._writes: list[CheckpointWriteResult] = []
         self._barrier_artifacts: list[ArtifactRef] = []
+        self._before_save: Callable[[ProgressCoordinate], None] | None = None
+
+    def set_before_save(self, callback: Callable[[ProgressCoordinate], None] | None) -> None:
+        """Install an executor-local validation hook before checkpoint publication."""
+        self._before_save = callback
 
     @property
     def writes(self) -> tuple[CheckpointWriteResult, ...]:
@@ -282,6 +392,8 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         return tuple(self._barrier_artifacts)
 
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        if self._before_save is not None:
+            self._before_save(checkpoint.coordinate)
         saved = super().save(checkpoint)
         barrier_spec = self._barrier_specs[saved.barrier]
         prepared_artifacts = _prepare_barrier_artifacts(
@@ -708,6 +820,13 @@ def execute_training_run_spec(
         checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
     method_observations: list[dict[str, Any]] = []
+    method_observation_buffer = (
+        _MethodObservationBuffer(method_observations, slot_axis_bindings)
+        if method_contract.training_diagnostics is not None
+        else None
+    )
+    if method_observation_buffer is not None:
+        checkpoint_store.set_before_save(lambda _coordinate: method_observation_buffer.flush())
     method_observation_origin_batch = (
         _terminal_completed_batches(
             program=program,
@@ -741,6 +860,24 @@ def execute_training_run_spec(
         cancellation = decision
 
     try:
+        live_progress_callback = _live_progress_callback(
+            progress_callback,
+            live_history_events,
+            run_event_emitter=run_event_emitter,
+            total_batches=total_batches,
+            started_at=started_at,
+            cancellation_observer=observe_cancellation,
+            runtime_telemetry=runtime_telemetry,
+            cache_before=cache_before,
+            start_semantics=execution_start_semantics,
+            slot_axis_bindings=slot_axis_bindings,
+        )
+
+        def publish_progress(coordinate: ProgressCoordinate) -> None:
+            if method_observation_buffer is not None:
+                method_observation_buffer.flush()
+            live_progress_callback(coordinate)
+
         execution = executor.run(
             slots,
             run_id=resolved_run_id,
@@ -748,27 +885,10 @@ def execute_training_run_spec(
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
-            progress_callback=(
-                _live_progress_callback(
-                    progress_callback,
-                    live_history_events,
-                    run_event_emitter=run_event_emitter,
-                    total_batches=total_batches,
-                    started_at=started_at,
-                    cancellation_observer=observe_cancellation,
-                    runtime_telemetry=runtime_telemetry,
-                    cache_before=cache_before,
-                    start_semantics=execution_start_semantics,
-                    slot_axis_bindings=slot_axis_bindings,
-                )
-            ),
+            progress_callback=publish_progress,
             method_observation_callback=(
-                (
-                    lambda coordinate: method_observations.append(
-                        _history_event(coordinate, slot_axis_bindings)
-                    )
-                )
-                if method_contract.training_diagnostics is not None
+                method_observation_buffer.append
+                if method_observation_buffer is not None
                 else None
             ),
             step_guard=_executor_nan_guard(
@@ -782,6 +902,9 @@ def execute_training_run_spec(
             progress_interval=run_spec.checkpoint_progress.progress_interval,
             include_completed_batches_in_progress=method_contract.training_diagnostics is not None,
         )
+        if method_observation_buffer is not None:
+            method_observation_buffer.flush()
+            method_observation_buffer.assert_empty()
         checkpoint_writes = checkpoint_store.writes
         continuation = run_spec.checkpoint_progress.continuation
         if continuation is not None and continuation.self_contained and checkpoint_writes:
