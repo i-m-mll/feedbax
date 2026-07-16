@@ -240,7 +240,7 @@ def _write_mutated_artifact_metadata(root: Path, manifest, **updates: object) ->
 
 
 def _artifact_with_mutated_container_storage(root: Path, artifact):
-    source = Path(artifact.uri)
+    source = root / artifact.metadata["relative_path"]
     with zipfile.ZipFile(source, mode="r") as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
     header = json.loads(members[EVALUATION_STATES_METADATA_KEY])

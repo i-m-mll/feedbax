@@ -196,8 +196,10 @@ def test_evaluation_states_durable_custody_round_trips(tmp_path: Path):
         assert len(artifacts) == 1
         artifact = artifacts[0]
         assert artifact.media_type == EVALUATION_STATES_MEDIA_TYPE
-        assert artifact.sha256 == sha256_file(Path(artifact.uri))
-        assert artifact.size_bytes == Path(artifact.uri).stat().st_size
+        artifact_path = tmp_path / artifact.metadata["relative_path"]
+        assert artifact.uri is None
+        assert artifact.sha256 == sha256_file(artifact_path)
+        assert artifact.size_bytes == artifact_path.stat().st_size
         assert artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
 
         loaded_states = load_evaluation_states(manifest, root=tmp_path)
@@ -238,7 +240,7 @@ def test_evaluation_states_tamper_fails_closed(tmp_path: Path):
             for artifact in manifest.artifacts
             if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
         )
-        Path(artifact.uri).write_bytes(b"tampered")
+        (tmp_path / artifact.metadata["relative_path"]).write_bytes(b"tampered")
 
         with pytest.raises(EvaluationStatesHashMismatch):
             load_evaluation_states(manifest, root=tmp_path)

@@ -158,7 +158,7 @@ def store_evaluation_states_artifact(
         else evaluation_states_container_bytes_v3
     )
     data, payload = writer(states)
-    return store_bytes_artifact(
+    ref = store_bytes_artifact(
         data,
         root=root,
         role=EVALUATION_STATES_ARTIFACT_ROLE,
@@ -172,6 +172,7 @@ def store_evaluation_states_artifact(
             "manifest_id": manifest_id,
         },
     )
+    return ref.model_copy(update={"uri": None})
 
 
 def load_evaluation_states_artifact(
