@@ -16,6 +16,7 @@ import stat
 import tarfile
 import tempfile
 import uuid
+import zlib
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
@@ -801,7 +802,7 @@ def materialize_checkpoint_custody_archive(
     parent_descriptor: int | None = None
     staging_descriptor: int | None = None
     staging_identity: os.stat_result | None = None
-    owned_name: str | None = None
+    directory_identities: dict[tuple[str, ...], tuple[int, int]] = {}
     try:
         directory_flags = _archive_directory_flags()
         parent_descriptor = os.open(parent, directory_flags)
@@ -816,16 +817,25 @@ def materialize_checkpoint_custody_archive(
 
         staging_name = f".{target.name}.checkpoint-archive-{uuid.uuid4().hex}"
         os.mkdir(staging_name, mode=0o700, dir_fd=parent_descriptor)
-        owned_name = staging_name
+        staging_identity = os.stat(
+            staging_name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
         staging_descriptor = os.open(staging_name, directory_flags, dir_fd=parent_descriptor)
-        try:
-            staging_identity = os.fstat(staging_descriptor)
-        except OSError:
-            staging_identity = os.stat(staging_descriptor)
-            raise
+        opened_identity = os.fstat(staging_descriptor)
+        current_identity = os.stat(
+            staging_name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if not stat.S_ISDIR(current_identity.st_mode) or not (
+            _identity(staging_identity)
+            == _identity(opened_identity)
+            == _identity(current_identity)
+        ):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive private staging identity changed during creation"
+            )
         staging = parent / staging_name
         document, payload_names, payload_size = _extract_checkpoint_custody_archive(
-            archive_bytes, staging_descriptor
+            archive_bytes, staging_descriptor, directory_identities
         )
         expected_document = {
             "schema_id": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
@@ -912,25 +922,24 @@ def materialize_checkpoint_custody_archive(
             target.name,
             expected_identity=staging_identity,
         )
-        owned_name = target.name
-        _require_external_archive_mapping(
-            parent, parent_identity, child=target, child_identity=staging_identity
-        )
-        owned_name = None
         return result
     finally:
         if staging_descriptor is not None:
-            os.close(staging_descriptor)
+            try:
+                os.close(staging_descriptor)
+            except OSError:
+                pass
         if parent_descriptor is not None:
-            if owned_name is not None and staging_identity is not None:
-                _remove_owned_archive_directory(
-                    parent_descriptor, owned_name, staging_identity
-                )
-            os.close(parent_descriptor)
+            try:
+                os.close(parent_descriptor)
+            except OSError:
+                pass
 
 
 def _extract_checkpoint_custody_archive(
-    archive_bytes: bytes, staging_descriptor: int
+    archive_bytes: bytes,
+    staging_descriptor: int,
+    directory_identities: dict[tuple[str, ...], tuple[int, int]],
 ) -> tuple[dict[str, Any], set[str], int]:
     """Stream canonical regular members into private staging."""
     document: dict[str, Any] | None = None
@@ -938,10 +947,10 @@ def _extract_checkpoint_custody_archive(
     folded_names: set[str] = set()
     payload_size = 0
     expected_offset = 0
-    archive_document: bytes | None = None
-    canonical_payload: list[tuple[str, Path, bytes]] = []
+    framing = _CanonicalUstarFraming()
+    compressed_stream = _SingleGzipMemberStream(archive_bytes, framing)
     try:
-        archive = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz")
+        archive = tarfile.open(fileobj=compressed_stream, mode="r|")
         with archive:
             for index, member in enumerate(archive):
                 name = _canonical_archive_relative_path(member.name, context="archive member")
@@ -962,6 +971,7 @@ def _extract_checkpoint_custody_archive(
                 expected_offset = member.offset_data + (
                     (member.size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE
                 ) * tarfile.BLOCKSIZE
+                framing.require_member(index, member)
                 names.add(name)
                 folded_names.add(name.casefold())
                 source = archive.extractfile(member)
@@ -986,19 +996,18 @@ def _extract_checkpoint_custody_archive(
                             "checkpoint archive document is not exact canonical JSON"
                         )
                     document = parsed
-                    archive_document = raw_document
                     continue
                 if not name.startswith("checkpoint/"):
                     raise CheckpointReferenceResolutionError(
                         f"checkpoint archive contains unexpected member: {name!r}"
                     )
                 relative = PurePosixPath(name).relative_to("checkpoint")
-                descriptor = _open_archive_member(staging_descriptor, relative.parts)
-                captured = bytearray()
+                descriptor = _open_archive_member(
+                    staging_descriptor, relative.parts, directory_identities
+                )
                 with os.fdopen(descriptor, "wb") as sink:
                     while chunk := source.read(1024 * 1024):
                         sink.write(chunk)
-                        captured.extend(chunk)
                     sink.flush()
                     written_size = os.fstat(sink.fileno()).st_size
                 if written_size != member.size:
@@ -1006,19 +1015,212 @@ def _extract_checkpoint_custody_archive(
                         f"checkpoint archive member size mismatch: {name!r}"
                     )
                 payload_size += member.size
-                canonical_payload.append((name, Path(), bytes(captured)))
+        compressed_stream.finish()
     except (tarfile.TarError, OSError, EOFError) as exc:
         raise CheckpointReferenceResolutionError(
             f"checkpoint archive tar stream is invalid: {exc}"
         ) from exc
-    if document is None or archive_document is None:
+    if document is None:
         raise CheckpointReferenceResolutionError("checkpoint archive document is missing")
-    if archive_bytes != _checkpoint_custody_archive_bytes(archive_document, canonical_payload):
-        raise CheckpointReferenceResolutionError(
-            "checkpoint archive has noncanonical or trailing compressed bytes"
-        )
     names.remove("archive.json")
     return document, names, payload_size
+
+
+class _CanonicalUstarFraming:
+    """Validate canonical USTAR framing without retaining payload bytes."""
+
+    def __init__(self) -> None:
+        self._header = bytearray()
+        self._remaining_data = 0
+        self._remaining_padding = 0
+        self._eof_offset: int | None = None
+        self._expected_size: int | None = None
+        self._offset = 0
+        self._members: list[tuple[int, str, int]] = []
+
+    def feed(self, data: bytes) -> None:
+        view = memoryview(data)
+        position = 0
+        while position < len(view):
+            if self._eof_offset is not None:
+                chunk = view[position:]
+                if any(chunk):
+                    raise CheckpointReferenceResolutionError(
+                        "checkpoint archive has noncanonical records after logical tar EOF"
+                    )
+                self._offset += len(chunk)
+                return
+            if self._remaining_data:
+                consumed = min(self._remaining_data, len(view) - position)
+                self._remaining_data -= consumed
+                self._offset += consumed
+                position += consumed
+                continue
+            if self._remaining_padding:
+                consumed = min(self._remaining_padding, len(view) - position)
+                padding = view[position : position + consumed]
+                if any(padding):
+                    raise CheckpointReferenceResolutionError(
+                        "checkpoint archive member padding is not canonical"
+                    )
+                self._remaining_padding -= consumed
+                self._offset += consumed
+                position += consumed
+                continue
+            consumed = min(tarfile.BLOCKSIZE - len(self._header), len(view) - position)
+            self._header.extend(view[position : position + consumed])
+            self._offset += consumed
+            position += consumed
+            if len(self._header) != tarfile.BLOCKSIZE:
+                continue
+            header_offset = self._offset - tarfile.BLOCKSIZE
+            header = bytes(self._header)
+            self._header.clear()
+            if not any(header):
+                self._eof_offset = header_offset
+                minimum = header_offset + 2 * tarfile.BLOCKSIZE
+                self._expected_size = (
+                    (minimum + tarfile.RECORDSIZE - 1) // tarfile.RECORDSIZE
+                ) * tarfile.RECORDSIZE
+                continue
+            name, size = _validate_canonical_ustar_header(header)
+            self._members.append((header_offset, name, size))
+            self._remaining_data = size
+            self._remaining_padding = (-size) % tarfile.BLOCKSIZE
+
+    def require_member(self, index: int, member: tarfile.TarInfo) -> None:
+        try:
+            offset, name, size = self._members[index]
+        except IndexError as exc:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive USTAR framing does not match parsed members"
+            ) from exc
+        if (offset, name, size) != (member.offset, member.name, member.size):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive USTAR framing does not match parsed members"
+            )
+
+    def finish(self) -> None:
+        if (
+            self._header
+            or self._remaining_data
+            or self._remaining_padding
+            or self._eof_offset is None
+            or self._expected_size != self._offset
+        ):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive tar stream has noncanonical termination"
+            )
+
+
+def _validate_canonical_ustar_header(header: bytes) -> tuple[str, int]:
+    """Return the exact USTAR member name and size for one canonical header."""
+
+    def text(field: bytes) -> str:
+        value, separator, padding = field.partition(b"\0")
+        if separator and any(padding):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive USTAR text field is not canonical"
+            )
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive USTAR member name is not UTF-8"
+            ) from exc
+
+    try:
+        size = int(header[124:135], 8)
+    except ValueError as exc:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive USTAR size field is invalid"
+        ) from exc
+    checksum_header = header[:148] + b" " * 8 + header[156:]
+    checksum = sum(checksum_header)
+    expected_fields = (
+        (header[100:108], b"0000644\0"),
+        (header[108:116], b"0000000\0"),
+        (header[116:124], b"0000000\0"),
+        (header[124:136], f"{size:011o}\0".encode("ascii")),
+        (header[136:148], b"00000000000\0"),
+        (header[148:156], f"{checksum:06o}\0 ".encode("ascii")),
+        (header[156:157], tarfile.REGTYPE),
+        (header[157:257], b"\0" * 100),
+        (header[257:263], b"ustar\0"),
+        (header[263:265], b"00"),
+        (header[265:329], b"\0" * 64),
+        (header[329:345], b"\0" * 16),
+        (header[500:512], b"\0" * 12),
+    )
+    if any(actual != expected for actual, expected in expected_fields):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive USTAR header is unsafe or noncanonical"
+        )
+    name = text(header[:100])
+    prefix = text(header[345:500])
+    return (f"{prefix}/{name}" if prefix else name), size
+
+
+class _SingleGzipMemberStream:
+    """Incrementally decode exactly one gzip member into a framing validator."""
+
+    def __init__(self, compressed: bytes, framing: _CanonicalUstarFraming) -> None:
+        self._compressed = compressed
+        self._framing = framing
+        self._decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        self._input_offset = 0
+        self._pending = b""
+        self._output = bytearray()
+        self._finished = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive decoder requires bounded streaming reads"
+            )
+        while len(self._output) < size and not self._finished:
+            self._pump()
+        result = bytes(self._output[:size])
+        del self._output[:size]
+        return result
+
+    def _pump(self) -> None:
+        if self._decoder.eof:
+            if (
+                self._decoder.unused_data
+                or self._pending
+                or self._input_offset != len(self._compressed)
+            ):
+                raise CheckpointReferenceResolutionError(
+                    "checkpoint archive has concatenated or trailing compressed bytes"
+                )
+            self._finished = True
+            return
+        if not self._pending and self._input_offset < len(self._compressed):
+            end = min(self._input_offset + 64 * 1024, len(self._compressed))
+            self._pending = self._compressed[self._input_offset : end]
+            self._input_offset = end
+        if not self._pending:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive gzip member is incomplete"
+            )
+        try:
+            output = self._decoder.decompress(self._pending, 1024 * 1024)
+        except zlib.error as exc:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint archive gzip member is invalid: {exc}"
+            ) from exc
+        self._pending = self._decoder.unconsumed_tail
+        if output:
+            self._framing.feed(output)
+            self._output.extend(output)
+
+    def finish(self) -> None:
+        self._output.clear()
+        while not self._finished:
+            self._pump()
+            self._output.clear()
+        self._framing.finish()
 
 
 def _archive_directory_flags() -> int:
@@ -1030,22 +1232,49 @@ def _archive_directory_flags() -> int:
     return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 
 
-def _open_archive_member(staging_descriptor: int, parts: tuple[str, ...]) -> int:
+def _open_archive_member(
+    staging_descriptor: int,
+    parts: tuple[str, ...],
+    directory_identities: dict[tuple[str, ...], tuple[int, int]],
+) -> int:
     """Open one archive member exclusively beneath the pinned staging directory."""
     directory_descriptor = os.dup(staging_descriptor)
     try:
+        traversed: tuple[str, ...] = ()
         for part in parts[:-1]:
-            try:
+            traversed += (part,)
+            expected_identity = directory_identities.get(traversed)
+            if expected_identity is None:
                 os.mkdir(part, mode=0o700, dir_fd=directory_descriptor)
-            except FileExistsError:
-                pass
+                created = os.stat(part, dir_fd=directory_descriptor, follow_symlinks=False)
+                expected_identity = _identity(created)
+                directory_identities[traversed] = expected_identity
             next_descriptor = os.open(
                 part, _archive_directory_flags(), dir_fd=directory_descriptor
             )
+            opened = os.fstat(next_descriptor)
+            current = os.stat(part, dir_fd=directory_descriptor, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(current.st_mode)
+                or _identity(opened) != expected_identity
+                or _identity(current) != expected_identity
+            ):
+                os.close(next_descriptor)
+                raise CheckpointReferenceResolutionError(
+                    "checkpoint archive extraction directory identity changed"
+                )
             os.close(directory_descriptor)
             directory_descriptor = next_descriptor
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        return os.open(parts[-1], flags, 0o600, dir_fd=directory_descriptor)
+        descriptor = os.open(parts[-1], flags, 0o600, dir_fd=directory_descriptor)
+        identity = _identity(os.fstat(descriptor))
+        current = os.stat(parts[-1], dir_fd=directory_descriptor, follow_symlinks=False)
+        if identity != _identity(current) or not stat.S_ISREG(current.st_mode):
+            os.close(descriptor)
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive extraction file identity changed"
+            )
+        return descriptor
     finally:
         os.close(directory_descriptor)
 
@@ -1076,46 +1305,6 @@ def _require_external_archive_mapping(
         raise CheckpointReferenceResolutionError(
             "checkpoint archive destination mapping changed"
         )
-
-
-def _remove_owned_archive_directory(
-    parent_descriptor: int, name: str, expected_identity: os.stat_result
-) -> None:
-    """Remove only the still-named directory created by this materialization."""
-    for _ in range(2):
-        candidates = (name, *(entry for entry in os.listdir(parent_descriptor) if entry != name))
-        for candidate in candidates:
-            try:
-                current = os.stat(candidate, dir_fd=parent_descriptor, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            if not stat.S_ISDIR(current.st_mode) or _identity(current) != _identity(
-                expected_identity
-            ):
-                continue
-            quarantine = f".checkpoint-archive-cleanup-{uuid.uuid4().hex}"
-            try:
-                _rename_archive_directory_no_replace(
-                    parent_descriptor,
-                    candidate,
-                    quarantine,
-                    expected_identity=expected_identity,
-                )
-                quarantined = os.stat(
-                    quarantine, dir_fd=parent_descriptor, follow_symlinks=False
-                )
-                if _identity(quarantined) != _identity(expected_identity):
-                    _rename_archive_directory_no_replace(
-                        parent_descriptor,
-                        quarantine,
-                        candidate,
-                        expected_identity=quarantined,
-                    )
-                    break
-                shutil.rmtree(quarantine, dir_fd=parent_descriptor)
-                return
-            except (CheckpointReferenceResolutionError, OSError):
-                return
 
 
 def _publish_directory_no_replace(

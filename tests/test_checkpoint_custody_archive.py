@@ -198,6 +198,13 @@ def _materialize(tmp_path: Path):
     return result, ref, provider, produced, materialized, destination
 
 
+def _retained_staging(tmp_path: Path, destination_name: str = "destination") -> Path:
+    residues = list(tmp_path.glob(f".{destination_name}.checkpoint-archive-*"))
+    assert len(residues) == 1
+    assert residues[0].is_dir()
+    return residues[0]
+
+
 def test_materialize_checkpoint_custody_archive_round_trip(tmp_path: Path) -> None:
     result, ref, _, produced, materialized, destination = _materialize(tmp_path)
 
@@ -212,6 +219,45 @@ def test_materialize_checkpoint_custody_archive_round_trip(tmp_path: Path) -> No
         materialized.resolved_transaction.parent_ref.id = "changed"
     with pytest.raises(TypeError):
         materialized.resolved_transaction.slots["extra"] = object()
+
+
+def test_materialize_publication_is_final_fallible_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    original_mapping = custody._require_external_archive_mapping
+    original_result = custody.MaterializedCheckpointCustodyArchive
+    original_publish = custody._publish_directory_no_replace
+    result_constructed = False
+    published = False
+
+    def require_mapping(*args: object, **kwargs: object) -> None:
+        assert not published
+        original_mapping(*args, **kwargs)
+
+    def construct_result(*args: object, **kwargs: object):
+        nonlocal result_constructed
+        result_constructed = True
+        return original_result(*args, **kwargs)
+
+    def publish(*args: object, **kwargs: object) -> None:
+        nonlocal published
+        assert result_constructed
+        original_publish(*args, **kwargs)
+        published = True
+
+    monkeypatch.setattr(custody, "_require_external_archive_mapping", require_mapping)
+    monkeypatch.setattr(custody, "MaterializedCheckpointCustodyArchive", construct_result)
+    monkeypatch.setattr(custody, "_publish_directory_no_replace", publish)
+    materialized = materialize_checkpoint_custody_archive(
+        provider,
+        produced.artifact_ref,
+        tmp_path / "destination",
+        expected_parent_ref=ref,
+        expected_transaction_root_sha256=transaction_root,
+    )
+    assert published
+    assert materialized.destination == tmp_path / "destination"
 
 
 def test_materialize_authenticates_blob_before_tar_parse(
@@ -237,6 +283,7 @@ def test_materialize_authenticates_blob_before_tar_parse(
             expected_transaction_root_sha256=transaction_root,
         )
     assert not opened
+    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
 
 
 @pytest.mark.parametrize("destination_kind", ["directory", "file", "symlink"])
@@ -271,7 +318,7 @@ def test_materialize_rejects_existing_destination_without_touching_it(
     assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
 
 
-def test_materialize_preserves_publication_race_winner_and_cleans_staging(
+def test_materialize_preserves_publication_race_winner_and_retains_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
@@ -292,7 +339,7 @@ def test_materialize_preserves_publication_race_winner_and_cleans_staging(
             expected_transaction_root_sha256=transaction_root,
         )
     assert destination.joinpath("winner").read_text() == "foreign"
-    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+    _retained_staging(tmp_path)
 
 
 @pytest.mark.parametrize("identity", ["parent", "transaction-root"])
@@ -312,7 +359,7 @@ def test_materialize_rejects_expected_identity_mismatch(
             expected_transaction_root_sha256=expected_root,
         )
     assert not (tmp_path / "destination").exists()
-    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+    _retained_staging(tmp_path)
 
 
 def _rewritten_archive(
@@ -381,7 +428,7 @@ def test_materialize_rejects_ungoverned_or_unsafe_members(
             expected_transaction_root_sha256=transaction_root,
         )
     assert not (tmp_path / "destination").exists()
-    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+    _retained_staging(tmp_path)
 
 
 def test_materialize_rejects_hidden_gnu_longname_header(tmp_path: Path) -> None:
@@ -432,7 +479,7 @@ def test_materialize_rejects_stale_or_migrated_latest_pointer(
             expected_transaction_root_sha256=transaction_root,
         )
     assert not (tmp_path / "destination").exists()
-    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+    _retained_staging(tmp_path)
 
 
 def test_materialize_rejects_unsupported_atomic_publication(
@@ -452,7 +499,7 @@ def test_materialize_rejects_unsupported_atomic_publication(
             expected_transaction_root_sha256=transaction_root,
         )
     assert not (tmp_path / "destination").exists()
-    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+    _retained_staging(tmp_path)
 
 
 def test_materialize_rejects_noncanonical_archive_document(tmp_path: Path) -> None:
@@ -489,6 +536,7 @@ def test_materialize_rejects_incidental_gzip_packet(tmp_path: Path) -> None:
             expected_parent_ref=ref,
             expected_transaction_root_sha256=transaction_root,
         )
+    _retained_staging(tmp_path)
 
 
 @pytest.mark.parametrize("suffix_kind", ["tar-record", "gzip-member", "trailing-bytes"])
@@ -524,9 +572,10 @@ def test_materialize_rejects_bytes_beyond_canonical_archive(
             expected_parent_ref=ref,
             expected_transaction_root_sha256=transaction_root,
         )
+    _retained_staging(tmp_path)
 
 
-def test_materialize_rejects_parent_path_swap_without_foreign_damage(
+def test_materialize_rejects_cooperative_parent_mapping_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
@@ -534,16 +583,17 @@ def test_materialize_rejects_parent_path_swap_without_foreign_damage(
     parent.mkdir()
     destination = parent / "destination"
     detached = tmp_path / "detached-publication"
-    original_publish = custody._publish_directory_no_replace
+    original_resolve = custody.resolve_checkpoint_custody_ref
 
-    def swap_parent(*args: object, **kwargs: object) -> None:
+    def resolve_then_swap_parent(*args: object, **kwargs: object):
+        resolved = original_resolve(*args, **kwargs)
         parent.rename(detached)
         parent.mkdir()
         destination.mkdir()
         destination.joinpath("foreign").write_text("keep")
-        original_publish(*args, **kwargs)
+        return resolved
 
-    monkeypatch.setattr(custody, "_publish_directory_no_replace", swap_parent)
+    monkeypatch.setattr(custody, "resolve_checkpoint_custody_ref", resolve_then_swap_parent)
     with pytest.raises(CheckpointReferenceResolutionError, match="mapping changed"):
         materialize_checkpoint_custody_archive(
             provider,
@@ -554,39 +604,33 @@ def test_materialize_rejects_parent_path_swap_without_foreign_damage(
         )
     assert destination.joinpath("foreign").read_text() == "keep"
     assert not detached.joinpath("destination").exists()
+    _retained_staging(detached)
 
 
-def test_materialize_rejects_staging_name_substitution_without_foreign_damage(
+def test_materialize_rejects_cooperative_staging_mapping_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
     destination = tmp_path / "destination"
-    original_publish = custody._publish_directory_no_replace
-    replacement: dict[str, str] = {}
+    original_resolve = custody.resolve_checkpoint_custody_ref
+    replacement: dict[str, Path] = {}
 
-    def substitute_staging(
-        parent_descriptor: int,
-        source_name: str,
-        destination_name: str,
-        **kwargs: object,
-    ) -> None:
-        stolen_name = f"stolen-{source_name}"
-        os.rename(
-            source_name,
-            stolen_name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
-        )
-        os.mkdir(source_name, mode=0o700, dir_fd=parent_descriptor)
-        foreign = tmp_path / source_name / "foreign"
+    def resolve_then_substitute_staging(*args: object, **kwargs: object):
+        resolved = original_resolve(*args, **kwargs)
+        staging = _retained_staging(tmp_path)
+        stolen = tmp_path / f"stolen-{staging.name}"
+        staging.rename(stolen)
+        staging.mkdir()
+        foreign = staging / "foreign"
         foreign.write_text("keep")
-        replacement["path"] = str(foreign)
-        original_publish(
-            parent_descriptor, source_name, destination_name, **kwargs
-        )
+        replacement["foreign"] = foreign
+        replacement["stolen"] = stolen
+        return resolved
 
-    monkeypatch.setattr(custody, "_publish_directory_no_replace", substitute_staging)
-    with pytest.raises(CheckpointReferenceResolutionError, match="staging identity changed"):
+    monkeypatch.setattr(
+        custody, "resolve_checkpoint_custody_ref", resolve_then_substitute_staging
+    )
+    with pytest.raises(CheckpointReferenceResolutionError, match="mapping changed"):
         materialize_checkpoint_custody_archive(
             provider,
             produced.artifact_ref,
@@ -594,16 +638,18 @@ def test_materialize_rejects_staging_name_substitution_without_foreign_damage(
             expected_parent_ref=ref,
             expected_transaction_root_sha256=transaction_root,
         )
-    assert Path(replacement["path"]).read_text() == "keep"
+    assert replacement["foreign"].read_text() == "keep"
+    assert replacement["stolen"].is_dir()
     assert not destination.exists()
-    assert not list(tmp_path.glob("stolen-.destination.checkpoint-archive-*"))
 
 
-def test_materialize_cleans_staging_when_first_identity_acquisition_fails(
+def test_materialize_retains_staging_when_first_identity_acquisition_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
     original_fstat = custody.os.fstat
+    provider_type = type(provider)
+    original_get = provider_type.get_bytes
     calls = 0
 
     def fail_first_staging_identity(descriptor: int):
@@ -613,7 +659,12 @@ def test_materialize_cleans_staging_when_first_identity_acquisition_fails(
             raise OSError("injected first staging identity failure")
         return original_fstat(descriptor)
 
-    monkeypatch.setattr(custody.os, "fstat", fail_first_staging_identity)
+    def authenticate_then_arm(self: object, artifact_ref: object) -> bytes:
+        data = original_get(self, artifact_ref)
+        monkeypatch.setattr(custody.os, "fstat", fail_first_staging_identity)
+        return data
+
+    monkeypatch.setattr(provider_type, "get_bytes", authenticate_then_arm)
     with pytest.raises(OSError, match="first staging identity failure"):
         materialize_checkpoint_custody_archive(
             provider,
@@ -622,42 +673,53 @@ def test_materialize_cleans_staging_when_first_identity_acquisition_fails(
             expected_parent_ref=ref,
             expected_transaction_root_sha256=transaction_root,
         )
-    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+    _retained_staging(tmp_path)
 
 
-def test_cleanup_preserves_foreign_swapped_between_stat_and_quarantine(
+def test_materialize_rejects_descendant_directory_substitution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
-    original_rename = custody._perform_archive_rename_no_replace
+    original_open = custody.os.open
+    provider_type = type(provider)
+    original_get = provider_type.get_bytes
     replacement: dict[str, Path] = {}
     swapped = False
 
-    def fail_publication(*args: object, **kwargs: object) -> None:
-        raise CheckpointReferenceResolutionError("injected publication failure")
-
-    def swap_before_quarantine(
-        parent_descriptor: int, source_name: str, destination_name: str
-    ) -> None:
+    def swap_created_descendant(path: object, flags: int, *args: object, **kwargs: object):
         nonlocal swapped
-        if not swapped and destination_name.startswith(".checkpoint-archive-cleanup-"):
+        directory_fd = kwargs.get("dir_fd")
+        if path == "transactions" and directory_fd is not None and not swapped:
             swapped = True
-            stolen_name = f"stolen-{source_name}"
             os.rename(
-                source_name,
-                stolen_name,
-                src_dir_fd=parent_descriptor,
-                dst_dir_fd=parent_descriptor,
+                "transactions",
+                "owned-transactions",
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
             )
-            os.mkdir(source_name, mode=0o700, dir_fd=parent_descriptor)
-            foreign = tmp_path / source_name / "foreign"
-            foreign.write_text("keep")
-            replacement["path"] = foreign
-        original_rename(parent_descriptor, source_name, destination_name)
+            os.mkdir("transactions", mode=0o700, dir_fd=directory_fd)
+            foreign_directory = original_open(
+                "transactions", custody._archive_directory_flags(), dir_fd=directory_fd
+            )
+            try:
+                marker_fd = original_open(
+                    "foreign",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=foreign_directory,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(foreign_directory)
+        return original_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(custody, "_publish_directory_no_replace", fail_publication)
-    monkeypatch.setattr(custody, "_perform_archive_rename_no_replace", swap_before_quarantine)
-    with pytest.raises(CheckpointReferenceResolutionError, match="publication failure"):
+    def authenticate_then_arm(self: object, artifact_ref: object) -> bytes:
+        data = original_get(self, artifact_ref)
+        monkeypatch.setattr(custody.os, "open", swap_created_descendant)
+        return data
+
+    monkeypatch.setattr(provider_type, "get_bytes", authenticate_then_arm)
+    with pytest.raises(CheckpointReferenceResolutionError, match="directory identity changed"):
         materialize_checkpoint_custody_archive(
             provider,
             produced.artifact_ref,
@@ -665,5 +727,71 @@ def test_cleanup_preserves_foreign_swapped_between_stat_and_quarantine(
             expected_parent_ref=ref,
             expected_transaction_root_sha256=transaction_root,
         )
-    assert replacement["path"].read_text() == "keep"
-    assert not list(tmp_path.glob("stolen-.destination.checkpoint-archive-*"))
+    staging = _retained_staging(tmp_path)
+    replacement["marker"] = staging / "transactions" / "foreign"
+    assert replacement["marker"].read_bytes() == b""
+    assert list((staging / "transactions").iterdir()) == [replacement["marker"]]
+
+
+def test_materialize_retains_staging_when_open_fails_immediately_after_mkdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    original_open = custody.os.open
+    provider_type = type(provider)
+    original_get = provider_type.get_bytes
+    failed = False
+
+    def fail_first_staging_open(path: object, *args: object, **kwargs: object):
+        nonlocal failed
+        if isinstance(path, str) and path.startswith(".destination.checkpoint-archive-") and not failed:
+            failed = True
+            raise OSError("injected staging open failure")
+        return original_open(path, *args, **kwargs)
+
+    def authenticate_then_arm(self: object, artifact_ref: object) -> bytes:
+        data = original_get(self, artifact_ref)
+        monkeypatch.setattr(custody.os, "open", fail_first_staging_open)
+        return data
+
+    monkeypatch.setattr(provider_type, "get_bytes", authenticate_then_arm)
+    with pytest.raises(OSError, match="staging open failure"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            produced.artifact_ref,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    _retained_staging(tmp_path)
+
+
+def test_materialize_streaming_acceptance_does_not_reencode_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    raw_tar = custody.gzip.decompress(provider.get_bytes(produced.artifact_ref))
+    alternate = io.BytesIO()
+    with custody.gzip.GzipFile(
+        fileobj=alternate, mode="wb", filename="", mtime=7, compresslevel=1
+    ) as compressed:
+        compressed.write(raw_tar)
+    alternate_ref = provider.store_bytes(
+        alternate.getvalue(),
+        role="training_checkpoint_custody_archive",
+        logical_name="alternate-compression.tar.gz",
+        media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+    )
+
+    def reject_reencoding(*args: object, **kwargs: object) -> bytes:
+        raise AssertionError("materialization must not re-encode authenticated bytes")
+
+    monkeypatch.setattr(custody, "_checkpoint_custody_archive_bytes", reject_reencoding)
+    result = materialize_checkpoint_custody_archive(
+        provider,
+        alternate_ref,
+        tmp_path / "destination",
+        expected_parent_ref=ref,
+        expected_transaction_root_sha256=transaction_root,
+    )
+    assert result.archive_evidence.archive_sha256 == alternate_ref.sha256
