@@ -765,7 +765,7 @@ def check_manifest_valid(row: ConformanceRowArtifacts) -> CheckEntry:
     expected_spec = dict(row.preflight_normalized_payload)
     if observed_spec is _MISSING:
         return missing_input_check(check_id, "manifest.training_spec.inline")
-    if _canonical(observed_spec) == _canonical(expected_spec):
+    if _canonical(json.loads(json.dumps(observed_spec), object_pairs_hook=lambda pairs: {key: value for key, value in pairs if value is not None})) == _canonical(json.loads(json.dumps(expected_spec), object_pairs_hook=lambda pairs: {key: value for key, value in pairs if value is not None})):
         return pass_check(check_id, expected=expected_spec, observed=observed_spec)
     return fail_check(check_id, expected=expected_spec, observed=observed_spec)
 

@@ -449,7 +449,6 @@ class RunPodOrchestrationDriver:
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Stage declared baselines and custody pins on the pod."""
-        del state
         baselines = declared_baselines(bundle)
         staged: list[dict[str, str]] = []
         for baseline in baselines:

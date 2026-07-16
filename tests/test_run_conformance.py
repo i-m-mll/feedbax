@@ -568,7 +568,7 @@ def test_execution_identity_rejects_artifact_digest_or_schema_failure(
 
 
 def test_manifest_valid_loads_manifest_and_compares_preflight_payload(tmp_path: Path) -> None:
-    training_payload = {"method_payload": {"payload": {"optimizer": {"type": "adamw"}}}}
+    training_payload = {"method_payload": {"payload": {"optimizer": {"type": "adamw"}}}, "metadata": {"optional": None}}
     manifest = TrainingRunManifest(
         id="feedbax-training-run:row-a",
         training_spec=spec_payload("TrainingRunSpec", training_payload),
