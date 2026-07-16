@@ -1888,7 +1888,9 @@ def _build_training_diagnostics(
         program=program,
         final_slots=final_slots,
         fallback=(
-            checkpoint_completed_batches
+            final_coordinate.completed_batches
+            if final_coordinate.completed_batches is not None
+            else checkpoint_completed_batches
             if checkpoint_completed_batches is not None
             else final_coordinate.program_step
         ),

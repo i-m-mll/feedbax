@@ -1000,6 +1000,26 @@ def test_declared_method_trace_is_durable_with_batch_replica_coordinates(tmp_pat
     assert diagnostics_ref.metadata["schema_version"].endswith(".v3")
 
 
+def test_declared_method_trace_uses_cancelled_batch_authority(tmp_path: Path) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path,
+        run_id="cancelled-mapped-trace",
+        cancellation_probe=lambda _coordinate: CancellationDecision("terminate", "test", 123.0),
+    )
+
+    trace = result.diagnostics.method_trace
+    assert trace is not None
+    assert result.status == result.manifest.status == "cancelled"
+    assert result.diagnostics.cumulative_completed_batches == 11
+    assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
+        (11, index) for index in range(5)
+    ]
+
+
 def test_method_trace_rejects_non_cartesian_history() -> None:
     declaration = _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
     assert declaration is not None
