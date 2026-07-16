@@ -502,6 +502,22 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
     assert artifacts.runtime_inputs == runtime_inputs
 
 
+def test_request_engine_adopts_constructed_driver_poll_interval(tmp_path: Path) -> None:
+    request, context, registry = _assembly_parts(tmp_path)
+    driver = FakeDriver()
+    driver.poll_interval_seconds = 7.0
+    engine = StageEngine.from_request(
+        request,
+        context=context,
+        registry=registry,
+        driver_factory=lambda _bundle: driver,
+    )
+
+    engine.run(stop_after_stage="ASSEMBLE")
+
+    assert engine.poll_interval_seconds == 7.0
+
+
 @pytest.mark.parametrize("stop_after", STAGE_ORDER[:-1])
 def test_stage_engine_resumes_from_every_stage_boundary(
     tmp_path: Path,

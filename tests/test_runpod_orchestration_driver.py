@@ -540,10 +540,19 @@ def test_stage_inputs_stages_and_verifies_declared_baseline(
     outputs = driver.stage_inputs(bundle, _state(bundle))
 
     assert outputs["baseline_count"] == 1
+    assert outputs["payload_count"] == 1
+    payload = bundle.rows[0].execution.payload
     assert transport.rsync_calls == [
-        (str(baseline) + "/", "/workspace/_artifacts/run-a/checkpoint_100/", True, ())
+        (str(baseline) + "/", "/workspace/_artifacts/run-a/checkpoint_100/", True, ()),
+        (
+            str(payload.uri),
+            "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/warm.json",
+            False,
+            (),
+        ),
     ]
-    assert "completed_training_batches" in transport.ssh_commands[-1]
+    assert any("completed_training_batches" in command for command in transport.ssh_commands)
+    assert any(payload.sha256 in command for command in transport.ssh_commands)
 
 
 def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path) -> None:
@@ -638,6 +647,46 @@ def test_launch_row_injects_native_execution_context_from_bundle_row(
     assert '"row_id":"warm"' in launch_command
     assert '"lowerer_id":"feedbax.tests.runpod"' in launch_command
     assert "feedbax-training-run:feedbax-training-run:" not in launch_command
+
+
+def test_launch_row_routes_staged_payload_to_native_executor(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, baseline=False)
+    original = bundle.rows[0]
+    row = original.model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=["python", "-m", "feedbax", "execute-training-run-spec"],
+                payload_routing={"kind": "registered-execution-payload"},
+            ),
+            "execution": original.execution.model_copy(
+                update={
+                    "row_provenance": TrainingRowProvenance(
+                        row_id=original.row_id,
+                        row_index=0,
+                        planned_run_id="feedbax-training-run:smoke",
+                        authored_payload_hash="a" * 64,
+                        lowered_execution_payload_hash=original.execution.payload.sha256,
+                        axis_coordinates={},
+                        lowerer_identities=[
+                            RowLowererIdentity(
+                                lowerer_id="feedbax.tests.runpod",
+                                lowerer_version="v1",
+                            )
+                        ],
+                    )
+                }
+            ),
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
+
+    driver.launch_row(bundle, row, _state(bundle))
+
+    assert (
+        "execute-training-run-spec "
+        "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/warm.json"
+    ) in transport.ssh_commands[0]
 
 
 def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:
@@ -816,6 +865,32 @@ def test_collect_rsyncs_requested_outputs_and_verifies_payload(tmp_path: Path) -
             (),
         )
     ]
+
+
+def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, baseline=False)
+    row = bundle.rows[0].model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"],
+                collect=["manifest.json", "training-diagnostics.json"],
+            )
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
+
+    collected = driver.collect(bundle, row, _state(bundle))
+
+    remote = "/workspace/feedbax_runs/2026-01-02-deadbeef"
+    assert [call[0] for call in transport.rsync_calls] == [
+        f"{remote}/rows/warm/manifest.json",
+        f"{remote}/rows/warm/training-diagnostics.json",
+        f"{remote}/events/warm.events.jsonl",
+    ]
+    assert collected["warm.events.jsonl"] == str(
+        bundle.run_set_dir / "events/warm.events.jsonl"
+    )
 
 
 def test_teardown_removes_acquired_pod_and_falls_back_to_stop(tmp_path: Path) -> None:

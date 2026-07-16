@@ -20,7 +20,10 @@ from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.drivers.native_execution import inject_native_execution_context
+from feedbax.orchestration.drivers.native_execution import (
+    inject_native_execution_context,
+    is_native_training_command,
+)
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 
 
@@ -422,6 +425,7 @@ class RunPodOrchestrationDriver:
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Stage declared baselines and custody pins on the pod."""
+        del state
         baselines = declared_baselines(bundle)
         staged: list[dict[str, str]] = []
         for baseline in baselines:
@@ -438,6 +442,25 @@ class RunPodOrchestrationDriver:
             ).check(f"stage baseline {baseline.label}")
             self._ssh(remote_baseline_verification_command(target, baseline.completed_batch))
             staged.append({"label": baseline.label, "source": str(source), "target": target})
+        payloads: list[dict[str, str]] = []
+        for row in bundle.rows:
+            if row.launch.payload_routing.get("kind") != "registered-execution-payload":
+                continue
+            source = Path(row.execution.payload.uri or "")
+            if not source.is_file():
+                raise RunPodDriverError(
+                    f"registered execution payload is not materialized for row {row.row_id!r}"
+                )
+            if _sha256_file(source) != row.execution.payload.sha256:
+                raise RunPodDriverError(
+                    f"registered execution payload digest mismatch for row {row.row_id!r}"
+                )
+            target = self._remote_payload_path(bundle, row)
+            self._ssh(f"mkdir -p {_sq(str(Path(target).parent))}")
+            self.transport.rsync(str(source), target).check(f"stage payload {row.row_id}")
+            check_line = row.execution.payload.sha256 + "  " + target
+            self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
+            payloads.append({"row_id": row.row_id, "source": str(source), "target": target})
         if bundle.input_custody_pins:
             payload = json.dumps(
                 [
@@ -451,7 +474,12 @@ class RunPodOrchestrationDriver:
                 f"cat > {_sq(self._remote_run_dir(bundle) + '/inputs/custody_pins.json')} <<'JSON'\n"
                 f"{payload}\nJSON"
             )
-        return {"baseline_count": len(staged), "baselines": staged}
+        return {
+            "baseline_count": len(staged),
+            "baselines": staged,
+            "payload_count": len(payloads),
+            "payloads": payloads,
+        }
 
     def launch_row(
         self,
@@ -552,12 +580,25 @@ class RunPodOrchestrationDriver:
         ]
         collected: dict[str, str] = {}
         for source in sources:
-            remote_source = source if source.startswith("/") else f"{remote_run_dir}/{source}"
+            if source.startswith("/"):
+                remote_source = source
+            elif "/" not in source and is_native_training_command(row.launch.command):
+                remote_source = f"{remote_run_dir}/rows/{row.row_id}/{source}"
+            else:
+                remote_source = f"{remote_run_dir}/{source}"
             target = dest_dir / Path(source).name
             self.transport.rsync(remote_source, str(target), delete=False).check(
                 f"collect {row.row_id}:{source}"
             )
             collected[Path(source).name] = str(target)
+        if is_native_training_command(row.launch.command):
+            event_name = f"{row.row_id}.events.jsonl"
+            event_target = bundle.run_set_dir / "events" / event_name
+            event_target.parent.mkdir(parents=True, exist_ok=True)
+            self.transport.rsync(
+                f"{remote_run_dir}/events/{event_name}", str(event_target), delete=False
+            ).check(f"collect {row.row_id}:events")
+            collected[event_name] = str(event_target)
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256:
             verify_collected_payload(dest_dir, str(payload_sha256))
@@ -726,6 +767,9 @@ class RunPodOrchestrationDriver:
 
     def _remote_sentinel_dir(self, bundle: RunBundle) -> str:
         return f"{self._remote_run_dir(bundle)}/sentinels"
+
+    def _remote_payload_path(self, bundle: RunBundle, row: RunRowSpec) -> str:
+        return f"{self._remote_run_dir(bundle)}/inputs/{row.row_id}.json"
 
     def _remote_events_dir(self, bundle: RunBundle) -> str:
         return f"{self._remote_run_dir(bundle)}/events"
@@ -1108,6 +1152,15 @@ def build_launch_row_command(
         if row.launch.command
         else ["uv", "run", "--no-sync", "python", row.launch.entry or ""]
     )
+    if (
+        row.launch.payload_routing.get("kind") == "registered-execution-payload"
+        and is_native_training_command(command_parts)
+    ):
+        command_index = command_parts.index("execute-training-run-spec")
+        if command_index + 1 == len(command_parts) or command_parts[
+            command_index + 1
+        ].startswith("-"):
+            command_parts.insert(command_index + 1, f"{remote_run_dir}/inputs/{row.row_id}.json")
     command_parts = inject_native_execution_context(
         command_parts,
         row=row,

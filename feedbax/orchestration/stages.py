@@ -176,6 +176,7 @@ class StageEngine:
             row_id: RowConformanceRuntimeInputs.model_validate(inputs)
             for row_id, inputs in (row_conformance_inputs or {}).items()
         }
+        self._poll_interval_explicit = poll_interval_seconds is not None
         self.poll_interval_seconds = (
             float(getattr(driver, "poll_interval_seconds", 0.05))
             if poll_interval_seconds is None
@@ -303,6 +304,10 @@ class StageEngine:
             )
             assert self.driver_factory is not None
             self.driver = self.driver_factory(self.bundle)
+            if not self._poll_interval_explicit:
+                self.poll_interval_seconds = float(
+                    getattr(self.driver, "poll_interval_seconds", 0.05)
+                )
             state = state.model_copy(
                 update={
                     "rows": {row.row_id: RowState() for row in self.bundle.rows},
