@@ -814,31 +814,38 @@ class EvaluationManifestProvenanceEnvelope:
 
 
 def verify_evaluation_manifest_provenance(
-    manifest: EvaluationRunManifest,
     manifest_ref: ParentRef,
+    raw_bytes: bytes,
     *,
     expected_producer_identity: str,
     expected_source_refs: tuple[ParentRef, ...] | None = None,
 ) -> EvaluationManifestProvenanceEnvelope:
     """Verify one authenticated evaluation manifest's producer and source envelope.
 
-    The first digest record authenticates ``manifest_ref``; remaining records align
-    positionally with ``source_refs``. All facts are derived from existing manifest
-    fields, so this contract does not introduce a new durable schema.
+    The manifest is parsed from ``raw_bytes`` only after ``manifest_ref`` authenticates
+    their exact size and digest. Remaining digest records align positionally with
+    ``source_refs``. This contract does not introduce a new durable schema.
     """
 
+    manifest_profile = authenticated_manifest_ref_profile(manifest_ref)
+    if manifest_profile is None:
+        raise ValueError("evaluation manifest authority is not authenticated")
+    manifest_digest, manifest_size = manifest_profile
+    if len(raw_bytes) != manifest_size:
+        raise ValueError("evaluation manifest authority byte size mismatch")
+    if hashlib.sha256(raw_bytes).hexdigest() != manifest_digest:
+        raise ValueError("evaluation manifest authority SHA-256 mismatch")
+
+    manifest = load_manifest_bytes(raw_bytes)
     if manifest.status != "completed":
         raise ValueError("evaluation provenance requires a completed manifest")
     if (
-        manifest_ref.kind != manifest.kind
+        not isinstance(manifest, EvaluationRunManifest)
+        or manifest_ref.kind != manifest.kind
         or manifest_ref.id != manifest.id
         or manifest_ref.role != "evaluation_run"
     ):
         raise ValueError("evaluation manifest authority disagrees with the manifest")
-    manifest_profile = authenticated_manifest_ref_profile(manifest_ref)
-    if manifest_profile is None:
-        raise ValueError("evaluation manifest authority is not authenticated")
-
     run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
     entrypoint = manifest.provenance.entrypoint
     if (
