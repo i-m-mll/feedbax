@@ -1916,8 +1916,8 @@ def _build_training_diagnostics(
     method_trace = _method_training_trace(
         declaration,
         method_ref=method_contract.method_ref,
-        history_events=history_events,
-        segment_start_batch=segment_start_batch,
+        method_observations=method_observations,
+        observation_origin_batch=method_observation_origin_batch,
         completed_batches=cumulative_completed_batches,
         replica_count=next(
             (
@@ -1957,8 +1957,8 @@ def _method_training_trace(
     declaration: MethodTrainingDiagnosticsSpec | None,
     *,
     method_ref: str,
-    history_events: Sequence[Mapping[str, Any]],
-    segment_start_batch: int,
+    method_observations: Sequence[Mapping[str, Any]],
+    observation_origin_batch: int,
     completed_batches: int,
     replica_count: int | None,
 ) -> MethodTrainingTrace | None:
@@ -1967,7 +1967,7 @@ def _method_training_trace(
     if replica_count is None:
         raise TrainingRunExecutorError("method trace lacks sized replica-axis authority")
     observed: dict[int, list[MethodTrainingTraceRecord]] = {}
-    for event in history_events:
+    for event in method_observations:
         coordinate = event.get("coordinate")
         metrics = event.get("metrics")
         if not isinstance(coordinate, Mapping) or not isinstance(metrics, Mapping):
@@ -1975,7 +1975,7 @@ def _method_training_trace(
         batch = coordinate.get("completed_batches")
         if isinstance(batch, bool) or not isinstance(batch, int):
             raise TrainingRunExecutorError("method trace progress is missing completed_batches")
-        if batch <= segment_start_batch or batch > completed_batches:
+        if batch <= observation_origin_batch or batch > completed_batches:
             raise TrainingRunExecutorError(
                 f"method trace completed batch {batch} is outside the active segment"
             )
@@ -2009,7 +2009,7 @@ def _method_training_trace(
             )
             for index in range(size)
         ]
-    expected = set(range(segment_start_batch + 1, completed_batches + 1))
+    expected = set(range(observation_origin_batch + 1, completed_batches + 1))
     if set(observed) != expected:
         missing = sorted(expected - set(observed))
         raise TrainingRunExecutorError(f"method trace has incomplete batch coverage: {missing!r}")

@@ -968,16 +968,19 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
 
 def test_declared_method_trace_is_durable_with_batch_replica_coordinates(tmp_path: Path) -> None:
     spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
+    spec.training_config.n_batches = 4
+    spec.checkpoint_progress.progress_interval = 3
     result = execute_training_run_spec(
         spec,
-        preparation=_valid_materialized_preparation(spec),
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
         manifest_root=tmp_path / "manifest",
         checkpoint_root=tmp_path / "checkpoint",
         run_id="mapped-trace",
     )
 
-    assert result.history_events[0]["coordinate"]["completed_batches"] == 1
+    assert [event["coordinate"]["completed_batches"] for event in result.history_events] == [12, 14]
     trace = result.diagnostics.method_trace
     assert result.diagnostics.schema_version == "feedbax.manifest.training_diagnostics.v3"
     assert trace is not None
@@ -985,12 +988,11 @@ def test_declared_method_trace_is_durable_with_batch_replica_coordinates(tmp_pat
     assert trace.trace_schema_id == "feedbax.tests.method_trace"
     assert trace.measurement_basis == "kernel_input"
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
-        (1, index) for index in range(5)
+        (batch, index) for batch in range(11, 15) for index in range(5)
     ]
     payload = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
     assert payload["method_trace"]["records"] == [
-        {"completed_batch": 1, "replica_index": index, "value": 0.0}
-        for index in range(5)
+        record.model_dump(mode="json") for record in trace.records
     ]
     diagnostics_ref = next(
         item for item in result.manifest.artifacts if item.role == "training_diagnostics"
@@ -1027,8 +1029,8 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
         _method_training_trace(
             declaration,
             method_ref="feedbax.tests.method",
-            history_events=[event(1, [1.0, 2.0]), event(1, [1.0, 2.0])],
-            segment_start_batch=0,
+            method_observations=[event(1, [1.0, 2.0]), event(1, [1.0, 2.0])],
+            observation_origin_batch=0,
             completed_batches=1,
             replica_count=2,
         )
@@ -1036,8 +1038,8 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
         _method_training_trace(
             declaration,
             method_ref="feedbax.tests.method",
-            history_events=[event(1, [1.0, 2.0])],
-            segment_start_batch=0,
+            method_observations=[event(1, [1.0, 2.0])],
+            observation_origin_batch=0,
             completed_batches=2,
             replica_count=2,
         )
@@ -1045,8 +1047,8 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
         _method_training_trace(
             declaration,
             method_ref="feedbax.tests.method",
-            history_events=[event(3, [1.0, 2.0])],
-            segment_start_batch=0,
+            method_observations=[event(3, [1.0, 2.0])],
+            observation_origin_batch=0,
             completed_batches=2,
             replica_count=2,
         )
@@ -1054,8 +1056,8 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
         _method_training_trace(
             declaration,
             method_ref="feedbax.tests.method",
-            history_events=[event(1, [1.0, 2.0], size=3)],
-            segment_start_batch=0,
+            method_observations=[event(1, [1.0, 2.0], size=3)],
+            observation_origin_batch=0,
             completed_batches=1,
             replica_count=2,
         )
@@ -1063,8 +1065,8 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
         _method_training_trace(
             declaration,
             method_ref="feedbax.tests.method",
-            history_events=[event(1, [1.0, 2.0])],
-            segment_start_batch=0,
+            method_observations=[event(1, [1.0, 2.0])],
+            observation_origin_batch=0,
             completed_batches=1,
             replica_count=5,
         )
