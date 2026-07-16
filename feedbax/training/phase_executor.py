@@ -29,6 +29,7 @@ UpdateKernel = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], Mapping[str, Any]
 ]
 ProgressCallback = Callable[[ProgressCoordinate], None]
+MethodObservationCallback = Callable[[ProgressCoordinate], None]
 StepGuard = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], "StepGuardResult | None"
 ]
@@ -293,6 +294,7 @@ class PhaseProgramExecutor:
         stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
+        method_observation_callback: MethodObservationCallback | None = None,
         step_guard: StepGuard | None = None,
         checkpoint_interval: int | None = None,
         progress_interval: int | None = None,
@@ -410,6 +412,16 @@ class PhaseProgramExecutor:
                         f"previous={previous_completed_batch}, current={completed_batches}",
                     )
                 previous_completed_batch = completed_batches
+                if method_observation_callback is not None:
+                    method_observation_callback(
+                        _copy_progress_coordinate(
+                            _progress_observation(
+                                coordinate,
+                                completed_batches,
+                                include_completed_batches=True,
+                            )
+                        )
+                    )
                 if progress_interval is None or self._interval_due(
                     completed_batches,
                     progress_interval,
