@@ -55,10 +55,12 @@ from .preparation import (
 from .diagnostics import (
     CheckpointTransactionDiagnostic,
     LearningRateDiagnostic,
+    MethodTrainingTraceLoadError,
     NativeExecutionProducerContext,
     NativeTrainingDiagnosticsInput,
     ScheduleContextDiagnostic,
     TrainingDiagnostics,
+    load_method_training_trace,
 )
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
@@ -135,6 +137,7 @@ __all__ = [
     "CheckpointTransactionDiagnostic",
     "DiagnosticsEmissionConflictError",
     "LearningRateDiagnostic",
+    "MethodTrainingTraceLoadError",
     "NativeExecutionProducerContext",
     "NativeTrainingDiagnosticsInput",
     "ResumeSlotTransform",
@@ -190,6 +193,7 @@ __all__ = [
     "grad_wrap_simple_loss_func",
     "load_hps",
     "load_latest_checkpoint",
+    "load_method_training_trace",
     "load_checkpoint_custody_documents",
     "load_checkpoint_latest_pointer_file",
     "load_checkpoint_latest_pointer_json",
