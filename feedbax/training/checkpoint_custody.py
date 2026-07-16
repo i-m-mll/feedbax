@@ -798,16 +798,34 @@ def materialize_checkpoint_custody_archive(
         raise CheckpointReferenceResolutionError(
             "checkpoint archive destination parent must be a real canonical directory"
         )
-    if target.exists() or target.is_symlink():
-        raise FileExistsError(f"checkpoint archive destination already exists: {target}")
-
-    staging = parent / f".{target.name}.checkpoint-archive-{uuid.uuid4().hex}"
-    os.mkdir(staging, mode=0o700)
-    staging_identity = staging.stat(follow_symlinks=False)
-    published = False
+    parent_descriptor: int | None = None
+    staging_descriptor: int | None = None
+    staging_identity: os.stat_result | None = None
+    owned_name: str | None = None
     try:
+        directory_flags = _archive_directory_flags()
+        parent_descriptor = os.open(parent, directory_flags)
+        parent_identity = os.fstat(parent_descriptor)
+        _require_external_archive_mapping(parent, parent_identity)
+        try:
+            os.stat(target.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"checkpoint archive destination already exists: {target}")
+
+        staging_name = f".{target.name}.checkpoint-archive-{uuid.uuid4().hex}"
+        os.mkdir(staging_name, mode=0o700, dir_fd=parent_descriptor)
+        owned_name = staging_name
+        staging_descriptor = os.open(staging_name, directory_flags, dir_fd=parent_descriptor)
+        try:
+            staging_identity = os.fstat(staging_descriptor)
+        except OSError:
+            staging_identity = os.stat(staging_descriptor)
+            raise
+        staging = parent / staging_name
         document, payload_names, payload_size = _extract_checkpoint_custody_archive(
-            archive_bytes, staging
+            archive_bytes, staging_descriptor
         )
         expected_document = {
             "schema_id": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
@@ -822,6 +840,9 @@ def materialize_checkpoint_custody_archive(
             raise CheckpointReferenceResolutionError(
                 "checkpoint archive document identity, schema, count, or size mismatch"
             )
+        _require_external_archive_mapping(
+            parent, parent_identity, child=staging, child_identity=staging_identity
+        )
         loaded_latest = load_checkpoint_latest_pointer_file(staging / LATEST_POINTER_NAME)
         if loaded_latest.migrated:
             raise CheckpointReferenceResolutionError(
@@ -864,6 +885,9 @@ def materialize_checkpoint_custody_archive(
             raise CheckpointReferenceResolutionError(
                 "checkpoint archive resolved transaction identity mismatch"
             )
+        _require_external_archive_mapping(
+            parent, parent_identity, child=staging, child_identity=staging_identity
+        )
         evidence = CheckpointCustodyArchiveEvidence(
             schema_id=document["schema_id"],
             schema_version=document["schema_version"],
@@ -882,26 +906,31 @@ def materialize_checkpoint_custody_archive(
             manifest_sha256=resolved.manifest_sha256,
             resolved_transaction=resolved,
         )
-        _publish_directory_no_replace(staging, target)
-        published = True
+        _publish_directory_no_replace(
+            parent_descriptor,
+            staging_name,
+            target.name,
+            expected_identity=staging_identity,
+        )
+        owned_name = target.name
+        _require_external_archive_mapping(
+            parent, parent_identity, child=target, child_identity=staging_identity
+        )
+        owned_name = None
         return result
     finally:
-        if not published:
-            try:
-                current = staging.stat(follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                if (
-                    stat.S_ISDIR(current.st_mode)
-                    and (current.st_dev, current.st_ino)
-                    == (staging_identity.st_dev, staging_identity.st_ino)
-                ):
-                    shutil.rmtree(staging)
+        if staging_descriptor is not None:
+            os.close(staging_descriptor)
+        if parent_descriptor is not None:
+            if owned_name is not None and staging_identity is not None:
+                _remove_owned_archive_directory(
+                    parent_descriptor, owned_name, staging_identity
+                )
+            os.close(parent_descriptor)
 
 
 def _extract_checkpoint_custody_archive(
-    archive_bytes: bytes, staging: Path
+    archive_bytes: bytes, staging_descriptor: int
 ) -> tuple[dict[str, Any], set[str], int]:
     """Stream canonical regular members into private staging."""
     document: dict[str, Any] | None = None
@@ -909,6 +938,8 @@ def _extract_checkpoint_custody_archive(
     folded_names: set[str] = set()
     payload_size = 0
     expected_offset = 0
+    archive_document: bytes | None = None
+    canonical_payload: list[tuple[str, Path, bytes]] = []
     try:
         archive = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz")
         with archive:
@@ -955,47 +986,189 @@ def _extract_checkpoint_custody_archive(
                             "checkpoint archive document is not exact canonical JSON"
                         )
                     document = parsed
+                    archive_document = raw_document
                     continue
                 if not name.startswith("checkpoint/"):
                     raise CheckpointReferenceResolutionError(
                         f"checkpoint archive contains unexpected member: {name!r}"
                     )
                 relative = PurePosixPath(name).relative_to("checkpoint")
-                output = staging.joinpath(*relative.parts)
-                output.parent.mkdir(parents=True, exist_ok=True)
-                no_follow = getattr(os, "O_NOFOLLOW", 0)
-                if not no_follow:
-                    raise CheckpointReferenceResolutionError(
-                        "exclusive no-follow archive extraction is unsupported"
-                    )
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow
-                descriptor = os.open(output, flags, 0o600)
+                descriptor = _open_archive_member(staging_descriptor, relative.parts)
+                captured = bytearray()
                 with os.fdopen(descriptor, "wb") as sink:
-                    shutil.copyfileobj(source, sink, length=1024 * 1024)
-                if output.stat(follow_symlinks=False).st_size != member.size:
+                    while chunk := source.read(1024 * 1024):
+                        sink.write(chunk)
+                        captured.extend(chunk)
+                    sink.flush()
+                    written_size = os.fstat(sink.fileno()).st_size
+                if written_size != member.size:
                     raise CheckpointReferenceResolutionError(
                         f"checkpoint archive member size mismatch: {name!r}"
                     )
                 payload_size += member.size
+                canonical_payload.append((name, Path(), bytes(captured)))
     except (tarfile.TarError, OSError, EOFError) as exc:
         raise CheckpointReferenceResolutionError(
             f"checkpoint archive tar stream is invalid: {exc}"
         ) from exc
-    if document is None:
+    if document is None or archive_document is None:
         raise CheckpointReferenceResolutionError("checkpoint archive document is missing")
+    if archive_bytes != _checkpoint_custody_archive_bytes(archive_document, canonical_payload):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive has noncanonical or trailing compressed bytes"
+        )
     names.remove("archive.json")
     return document, names, payload_size
 
 
-def _publish_directory_no_replace(source: Path, destination: Path) -> None:
+def _archive_directory_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if any(not getattr(os, name, 0) for name in required):
+        raise CheckpointReferenceResolutionError(
+            "descriptor-relative no-follow archive operations are unsupported"
+        )
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_archive_member(staging_descriptor: int, parts: tuple[str, ...]) -> int:
+    """Open one archive member exclusively beneath the pinned staging directory."""
+    directory_descriptor = os.dup(staging_descriptor)
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=directory_descriptor)
+            except FileExistsError:
+                pass
+            next_descriptor = os.open(
+                part, _archive_directory_flags(), dir_fd=directory_descriptor
+            )
+            os.close(directory_descriptor)
+            directory_descriptor = next_descriptor
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        return os.open(parts[-1], flags, 0o600, dir_fd=directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino
+
+
+def _require_external_archive_mapping(
+    parent: Path,
+    parent_identity: os.stat_result,
+    *,
+    child: Path | None = None,
+    child_identity: os.stat_result | None = None,
+) -> None:
+    """Require external paths to still identify the pinned archive objects."""
+    try:
+        actual_parent = parent.stat(follow_symlinks=False)
+        actual_child = child.stat(follow_symlinks=False) if child is not None else None
+    except OSError as exc:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive destination mapping changed"
+        ) from exc
+    if _identity(actual_parent) != _identity(parent_identity) or (
+        child_identity is not None
+        and (actual_child is None or _identity(actual_child) != _identity(child_identity))
+    ):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive destination mapping changed"
+        )
+
+
+def _remove_owned_archive_directory(
+    parent_descriptor: int, name: str, expected_identity: os.stat_result
+) -> None:
+    """Remove only the still-named directory created by this materialization."""
+    for _ in range(2):
+        candidates = (name, *(entry for entry in os.listdir(parent_descriptor) if entry != name))
+        for candidate in candidates:
+            try:
+                current = os.stat(candidate, dir_fd=parent_descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(current.st_mode) or _identity(current) != _identity(
+                expected_identity
+            ):
+                continue
+            quarantine = f".checkpoint-archive-cleanup-{uuid.uuid4().hex}"
+            try:
+                _rename_archive_directory_no_replace(
+                    parent_descriptor,
+                    candidate,
+                    quarantine,
+                    expected_identity=expected_identity,
+                )
+                quarantined = os.stat(
+                    quarantine, dir_fd=parent_descriptor, follow_symlinks=False
+                )
+                if _identity(quarantined) != _identity(expected_identity):
+                    _rename_archive_directory_no_replace(
+                        parent_descriptor,
+                        quarantine,
+                        candidate,
+                        expected_identity=quarantined,
+                    )
+                    break
+                shutil.rmtree(quarantine, dir_fd=parent_descriptor)
+                return
+            except (CheckpointReferenceResolutionError, OSError):
+                return
+
+
+def _publish_directory_no_replace(
+    parent_descriptor: int,
+    source_name: str,
+    destination_name: str,
+    *,
+    expected_identity: os.stat_result,
+) -> None:
     """Publish a directory atomically, rejecting platforms without no-replace rename."""
+    _rename_archive_directory_no_replace(
+        parent_descriptor,
+        source_name,
+        destination_name,
+        expected_identity=expected_identity,
+    )
+
+
+def _rename_archive_directory_no_replace(
+    parent_descriptor: int,
+    source_name: str,
+    destination_name: str,
+    *,
+    expected_identity: os.stat_result,
+) -> None:
+    """Rename one entry under a pinned parent without replacing another name."""
+    current = os.stat(source_name, dir_fd=parent_descriptor, follow_symlinks=False)
+    if not stat.S_ISDIR(current.st_mode) or _identity(current) != _identity(expected_identity):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive private staging identity changed before publication"
+        )
+    _perform_archive_rename_no_replace(parent_descriptor, source_name, destination_name)
+
+
+def _perform_archive_rename_no_replace(
+    parent_descriptor: int, source_name: str, destination_name: str
+) -> None:
+    """Invoke the supported descriptor-relative no-replace rename primitive."""
     libc = ctypes.CDLL(None, use_errno=True)
-    source_bytes = os.fsencode(source)
-    destination_bytes = os.fsencode(destination)
-    if hasattr(libc, "renamex_np"):
-        result = libc.renamex_np(source_bytes, destination_bytes, 0x00000004)
+    source_bytes = os.fsencode(source_name)
+    destination_bytes = os.fsencode(destination_name)
+    if hasattr(libc, "renameatx_np"):
+        result = libc.renameatx_np(
+            parent_descriptor,
+            source_bytes,
+            parent_descriptor,
+            destination_bytes,
+            0x00000004,
+        )
     elif hasattr(libc, "renameat2"):
-        result = libc.renameat2(-100, source_bytes, -100, destination_bytes, 1)
+        result = libc.renameat2(
+            parent_descriptor, source_bytes, parent_descriptor, destination_bytes, 1
+        )
     else:
         raise CheckpointReferenceResolutionError(
             "atomic no-replace directory publication is unsupported on this platform"
@@ -1004,7 +1177,7 @@ def _publish_directory_no_replace(source: Path, destination: Path) -> None:
         error = ctypes.get_errno()
         if error == getattr(os, "EEXIST", 17):
             raise FileExistsError(
-                f"checkpoint archive destination won publication race: {destination}"
+                f"checkpoint archive destination won publication race: {destination_name}"
             )
         raise CheckpointReferenceResolutionError(
             f"atomic no-replace directory publication failed: {os.strerror(error)}"
