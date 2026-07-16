@@ -105,6 +105,20 @@ def test_checkpoint_custody_archive_is_canonical_and_byte_identical(tmp_path: Pa
         first.evidence.parent_ref.id = "changed"
 
 
+def test_checkpoint_custody_archive_evidence_preserves_parent_ref_equality(
+    tmp_path: Path,
+) -> None:
+    result, ref, provider = _setup(tmp_path)
+    assert len(result.manifest.slots) > 1
+
+    produced = produce_checkpoint_custody_archive(
+        ref, allowed_root=result.root, artifact_provider=provider
+    )
+
+    assert produced.evidence.parent_ref == ref
+    assert ref == produced.evidence.parent_ref
+
+
 def test_checkpoint_custody_archive_rejects_stale_latest_without_storage(
     tmp_path: Path,
 ) -> None:
