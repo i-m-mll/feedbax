@@ -1188,6 +1188,7 @@ def build_launch_row_command(
             command_index + 1
         ].startswith("-"):
             command_parts.insert(command_index + 1, f"{remote_run_dir}/inputs/{row.row_id}.json")
+        row = row.model_copy(update={"execution": row.execution.model_copy(update={"payload": row.execution.payload.model_copy(update={"uri": f"{remote_run_dir}/inputs/{row.row_id}.json"})})})
     command_parts = inject_native_execution_context(
         command_parts,
         row=row,

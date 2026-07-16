@@ -734,10 +734,8 @@ def test_launch_row_routes_staged_payload_to_native_executor(tmp_path: Path) -> 
 
     driver.launch_row(bundle, row, _state(bundle))
 
-    assert (
-        "execute-training-run-spec "
-        "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/warm.json"
-    ) in transport.ssh_commands[0]
+    command = transport.ssh_commands[0]
+    assert "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/warm.json" in command and str(original.execution.payload.uri) not in command
 
 
 def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:
