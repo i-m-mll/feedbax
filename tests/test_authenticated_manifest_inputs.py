@@ -21,7 +21,6 @@ from feedbax.analysis.reports import (
     unregister_report_recipe,
 )
 from feedbax.analysis.specs import (
-    AnalysisRecipeExecutionError,
     execute_analysis_run_spec,
     register_analysis_recipe,
     unregister_analysis_recipe,
@@ -257,7 +256,7 @@ def test_legacy_manifest_ref_makes_no_authenticated_claim(tmp_path: Path) -> Non
         resolve_manifest_input(legacy, tmp_path)
 
 
-def test_analysis_integrity_failure_writes_failed_manifest_without_recipe_or_cache_effects(
+def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
     tmp_path: Path,
 ) -> None:
     _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
@@ -277,23 +276,13 @@ def test_analysis_integrity_failure_writes_failed_manifest_without_recipe_or_cac
     register_analysis_recipe(spec.analysis_type, recipe, replace=True)
     before = _file_snapshot(tmp_path)
     try:
-        with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        with pytest.raises(ValueError, match="size mismatch"):
             execute_analysis_run_spec(spec, root=tmp_path)
     finally:
         unregister_analysis_recipe(spec.analysis_type)
     assert calls == []
-    assert isinstance(excinfo.value.__cause__, ValueError)
-    assert "size mismatch" in str(excinfo.value.__cause__)
-    assert excinfo.value.manifest.status == "failed"
     after = _file_snapshot(tmp_path)
-    failed_path = str(excinfo.value.path.relative_to(tmp_path))
-    assert set(after) - set(before) == {failed_path}
-    after.pop(failed_path)
-    assert {
-        path: contents for path, contents in after.items() if not path.startswith("index/")
-    } == {
-        path: contents for path, contents in before.items() if not path.startswith("index/")
-    }
+    assert after == before
     assert not (tmp_path / "cache").exists()
 
 
