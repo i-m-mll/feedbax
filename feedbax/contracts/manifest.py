@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -790,6 +791,95 @@ class EvaluationRunManifest(BaseManifest):
     evaluation_spec: SpecPayload
     input_training_runs: list[ParentRef] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedManifestDigest:
+    """Authenticated byte identity for one manifest in a provenance envelope."""
+
+    kind: str
+    id: str
+    role: str | None
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationManifestProvenanceEnvelope:
+    """Verified producer and source authority derived from an evaluation manifest."""
+
+    producer_identity: str
+    source_refs: tuple[ParentRef, ...]
+    digest_envelope: tuple[AuthenticatedManifestDigest, ...]
+
+
+def verify_evaluation_manifest_provenance(
+    manifest: EvaluationRunManifest,
+    manifest_ref: ParentRef,
+    *,
+    expected_producer_identity: str,
+    expected_source_refs: tuple[ParentRef, ...] | None = None,
+) -> EvaluationManifestProvenanceEnvelope:
+    """Verify one authenticated evaluation manifest's producer and source envelope.
+
+    The first digest record authenticates ``manifest_ref``; remaining records align
+    positionally with ``source_refs``. All facts are derived from existing manifest
+    fields, so this contract does not introduce a new durable schema.
+    """
+
+    if manifest.status != "completed":
+        raise ValueError("evaluation provenance requires a completed manifest")
+    if (
+        manifest_ref.kind != manifest.kind
+        or manifest_ref.id != manifest.id
+        or manifest_ref.role != "evaluation_run"
+    ):
+        raise ValueError("evaluation manifest authority disagrees with the manifest")
+    manifest_profile = authenticated_manifest_ref_profile(manifest_ref)
+    if manifest_profile is None:
+        raise ValueError("evaluation manifest authority is not authenticated")
+
+    run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    entrypoint = manifest.provenance.entrypoint
+    if (
+        run_spec.evaluation_type != expected_producer_identity
+        or entrypoint is None
+        or entrypoint.kind != "feedbax-evaluation-recipe"
+        or entrypoint.name != run_spec.evaluation_type
+    ):
+        raise ValueError("evaluation manifest producer identity is not canonical")
+    if manifest.input_training_runs != run_spec.inputs:
+        raise ValueError("evaluation manifest training sources disagree with its spec")
+
+    staged = run_spec.params.get("staged_prerequisites") or {}
+    if not isinstance(staged, dict):
+        raise ValueError("evaluation staged prerequisites must be a mapping")
+    staged_refs = tuple(
+        StagedEvaluationPrerequisite.model_validate(value).parent
+        for value in staged.values()
+    )
+    source_refs = (*run_spec.inputs, *staged_refs)
+    if tuple(manifest.provenance.parents) != source_refs:
+        raise ValueError("evaluation provenance parents disagree with declared sources")
+    if expected_source_refs is not None and expected_source_refs != source_refs:
+        raise ValueError("evaluation manifest sources disagree with expected sources")
+
+    profiles = (manifest_profile,)
+    for ref in source_refs:
+        profile = authenticated_manifest_ref_profile(ref)
+        if profile is None:
+            raise ValueError(f"evaluation source {ref.id!r} is not authenticated")
+        profiles += (profile,)
+    refs = (manifest_ref, *source_refs)
+    digests = tuple(
+        AuthenticatedManifestDigest(ref.kind, ref.id, ref.role, digest, size)
+        for ref, (digest, size) in zip(refs, profiles)
+    )
+    return EvaluationManifestProvenanceEnvelope(
+        producer_identity=run_spec.evaluation_type,
+        source_refs=source_refs,
+        digest_envelope=digests,
+    )
 
 
 class CheckpointScorerIdentity(StrictModel):
