@@ -527,6 +527,29 @@ class ReducerRequirement(StrictModel):
     path: str
 
 
+class MethodTrainingDiagnosticsSpec(StrictModel):
+    """Authored declaration for one method's per-update training trace."""
+
+    trace_schema_id: str
+    trace_schema_version: str
+    measurement_basis: str
+    metric_payload_slot: str
+    replica_axis: str
+
+    @field_validator(
+        "trace_schema_id",
+        "trace_schema_version",
+        "measurement_basis",
+        "metric_payload_slot",
+        "replica_axis",
+    )
+    @classmethod
+    def _validate_authored_value(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("method training diagnostics values must be non-empty")
+        return value
+
+
 class MethodContractSpec(StrictModel):
     """Resolved method declaration consumed by the generic worker executor."""
 
@@ -539,6 +562,7 @@ class MethodContractSpec(StrictModel):
     phase_program: PhaseProgramSpec
     objective_reducers: list[ReducerRequirement] = Field(default_factory=list)
     worker_reducers: list[ReducerRequirement] = Field(default_factory=list)
+    training_diagnostics: MethodTrainingDiagnosticsSpec | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -560,6 +584,30 @@ class MethodContractSpec(StrictModel):
                 "method_ref must resolve to a governed method payload, phase program, "
                 "and update kernels; it must not name a method-owned runner"
             )
+        diagnostics = self.training_diagnostics
+        if diagnostics is not None:
+            axis = next((item for item in self.axes if item.name == diagnostics.replica_axis), None)
+            if axis is None or axis.role != "replicate" or axis.size is None:
+                raise ValueError(
+                    "training_diagnostics.replica_axis must name a sized replicate axis"
+                )
+            slot = next(
+                (item for item in self.state_slots if item.name == diagnostics.metric_payload_slot),
+                None,
+            )
+            if slot is None or slot.role != "metric":
+                raise ValueError(
+                    "training_diagnostics.metric_payload_slot must name a metric state slot"
+                )
+            bindings = slot.axis_bindings or ()
+            if (
+                len(bindings) != 1
+                or bindings[0].axis != diagnostics.replica_axis
+                or bindings[0].mode != "mapped"
+            ):
+                raise ValueError(
+                    "training_diagnostics metric slot must map over the declared replica axis"
+                )
         return self
 
 
