@@ -331,7 +331,7 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
         "--data-center-ids",
         "CA-MTL-1",
         "--env",
-        '{"RUNPOD_API_KEY": "dummy-key"}',
+        '{"FEEDBAX_RUNPOD_API_KEY": "dummy-key"}',
     )
     expected_call = (*base_call, "--data-center-ids", "EU-CZ-1", *first_call[-2:])
     transport.queue_runpodctl(first_call, CommandResult(1, "", "no capacity"))

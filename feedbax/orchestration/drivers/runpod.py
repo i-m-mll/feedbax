@@ -669,7 +669,7 @@ class RunPodOrchestrationDriver:
             if dc:
                 args.extend(["--data-center-ids", dc])
             if self.config.api_key:
-                args.extend(["--env", json.dumps({"RUNPOD_API_KEY": self.config.api_key})])
+                args.extend(["--env", json.dumps({"FEEDBAX_RUNPOD_API_KEY": self.config.api_key})])
             result = self.transport.runpodctl(*args)
             if result.returncode == 0:
                 payload = _json_object(result.stdout)
@@ -718,7 +718,7 @@ class RunPodOrchestrationDriver:
             return
         if not self._pod_id:
             raise RunPodDriverError("dead-man switch requires a RunPod pod id")
-        auth = "export RUNPOD_API_KEY=$(tr '\\0' '\\n' </proc/1/environ | sed -n 's/^RUNPOD_API_KEY=//p'); "
+        auth = "export RUNPOD_API_KEY=$(tr '\\0' '\\n' </proc/1/environ | sed -n 's/^FEEDBAX_RUNPOD_API_KEY=//p'); "
         self._ssh(
             auth + f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
         ).check("in-pod runpodctl presence and authentication")
