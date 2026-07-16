@@ -18,6 +18,7 @@ from feedbax.contracts.staged_execution import (
 from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
@@ -973,6 +974,24 @@ def _migrate_checkpoint_fork_provenance_v1_to_v2_payload(
         for slot in migrated.get("slots", ())
     ]
     migrated["schema_version"] = CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_checkpoint_fork_plan_v1_to_v2_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    for target in migrated.get("targets", ()):
+        if not isinstance(target, Mapping):
+            continue
+        policy = target.get("history_policy")
+        mode = policy.get("mode") if isinstance(policy, Mapping) else None
+        if mode not in {None, "preserve", "continue_segment"}:
+            raise ValueError(
+                f"checkpoint fork plan v1 has unsupported history mode {mode!r}"
+            )
+    migrated["schema_id"] = CHECKPOINT_FORK_PLAN_SCHEMA_ID
+    migrated["schema_version"] = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
     return migrated
 
 
@@ -2644,7 +2663,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Portable multi-target checkpoint fork declaration with explicit "
                 "transform identities and compatibility projections."
             ),
-            stance="reject",
+            stance="migrate",
+            supported_old_versions=(CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,),
             rejected_old_versions=("feedbax.spec.training_checkpoint_fork_plan.v0",),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -4013,6 +4033,19 @@ def _migrate_run_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, A
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "CheckpointForkPlan",
+    SchemaMigration(
+        source_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+        target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+        migration_id="checkpoint-fork-plan-v1-to-v2-future-continuation",
+        migrate=_migrate_checkpoint_fork_plan_v1_to_v2_payload,
+        description=(
+            "Preserve v1 preserve/continue_segment semantics while reserving "
+            "prepare_continuation for explicitly versioned v2 plans."
+        ),
+    ),
+)
 default_spec_registry.register_migration(
     "ExecutionIdentityEnvelope",
     SchemaMigration(
