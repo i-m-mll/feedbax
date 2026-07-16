@@ -344,6 +344,43 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
     assert "--dataCenterId" not in expected_call
 
 
+def test_provision_timeout_removes_newly_acquired_pod(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    clock = FakeClock()
+    create_call = (
+        "pod",
+        "create",
+        "--name",
+        "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image",
+        "runpod/pytorch:1.0.3",
+        "--ports",
+        "22/tcp,8080/http",
+        "--gpu-id",
+        "NVIDIA RTX 2000 Ada Generation",
+    )
+    transport.queue_runpodctl(create_call, CommandResult(0, json.dumps({"id": "pod-123"})))
+    transport.queue_runpodctl(("user", "--output", "json"), CommandResult(0, '{"clientBalance": 10}'))
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA RTX 2000 Ada Generation",
+            image="runpod/pytorch:1.0.3",
+            max_acquire_seconds=0,
+            poll_seconds=1,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+    assert all(check.status == "pass" for check in driver.preflight_checks(bundle))
+
+    with pytest.raises(RunPodDriverError, match="timed out waiting for RunPod SSH endpoint"):
+        driver.provision(bundle, _state(bundle))
+
+    assert transport.runpodctl_calls[-1] == ("remove", "pod", "pod-123")
+
+
 def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()

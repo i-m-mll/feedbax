@@ -294,11 +294,20 @@ class RunPodOrchestrationDriver:
             )
         pod_id = self._create_pod(bundle)
         self._pod_id = pod_id
-        pod = self._pod_get(pod_id)
-        self._endpoint = self._wait_for_endpoint(pod_id, pod)
-        self._configure_subprocess_endpoint(self._endpoint)
-        self._require_gpu_ready()
-        return self._provision_record(pod, provided_pod=False)
+        try:
+            pod = self._pod_get(pod_id)
+            self._endpoint = self._wait_for_endpoint(pod_id, pod)
+            self._configure_subprocess_endpoint(self._endpoint)
+            self._require_gpu_ready()
+            return self._provision_record(pod, provided_pod=False)
+        except Exception as exc:
+            try:
+                self.teardown(bundle, state)
+            except Exception as teardown_exc:
+                raise RunPodDriverError(
+                    f"{exc}; automatic teardown failed: {teardown_exc}"
+                ) from exc
+            raise
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
