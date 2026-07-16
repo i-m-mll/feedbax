@@ -371,6 +371,14 @@ def test_absent_method_training_diagnostics_is_excluded_from_serialization() -> 
             {"axis_bindings": [{"axis": "realization", "mode": "mapped", "array_axis": 0}]},
             "map over the declared replica axis",
         ),
+        (
+            "slot",
+            {"axis_bindings": [
+                {"axis": "replica", "mode": "mapped", "array_axis": 0},
+                {"axis": "realization", "mode": "mapped", "array_axis": 1},
+            ]},
+            "map over the declared replica axis",
+        ),
     ],
 )
 def test_method_training_diagnostics_rejects_invalid_declarations(

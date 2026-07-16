@@ -599,9 +599,11 @@ class MethodContractSpec(StrictModel):
                 raise ValueError(
                     "training_diagnostics.metric_payload_slot must name a metric state slot"
                 )
-            if not any(
-                binding.axis == diagnostics.replica_axis and binding.mode == "mapped"
-                for binding in slot.axis_bindings or ()
+            bindings = slot.axis_bindings or ()
+            if (
+                len(bindings) != 1
+                or bindings[0].axis != diagnostics.replica_axis
+                or bindings[0].mode != "mapped"
             ):
                 raise ValueError(
                     "training_diagnostics metric slot must map over the declared replica axis"
