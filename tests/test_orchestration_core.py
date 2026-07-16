@@ -892,6 +892,13 @@ def test_preflight_schedule_realization_discovers_controller_optimizer_metadata_
     assert len(row_observed["samples"]) >= 4
 
 
+def test_preflight_discovers_nested_method_training_optimizer(tmp_path: Path) -> None:
+    payload = (run_spec := _identity_training_payload())["method_payload"]["payload"]
+    payload["training"] = {"optimizer": payload.pop("optimizer")}
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row-a", run_spec=run_spec)])
+    assert {check.name: check for check in run_preflight_checks(bundle)}["schedule-realization"].status == "pass"
+
+
 def test_preflight_schedule_realization_requires_controller_optimizer_metadata_contexts(
     tmp_path: Path,
 ) -> None:

@@ -1020,6 +1020,7 @@ def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         _path(run_spec, "training", "optimizer"),
         _path(run_spec, "training_config", "optimizer"),
         _path(run_spec, "method_payload", "payload", "optimizer"),
+        _path(run_spec, "method_payload", "payload", "training", "optimizer"),
         _path(run_spec, "method_payload", "payload", "controller_optimizer"),
         _path(run_spec, "method_payload", "inline", "payload", "optimizer"),
         _path(run_spec, "method_payload", "inline", "payload", "controller_optimizer"),
