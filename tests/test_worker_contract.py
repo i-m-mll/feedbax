@@ -17,6 +17,7 @@ from feedbax.contracts.worker import (
     CheckpointSlotManifest,
     CheckpointSlotRecord,
     MethodContractSpec,
+    MethodTrainingDiagnosticsSpec,
     MappingLevelSpec,
     ReducerRequirement,
     StateSlotSpec,
@@ -296,6 +297,94 @@ def test_method_contract_rejects_method_owned_runner_refs() -> None:
     payload = toy_minimax_method_contract().model_dump(mode="json")
     payload["method_ref"] = "downstream_method.run_minimax"
     with pytest.raises(ValidationError, match="method-owned runner"):
+        MethodContractSpec.model_validate(payload)
+
+
+def _method_contract_with_training_diagnostics() -> MethodContractSpec:
+    contract = toy_adaptive_curriculum_method_contract()
+    contract.axes.append(AxisSpec(name="replica", role="replicate", size=3))
+    metric_slot = next(slot for slot in contract.state_slots if slot.name == "heldout_metric")
+    metric_slot.axis_bindings = [
+        SlotAxisBindingSpec(axis="replica", mode="mapped", array_axis=0)
+    ]
+    contract.training_diagnostics = MethodTrainingDiagnosticsSpec(
+        trace_schema_id="tests.method_training_trace",
+        trace_schema_version="tests.method_training_trace.v1",
+        measurement_basis="kernel_input",
+        metric_payload_slot="heldout_metric",
+        replica_axis="replica",
+    )
+    return contract
+
+
+def test_method_training_diagnostics_declaration_round_trips() -> None:
+    contract = _method_contract_with_training_diagnostics()
+
+    payload = contract.model_dump(mode="json", exclude_none=True)
+
+    assert MethodContractSpec.model_validate(payload) == contract
+    assert payload["training_diagnostics"]["metric_payload_slot"] == "heldout_metric"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "trace_schema_id",
+        "trace_schema_version",
+        "measurement_basis",
+        "metric_payload_slot",
+        "replica_axis",
+    ],
+)
+def test_method_training_diagnostics_requires_authored_values(field: str) -> None:
+    payload = _method_contract_with_training_diagnostics().training_diagnostics.model_dump()
+    payload[field] = " "
+
+    with pytest.raises(ValidationError, match="must be non-empty"):
+        MethodTrainingDiagnosticsSpec.model_validate(payload)
+
+
+def test_absent_method_training_diagnostics_is_excluded_from_serialization() -> None:
+    payload = toy_adaptive_curriculum_method_contract().model_dump(
+        mode="json", exclude_none=True
+    )
+
+    assert "training_diagnostics" not in payload
+
+
+@pytest.mark.parametrize(
+    ("target", "update", "match"),
+    [
+        ("diagnostics", {"replica_axis": "missing"}, "sized replicate axis"),
+        ("axis", {"role": "batch"}, "sized replicate axis"),
+        ("axis", {"size": None}, "sized replicate axis"),
+        ("diagnostics", {"metric_payload_slot": "missing"}, "metric state slot"),
+        ("slot", {"role": "auxiliary"}, "metric state slot"),
+        ("slot", {"axis_bindings": []}, "map over the declared replica axis"),
+        (
+            "slot",
+            {"axis_bindings": [{"axis": "replica", "mode": "shared"}]},
+            "map over the declared replica axis",
+        ),
+        (
+            "slot",
+            {"axis_bindings": [{"axis": "realization", "mode": "mapped", "array_axis": 0}]},
+            "map over the declared replica axis",
+        ),
+    ],
+)
+def test_method_training_diagnostics_rejects_invalid_declarations(
+    target: str, update: dict[str, object], match: str
+) -> None:
+    payload = _method_contract_with_training_diagnostics().model_dump(mode="json")
+    targets = {
+        "diagnostics": payload["training_diagnostics"],
+        "axis": next(axis for axis in payload["axes"] if axis["name"] == "replica"),
+        "slot": next(slot for slot in payload["state_slots"] if slot["name"] == "heldout_metric"),
+    }
+    targets[target].update(update)
+
+    with pytest.raises(ValidationError, match=match):
         MethodContractSpec.model_validate(payload)
 
 
