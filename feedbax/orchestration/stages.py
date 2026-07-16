@@ -467,6 +467,7 @@ class StageEngine:
             run_set_id=self.bundle.run_set_id,
             rows=rows,
             registry=self.conformance_registry,
+            declared_inapplicable=self.bundle.metadata.get("conformance_inapplicable"),
         )
         certificate_path = self.bundle.run_set_dir / "conformance.json"
         state = state.model_copy(

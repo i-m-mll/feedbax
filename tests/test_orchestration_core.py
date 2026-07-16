@@ -72,7 +72,9 @@ from feedbax.orchestration.bundle import (
 from feedbax.orchestration.conformance import (
     CheckEntry,
     CheckRegistry,
+    ConformanceRowArtifacts,
     build_default_check_registry,
+    run_conformance_checks,
 )
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.local import (
@@ -339,6 +341,26 @@ def _bundle(
         run_set_id=run_set_id,
         context=context,
         registry=registry,
+    )
+
+
+def test_conformance_records_declared_inapplicability() -> None:
+    registry = CheckRegistry(
+        {"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")}
+    )
+
+    certificate = run_conformance_checks(
+        run_set_id="declared-inapplicable",
+        rows=[ConformanceRowArtifacts(row_id="constant-rate")],
+        registry=registry,
+        declared_inapplicable={"lr_trace": "constant-rate rows have no schedule trace"},
+    )
+
+    result = certificate.rows["constant-rate"].checks[0]
+    assert certificate.overall == "pass"
+    assert result.status == "skipped"
+    assert result.detail == (
+        "inapplicable-by-declaration: constant-rate rows have no schedule trace"
     )
 
 

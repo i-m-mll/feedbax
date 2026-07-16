@@ -255,15 +255,30 @@ def run_conformance_checks(
     run_set_id: str,
     rows: Sequence[ConformanceRowArtifacts],
     registry: CheckRegistry,
+    declared_inapplicable: Mapping[str, str] | None = None,
     generated_at: datetime | None = None,
 ) -> RunConformanceCertificate:
     """Run registered checks over collected row artifacts."""
     if len(registry) == 0:
         raise ValueError("CERTIFY requires at least one registered conformance check")
+    declarations = dict(declared_inapplicable or {})
+    unknown = declarations.keys() - dict(registry.items()).keys()
+    if unknown:
+        raise ValueError(f"unknown declared-inapplicable checks: {sorted(unknown)!r}")
+    if any(not isinstance(reason, str) or not reason.strip() for reason in declarations.values()):
+        raise ValueError("declared-inapplicable checks require non-empty reasons")
     row_results: dict[str, list[CheckEntry]] = {}
     for row in sorted(rows, key=lambda item: item.row_id):
         checks: list[CheckEntry] = []
         for check_id, check in registry.items():
+            if check_id in declarations:
+                checks.append(
+                    skipped_check(
+                        check_id,
+                        detail=f"inapplicable-by-declaration: {declarations[check_id]}",
+                    )
+                )
+                continue
             try:
                 result = check(row)
             except Exception as exc:  # plugin/core failures belong in the certificate.
@@ -297,6 +312,7 @@ def write_conformance_certificate(
     run_set_id: str,
     rows: Sequence[ConformanceRowArtifacts],
     registry: CheckRegistry,
+    declared_inapplicable: Mapping[str, str] | None = None,
     generated_at: datetime | None = None,
 ) -> RunConformanceCertificate:
     """Run checks and write ``<run_set_dir>/conformance.json`` deterministically."""
@@ -304,6 +320,7 @@ def write_conformance_certificate(
         run_set_id=run_set_id,
         rows=rows,
         registry=registry,
+        declared_inapplicable=declared_inapplicable,
         generated_at=generated_at,
     )
     output = Path(run_set_dir) / "conformance.json"
