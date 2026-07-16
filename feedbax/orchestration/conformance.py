@@ -602,6 +602,7 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "n_batches"),
     )
     observed = _first_present(
+        _path(row.training_diagnostics, "segment_completed_batches"),
         _path(row.training_diagnostics, "completed_batches"),
         _path(row.training_diagnostics, "summary", "completed_batches"),
         _path(row.training_diagnostics, "summary_metrics", "completed_batches"),

@@ -418,7 +418,7 @@ def test_completed_batches_does_not_relax_unplanned_or_full_budget_rows() -> Non
 
 def test_checkpoint_cadence_uses_segment_length_for_continuation() -> None:
     row = _row(
-        bundle_row_spec={"expected_batches": 12_200, "checkpoint_interval": 100},
+        bundle_row_spec={"expected_batches": 200, "checkpoint_interval": 100},
         training_diagnostics={
             "completed_batches": 12_200,
             "segment_completed_batches": 200,
