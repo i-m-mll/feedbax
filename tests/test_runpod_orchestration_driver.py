@@ -446,7 +446,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "PATCH_FROM='/Users/mll/local feedbax'" in joined
     assert "uv sync --frozen" in joined
     assert "uv pip install extra" in joined
-    assert "uv pip install -U" in joined
+    assert "jax.__version__" in joined
     assert "jax[cuda12]" in joined
 
 
@@ -603,8 +603,7 @@ def test_stage_inputs_stages_and_verifies_declared_baseline(
             (),
         ),
     ]
-    assert any("completed_training_batches" in command for command in transport.ssh_commands)
-    assert any(payload.sha256 in command for command in transport.ssh_commands)
+    assert all((any("completed_training_batches" in command for command in transport.ssh_commands), any(payload.sha256 in command for command in transport.ssh_commands)))
 
 
 def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path) -> None:

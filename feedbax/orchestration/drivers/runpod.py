@@ -22,10 +22,7 @@ from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.drivers.native_execution import (
-    inject_native_execution_context,
-    is_native_training_command,
-)
+from feedbax.orchestration.drivers.native_execution import inject_native_execution_context, is_native_training_command
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 
 
@@ -239,7 +236,7 @@ class RunPodDriverConfig:
     local_repos: Mapping[str, Path | str] = field(default_factory=dict)
     remote_repos: Mapping[str, str] = field(default_factory=dict)
     path_patches: tuple[tuple[str, str, str], ...] = ()
-    overlay_steps: tuple[str, ...] = ("uv pip install -U 'jax[cuda12]'",)
+    overlay_steps: tuple[str, ...] = ("uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",)
     auto_teardown: bool = True
 
 
