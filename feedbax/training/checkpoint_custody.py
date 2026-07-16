@@ -753,7 +753,7 @@ def produce_checkpoint_custody_archive(
         schema_id=CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
         schema_version=CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
         media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
-        parent_ref=_immutable_model_snapshot(authenticated_ref),
+        parent_ref=authenticated_ref,
         transaction_root_sha256=transaction_root,
         payload_member_count=len(payload),
         expanded_payload_size_bytes=payload_size,
