@@ -1,4 +1,9 @@
 from .checkpoint_custody import (
+    CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+    CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
+    CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
+    CheckpointCustodyArchiveEvidence,
+    CheckpointCustodyArchiveResult,
     CheckpointCompatibilityError,
     CheckpointConsistencyError,
     CheckpointContractBindingError,
@@ -26,6 +31,7 @@ from .checkpoint_custody import (
     load_checkpoint_latest_pointer_json,
     load_checkpoint_transaction_manifest_file,
     load_checkpoint_transaction_manifest_json,
+    produce_checkpoint_custody_archive,
     resolve_checkpoint_custody_ref,
     run_contract_binding,
     structural_abi_fingerprint,
@@ -120,6 +126,11 @@ except ImportError:
     pass
 
 __all__ = [
+    "CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE",
+    "CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID",
+    "CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION",
+    "CheckpointCustodyArchiveEvidence",
+    "CheckpointCustodyArchiveResult",
     "CheckpointCompatibilityError",
     "CheckpointConsistencyError",
     "CheckpointContractBindingError",
@@ -199,6 +210,7 @@ __all__ = [
     "load_checkpoint_latest_pointer_json",
     "load_checkpoint_transaction_manifest_file",
     "load_checkpoint_transaction_manifest_json",
+    "produce_checkpoint_custody_archive",
     "resolve_checkpoint_custody_ref",
     "load_training_run_spec",
     "lower_zero_level_preparation_plan",

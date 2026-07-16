@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
+import io
 import json
 import logging
 import os
 import pickle
 import platform
 import shutil
+import tarfile
 import tempfile
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -56,12 +59,14 @@ from feedbax.contracts.checkpoints import (
     StructuralAbiFingerprint,
 )
 from feedbax.contracts.manifest import (
+    ArtifactRef,
     ArtifactMigrationRecord,
     ParentRef,
     canonical_json_bytes,
     feedbax_version,
     sha256_bytes,
 )
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_VERSION_V1, TrainingRunSpec
 from feedbax.contracts.worker import (
     CheckpointBarrierSpec,
@@ -79,6 +84,11 @@ from feedbax.training.worker_validation import resolve_execution_mapping
 LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
+CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID = "feedbax.archive.training_checkpoint_custody"
+CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION = "feedbax.archive.training_checkpoint_custody.v1"
+CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE = (
+    "application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip"
+)
 _LOGGER = logging.getLogger(__name__)
 _STRUCTURAL_ABI_DIFF_FIELDS = (
     "dtype",
@@ -463,6 +473,29 @@ class ResolvedCheckpointTransaction:
 
 
 @dataclass(frozen=True)
+class CheckpointCustodyArchiveEvidence:
+    """Authenticated identities and exact sizes bound into a custody archive."""
+
+    schema_id: str
+    schema_version: str
+    media_type: str
+    parent_ref: ParentRef
+    transaction_root_sha256: str
+    payload_member_count: int
+    expanded_payload_size_bytes: int
+    archive_sha256: str
+    archive_size_bytes: int
+
+
+@dataclass(frozen=True)
+class CheckpointCustodyArchiveResult:
+    """Immutable provider reference and evidence for canonical archive bytes."""
+
+    artifact_ref: ArtifactRef
+    evidence: CheckpointCustodyArchiveEvidence
+
+
+@dataclass(frozen=True)
 class _StructuralAbiLeafDiff:
     path: str
     field: str
@@ -586,6 +619,172 @@ def resolve_checkpoint_custody_ref(
         raise CheckpointReferenceResolutionError(
             f"checkpoint custody reference resolution failed: {exc}"
         ) from exc
+
+
+def produce_checkpoint_custody_archive(
+    ref: ParentRef,
+    *,
+    allowed_root: str | Path,
+    artifact_provider: ImmutableArtifactBlobProvider,
+) -> CheckpointCustodyArchiveResult:
+    """Validate and store the canonical v1 archive for one published transaction."""
+    resolved = resolve_checkpoint_custody_ref(ref, allowed_root=allowed_root)
+    authenticated_ref = resolved.parent_ref
+    root = Path(allowed_root).expanduser().resolve()
+    latest_path = root / LATEST_POINTER_NAME
+    latest_bytes = _read_archive_source(latest_path, context="checkpoint latest pointer")
+    try:
+        loaded_latest = load_checkpoint_latest_pointer_json(latest_bytes, path=str(latest_path))
+    except CheckpointIntegrityError as exc:
+        raise CheckpointReferenceResolutionError(str(exc)) from exc
+    manifest_path = _resolve_latest_manifest_path(root, loaded_latest.document)
+    manifest_bytes = _read_archive_source(manifest_path, context="checkpoint manifest")
+    try:
+        loaded_manifest = load_checkpoint_transaction_manifest_json(
+            manifest_bytes,
+            path=str(manifest_path),
+        )
+    except CheckpointIntegrityError as exc:
+        raise CheckpointReferenceResolutionError(str(exc)) from exc
+    if resolved.migration_records or loaded_latest.migrated or loaded_manifest.migrated:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive source documents must already use current schemas"
+        )
+    latest = loaded_latest.document
+    transaction_root = resolved.manifest.content_integrity_digest.transaction_root_sha256
+    if (
+        latest.transaction_id != authenticated_ref.id
+        or latest.manifest_relative_path != authenticated_ref.uri
+        or latest.manifest_sha256 != resolved.manifest_sha256
+        or latest.transaction_root_sha256 != transaction_root
+    ):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint latest pointer does not select the authenticated ParentRef transaction"
+        )
+    manifest_name = _canonical_archive_relative_path(
+        authenticated_ref.uri,
+        context="ParentRef uri",
+    )
+    if manifest_path != (root / Path(*PurePosixPath(manifest_name).parts)).resolve():
+        raise CheckpointReferenceResolutionError(
+            "checkpoint latest pointer manifest path differs from authenticated ParentRef"
+        )
+
+    payload: list[tuple[str, Path, bytes]] = []
+    payload.append((f"checkpoint/{LATEST_POINTER_NAME}", latest_path, latest_bytes))
+    if sha256_bytes(manifest_bytes) != resolved.manifest_sha256:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint manifest changed after authenticated resolution"
+        )
+    payload.append((f"checkpoint/{manifest_name}", manifest_path, manifest_bytes))
+    transaction_dir = manifest_path.parent.resolve()
+    for slot in resolved.manifest.slots:
+        slot_name = _canonical_archive_relative_path(
+            slot.relative_path,
+            context=f"checkpoint slot {slot.slot!r} relative_path",
+        )
+        blob_path = _resolve_checkpoint_slot_path(
+            slot,
+            transaction_dir=transaction_dir,
+            allowed_root=root,
+        )
+        try:
+            blob_bytes = _read_blob(slot, blob_path)
+        except (CheckpointIntegrityError, OSError) as exc:
+            raise CheckpointReferenceResolutionError(str(exc)) from exc
+        payload.append(
+            (f"checkpoint/{PurePosixPath(manifest_name).parent / slot_name}", blob_path, blob_bytes)
+        )
+    names = [name for name, _, _ in payload]
+    if len(names) != len(set(names)):
+        raise CheckpointReferenceResolutionError("checkpoint archive member names are not unique")
+
+    payload_size = sum(len(data) for _, _, data in payload)
+    archive_document = canonical_json_bytes(
+        {
+            "schema_id": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
+            "schema_version": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
+            "media_type": CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+            "parent_ref": authenticated_ref.model_dump(mode="json", exclude_none=True),
+            "transaction_root_sha256": transaction_root,
+            "payload_member_count": len(payload),
+            "expanded_payload_size_bytes": payload_size,
+        }
+    )
+    archive_bytes = _checkpoint_custody_archive_bytes(archive_document, payload)
+    for _, path, expected in payload:
+        try:
+            current = path.read_bytes()
+        except OSError as exc:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint archive source disappeared before storage: {path}"
+            ) from exc
+        if current != expected:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint archive source changed before storage: {path}"
+            )
+    artifact = artifact_provider.store_bytes(
+        archive_bytes,
+        role="training_checkpoint_custody_archive",
+        logical_name=f"{resolved.manifest.transaction_id}.checkpoint-custody.tar.gz",
+        media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+        metadata={
+            "schema_id": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
+            "schema_version": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
+            "transaction_root_sha256": transaction_root,
+        },
+    )
+    evidence = CheckpointCustodyArchiveEvidence(
+        schema_id=CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
+        schema_version=CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
+        media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+        parent_ref=_immutable_model_snapshot(authenticated_ref),
+        transaction_root_sha256=transaction_root,
+        payload_member_count=len(payload),
+        expanded_payload_size_bytes=payload_size,
+        archive_sha256=sha256_bytes(archive_bytes),
+        archive_size_bytes=len(archive_bytes),
+    )
+    return CheckpointCustodyArchiveResult(
+        artifact_ref=_immutable_model_snapshot(artifact),
+        evidence=evidence,
+    )
+
+
+def _canonical_archive_relative_path(value: str | None, *, context: str) -> str:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise CheckpointReferenceResolutionError(f"{context} is not a safe POSIX relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
+        raise CheckpointReferenceResolutionError(f"{context} is not a canonical relative path")
+    return path.as_posix()
+
+
+def _read_archive_source(path: Path, *, context: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise CheckpointReferenceResolutionError(f"{context} could not be read: {path}") from exc
+
+
+def _checkpoint_custody_archive_bytes(
+    archive_document: bytes,
+    payload: Sequence[tuple[str, Path, bytes]],
+) -> bytes:
+    output = io.BytesIO()
+    with gzip.GzipFile(fileobj=output, mode="wb", filename="", mtime=0, compresslevel=9) as gz:
+        with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            for name, data in [
+                ("archive.json", archive_document),
+                *((member_name, member_data) for member_name, _, member_data in payload),
+            ]:
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o644
+                info.uid = info.gid = info.mtime = 0
+                info.uname = info.gname = ""
+                archive.addfile(info, io.BytesIO(data))
+    return output.getvalue()
 
 
 def _resolve_checkpoint_custody_ref(
