@@ -270,6 +270,33 @@ def _valid_materialized_preparation(
     )
 
 
+def _mapped_runtime_resume_preparation(
+    spec: TrainingRunSpec,
+    **overrides: object,
+) -> MaterializedExecutionPreparation:
+    slots: dict[str, object] = {
+        "model": jnp.zeros((5,), dtype=jnp.float32),
+        "optimizer": jnp.zeros((5,), dtype=jnp.float32),
+        "prng": jnp.zeros((5, 2), dtype=jnp.uint32),
+        "objective": jnp.zeros((5,), dtype=jnp.float32),
+        "train_loss": jnp.zeros((5,), dtype=jnp.float32),
+        "batch_counter": jnp.zeros((5,), dtype=jnp.int32),
+        "adaptive_state": jnp.zeros((5,), dtype=jnp.float32),
+        "runtime_trace": jnp.zeros((5,), dtype=jnp.float32),
+    }
+    slots.update(overrides)
+    coordinates = tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5))
+    return _build_materialized_execution_preparation(
+        request=ExecutionPreparationRequest(run_spec=spec),
+        provider_identity="tests.mapped_runtime_resume",
+        initial_slots=slots,
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        coordinate_order=coordinates,
+    )
+
+
 def _mapped_plan(materializer) -> ExecutionPreparationPlan:
     return ExecutionPreparationPlan(
         shared_slots={},
@@ -669,6 +696,125 @@ def test_mapped_executor_preflight_and_execution_match_manual_scalar_loop() -> N
     assert result.slots["model"].tolist() == [1, 2, 3, 4, 5]
     assert result.slots["train_loss"].tolist() == [0, 2, 4, 6, 8]
     assert result.slots["batch_counter"].tolist() == [1] * 5
+
+
+def test_native_mapped_resume_retains_prepared_runtime_slots_and_checkpoint_authority(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    contract = worker.method_contract
+    mapped_binding = [SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)]
+    contract.state_slots.extend(
+        [
+            StateSlotSpec(
+                name="adaptive_state",
+                role="auxiliary",
+                axis_bindings=mapped_binding,
+            ),
+            StateSlotSpec(
+                name="runtime_trace",
+                role="metric",
+                axis_bindings=mapped_binding,
+            ),
+        ]
+    )
+    phase = contract.phase_program.phases[0]
+    phase.reads.extend(["adaptive_state", "runtime_trace"])
+    phase.writes.extend(["adaptive_state", "runtime_trace"])
+    step = contract.phase_program.update_steps[0]
+    step.reads.extend(["adaptive_state", "runtime_trace"])
+    step.writes.extend(["adaptive_state", "runtime_trace"])
+    contract.phase_program.checkpoint_barriers[0].slots.append(
+        CheckpointSlotSpec(slot="adaptive_state")
+    )
+
+    @jax.jit
+    def jitted_values(model, optimizer, batch_counter, adaptive_state, runtime_trace):
+        return (
+            model + 1,
+            optimizer + 1,
+            model * 2,
+            batch_counter + 1,
+            adaptive_state + 1,
+            runtime_trace + 1,
+        )
+
+    def update(slots, coordinate, context):
+        del coordinate, context
+        model, optimizer, train_loss, batch_counter, adaptive_state, runtime_trace = (
+            jitted_values(
+                slots["model"],
+                slots["optimizer"],
+                slots["batch_counter"],
+                slots["adaptive_state"],
+                slots["runtime_trace"],
+            )
+        )
+        return {
+            "model": model,
+            "optimizer": optimizer,
+            "prng": slots["prng"],
+            "train_loss": train_loss,
+            "batch_counter": batch_counter,
+            "adaptive_state": adaptive_state,
+            "runtime_trace": runtime_trace,
+        }
+
+    kernels = {"feedbax.training.standard_supervised.gradient_update": update}
+    worker.effective_phase = validate_worker_contract(contract, update_kernels=kernels)
+    spec = spec.model_copy(update={"worker_execution": worker})
+    registry = _mapped_test_registry(spec, update)
+    checkpoint_root = tmp_path / "checkpoint"
+    source = execute_training_run_spec(
+        spec,
+        preparation=_mapped_runtime_resume_preparation(
+            spec,
+            model=jnp.full((5,), 2.0),
+            optimizer=jnp.full((5,), 4.0),
+            adaptive_state=jnp.full((5,), 6.0),
+            runtime_trace=jnp.full((5,), 20.0),
+        ),
+        registry=registry,
+        manifest_root=tmp_path / "source-manifest",
+        checkpoint_root=checkpoint_root,
+        run_id="mapped-runtime-source",
+        stop_after_barrier="after_train_batch",
+    )
+    persisted_slots = {slot.slot for slot in source.checkpoint_writes[0].manifest.slots}
+    assert persisted_slots == {
+        "model",
+        "optimizer",
+        "prng",
+        "adaptive_state",
+        "batch_counter",
+    }
+    assert "runtime_trace" not in persisted_slots
+
+    resumed = execute_training_run_spec(
+        spec,
+        preparation=_mapped_runtime_resume_preparation(
+            spec,
+            model=jnp.full((5,), 100.0),
+            optimizer=jnp.full((5,), 100.0),
+            prng=jnp.ones((5, 2), dtype=jnp.uint32),
+            adaptive_state=jnp.full((5,), 100.0),
+            batch_counter=jnp.zeros((5,), dtype=jnp.int32),
+            runtime_trace=jnp.full((5,), 40.0),
+        ),
+        registry=registry,
+        manifest_root=tmp_path / "resume-manifest",
+        checkpoint_root=checkpoint_root,
+        run_id="mapped-runtime-resumed",
+        resume=True,
+    )
+
+    assert resumed.final_slots["model"].tolist() == [4.0] * 5
+    assert resumed.final_slots["optimizer"].tolist() == [6.0] * 5
+    assert resumed.final_slots["prng"].tolist() == [[0, 0]] * 5
+    assert resumed.final_slots["adaptive_state"].tolist() == [8.0] * 5
+    assert resumed.final_slots["batch_counter"].tolist() == [2] * 5
+    assert resumed.final_slots["runtime_trace"].tolist() == [41.0] * 5
 
 
 def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate_arrays(

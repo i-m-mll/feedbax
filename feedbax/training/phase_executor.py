@@ -284,6 +284,57 @@ class PhaseProgramExecutor:
                         f"mapped filtered-vmap preflight failed: {exc}",
                     ) from exc
 
+    def merge_resume_slots(
+        self,
+        slots: Mapping[str, Any],
+        checkpoint: PhaseCheckpoint,
+    ) -> dict[str, Any]:
+        """Overlay declared checkpoint authority onto prepared runtime slots."""
+        barrier = self._barriers.get(checkpoint.barrier)
+        if barrier is None:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}",
+                f"unknown checkpoint barrier {checkpoint.barrier!r}",
+            )
+        declared = {slot.slot: slot for slot in barrier.slots}
+        unknown = sorted(set(checkpoint.slots) - set(declared))
+        if unknown:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                f"checkpoint contains undeclared slots {unknown!r}",
+            )
+        missing_required_checkpoint = [
+            name
+            for name, spec in declared.items()
+            if spec.required and name not in checkpoint.slots
+        ]
+        if missing_required_checkpoint:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                f"checkpoint is missing required slots {missing_required_checkpoint!r}",
+            )
+        if not slots:
+            return _copy_executor_mapping(checkpoint.slots)
+        missing_prepared = sorted(set(checkpoint.slots) - set(slots))
+        if missing_prepared:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                "checkpoint slots lack prepared runtime templates "
+                f"{missing_prepared!r}",
+            )
+        missing_required_prepared = [
+            name for name, spec in declared.items() if spec.required and name not in slots
+        ]
+        if missing_required_prepared:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                "prepared runtime is missing required checkpoint slots "
+                f"{missing_required_prepared!r}",
+            )
+        merged = _copy_executor_mapping(slots)
+        merged.update(_copy_executor_mapping(checkpoint.slots))
+        return merged
+
     def run(
         self,
         slots: Mapping[str, Any],
@@ -314,7 +365,7 @@ class PhaseProgramExecutor:
         resuming_within_phase = False
         if resume_from_barrier is not None:
             checkpoint = self.checkpoint_store.load(resume_from_barrier)
-            current_slots = dict(checkpoint.slots)
+            current_slots = self.merge_resume_slots(slots, checkpoint)
             start_phase, resume_inner_step = self._resume_position(checkpoint)
             resuming_within_phase = resume_inner_step > 0
             coordinate = checkpoint.coordinate.model_copy(

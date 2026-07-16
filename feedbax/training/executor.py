@@ -692,7 +692,9 @@ def execute_training_run_spec(
         slot_axis_bindings=slot_axis_bindings,
     )
     prepared_slots = (
-        loaded_resume_checkpoint.slots if loaded_resume_checkpoint is not None else slots
+        executor.merge_resume_slots(slots, loaded_resume_checkpoint)
+        if loaded_resume_checkpoint is not None
+        else slots
     )
     try:
         executor.preflight(
