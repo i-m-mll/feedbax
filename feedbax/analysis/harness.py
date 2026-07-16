@@ -239,6 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="feedbax matrix-harness")
     parser.add_argument("spec", help="EvaluationRunMatrixSpec JSON path")
     parser.add_argument("--manifest-root", required=True)
+    parser.add_argument("--repo-root")
     parser.add_argument("--plugin", action="append")
     parser.add_argument("--escape-hatch-reason")
     parser.add_argument("--parent-manifest-root")
@@ -270,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     execute_evaluation_run_matrix(
         payload,
         root=args.manifest_root,
+        repo_root=args.repo_root,
         escape_hatch_reason=args.escape_hatch_reason,
         parent_manifest_root=args.parent_manifest_root,
         execution_descriptor=execution_descriptor,

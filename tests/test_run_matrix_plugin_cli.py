@@ -9,6 +9,8 @@ import feedbax.training.run_matrix as run_matrix
 from feedbax import __main__ as feedbax_main
 from feedbax.analysis import evaluation
 from feedbax.analysis import harness
+from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.contracts.manifest import canonical_json_bytes, load_manifest, sha256_bytes
 from feedbax.contracts.training import default_training_method_registry
 from feedbax.plugins.discovery import load_training_method_plugins
 from feedbax.training.preparation import ExecutionPreparationProviderRegistry
@@ -103,6 +105,58 @@ def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Pa
     ]
 
 
+def test_top_level_matrix_harness_executes_v3_axis_matrix(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    base = {"evaluation_type": "example.cli_axis", "params": {"gain": 0}}
+    (tmp_path / "base.json").write_text(json.dumps(base), encoding="utf-8")
+    payload = {
+        "schema_id": "feedbax.spec.evaluation_run_matrix",
+        "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+        "base": {"ref": "base.json", "sha256": sha256_bytes(canonical_json_bytes(base))},
+        "axes": [
+            {
+                "id": "gain",
+                "values": [
+                    {"id": "one", "deltas": [{"path": "params.gain", "value": 1}]}
+                ],
+            }
+        ],
+    }
+    spec = tmp_path / "matrix.json"
+    spec.write_text(json.dumps(payload), encoding="utf-8")
+    evaluation.register_evaluation_recipe(
+        "example.cli_axis", lambda *_args: EvaluationRecipeResult()
+    )
+    try:
+        result = feedbax_main.main(
+            [
+                "matrix-harness",
+                str(spec),
+                "--manifest-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+    finally:
+        evaluation.unregister_evaluation_recipe("example.cli_axis")
+
+    assert result == 0
+    manifest_path = next(
+        (tmp_path / "runs" / "gain-one" / "manifests" / "evaluation_runs").glob("*.json")
+    )
+    manifest = load_manifest(manifest_path)
+    assert manifest.metadata["matrix_harness"]["axis_expansion"]["pinned_base"]["ref"] == (
+        "base.json"
+    )
+
+
 def test_top_level_harness_cli_forwards_explicit_staged_runtime_bindings(
     monkeypatch,
     tmp_path: Path,
@@ -120,6 +174,8 @@ def test_top_level_harness_cli_forwards_explicit_staged_runtime_bindings(
             str(spec),
             "--manifest-root",
             str(manifest_root),
+            "--repo-root",
+            str(tmp_path),
             "--parent-manifest-root",
             str(parent_root),
             "--execution-descriptor",
@@ -137,6 +193,8 @@ def test_top_level_harness_cli_forwards_explicit_staged_runtime_bindings(
             str(spec),
             "--manifest-root",
             str(manifest_root),
+            "--repo-root",
+            str(tmp_path),
             "--parent-manifest-root",
             str(parent_root),
             "--execution-descriptor",
@@ -171,6 +229,8 @@ def test_harness_cli_parses_staged_runtime_bindings(monkeypatch, tmp_path: Path)
             str(spec),
             "--manifest-root",
             str(tmp_path / "rows"),
+            "--repo-root",
+            str(tmp_path),
             "--parent-manifest-root",
             str(tmp_path / "parents"),
             "--execution-descriptor",
@@ -185,6 +245,7 @@ def test_harness_cli_parses_staged_runtime_bindings(monkeypatch, tmp_path: Path)
     assert result == 0
     payload, kwargs = captured[0]
     assert payload == {"schema_id": "matrix"}
+    assert kwargs["repo_root"] == str(tmp_path)
     assert kwargs["execution_descriptor"] == {"schema_id": "descriptor"}
     assert kwargs["parent_manifest_root"] == str(tmp_path / "parents")
     assert kwargs["artifact_provider_bindings"][0].name == "shared"

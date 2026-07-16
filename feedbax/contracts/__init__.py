@@ -223,12 +223,19 @@ from feedbax.contracts.run_matrix import (
     apply_override_patches,
 )
 from feedbax.contracts.matrix_core import (
+    ContentPinnedJsonBase,
     MaterializedMatrixRow,
+    MatrixAxis,
+    MatrixAxisCoordinate,
+    MatrixAxisValue,
     MatrixRow as GenericMatrixRow,
     RowDerivation,
     RowMatrixSpec,
     derive_row_path,
+    expand_matrix_axes,
+    load_content_pinned_json_base,
     materialize_matrix_rows,
+    ordered_index_product,
 )
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import (
@@ -656,10 +663,17 @@ __all__ = [
     "MatrixDerivation",
     "MatrixForkSpec",
     "MatrixRow",
+    "ContentPinnedJsonBase",
     "MaterializedMatrixRow",
+    "MatrixAxis",
+    "MatrixAxisCoordinate",
+    "MatrixAxisValue",
     "GenericMatrixRow",
     "RowDerivation",
     "RowMatrixSpec",
+    "expand_matrix_axes",
+    "load_content_pinned_json_base",
+    "ordered_index_product",
     "TrainingMethodRegistration",
     "TrainingMethodAuthoringContribution",
     "TrainingMethodAuthoringHook",

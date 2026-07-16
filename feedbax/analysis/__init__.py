@@ -89,6 +89,7 @@ from .validation import (
 )
 from .evaluation import (
     EvaluationRunMatrixSpec,
+    compile_evaluation_run_matrix,
     execute_evaluation_run_matrix,
     get_evaluation_recipe,
     materialize_evaluation_run_matrix,
@@ -149,6 +150,7 @@ __all__ = [
     "EvaluationInputReferenceError",
     "EvaluationInputResolutionError",
     "EvaluationRunMatrixSpec",
+    "compile_evaluation_run_matrix",
     "HarnessResult",
     "ExistingAnalysisArtifact",
     "GraphControllerAdapter",

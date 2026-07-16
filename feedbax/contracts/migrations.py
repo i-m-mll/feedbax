@@ -144,6 +144,8 @@ from feedbax.contracts.representation import (
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
+    EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
+    EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
@@ -157,6 +159,7 @@ from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
@@ -1940,6 +1943,16 @@ def _migrate_training_run_matrix_v2_to_v3_payload(payload: dict[str, Any]) -> di
     return migrated
 
 
+def _migrate_evaluation_run_matrix_v2_to_v3_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve staged-parent and authoring fields in the combined v3 schema."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated.setdefault("staged_parents", {})
+    return migrated
+
+
 def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     """Populate schema identities for emitted Feedbax spec families."""
 
@@ -2569,12 +2582,28 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.analysis.harness",),
             consumed_by=("evaluation matrix materialization",),
             description=(
-                "Governed evaluation conditions expressed as one typed base plus "
-                "ordered row deltas and post-delta derivations."
+                "Governed evaluation conditions with staged parents and either explicit "
+                "rows or content-pinned ordered axis products."
             ),
             stance="migrate",
-            supported_old_versions=(EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+                EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=("feedbax.spec.evaluation_run_matrix.v0",),
+            required_tests=("tests/test_evaluation_matrix.py",),
+        ),
+        _family(
+            "EvaluationAxisExpansionProvenance",
+            EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
+            EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.analysis.evaluation",
+            emitted_by=("feedbax.analysis.evaluation.execute_evaluation_run_matrix",),
+            consumed_by=("durable evaluation manifest inspection",),
+            description="Embedded canonical provenance for authored evaluation axis products.",
+            rejected_old_versions=(
+                "feedbax.manifest.evaluation_axis_expansion_provenance.v0",
+            ),
             required_tests=("tests/test_evaluation_matrix.py",),
         ),
         _family(
@@ -4039,7 +4068,7 @@ default_spec_registry.register_migration(
     "EvaluationRunMatrixSpec",
     SchemaMigration(
         source_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
-        target_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        target_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
         migration_id="evaluation-run-matrix-v1-to-v2-staged-parents",
         migrate=_migrate_evaluation_run_matrix_v1_to_v2_payload,
         description="Add the empty matrix-level staged-parent binding map.",
@@ -4053,6 +4082,16 @@ default_spec_registry.register_migration(
         migration_id="training-run-matrix-v1-to-v2-typed-base",
         migrate=_migrate_training_run_matrix_v1_to_v2_payload,
         description="Replace the untyped base locator with the content-pinned base union.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationRunMatrixSpec",
+    SchemaMigration(
+        source_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+        target_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="evaluation-run-matrix-v2-to-v3-combined-authoring",
+        migrate=_migrate_evaluation_run_matrix_v2_to_v3_payload,
+        description="Preserve staged parents and enable combined explicit or axis authoring.",
     ),
 )
 default_spec_registry.register_migration(

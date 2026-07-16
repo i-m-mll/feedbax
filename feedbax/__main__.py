@@ -392,6 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     harness_parser.add_argument("spec", help="EvaluationRunMatrixSpec JSON path")
     harness_parser.add_argument("--manifest-root", required=True)
+    harness_parser.add_argument("--repo-root")
     harness_parser.add_argument(
         "--plugin",
         action="append",
@@ -414,6 +415,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         from feedbax.analysis.harness import main as harness_main
 
         harness_argv = [args.spec, "--manifest-root", args.manifest_root]
+        if args.repo_root is not None:
+            harness_argv.extend(("--repo-root", args.repo_root))
         for module_name in args.plugin or ():
             harness_argv.extend(("--plugin", module_name))
         if args.escape_hatch_reason is not None:
