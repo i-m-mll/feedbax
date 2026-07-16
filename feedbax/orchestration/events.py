@@ -12,10 +12,10 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TextIO
+from typing import Any, Literal, Self, TextIO
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.metric_values import NumericBooleanJsonValue
@@ -62,15 +62,6 @@ class MappedMetricValue(StrictModel):
     axes: tuple[MaterializedSlotAxisBinding, ...]
 
 
-def _validate_nonempty_named_nodes(value: dict[str, NumericBooleanJsonValue]):
-    if not value:
-        raise ValueError("structured mapped metric has an empty named node")
-    for item in value.values():
-        if isinstance(item, dict):
-            _validate_nonempty_named_nodes(item)
-    return value
-
-
 class StructuredMappedMetricValue(StrictModel):
     """Named numeric/boolean metric leaves retaining one replica axis."""
 
@@ -82,7 +73,37 @@ class StructuredMappedMetricValue(StrictModel):
     )
     value: dict[str, NumericBooleanJsonValue]
     axes: tuple[MaterializedSlotAxisBinding, ...]
-    _validate_value = field_validator("value")(_validate_nonempty_named_nodes)
+
+    @model_validator(mode="after")
+    def _validate_carrier(self) -> Self:
+        if len(self.axes) != 1:
+            raise ValueError("structured mapped metric requires exactly one axis")
+        axis = self.axes[0]
+        if (axis.role, axis.level, axis.mode, axis.array_axis) != (
+            "replicate",
+            0,
+            "mapped",
+            0,
+        ):
+            raise ValueError("structured mapped metric requires one leading replica axis")
+
+        def validate_node(value: dict[str, NumericBooleanJsonValue], path: str) -> None:
+            if not value:
+                raise ValueError(f"structured mapped metric has an empty named node at {path}")
+            for name, item in value.items():
+                item_path = f"{path}.{name}"
+                if isinstance(item, dict):
+                    validate_node(item, item_path)
+                elif not isinstance(item, list):
+                    raise ValueError(f"structured mapped metric leaf {item_path} must be a list")
+                elif len(item) != axis.size:
+                    raise ValueError(
+                        f"structured mapped metric leaf {item_path} has leading size "
+                        f"{len(item)}; expected {axis.size}"
+                    )
+
+        validate_node(self.value, "value")
+        return self
 
 
 def _normalize_structured_mapped_value(

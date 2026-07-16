@@ -182,15 +182,21 @@ def test_metric_normalization_preserves_named_mapped_leaf_types() -> None:
     }
 
 
+def _structured_mapped_axis(**updates: object) -> MaterializedSlotAxisBinding:
+    payload = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+    }
+    payload.update(updates)
+    return MaterializedSlotAxisBinding.model_validate(payload)
+
+
 def test_structured_mapped_metric_value_validates_direct_construction() -> None:
-    axis = MaterializedSlotAxisBinding(
-        axis="ensemble",
-        role="replicate",
-        size=2,
-        level=0,
-        mode="mapped",
-        array_axis=0,
-    )
+    axis = _structured_mapped_axis()
     carrier = StructuredMappedMetricValue(
         value={"accepted": [True, False], "nested": {"values": [2, 3.5]}},
         axes=(axis,),
@@ -210,7 +216,37 @@ def test_structured_mapped_metric_value_rejects_empty_named_nodes(
     value: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError, match="empty named node"):
-        StructuredMappedMetricValue(value=value, axes=())
+        StructuredMappedMetricValue(value=value, axes=(_structured_mapped_axis(),))
+
+
+@pytest.mark.parametrize(
+    ("axes", "value", "match"),
+    [
+        ((), {"leaf": [1, 2]}, "exactly one axis"),
+        (
+            (_structured_mapped_axis(), _structured_mapped_axis()),
+            {"leaf": [1, 2]},
+            "exactly one axis",
+        ),
+        ((_structured_mapped_axis(role="member"),), {"leaf": [1, 2]}, "replica axis"),
+        ((_structured_mapped_axis(level=1),), {"leaf": [1, 2]}, "replica axis"),
+        (
+            (_structured_mapped_axis(mode="shared", array_axis=None),),
+            {"leaf": [1, 2]},
+            "replica axis",
+        ),
+        ((_structured_mapped_axis(array_axis=1),), {"leaf": [1, 2]}, "replica axis"),
+        ((_structured_mapped_axis(),), {"leaf": True}, "must be a list"),
+        ((_structured_mapped_axis(),), {"leaf": [True]}, "leading size 1; expected 2"),
+    ],
+)
+def test_structured_mapped_metric_value_rejects_invalid_carrier_invariants(
+    axes: tuple[MaterializedSlotAxisBinding, ...],
+    value: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        StructuredMappedMetricValue(value=value, axes=axes)
 
 
 @pytest.mark.parametrize(
