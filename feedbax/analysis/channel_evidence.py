@@ -14,6 +14,7 @@ from feedbax.analysis.evaluation import resolve_staged_evaluation_prerequisite
 from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.contracts.evaluation_states import EVALUATION_STATES_ARTIFACT_ROLE
 from feedbax.contracts.manifest import StagedEvaluationPrerequisite
+from feedbax.contracts.validation import validate_sha256
 
 
 class EvaluationChannelEvidenceError(ValueError):
@@ -86,7 +87,9 @@ def resolve_authenticated_evaluation_channels(
             raise EvaluationChannelEvidenceError(
                 f"evaluation channel evidence record {position} has invalid or duplicate name {name!r}"
             )
-        evidence[name] = _authenticate_channel(name, raw, channels.get(name))
+        evidence[name] = _authenticate_channel(
+            name, raw, channels.get(name), expected_index=position
+        )
 
     if set(channels) != set(evidence):
         raise EvaluationChannelEvidenceError(
@@ -103,7 +106,11 @@ def resolve_authenticated_evaluation_channels(
 
 
 def _authenticate_channel(
-    name: str, raw: Mapping[str, Any], value: Any
+    name: str,
+    raw: Mapping[str, Any],
+    value: Any,
+    *,
+    expected_index: int,
 ) -> EvaluationChannelEvidence:
     if not isinstance(value, np.ndarray):
         raise EvaluationChannelEvidenceError(f"channel {name!r} is missing or is not an array")
@@ -115,6 +122,11 @@ def _authenticate_channel(
     index = raw.get("index")
     if not isinstance(index, int) or isinstance(index, bool) or index < 0:
         raise EvaluationChannelEvidenceError(f"channel {name!r} has malformed evidence index")
+    if index != expected_index:
+        raise EvaluationChannelEvidenceError(
+            f"channel {name!r} evidence index mismatch: "
+            f"expected={expected_index}, actual={index}"
+        )
     expected = {
         "shape": value.shape,
         "dtype": value.dtype.str,
@@ -129,8 +141,12 @@ def _authenticate_channel(
             f"expected={expected!r}, evidence={actual!r}, actual_c_contiguous={value.flags.c_contiguous!r}"
         )
     digest = raw.get("sha256")
-    if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
-        raise EvaluationChannelEvidenceError(f"channel {name!r} has malformed evidence sha256")
+    try:
+        digest = validate_sha256(
+            digest, field_name=f"channel {name!r} malformed evidence sha256"
+        )
+    except ValueError as exc:
+        raise EvaluationChannelEvidenceError(str(exc)) from exc
     computed = hashlib.sha256(value.tobytes(order="C")).hexdigest()
     if digest != computed:
         raise EvaluationChannelEvidenceError(

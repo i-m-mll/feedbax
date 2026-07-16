@@ -44,12 +44,12 @@ def _prerequisite():
     )
 
 
-def _record(array):
+def _record(array, *, name="noise", index=0):
     import hashlib
 
     return {
-        "name": "noise",
-        "index": 0,
+        "name": name,
+        "index": index,
         "shape": list(array.shape),
         "dtype": array.dtype.str,
         "byte_order": array.dtype.str[0],
@@ -98,6 +98,31 @@ def test_resolve_authenticated_evaluation_channels_rejects_record_mismatch(
         resolve_authenticated_evaluation_channels(
             _prerequisite(),
             execution_context=_Context({"channels": {"noise": array}}, [record]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("indexes", "expected", "actual"),
+    [([0, 0], 1, 0), ([1, 0], 0, 1)],
+)
+def test_resolve_authenticated_evaluation_channels_rejects_noncanonical_indexes(
+    indexes, expected, actual
+):
+    channels = {
+        "noise": np.arange(3, dtype=np.float64),
+        "signal": np.arange(3, dtype=np.float64),
+    }
+    records = [
+        _record(channels[name], name=name, index=index)
+        for name, index in zip(channels, indexes, strict=True)
+    ]
+
+    with pytest.raises(
+        EvaluationChannelEvidenceError,
+        match=rf"channel .* expected={expected}, actual={actual}",
+    ):
+        resolve_authenticated_evaluation_channels(
+            _prerequisite(), execution_context=_Context({"channels": channels}, records)
         )
 
 
