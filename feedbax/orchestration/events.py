@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal, TextIO
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from feedbax.contracts.manifest import StrictModel
 from feedbax.contracts.metric_values import NumericBooleanJsonValue
@@ -62,6 +62,15 @@ class MappedMetricValue(StrictModel):
     axes: tuple[MaterializedSlotAxisBinding, ...]
 
 
+def _validate_nonempty_named_nodes(value: dict[str, NumericBooleanJsonValue]):
+    if not value:
+        raise ValueError("structured mapped metric has an empty named node")
+    for item in value.values():
+        if isinstance(item, dict):
+            _validate_nonempty_named_nodes(item)
+    return value
+
+
 class StructuredMappedMetricValue(StrictModel):
     """Named numeric/boolean metric leaves retaining one replica axis."""
 
@@ -73,6 +82,7 @@ class StructuredMappedMetricValue(StrictModel):
     )
     value: dict[str, NumericBooleanJsonValue]
     axes: tuple[MaterializedSlotAxisBinding, ...]
+    _validate_value = field_validator("value")(_validate_nonempty_named_nodes)
 
 
 def _normalize_structured_mapped_value(

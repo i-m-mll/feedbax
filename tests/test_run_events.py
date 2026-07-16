@@ -205,6 +205,14 @@ def test_structured_mapped_metric_value_validates_direct_construction() -> None:
             StructuredMappedMetricValue(value={"leaf": invalid}, axes=(axis,))
 
 
+@pytest.mark.parametrize("value", [{}, {"nested": {}}])
+def test_structured_mapped_metric_value_rejects_empty_named_nodes(
+    value: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="empty named node"):
+        StructuredMappedMetricValue(value=value, axes=())
+
+
 @pytest.mark.parametrize(
     ("value", "match"),
     [
