@@ -345,9 +345,7 @@ def _bundle(
 
 
 def test_conformance_records_declared_inapplicability() -> None:
-    registry = CheckRegistry(
-        {"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")}
-    )
+    registry = CheckRegistry({"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")})
 
     certificate = run_conformance_checks(
         run_set_id="declared-inapplicable",
@@ -894,7 +892,8 @@ def test_preflight_schedule_realization_discovers_controller_optimizer_metadata_
 
 def test_preflight_discovers_nested_method_training_optimizer(tmp_path: Path) -> None:
     payload = (run_spec := _identity_training_payload())["method_payload"]["payload"]
-    payload["training"] = {"optimizer": payload.pop("optimizer")}
+    payload.pop("optimizer")
+    payload["training"] = {"optimizer": {"type": "adamw", "params": {}, "lr_schedule": LrScheduleSpec(kind="constant", learning_rate_0=0.1).model_dump(mode="json")}}
     bundle = _bundle(tmp_path, rows=[_compiled_row("row-a", run_spec=run_spec)])
     assert {check.name: check for check in run_preflight_checks(bundle)}["schedule-realization"].status == "pass"
 

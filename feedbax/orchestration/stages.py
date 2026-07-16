@@ -979,6 +979,15 @@ def _evaluate_optimizer_schedule_at_preflight(
         )
         optimizer.init({"preflight": 0.0})
         return {"optimizer_index": optimizer_index, "scheduled": False, "points": 0}
+    if optimizer_spec.lr_schedule.kind == "constant":
+        optimizer = build_optimizer(
+            optimizer_spec,
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
+        )
+        optimizer.init({"preflight": 0.0})
+        return {"optimizer_index": optimizer_index, "scheduled": True, "points": 1}
 
     expected_context = schedule_eval.require_schedule_context(
         schedule_eval.extract_resume_context(run_spec),
