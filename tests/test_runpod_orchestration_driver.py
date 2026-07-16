@@ -778,7 +778,7 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
 
     joined = "\n".join(transport.ssh_commands)
     assert "command -v runpodctl" in joined
-    assert "runpodctl get pod pod-123" in joined
+    assert all(text in joined for text in ("RUNPOD_API_KEY=$(tr", "runpodctl get pod pod-123"))
     watchdog = next(command for command in transport.ssh_commands if "deadman.pid" in command)
     assert 'kill -0 "$(cat "$pid_file")"' in watchdog
     assert 'runpodctl remove pod "$pod_id"' in watchdog

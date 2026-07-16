@@ -718,11 +718,12 @@ class RunPodOrchestrationDriver:
             return
         if not self._pod_id:
             raise RunPodDriverError("dead-man switch requires a RunPod pod id")
+        auth = "export RUNPOD_API_KEY=$(tr '\\0' '\\n' </proc/1/environ | sed -n 's/^RUNPOD_API_KEY=//p'); "
         self._ssh(
-            f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
+            auth + f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
         ).check("in-pod runpodctl presence and authentication")
         self._ssh(
-            build_deadman_watchdog_command(
+            auth + build_deadman_watchdog_command(
                 pod_id=self._pod_id,
                 remote_run_dir=self._remote_run_dir(bundle),
                 remote_sentinel_dir=self._remote_sentinel_dir(bundle),
