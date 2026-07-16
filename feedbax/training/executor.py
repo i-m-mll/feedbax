@@ -1587,26 +1587,26 @@ def _executor_nan_guard(
 
 
 def _nan_metric_names(metrics: Mapping[str, Any]) -> list[str]:
-    return sorted(name for name, value in metrics.items() if _tree_has_nan(value))
-
-
-def _tree_has_nan(value: Any) -> bool:
-    for leaf in jt.leaves(value, is_leaf=lambda item: item is None):
-        if _leaf_has_nan(leaf):
-            return True
-    return False
-
-
-def _leaf_has_nan(value: Any) -> bool:
-    if value is None:
-        return False
-    try:
-        array = jnp.asarray(value)
-        if not jnp.issubdtype(array.dtype, jnp.number):
-            return False
-        return bool(jax.device_get(jnp.any(jnp.isnan(array))))
-    except (TypeError, ValueError):
-        return False
+    names: list[str] = []
+    flags: list[jax.Array] = []
+    for name, value in sorted(metrics.items()):
+        leaf_flags: list[jax.Array] = []
+        for leaf in jt.leaves(value, is_leaf=lambda item: item is None):
+            if leaf is None:
+                continue
+            try:
+                array = jnp.asarray(leaf)
+            except (TypeError, ValueError):
+                continue
+            if jnp.issubdtype(array.dtype, jnp.number):
+                leaf_flags.append(jnp.any(jnp.isnan(array)))
+        if leaf_flags:
+            names.append(name)
+            flags.append(jnp.any(jnp.stack(leaf_flags)))
+    if not flags:
+        return []
+    observed = jax.device_get(jnp.stack(flags))
+    return [name for name, flag in zip(names, observed, strict=True) if flag]
 
 
 def _checkpoint_root(
