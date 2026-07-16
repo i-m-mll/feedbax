@@ -26,6 +26,10 @@ from feedbax.contracts.migrations import (
     migrate_studio_task_binding_spec,
     migrate_structured_spec_payload,
 )
+from feedbax.orchestration.events import (
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+)
 from feedbax.contracts.training import (
     LR_SCHEDULE_SPEC_SCHEMA_ID,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
@@ -417,6 +421,20 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
             {
                 "schema_id": "feedbax.manifest.mapped_metric_value",
                 "schema_version": "feedbax.manifest.mapped_metric_value.v0",
+            },
+        )
+
+    structured = default_spec_registry.resolve("StructuredMappedMetricValue")
+    assert structured.identity == STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID
+    assert structured.current_version == STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION
+    assert structured.policy is not None
+    assert structured.policy.stance == "reject"
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "StructuredMappedMetricValue",
+            {
+                "schema_id": STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+                "schema_version": f"{STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",
             },
         )
 

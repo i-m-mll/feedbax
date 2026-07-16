@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import Field, ValidationError, model_validator
 
 from feedbax.contracts.manifest import StrictModel, TrainingRunManifest
+from feedbax.contracts.metric_values import NumericBooleanJsonValue
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.worker import AxisCoordinateSpec, ProgressCoordinate
 from feedbax.orchestration.bundle import ExecutionIdentityEnvelope
@@ -103,7 +104,7 @@ class MethodTrainingTraceRecord(StrictModel):
 
     completed_batch: int = Field(ge=0)
     replica_index: int = Field(ge=0)
-    value: Any
+    value: NumericBooleanJsonValue
 
 
 class MethodTrainingTrace(StrictModel):

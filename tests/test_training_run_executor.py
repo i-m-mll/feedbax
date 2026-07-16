@@ -1039,6 +1039,7 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
             "metrics": {
                 "train_loss": {
                     "schema_id": "feedbax.manifest.mapped_metric_value",
+                    "schema_version": "feedbax.manifest.mapped_metric_value.v1",
                     "axes": [{**axis, "size": size}],
                     "value": values,
                 }
@@ -1090,6 +1091,51 @@ def test_method_trace_rejects_non_cartesian_history() -> None:
             completed_batches=1,
             replica_count=5,
         )
+
+
+def test_method_trace_transposes_named_mapped_values_by_replica() -> None:
+    declaration = _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    assert declaration is not None
+    axis = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+        "leaf_policy": "all_array_leaves",
+    }
+    trace = _method_training_trace(
+        declaration,
+        method_ref="feedbax.tests.method",
+        method_observations=[
+            {
+                "coordinate": {"completed_batches": 1},
+                "metrics": {
+                    "train_loss": {
+                        "schema_id": "feedbax.manifest.structured_mapped_metric_value",
+                        "schema_version": (
+                            "feedbax.manifest.structured_mapped_metric_value.v1"
+                        ),
+                        "axes": [axis],
+                        "value": {
+                            "accepted": [True, False],
+                            "nested": {"score": [[1.5, 2.5], [3.5, 4.5]]},
+                        },
+                    }
+                },
+            }
+        ],
+        observation_origin_batch=0,
+        completed_batches=1,
+        replica_count=2,
+    )
+
+    assert trace is not None
+    assert [record.value for record in trace.records] == [
+        {"accepted": True, "nested": {"score": [1.5, 2.5]}},
+        {"accepted": False, "nested": {"score": [3.5, 4.5]}},
+    ]
 
 
 def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:

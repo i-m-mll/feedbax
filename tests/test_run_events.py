@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import numpy as np
+from pydantic import ValidationError
 
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
@@ -18,6 +19,7 @@ from feedbax.orchestration.events import (
     RunEventEmitter,
     RunEventProtocolError,
     RunEventReader,
+    StructuredMappedMetricValue,
     format_batch_line,
     normalize_serialized_metrics,
 )
@@ -138,6 +140,103 @@ def test_metric_normalization_preserves_scalar_bytes_and_envelopes_mapped_values
         "dtype": "float64",
         "axes": [axes[0].model_dump(mode="json")],
     }
+
+
+def test_metric_normalization_preserves_named_mapped_leaf_types() -> None:
+    coordinate = ProgressCoordinate(
+        run_id="row",
+        phase="train",
+        program_step=1,
+        metrics={},
+    )
+    axis = MaterializedSlotAxisBinding(
+        axis="ensemble",
+        role="replicate",
+        size=2,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+
+    _, metrics = normalize_serialized_metrics(
+        coordinate,
+        {
+            "observation": {
+                "accepted": np.array([True, False]),
+                "counts": np.array([2, 3], dtype=np.uint32),
+                "nested": {"scores": np.array([[1.5], [2.5]])},
+            }
+        },
+        {"observation": (axis,)},
+    )
+
+    assert metrics["observation"] == {
+        "schema_id": "feedbax.manifest.structured_mapped_metric_value",
+        "schema_version": "feedbax.manifest.structured_mapped_metric_value.v1",
+        "value": {
+            "accepted": [True, False],
+            "counts": [2, 3],
+            "nested": {"scores": [[1.5], [2.5]]},
+        },
+        "axes": [axis.model_dump(mode="json")],
+    }
+
+
+def test_structured_mapped_metric_value_validates_direct_construction() -> None:
+    axis = MaterializedSlotAxisBinding(
+        axis="ensemble",
+        role="replicate",
+        size=2,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+    carrier = StructuredMappedMetricValue(
+        value={"accepted": [True, False], "nested": {"values": [2, 3.5]}},
+        axes=(axis,),
+    )
+    assert carrier.value == {
+        "accepted": [True, False],
+        "nested": {"values": [2, 3.5]},
+    }
+
+    for invalid in ("text", None, float("inf")):
+        with pytest.raises(ValidationError):
+            StructuredMappedMetricValue(value={"leaf": invalid}, axes=(axis,))
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ({}, "empty named node value"),
+        ({"nested": {}}, "empty named node value.nested"),
+        ({1: np.array([1, 2])}, "string name at value"),
+        ({"leaf": 1}, "value.leaf lacks a replica dimension"),
+        ({"leaf": np.array([1])}, "value.leaf has leading size 1; expected 2"),
+        ({"leaf": np.array(["a", "b"])}, "value.leaf has unsupported dtype"),
+        ({"leaf": np.array([1.0, np.inf])}, "value.leaf must be finite"),
+    ],
+)
+def test_metric_normalization_rejects_invalid_named_mapped_leaves(
+    value: object,
+    match: str,
+) -> None:
+    coordinate = ProgressCoordinate(run_id="row", phase="train", program_step=1)
+    axis = MaterializedSlotAxisBinding(
+        axis="ensemble",
+        role="replicate",
+        size=2,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+
+    with pytest.raises(RunEventProtocolError, match=match):
+        normalize_serialized_metrics(
+            coordinate,
+            {"observation": value},
+            {"observation": (axis,)},
+        )
 
 
 def test_metric_normalization_rejects_non_json_mapped_values() -> None:

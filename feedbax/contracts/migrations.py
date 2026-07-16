@@ -262,6 +262,8 @@ from feedbax.orchestration.state import (
 from feedbax.orchestration.events import (
     MAPPED_METRIC_VALUE_SCHEMA_ID,
     MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
 )
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
@@ -2292,6 +2294,18 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Lossless JSON metric value carrying resolved mapped-axis evidence.",
             stance="reject",
             rejected_old_versions=(f"{MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_structured_spec_migrations.py",),
+        ),
+        _family(
+            "StructuredMappedMetricValue",
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.events.StructuredMappedMetricValue",
+            emitted_by=("feedbax.training.executor",),
+            consumed_by=("method-authored training diagnostics",),
+            description="Named numeric and boolean metric leaves carrying one replica axis.",
+            stance="reject",
+            rejected_old_versions=(f"{STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",),
             required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(

@@ -61,7 +61,13 @@ from feedbax.contracts.worker import (
     ProgressCoordinate,
 )
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
-from feedbax.orchestration.events import RunEventEmitter, normalize_serialized_metrics
+from feedbax.orchestration.events import (
+    MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+    RunEventEmitter,
+    normalize_serialized_metrics,
+)
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
     ResumeSlotTransform,
@@ -1984,30 +1990,54 @@ def _method_training_trace(
         if batch in observed:
             raise TrainingRunExecutorError(f"method trace duplicates completed batch {batch}")
         payload = metrics.get(declaration.metric_payload_slot)
-        if not isinstance(payload, Mapping) or payload.get("schema_id") != (
-            "feedbax.manifest.mapped_metric_value"
-        ):
+        if not isinstance(payload, Mapping) or payload.get("schema_id") not in {
+            "feedbax.manifest.mapped_metric_value",
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+        }:
             raise TrainingRunExecutorError("method trace metric payload is not a mapped metric")
         axes = payload.get("axes")
         if not isinstance(axes, list) or len(axes) != 1:
             raise TrainingRunExecutorError("method trace metric requires one mapped replica axis")
         axis = axes[0]
-        if not isinstance(axis, Mapping) or axis.get("axis") != declaration.replica_axis:
+        if (
+            not isinstance(axis, Mapping)
+            or axis.get("axis") != declaration.replica_axis
+            or (axis.get("role"), axis.get("level"), axis.get("mode"), axis.get("array_axis"))
+            != ("replicate", 0, "mapped", 0)
+        ):
             raise TrainingRunExecutorError("method trace mapped axis does not match replica_axis")
         size = axis.get("size")
-        values = np.asarray(payload.get("value"))
+        structured = payload.get("schema_id") == STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID
+        expected_version = (
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION
+            if structured
+            else MAPPED_METRIC_VALUE_SCHEMA_VERSION
+        )
+        if payload.get("schema_version") != expected_version:
+            raise TrainingRunExecutorError("method trace metric schema version is unsupported")
+        values = payload.get("value")
         if (
             isinstance(size, bool)
             or not isinstance(size, int)
             or size != replica_count
-            or values.shape[:1] != (size,)
         ):
             raise TrainingRunExecutorError("method trace does not cover the replica axis")
+        if structured:
+            if not isinstance(values, Mapping):
+                raise TrainingRunExecutorError("structured method trace value must be named")
+            replica_values = [
+                _structured_replica_value(values, index=index, size=size) for index in range(size)
+            ]
+        else:
+            array = np.asarray(values)
+            if array.shape[:1] != (size,):
+                raise TrainingRunExecutorError("method trace does not cover the replica axis")
+            replica_values = [array[index].tolist() for index in range(size)]
         observed[batch] = [
             MethodTrainingTraceRecord(
                 completed_batch=batch,
                 replica_index=index,
-                value=values[index].tolist(),
+                value=replica_values[index],
             )
             for index in range(size)
         ]
@@ -2024,6 +2054,22 @@ def _method_training_trace(
         replica_axis=declaration.replica_axis,
         records=[record for batch in sorted(observed) for record in observed[batch]],
     )
+
+
+def _structured_replica_value(value: Mapping[str, Any], *, index: int, size: int) -> dict[str, Any]:
+    if not value:
+        raise TrainingRunExecutorError("structured method trace named nodes cannot be empty")
+    replica: dict[str, Any] = {}
+    for name, item in value.items():
+        if not isinstance(name, str):
+            raise TrainingRunExecutorError("structured method trace names must be strings")
+        if isinstance(item, Mapping):
+            replica[name] = _structured_replica_value(item, index=index, size=size)
+            continue
+        if not isinstance(item, list) or len(item) != size:
+            raise TrainingRunExecutorError("structured method trace does not cover the replica axis")
+        replica[name] = item[index]
+    return replica
 
 
 def _same_row_resume_start_batch(manifest: CheckpointTransactionManifest) -> int:
