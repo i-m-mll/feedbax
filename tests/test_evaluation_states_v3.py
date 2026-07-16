@@ -142,6 +142,23 @@ def test_v3_rejects_path_colliding_wrong_structure_by_fingerprint() -> None:
         )
 
 
+def test_v3_rejects_empty_subtree_placement_collision_by_fingerprint() -> None:
+    class Payload(NamedTuple):
+        a: object
+
+    value = np.asarray([1])
+    written = Payload(a=[[value, []]])
+    impostor = Payload(a=[[value], []])
+    data, _ = evaluation_states_container_bytes_v3(written)
+
+    with pytest.raises(EvaluationStatesContainerError, match="structure fingerprint"):
+        load_evaluation_states_container_bytes(data, structure=jt.structure(impostor))
+
+    loaded = load_evaluation_states_container_bytes(data, structure=jt.structure(written))
+    assert jt.structure(loaded) == jt.structure(written)
+    np.testing.assert_array_equal(loaded.a[0][0], value)
+
+
 def test_v3_structure_fingerprint_is_hash_seed_independent() -> None:
     script = """
 import jax.tree_util as jtu

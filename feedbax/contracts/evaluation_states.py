@@ -697,7 +697,8 @@ def _treedef_leaf_paths(structure: jtu.PyTreeDef) -> list[str]:
 
 
 def _treedef_structure_fingerprint(structure: jtu.PyTreeDef) -> str:
-    nodes: list[dict[str, str]] = []
+    """Hash each node's type, stable aux representation, and arity in preorder."""
+    nodes: list[dict[str, str | int]] = []
 
     def walk(node: jtu.PyTreeDef) -> None:
         node_data = node.node_data()
@@ -707,7 +708,8 @@ def _treedef_structure_fingerprint(structure: jtu.PyTreeDef) -> str:
             node_class, aux = node_data
             node_type = f"{node_class.__module__}.{node_class.__qualname__}"
             aux_data = _stable_aux_repr(aux)
-        nodes.append({"node_type": node_type, "aux_data_repr": aux_data})
+        child_count = len(node.children())
+        nodes.append({"node_type": node_type, "aux_data_repr": aux_data, "child_count": child_count})
         for child in node.children():
             walk(child)
 
@@ -716,6 +718,7 @@ def _treedef_structure_fingerprint(structure: jtu.PyTreeDef) -> str:
 
 
 def _stable_aux_repr(value: Any) -> str:
+    """Return stable aux text; address-bearing custom reprs fail safe by rejecting loads."""
     if isinstance(value, dict):
         items = sorted((_stable_aux_repr(key), _stable_aux_repr(item)) for key, item in value.items())
         return f"dict({items!r})"
