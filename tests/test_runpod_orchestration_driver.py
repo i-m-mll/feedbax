@@ -40,6 +40,7 @@ from feedbax.orchestration.drivers.runpod import (
     build_literal_path_patch_command,
     classify_pod_state,
     compute_runpod_environment_fingerprint,
+    declared_baselines,
     endpoint_classification,
     rank_datacenters_for_gpu,
 )
@@ -604,6 +605,14 @@ def test_stage_inputs_stages_and_verifies_declared_baseline(
         ),
     ]
     assert all((any("completed_training_batches" in command for command in transport.ssh_commands), any(payload.sha256 in command for command in transport.ssh_commands)))
+
+
+def test_declared_baselines_accepts_bundle_metadata(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path).model_copy(
+        update={"metadata": {"runpod_baselines": [{"checkpoint_path": "/custody", "completed_batches": 12000}]}}
+    )
+
+    assert declared_baselines(bundle)[-1].completed_batch == "12000"
 
 
 def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path) -> None:

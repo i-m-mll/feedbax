@@ -1011,6 +1011,14 @@ def declared_baselines(bundle: RunBundle) -> list[BaselineEntry]:
         payload = _registered_row_payload(row)
         if isinstance(payload, Mapping):
             entries.extend(_baseline_entries(payload, f"row:{row.row_id}"))
+    declared = bundle.metadata.get("runpod_baselines", [])
+    if not isinstance(declared, list) or any(not isinstance(item, Mapping) for item in declared):
+        raise RunPodDriverError("runpod_baselines must be a list of baseline declarations")
+    for index, item in enumerate(declared):
+        baseline = _baseline_entries(item, f"bundle:runpod_baselines:{index}")
+        if len(baseline) != 1:
+            raise RunPodDriverError("each runpod_baselines entry must declare one checkpoint")
+        entries.extend(baseline)
     return entries
 
 
