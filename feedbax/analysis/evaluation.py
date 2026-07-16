@@ -19,14 +19,16 @@ Producer contract:
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import json
+from math import prod
 from pathlib import Path
 from typing import Any, Sequence
 
 import dill as pickle
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -121,6 +123,35 @@ EVALUATION_STATES_CACHE_SCHEMA_VERSION = "feedbax.analysis.evaluation-states-cac
 _MAX_FAILURE_DIAGNOSTICS_BYTES = 16 * 1024
 
 _EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
+_EVALUATION_AUTHORING_SCHEMAS: dict[str, "EvaluationAuthoringSchema"] = {}
+
+
+@dataclass(frozen=True)
+class EvaluationAuthoringSchema:
+    """Runtime-only downstream schema enforced while evaluation matrices compile."""
+
+    schema_id: str
+    schema_version: str
+    params_model: type[BaseModel]
+    axes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        family = "evaluation authoring schema"
+        validate_schema_identity(self.schema_id, family=family)
+        validate_schema_version(self.schema_version, family=family)
+        if not self.schema_version.startswith(f"{self.schema_id}.v"):
+            raise ValueError("authoring schema_version must be versioned under schema_id")
+        if not isinstance(self.params_model, type) or not issubclass(self.params_model, BaseModel):
+            raise TypeError("authoring params_model must be a Pydantic BaseModel type")
+        if any(
+            not isinstance(name, str)
+            or not name
+            or not values
+            or any(not isinstance(value, str) or not value for value in values)
+            or len(values) != len(set(values))
+            for name, values in self.axes.items()
+        ):
+            raise ValueError("authoring axes require non-empty unique string value IDs")
 
 
 class EvaluationRunMatrixSpec(StrictModel):
@@ -211,12 +242,48 @@ def compile_evaluation_run_matrix(
             )
             for coordinate in expand_matrix_axes(matrix.axes)
         ]
-    return RowMatrixSpec[EvaluationRunSpec](
+    compiled = RowMatrixSpec[EvaluationRunSpec](
         base=base,
         rows=rows,
         sources=matrix.sources,
         derivations=matrix.derivations,
     )
+    _validate_evaluation_authoring(matrix, compiled, repo_root=repo_root)
+    return compiled
+
+
+def _validate_evaluation_authoring(
+    matrix: EvaluationRunMatrixSpec,
+    compiled: RowMatrixSpec[EvaluationRunSpec],
+    *,
+    repo_root: Path | str | None,
+) -> None:
+    evaluation_type = compiled.base.evaluation_type
+    schema = _EVALUATION_AUTHORING_SCHEMAS.get(evaluation_type)
+    if schema is None:
+        return
+    actual_axes = {axis.id: tuple(value.id for value in axis.values) for axis in matrix.axes}
+    if actual_axes != dict(schema.axes):
+        raise ValueError(
+            f"evaluation authoring axes for {evaluation_type!r} do not match "
+            f"schema {schema.schema_version!r}"
+        )
+    rows = materialize_matrix_rows(compiled, repo_root=repo_root)
+    expected_count = prod(len(values) for values in schema.axes.values())
+    if len(rows) != expected_count:
+        raise ValueError(
+            f"evaluation authoring grid for {evaluation_type!r} is incomplete: "
+            f"expected {expected_count} rows, got {len(rows)}"
+        )
+    for row in rows:
+        try:
+            schema.params_model.model_validate(copy.deepcopy(row.payload.params))
+        except Exception as exc:
+            raise ValueError(
+                f"evaluation authoring params for row {row.row_id!r} do not match "
+                f"schema {schema.schema_version!r}: {exc}"
+            ) from exc
+
 
 def _coerce_evaluation_run_matrix_spec(
     spec: EvaluationRunMatrixSpec | Mapping[str, Any],
@@ -283,10 +350,7 @@ def execute_evaluation_run_matrix(
         compiled = compile_evaluation_run_matrix(matrix, repo_root=repo_root)
         materialized_rows = materialize_matrix_rows(compiled, repo_root=repo_root)
         _validate_matrix_staged_parent_references(matrix, materialized_rows)
-        rows = [
-            (row.row_id, row.payload.model_dump(mode="python"))
-            for row in materialized_rows
-        ]
+        rows = [(row.row_id, row.payload.model_dump(mode="python")) for row in materialized_rows]
         execution_context = _resolve_matrix_staged_parents(
             matrix,
             parent_manifest_root=parent_manifest_root,
@@ -298,17 +362,14 @@ def execute_evaluation_run_matrix(
             matrix_metadata["axis_expansion"] = {
                 "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
                 "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
-                "authored_matrix_sha256": sha256_bytes(
-                    canonical_json_bytes(executable_spec)
-                ),
+                "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(executable_spec)),
                 "pinned_base": matrix.base.model_dump(mode="json"),
                 "ordered_axes": [
                     {"axis_id": axis.id, "value_ids": [value.id for value in axis.values]}
                     for axis in matrix.axes
                 ],
                 "coordinates": [
-                    {"row_id": row.row_id, **row.metadata["axis_product"]}
-                    for row in compiled.rows
+                    {"row_id": row.row_id, **row.metadata["axis_product"]} for row in compiled.rows
                 ],
                 "canonical_row_order": [row.row_id for row in materialized_rows],
                 "canonical_payload_sha256": {
@@ -606,6 +667,26 @@ def register_evaluation_recipe(
     _EVALUATION_RECIPES[evaluation_type] = validate_evaluation_recipe(evaluation_type, recipe)
 
 
+def register_evaluation_authoring_schema(
+    evaluation_type: str,
+    schema: EvaluationAuthoringSchema,
+    *,
+    replace: bool = False,
+) -> None:
+    """Register an experiment-owned compile-time schema without emitting it."""
+    evaluation_type = validate_namespaced_type_key(evaluation_type, field="evaluation_type")
+    if type(schema) is not EvaluationAuthoringSchema:
+        raise TypeError("schema must be an exact EvaluationAuthoringSchema instance")
+    if evaluation_type in _EVALUATION_AUTHORING_SCHEMAS and not replace:
+        raise ValueError(f"Evaluation authoring schema {evaluation_type!r} is already registered")
+    _EVALUATION_AUTHORING_SCHEMAS[evaluation_type] = schema
+
+
+def unregister_evaluation_authoring_schema(evaluation_type: str) -> None:
+    """Remove a runtime-only evaluation authoring schema."""
+    _EVALUATION_AUTHORING_SCHEMAS.pop(evaluation_type, None)
+
+
 def unregister_evaluation_recipe(evaluation_type: str) -> None:
     """Remove a previously registered evaluation recipe."""
     _EVALUATION_RECIPES.pop(evaluation_type, None)
@@ -628,7 +709,9 @@ def get_evaluation_recipe(evaluation_type: str) -> EvaluationRecipe:
         ) from exc
 
 
-def coerce_evaluation_run_spec(value: EvaluationRunSpec | Mapping[str, Any] | Path | str) -> EvaluationRunSpec:
+def coerce_evaluation_run_spec(
+    value: EvaluationRunSpec | Mapping[str, Any] | Path | str,
+) -> EvaluationRunSpec:
     """Load an ``EvaluationRunSpec`` from an object, mapping, or JSON file path."""
     if isinstance(value, EvaluationRunSpec):
         return value
@@ -665,11 +748,7 @@ def execute_evaluation_run_spec(
     )
     states_path.parent.mkdir(parents=True, exist_ok=True)
 
-    prov = (
-        provenance.model_copy(deep=True)
-        if provenance is not None
-        else collect_git_provenance()
-    )
+    prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
     staged_prerequisites = run_spec.params.get("staged_prerequisites")
     if staged_prerequisites is None:
         staged_prerequisites = {}
@@ -707,9 +786,7 @@ def execute_evaluation_run_spec(
             previous_manifest = _load_completed_evaluation_manifest(manifest_path, manifest_id)
             summary_metrics = dict(previous_manifest.summary_metrics) if previous_manifest else {}
             artifacts = list(previous_manifest.artifacts) if previous_manifest else []
-            result_metadata = (
-                dict(previous_manifest.metadata) if previous_manifest else {}
-            )
+            result_metadata = dict(previous_manifest.metadata) if previous_manifest else {}
             result = EvaluationRecipeResult(
                 states=states,
                 summary_metrics=summary_metrics,
@@ -815,8 +892,7 @@ def _states_custody_for_spec(run_spec: EvaluationRunSpec) -> str:
     raw = run_spec.params.get("states_custody", "cache")
     if raw not in {"cache", "durable"}:
         raise ValueError(
-            "EvaluationRunSpec params states_custody must be 'cache' or 'durable'; "
-            f"got {raw!r}"
+            f"EvaluationRunSpec params states_custody must be 'cache' or 'durable'; got {raw!r}"
         )
     return str(raw)
 
