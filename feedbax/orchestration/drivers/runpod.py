@@ -699,7 +699,7 @@ class RunPodOrchestrationDriver:
         if not self._pod_id:
             raise RunPodDriverError("dead-man switch requires a RunPod pod id")
         self._ssh(
-            "command -v runpodctl >/dev/null && runpodctl user --output json >/dev/null"
+            f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
         ).check("in-pod runpodctl presence and authentication")
         self._ssh(
             build_deadman_watchdog_command(
