@@ -690,6 +690,7 @@ def execute_training_run_spec(
     if loaded_resume_checkpoint is not None:
         checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
+    method_observations: list[dict[str, Any]] = []
     total_batches = int(run_spec.training_config.n_batches or 0)
     started_at = (
         time.perf_counter()
@@ -733,6 +734,15 @@ def execute_training_run_spec(
                     slot_axis_bindings=slot_axis_bindings,
                 )
             ),
+            method_observation_callback=(
+                (
+                    lambda coordinate: method_observations.append(
+                        _history_event(coordinate, slot_axis_bindings)
+                    )
+                )
+                if method_contract.training_diagnostics is not None
+                else None
+            ),
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
                 custody_root=custody_root,
@@ -769,6 +779,7 @@ def execute_training_run_spec(
             checkpoint_writes=checkpoint_writes,
             segment_start_batch=segment_start_batch,
             history_events=history_events,
+            method_observations=method_observations,
             execution_context=producer_context,
             slot_axis_bindings=slot_axis_bindings,
         )
@@ -857,6 +868,7 @@ def execute_training_run_spec(
             checkpoint_writes=checkpoint_writes,
             segment_start_batch=segment_start_batch,
             history_events=history_events,
+            method_observations=method_observations,
             execution_context=producer_context,
             slot_axis_bindings=slot_axis_bindings,
         )
@@ -1826,6 +1838,7 @@ def _build_training_diagnostics(
     checkpoint_writes: Sequence[CheckpointWriteResult],
     segment_start_batch: int,
     history_events: Sequence[Mapping[str, Any]],
+    method_observations: Sequence[Mapping[str, Any]],
     execution_context: NativeExecutionProducerContext | None,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> TrainingDiagnostics:

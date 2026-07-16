@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import optax
 from pydantic import BaseModel, ConfigDict
 
+import feedbax.training.executor as training_executor
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
@@ -882,6 +883,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
 
 def test_method_diagnostics_progress_observes_completed_batch_without_custody_leak(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spec = _mapped_run_spec()
     spec.worker_execution.method_contract.training_diagnostics = MethodTrainingDiagnosticsSpec(
@@ -896,6 +898,18 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     spec.checkpoint_progress.checkpoint_interval = 3
     spec.checkpoint_progress.progress_interval = 3
     callback_events: list[dict[str, object]] = []
+    method_observations: list[dict[str, object]] = []
+    build_diagnostics = training_executor._build_training_diagnostics
+
+    def capture_method_observations(**kwargs):
+        method_observations.extend(kwargs["method_observations"])
+        return build_diagnostics(**kwargs)
+
+    monkeypatch.setattr(
+        training_executor,
+        "_build_training_diagnostics",
+        capture_method_observations,
+    )
 
     result = execute_training_run_spec(
         spec,
@@ -916,6 +930,15 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     ]
     assert [event["coordinate"]["program_step"] for event in result.history_events] == [
         2,
+        4,
+    ]
+    assert [
+        event["coordinate"]["completed_batches"] for event in method_observations
+    ] == [11, 12, 13, 14]
+    assert [event["coordinate"]["program_step"] for event in method_observations] == [
+        1,
+        2,
+        3,
         4,
     ]
     assert all(
@@ -2586,7 +2609,10 @@ def test_authored_intervals_drive_multi_update_phase_and_terminal_remainder(
     assert int(result.final_slots["batch_counter"]) == total_updates
 
 
-def test_authored_cadence_uses_completed_batches_not_program_step(tmp_path: Path) -> None:
+def test_authored_cadence_uses_completed_batches_not_program_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry, _program = _interval_registry(total_updates=4)
     base_spec = _run_spec()
     spec = base_spec.model_copy(
@@ -2598,6 +2624,29 @@ def test_authored_cadence_uses_completed_batches_not_program_step(tmp_path: Path
     )
     initial_slots = _initial_slots(arrays=True)
     initial_slots["batch_counter"] = jnp.array(10, dtype=jnp.int32)
+    method_observations: list[dict[str, object]] = []
+    observation_callbacks: list[object] = []
+    build_diagnostics = training_executor._build_training_diagnostics
+    run_phase_program = training_executor.PhaseProgramExecutor.run
+
+    def capture_method_observations(**kwargs):
+        method_observations.extend(kwargs["method_observations"])
+        return build_diagnostics(**kwargs)
+
+    def capture_observation_callback(executor, *args, **kwargs):
+        observation_callbacks.append(kwargs["method_observation_callback"])
+        return run_phase_program(executor, *args, **kwargs)
+
+    monkeypatch.setattr(
+        training_executor,
+        "_build_training_diagnostics",
+        capture_method_observations,
+    )
+    monkeypatch.setattr(
+        training_executor.PhaseProgramExecutor,
+        "run",
+        capture_observation_callback,
+    )
 
     result = execute_training_run_spec(
         spec,
@@ -2616,6 +2665,8 @@ def test_authored_cadence_uses_completed_batches_not_program_step(tmp_path: Path
         for write in result.checkpoint_writes
     ] == [(12, 2), (14, 4)]
     assert [event["coordinate"]["program_step"] for event in result.history_events] == [2, 4]
+    assert method_observations == []
+    assert observation_callbacks == [None]
     assert int(result.final_slots["batch_counter"]) == 14
 
 
