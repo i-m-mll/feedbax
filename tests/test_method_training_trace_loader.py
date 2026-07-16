@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.contracts.manifest import TrainingRunManifest, spec_payload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -66,6 +67,8 @@ def _stored_trace(
         payload["method_trace"]["trace_schema_version"] = "unsupported"
     elif corruption == "provenance":
         payload["method_trace"]["measurement_basis"] = "different"
+    elif corruption == "value":
+        records[0]["value"] = "unsupported"
     provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
     artifact = provider.store_bytes(
         json.dumps(payload).encode(),
@@ -104,6 +107,7 @@ def test_load_method_training_trace_round_trips_governed_payload(tmp_path: Path)
         ("out_of_range", "out_of_range"),
         ("schema", "schema"),
         ("provenance", "provenance"),
+        ("value", "schema"),
     ],
 )
 def test_load_method_training_trace_rejects_payload_corruption(
@@ -138,3 +142,78 @@ def test_load_method_training_trace_rejects_truncated_custody(tmp_path: Path) ->
         load_method_training_trace(manifest, provider)
 
     assert exc_info.value.kind == "truncated"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "text", b"bytes", complex(1, 2), float("inf"), {1: True}],
+)
+def test_method_trace_record_rejects_non_numeric_boolean_json(value: object) -> None:
+    with pytest.raises(ValidationError):
+        MethodTrainingTraceRecord(completed_batch=1, replica_index=0, value=value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_json"),
+    [
+        (True, '{"completed_batch":1,"replica_index":0,"value":true}'),
+        (3, '{"completed_batch":1,"replica_index":0,"value":3}'),
+        (1.5, '{"completed_batch":1,"replica_index":0,"value":1.5}'),
+        (
+            {"accepted": True, "values": [2, 3.5]},
+            (
+                '{"completed_batch":1,"replica_index":0,'
+                '"value":{"accepted":true,"values":[2,3.5]}}'
+            ),
+        ),
+    ],
+)
+def test_method_trace_record_existing_valid_v3_bytes_are_unchanged(
+    value: object,
+    expected_json: str,
+) -> None:
+    record = MethodTrainingTraceRecord(completed_batch=1, replica_index=0, value=value)
+
+    assert record.model_dump_json() == expected_json
+
+
+def test_training_diagnostics_v3_existing_structured_value_bytes_are_unchanged() -> None:
+    trace = MethodTrainingTrace(
+        method_ref="m",
+        trace_schema_id="s",
+        trace_schema_version="s.v1",
+        measurement_basis="basis",
+        metric_payload_slot="slot",
+        replica_axis="replica",
+        records=[
+            MethodTrainingTraceRecord(
+                completed_batch=1,
+                replica_index=0,
+                value={"accepted": True, "values": [2, 3.5]},
+            )
+        ],
+    )
+    diagnostics = TrainingDiagnostics(
+        schema_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+        manifest_id="manifest",
+        run_id="run",
+        terminal_status="completed",
+        completed_batches=1,
+        segment_completed_batches=1,
+        cumulative_completed_batches=1,
+        method_trace=trace,
+    )
+    expected = (
+        '{"kind":"TrainingDiagnostics","schema_id":"feedbax.manifest.training_diagnostics",'
+        '"schema_version":"feedbax.manifest.training_diagnostics.v3","manifest_id":"manifest",'
+        '"run_id":"run","terminal_status":"completed","completed_batches":1,'
+        '"segment_completed_batches":1,"cumulative_completed_batches":1,"seeds":[],'
+        '"lr_trace":[],"checkpoint_coordinates":[],"checkpoint_transactions":[],'
+        '"resume_context":null,"optimizer_build_context":null,"method_trace":{'
+        '"method_ref":"m","trace_schema_id":"s","trace_schema_version":"s.v1",'
+        '"measurement_basis":"basis","metric_payload_slot":"slot","replica_axis":"replica",'
+        '"records":[{"completed_batch":1,"replica_index":0,"value":{"accepted":true,'
+        '"values":[2,3.5]}}]},"metadata":{}}'
+    )
+
+    assert diagnostics.model_dump_json() == expected
