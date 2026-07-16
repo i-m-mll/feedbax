@@ -47,6 +47,7 @@ from feedbax.orchestration.state import (
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
     TrainingDiagnostics,
 )
 from feedbax.training.interruption import CancellationDecision
@@ -1117,7 +1118,8 @@ def _is_typed_training_diagnostics(payload: Mapping[str, Any]) -> bool:
     if (
         payload.get("kind") != "TrainingDiagnostics"
         or payload.get("schema_id") != TRAINING_DIAGNOSTICS_SCHEMA_ID
-        or payload.get("schema_version") != TRAINING_DIAGNOSTICS_SCHEMA_VERSION
+        or payload.get("schema_version")
+        not in {TRAINING_DIAGNOSTICS_SCHEMA_VERSION, TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3}
     ):
         return False
     try:

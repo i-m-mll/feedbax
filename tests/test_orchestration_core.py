@@ -1124,6 +1124,7 @@ def test_conformance_discovery_prefers_typed_diagnostics_over_manifest_metrics(
         completed_batches=10,
         segment_completed_batches=10,
         cumulative_completed_batches=10,
+        schema_version="feedbax.manifest.training_diagnostics.v3",
         lr_trace=[{"step": 10, "learning_rate": 3e-4}],
         checkpoint_coordinates=[10],
         checkpoint_transactions=[
