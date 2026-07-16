@@ -742,6 +742,7 @@ def execute_training_run_spec(
             ),
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
+            include_completed_batches_in_progress=method_contract.training_diagnostics is not None,
         )
         checkpoint_writes = checkpoint_store.writes
         continuation = run_spec.checkpoint_progress.continuation
