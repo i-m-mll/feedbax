@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 from pathlib import Path
-import re
 from typing import Any, Mapping, Sequence
 
 from pydantic import Field, model_validator
@@ -16,13 +15,13 @@ from feedbax.contracts.resolved_snapshot_decoder import (
     SNAPSHOT_SCHEMA_ID,
     SNAPSHOT_SCHEMA_VERSION,
 )
+from feedbax.contracts.validation import validate_sha256
 
 
 TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID = "feedbax.manifest.training_run_execution_capsule"
 TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION = (
     f"{TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_ID}.v1"
 )
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def canonicalize_immutable_input_identities(
@@ -271,12 +270,6 @@ def training_run_execution_hash(
             "input_data_identities": input_data_identities,
         }
     )
-
-
-def validate_sha256(value: str, *, field_name: str) -> None:
-    """Reject any digest that is not lowercase 64-character hexadecimal."""
-    if not _SHA256_RE.fullmatch(value):
-        raise ValueError(f"{field_name} must be a lowercase 64-hex sha256 digest")
 
 
 def _validate_nested_hash_fields(value: Any, *, path: str) -> None:
