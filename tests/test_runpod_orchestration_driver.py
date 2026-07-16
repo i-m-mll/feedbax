@@ -314,7 +314,7 @@ def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path
 def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
-    expected_call = (
+    base_call = (
         "pod",
         "create",
         "--name",
@@ -325,26 +325,35 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
         "22/tcp,8080/http",
         "--gpu-id",
         "NVIDIA GeForce RTX 4090",
+    )
+    first_call = (
+        *base_call,
         "--data-center-ids",
         "CA-MTL-1",
+        "--env",
+        '{"RUNPOD_API_KEY": "dummy-key"}',
     )
+    expected_call = (*base_call, "--data-center-ids", "EU-CZ-1", *first_call[-2:])
+    transport.queue_runpodctl(first_call, CommandResult(1, "", "no capacity"))
     transport.queue_runpodctl(expected_call, CommandResult(0, json.dumps({"id": "pod-123"})))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
-            datacenters=("CA-MTL-1",),
+            datacenters=("CA-MTL-1", "EU-CZ-1"),
+            api_key="dummy-key",
             image="runpod/pytorch:1.0.3",
         ),
         transport=transport,
     )
 
     assert driver._create_pod(bundle) == "pod-123"
-    assert transport.runpodctl_calls == [expected_call]
+    assert transport.runpodctl_calls == [first_call, expected_call]
+    assert "dummy-key" not in repr(driver.config)
     assert "--gpuType" not in expected_call
     assert "--dataCenterId" not in expected_call
 
 
-def test_provision_timeout_removes_newly_acquired_pod(tmp_path: Path) -> None:
+def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     clock = FakeClock()
@@ -360,13 +369,19 @@ def test_provision_timeout_removes_newly_acquired_pod(tmp_path: Path) -> None:
         "--gpu-id",
         "NVIDIA RTX 2000 Ada Generation",
     )
-    transport.queue_runpodctl(create_call, CommandResult(0, json.dumps({"id": "pod-123"})))
+    transport.queue_runpodctl(create_call, CommandResult(0, json.dumps({"id": "pod-1"})))
+    transport.queue_runpodctl(create_call, CommandResult(0, json.dumps({"id": "pod-2"})))
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-2", "--output", "json"),
+        CommandResult(0, '{"createdAt":"now","ssh":{"ip":"203.0.113.2","port":22}}'),
+    )
     transport.queue_runpodctl(("user", "--output", "json"), CommandResult(0, '{"clientBalance": 10}'))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA RTX 2000 Ada Generation",
             image="runpod/pytorch:1.0.3",
             max_acquire_seconds=0,
+            max_provision_attempts=2,
             poll_seconds=1,
         ),
         transport=transport,
@@ -375,10 +390,10 @@ def test_provision_timeout_removes_newly_acquired_pod(tmp_path: Path) -> None:
     )
     assert all(check.status == "pass" for check in driver.preflight_checks(bundle))
 
-    with pytest.raises(RunPodDriverError, match="timed out waiting for RunPod SSH endpoint"):
-        driver.provision(bundle, _state(bundle))
+    record = driver.provision(bundle, _state(bundle))
 
-    assert transport.runpodctl_calls[-1] == ("remove", "pod", "pod-123")
+    assert ("remove", "pod", "pod-1") in transport.runpodctl_calls
+    assert record["pod_id"] == "pod-2"
 
 
 def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) -> None:
@@ -790,6 +805,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
         "runpod-gpu-policy-declared",
         "runpod-credentials",
         "runpod-balance-floor",
+        "runpod-deadman-credentials",
     ]
     assert all(check.status == "pass" for check in checks)
     assert transport.runpodctl_calls == [("user", "--output", "json")]

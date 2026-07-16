@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -221,10 +223,12 @@ class RunPodDriverConfig:
     ssh_port: int | None = None
     gpu_id: str | None = None
     datacenters: tuple[str, ...] = ()
+    api_key: str | None = field(default=None, repr=False)
     min_balance_usd: float = 5.0
     image: str = "runpod/pytorch:latest"
     pod_name_prefix: str = "feedbax-orchestration"
     max_acquire_seconds: float = 900.0
+    max_provision_attempts: int = 3
     poll_seconds: float = 5.0
     env_step_timeout_seconds: float = 1800.0
     failure_log_pull_timeout_seconds: float = 60.0
@@ -292,22 +296,29 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError(
                 "RunPod creation requires passing named driver PREFLIGHT checks first"
             )
-        pod_id = self._create_pod(bundle)
-        self._pod_id = pod_id
-        try:
-            pod = self._pod_get(pod_id)
-            self._endpoint = self._wait_for_endpoint(pod_id, pod)
-            self._configure_subprocess_endpoint(self._endpoint)
-            self._require_gpu_ready()
-            return self._provision_record(pod, provided_pod=False)
-        except Exception as exc:
+        for attempt in range(self.config.max_provision_attempts):
             try:
-                self.teardown(bundle, state)
-            except Exception as teardown_exc:
-                raise RunPodDriverError(
-                    f"{exc}; automatic teardown failed: {teardown_exc}"
-                ) from exc
-            raise
+                pod_id = self._create_pod(bundle)
+                self._pod_id = pod_id
+                pod = self._pod_get(pod_id)
+                self._endpoint = self._wait_for_endpoint(pod_id, pod)
+                self._configure_subprocess_endpoint(self._endpoint)
+                self._require_gpu_ready()
+                return self._provision_record(pod, provided_pod=False)
+            except Exception as exc:
+                if self._pod_id:
+                    try:
+                        self.teardown(bundle, state)
+                    except Exception as teardown_exc:
+                        raise RunPodDriverError(
+                            f"{exc}; automatic teardown failed: {teardown_exc}"
+                        ) from exc
+                self._pod_id = None
+                self._endpoint = None
+                if attempt + 1 >= self.config.max_provision_attempts:
+                    raise
+                self._sleep(self.config.poll_seconds)
+        raise AssertionError("unreachable")
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
@@ -371,6 +382,13 @@ class RunPodOrchestrationDriver:
                     else f"RunPod balance must be at least {self.config.min_balance_usd:g}"
                 ),
                 observed=balance if balance_required else "not-required-existing-target",
+            )
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-deadman-credentials",
+                not bundle.deadman_enabled or bool(self.config.api_key),
+                observed="available" if self.config.api_key else "not-required-or-missing",
             )
         )
         self._preflight_passed = all(check.status == "pass" for check in checks)
@@ -650,13 +668,15 @@ class RunPodOrchestrationDriver:
                 args.extend(["--gpu-id", self.config.gpu_id])
             if dc:
                 args.extend(["--data-center-ids", dc])
+            if self.config.api_key:
+                args.extend(["--env", json.dumps({"RUNPOD_API_KEY": self.config.api_key})])
             result = self.transport.runpodctl(*args)
             if result.returncode == 0:
                 payload = _json_object(result.stdout)
                 pod_id = str(payload.get("id") or payload.get("podId") or "")
                 if pod_id:
                     return pod_id
-            last_error = result.stderr or result.stdout
+            last_error = _redact_secret(result.stderr or result.stdout, self.config.api_key)
         raise RunPodDriverError(f"pod create failed: {last_error.strip()}")
 
     def _wait_for_endpoint(
@@ -1306,6 +1326,22 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
         raise RunPodDriverError("registered row payload schema does not match its reference")
     return dict(payload)
+
+
+def load_runpod_api_key(config_path: Path | str = "~/.runpod/config.toml") -> str | None:
+    """Load the RunPod key without exposing it through durable orchestration state."""
+    if key := os.environ.get("RUNPOD_API_KEY"):
+        return key
+    try:
+        payload = tomllib.loads(Path(config_path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    key = payload.get("apikey")
+    return str(key) if key else None
+
+
+def _redact_secret(value: str, secret: str | None) -> str:
+    return value.replace(secret, "<redacted>") if secret else value
 
 
 def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:

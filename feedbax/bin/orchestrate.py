@@ -35,7 +35,11 @@ from feedbax.orchestration import (
 )
 from feedbax.orchestration.bundle import default_orchestration_root
 from feedbax.orchestration.conformance import build_default_check_registry
-from feedbax.orchestration.drivers.runpod import RunPodDriverConfig, RunPodOrchestrationDriver
+from feedbax.orchestration.drivers.runpod import (
+    RunPodDriverConfig,
+    RunPodOrchestrationDriver,
+    load_runpod_api_key,
+)
 from feedbax.orchestration.stages import (
     BudgetExceeded,
     PreflightFailed,
@@ -344,7 +348,9 @@ def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
         ssh_port=(int(metadata["runpod_ssh_port"]) if metadata.get("runpod_ssh_port") else None),
         gpu_id=_optional_string(metadata.get("runpod_gpu_id")),
         datacenters=tuple(str(item) for item in metadata.get("runpod_datacenters", ())),
+        api_key=load_runpod_api_key(),
         min_balance_usd=float(metadata.get("runpod_min_balance_usd", 5.0)),
+        max_provision_attempts=int(metadata.get("runpod_max_provision_attempts", 3)),
         image=bundle.environment.image_id or "runpod/pytorch:latest",
         local_repos={
             str(name): str(path) for name, path in metadata.get("runpod_local_repos", {}).items()
