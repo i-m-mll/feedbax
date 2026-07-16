@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import NamedTuple
@@ -87,6 +90,7 @@ def test_v3_round_trip_is_deterministic_and_preserves_namedtuple_types() -> None
     assert data == repeated
     assert payload == repeated_payload
     assert payload.schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
+    assert payload.structure_fingerprint == repeated_payload.structure_fingerprint
     assert isinstance(loaded, Trajectory)
     assert isinstance(loaded.final_memory, Memory)
     assert isinstance(loaded.final_memory.inner, Inner)
@@ -125,6 +129,43 @@ def test_v3_requires_exact_caller_structure() -> None:
         load_evaluation_states_container_bytes(data, structure=jt.structure(renamed))
     with pytest.raises(EvaluationStatesContainerError, match="leaf count"):
         load_evaluation_states_container_bytes(data, structure=jt.structure((np.asarray(1),)))
+
+
+def test_v3_rejects_path_colliding_wrong_structure_by_fingerprint() -> None:
+    data, payload = evaluation_states_container_bytes_v3({0: np.asarray([1])})
+
+    assert type(payload).model_fields["structure_fingerprint"].is_required()
+    with pytest.raises(EvaluationStatesContainerError, match="structure fingerprint"):
+        load_evaluation_states_container_bytes(
+            data,
+            structure=jt.structure([np.asarray([1])]),
+        )
+
+
+def test_v3_structure_fingerprint_is_hash_seed_independent() -> None:
+    script = """
+import jax.tree_util as jtu
+import numpy as np
+from feedbax.contracts.evaluation_states import evaluation_states_container_bytes_v3
+class Node:
+    def __init__(self, value): self.value = value
+jtu.register_pytree_node(
+    Node,
+    lambda node: ((node.value,), frozenset({'a', 'b'})),
+    lambda _, leaves: Node(leaves[0]),
+)
+_, payload = evaluation_states_container_bytes_v3(Node(np.asarray([1])))
+print(payload.structure_fingerprint)
+"""
+    fingerprints = {
+        subprocess.check_output(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            text=True,
+        ).strip()
+        for seed in ("1", "2")
+    }
+    assert len(fingerprints) == 1
 
 
 @pytest.mark.parametrize(

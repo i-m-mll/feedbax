@@ -328,6 +328,34 @@ def test_require_durable_threads_typed_structure_provider_end_to_end(tmp_path: P
         unregister_evaluation_recipe(EVALUATION_TYPE)
 
 
+def test_require_durable_classifies_structure_provider_failure(tmp_path: Path) -> None:
+    _register_evaluation()
+    try:
+        manifest, _ = _evaluation(tmp_path, durable=True)
+
+        def fail_provider(_manifest):
+            raise RuntimeError("provider exploded")
+
+        register_analysis_recipe(
+            ANALYSIS_TYPE,
+            lambda *_args: None,
+            replace=True,
+            evaluation_states_structure=fail_provider,
+        )
+        with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
+            resolve_analysis_inputs(
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path),
+                root=tmp_path,
+            )
+
+        assert excinfo.value.diagnostic.code == "custody_unavailable"
+        assert excinfo.value.diagnostic.details["provider_failure"] == "provider exploded"
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+    finally:
+        unregister_analysis_recipe(ANALYSIS_TYPE)
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [

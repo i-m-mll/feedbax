@@ -553,7 +553,17 @@ def _load_required_durable_evaluation_states(
     structure_provider: EvaluationStatesStructureProviderProtocol | None,
 ) -> tuple[Any, AnalysisEvaluationStateSource]:
     manifest, artifact = _evaluation_states_artifact_for_durable_policy(ref, manifest)
-    structure = structure_provider(manifest) if structure_provider is not None else None
+    try:
+        structure = structure_provider(manifest) if structure_provider is not None else None
+    except Exception as exc:
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact.artifact_id,
+            message=f"Evaluation states structure provider failed: {exc}",
+            details={"provider_failure_type": type(exc).__name__, "provider_failure": str(exc)},
+            cause=exc,
+        ) from exc
     if structure is not None and not isinstance(structure, jtu.PyTreeDef):
         raise _resolution_error(
             code="custody_unavailable",

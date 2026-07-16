@@ -130,6 +130,13 @@ class EvaluationStatesContainerPayloadV3(StrictModel):
         "feedbax.manifest.evaluation_states_container.v3"
     ] = EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
     storage_backend: Literal["npz.v3"] = EVALUATION_STATES_STORAGE_BACKEND_V3
+    structure_fingerprint: str = Field(
+        description=(
+            "SHA-256 of canonical JSON for a preorder PyTreeDef walk; each node records "
+            "its module-qualified node type (or '<leaf>') and a deterministic repr of "
+            "auxiliary data with mapping/set entries sorted recursively."
+        )
+    )
     leaves: list[EvaluationStatesLeafRecord] = Field(default_factory=list)
     metadata_sha256: str | None = None
 
@@ -321,7 +328,7 @@ def evaluation_states_container_bytes_v3(
     states: Any,
 ) -> tuple[bytes, EvaluationStatesContainerPayloadV3]:
     """Serialize mixed leaves without embedding a caller-specific pytree definition."""
-    path_leaves, _ = jt.flatten_with_path(states)
+    path_leaves, treedef = jt.flatten_with_path(states)
     if not path_leaves:
         raise EvaluationStatesLeafError(
             "states_custody='durable' requires a non-empty pytree of array or "
@@ -329,6 +336,7 @@ def evaluation_states_container_bytes_v3(
         )
     arrays, leaves, metadata_bytes = _encode_mixed_leaves(path_leaves)
     payload = EvaluationStatesContainerPayloadV3(
+        structure_fingerprint=_treedef_structure_fingerprint(treedef),
         leaves=leaves,
         metadata_sha256=sha256_bytes(metadata_bytes) if metadata_bytes is not None else None,
     )
@@ -337,6 +345,8 @@ def evaluation_states_container_bytes_v3(
 
 def _treedef_is_proto_serializable(treedef: jtu.PyTreeDef) -> bool:
     """Return whether JAX's proto codec supports this pytree structure."""
+    # This match is coupled to JAX's current error wording; unknown wording re-raises so
+    # writer selection fails safe and loudly when that upstream contract changes.
     try:
         treedef.serialize_using_proto()
     except ValueError as exc:
@@ -429,7 +439,13 @@ def load_evaluation_states_container_bytes(
                     "Evaluation states container v3 leaf paths do not match caller structure: "
                     f"stored={stored_paths!r}, structure={structure_paths!r}."
                 )
-            leaves, seen = _load_v2_leaves(archive, names, payload)
+            structure_fingerprint = _treedef_structure_fingerprint(structure)
+            if structure_fingerprint != payload.structure_fingerprint:
+                raise EvaluationStatesContainerError(
+                    "Evaluation states container v3 structure fingerprint does not match "
+                    "caller structure."
+                )
+            leaves, seen = _load_v2_leaves(archive, names, payload, version_label="v3")
         else:  # pragma: no cover - _validate_payload_version raises first.
             raise UnsupportedSpecVersion(
                 f"Unsupported evaluation states container version {schema_version!r}."
@@ -468,6 +484,8 @@ def _load_v2_leaves(
     archive: zipfile.ZipFile,
     names: set[str],
     payload: EvaluationStatesContainerPayloadV2 | EvaluationStatesContainerPayloadV3,
+    *,
+    version_label: str = "v2",
 ) -> tuple[list[Any], set[str]]:
     seen = {EVALUATION_STATES_METADATA_KEY}
     metadata_by_index: dict[int, Any] = {}
@@ -475,58 +493,58 @@ def _load_v2_leaves(
     if has_metadata:
         if EVALUATION_STATES_METADATA_VALUES_KEY not in names:
             raise EvaluationStatesContainerError(
-                "Evaluation states container v2 is missing metadata values member "
+                f"Evaluation states container {version_label} is missing metadata values member "
                 f"{EVALUATION_STATES_METADATA_VALUES_KEY!r}."
             )
         metadata_bytes = archive.read(EVALUATION_STATES_METADATA_VALUES_KEY)
         seen.add(EVALUATION_STATES_METADATA_VALUES_KEY)
         if payload.metadata_sha256 is None:
             raise EvaluationStatesContainerError(
-                "Evaluation states container v2 metadata section has no SHA-256 digest."
+                f"Evaluation states container {version_label} metadata section has no SHA-256 digest."
             )
         digest = sha256_bytes(metadata_bytes)
         if digest != payload.metadata_sha256:
             raise EvaluationStatesContainerError(
-                "Evaluation states container v2 metadata section digest mismatch."
+                f"Evaluation states container {version_label} metadata section digest mismatch."
             )
         metadata_records = json.loads(metadata_bytes.decode("utf-8"))
         if not isinstance(metadata_records, list):
             raise EvaluationStatesContainerError(
-                "Evaluation states container v2 metadata section must be a list."
+                f"Evaluation states container {version_label} metadata section must be a list."
             )
         for item in metadata_records:
             if not isinstance(item, dict):
                 raise EvaluationStatesContainerError(
-                    "Evaluation states container v2 metadata entries must be objects."
+                    f"Evaluation states container {version_label} metadata entries must be objects."
                 )
             index = item.get("index")
             path = item.get("path")
             if not isinstance(index, int) or not isinstance(path, str) or "value" not in item:
                 raise EvaluationStatesContainerError(
-                    "Evaluation states container v2 metadata entry is malformed."
+                    f"Evaluation states container {version_label} metadata entry is malformed."
                 )
             if index in metadata_by_index:
                 raise EvaluationStatesContainerError(
-                    f"Evaluation states container v2 metadata duplicates leaf {index}."
+                    f"Evaluation states container {version_label} metadata duplicates leaf {index}."
                 )
             if index < 0 or index >= len(payload.leaves):
                 raise EvaluationStatesContainerError(
-                    f"Evaluation states container v2 metadata index {index} is out of range."
+                    f"Evaluation states container {version_label} metadata index {index} is out of range."
                 )
             if payload.leaves[index].path != path:
                 raise EvaluationStatesContainerError(
-                    "Evaluation states container v2 metadata path mismatch: "
+                    f"Evaluation states container {version_label} metadata path mismatch: "
                     f"index={index}, expected={payload.leaves[index].path!r}, found={path!r}."
                 )
             metadata_by_index[index] = item["value"]
     elif EVALUATION_STATES_METADATA_VALUES_KEY in names:
         raise EvaluationStatesContainerError(
-            "Evaluation states container v2 has a metadata values member but no "
+            f"Evaluation states container {version_label} has a metadata values member but no "
             "metadata leaves."
         )
     elif payload.metadata_sha256 is not None:
         raise EvaluationStatesContainerError(
-            "Evaluation states container v2 has a metadata digest but no metadata leaves."
+            f"Evaluation states container {version_label} has a metadata digest but no metadata leaves."
         )
 
     leaves: list[Any] = []
@@ -565,7 +583,7 @@ def _load_v2_leaves(
 
     if len(metadata_by_index) != sum(record.kind == "metadata" for record in payload.leaves):
         raise EvaluationStatesContainerError(
-            "Evaluation states container v2 metadata section has unreferenced entries."
+            f"Evaluation states container {version_label} metadata section has unreferenced entries."
         )
     return leaves, seen
 
@@ -676,6 +694,39 @@ def _treedef_leaf_paths(structure: jtu.PyTreeDef) -> list[str]:
             "Caller-supplied evaluation states structure cannot be flattened consistently."
         )
     return [_leaf_path(path) for path, _ in path_leaves]
+
+
+def _treedef_structure_fingerprint(structure: jtu.PyTreeDef) -> str:
+    nodes: list[dict[str, str]] = []
+
+    def walk(node: jtu.PyTreeDef) -> None:
+        node_data = node.node_data()
+        if node_data is None:
+            node_type, aux_data = "<leaf>", "None"
+        else:
+            node_class, aux = node_data
+            node_type = f"{node_class.__module__}.{node_class.__qualname__}"
+            aux_data = _stable_aux_repr(aux)
+        nodes.append({"node_type": node_type, "aux_data_repr": aux_data})
+        for child in node.children():
+            walk(child)
+
+    walk(structure)
+    return sha256_bytes(_canonical_json_bytes(nodes))
+
+
+def _stable_aux_repr(value: Any) -> str:
+    if isinstance(value, dict):
+        items = sorted((_stable_aux_repr(key), _stable_aux_repr(item)) for key, item in value.items())
+        return f"dict({items!r})"
+    if isinstance(value, (set, frozenset)):
+        return f"{type(value).__name__}({sorted(_stable_aux_repr(item) for item in value)!r})"
+    if isinstance(value, (list, tuple)):
+        items = [_stable_aux_repr(item) for item in value]
+        return f"{type(value).__name__}({items!r})"
+    if isinstance(value, type):
+        return f"type({value.__module__}.{value.__qualname__})"
+    return repr(value)
 
 
 def _array_digest(array: np.ndarray) -> str:
