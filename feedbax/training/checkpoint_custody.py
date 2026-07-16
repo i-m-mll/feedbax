@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import gzip
 import io
@@ -11,6 +12,7 @@ import os
 import pickle
 import platform
 import shutil
+import stat
 import tarfile
 import tempfile
 import uuid
@@ -496,6 +498,17 @@ class CheckpointCustodyArchiveResult:
 
 
 @dataclass(frozen=True)
+class MaterializedCheckpointCustodyArchive:
+    """Authenticated archive materialization and resolved transaction evidence."""
+
+    artifact_ref: ArtifactRef
+    archive_evidence: CheckpointCustodyArchiveEvidence
+    destination: Path
+    manifest_sha256: str
+    resolved_transaction: ResolvedCheckpointTransaction
+
+
+@dataclass(frozen=True)
 class _StructuralAbiLeafDiff:
     path: str
     field: str
@@ -749,6 +762,253 @@ def produce_checkpoint_custody_archive(
         artifact_ref=_immutable_model_snapshot(artifact),
         evidence=evidence,
     )
+
+
+def materialize_checkpoint_custody_archive(
+    artifact_provider: ImmutableArtifactBlobProvider,
+    artifact_ref: ArtifactRef,
+    destination: str | Path,
+    *,
+    expected_parent_ref: ParentRef,
+    expected_transaction_root_sha256: str,
+) -> MaterializedCheckpointCustodyArchive:
+    """Authenticate, validate, and atomically publish one canonical v1 archive."""
+    archive_bytes = artifact_provider.get_bytes(artifact_ref)
+    if artifact_ref.media_type != CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE:
+        raise CheckpointReferenceResolutionError("checkpoint archive media type mismatch")
+    raw_destination = os.fspath(destination)
+    target = Path(raw_destination)
+    if (
+        "\x00" in raw_destination
+        or not target.is_absolute()
+        or ".." in target.parts
+        or not target.name
+    ):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive destination must be an absolute canonical path"
+        )
+    parent = target.parent
+    try:
+        canonical_parent = parent.resolve(strict=True)
+    except OSError as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint archive destination parent is unavailable: {parent}"
+        ) from exc
+    if canonical_parent != parent or not parent.is_dir():
+        raise CheckpointReferenceResolutionError(
+            "checkpoint archive destination parent must be a real canonical directory"
+        )
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(f"checkpoint archive destination already exists: {target}")
+
+    staging = parent / f".{target.name}.checkpoint-archive-{uuid.uuid4().hex}"
+    os.mkdir(staging, mode=0o700)
+    staging_identity = staging.stat(follow_symlinks=False)
+    published = False
+    try:
+        document, payload_names, payload_size = _extract_checkpoint_custody_archive(
+            archive_bytes, staging
+        )
+        expected_document = {
+            "schema_id": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
+            "schema_version": CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
+            "media_type": CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+            "parent_ref": expected_parent_ref.model_dump(mode="json", exclude_none=True),
+            "transaction_root_sha256": expected_transaction_root_sha256,
+            "payload_member_count": len(payload_names),
+            "expanded_payload_size_bytes": payload_size,
+        }
+        if document != expected_document:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive document identity, schema, count, or size mismatch"
+            )
+        loaded_latest = load_checkpoint_latest_pointer_file(staging / LATEST_POINTER_NAME)
+        if loaded_latest.migrated:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive documents must already use current schemas"
+            )
+        latest = loaded_latest.document
+        if (
+            latest.transaction_id != expected_parent_ref.id
+            or latest.manifest_relative_path != expected_parent_ref.uri
+            or latest.manifest_sha256
+            != expected_parent_ref.metadata.get("manifest_sha256")
+            or latest.transaction_root_sha256 != expected_transaction_root_sha256
+        ):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive latest pointer is stale or selects another transaction"
+            )
+        resolved = resolve_checkpoint_custody_ref(expected_parent_ref, allowed_root=staging)
+        if resolved.migration_records:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive documents must already use current schemas"
+            )
+        manifest = resolved.manifest
+        expected_names = {
+            f"checkpoint/{LATEST_POINTER_NAME}",
+            f"checkpoint/{_canonical_archive_relative_path(expected_parent_ref.uri, context='ParentRef uri')}",
+            *(
+                f"checkpoint/{PurePosixPath(expected_parent_ref.uri).parent / _canonical_archive_relative_path(slot.relative_path, context='slot relative_path')}"
+                for slot in manifest.slots
+            ),
+        }
+        if payload_names != expected_names:
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive contains missing or unexpected governed members"
+            )
+        if (
+            resolved.parent_ref != expected_parent_ref
+            or manifest.content_integrity_digest.transaction_root_sha256
+            != expected_transaction_root_sha256
+        ):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint archive resolved transaction identity mismatch"
+            )
+        evidence = CheckpointCustodyArchiveEvidence(
+            schema_id=document["schema_id"],
+            schema_version=document["schema_version"],
+            media_type=document["media_type"],
+            parent_ref=_immutable_model_snapshot(expected_parent_ref),
+            transaction_root_sha256=expected_transaction_root_sha256,
+            payload_member_count=len(payload_names),
+            expanded_payload_size_bytes=payload_size,
+            archive_sha256=artifact_ref.sha256,
+            archive_size_bytes=artifact_ref.size_bytes,
+        )
+        result = MaterializedCheckpointCustodyArchive(
+            artifact_ref=_immutable_model_snapshot(artifact_ref),
+            archive_evidence=evidence,
+            destination=target,
+            manifest_sha256=resolved.manifest_sha256,
+            resolved_transaction=resolved,
+        )
+        _publish_directory_no_replace(staging, target)
+        published = True
+        return result
+    finally:
+        if not published:
+            try:
+                current = staging.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    stat.S_ISDIR(current.st_mode)
+                    and (current.st_dev, current.st_ino)
+                    == (staging_identity.st_dev, staging_identity.st_ino)
+                ):
+                    shutil.rmtree(staging)
+
+
+def _extract_checkpoint_custody_archive(
+    archive_bytes: bytes, staging: Path
+) -> tuple[dict[str, Any], set[str], int]:
+    """Stream canonical regular members into private staging."""
+    document: dict[str, Any] | None = None
+    names: set[str] = set()
+    folded_names: set[str] = set()
+    payload_size = 0
+    expected_offset = 0
+    try:
+        archive = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz")
+        with archive:
+            for index, member in enumerate(archive):
+                name = _canonical_archive_relative_path(member.name, context="archive member")
+                if (
+                    member.offset != expected_offset
+                    or member.offset_data - member.offset != tarfile.BLOCKSIZE
+                    or member.type != tarfile.REGTYPE
+                    or member.pax_headers
+                    or getattr(member, "sparse", None)
+                    or (member.mode, member.uid, member.gid, member.mtime, member.uname, member.gname)
+                    != (0o644, 0, 0, 0, "", "")
+                    or name in names
+                    or name.casefold() in folded_names
+                ):
+                    raise CheckpointReferenceResolutionError(
+                        f"checkpoint archive member is unsafe or duplicated: {name!r}"
+                    )
+                expected_offset = member.offset_data + (
+                    (member.size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE
+                ) * tarfile.BLOCKSIZE
+                names.add(name)
+                folded_names.add(name.casefold())
+                source = archive.extractfile(member)
+                if source is None:
+                    raise CheckpointReferenceResolutionError(
+                        f"checkpoint archive member cannot be read: {name!r}"
+                    )
+                if index == 0:
+                    if name != "archive.json":
+                        raise CheckpointReferenceResolutionError(
+                            "checkpoint archive must begin with archive.json"
+                        )
+                    raw_document = source.read(member.size + 1)
+                    try:
+                        parsed = json.loads(raw_document)
+                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        raise CheckpointReferenceResolutionError(
+                            "checkpoint archive document is invalid JSON"
+                        ) from exc
+                    if not isinstance(parsed, dict) or raw_document != canonical_json_bytes(parsed):
+                        raise CheckpointReferenceResolutionError(
+                            "checkpoint archive document is not exact canonical JSON"
+                        )
+                    document = parsed
+                    continue
+                if not name.startswith("checkpoint/"):
+                    raise CheckpointReferenceResolutionError(
+                        f"checkpoint archive contains unexpected member: {name!r}"
+                    )
+                relative = PurePosixPath(name).relative_to("checkpoint")
+                output = staging.joinpath(*relative.parts)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                no_follow = getattr(os, "O_NOFOLLOW", 0)
+                if not no_follow:
+                    raise CheckpointReferenceResolutionError(
+                        "exclusive no-follow archive extraction is unsupported"
+                    )
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow
+                descriptor = os.open(output, flags, 0o600)
+                with os.fdopen(descriptor, "wb") as sink:
+                    shutil.copyfileobj(source, sink, length=1024 * 1024)
+                if output.stat(follow_symlinks=False).st_size != member.size:
+                    raise CheckpointReferenceResolutionError(
+                        f"checkpoint archive member size mismatch: {name!r}"
+                    )
+                payload_size += member.size
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint archive tar stream is invalid: {exc}"
+        ) from exc
+    if document is None:
+        raise CheckpointReferenceResolutionError("checkpoint archive document is missing")
+    names.remove("archive.json")
+    return document, names, payload_size
+
+
+def _publish_directory_no_replace(source: Path, destination: Path) -> None:
+    """Publish a directory atomically, rejecting platforms without no-replace rename."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if hasattr(libc, "renamex_np"):
+        result = libc.renamex_np(source_bytes, destination_bytes, 0x00000004)
+    elif hasattr(libc, "renameat2"):
+        result = libc.renameat2(-100, source_bytes, -100, destination_bytes, 1)
+    else:
+        raise CheckpointReferenceResolutionError(
+            "atomic no-replace directory publication is unsupported on this platform"
+        )
+    if result != 0:
+        error = ctypes.get_errno()
+        if error == getattr(os, "EEXIST", 17):
+            raise FileExistsError(
+                f"checkpoint archive destination won publication race: {destination}"
+            )
+        raise CheckpointReferenceResolutionError(
+            f"atomic no-replace directory publication failed: {os.strerror(error)}"
+        )
 
 
 def _canonical_archive_relative_path(value: str | None, *, context: str) -> str:

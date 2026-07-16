@@ -9,12 +9,14 @@ import pytest
 from pydantic import ValidationError
 
 import feedbax.training.checkpoint_custody as custody
+from feedbax.contracts.checkpoints import TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training import (
     CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
     CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
     CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
     CheckpointReferenceResolutionError,
+    materialize_checkpoint_custody_archive,
     produce_checkpoint_custody_archive,
 )
 from tests.test_checkpoint_custody import (
@@ -171,3 +173,319 @@ def test_checkpoint_custody_archive_rejects_blob_change_before_store(
             ref, allowed_root=result.root, artifact_provider=provider
         )
     assert not provider.root.exists()
+
+
+def _produce(tmp_path: Path):
+    result, ref, provider = _setup(tmp_path)
+    produced = produce_checkpoint_custody_archive(
+        ref, allowed_root=result.root, artifact_provider=provider
+    )
+    transaction_root = result.manifest.content_integrity_digest.transaction_root_sha256
+    return result, ref, provider, produced, transaction_root
+
+
+def _materialize(tmp_path: Path):
+    result, ref, provider, produced, transaction_root = _produce(tmp_path)
+    destination = tmp_path / "materialized"
+    materialized = materialize_checkpoint_custody_archive(
+        provider,
+        produced.artifact_ref,
+        destination,
+        expected_parent_ref=ref,
+        expected_transaction_root_sha256=transaction_root,
+    )
+    return result, ref, provider, produced, materialized, destination
+
+
+def test_materialize_checkpoint_custody_archive_round_trip(tmp_path: Path) -> None:
+    result, ref, _, produced, materialized, destination = _materialize(tmp_path)
+
+    assert destination.joinpath("latest.json").read_bytes() == result.latest_pointer_path.read_bytes()
+    assert destination.joinpath(ref.uri).read_bytes() == result.manifest_path.read_bytes()
+    assert materialized.artifact_ref == produced.artifact_ref
+    assert materialized.archive_evidence == produced.evidence
+    assert materialized.destination == destination
+    assert materialized.manifest_sha256 == ref.metadata["manifest_sha256"]
+    assert materialized.resolved_transaction.parent_ref == ref
+    with pytest.raises(ValidationError):
+        materialized.resolved_transaction.parent_ref.id = "changed"
+    with pytest.raises(TypeError):
+        materialized.resolved_transaction.slots["extra"] = object()
+
+
+def test_materialize_authenticates_blob_before_tar_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    blob = provider._canonical_path(produced.artifact_ref.sha256)
+    blob.write_bytes(b"not the authenticated archive")
+    opened = False
+
+    def observe_open(*args: object, **kwargs: object):
+        nonlocal opened
+        opened = True
+        raise AssertionError("tar parsing must not occur")
+
+    monkeypatch.setattr(tarfile, "open", observe_open)
+    with pytest.raises(Exception, match="size mismatch|sha256 mismatch"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            produced.artifact_ref,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    assert not opened
+
+
+@pytest.mark.parametrize("destination_kind", ["directory", "file", "symlink"])
+def test_materialize_rejects_existing_destination_without_touching_it(
+    tmp_path: Path, destination_kind: str
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    destination = tmp_path / "destination"
+    foreign = tmp_path / "foreign"
+    if destination_kind == "directory":
+        destination.mkdir()
+        foreign = destination / "foreign"
+        foreign.write_text("keep")
+    elif destination_kind == "file":
+        destination.write_text("keep")
+        foreign = destination
+    else:
+        foreign.write_text("keep")
+        destination.symlink_to(foreign)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            produced.artifact_ref,
+            destination,
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    assert foreign.read_text() == "keep"
+    if destination_kind == "symlink":
+        assert destination.is_symlink()
+    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+
+
+def test_materialize_preserves_publication_race_winner_and_cleans_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    destination = tmp_path / "destination"
+
+    def lose_publication_race(source: Path, target: Path) -> None:
+        assert source.parent == target.parent
+        target.mkdir()
+        target.joinpath("winner").write_text("foreign")
+        raise FileExistsError("destination won publication race")
+
+    monkeypatch.setattr(custody, "_publish_directory_no_replace", lose_publication_race)
+    with pytest.raises(FileExistsError, match="publication race"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            produced.artifact_ref,
+            destination,
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    assert destination.joinpath("winner").read_text() == "foreign"
+    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+
+
+@pytest.mark.parametrize("identity", ["parent", "transaction-root"])
+def test_materialize_rejects_expected_identity_mismatch(
+    tmp_path: Path, identity: str
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    expected_ref = ref.model_copy(update={"id": "wrong"}) if identity == "parent" else ref
+    expected_root = "0" * 64 if identity == "transaction-root" else transaction_root
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="document identity"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            produced.artifact_ref,
+            tmp_path / "destination",
+            expected_parent_ref=expected_ref,
+            expected_transaction_root_sha256=expected_root,
+        )
+    assert not (tmp_path / "destination").exists()
+    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+
+
+def _rewritten_archive(
+    provider: ImmutableArtifactBlobProvider,
+    produced: object,
+    rewrite: callable,
+):
+    original = provider.get_bytes(produced.artifact_ref)
+    members: list[tuple[tarfile.TarInfo, bytes]] = []
+    with tarfile.open(fileobj=io.BytesIO(original), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            members.append((member, archive.extractfile(member).read()))
+    rewrite(members)
+    output = io.BytesIO()
+    archive_format = tarfile.USTAR_FORMAT
+    if any(member.pax_headers for member, _ in members):
+        archive_format = tarfile.PAX_FORMAT
+    elif any(member.name.startswith("checkpoint/long-name-") for member, _ in members):
+        archive_format = tarfile.GNU_FORMAT
+    with custody.gzip.GzipFile(fileobj=output, mode="wb", filename="", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w", format=archive_format) as archive:
+            for member, data in members:
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+    return provider.store_bytes(
+        output.getvalue(),
+        role="training_checkpoint_custody_archive",
+        logical_name="rewritten.tar.gz",
+        media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["unexpected", "duplicate", "case-collision", "link", "special", "pax"]
+)
+def test_materialize_rejects_ungoverned_or_unsafe_members(
+    tmp_path: Path, mutation: str
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+
+    def rewrite(members: list[tuple[tarfile.TarInfo, bytes]]) -> None:
+        if mutation == "unexpected":
+            member = tarfile.TarInfo("checkpoint/unexpected.bin")
+            members.append((member, b"extra"))
+        elif mutation == "duplicate":
+            member = tarfile.TarInfo(members[1][0].name)
+            members.append((member, b"duplicate"))
+        elif mutation == "case-collision":
+            member = tarfile.TarInfo("checkpoint/LATEST.json")
+            members.append((member, b"extra"))
+        elif mutation == "link":
+            members[1][0].type = tarfile.SYMTYPE
+            members[1][0].linkname = "elsewhere"
+        elif mutation == "special":
+            members[1][0].type = tarfile.CHRTYPE
+        else:
+            members[1][0].pax_headers = {"comment": "forbidden"}
+
+    rewritten = _rewritten_archive(provider, produced, rewrite)
+    with pytest.raises(CheckpointReferenceResolutionError, match="unsafe|unexpected|mismatch"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            rewritten,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    assert not (tmp_path / "destination").exists()
+    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+
+
+def test_materialize_rejects_hidden_gnu_longname_header(tmp_path: Path) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    def rewrite(members: list[tuple[tarfile.TarInfo, bytes]]) -> None:
+        members[1][0].name = "checkpoint/" + "long-name-" * 12
+    rewritten = _rewritten_archive(provider, produced, rewrite)
+    with pytest.raises(CheckpointReferenceResolutionError, match="unsafe"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            rewritten,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["stale", "legacy-schema"])
+def test_materialize_rejects_stale_or_migrated_latest_pointer(
+    tmp_path: Path, mutation: str
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+
+    def rewrite(members: list[tuple[tarfile.TarInfo, bytes]]) -> None:
+        latest = json.loads(members[1][1])
+        if mutation == "stale":
+            data = members[1][1].replace(
+                latest["transaction_id"].encode(), b"tx-" + b"0" * 32
+            )
+        else:
+            latest["schema_version"] = TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2
+            latest["completed_coordinate"]["global_step"] = latest[
+                "completed_coordinate"
+            ].pop("program_step")
+            data = custody.canonical_json_bytes(latest)
+            document = json.loads(members[0][1])
+            document["expanded_payload_size_bytes"] += len(data) - len(members[1][1])
+            members[0] = (members[0][0], custody.canonical_json_bytes(document))
+        members[1] = (members[1][0], data)
+
+    rewritten = _rewritten_archive(provider, produced, rewrite)
+    with pytest.raises(CheckpointReferenceResolutionError, match="latest pointer|current schemas"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            rewritten,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    assert not (tmp_path / "destination").exists()
+    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+
+
+def test_materialize_rejects_unsupported_atomic_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    def unsupported(*args: object) -> None:
+        raise CheckpointReferenceResolutionError("atomic no-replace publication unsupported")
+
+    monkeypatch.setattr(custody, "_publish_directory_no_replace", unsupported)
+    with pytest.raises(CheckpointReferenceResolutionError, match="unsupported"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            produced.artifact_ref,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    assert not (tmp_path / "destination").exists()
+    assert not list(tmp_path.glob(".destination.checkpoint-archive-*"))
+
+
+def test_materialize_rejects_noncanonical_archive_document(tmp_path: Path) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+
+    def rewrite(members: list[tuple[tarfile.TarInfo, bytes]]) -> None:
+        document = json.loads(members[0][1])
+        members[0] = (members[0][0], json.dumps(document, indent=2).encode())
+
+    rewritten = _rewritten_archive(provider, produced, rewrite)
+    with pytest.raises(CheckpointReferenceResolutionError, match="canonical JSON"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            rewritten,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+
+
+def test_materialize_rejects_incidental_gzip_packet(tmp_path: Path) -> None:
+    _, ref, provider, _, transaction_root = _produce(tmp_path)
+    artifact = provider.store_bytes(
+        custody.gzip.compress(b"rlrmp2 checkpoint packet"),
+        role="training_checkpoint_custody_archive",
+        logical_name="packet.gz",
+        media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+    )
+    with pytest.raises(CheckpointReferenceResolutionError, match="tar stream"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            artifact,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
