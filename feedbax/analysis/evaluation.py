@@ -133,7 +133,7 @@ class EvaluationAuthoringSchema:
     schema_id: str
     schema_version: str
     params_model: type[BaseModel]
-    axes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    axis_profiles: tuple[Mapping[str, tuple[str, ...]], ...]
 
     def __post_init__(self) -> None:
         family = "evaluation authoring schema"
@@ -143,15 +143,18 @@ class EvaluationAuthoringSchema:
             raise ValueError("authoring schema_version must be versioned under schema_id")
         if not isinstance(self.params_model, type) or not issubclass(self.params_model, BaseModel):
             raise TypeError("authoring params_model must be a Pydantic BaseModel type")
-        if any(
-            not isinstance(name, str)
-            or not name
-            or not values
-            or any(not isinstance(value, str) or not value for value in values)
-            or len(values) != len(set(values))
-            for name, values in self.axes.items()
-        ):
-            raise ValueError("authoring axes require non-empty unique string value IDs")
+        if not self.axis_profiles:
+            raise ValueError("authoring schema requires at least one axis profile")
+        for profile in self.axis_profiles:
+            if not profile or any(
+                not isinstance(name, str)
+                or not name
+                or not values
+                or any(not isinstance(value, str) or not value for value in values)
+                or len(values) != len(set(values))
+                for name, values in profile.items()
+            ):
+                raise ValueError("authoring axes require non-empty unique string value IDs")
 
 
 class EvaluationRunMatrixSpec(StrictModel):
@@ -263,13 +266,16 @@ def _validate_evaluation_authoring(
     if schema is None:
         return
     actual_axes = {axis.id: tuple(value.id for value in axis.values) for axis in matrix.axes}
-    if actual_axes != dict(schema.axes):
+    profile = next(
+        (profile for profile in schema.axis_profiles if actual_axes == dict(profile)), None
+    )
+    if profile is None:
         raise ValueError(
             f"evaluation authoring axes for {evaluation_type!r} do not match "
             f"schema {schema.schema_version!r}"
         )
     rows = materialize_matrix_rows(compiled, repo_root=repo_root)
-    expected_count = prod(len(values) for values in schema.axes.values())
+    expected_count = prod(len(values) for values in profile.values())
     if len(rows) != expected_count:
         raise ValueError(
             f"evaluation authoring grid for {evaluation_type!r} is incomplete: "
@@ -670,15 +676,30 @@ def register_evaluation_recipe(
 def register_evaluation_authoring_schema(
     evaluation_type: str,
     schema: EvaluationAuthoringSchema,
-    *,
-    replace: bool = False,
 ) -> None:
-    """Register an experiment-owned compile-time schema without emitting it."""
+    """Idempotently register an experiment-owned compile-time schema."""
     evaluation_type = validate_namespaced_type_key(evaluation_type, field="evaluation_type")
     if type(schema) is not EvaluationAuthoringSchema:
         raise TypeError("schema must be an exact EvaluationAuthoringSchema instance")
-    if evaluation_type in _EVALUATION_AUTHORING_SCHEMAS and not replace:
-        raise ValueError(f"Evaluation authoring schema {evaluation_type!r} is already registered")
+    registered = _EVALUATION_AUTHORING_SCHEMAS.get(evaluation_type)
+    same_profiles = registered is not None and {
+        tuple(sorted((name, tuple(values)) for name, values in profile.items()))
+        for profile in registered.axis_profiles
+    } == {
+        tuple(sorted((name, tuple(values)) for name, values in profile.items()))
+        for profile in schema.axis_profiles
+    }
+    if registered is not None:
+        if (
+            registered.schema_id == schema.schema_id
+            and registered.schema_version == schema.schema_version
+            and registered.params_model is schema.params_model
+            and same_profiles
+        ):
+            return
+        raise ValueError(
+            f"Evaluation authoring schema {evaluation_type!r} conflicts with registered schema"
+        )
     _EVALUATION_AUTHORING_SCHEMAS[evaluation_type] = schema
 
 
