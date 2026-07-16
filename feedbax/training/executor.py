@@ -679,9 +679,12 @@ def execute_training_run_spec(
         mapping_levels=mapping_levels,
         slot_axis_bindings=slot_axis_bindings,
     )
+    prepared_slots = (
+        loaded_resume_checkpoint.slots if loaded_resume_checkpoint is not None else slots
+    )
     try:
         executor.preflight(
-            loaded_resume_checkpoint.slots if loaded_resume_checkpoint is not None else slots,
+            prepared_slots,
             run_id=resolved_run_id,
             context=executor_context,
         )
@@ -691,6 +694,17 @@ def execute_training_run_spec(
         checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
     method_observations: list[dict[str, Any]] = []
+    method_observation_origin_batch = (
+        _terminal_completed_batches(
+            program=program,
+            final_slots=prepared_slots,
+            fallback=segment_start_batch,
+            require_authority=True,
+            slot_axis_bindings=slot_axis_bindings,
+        )
+        if method_contract.training_diagnostics is not None
+        else segment_start_batch
+    )
     total_batches = int(run_spec.training_config.n_batches or 0)
     started_at = (
         time.perf_counter()
@@ -778,6 +792,7 @@ def execute_training_run_spec(
             program=program,
             checkpoint_writes=checkpoint_writes,
             segment_start_batch=segment_start_batch,
+            method_observation_origin_batch=method_observation_origin_batch,
             history_events=history_events,
             method_observations=method_observations,
             execution_context=producer_context,
@@ -867,6 +882,7 @@ def execute_training_run_spec(
             program=program,
             checkpoint_writes=checkpoint_writes,
             segment_start_batch=segment_start_batch,
+            method_observation_origin_batch=method_observation_origin_batch,
             history_events=history_events,
             method_observations=method_observations,
             execution_context=producer_context,
@@ -1837,6 +1853,7 @@ def _build_training_diagnostics(
     program: Any,
     checkpoint_writes: Sequence[CheckpointWriteResult],
     segment_start_batch: int,
+    method_observation_origin_batch: int,
     history_events: Sequence[Mapping[str, Any]],
     method_observations: Sequence[Mapping[str, Any]],
     execution_context: NativeExecutionProducerContext | None,
