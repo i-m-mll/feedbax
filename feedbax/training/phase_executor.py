@@ -361,6 +361,10 @@ class PhaseProgramExecutor:
         self._validate_interval(progress_interval, name="progress_interval")
         progress: list[ProgressCoordinate] = []
         checkpoint_context = dict(context or {})
+        mapped_kernels = {
+            kernel_ref: self._mapped_kernel(kernel)
+            for kernel_ref, kernel in self.kernels.items()
+        }
         resume_inner_step = 0
         resuming_within_phase = False
         if resume_from_barrier is not None:
@@ -409,7 +413,7 @@ class PhaseProgramExecutor:
                             f"missing callable for kernel_ref {step.kernel.kernel_ref!r}",
                         )
                     if self._active_axis is not None and self._active_axis in step.axes:
-                        updates = self._mapped_kernel(kernel)(
+                        updates = mapped_kernels[step.kernel.kernel_ref](
                             {
                                 name: current_slots[name]
                                 for name in self._mapped_slots
@@ -665,9 +669,11 @@ class PhaseProgramExecutor:
             if authority.slot in self._mapped_slots
             else [slots[authority.slot]]
         )
-        batches = [
-            self._batch_progress_value(value, authority.field_path, path) for value in values
+        resolved = [
+            self._batch_progress_field(value, authority.field_path, path) for value in values
         ]
+        observed = jax.device_get(resolved)
+        batches = [self._batch_progress_value(value, path) for value in observed]
         if any(value != batches[0] for value in batches[1:]):
             raise WorkerContractValidationError(
                 path,
@@ -683,11 +689,11 @@ class PhaseProgramExecutor:
         )
 
     @staticmethod
-    def _batch_progress_value(
+    def _batch_progress_field(
         value: Any,
         field_path: Sequence[str | int],
         path: str,
-    ) -> int:
+    ) -> Any:
         for position, segment in enumerate(field_path):
             segment_path = f"{path}/field_path/{position}"
             if isinstance(value, Mapping):
@@ -709,10 +715,12 @@ class PhaseProgramExecutor:
                     segment_path,
                     "cannot traverse non-container in batch-progress slot",
                 )
+        return value
+
+    @staticmethod
+    def _batch_progress_value(value: Any, path: str) -> int:
         try:
-            scalar = jax.device_get(value)
-            if hasattr(scalar, "item"):
-                scalar = scalar.item()
+            scalar = value.item() if hasattr(value, "item") else value
             if isinstance(scalar, bool):
                 raise TypeError("boolean is not a batch coordinate")
             batches = index(scalar)

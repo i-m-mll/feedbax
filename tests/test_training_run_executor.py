@@ -19,6 +19,7 @@ import optax
 from pydantic import BaseModel, ConfigDict
 
 import feedbax.training.executor as training_executor
+import feedbax.training.phase_executor as phase_executor
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
@@ -696,6 +697,130 @@ def test_mapped_executor_preflight_and_execution_match_manual_scalar_loop() -> N
     assert result.slots["model"].tolist() == [1, 2, 3, 4, 5]
     assert result.slots["train_loss"].tolist() == [0, 2, 4, 6, 8]
     assert result.slots["batch_counter"].tolist() == [1] * 5
+
+
+def test_mapped_executor_constructs_wrapper_once_across_changing_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _mapped_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 3
+
+    def coordinate_kernel(slots, coordinate, context):
+        del context
+        increment = coordinate.program_step + 1
+        updates = _mapped_scalar_kernel(slots, coordinate, {})
+        updates["model"] = slots["model"] + increment
+        return updates
+
+    executor, _ = _mapped_phase_executor(coordinate_kernel, spec)
+    constructed = 0
+    mapped_kernel = executor._mapped_kernel
+
+    def counted_mapped_kernel(kernel):
+        nonlocal constructed
+        constructed += 1
+        return mapped_kernel(kernel)
+
+    monkeypatch.setattr(executor, "_mapped_kernel", counted_mapped_kernel)
+    result = executor.run(_mapped_slots(), run_id="mapped-dynamic-coordinate")
+
+    assert constructed == 1
+    assert result.slots["model"].tolist() == [6, 7, 8, 9, 10]
+    assert result.slots["batch_counter"].tolist() == [3] * 5
+
+
+def test_mapped_batch_authority_uses_one_transfer_and_rejects_divergence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    slots = _mapped_slots()
+    transfers = 0
+    device_get = jax.device_get
+
+    def counted_device_get(value):
+        nonlocal transfers
+        transfers += 1
+        return device_get(value)
+
+    monkeypatch.setattr(phase_executor.jax, "device_get", counted_device_get)
+    completed = executor._completed_training_batches(
+        slots, phase_executor.ProgressCoordinate(run_id="mapped", phase="train_batch")
+    )
+    assert completed == 0
+    assert transfers == 1
+
+    transfers = 0
+    slots["batch_counter"] = jnp.arange(5, dtype=jnp.int32)
+    with pytest.raises(WorkerContractValidationError, match="authorities diverged"):
+        executor._completed_training_batches(
+            slots, phase_executor.ProgressCoordinate(run_id="mapped", phase="train_batch")
+        )
+    assert transfers == 1
+
+
+@pytest.mark.parametrize("authority", [2**100, pytest.param(None, id="supports-index")])
+def test_mapped_batch_authority_preserves_host_integer_semantics(authority) -> None:
+    class HostBatchAuthority:
+        def __index__(self) -> int:
+            return 7
+
+    expected = 7 if authority is None else authority
+    authority = HostBatchAuthority() if authority is None else authority
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    slots = _mapped_slots()
+    slots["batch_counter"] = authority
+
+    completed = executor._completed_training_batches(
+        slots, phase_executor.ProgressCoordinate(run_id="mapped", phase="train_batch")
+    )
+
+    assert completed == expected
+
+
+def test_nan_metric_names_uses_one_transfer_for_nested_mapped_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transfers = 0
+    device_get = jax.device_get
+
+    def counted_device_get(value):
+        nonlocal transfers
+        transfers += 1
+        return device_get(value)
+
+    monkeypatch.setattr(training_executor.jax, "device_get", counted_device_get)
+    observed = training_executor._nan_metric_names(
+        {
+            "healthy": {"replicas": jnp.arange(5.0), "nested": (jnp.inf, None)},
+            "replica_edge": {
+                "replicas": jnp.array([0.0, 1.0, 2.0, 3.0, jnp.nan]),
+                "label": "ignored",
+            },
+        }
+    )
+    assert observed == ["replica_edge"]
+    assert transfers == 1
+
+
+def test_native_mapped_nan_guard_fails_closed_after_batched_health_reduction(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_run_spec()
+
+    def nan_kernel(slots, coordinate, context):
+        updates = _mapped_scalar_kernel(slots, coordinate, context)
+        updates["train_loss"] = jnp.full_like(slots["train_loss"], jnp.nan)
+        return updates
+
+    with pytest.raises(FloatingPointError, match="train_loss"):
+        execute_training_run_spec(
+            spec,
+            preparation=_valid_materialized_preparation(spec),
+            registry=_mapped_test_registry(spec, nan_kernel),
+            manifest_root=tmp_path / "manifest",
+            checkpoint_root=tmp_path / "checkpoints",
+            run_id="mapped-nan-health",
+        )
 
 
 def test_native_mapped_resume_retains_prepared_runtime_slots_and_checkpoint_authority(
