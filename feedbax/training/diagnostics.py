@@ -13,7 +13,9 @@ from feedbax.orchestration.bundle import ExecutionIdentityEnvelope
 
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
-TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v2"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2 = "feedbax.manifest.training_diagnostics.v2"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3 = "feedbax.manifest.training_diagnostics.v3"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID = "feedbax.spec.native_execution_context"
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
     "feedbax.spec.native_execution_context.v1"
@@ -82,6 +84,26 @@ class CheckpointTransactionDiagnostic(StrictModel):
     coordinate: ProgressCoordinate
 
 
+class MethodTrainingTraceRecord(StrictModel):
+    """One method-authored observation at an explicit batch and replica coordinate."""
+
+    completed_batch: int = Field(ge=0)
+    replica_index: int = Field(ge=0)
+    value: Any
+
+
+class MethodTrainingTrace(StrictModel):
+    """Durable method trace with authored scientific and coordinate provenance."""
+
+    method_ref: str = Field(min_length=1)
+    trace_schema_id: str = Field(min_length=1)
+    trace_schema_version: str = Field(min_length=1)
+    measurement_basis: str = Field(min_length=1)
+    metric_payload_slot: str = Field(min_length=1)
+    replica_axis: str = Field(min_length=1)
+    records: list[MethodTrainingTraceRecord]
+
+
 class TrainingDiagnostics(StrictModel):
     """Durable diagnostics emitted by the native training executor."""
 
@@ -89,8 +111,11 @@ class TrainingDiagnostics(StrictModel):
     schema_id: Literal["feedbax.manifest.training_diagnostics"] = (
         TRAINING_DIAGNOSTICS_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.manifest.training_diagnostics.v2"] = (
-        TRAINING_DIAGNOSTICS_SCHEMA_VERSION
+    schema_version: Literal[
+        "feedbax.manifest.training_diagnostics.v2",
+        "feedbax.manifest.training_diagnostics.v3",
+    ] = (
+        TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
     )
     manifest_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
@@ -106,6 +131,7 @@ class TrainingDiagnostics(StrictModel):
     )
     resume_context: ScheduleContextDiagnostic | None = None
     optimizer_build_context: ScheduleContextDiagnostic | None = None
+    method_trace: MethodTrainingTrace | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -127,4 +153,9 @@ class TrainingDiagnostics(StrictModel):
             raise ValueError(
                 "segment_completed_batches cannot exceed the cumulative batch count"
             )
+        if (
+            self.method_trace is not None
+            and self.schema_version != TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
+        ):
+            raise ValueError("method_trace requires TrainingDiagnostics schema v3")
         return self

@@ -275,7 +275,8 @@ NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
 )
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
-TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v2"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2 = "feedbax.manifest.training_diagnostics.v2"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v3"
 CHECKPOINT_FORK_PROVENANCE_SCHEMA_ID = "feedbax.manifest.training_checkpoint.fork_provenance"
 CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.training_checkpoint.fork_provenance.v1"
@@ -981,6 +982,15 @@ def _migrate_training_diagnostics_v1_to_v2_payload(
         {**dict(sample), "axis_coordinates": None}
         for sample in migrated.get("lr_trace", ())
     ]
+    migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
+    return migrated
+
+
+def _migrate_training_diagnostics_v2_to_v3_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["method_trace"] = None
     migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION
     return migrated
 
@@ -2262,7 +2272,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "native training-run manifest."
             ),
             stance="migrate",
-            supported_old_versions=(TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,
+                TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=(f"{TRAINING_DIAGNOSTICS_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_training_run_executor.py",
@@ -4279,10 +4292,20 @@ default_spec_registry.register_migration(
     "TrainingDiagnostics",
     SchemaMigration(
         source_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,
-        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
         migration_id="training-diagnostics-v1-to-v2-axis-coordinates",
         migrate=_migrate_training_diagnostics_v1_to_v2_payload,
         description="Add optional mapped-axis coordinates to learning-rate samples.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingDiagnostics",
+    SchemaMigration(
+        source_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        migration_id="training-diagnostics-v2-to-v3-method-trace",
+        migrate=_migrate_training_diagnostics_v2_to_v3_payload,
+        description="Add an explicitly unavailable method-authored training trace.",
     ),
 )
 default_spec_registry.register_migration(

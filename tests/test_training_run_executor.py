@@ -106,6 +106,7 @@ from feedbax.training.executor import (
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
     _feedbax_owned_training_manifest_metadata,
+    _method_training_trace,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
     _realized_lr_trace,
@@ -196,6 +197,19 @@ def _mapped_run_spec() -> TrainingRunSpec:
     for step in contract.phase_program.update_steps:
         step.axes.append("ensemble")
     worker.mapping_levels = [MappingLevelSpec(axis="ensemble")]
+    return spec.model_copy(update={"worker_execution": worker})
+
+
+def _mapped_diagnostics_run_spec() -> TrainingRunSpec:
+    spec = _mapped_run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    worker.method_contract.training_diagnostics = MethodTrainingDiagnosticsSpec(
+        trace_schema_id="feedbax.tests.method_trace",
+        trace_schema_version="feedbax.tests.method_trace.v1",
+        measurement_basis="kernel_input",
+        metric_payload_slot="train_loss",
+        replica_axis="ensemble",
+    )
     return spec.model_copy(update={"worker_execution": worker})
 
 
@@ -612,8 +626,8 @@ def test_mapped_plan_rejects_tree_shape_type_and_static_drift(drift, message) ->
     assert calls == 2
 
 
-def _mapped_phase_executor(kernel):
-    spec = _mapped_run_spec()
+def _mapped_phase_executor(kernel, spec: TrainingRunSpec | None = None):
+    spec = spec or _mapped_run_spec()
     levels, bindings = resolve_execution_mapping(spec.worker_execution)
     return PhaseProgramExecutor(
         spec.worker_execution.method_contract.phase_program,
@@ -895,14 +909,7 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     expected_batches: list[int],
     expected_steps: list[int],
 ) -> None:
-    spec = _mapped_run_spec()
-    spec.worker_execution.method_contract.training_diagnostics = MethodTrainingDiagnosticsSpec(
-        trace_schema_id="tests.mapped_trace",
-        trace_schema_version="tests.mapped_trace.v1",
-        measurement_basis="kernel_input",
-        metric_payload_slot="train_loss",
-        replica_axis="ensemble",
-    )
+    spec = _mapped_diagnostics_run_spec()
     spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
     spec.training_config.n_batches = 4
     spec.checkpoint_progress.checkpoint_interval = 3
@@ -957,6 +964,110 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
         for write in result.checkpoint_writes
     )
     assert result.final_coordinate.completed_batches is None
+
+
+def test_declared_method_trace_is_durable_with_batch_replica_coordinates(tmp_path: Path) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id="mapped-trace",
+    )
+
+    assert result.history_events[0]["coordinate"]["completed_batches"] == 1
+    trace = result.diagnostics.method_trace
+    assert result.diagnostics.schema_version == "feedbax.manifest.training_diagnostics.v3"
+    assert trace is not None
+    assert trace.method_ref == spec.worker_execution.method_contract.method_ref
+    assert trace.trace_schema_id == "feedbax.tests.method_trace"
+    assert trace.measurement_basis == "kernel_input"
+    assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
+        (1, index) for index in range(5)
+    ]
+    payload = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
+    assert payload["method_trace"]["records"] == [
+        {"completed_batch": 1, "replica_index": index, "value": 0.0}
+        for index in range(5)
+    ]
+    diagnostics_ref = next(
+        item for item in result.manifest.artifacts if item.role == "training_diagnostics"
+    )
+    assert diagnostics_ref.metadata["schema_version"].endswith(".v3")
+
+
+def test_method_trace_rejects_non_cartesian_history() -> None:
+    declaration = _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    assert declaration is not None
+    axis = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+        "leaf_policy": "all_array_leaves",
+    }
+
+    def event(batch: int, values: list[float], *, size: int = 2) -> dict[str, object]:
+        return {
+            "coordinate": {"completed_batches": batch},
+            "metrics": {
+                "train_loss": {
+                    "schema_id": "feedbax.manifest.mapped_metric_value",
+                    "axes": [{**axis, "size": size}],
+                    "value": values,
+                }
+            },
+        }
+
+    with pytest.raises(TrainingRunExecutorError, match="duplicates completed batch"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            history_events=[event(1, [1.0, 2.0]), event(1, [1.0, 2.0])],
+            segment_start_batch=0,
+            completed_batches=1,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="incomplete batch coverage"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            history_events=[event(1, [1.0, 2.0])],
+            segment_start_batch=0,
+            completed_batches=2,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="outside the active segment"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            history_events=[event(3, [1.0, 2.0])],
+            segment_start_batch=0,
+            completed_batches=2,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="does not cover the replica axis"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            history_events=[event(1, [1.0, 2.0], size=3)],
+            segment_start_batch=0,
+            completed_batches=1,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="does not cover the replica axis"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            history_events=[event(1, [1.0, 2.0])],
+            segment_start_batch=0,
+            completed_batches=1,
+            replica_count=5,
+        )
 
 
 def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:
@@ -2091,6 +2202,8 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
     diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
     assert diagnostics["kind"] == "TrainingDiagnostics"
     assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v2"
+    assert "method_trace" not in diagnostics
+    assert "completed_batches" not in result.history_events[0]["coordinate"]
     assert diagnostics["manifest_id"] == manifest.id
     assert diagnostics["completed_batches"] == 1
     assert diagnostics["segment_completed_batches"] == 1
