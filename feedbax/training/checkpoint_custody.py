@@ -773,7 +773,13 @@ def materialize_checkpoint_custody_archive(
     expected_parent_ref: ParentRef,
     expected_transaction_root_sha256: str,
 ) -> MaterializedCheckpointCustodyArchive:
-    """Authenticate, validate, and atomically publish one canonical v1 archive."""
+    """Authenticate, validate, and atomically publish one canonical v1 archive.
+
+    ``expected_parent_ref`` and ``expected_transaction_root_sha256`` are trusted
+    out-of-band authorities supplied by an authenticated caller or control plane.
+    In particular, ``expected_parent_ref.metadata["manifest_sha256"]`` must never
+    be derived from the hostile archive bytes being validated.
+    """
     archive_bytes = artifact_provider.get_bytes(artifact_ref)
     if artifact_ref.media_type != CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE:
         raise CheckpointReferenceResolutionError("checkpoint archive media type mismatch")
@@ -1005,7 +1011,12 @@ def _extract_checkpoint_custody_archive(
                 descriptor = _open_archive_member(
                     staging_descriptor, relative.parts, directory_identities
                 )
-                with os.fdopen(descriptor, "wb") as sink:
+                try:
+                    sink = os.fdopen(descriptor, "wb")
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                with sink:
                     while chunk := source.read(1024 * 1024):
                         sink.write(chunk)
                     sink.flush()
@@ -1249,32 +1260,43 @@ def _open_archive_member(
                 created = os.stat(part, dir_fd=directory_descriptor, follow_symlinks=False)
                 expected_identity = _identity(created)
                 directory_identities[traversed] = expected_identity
-            next_descriptor = os.open(
+            next_descriptor: int | None = os.open(
                 part, _archive_directory_flags(), dir_fd=directory_descriptor
             )
-            opened = os.fstat(next_descriptor)
-            current = os.stat(part, dir_fd=directory_descriptor, follow_symlinks=False)
-            if (
-                not stat.S_ISDIR(current.st_mode)
-                or _identity(opened) != expected_identity
-                or _identity(current) != expected_identity
-            ):
-                os.close(next_descriptor)
-                raise CheckpointReferenceResolutionError(
-                    "checkpoint archive extraction directory identity changed"
-                )
-            os.close(directory_descriptor)
-            directory_descriptor = next_descriptor
+            try:
+                opened = os.fstat(next_descriptor)
+                current = os.stat(part, dir_fd=directory_descriptor, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(current.st_mode)
+                    or _identity(opened) != expected_identity
+                    or _identity(current) != expected_identity
+                ):
+                    raise CheckpointReferenceResolutionError(
+                        "checkpoint archive extraction directory identity changed"
+                    )
+                os.close(directory_descriptor)
+                directory_descriptor = next_descriptor
+                next_descriptor = None
+            finally:
+                if next_descriptor is not None:
+                    os.close(next_descriptor)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        descriptor = os.open(parts[-1], flags, 0o600, dir_fd=directory_descriptor)
-        identity = _identity(os.fstat(descriptor))
-        current = os.stat(parts[-1], dir_fd=directory_descriptor, follow_symlinks=False)
-        if identity != _identity(current) or not stat.S_ISREG(current.st_mode):
-            os.close(descriptor)
-            raise CheckpointReferenceResolutionError(
-                "checkpoint archive extraction file identity changed"
-            )
-        return descriptor
+        descriptor: int | None = os.open(
+            parts[-1], flags, 0o600, dir_fd=directory_descriptor
+        )
+        try:
+            identity = _identity(os.fstat(descriptor))
+            current = os.stat(parts[-1], dir_fd=directory_descriptor, follow_symlinks=False)
+            if identity != _identity(current) or not stat.S_ISREG(current.st_mode):
+                raise CheckpointReferenceResolutionError(
+                    "checkpoint archive extraction file identity changed"
+                )
+            result = descriptor
+            descriptor = None
+            return result
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
     finally:
         os.close(directory_descriptor)
 

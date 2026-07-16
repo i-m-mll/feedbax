@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tarfile
+from errno import EBADF
 from pathlib import Path
 
 import pytest
@@ -323,13 +324,29 @@ def test_materialize_preserves_publication_race_winner_and_retains_staging(
 ) -> None:
     _, ref, provider, produced, transaction_root = _produce(tmp_path)
     destination = tmp_path / "destination"
+    perform_rename = custody._perform_archive_rename_no_replace
 
-    def lose_publication_race(*args: object, **kwargs: object) -> None:
-        destination.mkdir()
-        destination.joinpath("winner").write_text("foreign")
-        raise FileExistsError("destination won publication race")
+    def create_winner_then_perform_real_rename(
+        parent_descriptor: int, source_name: str, destination_name: str
+    ) -> None:
+        os.mkdir(destination_name, dir_fd=parent_descriptor)
+        winner_descriptor = os.open(
+            f"{destination_name}/winner",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            os.write(winner_descriptor, b"foreign")
+        finally:
+            os.close(winner_descriptor)
+        perform_rename(parent_descriptor, source_name, destination_name)
 
-    monkeypatch.setattr(custody, "_publish_directory_no_replace", lose_publication_race)
+    monkeypatch.setattr(
+        custody,
+        "_perform_archive_rename_no_replace",
+        create_winner_then_perform_real_rename,
+    )
     with pytest.raises(FileExistsError, match="publication race"):
         materialize_checkpoint_custody_archive(
             provider,
@@ -340,6 +357,100 @@ def test_materialize_preserves_publication_race_winner_and_retains_staging(
         )
     assert destination.joinpath("winner").read_text() == "foreign"
     _retained_staging(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["directory-fstat", "directory-stat", "file-fstat", "file-stat"],
+)
+def test_open_archive_member_closes_unadopted_descriptor_on_validation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_point: str
+) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    original_open = os.open
+    original_close = os.close
+    original_dup = os.dup
+    original_fstat = os.fstat
+    original_stat = os.stat
+    staging_descriptor = original_open(staging, custody._archive_directory_flags())
+    observed: dict[str, int] = {}
+
+    def track_dup(descriptor: int) -> int:
+        duplicate = original_dup(descriptor)
+        observed["root"] = duplicate
+        return duplicate
+
+    def track_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        descriptor = original_open(path, flags, *args, **kwargs)
+        if path == "nested":
+            observed["directory"] = descriptor
+        elif path == "member":
+            observed["file"] = descriptor
+        return descriptor
+
+    def fail_fstat(descriptor: int):
+        if (
+            failure_point == "directory-fstat"
+            and descriptor == observed.get("directory")
+        ) or (failure_point == "file-fstat" and descriptor == observed.get("file")):
+            raise OSError(f"injected {failure_point} failure")
+        return original_fstat(descriptor)
+
+    def fail_stat(path: object, *args: object, **kwargs: object):
+        if (
+            failure_point == "directory-stat"
+            and path == "nested"
+            and "directory" in observed
+        ) or (failure_point == "file-stat" and path == "member"):
+            raise OSError(f"injected {failure_point} failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(custody.os, "dup", track_dup)
+    monkeypatch.setattr(custody.os, "open", track_open)
+    monkeypatch.setattr(custody.os, "fstat", fail_fstat)
+    monkeypatch.setattr(custody.os, "stat", fail_stat)
+    try:
+        with pytest.raises(OSError, match=f"injected {failure_point} failure"):
+            custody._open_archive_member(
+                staging_descriptor, ("nested", "member"), {}
+            )
+        for descriptor in observed.values():
+            with pytest.raises(OSError) as closed:
+                original_fstat(descriptor)
+            assert closed.value.errno == EBADF
+    finally:
+        original_close(staging_descriptor)
+
+
+def test_materialize_closes_member_descriptor_when_fdopen_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ref, provider, produced, transaction_root = _produce(tmp_path)
+    original_fdopen = os.fdopen
+    original_fstat = os.fstat
+    member_descriptor: int | None = None
+
+    def fail_fdopen(descriptor: int, *args: object, **kwargs: object):
+        nonlocal member_descriptor
+        member_descriptor = descriptor
+        raise OSError("injected fdopen failure")
+
+    monkeypatch.setattr(custody.os, "fdopen", fail_fdopen)
+    with pytest.raises(CheckpointReferenceResolutionError, match="fdopen failure"):
+        materialize_checkpoint_custody_archive(
+            provider,
+            produced.artifact_ref,
+            tmp_path / "destination",
+            expected_parent_ref=ref,
+            expected_transaction_root_sha256=transaction_root,
+        )
+    assert member_descriptor is not None
+    with pytest.raises(OSError) as closed:
+        original_fstat(member_descriptor)
+    assert closed.value.errno == EBADF
+    _retained_staging(tmp_path)
+    monkeypatch.setattr(custody.os, "fdopen", original_fdopen)
 
 
 @pytest.mark.parametrize("identity", ["parent", "transaction-root"])
