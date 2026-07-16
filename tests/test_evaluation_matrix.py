@@ -400,7 +400,7 @@ class _ExpectedZeros(BaseModel):
 class _ComparatorAuthoringParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    arm_id: Literal["extlqg", "hinf"]
+    arm_id: Literal["trained", "extlqg", "hinf"]
     target_index: int
     channels: _ChannelTaxonomy
     expected_zeros: _ExpectedZeros
@@ -410,6 +410,7 @@ def _schema_matrix(
     tmp_path: Path,
     *,
     command_dimension: str = "task.plant.command_dim",
+    arms: tuple[str, ...] = ("extlqg", "hinf"),
 ) -> EvaluationRunMatrixSpec:
     base = EvaluationRunSpec(
         evaluation_type="example.schema_validated",
@@ -426,7 +427,7 @@ def _schema_matrix(
             },
         },
     ).model_dump(mode="json", exclude_none=True)
-    base_path = tmp_path / f"schema-base-{command_dimension.rsplit('.', 1)[-1]}.json"
+    base_path = tmp_path / f"schema-base-{len(arms)}-{command_dimension.rsplit('.', 1)[-1]}.json"
     base_path.write_text(json.dumps(base), encoding="utf-8")
     return EvaluationRunMatrixSpec(
         base={
@@ -442,7 +443,7 @@ def _schema_matrix(
                         id=arm,
                         deltas=[OverridePatch(path="params.arm_id", value=arm)],
                     )
-                    for arm in ("extlqg", "hinf")
+                    for arm in arms
                 ],
             ),
             MatrixAxis(
@@ -470,7 +471,10 @@ def test_runtime_authoring_schema_validates_taxonomy_grid_without_changing_hashe
         schema_id="example.spec.evaluation.schema_validated",
         schema_version="example.spec.evaluation.schema_validated.v1",
         params_model=_ComparatorAuthoringParams,
-        axes={"arm": ("extlqg", "hinf"), "target": ("0", "1")},
+        axis_profiles=(
+            {"arm": ("extlqg", "hinf"), "target": ("0", "1")},
+            {"arm": ("trained", "extlqg", "hinf"), "target": ("0", "1")},
+        ),
     )
     register_evaluation_authoring_schema("example.schema_validated", schema)
     try:
@@ -491,6 +495,56 @@ def test_runtime_authoring_schema_validates_taxonomy_grid_without_changing_hashe
         wrong_grid.axes[1].values.pop()
         with pytest.raises(ValueError, match="do not match schema"):
             compile_evaluation_run_matrix(wrong_grid, repo_root=tmp_path)
+    finally:
+        unregister_evaluation_authoring_schema("example.schema_validated")
+
+
+@pytest.mark.parametrize("reverse_hooks", [False, True])
+def test_authoring_schema_registration_is_order_independent_and_rejects_conflicts(
+    tmp_path: Path, reverse_hooks: bool
+) -> None:
+    profiles = (
+        {"arm": ("extlqg", "hinf"), "target": ("0", "1")},
+        {"arm": ("trained", "extlqg", "hinf"), "target": ("0", "1")},
+    )
+
+    def register_hook(*, reverse_profiles: bool) -> None:
+        register_evaluation_authoring_schema(
+            "example.schema_validated",
+            EvaluationAuthoringSchema(
+                schema_id="example.spec.evaluation.schema_validated",
+                schema_version="example.spec.evaluation.schema_validated.v1",
+                params_model=_ComparatorAuthoringParams,
+                axis_profiles=profiles[::-1] if reverse_profiles else profiles,
+            ),
+        )
+
+    try:
+        for hook in (False, True) if reverse_hooks else (True, False):
+            register_hook(reverse_profiles=hook)
+        assert (
+            len(compile_evaluation_run_matrix(_schema_matrix(tmp_path), repo_root=tmp_path).rows)
+            == 4
+        )
+        assert (
+            len(
+                compile_evaluation_run_matrix(
+                    _schema_matrix(tmp_path, arms=("trained", "extlqg", "hinf")),
+                    repo_root=tmp_path,
+                ).rows
+            )
+            == 6
+        )
+        with pytest.raises(ValueError, match="conflicts with registered schema"):
+            register_evaluation_authoring_schema(
+                "example.schema_validated",
+                EvaluationAuthoringSchema(
+                    schema_id="example.spec.evaluation.schema_validated",
+                    schema_version="example.spec.evaluation.schema_validated.v1",
+                    params_model=_ComparatorAuthoringParams,
+                    axis_profiles=({"arm": ("hinf",), "target": ("0", "1")},),
+                ),
+            )
     finally:
         unregister_evaluation_authoring_schema("example.schema_validated")
 
