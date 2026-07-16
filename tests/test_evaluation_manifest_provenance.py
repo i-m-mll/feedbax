@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from feedbax.contracts import (
@@ -19,7 +21,7 @@ from feedbax.contracts.manifest import (
 )
 
 
-def _ref(kind: str, id_: str, role: str, digest: str) -> ParentRef:
+def _ref(kind: str, id_: str, role: str, digest: str, size: int = 123) -> ParentRef:
     return ParentRef(
         kind=kind,
         id=id_,
@@ -28,12 +30,12 @@ def _ref(kind: str, id_: str, role: str, digest: str) -> ParentRef:
             "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
             "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
             "manifest_sha256": digest,
-            "size_bytes": 123,
+            "size_bytes": size,
         },
     )
 
 
-def _case() -> tuple[EvaluationRunManifest, ParentRef, tuple[ParentRef, ...]]:
+def _case() -> tuple[EvaluationRunManifest, ParentRef, bytes, tuple[ParentRef, ...]]:
     training = _ref("TrainingRunManifest", "training", "training_run", "a" * 64)
     bank = _ref("EvaluationRunManifest", "bank", "evaluation_run", "b" * 64)
     spec = EvaluationRunSpec(
@@ -48,7 +50,12 @@ def _case() -> tuple[EvaluationRunManifest, ParentRef, tuple[ParentRef, ...]]:
     manifest = EvaluationRunManifest(
         id="evaluation",
         status="completed",
-        evaluation_spec=SpecPayload(kind="EvaluationRunSpec", inline=spec.model_dump(mode="json")),
+        evaluation_spec=SpecPayload(
+            kind="EvaluationRunSpec",
+            schema_id="feedbax.spec.evaluation_run",
+            schema_version="feedbax.spec.evaluation_run.v1",
+            inline=spec.model_dump(mode="json"),
+        ),
         input_training_runs=[training],
         provenance=Provenance(
             entrypoint=EntrypointRef(
@@ -57,16 +64,23 @@ def _case() -> tuple[EvaluationRunManifest, ParentRef, tuple[ParentRef, ...]]:
             parents=[training, bank],
         ),
     )
-    authority = _ref("EvaluationRunManifest", manifest.id, "evaluation_run", "c" * 64)
-    return manifest, authority, (training, bank)
+    raw_bytes = (manifest.model_dump_json(indent=2, exclude_none=True) + "\n").encode()
+    authority = _ref(
+        "EvaluationRunManifest",
+        manifest.id,
+        "evaluation_run",
+        hashlib.sha256(raw_bytes).hexdigest(),
+        len(raw_bytes),
+    )
+    return manifest, authority, raw_bytes, (training, bank)
 
 
 def test_verifier_returns_authenticated_producer_source_digest_envelope() -> None:
-    manifest, authority, sources = _case()
+    manifest, authority, raw_bytes, sources = _case()
 
     envelope = verify_evaluation_manifest_provenance(
-        manifest,
         authority,
+        raw_bytes,
         expected_producer_identity="example.rollout",
         expected_source_refs=sources,
     )
@@ -76,7 +90,11 @@ def test_verifier_returns_authenticated_producer_source_digest_envelope() -> Non
     assert envelope.source_refs == sources
     assert envelope.digest_envelope == (
         AuthenticatedManifestDigest(
-            "EvaluationRunManifest", "evaluation", "evaluation_run", "c" * 64, 123
+            "EvaluationRunManifest",
+            "evaluation",
+            "evaluation_run",
+            hashlib.sha256(raw_bytes).hexdigest(),
+            len(raw_bytes),
         ),
         AuthenticatedManifestDigest(
             "TrainingRunManifest", "training", "training_run", "a" * 64, 123
@@ -99,7 +117,7 @@ def test_verifier_returns_authenticated_producer_source_digest_envelope() -> Non
     ],
 )
 def test_verifier_fails_closed_on_envelope_drift(mutation: str, message: str) -> None:
-    manifest, authority, sources = _case()
+    manifest, authority, raw_bytes, sources = _case()
     producer = "example.rollout"
     expected = sources
     if mutation == "pending":
@@ -109,7 +127,7 @@ def test_verifier_fails_closed_on_envelope_drift(mutation: str, message: str) ->
     elif mutation == "authority":
         authority.metadata = {}
     elif mutation == "parents":
-        manifest.provenance.parents = sources[:1]
+        manifest.provenance.parents = list(sources[:1])
     elif mutation == "expected":
         expected = sources[:1]
     elif mutation == "source":
@@ -117,11 +135,33 @@ def test_verifier_fails_closed_on_envelope_drift(mutation: str, message: str) ->
         manifest.input_training_runs[0].metadata.clear()
         manifest.provenance.parents[0].metadata.clear()
         expected[0].metadata.clear()
+    if mutation in {"pending", "parents", "source"}:
+        raw_bytes = (manifest.model_dump_json(indent=2, exclude_none=True) + "\n").encode()
+        authority = _ref(
+            "EvaluationRunManifest",
+            manifest.id,
+            "evaluation_run",
+            hashlib.sha256(raw_bytes).hexdigest(),
+            len(raw_bytes),
+        )
 
     with pytest.raises(ValueError, match=message):
         verify_evaluation_manifest_provenance(
-            manifest,
             authority,
+            raw_bytes,
             expected_producer_identity=producer,
             expected_source_refs=expected,
+        )
+
+
+def test_verifier_rejects_altered_manifest_bytes_with_preserved_identity() -> None:
+    manifest, authority, raw_bytes, sources = _case()
+    altered = raw_bytes.replace(b"example.rollout", b"tamperd.rollout", 1)
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        verify_evaluation_manifest_provenance(
+            authority,
+            altered,
+            expected_producer_identity="example.rollout",
+            expected_source_refs=sources,
         )
