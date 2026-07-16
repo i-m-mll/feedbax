@@ -56,6 +56,8 @@ from feedbax.contracts.worker import (
     AxisCoordinateSpec,
     BarrierArtifactSinkSpec,
     MaterializedSlotAxisBinding,
+    MethodContractSpec,
+    MethodTrainingDiagnosticsSpec,
     ProgressCoordinate,
 )
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
@@ -91,7 +93,11 @@ from feedbax.training.preparation import (
 from feedbax.training.diagnostics import (
     CheckpointTransactionDiagnostic,
     LearningRateDiagnostic,
+    MethodTrainingTrace,
+    MethodTrainingTraceRecord,
     NativeExecutionProducerContext,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
     TrainingDiagnostics,
 )
 from feedbax.training.worker_validation import (
@@ -770,6 +776,7 @@ def execute_training_run_spec(
             segment_start_batch=segment_start_batch,
             history_events=history_events,
             execution_context=producer_context,
+            method_contract=method_contract,
             slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
@@ -858,6 +865,7 @@ def execute_training_run_spec(
             segment_start_batch=segment_start_batch,
             history_events=history_events,
             execution_context=producer_context,
+            method_contract=method_contract,
             slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
@@ -1827,6 +1835,7 @@ def _build_training_diagnostics(
     segment_start_batch: int,
     history_events: Sequence[Mapping[str, Any]],
     execution_context: NativeExecutionProducerContext | None,
+    method_contract: MethodContractSpec,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> TrainingDiagnostics:
     transactions: list[CheckpointTransactionDiagnostic] = []
@@ -1873,7 +1882,28 @@ def _build_training_diagnostics(
         history_events,
         declared=(diagnostic_input.lr_trace if diagnostic_input is not None else ()),
     )
+    declaration = method_contract.training_diagnostics
+    method_trace = _method_training_trace(
+        declaration,
+        method_ref=method_contract.method_ref,
+        history_events=history_events,
+        segment_start_batch=segment_start_batch,
+        completed_batches=cumulative_completed_batches,
+        replica_count=next(
+            (
+                axis.size
+                for axis in method_contract.axes
+                if declaration is not None and axis.name == declaration.replica_axis
+            ),
+            None,
+        ),
+    )
     return TrainingDiagnostics(
+        schema_version=(
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
+            if method_trace is not None
+            else TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
+        ),
         manifest_id=manifest_id,
         run_id=run_id,
         terminal_status=status,
@@ -1888,7 +1918,79 @@ def _build_training_diagnostics(
         optimizer_build_context=(
             diagnostic_input.optimizer_build_context if diagnostic_input is not None else None
         ),
+        method_trace=method_trace,
         metadata=(dict(diagnostic_input.metadata) if diagnostic_input is not None else {}),
+    )
+
+
+def _method_training_trace(
+    declaration: MethodTrainingDiagnosticsSpec | None,
+    *,
+    method_ref: str,
+    history_events: Sequence[Mapping[str, Any]],
+    segment_start_batch: int,
+    completed_batches: int,
+    replica_count: int | None,
+) -> MethodTrainingTrace | None:
+    if declaration is None:
+        return None
+    if replica_count is None:
+        raise TrainingRunExecutorError("method trace lacks sized replica-axis authority")
+    observed: dict[int, list[MethodTrainingTraceRecord]] = {}
+    for event in history_events:
+        coordinate = event.get("coordinate")
+        metrics = event.get("metrics")
+        if not isinstance(coordinate, Mapping) or not isinstance(metrics, Mapping):
+            raise TrainingRunExecutorError("method trace requires typed progress events")
+        batch = coordinate.get("completed_batches")
+        if isinstance(batch, bool) or not isinstance(batch, int):
+            raise TrainingRunExecutorError("method trace progress is missing completed_batches")
+        if batch <= segment_start_batch or batch > completed_batches:
+            raise TrainingRunExecutorError(
+                f"method trace completed batch {batch} is outside the active segment"
+            )
+        if batch in observed:
+            raise TrainingRunExecutorError(f"method trace duplicates completed batch {batch}")
+        payload = metrics.get(declaration.metric_payload_slot)
+        if not isinstance(payload, Mapping) or payload.get("schema_id") != (
+            "feedbax.manifest.mapped_metric_value"
+        ):
+            raise TrainingRunExecutorError("method trace metric payload is not a mapped metric")
+        axes = payload.get("axes")
+        if not isinstance(axes, list) or len(axes) != 1:
+            raise TrainingRunExecutorError("method trace metric requires one mapped replica axis")
+        axis = axes[0]
+        if not isinstance(axis, Mapping) or axis.get("axis") != declaration.replica_axis:
+            raise TrainingRunExecutorError("method trace mapped axis does not match replica_axis")
+        size = axis.get("size")
+        values = np.asarray(payload.get("value"))
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or size != replica_count
+            or values.shape[:1] != (size,)
+        ):
+            raise TrainingRunExecutorError("method trace does not cover the replica axis")
+        observed[batch] = [
+            MethodTrainingTraceRecord(
+                completed_batch=batch,
+                replica_index=index,
+                value=values[index].tolist(),
+            )
+            for index in range(size)
+        ]
+    expected = set(range(segment_start_batch + 1, completed_batches + 1))
+    if set(observed) != expected:
+        missing = sorted(expected - set(observed))
+        raise TrainingRunExecutorError(f"method trace has incomplete batch coverage: {missing!r}")
+    return MethodTrainingTrace(
+        method_ref=method_ref,
+        trace_schema_id=declaration.trace_schema_id,
+        trace_schema_version=declaration.trace_schema_version,
+        measurement_basis=declaration.measurement_basis,
+        metric_payload_slot=declaration.metric_payload_slot,
+        replica_axis=declaration.replica_axis,
+        records=[record for batch in sorted(observed) for record in observed[batch]],
     )
 
 

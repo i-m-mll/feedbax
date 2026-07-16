@@ -120,7 +120,7 @@ from feedbax.training.diagnostics import (
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
-    TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
 )
 from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
@@ -326,7 +326,7 @@ def test_execution_identity_envelope_v1_migrates_with_unavailable_provenance() -
         (
             "TrainingDiagnostics",
             TRAINING_DIAGNOSTICS_SCHEMA_ID,
-            TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
         ),
     ],
 )
@@ -367,8 +367,13 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
             "lr_trace": [{"step": 1, "learning_rate": 0.1}],
         },
     )
-    assert diagnostics.payload["schema_version"].endswith(".v2")
+    assert diagnostics.payload["schema_version"].endswith(".v3")
     assert diagnostics.payload["lr_trace"][0]["axis_coordinates"] is None
+    assert diagnostics.payload["method_trace"] is None
+    assert [record.migration_id for record in diagnostics.migration_records] == [
+        "training-diagnostics-v1-to-v2-axis-coordinates",
+        "training-diagnostics-v2-to-v3-method-trace",
+    ]
 
     provenance = default_spec_registry.migrate(
         "CheckpointForkProvenance",
