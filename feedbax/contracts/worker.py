@@ -631,6 +631,7 @@ class ProgressCoordinate(StrictModel):
     replicate_id: str | None = None
     completed_barrier: str | None = None
     schedule_origin_step: int | None = None
+    completed_batches: int | None = Field(default=None, ge=0)
     metrics: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")

@@ -64,6 +64,17 @@ def _copy_progress_coordinate(coordinate: ProgressCoordinate) -> ProgressCoordin
     return coordinate.model_copy(update={"metrics": _copy_executor_mapping(coordinate.metrics)})
 
 
+def _progress_observation(
+    coordinate: ProgressCoordinate,
+    completed_batches: int,
+    *,
+    include_completed_batches: bool,
+) -> ProgressCoordinate:
+    if include_completed_batches:
+        return coordinate.model_copy(update={"completed_batches": completed_batches})
+    return coordinate
+
+
 @dataclass
 class PhaseCheckpoint:
     """In-memory checkpoint captured at a phase barrier."""
@@ -285,6 +296,7 @@ class PhaseProgramExecutor:
         step_guard: StepGuard | None = None,
         checkpoint_interval: int | None = None,
         progress_interval: int | None = None,
+        include_completed_batches_in_progress: bool = False,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier.
 
@@ -403,10 +415,15 @@ class PhaseProgramExecutor:
                     progress_interval,
                     last_progress_batch,
                 ):
-                    progress.append(coordinate)
+                    observed_coordinate = _progress_observation(
+                        coordinate,
+                        completed_batches,
+                        include_completed_batches=include_completed_batches_in_progress,
+                    )
+                    progress.append(observed_coordinate)
                     last_progress_batch = completed_batches
                     if progress_callback is not None:
-                        progress_callback(_copy_progress_coordinate(coordinate))
+                        progress_callback(_copy_progress_coordinate(observed_coordinate))
                 if checkpoint_interval is not None and self._interval_due(
                     completed_batches,
                     checkpoint_interval,
@@ -440,10 +457,15 @@ class PhaseProgramExecutor:
                 and progress_interval is not None
                 and completed_batches != last_progress_batch
             ):
-                progress.append(coordinate)
+                observed_coordinate = _progress_observation(
+                    coordinate,
+                    completed_batches,
+                    include_completed_batches=include_completed_batches_in_progress,
+                )
+                progress.append(observed_coordinate)
                 last_progress_batch = completed_batches
                 if progress_callback is not None:
-                    progress_callback(_copy_progress_coordinate(coordinate))
+                    progress_callback(_copy_progress_coordinate(observed_coordinate))
 
             saved_checkpoint: PhaseCheckpoint | None = None
             if checkpoint_interval is None and phase.checkpoint_barrier is not None:

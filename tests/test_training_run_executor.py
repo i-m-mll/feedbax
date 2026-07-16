@@ -69,6 +69,7 @@ from feedbax.contracts.worker import (
     AxisSpec,
     BarrierArtifactSinkSpec,
     CheckpointSlotSpec,
+    MethodTrainingDiagnosticsSpec,
     MappingLevelSpec,
     MetricGuardSpec,
     PhaseTransitionSpec,
@@ -233,11 +234,15 @@ def _mapped_test_registry(spec: TrainingRunSpec, kernel) -> TrainingMethodRegist
 
 def _valid_materialized_preparation(
     spec: TrainingRunSpec,
+    *,
+    initial_batch: int = 0,
 ) -> MaterializedExecutionPreparation:
     slots = {
         slot.name: jnp.zeros((5,), dtype=jnp.float32)
         for slot in spec.worker_execution.method_contract.state_slots
     }
+    if initial_batch:
+        slots["batch_counter"] = jnp.full((5,), initial_batch, dtype=jnp.int32)
     coordinates = tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5))
     return _build_materialized_execution_preparation(
         request=ExecutionPreparationRequest(run_spec=spec),
@@ -675,10 +680,13 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         emitter.close()
 
     history = result.history_events[0]
+    assert "completed_batches" not in history["coordinate"]
     assert "train_loss" not in history["coordinate"]["metrics"]
     assert history["metrics"]["train_loss"]["value"] == [0.0] * 5
     assert result.manifest.summary_metrics["train_loss"]["axes"][0]["axis"] == "ensemble"
     checkpoint = result.checkpoint_writes[0].manifest
+    assert checkpoint.completed_coordinate.completed_batches is None
+    assert result.final_coordinate.completed_batches is None
     assert "train_loss" not in checkpoint.completed_coordinate.metrics
     assert all(slot.materialized_axes for slot in checkpoint.slots)
     events = RunEventReader(tmp_path / "events.jsonl").read_all()
@@ -870,6 +878,51 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
                     else result.final_slots
                 ),
             )
+
+
+def test_method_diagnostics_progress_observes_completed_batch_without_custody_leak(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_run_spec()
+    spec.worker_execution.method_contract.training_diagnostics = MethodTrainingDiagnosticsSpec(
+        trace_schema_id="tests.mapped_trace",
+        trace_schema_version="tests.mapped_trace.v1",
+        measurement_basis="kernel_input",
+        metric_payload_slot="train_loss",
+        replica_axis="ensemble",
+    )
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
+    spec.training_config.n_batches = 4
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = 3
+    callback_events: list[dict[str, object]] = []
+
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id="mapped-diagnostics-observation",
+        progress_callback=callback_events.append,
+    )
+
+    assert [
+        event["coordinate"]["completed_batches"] for event in result.history_events
+    ] == [12, 14]
+    assert [event["coordinate"]["completed_batches"] for event in callback_events] == [
+        12,
+        14,
+    ]
+    assert [event["coordinate"]["program_step"] for event in result.history_events] == [
+        2,
+        4,
+    ]
+    assert all(
+        write.manifest.completed_coordinate.completed_batches is None
+        for write in result.checkpoint_writes
+    )
+    assert result.final_coordinate.completed_batches is None
 
 
 def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:
