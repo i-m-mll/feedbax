@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -69,6 +70,10 @@ from feedbax.contracts.matrix_core import (
     materialize_matrix_rows,
 )
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.schema_namespace import (
+    validate_schema_identity,
+    validate_schema_version,
+)
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
@@ -113,6 +118,7 @@ class EvaluationRecipeResult:
 EvaluationRecipe = EvaluationRecipeProtocol
 STATES_SCHEMA_METADATA_KEY = "states_schema"
 EVALUATION_STATES_CACHE_SCHEMA_VERSION = "feedbax.analysis.evaluation-states-cache.v1"
+_MAX_FAILURE_DIAGNOSTICS_BYTES = 16 * 1024
 
 _EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
 
@@ -489,6 +495,46 @@ class EvaluationRecipeExecutionError(RuntimeError):
         self.__cause__ = cause
 
 
+class EvaluationFailureDiagnostics(StrictModel):
+    """Opaque schema-identified scientific evidence for a failed recipe."""
+
+    schema_id: str
+    schema_version: str
+    values: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _validate_payload(self) -> "EvaluationFailureDiagnostics":
+        validate_schema_identity(self.schema_id, family="evaluation failure diagnostics")
+        validate_schema_version(self.schema_version, family="evaluation failure diagnostics")
+        try:
+            encoded = json.dumps(
+                self.model_dump(mode="python"),
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("evaluation failure diagnostics must be finite JSON") from exc
+        if len(encoded) > _MAX_FAILURE_DIAGNOSTICS_BYTES:
+            raise ValueError("evaluation failure diagnostics exceed the size limit")
+        return self
+
+
+class EvaluationRecipeDiagnosticError(RuntimeError):
+    """Recipe failure carrying validated opaque scientific diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        diagnostics: EvaluationFailureDiagnostics | Mapping[str, Any],
+    ):
+        super().__init__(message)
+        try:
+            self.diagnostics = EvaluationFailureDiagnostics.model_validate(diagnostics)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("evaluation failure diagnostics payload is invalid") from exc
+
+
 class EvaluationStatesArtifactNotFound(LookupError):
     """Raised when a manifest has no durable evaluation-states artifact."""
 
@@ -708,6 +754,21 @@ def execute_evaluation_run_spec(
         )
         return manifest, write_manifest(manifest, root=root_path)
     except Exception as exc:
+        error: dict[str, Any] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+        if isinstance(exc, EvaluationRecipeDiagnosticError):
+            error["diagnostics"] = {
+                **exc.diagnostics.model_dump(mode="json"),
+                "recipe": {
+                    "evaluation_type": run_spec.evaluation_type,
+                    "entrypoint": EntrypointRef(
+                        kind="feedbax-evaluation-recipe",
+                        name=run_spec.evaluation_type,
+                    ).model_dump(mode="json", exclude_none=True),
+                },
+            }
         manifest = _build_evaluation_manifest(
             manifest_id=manifest_id,
             run_spec=run_spec,
@@ -718,10 +779,7 @@ def execute_evaluation_run_spec(
             metadata={
                 **manifest_metadata,
                 "cache": cache_metadata,
-                "error": {
-                    "type": type(exc).__name__,
-                    "message": str(exc),
-                },
+                "error": error,
             },
         )
         path = write_manifest(manifest, root=root_path)
