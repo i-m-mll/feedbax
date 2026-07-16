@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeDiagnosticError,
     EvaluationRecipeResult,
     EvaluationRecipeExecutionError,
     load_evaluation_states,
@@ -403,6 +404,111 @@ def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: 
         assert caller_provenance.entrypoint is None
     finally:
         unregister_evaluation_recipe("testpkg.copy_provenance_eval")
+
+
+def test_evaluation_failure_diagnostics_round_trip_with_recipe_provenance(tmp_path: Path):
+    evaluation_type = "testpkg.diagnostic_eval"
+    spec = EvaluationRunSpec(evaluation_type=evaluation_type)
+
+    def recipe(*_args) -> EvaluationRecipeResult:
+        raise EvaluationRecipeDiagnosticError(
+            "solver rejected the condition",
+            {
+                "schema_id": "testpkg.solver_failure",
+                "schema_version": "testpkg.solver_failure.v1",
+                "values": {"residual": 0.25, "iterations": 7},
+            },
+        )
+
+    register_evaluation_recipe(evaluation_type, recipe, replace=True)
+    try:
+        with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
+            execute_evaluation_run_spec(spec, root=tmp_path)
+        manifest = excinfo.value.manifest
+        diagnostics = manifest.metadata["error"]["diagnostics"]
+        assert diagnostics["schema_id"] == "testpkg.solver_failure"
+        assert diagnostics["schema_version"] == "testpkg.solver_failure.v1"
+        assert diagnostics["values"] == {"residual": 0.25, "iterations": 7}
+        assert diagnostics["recipe"] == {
+            "evaluation_type": evaluation_type,
+            "entrypoint": {
+                "kind": "feedbax-evaluation-recipe",
+                "name": evaluation_type,
+                "metadata": {},
+            },
+        }
+        assert load_manifest(excinfo.value.path).metadata["error"] == manifest.metadata["error"]
+    finally:
+        unregister_evaluation_recipe(evaluation_type)
+
+
+def test_evaluation_failure_without_diagnostics_keeps_ordinary_error(tmp_path: Path):
+    evaluation_type = "testpkg.ordinary_failure"
+
+    def recipe(*_args) -> EvaluationRecipeResult:
+        raise RuntimeError("ordinary failure")
+
+    register_evaluation_recipe(evaluation_type, recipe, replace=True)
+    try:
+        with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
+            execute_evaluation_run_spec(
+                EvaluationRunSpec(evaluation_type=evaluation_type),
+                root=tmp_path,
+            )
+        assert excinfo.value.manifest.metadata["error"] == {
+            "type": "RuntimeError",
+            "message": "ordinary failure",
+        }
+    finally:
+        unregister_evaluation_recipe(evaluation_type)
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        {"schema_version": "testpkg.failure.v1", "values": {}},
+        {
+            "schema_id": "testpkg.failure",
+            "schema_version": "testpkg.failure.v1",
+            "values": {"path": Path("/private/diagnostic-secret")},
+        },
+        {
+            "schema_id": "testpkg.failure",
+            "schema_version": "testpkg.failure.v1",
+            "values": {"oversized": "x" * 17_000},
+        },
+        {
+            "schema_id": "testpkg.failure",
+            "schema_version": "testpkg.failure.v1",
+            "values": {},
+            "recipe": {"evaluation_type": "forged.recipe"},
+        },
+    ],
+)
+def test_invalid_evaluation_failure_diagnostics_are_rejected_safely(
+    tmp_path: Path,
+    diagnostics: dict[str, object],
+):
+    evaluation_type = "testpkg.invalid_diagnostics"
+
+    def recipe(*_args) -> EvaluationRecipeResult:
+        raise EvaluationRecipeDiagnosticError("scientific failure", diagnostics)
+
+    register_evaluation_recipe(evaluation_type, recipe, replace=True)
+    try:
+        with pytest.raises(EvaluationRecipeExecutionError) as excinfo:
+            execute_evaluation_run_spec(
+                EvaluationRunSpec(evaluation_type=evaluation_type),
+                root=tmp_path,
+            )
+        error = excinfo.value.manifest.metadata["error"]
+        assert error == {
+            "type": "ValueError",
+            "message": "evaluation failure diagnostics payload is invalid",
+        }
+        assert "diagnostic-secret" not in excinfo.value.path.read_text(encoding="utf-8")
+    finally:
+        unregister_evaluation_recipe(evaluation_type)
 
 
 def _with_container_schema_version(data: bytes, schema_version: str) -> bytes:
