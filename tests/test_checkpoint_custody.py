@@ -180,6 +180,35 @@ def _rewrite_manifest_and_latest(result, payload: dict[str, object]) -> None:
     _write_json(result.latest_pointer_path, latest_payload)
 
 
+def _rewrite_controller_leaf_type(result, leaf_type: str) -> None:
+    payload = json.loads(result.manifest_path.read_text())
+    controller = next(slot for slot in payload["slots"] if slot["slot"] == "controller")
+    fingerprint = controller["structural_abi_fingerprint"]
+    fingerprint["leaves"][0]["leaf_type"] = leaf_type
+    leaves = [
+        custody_module.SlotLeafFingerprint.model_validate(leaf)
+        for leaf in fingerprint["leaves"]
+    ]
+    fingerprint["fingerprint_sha256"] = custody_module._canonical_hash(
+        custody_module._structural_abi_content_payload(fingerprint["treedef"], leaves)
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+
+def _write_minimax_checkpoint(tmp_path: Path):
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    return run_spec, program, result
+
+
 def _manifest_blob_path(manifest_path: Path, relative_path: str) -> Path:
     return manifest_path.parent / relative_path
 
@@ -2016,6 +2045,76 @@ def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
     assert "checkpoint slot 'adversary_population'" in message
     assert "path=/0 field=shape recorded=[3] actual=[2]" in message
     assert "jax_enable_x64 differs" not in message
+
+
+@pytest.mark.parametrize(
+    "recorded_leaf_type",
+    ["jaxlib.xla_extension.ArrayImpl", "jaxlib._jax.ArrayImpl"],
+)
+def test_jax_array_leaf_identity_accepts_known_private_spelling(
+    tmp_path: Path,
+    recorded_leaf_type: str,
+) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    assert result.manifest.slots[0].structural_abi_fingerprint.leaves[0].leaf_type == (
+        "jax.Array"
+    )
+    _rewrite_controller_leaf_type(result, recorded_leaf_type)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+    assert loaded.slots["controller"].tolist() == [1.0, 2.0]
+
+
+def test_jax_array_leaf_identity_rejects_unknown_private_spelling(tmp_path: Path) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    _rewrite_controller_leaf_type(result, "jaxlib.future.ArrayImpl")
+
+    with pytest.raises(CheckpointIntegrityError) as exc_info:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+    message = str(exc_info.value)
+    assert "path=/ field=leaf_type" in message
+    assert 'recorded="jaxlib.future.ArrayImpl" actual="jax.Array"' in message
+
+
+@pytest.mark.parametrize(
+    ("replacement", "field"),
+    [
+        pytest.param(jnp.array([1.0, 2.0, 3.0]), "shape", id="shape"),
+        pytest.param(jnp.array([1, 2], dtype=jnp.int32), "dtype", id="dtype"),
+        pytest.param(1.0, "leaf_type", id="non-array"),
+    ],
+)
+def test_jax_array_leaf_identity_preserves_other_abi_failures(
+    tmp_path: Path,
+    replacement: object,
+    field: str,
+) -> None:
+    run_spec, program, _result = _write_minimax_checkpoint(tmp_path)
+    expected_slots = _minimax_slots()
+    expected_slots["controller"] = replacement
+
+    with pytest.raises(CheckpointCompatibilityError) as exc_info:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=expected_slots,
+        )
+
+    message = str(exc_info.value)
+    assert f"path=/ field={field}" in message
+    assert "recorded=" in message and "actual=" in message
 
 
 def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:

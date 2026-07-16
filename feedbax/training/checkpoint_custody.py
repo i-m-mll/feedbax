@@ -87,6 +87,7 @@ _STRUCTURAL_ABI_DIFF_FIELDS = (
     "leaf_type",
     "static_repr_sha256",
 )
+_JAX_ARRAY_LEAF_TYPE = "jax.Array"
 LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT = (
     "feedbax.training.legacy_checkpoint_adoption.adopt_legacy_checkpoint"
 )
@@ -3307,6 +3308,9 @@ def _structural_abi_leaf_diffs(
         for field in _STRUCTURAL_ABI_DIFF_FIELDS:
             recorded_value = getattr(recorded_leaf, field)
             actual_value = getattr(actual_leaf, field)
+            if field == "leaf_type":
+                recorded_value = _canonical_leaf_type(recorded_value)
+                actual_value = _canonical_leaf_type(actual_value)
             if recorded_value == actual_value:
                 continue
             diffs.append(
@@ -3455,10 +3459,9 @@ def _validate_manifest_structural_abi(
             continue
         loaded_fingerprint = structural_abi_fingerprint(loaded_slots[slot.slot])
         loaded_fingerprints[slot.slot] = loaded_fingerprint
-        if (
-            loaded_fingerprint.fingerprint_sha256
-            != slot.structural_abi_fingerprint.fingerprint_sha256
-        ):
+        if _semantic_structural_abi_sha256(
+            loaded_fingerprint
+        ) != _semantic_structural_abi_sha256(slot.structural_abi_fingerprint):
             diff_suffix = _format_structural_abi_diff(
                 slot.structural_abi_fingerprint,
                 loaded_fingerprint,
@@ -3991,7 +3994,7 @@ def _leaf_fingerprint(path: Any, leaf: Any) -> SlotLeafFingerprint:
         array = jnp.asarray(leaf)
         return SlotLeafFingerprint(
             path=path_text,
-            leaf_type=_qualified_type_name(leaf),
+            leaf_type=_JAX_ARRAY_LEAF_TYPE,
             shape=tuple(int(dim) for dim in array.shape),
             dtype=str(array.dtype),
             weak_type=bool(getattr(array, "weak_type", False)),
@@ -4032,6 +4035,20 @@ def _leaf_structural_content_payload(leaf: SlotLeafFingerprint) -> dict[str, Any
         )
         if key in payload
     }
+
+
+def _semantic_structural_abi_sha256(fingerprint: StructuralAbiFingerprint) -> str:
+    leaves = [
+        leaf.model_copy(update={"leaf_type": _canonical_leaf_type(leaf.leaf_type)})
+        for leaf in fingerprint.leaves
+    ]
+    return _canonical_hash(_structural_abi_content_payload(fingerprint.treedef, leaves))
+
+
+def _canonical_leaf_type(leaf_type: str) -> str:
+    if leaf_type in ("jaxlib.xla_extension.ArrayImpl", "jaxlib._jax.ArrayImpl"):
+        return _JAX_ARRAY_LEAF_TYPE
+    return leaf_type
 
 
 def _slot_integrity_records(value: Any) -> _SlotIntegrityRecords:
