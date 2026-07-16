@@ -881,9 +881,19 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
             )
 
 
+@pytest.mark.parametrize(
+    ("initial_batch", "expected_batches", "expected_steps"),
+    [
+        pytest.param(0, [3, 4], [3, 4], id="fresh"),
+        pytest.param(10, [12, 14], [2, 4], id="continuation"),
+    ],
+)
 def test_method_diagnostics_progress_observes_completed_batch_without_custody_leak(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    initial_batch: int,
+    expected_batches: list[int],
+    expected_steps: list[int],
 ) -> None:
     spec = _mapped_run_spec()
     spec.worker_execution.method_contract.training_diagnostics = MethodTrainingDiagnosticsSpec(
@@ -899,10 +909,12 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     spec.checkpoint_progress.progress_interval = 3
     callback_events: list[dict[str, object]] = []
     method_observations: list[dict[str, object]] = []
+    observation_origins: list[int] = []
     build_diagnostics = training_executor._build_training_diagnostics
 
     def capture_method_observations(**kwargs):
         method_observations.extend(kwargs["method_observations"])
+        observation_origins.append(kwargs["method_observation_origin_batch"])
         return build_diagnostics(**kwargs)
 
     monkeypatch.setattr(
@@ -913,7 +925,7 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
 
     result = execute_training_run_spec(
         spec,
-        preparation=_valid_materialized_preparation(spec, initial_batch=10),
+        preparation=_valid_materialized_preparation(spec, initial_batch=initial_batch),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
         manifest_root=tmp_path / "manifest",
         checkpoint_root=tmp_path / "checkpoint",
@@ -923,24 +935,23 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
 
     assert [
         event["coordinate"]["completed_batches"] for event in result.history_events
-    ] == [12, 14]
-    assert [event["coordinate"]["completed_batches"] for event in callback_events] == [
-        12,
-        14,
-    ]
-    assert [event["coordinate"]["program_step"] for event in result.history_events] == [
-        2,
-        4,
-    ]
+    ] == expected_batches
+    assert [
+        event["coordinate"]["completed_batches"] for event in callback_events
+    ] == expected_batches
+    assert [
+        event["coordinate"]["program_step"] for event in result.history_events
+    ] == expected_steps
     assert [
         event["coordinate"]["completed_batches"] for event in method_observations
-    ] == [11, 12, 13, 14]
+    ] == list(range(initial_batch + 1, initial_batch + 5))
     assert [event["coordinate"]["program_step"] for event in method_observations] == [
         1,
         2,
         3,
         4,
     ]
+    assert observation_origins == [initial_batch]
     assert all(
         write.manifest.completed_coordinate.completed_batches is None
         for write in result.checkpoint_writes
