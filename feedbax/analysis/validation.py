@@ -130,6 +130,19 @@ def validate_evaluation_recipe(
     return recipe
 
 
+def validate_evaluation_batch_recipe(evaluation_type: str, recipe: Any) -> Any:
+    """Validate and return a registered batched evaluation recipe callable."""
+    validate_namespaced_type_key(evaluation_type, field="evaluation_type")
+    _validate_callable_shape(
+        kind="Evaluation batch recipe",
+        type_key=evaluation_type,
+        recipe=recipe,
+        example_args=(object(), object()),
+        expected="(items, execution_context)",
+    )
+    return recipe
+
+
 def validate_analysis_recipe(
     analysis_type: str,
     recipe: Any,
@@ -202,7 +215,7 @@ def _validate_callable_shape(
     try:
         signature.bind(*example_args)
     except TypeError as exc:
-        argument_count = {3: "three", 4: "four"}.get(
+        argument_count = {2: "two", 3: "three", 4: "four"}.get(
             len(example_args),
             str(len(example_args)),
         )

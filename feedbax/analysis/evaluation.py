@@ -99,6 +99,7 @@ from feedbax.contracts.staged_execution import (
 )
 from feedbax.analysis.validation import (
     EvaluationRecipeProtocol,
+    validate_evaluation_batch_recipe,
     validate_evaluation_recipe,
     validate_namespaced_type_key,
 )
@@ -121,8 +122,7 @@ class EvaluationRecipeResult:
 
 EvaluationRecipe = EvaluationRecipeProtocol
 EvaluationBatchRecipe = Callable[
-    [Sequence["EvaluationBatchItem"], StagedExecutionContext],
-    Sequence[EvaluationRecipeResult],
+    [Sequence["EvaluationBatchItem"], StagedExecutionContext], Sequence[EvaluationRecipeResult]
 ]
 STATES_SCHEMA_METADATA_KEY = "states_schema"
 EVALUATION_STATES_CACHE_SCHEMA_VERSION = "feedbax.analysis.evaluation-states-cache.v1"
@@ -135,7 +135,8 @@ _EVALUATION_AUTHORING_SCHEMAS: dict[str, "EvaluationAuthoringSchema"] = {}
 
 @dataclass(frozen=True)
 class EvaluationBatchExecution:
-    """Explicit runtime opt-in for one whole-matrix recipe invocation."""
+    """Hard kills may leave safe-to-delete sibling ``.{root}.batch-*`` directories.
+    Batch mode requires a fresh root; grids needing reuse or resume must use per-row mode."""
 
 
 @dataclass(frozen=True)
@@ -445,6 +446,8 @@ def execute_evaluation_run_matrix(
         "staged_parents": staged_parents,
     }
     if batch is not None:
+        if type(batch) is not EvaluationBatchExecution:
+            raise TypeError("batch must be an EvaluationBatchExecution instance")
         if escape_hatch_reason is not None:
             raise ValueError("batched execution only accepts EvaluationRunMatrixSpec")
         return _execute_evaluation_batch_rows(
@@ -492,8 +495,8 @@ def _execute_evaluation_batch_rows(
     matrix_metadata: Mapping[str, Any],
     regeneration_parameters: Mapping[str, Any],
 ):
-    """Run recipe blocks first, then atomically publish independent row custody."""
     from feedbax.analysis.harness import MatrixMaterializerHarness
+    from feedbax.persistence.manifest_index import connect_index, index_manifest
 
     if root.exists():
         raise FileExistsError("batched evaluation root must not already exist")
@@ -523,6 +526,21 @@ def _execute_evaluation_batch_rows(
             )
             for row_id, spec in specs
         ]
+        for item in items:
+            try:
+                prerequisites = item.spec.params.get("staged_prerequisites")
+                if prerequisites is None:
+                    continue
+                if not isinstance(prerequisites, Mapping):
+                    raise TypeError(
+                        "evaluation params.staged_prerequisites must be a mapping or null"
+                    )
+                for prerequisite in prerequisites.values():
+                    resolve_staged_evaluation_prerequisite(
+                        prerequisite, execution_context=execution_context
+                    )
+            except Exception as exc:
+                raise EvaluationBatchRowError(item.row_id, exc) from exc
         try:
             results = list(batch_recipe(items, execution_context))
         except EvaluationBatchRowError as exc:
@@ -565,14 +583,36 @@ def _execute_evaluation_batch_rows(
             matrix_metadata=matrix_metadata,
             regeneration_parameters=regeneration_parameters,
         )
+        published_rows = []
+        for row in result.rows:
+            def publish(artifact: ArtifactRef) -> ArtifactRef:
+                if artifact.uri is None:
+                    return artifact
+                uri = Path(artifact.uri)
+                if not uri.is_relative_to(staging):
+                    return artifact
+                return artifact.model_copy(
+                    update={"uri": str(root / uri.relative_to(staging))}
+                )
+
+            manifest = row.result.model_copy(
+                update={"artifacts": [publish(artifact) for artifact in row.result.artifacts]}
+            )
+            staged_path = write_manifest(manifest, root=staging / row.row_id, index=False)
+            shutil.rmtree(staging / row.row_id / "index", ignore_errors=True)
+            index = connect_index(staging / row.row_id / "index" / "feedbax.sqlite")
+            index_manifest(index, manifest, path=root / staged_path.relative_to(staging))
+            index.close()
+            published_rows.append(
+                replace(
+                    row,
+                    result=manifest,
+                    manifest_path=root / staged_path.relative_to(staging),
+                    artifacts=tuple(publish(artifact) for artifact in row.artifacts),
+                )
+            )
         staging.rename(root)
-        return replace(
-            result,
-            rows=tuple(
-                replace(row, manifest_path=root / row.manifest_path.relative_to(staging))
-                for row in result.rows
-            ),
-        )
+        return replace(result, rows=tuple(published_rows))
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -859,8 +899,7 @@ def register_evaluation_recipe(
     if evaluation_type in _EVALUATION_RECIPES and not replace:
         raise ValueError(f"Evaluation recipe {evaluation_type!r} is already registered")
     if batch_recipe is not None:
-        if not callable(batch_recipe):
-            raise TypeError("evaluation batch recipe must be callable")
+        batch_recipe = validate_evaluation_batch_recipe(evaluation_type, batch_recipe)
     _EVALUATION_RECIPES[evaluation_type] = validate_evaluation_recipe(evaluation_type, recipe)
     if replace:
         _EVALUATION_BATCH_RECIPES.pop(evaluation_type, None)
