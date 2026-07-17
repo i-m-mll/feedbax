@@ -4,8 +4,10 @@ import json
 import io
 import zipfile
 from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import patch
 
+import jax.tree as jt
 import numpy as np
 import pytest
 from pydantic import ValidationError
@@ -45,6 +47,7 @@ from feedbax.contracts.manifest import (
     ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
     AnalysisEvaluationStateSource,
     AnalysisRunSpec,
     EvaluationRunSpec,
@@ -237,7 +240,7 @@ def _write_mutated_artifact_metadata(root: Path, manifest, **updates: object) ->
 
 
 def _artifact_with_mutated_container_storage(root: Path, artifact):
-    source = Path(artifact.uri)
+    source = root / artifact.metadata["relative_path"]
     with zipfile.ZipFile(source, mode="r") as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
     header = json.loads(members[EVALUATION_STATES_METADATA_KEY])
@@ -284,6 +287,72 @@ def test_require_durable_bypasses_cache_and_never_recomputes(tmp_path: Path) -> 
         assert excinfo.value.diagnostic.code == "missing_durable_states"
         execute.assert_not_called()
     finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
+def test_require_durable_threads_typed_structure_provider_end_to_end(tmp_path: Path) -> None:
+    class TypedStates(NamedTuple):
+        value: object
+
+    def evaluation_recipe(run_spec, _root, _states_path, _execution_context):
+        return EvaluationRecipeResult(
+            states=TypedStates(np.asarray(run_spec.params["value"], dtype=np.int32))
+        )
+
+    register_evaluation_recipe(EVALUATION_TYPE, evaluation_recipe, replace=True)
+    try:
+        manifest, _ = _evaluation(tmp_path, durable=True)
+        register_analysis_recipe(
+            ANALYSIS_TYPE,
+            lambda *_args: None,
+            replace=True,
+            evaluation_states_structure=lambda _: jt.structure(TypedStates(np.asarray(0))),
+        )
+        resolved = resolve_analysis_inputs(
+            _analysis_spec(manifest.id, policy="require_durable", root=tmp_path), root=tmp_path
+        )[0]
+        assert isinstance(resolved.states, TypedStates)
+        assert resolved.evaluation_state_source.container_schema_version == (
+            EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
+        )
+        assert resolved.evaluation_state_source.container_storage_backend == "npz.v3"
+
+        register_analysis_recipe(ANALYSIS_TYPE, lambda *_args: None, replace=True)
+        with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
+            resolve_analysis_inputs(
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path), root=tmp_path
+            )
+        assert excinfo.value.diagnostic.code == "custody_unavailable"
+    finally:
+        unregister_analysis_recipe(ANALYSIS_TYPE)
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
+def test_require_durable_classifies_structure_provider_failure(tmp_path: Path) -> None:
+    _register_evaluation()
+    try:
+        manifest, _ = _evaluation(tmp_path, durable=True)
+
+        def fail_provider(_manifest):
+            raise RuntimeError("provider exploded")
+
+        register_analysis_recipe(
+            ANALYSIS_TYPE,
+            lambda *_args: None,
+            replace=True,
+            evaluation_states_structure=fail_provider,
+        )
+        with pytest.raises(AnalysisEvaluationStatesResolutionError) as excinfo:
+            resolve_analysis_inputs(
+                _analysis_spec(manifest.id, policy="require_durable", root=tmp_path),
+                root=tmp_path,
+            )
+
+        assert excinfo.value.diagnostic.code == "custody_unavailable"
+        assert excinfo.value.diagnostic.details["provider_failure"] == "provider exploded"
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+    finally:
+        unregister_analysis_recipe(ANALYSIS_TYPE)
         unregister_evaluation_recipe(EVALUATION_TYPE)
 
 

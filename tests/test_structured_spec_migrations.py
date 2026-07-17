@@ -81,7 +81,7 @@ from feedbax.contracts.extraction import (
     EXTRACTION_PRODUCT_SPEC_SCHEMA_VERSION,
 )
 from feedbax.contracts.manifest import (
-    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
     FIGURE_MANIFEST_SCHEMA_ID,
     FIGURE_MANIFEST_SCHEMA_VERSION,
 )
@@ -618,7 +618,7 @@ def test_default_registry_registers_evaluation_states_container_family() -> None
     family = default_spec_registry.resolve("EvaluationStatesContainer")
 
     assert family.identity == "feedbax.manifest.evaluation_states_container"
-    assert family.current_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+    assert family.current_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
     assert family.policy is not None
     assert family.policy.stance == "reject"
     migrations = default_spec_registry.available_migrations("EvaluationStatesContainer")

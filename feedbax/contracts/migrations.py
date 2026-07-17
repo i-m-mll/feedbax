@@ -164,6 +164,7 @@ from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
     FIGURE_MANIFEST_SCHEMA_ID,
     FIGURE_MANIFEST_SCHEMA_VERSION,
     REGENERATION_SPEC_SCHEMA_ID,
@@ -3851,7 +3852,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 kind,
                 schema_id,
                 (
-                    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+                    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
                     if kind == "EvaluationStatesContainer"
                     else MANIFEST_SCHEMA_VERSION
                 ),
