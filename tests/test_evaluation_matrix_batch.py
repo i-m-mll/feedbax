@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import patch
 
 import jax.tree as jt
@@ -26,8 +27,13 @@ from feedbax.analysis.specs import (
     unregister_analysis_recipe,
 )
 from feedbax.analysis.validation import RecipeValidationError
-from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
+from feedbax.contracts.evaluation_states import (
+    EvaluationStatesCustodyUnavailable,
+    store_evaluation_states_artifact,
+)
 from feedbax.contracts.manifest import (
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
     AnalysisRunSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
@@ -67,6 +73,139 @@ def _result(gain: float) -> EvaluationRecipeResult:
         summary_metrics={"total": float(states["value"].sum())},
         metadata={"states_schema": "feedbax.test.batched_matrix_states.v1"},
     )
+
+
+class TypedRowStates(NamedTuple):
+    value: object
+
+
+def _typed_result(gain: float) -> EvaluationRecipeResult:
+    states = TypedRowStates(np.asarray([gain, gain + 1], dtype=np.float32))
+    return EvaluationRecipeResult(states=states, metadata={"states_schema": "typed.v1"})
+
+
+def _execute_typed_batch(matrix, root: Path, *, parent_root: Path | None = None):
+    register_evaluation_recipe(
+        EVALUATION_TYPE,
+        lambda spec, *_args: _typed_result(spec.params["gain"]),
+        batch_recipe=lambda items, _: [_typed_result(item.spec.params["gain"]) for item in items],
+        replace=True,
+    )
+    try:
+        return execute_evaluation_run_matrix(
+            matrix,
+            root=root,
+            parent_manifest_root=parent_root,
+            batch=EvaluationBatchExecution(),
+        )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+
+def _resolve_typed_rows(batch, root: Path) -> list[TypedRowStates]:
+    register_analysis_recipe(
+        ANALYSIS_TYPE,
+        lambda *_args: None,
+        evaluation_states_structure=lambda _: jt.structure(_typed_result(0).states),
+        replace=True,
+    )
+    try:
+        return [
+            resolve_analysis_inputs(
+                AnalysisRunSpec(
+                    analysis_type=ANALYSIS_TYPE,
+                    inputs=[authenticated_manifest_ref(row.result, row.manifest_path, "evaluation_run")],
+                    evaluation_states_policy="require_durable",
+                ),
+                root=root / row.row_id,
+            )[0].states
+            for row in batch.rows
+        ]
+    finally:
+        unregister_analysis_recipe(ANALYSIS_TYPE)
+
+
+def _staged_matrix(tmp_path: Path, states):
+    parent_root = tmp_path / "parents"
+    parent_id = "feedbax-evaluation-run:batch-prerequisite"
+    artifact = store_evaluation_states_artifact(states, root=parent_root, manifest_id=parent_id)
+    parent = EvaluationRunManifest(
+        id=parent_id,
+        status="completed",
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec", EvaluationRunSpec(evaluation_type=EVALUATION_TYPE).model_dump(
+                mode="json")),
+        artifacts=[artifact],
+    )
+    parent_path = write_manifest(parent, root=parent_root, index=False)
+    prerequisite = StagedEvaluationPrerequisite(
+        parent=authenticated_manifest_ref(parent, parent_path, "evaluation_run")
+    )
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type=EVALUATION_TYPE,
+            params={
+                "gain": 3.0, "states_custody": "durable",
+                "staged_prerequisites": {"parent": prerequisite}},
+        ),
+        rows=[MatrixRow(row_id="row")],
+        staged_parents={"parent": prerequisite},
+    )
+    return parent_root, artifact, matrix
+
+
+def test_batched_typed_v3_outputs_round_trip_through_require_durable(tmp_path: Path) -> None:
+    root = tmp_path / "batched"
+    batch = _execute_typed_batch(_matrix(), root)
+    restored = _resolve_typed_rows(batch, root)
+    assert all(isinstance(states, TypedRowStates) for states in restored)
+    for gain, row, states in zip((1, 2, 3), batch.rows, restored, strict=True):
+        artifact = next(a for a in row.result.artifacts if a.role == "evaluation_states")
+        assert artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
+        np.testing.assert_array_equal(states.value, np.asarray([gain, gain + 1]))
+
+
+def test_batched_typed_v3_outputs_accept_normalized_staged_v2_parent(tmp_path: Path) -> None:
+    parent_root, parent_artifact, matrix = _staged_matrix(
+        tmp_path, {"value": np.asarray([3, 5], dtype=np.int32)}
+    )
+    root = tmp_path / "batched"
+    batch = _execute_typed_batch(matrix, root, parent_root=parent_root)
+    output_artifact = next(
+        a for a in batch.rows[0].result.artifacts if a.role == "evaluation_states"
+    )
+    assert parent_artifact.uri is None
+    assert parent_artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+    assert output_artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
+    restored = _resolve_typed_rows(batch, root)
+    assert isinstance(restored[0], TypedRowStates)
+    np.testing.assert_array_equal(restored[0].value, np.asarray([3, 4]))
+
+
+def test_batched_preflight_rejects_typed_v3_staged_parent(tmp_path: Path) -> None:
+    parent_root, artifact, matrix = _staged_matrix(tmp_path, _typed_result(9).states)
+    output = tmp_path / "batched"
+    register_evaluation_recipe(
+        EVALUATION_TYPE,
+        lambda spec, *_args: _typed_result(spec.params["gain"]),
+        batch_recipe=lambda *_args: pytest.fail("batch recipe ran before preflight"),
+        replace=True,
+    )
+    try:
+        with pytest.raises(EvaluationBatchRowError) as exc_info:
+            execute_evaluation_run_matrix(
+                matrix,
+                root=output,
+                parent_manifest_root=parent_root,
+                batch=EvaluationBatchExecution(),
+            )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    assert artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
+    assert exc_info.value.row_id == "row"
+    assert isinstance(exc_info.value.__cause__, EvaluationStatesCustodyUnavailable)
+    assert not output.exists()
 
 
 def test_batched_matrix_matches_default_and_round_trips_require_durable(
