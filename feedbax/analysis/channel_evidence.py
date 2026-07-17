@@ -55,6 +55,11 @@ def resolve_authenticated_evaluation_channels(
     states = resolve_staged_evaluation_prerequisite(
         declared, execution_context=execution_context
     )
+    cache_lookup = getattr(execution_context, "_cached_authenticated_channels", None)
+    if cache_lookup is not None:
+        cached = cache_lookup(states)
+        if cached is not None:
+            return cached
     resolved = execution_context.resolve_manifest_input(declared.parent)
     artifacts = [
         item
@@ -96,13 +101,17 @@ def resolve_authenticated_evaluation_channels(
             "evaluation channel keys disagree with manifest evidence: "
             f"states={sorted(channels)}, evidence={sorted(evidence)}"
         )
-    return AuthenticatedEvaluationChannels(
+    authenticated = AuthenticatedEvaluationChannels(
         states=states,
         channels=MappingProxyType(dict(channels)),
         evidence=MappingProxyType(evidence),
         manifest_sha256=str(declared.parent.metadata["manifest_sha256"]),
         states_sha256=artifacts[0].sha256,
     )
+    cache_store = getattr(execution_context, "_cache_authenticated_channels", None)
+    if cache_store is not None:
+        cache_store(states, authenticated)
+    return authenticated
 
 
 def _authenticate_channel(

@@ -6,6 +6,7 @@ import shutil
 
 import pytest
 
+import feedbax.analysis.execution_context as execution_context_module
 from feedbax.analysis.bundles import (
     AnalysisBundleSpec,
     BundleStageSpec,
@@ -375,6 +376,7 @@ def test_checkpoint_binding_rejects_malformed_relative_uri_before_resolution(
 
 def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_reference(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkpoint_root = tmp_path / "checkpoint-authority"
     run_spec = _run_spec(minimax=True)
@@ -413,13 +415,33 @@ def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_referenc
             StagedCheckpointCustodyRootBinding("training-checkpoints", checkpoint_root)
         ],
     )
+    original_resolve = execution_context_module.resolve_bound_checkpoint_custody_ref
+    resolutions = 0
+
+    def counted_resolve(*args, **kwargs):
+        nonlocal resolutions
+        resolutions += 1
+        return original_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "resolve_bound_checkpoint_custody_ref",
+        counted_resolve,
+    )
 
     explicit = context.resolve_checkpoint_custody_ref(
         parent,
         binding_name="training-checkpoints",
         slot_names=["controller"],
     )
+    repeated = context.resolve_checkpoint_custody_ref(
+        parent,
+        binding_name="training-checkpoints",
+        slot_names=["controller"],
+    )
     from_metadata = context.resolve_checkpoint_custody_ref(parent, slot_names=["rng"])
+    assert repeated is explicit
+    assert resolutions == 2
     assert explicit.parent_ref == parent
     assert explicit.manifest.transaction_id == result.manifest.transaction_id
     assert set(explicit.slots) == {"controller"}
