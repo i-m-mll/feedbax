@@ -24,6 +24,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
+    ArtifactRef,
     ParentRef,
     analysis_run_manifest_id,
     figure_manifest_id,
@@ -53,6 +54,15 @@ class AnalysisJobResult:
     figure_hashes: list[str]
     artifact_ids: list[str]
     artifact_paths: list[str]
+
+
+def _job_artifact_location(artifact: ArtifactRef) -> str:
+    """Return a stable job-status location without path-normalizing artifact URIs."""
+    if artifact.uri is None:
+        raise ValueError("analysis job artifacts require a URI")
+    if artifact.uri.startswith("artifact://sha256/"):
+        return artifact.uri
+    return str(Path(artifact.uri))
 
 
 def _spec_for_analysis_request(
@@ -142,7 +152,7 @@ def _run_analysis_sync(spec: AnalysisRunSpec) -> AnalysisJobResult:
         ],
         artifact_ids=[artifact.artifact_id for artifact in manifest.artifacts],
         artifact_paths=[
-            str(Path(artifact.uri))
+            _job_artifact_location(artifact)
             for artifact in manifest.artifacts
             if artifact.uri is not None
         ],
@@ -191,7 +201,7 @@ def _run_figure_sync(spec: FigureSpec) -> AnalysisJobResult:
             if artifact.role == FIGURE_RENDER_ROLE and artifact.artifact_id is not None
         ],
         artifact_paths=[
-            str(Path(artifact.uri))
+            _job_artifact_location(artifact)
             for artifact in manifest.artifacts
             if artifact.role == FIGURE_RENDER_ROLE and artifact.uri is not None
         ],

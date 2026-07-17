@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -32,9 +33,9 @@ from feedbax.contracts.manifest import (
     safe_manifest_key,
     spec_payload,
     store_artifact,
-    store_json_artifact,
     write_manifest,
 )
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plot.lifecycle import close_figure
 from feedbax.plot.utils import savefig
 from jax_cookbook import arrays_to_lists
@@ -197,17 +198,27 @@ class AnalysisRunContext:
         group_metadata: dict[str, Any] | None = None,
     ) -> ArtifactRef:
         """Persist stable JSON payload and record it on this analysis run."""
-        artifact = store_json_artifact(
-            arrays_to_lists(value),
-            root=self.root_path,
+        data = json.dumps(arrays_to_lists(value), indent=2, sort_keys=True).encode() + b"\n"
+        provider = ImmutableArtifactBlobProvider(self.root_path.absolute())
+        artifact = provider.store_bytes(
+            data,
             role=role,
             logical_name=logical_name,
+            media_type="application/json",
             metadata=self._artifact_metadata(
                 metadata,
                 group_id=group_id,
                 group_role=group_role,
                 group_metadata=group_metadata,
             ),
+        )
+        artifact = artifact.model_copy(
+            update={
+                "metadata": {
+                    **artifact.metadata,
+                    "local_relative_path": str(provider.canonical_relative_path(artifact)),
+                }
+            }
         )
         self.record_artifact_refs([artifact])
         return artifact

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -11,6 +12,8 @@ from feedbax.analysis.evaluation import (
     register_evaluation_recipe,
     unregister_evaluation_recipe,
 )
+from feedbax.analysis.context import AnalysisRunContext
+import feedbax.analysis.specs as analysis_specs
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
     execute_analysis_run_spec,
@@ -20,13 +23,14 @@ from feedbax.analysis.specs import (
 from feedbax.analysis.manifest_inputs import is_authenticated_manifest_ref
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
+    ArtifactRef,
     EvaluationRunSpec,
     ParentRef,
     analysis_run_manifest_id,
     load_manifest,
 )
 from feedbax.contracts.studio_api import GenerateAnalysisRequest
-from feedbax.web.api.analysis import _spec_for_analysis_request
+from feedbax.web.api.analysis import _run_analysis_sync, _spec_for_analysis_request
 from feedbax.web.app import create_app
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
@@ -156,6 +160,14 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
         assert status_payload["artifact_paths"]
 
         manifest = load_manifest(status_payload["manifest_path"])
+        assert status_payload["artifact_paths"] == [
+            artifact.uri
+            if (artifact.uri or "").startswith("artifact://sha256/")
+            else str(Path(artifact.uri))
+            for artifact in manifest.artifacts
+            if artifact.uri is not None
+        ]
+        assert all("artifact:/sha256/" not in uri for uri in status_payload["artifact_paths"])
         assert manifest.kind == "AnalysisRunManifest"
         assert manifest.inputs[0].id == eval_manifest.id
         assert manifest.provenance.parents[0].id == eval_manifest.id
@@ -174,6 +186,44 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
     finally:
         unregister_analysis_recipe(TOY_JOB_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_JOB_EVAL_TYPE)
+
+
+def test_run_analysis_sync_preserves_canonical_uri_and_legacy_path_shape(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="test.studio_canonical_location"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+    canonical = context.record_json_artifact(
+        {"location": "canonical"},
+        role="analysis",
+        logical_name="canonical.json",
+    )
+    legacy_path = tmp_path / "legacy.json"
+    legacy = ArtifactRef(
+        role="analysis",
+        logical_name="legacy.json",
+        uri=str(legacy_path),
+    )
+    manifest = SimpleNamespace(
+        id="feedbax-analysis-run:studio-artifact-locations",
+        artifacts=[canonical, legacy],
+    )
+
+    def execute_stub(_spec, *, fig_dump_formats):
+        assert fig_dump_formats == ("json",)
+        return manifest, tmp_path / "manifest.json"
+
+    monkeypatch.setattr(analysis_specs, "execute_analysis_run_spec", execute_stub)
+
+    result = _run_analysis_sync(AnalysisRunSpec(analysis_type="test.studio_locations"))
+
+    assert canonical.uri == canonical.artifact_id
+    assert result.artifact_paths == [canonical.uri, str(Path(legacy.uri))]
+    assert all("artifact:/sha256/" not in uri for uri in result.artifact_paths)
 
 
 def test_studio_analysis_job_executes_require_durable_with_exact_authority(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from feedbax.analysis.analysis import AbstractAnalysis
+from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.bundles import (
     AnalysisBundleSpec,
     BundleStageSpec,
@@ -40,6 +42,7 @@ from feedbax.contracts.figures import (
 )
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
+    AnalysisRunSpec,
     ParentRef,
     canonical_json_bytes,
     sha256_bytes,
@@ -154,6 +157,91 @@ def test_provider_canonical_payload_is_decoded_and_constructor_context_is_saniti
     assert str(tmp_path) not in serialized
     assert '"uri"' not in serialized
     assert '"root"' not in serialized
+
+
+def test_recorded_json_artifact_round_trips_through_public_figure_payload_path(
+    tmp_path: Path,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "provider")
+    certificate = {
+        "schema_id": "test.recorded.figure_payload",
+        "schema_version": "test.recorded.figure_payload.v1",
+        "values": [3, 5, 8],
+    }
+    analysis_context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="test.recorded.figure_payload"),
+        root=provider.root,
+        index_manifest=False,
+    )
+    recorded = analysis_context.record_json_artifact(
+        certificate,
+        role="recorded_figure_payload",
+        logical_name="figure/payload.json",
+    )
+    manifest, _manifest_path = analysis_context.finalize()
+
+    manifest_bytes = canonical_json_bytes(manifest)
+    manifest_artifact = provider.store_bytes(
+        manifest_bytes,
+        role="analysis_manifest",
+        logical_name="manifest.json",
+        media_type="application/json",
+    )
+    parent = ParentRef(
+        kind=manifest.kind,
+        id=manifest.id,
+        role="grouped_analysis",
+        metadata={
+            "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+            "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+            "manifest_sha256": sha256_bytes(manifest_bytes),
+            "size_bytes": len(manifest_bytes),
+        },
+    )
+    execution_context = StagedExecutionContext(
+        descriptor=None,
+        opened_artifact_providers={"analysis": provider},
+        checkpoint_custody_roots={},
+        parent_execution_locations=(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=provider.root,
+                execution_uri=str(provider.canonical_relative_path(manifest_artifact)),
+                artifact_provider="analysis",
+            ),
+        ),
+    )
+    selector = FigureArtifactPayload(
+        name="payload",
+        manifest_role="grouped_analysis",
+        artifact_role="recorded_figure_payload",
+        artifact_provider="analysis",
+        payload_schema_id=certificate["schema_id"],
+        payload_schema_version=certificate["schema_version"],
+    )
+    figure_spec = FigureSpec(
+        name="recorded-payload",
+        assembler="feedbax.grid_figure",
+        inputs=[parent],
+        input_authorities=[
+            FigureInputAuthority(parent=parent, artifact_payloads=[selector])
+        ],
+    )
+
+    resolved = resolve_figure_inputs(figure_spec, execution_context=execution_context)
+    raw_bytes = provider.get_bytes(recorded)
+    digest = hashlib.sha256(raw_bytes).hexdigest()
+
+    assert resolved[0].artifact_payloads == {"payload": certificate}
+    assert resolved[0].artifact_refs == (recorded,)
+    assert raw_bytes == json.dumps(certificate, indent=2, sort_keys=True).encode() + b"\n"
+    assert digest == recorded.sha256
+    canonical_id = f"artifact://sha256/{digest}"
+    assert recorded.artifact_id == canonical_id
+    assert recorded.uri == canonical_id
+    assert recorded.metadata["local_relative_path"] == str(
+        provider.canonical_relative_path(recorded)
+    )
 
 
 def test_direct_execution_records_exact_consumed_artifact(tmp_path: Path) -> None:

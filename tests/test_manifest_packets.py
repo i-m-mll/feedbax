@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from feedbax.analysis.context import AnalysisRunContext
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
+    AnalysisRunSpec,
     EvaluationRunManifest,
     ParentRef,
     ReportManifest,
@@ -173,6 +175,53 @@ def test_manifest_packet_exports_descendant_closure_and_imports_fresh_root(
     finally:
         conn.close()
     assert row_count == 4
+
+
+def test_manifest_packet_includes_canonical_analysis_artifact_explicitly_and_automatically(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    payload = {"labels": ["canonical", "packet"]}
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="testpkg.canonical_packet"),
+        root=source,
+        index_manifest=False,
+    )
+    artifact = context.record_json_artifact(
+        payload,
+        role="data_product",
+        logical_name="canonical.json",
+    )
+    manifest, _path = context.finalize(status="completed")
+    expected_bytes = json.dumps(payload, indent=2, sort_keys=True).encode() + b"\n"
+
+    explicit_packet = tmp_path / "explicit-packet"
+    explicit = export_manifest_packet(
+        [manifest.id],
+        root=source,
+        dest=explicit_packet,
+        include_artifacts=True,
+    )
+    explicit_entry = _packet_index(explicit_packet)["artifacts"][0]
+
+    assert artifact.uri == artifact.artifact_id
+    assert explicit.included_artifact_count == 1
+    assert explicit.external_artifact_count == 0
+    assert (explicit_packet / explicit_entry["path"]).read_bytes() == expected_bytes
+
+    auto_packet = tmp_path / "auto-packet"
+    automatic = export_manifest_packet(
+        [manifest.id],
+        root=source,
+        dest=auto_packet,
+        include_artifacts="auto",
+    )
+    automatic_entry = _packet_index(auto_packet)["artifacts"][0]
+
+    assert automatic.included_artifact_count == 1
+    assert automatic.external_artifact_count == 0
+    assert automatic_entry["mode"] == "included"
+    assert (auto_packet / automatic_entry["path"]).read_bytes() == expected_bytes
 
 
 def test_manifest_packet_import_is_idempotent_and_rejects_divergent_id(
