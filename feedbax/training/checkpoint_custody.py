@@ -119,7 +119,7 @@ _READ_ONLY_MODEL_TYPES: dict[type[BaseModel], type[BaseModel]] = {}
 
 
 def _reject_snapshot_mutation(*_args: Any, **_kwargs: Any) -> None:
-    raise TypeError("verified checkpoint lineage snapshots are immutable")
+    raise TypeError("verified authenticated snapshots are immutable")
 
 
 class _FrozenDict(dict[Any, Any]):
@@ -133,6 +133,13 @@ class _FrozenDict(dict[Any, Any]):
     setdefault = _reject_snapshot_mutation
     update = _reject_snapshot_mutation
     __ior__ = _reject_snapshot_mutation
+
+    def __copy__(self) -> "_FrozenDict":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "_FrozenDict":
+        memo[id(self)] = self
+        return self
 
 
 class _FrozenList(list[Any]):
@@ -150,6 +157,13 @@ class _FrozenList(list[Any]):
     sort = _reject_snapshot_mutation
     __iadd__ = _reject_snapshot_mutation
     __imul__ = _reject_snapshot_mutation
+
+    def __copy__(self) -> "_FrozenList":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "_FrozenList":
+        memo[id(self)] = self
+        return self
 
 
 class CheckpointCustodyError(ValueError):
@@ -1781,7 +1795,10 @@ def _immutable_snapshot_value(value: Any) -> Any:
     if isinstance(value, list):
         return _FrozenList(_immutable_snapshot_value(item) for item in value)
     if isinstance(value, tuple):
-        return tuple(_immutable_snapshot_value(item) for item in value)
+        items = tuple(_immutable_snapshot_value(item) for item in value)
+        if hasattr(value, "_fields"):
+            return type(value)(*items)
+        return items
     if isinstance(value, (set, frozenset)):
         return frozenset(_immutable_snapshot_value(item) for item in value)
     return value

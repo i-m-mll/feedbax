@@ -1,9 +1,11 @@
+import copy
 from pathlib import Path
 import hashlib
 import os
 import shutil
 
 import jax.tree as jt
+import jax.tree_util as jtu
 import numpy as np
 import pytest
 
@@ -173,6 +175,102 @@ def test_identical_authenticated_states_are_decoded_once_and_reused_immutably(
     assert not first["trajectory"].flags.writeable
     with pytest.raises(ValueError, match="read-only"):
         first["trajectory"][0] = -1
+    with pytest.raises(TypeError, match="immutable"):
+        first["trajectory"] = np.asarray([777], dtype=np.float32)
+
+
+def test_authenticated_manifest_snapshot_rejects_authority_substitution(
+    tmp_path: Path,
+) -> None:
+    manifest_id = "feedbax-evaluation-run:authority-test"
+    first_artifact = store_evaluation_states_artifact(
+        {"trajectory": np.asarray([1, 2], dtype=np.int32)},
+        root=tmp_path,
+        manifest_id=manifest_id,
+    )
+    second_artifact = store_evaluation_states_artifact(
+        {"trajectory": np.asarray([90, 91], dtype=np.int32)},
+        root=tmp_path,
+        manifest_id=manifest_id,
+    )
+    context, parent = _local_context(_manifest(first_artifact), tmp_path)
+    resolved = context.resolve_manifest_input(parent)
+    replacement = second_artifact.model_copy(
+        update={"uri": second_artifact.metadata["relative_path"]}
+    )
+
+    with pytest.raises(TypeError, match="immutable"):
+        resolved.manifest.artifacts[0] = replacement
+    with pytest.raises((TypeError, ValueError), match="frozen|immutable"):
+        resolved.manifest.artifacts[0].metadata["relative_path"] = (
+            second_artifact.metadata["relative_path"]
+        )
+
+    states = context.load_evaluation_states(parent)
+    np.testing.assert_array_equal(states["trajectory"], np.asarray([1, 2]))
+    assert copy.deepcopy(resolved.manifest) == resolved.manifest
+
+
+class _MutableAux:
+    def __init__(self, tag: str):
+        self.tag = tag
+
+    def __hash__(self) -> int:
+        return 0
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _MutableAux) and self.tag == other.tag
+
+    def __repr__(self) -> str:
+        return f"_MutableAux({self.tag!r})"
+
+
+@jtu.register_pytree_node_class
+class _MutableStructureNode:
+    def __init__(self, value, tag: str):
+        self.value = value
+        self.tag = tag
+
+    def tree_flatten(self):
+        return (self.value,), _MutableAux(self.tag)
+
+    @classmethod
+    def tree_unflatten(cls, aux: _MutableAux, children):
+        return cls(children[0], aux.tag)
+
+
+def test_mutated_custom_pytree_aux_misses_and_rechecks_structure_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = store_evaluation_states_artifact(
+        _MutableStructureNode(np.asarray([8], dtype=np.int32), "original"),
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, parent = _local_context(_manifest(artifact), tmp_path)
+    structure = jt.structure(_MutableStructureNode(0, "original"))
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    first = context.load_evaluation_states(parent, structure=structure)
+    structure.node_data()[1].tag = "mutated"
+    with pytest.raises(ValueError, match="structure fingerprint"):
+        context.load_evaluation_states(parent, structure=structure)
+
+    assert first.tag == "original"
+    assert loads == 2
 
 
 def test_requested_structure_is_part_of_authenticated_states_authority(

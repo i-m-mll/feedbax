@@ -15,7 +15,7 @@ from urllib.parse import unquote, urlsplit
 import jax.tree as jt
 import jax.tree_util as jtu
 import numpy as np
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
@@ -23,6 +23,7 @@ from feedbax.analysis.manifest_inputs import (
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
+    _treedef_structure_fingerprint,
     load_authenticated_evaluation_states_artifact,
 )
 from feedbax.contracts.manifest import (
@@ -44,6 +45,8 @@ from feedbax.persistence.artifact_custody import (
 )
 from feedbax.training.checkpoint_custody import (
     ResolvedCheckpointTransaction,
+    _immutable_model_snapshot,
+    _immutable_snapshot_value,
     resolve_checkpoint_custody_ref as resolve_bound_checkpoint_custody_ref,
 )
 
@@ -135,7 +138,7 @@ class _EvaluationStatesAuthorityKey:
     manifest: _ManifestAuthorityKey
     states_sha256: str
     states_size_bytes: int
-    requested_structure: jtu.PyTreeDef | None
+    requested_structure_fingerprint: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,7 +350,7 @@ class StagedExecutionContext:
                 raise StagedExecutionContextError(
                     "provider-backed manifest kind or id disagrees with ParentRef"
                 )
-            resolved = ResolvedManifestInput(
+            resolved = _immutable_resolved_manifest_input(
                 ref=parent,
                 manifest=manifest,
                 path=Path(provider.root) / location.execution_uri,
@@ -413,7 +416,11 @@ class StagedExecutionContext:
             manifest=_manifest_authority_key(parent, location),
             states_sha256=str(artifact.sha256),
             states_size_bytes=int(artifact.size_bytes),
-            requested_structure=structure,
+            requested_structure_fingerprint=(
+                _treedef_structure_fingerprint(structure)
+                if structure is not None
+                else None
+            ),
         )
         cached = self._memo.evaluation_states.get(key)
         if cached is not None:
@@ -441,7 +448,7 @@ class StagedExecutionContext:
                     data=data,
                     structure=structure,
                 )
-                _mark_numpy_arrays_read_only(states)
+                states = _immutable_authenticated_snapshot(states)
                 self._memo.evaluation_states[key] = _MemoEntry(states, (snapshot,))
                 self._memo.state_keys_by_object_id[id(states)] = key
                 return states
@@ -480,7 +487,7 @@ class StagedExecutionContext:
                 data=data,
                 structure=structure,
             )
-            _mark_numpy_arrays_read_only(states)
+            states = _immutable_authenticated_snapshot(states)
             snapshot = _retained_file_snapshot(
                 Path(provider.root),
                 relative,
@@ -623,7 +630,10 @@ class StagedExecutionContext:
                 allowed_root=root,
                 slot_names=slot_names,
             )
-            _mark_numpy_arrays_read_only(resolved.slots)
+            resolved = replace(
+                resolved,
+                slots=_immutable_authenticated_snapshot(resolved.slots),
+            )
             manifest_snapshot = _retained_file_snapshot(
                 root,
                 str(ref.uri),
@@ -1015,11 +1025,61 @@ def _checkpoint_slot_relative_path(manifest_relative: str, slot_relative: str) -
     return _validate_relative_execution_uri(combined)
 
 
-def _mark_numpy_arrays_read_only(value: Any) -> None:
-    """Freeze every decoded NumPy leaf in one authenticated snapshot."""
-    for leaf in jt.leaves(value):
-        if isinstance(leaf, np.ndarray):
-            leaf.flags.writeable = False
+def _mark_numpy_arrays_read_only(value: Any, *, _seen: set[int] | None = None) -> None:
+    """Freeze NumPy arrays below real containers, including mapping proxies."""
+    if isinstance(value, np.ndarray):
+        value.flags.writeable = False
+        return
+    if isinstance(value, (str, bytes, bytearray, memoryview)):
+        return
+    seen = set() if _seen is None else _seen
+    identity = id(value)
+    if identity in seen:
+        return
+    seen.add(identity)
+    if isinstance(value, BaseModel):
+        for field_name in type(value).model_fields:
+            _mark_numpy_arrays_read_only(getattr(value, field_name), _seen=seen)
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _mark_numpy_arrays_read_only(key, _seen=seen)
+            _mark_numpy_arrays_read_only(item, _seen=seen)
+        return
+    if isinstance(value, Sequence):
+        for item in value:
+            _mark_numpy_arrays_read_only(item, _seen=seen)
+        return
+    try:
+        leaves = jt.leaves(value)
+    except (TypeError, ValueError):
+        return
+    if len(leaves) == 1 and leaves[0] is value:
+        return
+    for leaf in leaves:
+        _mark_numpy_arrays_read_only(leaf, _seen=seen)
+
+
+def _immutable_authenticated_snapshot(value: Any) -> Any:
+    """Return a recursively immutable snapshot of already-verified values."""
+    _mark_numpy_arrays_read_only(value)
+    return _immutable_snapshot_value(value)
+
+
+def _immutable_resolved_manifest_input(
+    *,
+    ref: ParentRef,
+    manifest: Any,
+    path: Path,
+    raw_bytes: bytes,
+) -> ResolvedManifestInput:
+    """Freeze the parsed authority while retaining its exact authenticated bytes."""
+    return ResolvedManifestInput(
+        ref=_immutable_model_snapshot(ref),
+        manifest=_immutable_model_snapshot(manifest),
+        path=path,
+        raw_bytes=raw_bytes,
+    )
 
 
 def _resolve_retained_local_manifest_input(
@@ -1051,7 +1111,7 @@ def _resolve_retained_local_manifest_input(
             "local evaluation manifest kind or id disagrees with ParentRef"
         )
     return (
-        ResolvedManifestInput(
+        _immutable_resolved_manifest_input(
             ref=parent,
             manifest=manifest,
             path=location.root / execution_uri,
@@ -1177,11 +1237,22 @@ def _read_retained_local_file(
         while chunk := os.read(file_descriptor, 1024 * 1024):
             chunks.append(chunk)
         after = os.fstat(file_descriptor)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        if require_single_link and after.st_nlink != 1:
+            raise StagedExecutionContextError(
+                f"{kind} hard-link count changed during read"
+            )
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
             after.st_dev,
             after.st_ino,
             after.st_size,
             after.st_mtime_ns,
+            after.st_ctime_ns,
         ):
             raise StagedExecutionContextError(f"{kind} identity changed during read")
         path_after = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
@@ -1192,6 +1263,7 @@ def _read_retained_local_file(
             path_before.st_nlink,
             path_before.st_size,
             path_before.st_mtime_ns,
+            path_before.st_ctime_ns,
         ) != (
             path_after.st_dev,
             path_after.st_ino,
@@ -1199,6 +1271,7 @@ def _read_retained_local_file(
             path_after.st_nlink,
             path_after.st_size,
             path_after.st_mtime_ns,
+            path_after.st_ctime_ns,
         ):
             raise StagedExecutionContextError(f"{kind} path changed during read")
         for parent_descriptor, component, expected_identity in directory_records:
