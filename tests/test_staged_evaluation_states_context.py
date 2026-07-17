@@ -381,6 +381,22 @@ def test_load_evaluation_states_rejects_local_path_escape(tmp_path: Path) -> Non
     assert isinstance(excinfo.value, StagedExecutionContextError)
 
 
+def test_load_evaluation_states_rejects_serialized_raw_nul_locator(tmp_path: Path) -> None:
+    locator = "bad\x00name.npz"
+    artifact = store_evaluation_states_artifact(
+        {"value": np.asarray([1])}, root=tmp_path, manifest_id="raw-nul"
+    ).model_copy(
+        update={"uri": locator, "metadata": {"relative_path": locator}}
+    )
+    context, parent = _local_context(
+        _manifest(artifact), tmp_path, normalize_locators=False
+    )
+
+    with pytest.raises(StagedLocatorTraversalError) as excinfo:
+        context.load_evaluation_states(parent)
+    assert isinstance(excinfo.value, StagedExecutionContextError)
+
+
 def test_load_evaluation_states_rejects_conflicting_local_locators(tmp_path: Path) -> None:
     artifact = store_evaluation_states_artifact(
         {"value": np.asarray([1])}, root=tmp_path, manifest_id="conflict"
