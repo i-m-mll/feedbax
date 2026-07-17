@@ -603,8 +603,11 @@ def _execute_evaluation_batch_rows(
                 update={"artifacts": [publish(artifact) for artifact in row.result.artifacts]}
             )
             staged_path = write_manifest(manifest, root=staging / row.row_id, index=False)
-            shutil.rmtree(staging / row.row_id / "index")
-            index = connect_index(staging / row.row_id / "index" / "feedbax.sqlite")
+            index_root = staging / row.row_id / "index"
+            shutil.rmtree(index_root)
+            if index_root.exists():
+                raise RuntimeError(f"staging index discard did not remove {index_root}")
+            index = connect_index(index_root / "feedbax.sqlite")
             index_manifest(index, manifest, path=root / staged_path.relative_to(staging))
             index.close()
             published_rows.append(

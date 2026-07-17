@@ -228,14 +228,16 @@ def test_batched_matrix_fails_closed_with_typed_row_diagnostic(tmp_path: Path) -
     assert not output.exists()
 
 
-def test_batched_matrix_fails_closed_when_staging_index_discard_fails(
+def test_batched_matrix_fails_closed_when_staging_index_discard_is_no_op(
     tmp_path: Path,
 ) -> None:
     real_rmtree = evaluation_module.shutil.rmtree
 
-    def fail_index_discard(path, *args, **kwargs):
+    def no_op_index_discard(path, *args, **kwargs):
         if Path(path).name == "index":
-            raise OSError("injected index discard failure")
+            if kwargs.get("ignore_errors") is True:
+                raise AssertionError("index discard must not ignore errors")
+            return None
         return real_rmtree(path, *args, **kwargs)
 
     register_evaluation_recipe(
@@ -249,8 +251,8 @@ def test_batched_matrix_fails_closed_when_staging_index_discard_fails(
     output = tmp_path / "batched"
     try:
         with (
-            patch.object(evaluation_module.shutil, "rmtree", side_effect=fail_index_discard),
-            pytest.raises(OSError, match="injected index discard failure"),
+            patch.object(evaluation_module.shutil, "rmtree", side_effect=no_op_index_discard),
+            pytest.raises(RuntimeError, match="staging index discard did not remove"),
         ):
             execute_evaluation_run_matrix(
                 _matrix(),
