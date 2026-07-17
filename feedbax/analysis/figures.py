@@ -58,6 +58,7 @@ from feedbax.plot.constructors import (
     get_figure_template,
 )
 from feedbax.plot.io import save_figure_with_spec
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 FIGURE_RENDER_ROLE = "figure_render"
 FIGURE_SPEC_ROLE = "figure_spec"
@@ -840,12 +841,16 @@ def _binding_data(
 def _piece_data(piece: Any, root: Path) -> dict[str, Any]:
     if piece.artifact_ref is None or piece.artifact_ref.uri is None:
         return {}
-    path = Path(piece.artifact_ref.uri)
-    if not path.is_absolute():
-        path = root / path
     if piece.artifact_ref.media_type != "application/json":
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    if piece.artifact_ref.uri.startswith("artifact://sha256/"):
+        raw = ImmutableArtifactBlobProvider(root.absolute()).get_bytes(piece.artifact_ref)
+        payload = json.loads(raw)
+    else:
+        path = Path(piece.artifact_ref.uri)
+        if not path.is_absolute():
+            path = root / path
+        payload = json.loads(path.read_text(encoding="utf-8"))
     if piece.data_path:
         payload = _get_payload_path(payload, piece.data_path)
     if not isinstance(payload, dict):
