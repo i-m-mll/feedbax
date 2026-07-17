@@ -256,7 +256,7 @@ def test_legacy_manifest_ref_makes_no_authenticated_claim(tmp_path: Path) -> Non
         resolve_manifest_input(legacy, tmp_path)
 
 
-def test_analysis_integrity_failure_precedes_recipe_cache_and_filesystem_effects(
+def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
     tmp_path: Path,
 ) -> None:
     _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
@@ -281,7 +281,8 @@ def test_analysis_integrity_failure_precedes_recipe_cache_and_filesystem_effects
     finally:
         unregister_analysis_recipe(spec.analysis_type)
     assert calls == []
-    assert _file_snapshot(tmp_path) == before
+    after = _file_snapshot(tmp_path)
+    assert after == before
     assert not (tmp_path / "cache").exists()
 
 

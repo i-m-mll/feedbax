@@ -17,6 +17,7 @@ import equinox as eqx
 import jax.tree as jt
 from feedbax.contracts.expressions import evaluate_query
 from feedbax.contracts.extraction import load_expression_context, set_dotted_path
+from feedbax.contracts.matrix_core import ordered_index_product
 from feedbax.contracts.manifest import (
     Provenance,
     SpecPayload,
@@ -1412,10 +1413,9 @@ def _expand_group(
                 f"zip sweep group {group.id!r} has mismatched lengths {sorted(lengths)!r}"
             )
         return [{axis_id: index for axis_id in group.axes} for index in range(next(iter(lengths)))]
-    return [
-        dict(zip(group.axes, indices))
-        for indices in _product(*(range(axis_lengths[axis_id]) for axis_id in group.axes))
-    ]
+    return ordered_index_product(
+        [(axis_id, axis_lengths[axis_id]) for axis_id in group.axes]
+    )
 
 
 def _validate_manual_coordinate(

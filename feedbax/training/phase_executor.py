@@ -29,6 +29,7 @@ UpdateKernel = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], Mapping[str, Any]
 ]
 ProgressCallback = Callable[[ProgressCoordinate], None]
+MethodObservationCallback = Callable[[ProgressCoordinate], None]
 StepGuard = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], "StepGuardResult | None"
 ]
@@ -62,6 +63,17 @@ def _copy_phase_checkpoint(checkpoint: "PhaseCheckpoint") -> "PhaseCheckpoint":
 
 def _copy_progress_coordinate(coordinate: ProgressCoordinate) -> ProgressCoordinate:
     return coordinate.model_copy(update={"metrics": _copy_executor_mapping(coordinate.metrics)})
+
+
+def _progress_observation(
+    coordinate: ProgressCoordinate,
+    completed_batches: int,
+    *,
+    include_completed_batches: bool,
+) -> ProgressCoordinate:
+    if include_completed_batches:
+        return coordinate.model_copy(update={"completed_batches": completed_batches})
+    return coordinate
 
 
 @dataclass
@@ -272,6 +284,57 @@ class PhaseProgramExecutor:
                         f"mapped filtered-vmap preflight failed: {exc}",
                     ) from exc
 
+    def merge_resume_slots(
+        self,
+        slots: Mapping[str, Any],
+        checkpoint: PhaseCheckpoint,
+    ) -> dict[str, Any]:
+        """Overlay declared checkpoint authority onto prepared runtime slots."""
+        barrier = self._barriers.get(checkpoint.barrier)
+        if barrier is None:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}",
+                f"unknown checkpoint barrier {checkpoint.barrier!r}",
+            )
+        declared = {slot.slot: slot for slot in barrier.slots}
+        unknown = sorted(set(checkpoint.slots) - set(declared))
+        if unknown:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                f"checkpoint contains undeclared slots {unknown!r}",
+            )
+        missing_required_checkpoint = [
+            name
+            for name, spec in declared.items()
+            if spec.required and name not in checkpoint.slots
+        ]
+        if missing_required_checkpoint:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                f"checkpoint is missing required slots {missing_required_checkpoint!r}",
+            )
+        if not slots:
+            return _copy_executor_mapping(checkpoint.slots)
+        missing_prepared = sorted(set(checkpoint.slots) - set(slots))
+        if missing_prepared:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                "checkpoint slots lack prepared runtime templates "
+                f"{missing_prepared!r}",
+            )
+        missing_required_prepared = [
+            name for name, spec in declared.items() if spec.required and name not in slots
+        ]
+        if missing_required_prepared:
+            raise WorkerContractValidationError(
+                f"/checkpoint_barriers/{checkpoint.barrier}/slots",
+                "prepared runtime is missing required checkpoint slots "
+                f"{missing_required_prepared!r}",
+            )
+        merged = _copy_executor_mapping(slots)
+        merged.update(_copy_executor_mapping(checkpoint.slots))
+        return merged
+
     def run(
         self,
         slots: Mapping[str, Any],
@@ -282,9 +345,11 @@ class PhaseProgramExecutor:
         stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
+        method_observation_callback: MethodObservationCallback | None = None,
         step_guard: StepGuard | None = None,
         checkpoint_interval: int | None = None,
         progress_interval: int | None = None,
+        include_completed_batches_in_progress: bool = False,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier.
 
@@ -296,11 +361,15 @@ class PhaseProgramExecutor:
         self._validate_interval(progress_interval, name="progress_interval")
         progress: list[ProgressCoordinate] = []
         checkpoint_context = dict(context or {})
+        mapped_kernels = {
+            kernel_ref: self._mapped_kernel(kernel)
+            for kernel_ref, kernel in self.kernels.items()
+        }
         resume_inner_step = 0
         resuming_within_phase = False
         if resume_from_barrier is not None:
             checkpoint = self.checkpoint_store.load(resume_from_barrier)
-            current_slots = dict(checkpoint.slots)
+            current_slots = self.merge_resume_slots(slots, checkpoint)
             start_phase, resume_inner_step = self._resume_position(checkpoint)
             resuming_within_phase = resume_inner_step > 0
             coordinate = checkpoint.coordinate.model_copy(
@@ -344,7 +413,7 @@ class PhaseProgramExecutor:
                             f"missing callable for kernel_ref {step.kernel.kernel_ref!r}",
                         )
                     if self._active_axis is not None and self._active_axis in step.axes:
-                        updates = self._mapped_kernel(kernel)(
+                        updates = mapped_kernels[step.kernel.kernel_ref](
                             {
                                 name: current_slots[name]
                                 for name in self._mapped_slots
@@ -398,15 +467,30 @@ class PhaseProgramExecutor:
                         f"previous={previous_completed_batch}, current={completed_batches}",
                     )
                 previous_completed_batch = completed_batches
+                if method_observation_callback is not None:
+                    method_observation_callback(
+                        _copy_progress_coordinate(
+                            _progress_observation(
+                                coordinate,
+                                completed_batches,
+                                include_completed_batches=True,
+                            )
+                        )
+                    )
                 if progress_interval is None or self._interval_due(
                     completed_batches,
                     progress_interval,
                     last_progress_batch,
                 ):
-                    progress.append(coordinate)
+                    observed_coordinate = _progress_observation(
+                        coordinate,
+                        completed_batches,
+                        include_completed_batches=include_completed_batches_in_progress,
+                    )
+                    progress.append(observed_coordinate)
                     last_progress_batch = completed_batches
                     if progress_callback is not None:
-                        progress_callback(_copy_progress_coordinate(coordinate))
+                        progress_callback(_copy_progress_coordinate(observed_coordinate))
                 if checkpoint_interval is not None and self._interval_due(
                     completed_batches,
                     checkpoint_interval,
@@ -440,10 +524,15 @@ class PhaseProgramExecutor:
                 and progress_interval is not None
                 and completed_batches != last_progress_batch
             ):
-                progress.append(coordinate)
+                observed_coordinate = _progress_observation(
+                    coordinate,
+                    completed_batches,
+                    include_completed_batches=include_completed_batches_in_progress,
+                )
+                progress.append(observed_coordinate)
                 last_progress_batch = completed_batches
                 if progress_callback is not None:
-                    progress_callback(_copy_progress_coordinate(coordinate))
+                    progress_callback(_copy_progress_coordinate(observed_coordinate))
 
             saved_checkpoint: PhaseCheckpoint | None = None
             if checkpoint_interval is None and phase.checkpoint_barrier is not None:
@@ -580,9 +669,11 @@ class PhaseProgramExecutor:
             if authority.slot in self._mapped_slots
             else [slots[authority.slot]]
         )
-        batches = [
-            self._batch_progress_value(value, authority.field_path, path) for value in values
+        resolved = [
+            self._batch_progress_field(value, authority.field_path, path) for value in values
         ]
+        observed = jax.device_get(resolved)
+        batches = [self._batch_progress_value(value, path) for value in observed]
         if any(value != batches[0] for value in batches[1:]):
             raise WorkerContractValidationError(
                 path,
@@ -598,11 +689,11 @@ class PhaseProgramExecutor:
         )
 
     @staticmethod
-    def _batch_progress_value(
+    def _batch_progress_field(
         value: Any,
         field_path: Sequence[str | int],
         path: str,
-    ) -> int:
+    ) -> Any:
         for position, segment in enumerate(field_path):
             segment_path = f"{path}/field_path/{position}"
             if isinstance(value, Mapping):
@@ -624,10 +715,12 @@ class PhaseProgramExecutor:
                     segment_path,
                     "cannot traverse non-container in batch-progress slot",
                 )
+        return value
+
+    @staticmethod
+    def _batch_progress_value(value: Any, path: str) -> int:
         try:
-            scalar = jax.device_get(value)
-            if hasattr(scalar, "item"):
-                scalar = scalar.item()
+            scalar = value.item() if hasattr(value, "item") else value
             if isinstance(scalar, bool):
                 raise TypeError("boolean is not a batch coordinate")
             batches = index(scalar)

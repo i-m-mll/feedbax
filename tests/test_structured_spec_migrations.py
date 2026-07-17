@@ -10,6 +10,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
     CheckpointForkProvenance,
 )
 from feedbax.contracts.migrations import (
@@ -25,6 +26,10 @@ from feedbax.contracts.migrations import (
     migrate_studio_stage_spec,
     migrate_studio_task_binding_spec,
     migrate_structured_spec_payload,
+)
+from feedbax.orchestration.events import (
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
 )
 from feedbax.contracts.training import (
     LR_SCHEDULE_SPEC_SCHEMA_ID,
@@ -120,7 +125,7 @@ from feedbax.training.diagnostics import (
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID,
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
-    TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
 )
 from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
@@ -326,7 +331,7 @@ def test_execution_identity_envelope_v1_migrates_with_unavailable_provenance() -
         (
             "TrainingDiagnostics",
             TRAINING_DIAGNOSTICS_SCHEMA_ID,
-            TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
         ),
     ],
 )
@@ -367,8 +372,13 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
             "lr_trace": [{"step": 1, "learning_rate": 0.1}],
         },
     )
-    assert diagnostics.payload["schema_version"].endswith(".v2")
+    assert diagnostics.payload["schema_version"].endswith(".v3")
     assert diagnostics.payload["lr_trace"][0]["axis_coordinates"] is None
+    assert diagnostics.payload["method_trace"] is None
+    assert [record.migration_id for record in diagnostics.migration_records] == [
+        "training-diagnostics-v1-to-v2-axis-coordinates",
+        "training-diagnostics-v2-to-v3-method-trace",
+    ]
 
     provenance = default_spec_registry.migrate(
         "CheckpointForkProvenance",
@@ -412,6 +422,20 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
             {
                 "schema_id": "feedbax.manifest.mapped_metric_value",
                 "schema_version": "feedbax.manifest.mapped_metric_value.v0",
+            },
+        )
+
+    structured = default_spec_registry.resolve("StructuredMappedMetricValue")
+    assert structured.identity == STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID
+    assert structured.current_version == STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION
+    assert structured.policy is not None
+    assert structured.policy.stance == "reject"
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "StructuredMappedMetricValue",
+            {
+                "schema_id": STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+                "schema_version": f"{STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",
             },
         )
 
@@ -656,7 +680,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.spec.training_method.standard_supervised_payload"
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
-    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v4"
+    assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v5"
     assert families["PathExpression"].identity == PATH_EXPRESSION_SCHEMA_ID
     assert families["PathExpression"].current_version == PATH_EXPRESSION_SCHEMA_VERSION
     assert families["ExtractionProductSpec"].identity == EXTRACTION_PRODUCT_SPEC_SCHEMA_ID
@@ -713,6 +737,75 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["SpecPayload"].namespace == SchemaNamespaceKind.MANIFEST
     assert not families["RegistryEntry"].durable
     assert not families["StudioSchemaRegistry"].durable
+
+
+@pytest.mark.parametrize(
+    ("source_version", "stage_payload"),
+    [
+        (
+            "feedbax.spec.analysis_bundle.v2",
+            {"name": "analysis", "kind": "analysis", "params": {}},
+        ),
+        (
+            "feedbax.spec.analysis_bundle.v3",
+            {"name": "analysis", "kind": "analysis", "local_params": {}},
+        ),
+    ],
+)
+def test_analysis_bundle_old_version_chain_stamps_recompute_policy(
+    source_version: str,
+    stage_payload: dict[str, object],
+) -> None:
+    result = migrate_structured_spec_payload(
+        "AnalysisBundleSpec",
+        {
+            "schema_id": "feedbax.spec.analysis_bundle",
+            "schema_version": source_version,
+            "name": "legacy",
+            "templates": [{"name": "template", "analysis_type": "demo"}],
+            "stages": [stage_payload],
+        },
+    )
+
+    assert result.target_version == "feedbax.spec.analysis_bundle.v5"
+    assert result.payload["templates"][0]["evaluation_states_policy"] == "recompute"
+    assert result.payload["stages"][0]["evaluation_states_policy"] == "recompute"
+
+
+def test_analysis_bundle_v4_to_v5_preserves_authored_policy_and_stage_scope() -> None:
+    result = migrate_structured_spec_payload(
+        "AnalysisBundleSpec",
+        {
+            "schema_id": "feedbax.spec.analysis_bundle",
+            "schema_version": "feedbax.spec.analysis_bundle.v4",
+            "name": "policy",
+            "templates": [
+                {"name": "legacy", "analysis_type": "demo"},
+                {
+                    "name": "strict",
+                    "analysis_type": "demo",
+                    "evaluation_states_policy": "require_durable",
+                },
+            ],
+            "stages": [
+                {"name": "evaluation", "kind": "evaluation"},
+                {"name": "analysis", "kind": "analysis"},
+                {
+                    "name": "materialize",
+                    "kind": "materialization",
+                    "evaluation_states_policy": "require_durable",
+                },
+                {"name": "report", "kind": "report"},
+            ],
+        },
+    )
+
+    assert result.payload["templates"][0]["evaluation_states_policy"] == "recompute"
+    assert result.payload["templates"][1]["evaluation_states_policy"] == "require_durable"
+    assert "evaluation_states_policy" not in result.payload["stages"][0]
+    assert result.payload["stages"][1]["evaluation_states_policy"] == "recompute"
+    assert result.payload["stages"][2]["evaluation_states_policy"] == "require_durable"
+    assert "evaluation_states_policy" not in result.payload["stages"][3]
 
 
 def test_loss_term_spec_v1_migrates_to_v2_schema_identity() -> None:
@@ -1032,6 +1125,30 @@ def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:
             "CheckpointForkPlan",
             {"schema_version": "feedbax.spec.training_checkpoint_fork_plan.v0"},
         )
+
+
+def test_checkpoint_fork_plan_v1_migration_preserves_modes_and_guards_v2_mode() -> None:
+    for mode in (None, "preserve", "continue_segment"):
+        policy = {} if mode is None else {"mode": mode}
+        result = default_spec_registry.migrate(
+            "CheckpointForkPlan",
+            {
+                "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+                "targets": [{"history_policy": policy}],
+            },
+        )
+        assert result.payload["schema_version"] == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
+        assert result.payload["targets"][0]["history_policy"] == policy
+
+    for mode in ("prepare_continuation", "unknown"):
+        with pytest.raises(ValueError, match="unsupported history mode"):
+            default_spec_registry.migrate(
+                "CheckpointForkPlan",
+                {
+                    "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+                    "targets": [{"history_policy": {"mode": mode}}],
+                },
+            )
 
 
 def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:

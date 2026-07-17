@@ -62,7 +62,7 @@ def test_bundle_stage_local_params_is_explicit_and_exclusive() -> None:
         )
 
 
-def test_analysis_bundle_v4_is_accepted_without_migration() -> None:
+def test_analysis_bundle_current_version_is_accepted_without_migration() -> None:
     payload = AnalysisBundleSpec(name="current").model_dump(mode="json")
     result = migrate_structured_spec_payload("AnalysisBundleSpec", payload)
 
@@ -93,11 +93,13 @@ def test_analysis_bundle_v2_migrates_stage_params_to_explicit_local_params() -> 
     assert [record.migration_id for record in result.migration_records] == [
         "analysis-bundle-v2-to-v3-shared-params-base",
         "analysis-bundle-v3-to-v4-per-input-prerequisites",
+        "analysis-bundle-v4-to-v5-evaluation-states-policy",
     ]
     assert migrated.params_base.params == {}
     assert migrated.stages[0].local_params == {"window": 11}
     assert migrated.stages[0].params_patches == []
     assert migrated.stages[0].prerequisite_bindings == []
+    assert migrated.stages[0].evaluation_states_policy == "recompute"
 
 
 def test_analysis_bundle_v3_migrates_with_empty_prerequisite_bindings() -> None:
@@ -114,7 +116,8 @@ def test_analysis_bundle_v3_migrates_with_empty_prerequisite_bindings() -> None:
     migrated = AnalysisBundleSpec.model_validate(result.payload)
     assert migrated.schema_version == ANALYSIS_BUNDLE_SCHEMA_VERSION
     assert [record.migration_id for record in result.migration_records] == [
-        "analysis-bundle-v3-to-v4-per-input-prerequisites"
+        "analysis-bundle-v3-to-v4-per-input-prerequisites",
+        "analysis-bundle-v4-to-v5-evaluation-states-policy",
     ]
 
 
@@ -142,7 +145,14 @@ stages:
             manifest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
             size_bytes: 10
 """
-    loaded = AnalysisBundleSpec.model_validate(get_yaml_loader(typ="safe").load(payload))
+    migrated = migrate_structured_spec_payload(
+        "AnalysisBundleSpec",
+        get_yaml_loader(typ="safe").load(payload),
+    )
+    assert [record.migration_id for record in migrated.migration_records] == [
+        "analysis-bundle-v4-to-v5-evaluation-states-policy"
+    ]
+    loaded = AnalysisBundleSpec.model_validate(migrated.payload)
     round_tripped = AnalysisBundleSpec.model_validate_json(loaded.model_dump_json())
     binding = round_tripped.stages[0].prerequisite_bindings[0]
     assert binding.input_id == "training-1"

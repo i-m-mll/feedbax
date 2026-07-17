@@ -56,10 +56,18 @@ from feedbax.contracts.worker import (
     AxisCoordinateSpec,
     BarrierArtifactSinkSpec,
     MaterializedSlotAxisBinding,
+    MethodContractSpec,
+    MethodTrainingDiagnosticsSpec,
     ProgressCoordinate,
 )
 from feedbax.objectives.service import LossService, ObjectiveLoweringError
-from feedbax.orchestration.events import RunEventEmitter, normalize_serialized_metrics
+from feedbax.orchestration.events import (
+    MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+    RunEventEmitter,
+    normalize_serialized_metrics,
+)
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
     ResumeSlotTransform,
@@ -91,7 +99,11 @@ from feedbax.training.preparation import (
 from feedbax.training.diagnostics import (
     CheckpointTransactionDiagnostic,
     LearningRateDiagnostic,
+    MethodTrainingTrace,
+    MethodTrainingTraceRecord,
     NativeExecutionProducerContext,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
     TrainingDiagnostics,
 )
 from feedbax.training.worker_validation import (
@@ -107,6 +119,7 @@ CancellationProbe = Callable[[ProgressCoordinate], CancellationDecision | None]
 _RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
 _FEEDBAX_METADATA_NAMESPACE_PREFIX = "feedbax_"
 _METADATA_VALUE_ABSENT = object()
+_METHOD_OBSERVATION_BUFFER_CAP = 500
 
 
 class TrainingRunExecutorError(ValueError):
@@ -127,6 +140,110 @@ class _ImmediateCancellation(Exception):
     def __init__(self, coordinate: ProgressCoordinate, decision: CancellationDecision) -> None:
         self.coordinate = coordinate
         self.decision = decision
+
+
+@dataclass
+class _BufferedStaticValues:
+    """Non-array leaves retained in update order across one buffered chunk."""
+
+    values: tuple[Any, ...]
+
+
+@dataclass
+class _MethodObservationBuffer:
+    """Bound raw method observations until an evidence publication boundary."""
+
+    observations: list[dict[str, Any]]
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]]
+    capacity: int = _METHOD_OBSERVATION_BUFFER_CAP
+
+    def __post_init__(self) -> None:
+        if self.capacity <= 0:
+            raise ValueError("method observation buffer capacity must be positive")
+        self._coordinates: list[ProgressCoordinate] = []
+        self.flush_sizes: list[int] = []
+        self.peak_buffered_updates = 0
+
+    @property
+    def buffered_updates(self) -> int:
+        """Return the number of raw updates awaiting materialization."""
+        return len(self._coordinates)
+
+    def append(self, coordinate: ProgressCoordinate) -> None:
+        """Retain one immutable raw coordinate, flushing only at hard capacity."""
+        self._coordinates.append(coordinate)
+        self.peak_buffered_updates = max(
+            self.peak_buffered_updates,
+            len(self._coordinates),
+        )
+        if len(self._coordinates) >= self.capacity:
+            self.flush()
+
+    def flush(self) -> None:
+        """Materialize one stacked metrics PyTree and normalize each host record."""
+        if not self._coordinates:
+            return
+        coordinates = tuple(self._coordinates)
+        metrics = tuple(coordinate.metrics for coordinate in coordinates)
+
+        def stack_leaves(*leaves: Any) -> Any:
+            if all(leaf is None for leaf in leaves):
+                return None
+            try:
+                return jnp.stack(leaves)
+            except (TypeError, ValueError):
+                if any(isinstance(leaf, (jax.Array, np.ndarray)) for leaf in leaves):
+                    raise
+                return _BufferedStaticValues(tuple(leaves))
+
+        try:
+            expected_structure = jt.structure(metrics[0], is_leaf=lambda item: item is None)
+            if any(
+                jt.structure(item, is_leaf=lambda value: value is None) != expected_structure
+                for item in metrics[1:]
+            ):
+                raise TrainingRunExecutorError(
+                    "buffered method observations changed metrics PyTree structure"
+                )
+            stacked_metrics = jt.map(
+                stack_leaves,
+                *metrics,
+                is_leaf=lambda item: item is None,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TrainingRunExecutorError(
+                "buffered method observations could not be stacked by corresponding leaf"
+            ) from exc
+        host_metrics = jax.device_get(stacked_metrics)
+        normalized: list[dict[str, Any]] = []
+        for index, coordinate in enumerate(coordinates):
+            record_metrics = jt.map(
+                lambda leaf: (
+                    None
+                    if leaf is None
+                    else leaf.values[index]
+                    if isinstance(leaf, _BufferedStaticValues)
+                    else leaf[index]
+                ),
+                host_metrics,
+                is_leaf=lambda item: item is None or isinstance(item, _BufferedStaticValues),
+            )
+            normalized.append(
+                _history_event(
+                    coordinate.model_copy(update={"metrics": record_metrics}),
+                    self.slot_axis_bindings,
+                )
+            )
+        self.observations.extend(normalized)
+        self.flush_sizes.append(len(coordinates))
+        self._coordinates.clear()
+
+    def assert_empty(self) -> None:
+        """Reject an execution result that omitted a buffered observation tail."""
+        if self._coordinates:
+            raise TrainingRunExecutorError(
+                f"{len(self._coordinates)} method observations remain unflushed"
+            )
 
 
 def _compilation_cache_snapshot() -> dict[str, Any]:
@@ -258,6 +375,11 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         }
         self._writes: list[CheckpointWriteResult] = []
         self._barrier_artifacts: list[ArtifactRef] = []
+        self._before_save: Callable[[ProgressCoordinate], None] | None = None
+
+    def set_before_save(self, callback: Callable[[ProgressCoordinate], None] | None) -> None:
+        """Install an executor-local validation hook before checkpoint publication."""
+        self._before_save = callback
 
     @property
     def writes(self) -> tuple[CheckpointWriteResult, ...]:
@@ -270,6 +392,8 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         return tuple(self._barrier_artifacts)
 
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
+        if self._before_save is not None:
+            self._before_save(checkpoint.coordinate)
         saved = super().save(checkpoint)
         barrier_spec = self._barrier_specs[saved.barrier]
         prepared_artifacts = _prepare_barrier_artifacts(
@@ -679,9 +803,14 @@ def execute_training_run_spec(
         mapping_levels=mapping_levels,
         slot_axis_bindings=slot_axis_bindings,
     )
+    prepared_slots = (
+        executor.merge_resume_slots(slots, loaded_resume_checkpoint)
+        if loaded_resume_checkpoint is not None
+        else slots
+    )
     try:
         executor.preflight(
-            loaded_resume_checkpoint.slots if loaded_resume_checkpoint is not None else slots,
+            prepared_slots,
             run_id=resolved_run_id,
             context=executor_context,
         )
@@ -690,6 +819,25 @@ def execute_training_run_spec(
     if loaded_resume_checkpoint is not None:
         checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
+    method_observations: list[dict[str, Any]] = []
+    method_observation_buffer = (
+        _MethodObservationBuffer(method_observations, slot_axis_bindings)
+        if method_contract.training_diagnostics is not None
+        else None
+    )
+    if method_observation_buffer is not None:
+        checkpoint_store.set_before_save(lambda _coordinate: method_observation_buffer.flush())
+    method_observation_origin_batch = (
+        _terminal_completed_batches(
+            program=program,
+            final_slots=prepared_slots,
+            fallback=segment_start_batch,
+            require_authority=True,
+            slot_axis_bindings=slot_axis_bindings,
+        )
+        if method_contract.training_diagnostics is not None
+        else segment_start_batch
+    )
     total_batches = int(run_spec.training_config.n_batches or 0)
     started_at = (
         time.perf_counter()
@@ -712,6 +860,24 @@ def execute_training_run_spec(
         cancellation = decision
 
     try:
+        live_progress_callback = _live_progress_callback(
+            progress_callback,
+            live_history_events,
+            run_event_emitter=run_event_emitter,
+            total_batches=total_batches,
+            started_at=started_at,
+            cancellation_observer=observe_cancellation,
+            runtime_telemetry=runtime_telemetry,
+            cache_before=cache_before,
+            start_semantics=execution_start_semantics,
+            slot_axis_bindings=slot_axis_bindings,
+        )
+
+        def publish_progress(coordinate: ProgressCoordinate) -> None:
+            if method_observation_buffer is not None:
+                method_observation_buffer.flush()
+            live_progress_callback(coordinate)
+
         execution = executor.run(
             slots,
             run_id=resolved_run_id,
@@ -719,19 +885,11 @@ def execute_training_run_spec(
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
-            progress_callback=(
-                _live_progress_callback(
-                    progress_callback,
-                    live_history_events,
-                    run_event_emitter=run_event_emitter,
-                    total_batches=total_batches,
-                    started_at=started_at,
-                    cancellation_observer=observe_cancellation,
-                    runtime_telemetry=runtime_telemetry,
-                    cache_before=cache_before,
-                    start_semantics=execution_start_semantics,
-                    slot_axis_bindings=slot_axis_bindings,
-                )
+            progress_callback=publish_progress,
+            method_observation_callback=(
+                method_observation_buffer.append
+                if method_observation_buffer is not None
+                else None
             ),
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
@@ -742,7 +900,11 @@ def execute_training_run_spec(
             ),
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
+            include_completed_batches_in_progress=method_contract.training_diagnostics is not None,
         )
+        if method_observation_buffer is not None:
+            method_observation_buffer.flush()
+            method_observation_buffer.assert_empty()
         checkpoint_writes = checkpoint_store.writes
         continuation = run_spec.checkpoint_progress.continuation
         if continuation is not None and continuation.self_contained and checkpoint_writes:
@@ -767,8 +929,11 @@ def execute_training_run_spec(
             program=program,
             checkpoint_writes=checkpoint_writes,
             segment_start_batch=segment_start_batch,
+            method_observation_origin_batch=method_observation_origin_batch,
             history_events=history_events,
+            method_observations=method_observations,
             execution_context=producer_context,
+            method_contract=method_contract,
             slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
@@ -855,8 +1020,11 @@ def execute_training_run_spec(
             program=program,
             checkpoint_writes=checkpoint_writes,
             segment_start_batch=segment_start_batch,
+            method_observation_origin_batch=method_observation_origin_batch,
             history_events=history_events,
+            method_observations=method_observations,
             execution_context=producer_context,
+            method_contract=method_contract,
             slot_axis_bindings=slot_axis_bindings,
         )
         diagnostics_path = _diagnostics_output_path(
@@ -1542,26 +1710,26 @@ def _executor_nan_guard(
 
 
 def _nan_metric_names(metrics: Mapping[str, Any]) -> list[str]:
-    return sorted(name for name, value in metrics.items() if _tree_has_nan(value))
-
-
-def _tree_has_nan(value: Any) -> bool:
-    for leaf in jt.leaves(value, is_leaf=lambda item: item is None):
-        if _leaf_has_nan(leaf):
-            return True
-    return False
-
-
-def _leaf_has_nan(value: Any) -> bool:
-    if value is None:
-        return False
-    try:
-        array = jnp.asarray(value)
-        if not jnp.issubdtype(array.dtype, jnp.number):
-            return False
-        return bool(jax.device_get(jnp.any(jnp.isnan(array))))
-    except (TypeError, ValueError):
-        return False
+    names: list[str] = []
+    flags: list[jax.Array] = []
+    for name, value in sorted(metrics.items()):
+        leaf_flags: list[jax.Array] = []
+        for leaf in jt.leaves(value, is_leaf=lambda item: item is None):
+            if leaf is None:
+                continue
+            try:
+                array = jnp.asarray(leaf)
+            except (TypeError, ValueError):
+                continue
+            if jnp.issubdtype(array.dtype, jnp.number):
+                leaf_flags.append(jnp.any(jnp.isnan(array)))
+        if leaf_flags:
+            names.append(name)
+            flags.append(jnp.any(jnp.stack(leaf_flags)))
+    if not flags:
+        return []
+    observed = jax.device_get(jnp.stack(flags))
+    return [name for name, flag in zip(names, observed, strict=True) if flag]
 
 
 def _checkpoint_root(
@@ -1824,8 +1992,11 @@ def _build_training_diagnostics(
     program: Any,
     checkpoint_writes: Sequence[CheckpointWriteResult],
     segment_start_batch: int,
+    method_observation_origin_batch: int,
     history_events: Sequence[Mapping[str, Any]],
+    method_observations: Sequence[Mapping[str, Any]],
     execution_context: NativeExecutionProducerContext | None,
+    method_contract: MethodContractSpec,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> TrainingDiagnostics:
     transactions: list[CheckpointTransactionDiagnostic] = []
@@ -1848,7 +2019,9 @@ def _build_training_diagnostics(
         program=program,
         final_slots=final_slots,
         fallback=(
-            checkpoint_completed_batches
+            final_coordinate.completed_batches
+            if final_coordinate.completed_batches is not None
+            else checkpoint_completed_batches
             if checkpoint_completed_batches is not None
             else final_coordinate.program_step
         ),
@@ -1872,7 +2045,28 @@ def _build_training_diagnostics(
         history_events,
         declared=(diagnostic_input.lr_trace if diagnostic_input is not None else ()),
     )
+    declaration = method_contract.training_diagnostics
+    method_trace = _method_training_trace(
+        declaration,
+        method_ref=method_contract.method_ref,
+        method_observations=method_observations,
+        observation_origin_batch=method_observation_origin_batch,
+        completed_batches=cumulative_completed_batches,
+        replica_count=next(
+            (
+                axis.size
+                for axis in method_contract.axes
+                if declaration is not None and axis.name == declaration.replica_axis
+            ),
+            None,
+        ),
+    )
     return TrainingDiagnostics(
+        schema_version=(
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
+            if method_trace is not None
+            else TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
+        ),
         manifest_id=manifest_id,
         run_id=run_id,
         terminal_status=status,
@@ -1887,8 +2081,120 @@ def _build_training_diagnostics(
         optimizer_build_context=(
             diagnostic_input.optimizer_build_context if diagnostic_input is not None else None
         ),
+        method_trace=method_trace,
         metadata=(dict(diagnostic_input.metadata) if diagnostic_input is not None else {}),
     )
+
+
+def _method_training_trace(
+    declaration: MethodTrainingDiagnosticsSpec | None,
+    *,
+    method_ref: str,
+    method_observations: Sequence[Mapping[str, Any]],
+    observation_origin_batch: int,
+    completed_batches: int,
+    replica_count: int | None,
+) -> MethodTrainingTrace | None:
+    if declaration is None:
+        return None
+    if replica_count is None:
+        raise TrainingRunExecutorError("method trace lacks sized replica-axis authority")
+    observed: dict[int, list[MethodTrainingTraceRecord]] = {}
+    for event in method_observations:
+        coordinate = event.get("coordinate")
+        metrics = event.get("metrics")
+        if not isinstance(coordinate, Mapping) or not isinstance(metrics, Mapping):
+            raise TrainingRunExecutorError("method trace requires typed progress events")
+        batch = coordinate.get("completed_batches")
+        if isinstance(batch, bool) or not isinstance(batch, int):
+            raise TrainingRunExecutorError("method trace progress is missing completed_batches")
+        if batch <= observation_origin_batch or batch > completed_batches:
+            raise TrainingRunExecutorError(
+                f"method trace completed batch {batch} is outside the active segment"
+            )
+        if batch in observed:
+            raise TrainingRunExecutorError(f"method trace duplicates completed batch {batch}")
+        payload = metrics.get(declaration.metric_payload_slot)
+        if not isinstance(payload, Mapping) or payload.get("schema_id") not in {
+            "feedbax.manifest.mapped_metric_value",
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+        }:
+            raise TrainingRunExecutorError("method trace metric payload is not a mapped metric")
+        axes = payload.get("axes")
+        if not isinstance(axes, list) or len(axes) != 1:
+            raise TrainingRunExecutorError("method trace metric requires one mapped replica axis")
+        axis = axes[0]
+        if (
+            not isinstance(axis, Mapping)
+            or axis.get("axis") != declaration.replica_axis
+            or (axis.get("role"), axis.get("level"), axis.get("mode"), axis.get("array_axis"))
+            != ("replicate", 0, "mapped", 0)
+        ):
+            raise TrainingRunExecutorError("method trace mapped axis does not match replica_axis")
+        size = axis.get("size")
+        structured = payload.get("schema_id") == STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID
+        expected_version = (
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION
+            if structured
+            else MAPPED_METRIC_VALUE_SCHEMA_VERSION
+        )
+        if payload.get("schema_version") != expected_version:
+            raise TrainingRunExecutorError("method trace metric schema version is unsupported")
+        values = payload.get("value")
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or size != replica_count
+        ):
+            raise TrainingRunExecutorError("method trace does not cover the replica axis")
+        if structured:
+            if not isinstance(values, Mapping):
+                raise TrainingRunExecutorError("structured method trace value must be named")
+            replica_values = [
+                _structured_replica_value(values, index=index, size=size) for index in range(size)
+            ]
+        else:
+            array = np.asarray(values)
+            if array.shape[:1] != (size,):
+                raise TrainingRunExecutorError("method trace does not cover the replica axis")
+            replica_values = [array[index].tolist() for index in range(size)]
+        observed[batch] = [
+            MethodTrainingTraceRecord(
+                completed_batch=batch,
+                replica_index=index,
+                value=replica_values[index],
+            )
+            for index in range(size)
+        ]
+    expected = set(range(observation_origin_batch + 1, completed_batches + 1))
+    if set(observed) != expected:
+        missing = sorted(expected - set(observed))
+        raise TrainingRunExecutorError(f"method trace has incomplete batch coverage: {missing!r}")
+    return MethodTrainingTrace(
+        method_ref=method_ref,
+        trace_schema_id=declaration.trace_schema_id,
+        trace_schema_version=declaration.trace_schema_version,
+        measurement_basis=declaration.measurement_basis,
+        metric_payload_slot=declaration.metric_payload_slot,
+        replica_axis=declaration.replica_axis,
+        records=[record for batch in sorted(observed) for record in observed[batch]],
+    )
+
+
+def _structured_replica_value(value: Mapping[str, Any], *, index: int, size: int) -> dict[str, Any]:
+    if not value:
+        raise TrainingRunExecutorError("structured method trace named nodes cannot be empty")
+    replica: dict[str, Any] = {}
+    for name, item in value.items():
+        if not isinstance(name, str):
+            raise TrainingRunExecutorError("structured method trace names must be strings")
+        if isinstance(item, Mapping):
+            replica[name] = _structured_replica_value(item, index=index, size=size)
+            continue
+        if not isinstance(item, list) or len(item) != size:
+            raise TrainingRunExecutorError("structured method trace does not cover the replica axis")
+        replica[name] = item[index]
+    return replica
 
 
 def _same_row_resume_start_batch(manifest: CheckpointTransactionManifest) -> int:

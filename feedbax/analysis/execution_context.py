@@ -21,7 +21,7 @@ from feedbax.analysis.manifest_inputs import (
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
-    load_evaluation_states_container_bytes,
+    load_authenticated_evaluation_states_artifact,
 )
 from feedbax.contracts.manifest import (
     ArtifactRef,
@@ -251,7 +251,6 @@ class StagedExecutionContext:
                 "completed EvaluationRunManifest must have exactly one evaluation_states artifact"
             )
         artifact = artifacts[0]
-        _require_durable_evaluation_states_artifact(artifact)
         if location.artifact_provider is None:
             assert expected_root_identity is not None
             canonical = artifact.metadata.get("relative_path")
@@ -272,7 +271,11 @@ class StagedExecutionContext:
                     expected_size=artifact.size_bytes,
                     expected_sha256=artifact.sha256,
                 )
-                return load_evaluation_states_container_bytes(data)
+                return load_authenticated_evaluation_states_artifact(
+                    artifact,
+                    manifest_id=manifest.id,
+                    data=data,
+                )
             finally:
                 _require_directory_identity(
                     location.root, expected_root_identity, kind="parent execution"
@@ -283,8 +286,14 @@ class StagedExecutionContext:
             location.artifact_provider
         ]
         try:
-            data = provider.get_bytes(artifact, size_bytes=artifact.size_bytes)
-            return load_evaluation_states_container_bytes(data)
+            data = provider.get_bytes(
+                f"artifact://sha256/{artifact.sha256}", size_bytes=artifact.size_bytes
+            )
+            return load_authenticated_evaluation_states_artifact(
+                artifact,
+                manifest_id=manifest.id,
+                data=data,
+            )
         finally:
             _require_directory_identity(
                 Path(provider.root),
@@ -589,22 +598,6 @@ def _require_directory_identity(
     if observed != expected:
         raise StagedExecutionContextError(
             f"{kind} root authority was replaced after binding: {root}"
-        )
-
-
-def _require_durable_evaluation_states_artifact(artifact: ArtifactRef) -> None:
-    """Require a complete content-addressed durable evaluation-states reference."""
-    if artifact.sha256 is None or len(artifact.sha256) != 64:
-        raise StagedExecutionContextError(
-            "evaluation_states artifact requires a complete sha256"
-        )
-    if artifact.size_bytes is None or artifact.size_bytes < 0:
-        raise StagedExecutionContextError(
-            "evaluation_states artifact requires a nonnegative size_bytes"
-        )
-    if artifact.artifact_id != f"artifact://sha256/{artifact.sha256}":
-        raise StagedExecutionContextError(
-            "evaluation_states artifact_id must match its sha256"
         )
 
 

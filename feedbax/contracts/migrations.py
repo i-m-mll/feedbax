@@ -18,6 +18,7 @@ from feedbax.contracts.staged_execution import (
 from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
@@ -144,8 +145,22 @@ from feedbax.contracts.representation import (
 from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
+    EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
+    EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
+    ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
+    ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID,
+    ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION,
+    ANALYSIS_RUN_SPEC_SCHEMA_ID,
+    ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
+    ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,
+    ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION,
+    ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
@@ -248,6 +263,8 @@ from feedbax.orchestration.state import (
 from feedbax.orchestration.events import (
     MAPPED_METRIC_VALUE_SCHEMA_ID,
     MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
 )
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
 RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
@@ -261,7 +278,8 @@ NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
 )
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
-TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v2"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2 = "feedbax.manifest.training_diagnostics.v2"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v3"
 CHECKPOINT_FORK_PROVENANCE_SCHEMA_ID = "feedbax.manifest.training_checkpoint.fork_provenance"
 CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.training_checkpoint.fork_provenance.v1"
@@ -959,6 +977,24 @@ def _migrate_checkpoint_fork_provenance_v1_to_v2_payload(
     return migrated
 
 
+def _migrate_checkpoint_fork_plan_v1_to_v2_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    for target in migrated.get("targets", ()):
+        if not isinstance(target, Mapping):
+            continue
+        policy = target.get("history_policy")
+        mode = policy.get("mode") if isinstance(policy, Mapping) else None
+        if mode not in {None, "preserve", "continue_segment"}:
+            raise ValueError(
+                f"checkpoint fork plan v1 has unsupported history mode {mode!r}"
+            )
+    migrated["schema_id"] = CHECKPOINT_FORK_PLAN_SCHEMA_ID
+    migrated["schema_version"] = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
+    return migrated
+
+
 def _migrate_training_diagnostics_v1_to_v2_payload(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -967,6 +1003,15 @@ def _migrate_training_diagnostics_v1_to_v2_payload(
         {**dict(sample), "axis_coordinates": None}
         for sample in migrated.get("lr_trace", ())
     ]
+    migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
+    return migrated
+
+
+def _migrate_training_diagnostics_v2_to_v3_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["method_trace"] = None
     migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION
     return migrated
 
@@ -1854,6 +1899,31 @@ def _migrate_evaluation_states_container_v1(payload: dict[str, Any]) -> dict[str
     return migrated
 
 
+def _migrate_evaluation_run_matrix_v1_to_v2_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Add the authored staged-parent map introduced by matrix schema v2."""
+    migrated = dict(payload)
+    migrated.setdefault("staged_parents", {})
+    return migrated
+
+
+def _migrate_analysis_run_spec_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Make the historical implicit recomputation behavior explicit."""
+    migrated = dict(payload)
+    migrated["schema_id"] = ANALYSIS_RUN_SPEC_SCHEMA_ID
+    migrated.setdefault("evaluation_states_policy", "recompute")
+    return migrated
+
+
+def _migrate_analysis_run_manifest_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept historical manifests without inventing state-source evidence."""
+    migrated = dict(payload)
+    migrated.setdefault("evaluation_state_sources", [])
+    migrated.setdefault("evaluation_state_resolution_diagnostics", [])
+    return migrated
+
+
 def _migrate_training_run_matrix_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Promote the untyped v1 base locator to the fail-closed v2 union."""
     migrated = dict(payload)
@@ -1901,6 +1971,16 @@ def _migrate_training_run_matrix_v2_to_v3_payload(payload: dict[str, Any]) -> di
     migrated.setdefault("execution_dependencies", [])
     migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_evaluation_run_matrix_v2_to_v3_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve staged-parent and authoring fields in the combined v3 schema."""
+    migrated = dict(payload)
+    migrated["schema_id"] = EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated.setdefault("staged_parents", {})
     return migrated
 
 
@@ -2213,7 +2293,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "native training-run manifest."
             ),
             stance="migrate",
-            supported_old_versions=(TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,
+                TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=(f"{TRAINING_DIAGNOSTICS_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_training_run_executor.py",
@@ -2230,6 +2313,18 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Lossless JSON metric value carrying resolved mapped-axis evidence.",
             stance="reject",
             rejected_old_versions=(f"{MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_structured_spec_migrations.py",),
+        ),
+        _family(
+            "StructuredMappedMetricValue",
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+            STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.events.StructuredMappedMetricValue",
+            emitted_by=("feedbax.training.executor",),
+            consumed_by=("method-authored training diagnostics",),
+            description="Named numeric and boolean metric leaves carrying one replica axis.",
+            stance="reject",
+            rejected_old_versions=(f"{STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",),
             required_tests=("tests/test_structured_spec_migrations.py",),
         ),
         _family(
@@ -2533,11 +2628,28 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.analysis.harness",),
             consumed_by=("evaluation matrix materialization",),
             description=(
-                "Governed evaluation conditions expressed as one typed base plus "
-                "ordered row deltas and post-delta derivations."
+                "Governed evaluation conditions with staged parents and either explicit "
+                "rows or content-pinned ordered axis products."
             ),
-            stance="reject",
+            stance="migrate",
+            supported_old_versions=(
+                EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+                EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=("feedbax.spec.evaluation_run_matrix.v0",),
+            required_tests=("tests/test_evaluation_matrix.py",),
+        ),
+        _family(
+            "EvaluationAxisExpansionProvenance",
+            EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
+            EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
+            owner_module="feedbax.analysis.evaluation",
+            emitted_by=("feedbax.analysis.evaluation.execute_evaluation_run_matrix",),
+            consumed_by=("durable evaluation manifest inspection",),
+            description="Embedded canonical provenance for authored evaluation axis products.",
+            rejected_old_versions=(
+                "feedbax.manifest.evaluation_axis_expansion_provenance.v0",
+            ),
             required_tests=("tests/test_evaluation_matrix.py",),
         ),
         _family(
@@ -2551,7 +2663,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Portable multi-target checkpoint fork declaration with explicit "
                 "transform identities and compatibility projections."
             ),
-            stance="reject",
+            stance="migrate",
+            supported_old_versions=(CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,),
             rejected_old_versions=("feedbax.spec.training_checkpoint_fork_plan.v0",),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -2792,12 +2905,46 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "AnalysisRunSpec",
-            "feedbax.spec.analysis_run",
-            "feedbax.spec.analysis_run.v1",
+            ANALYSIS_RUN_SPEC_SCHEMA_ID,
+            ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.manifest",
             emitted_by=("AnalysisRunManifest.analysis_spec", "provider_manifest.schemas"),
             consumed_by=("feedbax.analysis.specs",),
             description="Declarative analysis run request.",
+            stance="migrate",
+            supported_old_versions=(ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,),
+            rejected_old_versions=(f"{ANALYSIS_RUN_SPEC_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_analysis_evaluation_states_policy.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "AnalysisEvaluationStateSource",
+            ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID,
+            ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.manifest",
+            emitted_by=("AnalysisRunManifest.evaluation_state_sources",),
+            consumed_by=("analysis manifest readers", "provider manifest compilation"),
+            description="Queryable supplier evidence for analysis evaluation-state inputs.",
+            rejected_old_versions=(
+                f"{ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID}.v0",
+                ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1,
+            ),
+            required_tests=("tests/test_analysis_evaluation_states_policy.py",),
+        ),
+        _family(
+            "AnalysisEvaluationStateResolutionDiagnostic",
+            ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID,
+            ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.manifest",
+            emitted_by=("AnalysisRunManifest.evaluation_state_resolution_diagnostics",),
+            consumed_by=("analysis manifest readers", "provider manifest compilation"),
+            description="Actionable fail-closed evaluation-state resolution evidence.",
+            rejected_old_versions=(
+                f"{ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID}.v0",
+            ),
+            required_tests=("tests/test_analysis_evaluation_states_policy.py",),
         ),
         _family(
             "AnalysisDataProductRequirement",
@@ -2893,7 +3040,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
-            "feedbax.spec.analysis_bundle.v4",
+            "feedbax.spec.analysis_bundle.v5",
             owner_module="feedbax.analysis.bundles",
             emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
             consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
@@ -2905,9 +3052,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 "feedbax.spec.analysis_bundle.v2",
                 "feedbax.spec.analysis_bundle.v3",
+                "feedbax.spec.analysis_bundle.v4",
             ),
             rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
-            required_tests=("tests/test_analysis_bundle_base_patches.py",),
+            required_tests=(
+                "tests/test_analysis_bundle_base_patches.py",
+                "tests/test_analysis_spec_bundles.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "PathExpression",
@@ -3170,12 +3322,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "FigureManifest"
                     else TRAINING_RUN_SET_SCHEMA_VERSION
                     if kind == "TrainingRunSetManifest"
+                    else ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
+                    if kind == "AnalysisRunManifest"
                     else MANIFEST_SCHEMA_VERSION
                 ),
-                stance="migrate" if kind == "TrainingRunSetManifest" else "reject",
+                stance=(
+                    "migrate"
+                    if kind in {"TrainingRunSetManifest", "AnalysisRunManifest"}
+                    else "reject"
+                ),
                 supported_old_versions=(
                     (TRAINING_RUN_SET_SCHEMA_VERSION_V1,)
                     if kind == "TrainingRunSetManifest"
+                    else (ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,)
+                    if kind == "AnalysisRunManifest"
                     else ()
                 ),
                 owner_module="feedbax.contracts.manifest",
@@ -3780,6 +3940,36 @@ def _migrate_analysis_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[s
     return migrated
 
 
+def _migrate_analysis_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Make historical analysis-state recomputation explicit at authored boundaries."""
+    migrated = dict(payload)
+    raw_templates = migrated.get("templates", [])
+    if isinstance(raw_templates, list):
+        templates: list[Any] = []
+        for raw_template in raw_templates:
+            if not isinstance(raw_template, Mapping):
+                templates.append(raw_template)
+                continue
+            template = dict(raw_template)
+            template.setdefault("evaluation_states_policy", "recompute")
+            templates.append(template)
+        migrated["templates"] = templates
+
+    raw_stages = migrated.get("stages", [])
+    if isinstance(raw_stages, list):
+        stages: list[Any] = []
+        for raw_stage in raw_stages:
+            if not isinstance(raw_stage, Mapping):
+                stages.append(raw_stage)
+                continue
+            stage = dict(raw_stage)
+            if stage.get("kind") in {"analysis", "materialization"}:
+                stage.setdefault("evaluation_states_policy", "recompute")
+            stages.append(stage)
+        migrated["stages"] = stages
+    return migrated
+
+
 def _migrate_run_bundle_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Mark provenance as unavailable on bundles emitted before row handoff v1."""
     migrated = dict(payload)
@@ -3844,6 +4034,19 @@ def _migrate_run_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, A
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
 default_spec_registry.register_migration(
+    "CheckpointForkPlan",
+    SchemaMigration(
+        source_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+        target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+        migration_id="checkpoint-fork-plan-v1-to-v2-future-continuation",
+        migrate=_migrate_checkpoint_fork_plan_v1_to_v2_payload,
+        description=(
+            "Preserve v1 preserve/continue_segment semantics while reserving "
+            "prepare_continuation for explicitly versioned v2 plans."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
     "ExecutionIdentityEnvelope",
     SchemaMigration(
         source_version=EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
@@ -3853,6 +4056,19 @@ default_spec_registry.register_migration(
         description=(
             "Preserve envelopes from compiler families that predate typed training-row "
             "provenance and mark that provenance explicitly unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisBundleSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.analysis_bundle.v4",
+        target_version="feedbax.spec.analysis_bundle.v5",
+        migration_id="analysis-bundle-v4-to-v5-evaluation-states-policy",
+        migrate=_migrate_analysis_bundle_v4_to_v5_payload,
+        description=(
+            "Preserve historical recomputation behavior by making the evaluation-states "
+            "policy explicit on analysis templates and analysis/materialization stages."
         ),
     ),
 )
@@ -3909,6 +4125,16 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
+    "EvaluationRunMatrixSpec",
+    SchemaMigration(
+        source_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+        migration_id="evaluation-run-matrix-v1-to-v2-staged-parents",
+        migrate=_migrate_evaluation_run_matrix_v1_to_v2_payload,
+        description="Add the empty matrix-level staged-parent binding map.",
+    ),
+)
+default_spec_registry.register_migration(
     "TrainingRunMatrixSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
@@ -3916,6 +4142,16 @@ default_spec_registry.register_migration(
         migration_id="training-run-matrix-v1-to-v2-typed-base",
         migrate=_migrate_training_run_matrix_v1_to_v2_payload,
         description="Replace the untyped base locator with the content-pinned base union.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationRunMatrixSpec",
+    SchemaMigration(
+        source_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+        target_version=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="evaluation-run-matrix-v2-to-v3-combined-authoring",
+        migrate=_migrate_evaluation_run_matrix_v2_to_v3_payload,
+        description="Preserve staged parents and enable combined explicit or axis authoring.",
     ),
 )
 default_spec_registry.register_migration(
@@ -4103,10 +4339,20 @@ default_spec_registry.register_migration(
     "TrainingDiagnostics",
     SchemaMigration(
         source_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,
-        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
         migration_id="training-diagnostics-v1-to-v2-axis-coordinates",
         migrate=_migrate_training_diagnostics_v1_to_v2_payload,
         description="Add optional mapped-axis coordinates to learning-rate samples.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingDiagnostics",
+    SchemaMigration(
+        source_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        migration_id="training-diagnostics-v2-to-v3-method-trace",
+        migrate=_migrate_training_diagnostics_v2_to_v3_payload,
+        description="Add an explicitly unavailable method-authored training trace.",
     ),
 )
 default_spec_registry.register_migration(
@@ -4179,6 +4425,31 @@ default_spec_registry.register_migration(
         description=(
             "Stamp legacy loss-term payloads with schema identity after verifying "
             "they route through ObjectiveSpec/ReductionSpec lowering."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisRunManifest",
+    SchemaMigration(
+        source_version=ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,
+        target_version=ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION,
+        migration_id="analysis-run-manifest-v1-to-v2-evaluation-state-evidence",
+        migrate=_migrate_analysis_run_manifest_v1,
+        description=(
+            "Accept historical analysis manifests with explicitly unavailable state-source "
+            "evidence."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "AnalysisRunSpec",
+    SchemaMigration(
+        source_version=ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1,
+        target_version=ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
+        migration_id="analysis-run-spec-v1-to-v2-evaluation-states-policy",
+        migrate=_migrate_analysis_run_spec_v1,
+        description=(
+            "Make the historical analysis-time evaluation-state recomputation policy explicit."
         ),
     ),
 )

@@ -18,6 +18,9 @@ import jax.numpy as jnp
 import optax
 from pydantic import BaseModel, ConfigDict
 
+import feedbax.training.executor as training_executor
+import feedbax.training.phase_executor as phase_executor
+import feedbax.orchestration.events as orchestration_events
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
@@ -69,6 +72,7 @@ from feedbax.contracts.worker import (
     AxisSpec,
     BarrierArtifactSinkSpec,
     CheckpointSlotSpec,
+    MethodTrainingDiagnosticsSpec,
     MappingLevelSpec,
     MetricGuardSpec,
     PhaseTransitionSpec,
@@ -104,6 +108,7 @@ from feedbax.training.executor import (
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
     _feedbax_owned_training_manifest_metadata,
+    _method_training_trace,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
     _realized_lr_trace,
@@ -197,6 +202,19 @@ def _mapped_run_spec() -> TrainingRunSpec:
     return spec.model_copy(update={"worker_execution": worker})
 
 
+def _mapped_diagnostics_run_spec() -> TrainingRunSpec:
+    spec = _mapped_run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    worker.method_contract.training_diagnostics = MethodTrainingDiagnosticsSpec(
+        trace_schema_id="feedbax.tests.method_trace",
+        trace_schema_version="feedbax.tests.method_trace.v1",
+        measurement_basis="kernel_input",
+        metric_payload_slot="train_loss",
+        replica_axis="ensemble",
+    )
+    return spec.model_copy(update={"worker_execution": worker})
+
+
 def _mapped_shared_objective_run_spec(kernel) -> TrainingRunSpec:
     spec = _mapped_run_spec()
     worker = spec.worker_execution.model_copy(deep=True)
@@ -233,15 +251,46 @@ def _mapped_test_registry(spec: TrainingRunSpec, kernel) -> TrainingMethodRegist
 
 def _valid_materialized_preparation(
     spec: TrainingRunSpec,
+    *,
+    initial_batch: int = 0,
 ) -> MaterializedExecutionPreparation:
     slots = {
         slot.name: jnp.zeros((5,), dtype=jnp.float32)
         for slot in spec.worker_execution.method_contract.state_slots
     }
+    if initial_batch:
+        slots["batch_counter"] = jnp.full((5,), initial_batch, dtype=jnp.int32)
     coordinates = tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5))
     return _build_materialized_execution_preparation(
         request=ExecutionPreparationRequest(run_spec=spec),
         provider_identity="tests.mapped_preparation",
+        initial_slots=slots,
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        coordinate_order=coordinates,
+    )
+
+
+def _mapped_runtime_resume_preparation(
+    spec: TrainingRunSpec,
+    **overrides: object,
+) -> MaterializedExecutionPreparation:
+    slots: dict[str, object] = {
+        "model": jnp.zeros((5,), dtype=jnp.float32),
+        "optimizer": jnp.zeros((5,), dtype=jnp.float32),
+        "prng": jnp.zeros((5, 2), dtype=jnp.uint32),
+        "objective": jnp.zeros((5,), dtype=jnp.float32),
+        "train_loss": jnp.zeros((5,), dtype=jnp.float32),
+        "batch_counter": jnp.zeros((5,), dtype=jnp.int32),
+        "adaptive_state": jnp.zeros((5,), dtype=jnp.float32),
+        "runtime_trace": jnp.zeros((5,), dtype=jnp.float32),
+    }
+    slots.update(overrides)
+    coordinates = tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5))
+    return _build_materialized_execution_preparation(
+        request=ExecutionPreparationRequest(run_spec=spec),
+        provider_identity="tests.mapped_runtime_resume",
         initial_slots=slots,
         kernel_context={},
         loss_service=None,
@@ -606,8 +655,8 @@ def test_mapped_plan_rejects_tree_shape_type_and_static_drift(drift, message) ->
     assert calls == 2
 
 
-def _mapped_phase_executor(kernel):
-    spec = _mapped_run_spec()
+def _mapped_phase_executor(kernel, spec: TrainingRunSpec | None = None):
+    spec = spec or _mapped_run_spec()
     levels, bindings = resolve_execution_mapping(spec.worker_execution)
     return PhaseProgramExecutor(
         spec.worker_execution.method_contract.phase_program,
@@ -651,6 +700,249 @@ def test_mapped_executor_preflight_and_execution_match_manual_scalar_loop() -> N
     assert result.slots["batch_counter"].tolist() == [1] * 5
 
 
+def test_mapped_executor_constructs_wrapper_once_across_changing_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _mapped_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 3
+
+    def coordinate_kernel(slots, coordinate, context):
+        del context
+        increment = coordinate.program_step + 1
+        updates = _mapped_scalar_kernel(slots, coordinate, {})
+        updates["model"] = slots["model"] + increment
+        return updates
+
+    executor, _ = _mapped_phase_executor(coordinate_kernel, spec)
+    constructed = 0
+    mapped_kernel = executor._mapped_kernel
+
+    def counted_mapped_kernel(kernel):
+        nonlocal constructed
+        constructed += 1
+        return mapped_kernel(kernel)
+
+    monkeypatch.setattr(executor, "_mapped_kernel", counted_mapped_kernel)
+    result = executor.run(_mapped_slots(), run_id="mapped-dynamic-coordinate")
+
+    assert constructed == 1
+    assert result.slots["model"].tolist() == [6, 7, 8, 9, 10]
+    assert result.slots["batch_counter"].tolist() == [3] * 5
+
+
+def test_mapped_batch_authority_uses_one_transfer_and_rejects_divergence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    slots = _mapped_slots()
+    transfers = 0
+    device_get = jax.device_get
+
+    def counted_device_get(value):
+        nonlocal transfers
+        transfers += 1
+        return device_get(value)
+
+    monkeypatch.setattr(phase_executor.jax, "device_get", counted_device_get)
+    completed = executor._completed_training_batches(
+        slots, phase_executor.ProgressCoordinate(run_id="mapped", phase="train_batch")
+    )
+    assert completed == 0
+    assert transfers == 1
+
+    transfers = 0
+    slots["batch_counter"] = jnp.arange(5, dtype=jnp.int32)
+    with pytest.raises(WorkerContractValidationError, match="authorities diverged"):
+        executor._completed_training_batches(
+            slots, phase_executor.ProgressCoordinate(run_id="mapped", phase="train_batch")
+        )
+    assert transfers == 1
+
+
+@pytest.mark.parametrize("authority", [2**100, pytest.param(None, id="supports-index")])
+def test_mapped_batch_authority_preserves_host_integer_semantics(authority) -> None:
+    class HostBatchAuthority:
+        def __index__(self) -> int:
+            return 7
+
+    expected = 7 if authority is None else authority
+    authority = HostBatchAuthority() if authority is None else authority
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    slots = _mapped_slots()
+    slots["batch_counter"] = authority
+
+    completed = executor._completed_training_batches(
+        slots, phase_executor.ProgressCoordinate(run_id="mapped", phase="train_batch")
+    )
+
+    assert completed == expected
+
+
+def test_nan_metric_names_uses_one_transfer_for_nested_mapped_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transfers = 0
+    device_get = jax.device_get
+
+    def counted_device_get(value):
+        nonlocal transfers
+        transfers += 1
+        return device_get(value)
+
+    monkeypatch.setattr(training_executor.jax, "device_get", counted_device_get)
+    observed = training_executor._nan_metric_names(
+        {
+            "healthy": {"replicas": jnp.arange(5.0), "nested": (jnp.inf, None)},
+            "replica_edge": {
+                "replicas": jnp.array([0.0, 1.0, 2.0, 3.0, jnp.nan]),
+                "label": "ignored",
+            },
+        }
+    )
+    assert observed == ["replica_edge"]
+    assert transfers == 1
+
+
+def test_native_mapped_nan_guard_fails_closed_after_batched_health_reduction(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_run_spec()
+
+    def nan_kernel(slots, coordinate, context):
+        updates = _mapped_scalar_kernel(slots, coordinate, context)
+        updates["train_loss"] = jnp.full_like(slots["train_loss"], jnp.nan)
+        return updates
+
+    with pytest.raises(FloatingPointError, match="train_loss"):
+        execute_training_run_spec(
+            spec,
+            preparation=_valid_materialized_preparation(spec),
+            registry=_mapped_test_registry(spec, nan_kernel),
+            manifest_root=tmp_path / "manifest",
+            checkpoint_root=tmp_path / "checkpoints",
+            run_id="mapped-nan-health",
+        )
+
+
+def test_native_mapped_resume_retains_prepared_runtime_slots_and_checkpoint_authority(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_run_spec()
+    worker = spec.worker_execution.model_copy(deep=True)
+    contract = worker.method_contract
+    mapped_binding = [SlotAxisBindingSpec(axis="ensemble", mode="mapped", array_axis=0)]
+    contract.state_slots.extend(
+        [
+            StateSlotSpec(
+                name="adaptive_state",
+                role="auxiliary",
+                axis_bindings=mapped_binding,
+            ),
+            StateSlotSpec(
+                name="runtime_trace",
+                role="metric",
+                axis_bindings=mapped_binding,
+            ),
+        ]
+    )
+    phase = contract.phase_program.phases[0]
+    phase.reads.extend(["adaptive_state", "runtime_trace"])
+    phase.writes.extend(["adaptive_state", "runtime_trace"])
+    step = contract.phase_program.update_steps[0]
+    step.reads.extend(["adaptive_state", "runtime_trace"])
+    step.writes.extend(["adaptive_state", "runtime_trace"])
+    contract.phase_program.checkpoint_barriers[0].slots.append(
+        CheckpointSlotSpec(slot="adaptive_state")
+    )
+
+    @jax.jit
+    def jitted_values(model, optimizer, batch_counter, adaptive_state, runtime_trace):
+        return (
+            model + 1,
+            optimizer + 1,
+            model * 2,
+            batch_counter + 1,
+            adaptive_state + 1,
+            runtime_trace + 1,
+        )
+
+    def update(slots, coordinate, context):
+        del coordinate, context
+        model, optimizer, train_loss, batch_counter, adaptive_state, runtime_trace = (
+            jitted_values(
+                slots["model"],
+                slots["optimizer"],
+                slots["batch_counter"],
+                slots["adaptive_state"],
+                slots["runtime_trace"],
+            )
+        )
+        return {
+            "model": model,
+            "optimizer": optimizer,
+            "prng": slots["prng"],
+            "train_loss": train_loss,
+            "batch_counter": batch_counter,
+            "adaptive_state": adaptive_state,
+            "runtime_trace": runtime_trace,
+        }
+
+    kernels = {"feedbax.training.standard_supervised.gradient_update": update}
+    worker.effective_phase = validate_worker_contract(contract, update_kernels=kernels)
+    spec = spec.model_copy(update={"worker_execution": worker})
+    registry = _mapped_test_registry(spec, update)
+    checkpoint_root = tmp_path / "checkpoint"
+    source = execute_training_run_spec(
+        spec,
+        preparation=_mapped_runtime_resume_preparation(
+            spec,
+            model=jnp.full((5,), 2.0),
+            optimizer=jnp.full((5,), 4.0),
+            adaptive_state=jnp.full((5,), 6.0),
+            runtime_trace=jnp.full((5,), 20.0),
+        ),
+        registry=registry,
+        manifest_root=tmp_path / "source-manifest",
+        checkpoint_root=checkpoint_root,
+        run_id="mapped-runtime-source",
+        stop_after_barrier="after_train_batch",
+    )
+    persisted_slots = {slot.slot for slot in source.checkpoint_writes[0].manifest.slots}
+    assert persisted_slots == {
+        "model",
+        "optimizer",
+        "prng",
+        "adaptive_state",
+        "batch_counter",
+    }
+    assert "runtime_trace" not in persisted_slots
+
+    resumed = execute_training_run_spec(
+        spec,
+        preparation=_mapped_runtime_resume_preparation(
+            spec,
+            model=jnp.full((5,), 100.0),
+            optimizer=jnp.full((5,), 100.0),
+            prng=jnp.ones((5, 2), dtype=jnp.uint32),
+            adaptive_state=jnp.full((5,), 100.0),
+            batch_counter=jnp.zeros((5,), dtype=jnp.int32),
+            runtime_trace=jnp.full((5,), 40.0),
+        ),
+        registry=registry,
+        manifest_root=tmp_path / "resume-manifest",
+        checkpoint_root=checkpoint_root,
+        run_id="mapped-runtime-resumed",
+        resume=True,
+    )
+
+    assert resumed.final_slots["model"].tolist() == [4.0] * 5
+    assert resumed.final_slots["optimizer"].tolist() == [6.0] * 5
+    assert resumed.final_slots["prng"].tolist() == [[0, 0]] * 5
+    assert resumed.final_slots["adaptive_state"].tolist() == [8.0] * 5
+    assert resumed.final_slots["batch_counter"].tolist() == [2] * 5
+    assert resumed.final_slots["runtime_trace"].tolist() == [41.0] * 5
+
+
 def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate_arrays(
     tmp_path: Path,
 ) -> None:
@@ -675,10 +967,13 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
         emitter.close()
 
     history = result.history_events[0]
+    assert "completed_batches" not in history["coordinate"]
     assert "train_loss" not in history["coordinate"]["metrics"]
     assert history["metrics"]["train_loss"]["value"] == [0.0] * 5
     assert result.manifest.summary_metrics["train_loss"]["axes"][0]["axis"] == "ensemble"
     checkpoint = result.checkpoint_writes[0].manifest
+    assert checkpoint.completed_coordinate.completed_batches is None
+    assert result.final_coordinate.completed_batches is None
     assert "train_loss" not in checkpoint.completed_coordinate.metrics
     assert all(slot.materialized_axes for slot in checkpoint.slots)
     events = RunEventReader(tmp_path / "events.jsonl").read_all()
@@ -870,6 +1165,563 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
                     else result.final_slots
                 ),
             )
+
+
+@pytest.mark.parametrize(
+    ("initial_batch", "expected_batches", "expected_steps"),
+    [
+        pytest.param(0, [3, 4], [3, 4], id="fresh"),
+        pytest.param(10, [12, 14], [2, 4], id="continuation"),
+    ],
+)
+def test_method_diagnostics_progress_observes_completed_batch_without_custody_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_batch: int,
+    expected_batches: list[int],
+    expected_steps: list[int],
+) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
+    spec.training_config.n_batches = 4
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = 3
+    callback_events: list[dict[str, object]] = []
+    method_observations: list[dict[str, object]] = []
+    observation_origins: list[int] = []
+    build_diagnostics = training_executor._build_training_diagnostics
+
+    def capture_method_observations(**kwargs):
+        method_observations.extend(kwargs["method_observations"])
+        observation_origins.append(kwargs["method_observation_origin_batch"])
+        return build_diagnostics(**kwargs)
+
+    monkeypatch.setattr(
+        training_executor,
+        "_build_training_diagnostics",
+        capture_method_observations,
+    )
+
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec, initial_batch=initial_batch),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id="mapped-diagnostics-observation",
+        progress_callback=callback_events.append,
+    )
+
+    assert [
+        event["coordinate"]["completed_batches"] for event in result.history_events
+    ] == expected_batches
+    assert [
+        event["coordinate"]["completed_batches"] for event in callback_events
+    ] == expected_batches
+    assert [
+        event["coordinate"]["program_step"] for event in result.history_events
+    ] == expected_steps
+    assert [
+        event["coordinate"]["completed_batches"] for event in method_observations
+    ] == list(range(initial_batch + 1, initial_batch + 5))
+    assert [event["coordinate"]["program_step"] for event in method_observations] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert observation_origins == [initial_batch]
+    assert all(
+        write.manifest.completed_coordinate.completed_batches is None
+        for write in result.checkpoint_writes
+    )
+    assert result.final_coordinate.completed_batches is None
+
+
+def test_method_observation_buffer_batches_host_materialization_and_preserves_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    bindings = _valid_materialized_preparation(spec).slot_axis_bindings
+    observations: list[dict[str, object]] = []
+    buffer = training_executor._MethodObservationBuffer(
+        observations,
+        bindings,
+        capacity=3,
+    )
+    coordinates = [
+        phase_executor.ProgressCoordinate(
+            run_id="batched-observations",
+            phase="train_batch",
+            program_step=batch,
+            completed_batches=batch,
+            metrics={
+                "train_loss": {
+                    "accepted": jnp.asarray(
+                        [(batch + replica) % 2 == 0 for replica in range(5)]
+                    ),
+                    "score": jnp.arange(5, dtype=jnp.float32) + batch,
+                    "nested": {
+                        "count": jnp.arange(5, dtype=jnp.int32) + batch,
+                    },
+                },
+                "shared_label": "ready",
+            },
+        )
+        for batch in range(1, 8)
+    ]
+    expected = [training_executor._history_event(coordinate, bindings) for coordinate in coordinates]
+    transfer_calls = 0
+    materialized_leaves = 0
+    jax_backed_asarray_calls = 0
+    device_get = jax.device_get
+    np_asarray = np.asarray
+
+    def counted_device_get(value):
+        nonlocal transfer_calls, materialized_leaves
+        transfer_calls += 1
+        materialized_leaves += sum(
+            isinstance(leaf, jax.Array) for leaf in jax.tree.leaves(value)
+        )
+        return device_get(value)
+
+    def counted_asarray(value, *args, **kwargs):
+        nonlocal jax_backed_asarray_calls
+        if isinstance(value, jax.Array):
+            jax_backed_asarray_calls += 1
+        return np_asarray(value, *args, **kwargs)
+
+    monkeypatch.setattr(training_executor.jax, "device_get", counted_device_get)
+    monkeypatch.setattr(orchestration_events.np, "asarray", counted_asarray)
+
+    for coordinate in coordinates:
+        buffer.append(coordinate)
+    buffer.flush()
+    buffer.assert_empty()
+
+    assert buffer.flush_sizes == [3, 3, 1]
+    assert buffer.peak_buffered_updates == 3
+    assert transfer_calls == 3
+    assert materialized_leaves == 3 * 3
+    assert jax_backed_asarray_calls == 0
+    assert observations == expected
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_interval", "progress_interval", "expected_chunks"),
+    [
+        pytest.param(None, None, [1, 1, 1, 1, 1], id="absent-intervals"),
+        pytest.param(100, 100, [2, 2, 1], id="oversized-intervals"),
+    ],
+)
+def test_method_observation_buffer_hard_cap_with_absent_or_oversized_intervals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_interval: int | None,
+    progress_interval: int | None,
+    expected_chunks: list[int],
+) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 5
+    spec.training_config.n_batches = 5
+    spec.checkpoint_progress.checkpoint_interval = checkpoint_interval
+    spec.checkpoint_progress.progress_interval = progress_interval
+    buffers: list[training_executor._MethodObservationBuffer] = []
+    buffer_type = training_executor._MethodObservationBuffer
+
+    def bounded_buffer(observations, bindings):
+        buffer = buffer_type(observations, bindings, capacity=2)
+        buffers.append(buffer)
+        return buffer
+
+    monkeypatch.setattr(training_executor, "_MethodObservationBuffer", bounded_buffer)
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id="bounded-observations",
+    )
+
+    assert len(buffers) == 1
+    assert buffers[0].peak_buffered_updates <= 2
+    assert buffers[0].flush_sizes == expected_chunks
+    assert result.diagnostics.method_trace is not None
+    assert len(result.diagnostics.method_trace.records) == 5 * 5
+
+
+@pytest.mark.parametrize("invalid_kind", ["malformed", "nonfinite", "wrong-size"])
+@pytest.mark.parametrize(
+    ("invalid_batches", "expected_published_batches", "expected_checkpoint_count"),
+    [
+        pytest.param({1, 2, 3}, [], 0, id="early-chunk"),
+        pytest.param({4}, [3], 1, id="terminal-remainder"),
+    ],
+)
+def test_invalid_buffered_method_observation_fails_before_matching_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_kind: str,
+    invalid_batches: set[int],
+    expected_published_batches: list[int],
+    expected_checkpoint_count: int,
+) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
+    spec.training_config.n_batches = 4
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = 3
+    buffer_type = training_executor._MethodObservationBuffer
+
+    class CorruptingBuffer(buffer_type):
+        def append(self, coordinate):
+            completed_batches = coordinate.completed_batches
+            if completed_batches in invalid_batches:
+                if invalid_kind == "malformed":
+                    invalid = {}
+                elif invalid_kind == "nonfinite":
+                    invalid = jnp.full((5,), jnp.nan)
+                else:
+                    invalid = {"score": jnp.arange(4, dtype=jnp.float32)}
+                coordinate = coordinate.model_copy(
+                    update={"metrics": {**coordinate.metrics, "train_loss": invalid}}
+                )
+            super().append(coordinate)
+
+    monkeypatch.setattr(
+        training_executor,
+        "_MethodObservationBuffer",
+        lambda observations, bindings: CorruptingBuffer(observations, bindings, capacity=3),
+    )
+    published: list[dict[str, object]] = []
+    checkpoint_root = tmp_path / "checkpoint"
+
+    with pytest.raises((TrainingRunExecutorError, ValueError)):
+        execute_training_run_spec(
+            spec,
+            preparation=_valid_materialized_preparation(spec),
+            registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+            manifest_root=tmp_path / "manifest",
+            checkpoint_root=checkpoint_root,
+            run_id=f"invalid-observation-{invalid_kind}",
+            progress_callback=published.append,
+        )
+
+    assert [event["coordinate"]["completed_batches"] for event in published] == (
+        expected_published_batches
+    )
+    assert len(list(checkpoint_root.glob("transactions/tx-*"))) == expected_checkpoint_count
+
+
+@pytest.mark.parametrize("stop_mode", ["terminate", "stop", "stop_after_barrier"])
+def test_buffered_method_observations_include_terminating_or_saved_barrier_update(
+    tmp_path: Path,
+    stop_mode: str,
+) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 7
+    spec.training_config.n_batches = 7
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = 3
+    kwargs: dict[str, object] = {}
+    if stop_mode == "stop_after_barrier":
+        kwargs["stop_after_barrier"] = "after_train_batch"
+    else:
+        decision = CancellationDecision(stop_mode, "test", 123.0)
+        kwargs["cancellation_probe"] = (
+            lambda coordinate: decision if coordinate.completed_batches == 3 else None
+        )
+
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id=f"buffered-{stop_mode}",
+        **kwargs,
+    )
+
+    trace = result.diagnostics.method_trace
+    assert trace is not None
+    assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
+        (batch, replica) for batch in range(1, 4) for replica in range(5)
+    ]
+    assert result.final_coordinate.program_step == 3
+    assert len(result.checkpoint_writes) == (0 if stop_mode == "terminate" else 1)
+    if stop_mode in {"terminate", "stop"}:
+        assert result.status == "cancelled"
+        assert result.manifest.provenance.metadata["cancellation"]["action"] == stop_mode
+
+
+def test_buffered_method_observations_resume_from_partial_checkpoint(
+    tmp_path: Path,
+) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 7
+    spec.training_config.n_batches = 7
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = 3
+    checkpoint_root = tmp_path / "checkpoint"
+    partial = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "partial-manifest",
+        checkpoint_root=checkpoint_root,
+        run_id="buffered-partial",
+        stop_after_barrier="after_train_batch",
+    )
+    resumed = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "resumed-manifest",
+        checkpoint_root=checkpoint_root,
+        run_id="buffered-resumed",
+        resume=True,
+    )
+
+    partial_trace = partial.diagnostics.method_trace
+    resumed_trace = resumed.diagnostics.method_trace
+    assert partial_trace is not None
+    assert resumed_trace is not None
+    assert {row.completed_batch for row in partial_trace.records} == {1, 2, 3}
+    assert {row.completed_batch for row in resumed_trace.records} == {4, 5, 6, 7}
+    assert len(resumed_trace.records) == 4 * 5
+    assert [write.manifest.completed_training_batches for write in resumed.checkpoint_writes] == [
+        6,
+        7,
+    ]
+
+
+def test_buffered_and_immediate_method_observation_contracts_are_equivalent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
+    spec.training_config.n_batches = 4
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = 3
+    buffer_type = training_executor._MethodObservationBuffer
+
+    def run_with_capacity(capacity: int, root: Path):
+        monkeypatch.setattr(
+            training_executor,
+            "_MethodObservationBuffer",
+            lambda observations, bindings: buffer_type(
+                observations,
+                bindings,
+                capacity=capacity,
+            ),
+        )
+        return execute_training_run_spec(
+            spec,
+            preparation=_valid_materialized_preparation(spec),
+            registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+            manifest_root=root / "manifest",
+            checkpoint_root=root / "checkpoint",
+            run_id="observation-equivalence",
+        )
+
+    immediate = run_with_capacity(1, tmp_path / "immediate")
+    buffered = run_with_capacity(500, tmp_path / "buffered")
+    immediate_trace = immediate.diagnostics.method_trace
+    buffered_trace = buffered.diagnostics.method_trace
+    assert immediate_trace is not None
+    assert buffered_trace is not None
+    assert [record.model_dump(mode="json") for record in buffered_trace.records] == [
+        record.model_dump(mode="json") for record in immediate_trace.records
+    ]
+    assert [
+        (event["coordinate"], event["metrics"]) for event in buffered.history_events
+    ] == [(event["coordinate"], event["metrics"]) for event in immediate.history_events]
+    assert buffered.diagnostics.schema_version == immediate.diagnostics.schema_version
+    assert buffered.manifest.schema_version == immediate.manifest.schema_version
+    assert [
+        write.manifest.completed_training_batches for write in buffered.checkpoint_writes
+    ] == [write.manifest.completed_training_batches for write in immediate.checkpoint_writes]
+    assert [
+        [(slot.slot, slot.sha256) for slot in write.manifest.slots]
+        for write in buffered.checkpoint_writes
+    ] == [
+        [(slot.slot, slot.sha256) for slot in write.manifest.slots]
+        for write in immediate.checkpoint_writes
+    ]
+
+
+def test_declared_method_trace_is_durable_with_batch_replica_coordinates(tmp_path: Path) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
+    spec.training_config.n_batches = 4
+    spec.checkpoint_progress.progress_interval = 3
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
+        run_id="mapped-trace",
+    )
+
+    assert [event["coordinate"]["completed_batches"] for event in result.history_events] == [12, 14]
+    trace = result.diagnostics.method_trace
+    assert result.diagnostics.schema_version == "feedbax.manifest.training_diagnostics.v3"
+    assert trace is not None
+    assert trace.method_ref == spec.worker_execution.method_contract.method_ref
+    assert trace.trace_schema_id == "feedbax.tests.method_trace"
+    assert trace.measurement_basis == "kernel_input"
+    assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
+        (batch, index) for batch in range(11, 15) for index in range(5)
+    ]
+    payload = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
+    assert payload["method_trace"]["records"] == [
+        record.model_dump(mode="json") for record in trace.records
+    ]
+    diagnostics_ref = next(
+        item for item in result.manifest.artifacts if item.role == "training_diagnostics"
+    )
+    assert diagnostics_ref.metadata["schema_version"].endswith(".v3")
+
+
+def test_declared_method_trace_uses_cancelled_batch_authority(tmp_path: Path) -> None:
+    spec = _mapped_diagnostics_run_spec()
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=tmp_path,
+        run_id="cancelled-mapped-trace",
+        cancellation_probe=lambda _coordinate: CancellationDecision("terminate", "test", 123.0),
+    )
+
+    trace = result.diagnostics.method_trace
+    assert trace is not None
+    assert result.status == result.manifest.status == "cancelled"
+    assert result.diagnostics.cumulative_completed_batches == 11
+    assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
+        (11, index) for index in range(5)
+    ]
+
+
+def test_method_trace_rejects_non_cartesian_history() -> None:
+    declaration = _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    assert declaration is not None
+    axis = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+        "leaf_policy": "all_array_leaves",
+    }
+
+    def event(batch: int, values: list[float], *, size: int = 2) -> dict[str, object]:
+        return {
+            "coordinate": {"completed_batches": batch},
+            "metrics": {
+                "train_loss": {
+                    "schema_id": "feedbax.manifest.mapped_metric_value",
+                    "schema_version": "feedbax.manifest.mapped_metric_value.v1",
+                    "axes": [{**axis, "size": size}],
+                    "value": values,
+                }
+            },
+        }
+
+    with pytest.raises(TrainingRunExecutorError, match="duplicates completed batch"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            method_observations=[event(1, [1.0, 2.0]), event(1, [1.0, 2.0])],
+            observation_origin_batch=0,
+            completed_batches=1,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="incomplete batch coverage"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            method_observations=[event(1, [1.0, 2.0])],
+            observation_origin_batch=0,
+            completed_batches=2,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="outside the active segment"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            method_observations=[event(3, [1.0, 2.0])],
+            observation_origin_batch=0,
+            completed_batches=2,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="does not cover the replica axis"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            method_observations=[event(1, [1.0, 2.0], size=3)],
+            observation_origin_batch=0,
+            completed_batches=1,
+            replica_count=2,
+        )
+    with pytest.raises(TrainingRunExecutorError, match="does not cover the replica axis"):
+        _method_training_trace(
+            declaration,
+            method_ref="feedbax.tests.method",
+            method_observations=[event(1, [1.0, 2.0])],
+            observation_origin_batch=0,
+            completed_batches=1,
+            replica_count=5,
+        )
+
+
+def test_method_trace_transposes_named_mapped_values_by_replica() -> None:
+    declaration = _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
+    assert declaration is not None
+    axis = {
+        "axis": "ensemble",
+        "role": "replicate",
+        "size": 2,
+        "level": 0,
+        "mode": "mapped",
+        "array_axis": 0,
+        "leaf_policy": "all_array_leaves",
+    }
+    trace = _method_training_trace(
+        declaration,
+        method_ref="feedbax.tests.method",
+        method_observations=[
+            {
+                "coordinate": {"completed_batches": 1},
+                "metrics": {
+                    "train_loss": {
+                        "schema_id": "feedbax.manifest.structured_mapped_metric_value",
+                        "schema_version": (
+                            "feedbax.manifest.structured_mapped_metric_value.v1"
+                        ),
+                        "axes": [axis],
+                        "value": {
+                            "accepted": [True, False],
+                            "nested": {"score": [[1.5, 2.5], [3.5, 4.5]]},
+                        },
+                    }
+                },
+            }
+        ],
+        observation_origin_batch=0,
+        completed_batches=1,
+        replica_count=2,
+    )
+
+    assert trace is not None
+    assert [record.value for record in trace.records] == [
+        {"accepted": True, "nested": {"score": [1.5, 2.5]}},
+        {"accepted": False, "nested": {"score": [3.5, 4.5]}},
+    ]
 
 
 def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:
@@ -2004,6 +2856,8 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
     diagnostics = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
     assert diagnostics["kind"] == "TrainingDiagnostics"
     assert diagnostics["schema_version"] == "feedbax.manifest.training_diagnostics.v2"
+    assert "method_trace" not in diagnostics
+    assert "completed_batches" not in result.history_events[0]["coordinate"]
     assert diagnostics["manifest_id"] == manifest.id
     assert diagnostics["completed_batches"] == 1
     assert diagnostics["segment_completed_batches"] == 1
@@ -2533,7 +3387,10 @@ def test_authored_intervals_drive_multi_update_phase_and_terminal_remainder(
     assert int(result.final_slots["batch_counter"]) == total_updates
 
 
-def test_authored_cadence_uses_completed_batches_not_program_step(tmp_path: Path) -> None:
+def test_authored_cadence_uses_completed_batches_not_program_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry, _program = _interval_registry(total_updates=4)
     base_spec = _run_spec()
     spec = base_spec.model_copy(
@@ -2545,6 +3402,29 @@ def test_authored_cadence_uses_completed_batches_not_program_step(tmp_path: Path
     )
     initial_slots = _initial_slots(arrays=True)
     initial_slots["batch_counter"] = jnp.array(10, dtype=jnp.int32)
+    method_observations: list[dict[str, object]] = []
+    observation_callbacks: list[object] = []
+    build_diagnostics = training_executor._build_training_diagnostics
+    run_phase_program = training_executor.PhaseProgramExecutor.run
+
+    def capture_method_observations(**kwargs):
+        method_observations.extend(kwargs["method_observations"])
+        return build_diagnostics(**kwargs)
+
+    def capture_observation_callback(executor, *args, **kwargs):
+        observation_callbacks.append(kwargs["method_observation_callback"])
+        return run_phase_program(executor, *args, **kwargs)
+
+    monkeypatch.setattr(
+        training_executor,
+        "_build_training_diagnostics",
+        capture_method_observations,
+    )
+    monkeypatch.setattr(
+        training_executor.PhaseProgramExecutor,
+        "run",
+        capture_observation_callback,
+    )
 
     result = execute_training_run_spec(
         spec,
@@ -2563,6 +3443,8 @@ def test_authored_cadence_uses_completed_batches_not_program_step(tmp_path: Path
         for write in result.checkpoint_writes
     ] == [(12, 2), (14, 4)]
     assert [event["coordinate"]["program_step"] for event in result.history_events] == [2, 4]
+    assert method_observations == []
+    assert observation_callbacks == [None]
     assert int(result.final_slots["batch_counter"]) == 14
 
 

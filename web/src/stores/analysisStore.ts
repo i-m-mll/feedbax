@@ -359,11 +359,20 @@ function syncAnalysisStageDraft(state: AnalysisStoreState, reason: string) {
   );
 
   if (!analysisStage.scenario_id) return;
+  const currentAnalysisSpec = workspace.scenarios[analysisStage.scenario_id]?.analysis_spec as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const evaluationStatesPolicy =
+    currentAnalysisSpec?.evaluation_states_policy === 'require_durable'
+      ? 'require_durable'
+      : 'recompute';
   workspaceStore.updateScenarioDraft(
     analysisStage.scenario_id,
     {
       analysis_spec: {
         schema_version: 'feedbax.studio.analysis.v1',
+        evaluation_states_policy: evaluationStatesPolicy,
         pages: pages.map(analysisPageToWire),
         active_page_id: state.activePageId,
         input_requirements: inputRequirements,

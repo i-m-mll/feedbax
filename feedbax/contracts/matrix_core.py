@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
+import json
+import math
 from pathlib import Path
 import re
 from typing import Any, Generic, TypeVar
@@ -11,11 +14,76 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueExpr, evaluate_query
 from feedbax.contracts.extraction import SourceBinding, load_expression_context, set_dotted_path
-from feedbax.contracts.manifest import OverridePatch, StrictModel
+from feedbax.contracts.manifest import (
+    OverridePatch,
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 
 
 PayloadT = TypeVar("PayloadT", bound=StrictModel)
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class ContentPinnedJsonBase(StrictModel):
+    """Relative JSON document whose canonical content hash is authoritative."""
+
+    ref: str
+    sha256: str
+
+    @model_validator(mode="after")
+    def _validate_base(self) -> "ContentPinnedJsonBase":
+        if not self.ref.strip() or Path(self.ref).is_absolute():
+            raise ValueError("content-pinned JSON base ref must be a non-empty relative path")
+        if not _SHA256_RE.fullmatch(self.sha256):
+            raise ValueError("content-pinned JSON base sha256 must be lowercase hexadecimal")
+        return self
+
+
+class MatrixAxisValue(StrictModel):
+    """One named value on an authored matrix axis."""
+
+    id: str
+    label: str | None = None
+    deltas: list[OverridePatch] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_value(self) -> "MatrixAxisValue":
+        _validate_path_safe_id(self.id, "axis value id")
+        paths = [delta.path for delta in self.deltas]
+        if len(paths) != len(set(paths)):
+            raise ValueError(f"axis value {self.id!r} has duplicate delta paths")
+        for delta in self.deltas:
+            if delta.op != "remove":
+                _require_json_value(delta.value, f"axis value {self.id!r} delta {delta.path!r}")
+        return self
+
+
+class MatrixAxis(StrictModel):
+    """One ordered authored axis with ordered named values."""
+
+    id: str
+    label: str | None = None
+    values: list[MatrixAxisValue] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_axis(self) -> "MatrixAxis":
+        _validate_path_safe_id(self.id, "axis id")
+        value_ids = [value.id for value in self.values]
+        if len(value_ids) != len(set(value_ids)):
+            raise ValueError(f"axis {self.id!r} value ids must be unique")
+        return self
+
+
+class MatrixAxisCoordinate(StrictModel):
+    """One deterministic coordinate selected from an ordered axis product."""
+
+    row_id: str
+    value_indices: dict[str, int]
+    value_ids: dict[str, str]
+    deltas: list[OverridePatch] = Field(default_factory=list)
 
 
 class RowDerivation(StrictModel):
@@ -84,6 +152,99 @@ class MaterializedMatrixRow(StrictModel, Generic[PayloadT]):
     payload: PayloadT
     output_path: str
     spec_path: str
+
+
+def load_content_pinned_json_base(
+    base: ContentPinnedJsonBase,
+    *,
+    repo_root: Path | str | None,
+) -> dict[str, Any]:
+    """Load and verify one canonical-JSON content-pinned object."""
+    if repo_root is None:
+        raise ValueError("content-pinned JSON base requires repo_root")
+    root = Path(repo_root).resolve()
+    path = (root / base.ref).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"content-pinned JSON base escapes repo_root: {base.ref!r}") from exc
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load content-pinned JSON base {base.ref!r}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("content-pinned JSON base must contain a JSON object")
+    _require_json_value(payload, "content-pinned JSON base")
+    actual_sha256 = sha256_bytes(canonical_json_bytes(payload))
+    if actual_sha256 != base.sha256:
+        raise ValueError(
+            f"content-pinned JSON base hash mismatch for {base.ref!r}: "
+            f"expected {base.sha256}, got {actual_sha256}"
+        )
+    return payload
+
+
+def ordered_index_product(
+    axis_lengths: Sequence[tuple[str, int]],
+) -> list[dict[str, int]]:
+    """Return a stable Cartesian product in authored axis order."""
+    if not axis_lengths:
+        raise ValueError("ordered index product requires at least one axis")
+    axis_ids = [axis_id for axis_id, _ in axis_lengths]
+    if len(axis_ids) != len(set(axis_ids)):
+        raise ValueError("ordered index product axis ids must be unique")
+    for axis_id, length in axis_lengths:
+        _validate_path_safe_id(axis_id, "axis id")
+        if not isinstance(length, int) or isinstance(length, bool) or length <= 0:
+            raise ValueError(f"ordered index product axis {axis_id!r} must be non-empty")
+
+    coordinates: list[dict[str, int]] = [{}]
+    for axis_id, length in axis_lengths:
+        coordinates = [
+            {**coordinate, axis_id: index}
+            for coordinate in coordinates
+            for index in range(length)
+        ]
+    return coordinates
+
+
+def expand_matrix_axes(axes: Sequence[MatrixAxis]) -> list[MatrixAxisCoordinate]:
+    """Expand ordered authored axes into canonical row coordinates and deltas."""
+    axis_ids = [axis.id for axis in axes]
+    if len(axis_ids) != len(set(axis_ids)):
+        raise ValueError("matrix axis ids must be unique")
+    indexed = ordered_index_product([(axis.id, len(axis.values)) for axis in axes])
+    coordinates: list[MatrixAxisCoordinate] = []
+    row_ids: set[str] = set()
+    expected = set(axis_ids)
+    for indices in indexed:
+        if set(indices) != expected:
+            raise ValueError("ordered axis product produced an incomplete coordinate")
+        selected = [axis.values[indices[axis.id]] for axis in axes]
+        value_ids = {axis.id: value.id for axis, value in zip(axes, selected)}
+        row_id = "--".join(
+            f"{axis.id}-{value.id}" for axis, value in zip(axes, selected)
+        )
+        _validate_path_safe_id(row_id, "generated row id")
+        if row_id in row_ids:
+            raise ValueError(f"generated matrix row_id collision: {row_id!r}")
+        row_ids.add(row_id)
+        deltas = [delta for value in selected for delta in value.deltas]
+        paths = [delta.path for delta in deltas]
+        duplicates = sorted({path for path in paths if paths.count(path) > 1})
+        if duplicates:
+            raise ValueError(
+                f"matrix coordinate {row_id!r} selects duplicate delta paths {duplicates!r}"
+            )
+        coordinates.append(
+            MatrixAxisCoordinate(
+                row_id=row_id,
+                value_indices=dict(indices),
+                value_ids=value_ids,
+                deltas=deltas,
+            )
+        )
+    return coordinates
 
 
 def derive_row_path(
@@ -177,11 +338,43 @@ def _validate_dotted_path(path: str, field: str) -> None:
         raise ValueError(f"{field} is not dotted-path-like: {path!r}")
 
 
+def _validate_path_safe_id(value: str, field: str) -> None:
+    if not _PATH_SAFE_RE.fullmatch(value) or value in {".", ".."}:
+        raise ValueError(f"{field} is not path-safe: {value!r}")
+
+
+def _require_json_value(value: Any, field: str) -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{field} must contain finite JSON numbers")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _require_json_value(item, field)
+        return
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError(f"{field} must contain only string JSON object keys")
+        for item in value.values():
+            _require_json_value(item, field)
+        return
+    raise ValueError(f"{field} contains a non-JSON value of type {type(value).__name__}")
+
+
 __all__ = [
+    "ContentPinnedJsonBase",
     "MaterializedMatrixRow",
+    "MatrixAxis",
+    "MatrixAxisCoordinate",
+    "MatrixAxisValue",
     "MatrixRow",
     "RowDerivation",
     "RowMatrixSpec",
     "derive_row_path",
+    "expand_matrix_axes",
+    "load_content_pinned_json_base",
     "materialize_matrix_rows",
+    "ordered_index_product",
 ]

@@ -1,4 +1,10 @@
 from .checkpoint_custody import (
+    CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+    CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID,
+    CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION,
+    CheckpointCustodyArchiveEvidence,
+    CheckpointCustodyArchiveResult,
+    MaterializedCheckpointCustodyArchive,
     CheckpointCompatibilityError,
     CheckpointConsistencyError,
     CheckpointContractBindingError,
@@ -26,6 +32,8 @@ from .checkpoint_custody import (
     load_checkpoint_latest_pointer_json,
     load_checkpoint_transaction_manifest_file,
     load_checkpoint_transaction_manifest_json,
+    produce_checkpoint_custody_archive,
+    materialize_checkpoint_custody_archive,
     resolve_checkpoint_custody_ref,
     run_contract_binding,
     structural_abi_fingerprint,
@@ -55,10 +63,12 @@ from .preparation import (
 from .diagnostics import (
     CheckpointTransactionDiagnostic,
     LearningRateDiagnostic,
+    MethodTrainingTraceLoadError,
     NativeExecutionProducerContext,
     NativeTrainingDiagnosticsInput,
     ScheduleContextDiagnostic,
     TrainingDiagnostics,
+    load_method_training_trace,
 )
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
@@ -118,6 +128,12 @@ except ImportError:
     pass
 
 __all__ = [
+    "CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE",
+    "CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID",
+    "CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION",
+    "CheckpointCustodyArchiveEvidence",
+    "CheckpointCustodyArchiveResult",
+    "MaterializedCheckpointCustodyArchive",
     "CheckpointCompatibilityError",
     "CheckpointConsistencyError",
     "CheckpointContractBindingError",
@@ -135,6 +151,7 @@ __all__ = [
     "CheckpointTransactionDiagnostic",
     "DiagnosticsEmissionConflictError",
     "LearningRateDiagnostic",
+    "MethodTrainingTraceLoadError",
     "NativeExecutionProducerContext",
     "NativeTrainingDiagnosticsInput",
     "ResumeSlotTransform",
@@ -190,11 +207,14 @@ __all__ = [
     "grad_wrap_simple_loss_func",
     "load_hps",
     "load_latest_checkpoint",
+    "load_method_training_trace",
     "load_checkpoint_custody_documents",
     "load_checkpoint_latest_pointer_file",
     "load_checkpoint_latest_pointer_json",
     "load_checkpoint_transaction_manifest_file",
     "load_checkpoint_transaction_manifest_json",
+    "produce_checkpoint_custody_archive",
+    "materialize_checkpoint_custody_archive",
     "resolve_checkpoint_custody_ref",
     "load_training_run_spec",
     "lower_zero_level_preparation_plan",

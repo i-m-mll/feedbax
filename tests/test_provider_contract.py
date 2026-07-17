@@ -298,6 +298,11 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "array_store" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
     assert "TrainingRunSpec" in manifest.schemas
+    assert "EvaluationRunMatrixSpec" in manifest.schemas
+    matrix_properties = manifest.schemas["EvaluationRunMatrixSpec"]["properties"]
+    assert matrix_properties["schema_version"]["default"] == (
+        "feedbax.spec.evaluation_run_matrix.v3"
+    )
     assert "ModelArtifactManifest" in manifest.schemas
     assert "CheckpointSelectionManifest" in manifest.schemas
     assert "CheckpointSelectionSpec" in manifest.schemas
@@ -521,6 +526,26 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
         checkpoint_selection.parent_ref_fields
     )
     assert "scorer" in checkpoint_selection.opaque_domain_fields
+
+    analysis = mappings["AnalysisRunManifest"]
+    assert "evaluation_state_sources[]" in analysis.spec_fields
+    assert "evaluation_state_resolution_diagnostics[]" in analysis.spec_fields
+    assert (
+        "evaluation_state_sources[].evaluation_manifest_authority"
+        in analysis.parent_ref_fields
+    )
+    assert (
+        "evaluation_state_sources[].resulting_evaluation_manifest_authority"
+        in analysis.parent_ref_fields
+    )
+
+
+def test_provider_analysis_schema_exposes_evaluation_states_policy() -> None:
+    schema = provider_manifest().schemas["AnalysisRunSpec"]
+    policy = schema["properties"]["evaluation_states_policy"]
+
+    assert policy["default"] == "recompute"
+    assert policy["enum"] == ["recompute", "require_durable"]
 
 
 def test_training_run_manifest_mandible_mapping_fixture_preserves_local_refs() -> None:

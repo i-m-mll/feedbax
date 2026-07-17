@@ -55,22 +55,42 @@ class AnalysisJobResult:
     artifact_paths: list[str]
 
 
-def _spec_for_analysis_request(payload: GenerateAnalysisRequest) -> AnalysisRunSpec:
+def _spec_for_analysis_request(
+    payload: GenerateAnalysisRequest,
+    *,
+    root: Path | str | None = None,
+) -> AnalysisRunSpec:
     """Build the executable analysis spec demanded by the Studio request."""
     if not payload.eval_run_id:
         raise HTTPException(
             status_code=400,
             detail="eval_run_id is required for Studio analysis execution",
         )
+    evaluation_parent = ParentRef(
+        kind="EvaluationRunManifest",
+        id=payload.eval_run_id,
+        role="evaluation_run",
+    )
+    if payload.evaluation_states_policy == "require_durable":
+        from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
+        from feedbax.analysis.specs import find_manifest_by_id
+        from feedbax.contracts.manifest import EvaluationRunManifest
+
+        manifest, path = find_manifest_by_id(payload.eval_run_id, root=root)
+        if not isinstance(manifest, EvaluationRunManifest):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"eval_run_id {payload.eval_run_id!r} does not resolve to an "
+                    "EvaluationRunManifest"
+                ),
+            )
+        evaluation_parent = authenticated_manifest_ref(manifest, path, "evaluation_run")
+
     return AnalysisRunSpec(
         analysis_type=payload.node_id,
-        inputs=[
-            ParentRef(
-                kind="EvaluationRunManifest",
-                id=payload.eval_run_id,
-                role="evaluation_run",
-            )
-        ],
+        inputs=[evaluation_parent],
+        evaluation_states_policy=payload.evaluation_states_policy,
         params={
             "requested_outputs": [payload.node_id],
             "studio": {

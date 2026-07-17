@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -50,6 +51,26 @@ ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION = "feedbax.manifest.analysis_data_product.v
 EVALUATION_STATES_CONTAINER_SCHEMA_ID = "feedbax.manifest.evaluation_states_container"
 EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = "feedbax.manifest.evaluation_states_container.v1"
 EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = "feedbax.manifest.evaluation_states_container.v2"
+ANALYSIS_RUN_SPEC_SCHEMA_ID = "feedbax.spec.analysis_run"
+ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.analysis_run.v1"
+ANALYSIS_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_run.v2"
+ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID = (
+    "feedbax.manifest.analysis_evaluation_state_source"
+)
+ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1 = (
+    "feedbax.manifest.analysis_evaluation_state_source.v1"
+)
+ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION = (
+    "feedbax.manifest.analysis_evaluation_state_source.v2"
+)
+ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID = (
+    "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic"
+)
+ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION = (
+    "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic.v1"
+)
+ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1 = SCHEMA_VERSION
+ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.analysis_run.v2"
 FIGURE_MANIFEST_SCHEMA_ID = "feedbax.manifest.figure"
 FIGURE_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.figure.v1"
 TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID = (
@@ -62,6 +83,16 @@ TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projec
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID = "feedbax.spec.staged_evaluation_prerequisite"
 STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = (
     "feedbax.spec.staged_evaluation_prerequisite.v1"
+)
+AUTHENTICATED_MANIFEST_REF_SCHEMA_ID = "feedbax.ref.authenticated_manifest"
+AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION = "feedbax.ref.authenticated_manifest.v1"
+
+_AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS = frozenset(
+    {"ref_schema_id", "ref_schema_version"}
+)
+_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS = (
+    _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS
+    | {"manifest_sha256", "size_bytes"}
 )
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
@@ -165,6 +196,47 @@ class ParentRef(StrictModel):
     role: Optional[str] = None
     uri: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def authenticated_manifest_ref_profile(ref: ParentRef) -> tuple[str, int] | None:
+    """Return one ref's authenticated byte profile, if it declares one.
+
+    Partial or unsupported authenticated profiles raise rather than degrading to
+    an unauthenticated manifest reference.
+    """
+
+    discriminators = _AUTHENTICATED_MANIFEST_REF_PROFILE_DISCRIMINATORS.intersection(
+        ref.metadata
+    )
+    if not discriminators:
+        return None
+    present = _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS.intersection(ref.metadata)
+    if present != _AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS:
+        missing = ", ".join(
+            sorted(_AUTHENTICATED_MANIFEST_REF_PROFILE_KEYS - present)
+        )
+        raise ValueError(f"Authenticated manifest ref {ref.id!r} is incomplete: {missing}")
+    schema_id = ref.metadata["ref_schema_id"]
+    schema_version = ref.metadata["ref_schema_version"]
+    digest = ref.metadata["manifest_sha256"]
+    size = ref.metadata["size_bytes"]
+    if schema_id != AUTHENTICATED_MANIFEST_REF_SCHEMA_ID:
+        raise ValueError(f"Unsupported authenticated manifest ref schema_id: {schema_id!r}")
+    if schema_version != AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported authenticated manifest ref schema_version: {schema_version!r}"
+        )
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid SHA-256")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise ValueError(f"Authenticated manifest ref {ref.id!r} has invalid byte size")
+    if ref.uri is not None:
+        raise ValueError("Authenticated manifest refs must keep machine-local locators out of uri")
+    return digest, size
 
 
 class StagedEvaluationPrerequisite(StrictModel):
@@ -703,7 +775,15 @@ class EvaluationRunSpec(StrictModel):
 
 
 EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.evaluation_run_matrix"
-EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run_matrix.v1"
+EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.evaluation_run_matrix.v1"
+EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.evaluation_run_matrix.v2"
+EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run_matrix.v3"
+EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID = (
+    "feedbax.manifest.evaluation_axis_expansion_provenance"
+)
+EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION = (
+    "feedbax.manifest.evaluation_axis_expansion_provenance.v1"
+)
 
 
 class EvaluationRunManifest(BaseManifest):
@@ -711,6 +791,102 @@ class EvaluationRunManifest(BaseManifest):
     evaluation_spec: SpecPayload
     input_training_runs: list[ParentRef] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedManifestDigest:
+    """Authenticated byte identity for one manifest in a provenance envelope."""
+
+    kind: str
+    id: str
+    role: str | None
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationManifestProvenanceEnvelope:
+    """Verified producer and source authority derived from an evaluation manifest."""
+
+    producer_identity: str
+    source_refs: tuple[ParentRef, ...]
+    digest_envelope: tuple[AuthenticatedManifestDigest, ...]
+
+
+def verify_evaluation_manifest_provenance(
+    manifest_ref: ParentRef,
+    raw_bytes: bytes,
+    *,
+    expected_producer_identity: str,
+    expected_source_refs: tuple[ParentRef, ...] | None = None,
+) -> EvaluationManifestProvenanceEnvelope:
+    """Verify one authenticated evaluation manifest's producer and source envelope.
+
+    The manifest is parsed from ``raw_bytes`` only after ``manifest_ref`` authenticates
+    their exact size and digest. Remaining digest records align positionally with
+    ``source_refs``. This contract does not introduce a new durable schema.
+    """
+
+    manifest_profile = authenticated_manifest_ref_profile(manifest_ref)
+    if manifest_profile is None:
+        raise ValueError("evaluation manifest authority is not authenticated")
+    manifest_digest, manifest_size = manifest_profile
+    if len(raw_bytes) != manifest_size:
+        raise ValueError("evaluation manifest authority byte size mismatch")
+    if hashlib.sha256(raw_bytes).hexdigest() != manifest_digest:
+        raise ValueError("evaluation manifest authority SHA-256 mismatch")
+
+    manifest = load_manifest_bytes(raw_bytes)
+    if manifest.status != "completed":
+        raise ValueError("evaluation provenance requires a completed manifest")
+    if (
+        not isinstance(manifest, EvaluationRunManifest)
+        or manifest_ref.kind != manifest.kind
+        or manifest_ref.id != manifest.id
+        or manifest_ref.role != "evaluation_run"
+    ):
+        raise ValueError("evaluation manifest authority disagrees with the manifest")
+    run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    entrypoint = manifest.provenance.entrypoint
+    if (
+        run_spec.evaluation_type != expected_producer_identity
+        or entrypoint is None
+        or entrypoint.kind != "feedbax-evaluation-recipe"
+        or entrypoint.name != run_spec.evaluation_type
+    ):
+        raise ValueError("evaluation manifest producer identity is not canonical")
+    if manifest.input_training_runs != run_spec.inputs:
+        raise ValueError("evaluation manifest training sources disagree with its spec")
+
+    staged = run_spec.params.get("staged_prerequisites") or {}
+    if not isinstance(staged, dict):
+        raise ValueError("evaluation staged prerequisites must be a mapping")
+    staged_refs = tuple(
+        StagedEvaluationPrerequisite.model_validate(value).parent
+        for value in staged.values()
+    )
+    source_refs = (*run_spec.inputs, *staged_refs)
+    if tuple(manifest.provenance.parents) != source_refs:
+        raise ValueError("evaluation provenance parents disagree with declared sources")
+    if expected_source_refs is not None and expected_source_refs != source_refs:
+        raise ValueError("evaluation manifest sources disagree with expected sources")
+
+    profiles = (manifest_profile,)
+    for ref in source_refs:
+        profile = authenticated_manifest_ref_profile(ref)
+        if profile is None:
+            raise ValueError(f"evaluation source {ref.id!r} is not authenticated")
+        profiles += (profile,)
+    refs = (manifest_ref, *source_refs)
+    digests = tuple(
+        AuthenticatedManifestDigest(ref.kind, ref.id, ref.role, digest, size)
+        for ref, (digest, size) in zip(refs, profiles)
+    )
+    return EvaluationManifestProvenanceEnvelope(
+        producer_identity=run_spec.evaluation_type,
+        source_refs=source_refs,
+        digest_envelope=digests,
+    )
 
 
 class CheckpointScorerIdentity(StrictModel):
@@ -858,19 +1034,136 @@ class CheckpointSelectionManifest(BaseManifest):
         return self
 
 
+EvaluationStatesConsumptionPolicy = Literal["recompute", "require_durable"]
+
+
 class AnalysisRunSpec(StrictModel):
     """Declarative request for an analysis run."""
 
+    schema_id: Literal["feedbax.spec.analysis_run"] = ANALYSIS_RUN_SPEC_SCHEMA_ID
+    schema_version: Literal["feedbax.spec.analysis_run.v2"] = ANALYSIS_RUN_SPEC_SCHEMA_VERSION
     analysis_type: str
     inputs: list[ParentRef] = Field(default_factory=list)
     input_requirements: list[AnalysisInputRequirement] = Field(default_factory=list)
+    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalysisEvaluationStateSource(StrictModel):
+    """Queryable provenance for evaluation states consumed by one analysis."""
+
+    schema_id: Literal[
+        "feedbax.manifest.analysis_evaluation_state_source"
+    ] = ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID
+    schema_version: Literal[
+        "feedbax.manifest.analysis_evaluation_state_source.v2"
+    ] = ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION
+    source_kind: Literal["evaluation_cache", "durable", "analysis_time_recompute"]
+    requested_evaluation_manifest_id: str
+    evaluation_manifest_authority: Optional[ParentRef] = None
+    supplying_evaluation_manifest_id: Optional[str] = None
+    resulting_evaluation_manifest_id: Optional[str] = None
+    resulting_evaluation_manifest_authority: Optional[ParentRef] = None
+    cache_schema_version: Optional[str] = None
+    cache_key: Optional[str] = None
+    artifact_id: Optional[str] = None
+    artifact_sha256: Optional[str] = None
+    artifact_size_bytes: Optional[int] = Field(default=None, ge=0)
+    artifact_storage_backend: Optional[str] = None
+    container_schema_id: Optional[str] = None
+    container_schema_version: Optional[str] = None
+    container_storage_backend: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_source_evidence(self) -> "AnalysisEvaluationStateSource":
+        if self.source_kind == "durable":
+            required = {
+                "supplying_evaluation_manifest_id": self.supplying_evaluation_manifest_id,
+                "evaluation_manifest_authority": self.evaluation_manifest_authority,
+                "artifact_id": self.artifact_id,
+                "artifact_sha256": self.artifact_sha256,
+                "artifact_size_bytes": self.artifact_size_bytes,
+                "artifact_storage_backend": self.artifact_storage_backend,
+                "container_schema_id": self.container_schema_id,
+                "container_schema_version": self.container_schema_version,
+                "container_storage_backend": self.container_storage_backend,
+            }
+            missing = sorted(
+                name
+                for name, value in required.items()
+                if value is None or (isinstance(value, str) and not value)
+            )
+            if missing:
+                raise ValueError(
+                    "durable analysis evaluation-state source is missing evidence: "
+                    f"{missing}"
+                )
+            assert self.evaluation_manifest_authority is not None
+            if authenticated_manifest_ref_profile(self.evaluation_manifest_authority) is None:
+                raise ValueError(
+                    "durable analysis evaluation-state source requires a complete "
+                    "authenticated evaluation_manifest_authority"
+                )
+        elif self.source_kind == "analysis_time_recompute":
+            if (
+                not self.resulting_evaluation_manifest_id
+                or self.resulting_evaluation_manifest_authority is None
+            ):
+                raise ValueError(
+                    "analysis_time_recompute source requires authenticated resulting "
+                    "evaluation authority"
+                )
+            if (
+                authenticated_manifest_ref_profile(
+                    self.resulting_evaluation_manifest_authority
+                )
+                is None
+            ):
+                raise ValueError(
+                    "analysis_time_recompute source requires a complete authenticated "
+                    "resulting_evaluation_manifest_authority"
+                )
+        elif self.source_kind == "evaluation_cache":
+            if not self.cache_schema_version or not self.cache_key:
+                raise ValueError(
+                    "evaluation_cache source requires its stable schema version and key"
+                )
+        return self
+
+
+AnalysisEvaluationStateResolutionCode = Literal[
+    "missing_durable_states",
+    "custody_unavailable",
+    "schema_mismatch",
+    "provenance_mismatch",
+]
+
+
+class AnalysisEvaluationStateResolutionDiagnostic(StrictModel):
+    """Stable actionable diagnostic for failed evaluation-state resolution."""
+
+    schema_id: Literal[
+        "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic"
+    ] = ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID
+    schema_version: Literal[
+        "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic.v1"
+    ] = ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION
+    code: AnalysisEvaluationStateResolutionCode
+    evaluation_manifest_id: str
+    message: str
+    artifact_id: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class AnalysisRunManifest(BaseManifest):
     kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
+    schema_version: str = ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
     analysis_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
+    evaluation_state_sources: list[AnalysisEvaluationStateSource] = Field(default_factory=list)
+    evaluation_state_resolution_diagnostics: list[
+        AnalysisEvaluationStateResolutionDiagnostic
+    ] = Field(default_factory=list)
     regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
     produced_data: list[AnalysisDataProduct] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
@@ -1958,6 +2251,20 @@ def _normalize_training_run_set_manifest_data(data: dict[str, Any]) -> dict[str,
     return migrated
 
 
+def _normalize_analysis_run_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
+    if data.get("kind") != "AnalysisRunManifest":
+        return data
+    from feedbax.contracts.migrations import default_spec_registry
+
+    schema_version = data.get("schema_version", ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1)
+    result = default_spec_registry.migrate(
+        "AnalysisRunManifest",
+        data,
+        source_version=schema_version if isinstance(schema_version, str) else None,
+    )
+    return result.payload
+
+
 def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
     """Return a copy with embedded spec payloads registry-stamped and migrated."""
     fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(manifest.kind)
@@ -2162,6 +2469,7 @@ def load_manifest_bytes(raw: bytes) -> AnyManifest:
     """Parse one known Feedbax manifest from already-authenticated raw bytes."""
     data = json.loads(raw)
     data = _normalize_training_run_set_manifest_data(data)
+    data = _normalize_analysis_run_manifest_data(data)
     data = _normalize_manifest_data_spec_payloads(data)
     data = _validate_retention_artifact_ref_metadata(data)
     raw_kind = data.get("kind")

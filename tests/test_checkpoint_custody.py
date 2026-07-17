@@ -18,6 +18,7 @@ from feedbax.contracts.checkpoints import (
     BatchHistory,
     CheckpointContinuationRequest,
     CheckpointForkBarrierMapping,
+    CheckpointForkHistoryPolicy,
     CheckpointForkPlan,
     CheckpointForkSourcePreparation,
     CheckpointForkTarget,
@@ -178,6 +179,35 @@ def _rewrite_manifest_and_latest(result, payload: dict[str, object]) -> None:
     latest_payload = json.loads(result.latest_pointer_path.read_text())
     latest_payload["manifest_sha256"] = _sha256_file(result.manifest_path)
     _write_json(result.latest_pointer_path, latest_payload)
+
+
+def _rewrite_controller_leaf_type(result, leaf_type: str) -> None:
+    payload = json.loads(result.manifest_path.read_text())
+    controller = next(slot for slot in payload["slots"] if slot["slot"] == "controller")
+    fingerprint = controller["structural_abi_fingerprint"]
+    fingerprint["leaves"][0]["leaf_type"] = leaf_type
+    leaves = [
+        custody_module.SlotLeafFingerprint.model_validate(leaf)
+        for leaf in fingerprint["leaves"]
+    ]
+    fingerprint["fingerprint_sha256"] = custody_module._canonical_hash(
+        custody_module._structural_abi_content_payload(fingerprint["treedef"], leaves)
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+
+def _write_minimax_checkpoint(tmp_path: Path):
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    return run_spec, program, result
 
 
 def _manifest_blob_path(manifest_path: Path, relative_path: str) -> Path:
@@ -2018,6 +2048,76 @@ def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
     assert "jax_enable_x64 differs" not in message
 
 
+@pytest.mark.parametrize(
+    "recorded_leaf_type",
+    ["jaxlib.xla_extension.ArrayImpl", "jaxlib._jax.ArrayImpl"],
+)
+def test_jax_array_leaf_identity_accepts_known_private_spelling(
+    tmp_path: Path,
+    recorded_leaf_type: str,
+) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    assert result.manifest.slots[0].structural_abi_fingerprint.leaves[0].leaf_type == (
+        "jax.Array"
+    )
+    _rewrite_controller_leaf_type(result, recorded_leaf_type)
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+    assert loaded.slots["controller"].tolist() == [1.0, 2.0]
+
+
+def test_jax_array_leaf_identity_rejects_unknown_private_spelling(tmp_path: Path) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    _rewrite_controller_leaf_type(result, "jaxlib.future.ArrayImpl")
+
+    with pytest.raises(CheckpointIntegrityError) as exc_info:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+    message = str(exc_info.value)
+    assert "path=/ field=leaf_type" in message
+    assert 'recorded="jaxlib.future.ArrayImpl" actual="jax.Array"' in message
+
+
+@pytest.mark.parametrize(
+    ("replacement", "field"),
+    [
+        pytest.param(jnp.array([1.0, 2.0, 3.0]), "shape", id="shape"),
+        pytest.param(jnp.array([1, 2], dtype=jnp.int32), "dtype", id="dtype"),
+        pytest.param(1.0, "leaf_type", id="non-array"),
+    ],
+)
+def test_jax_array_leaf_identity_preserves_other_abi_failures(
+    tmp_path: Path,
+    replacement: object,
+    field: str,
+) -> None:
+    run_spec, program, _result = _write_minimax_checkpoint(tmp_path)
+    expected_slots = _minimax_slots()
+    expected_slots["controller"] = replacement
+
+    with pytest.raises(CheckpointCompatibilityError) as exc_info:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=expected_slots,
+        )
+
+    message = str(exc_info.value)
+    assert f"path=/ field={field}" in message
+    assert "recorded=" in message and "actual=" in message
+
+
 def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
     run_spec = _run_spec(minimax=True)
     program = run_spec.worker_execution.method_contract.phase_program
@@ -2375,14 +2475,150 @@ def test_checkpoint_continuation_v1_is_explicitly_rejected() -> None:
         )
 
 
-def test_continuation_applied_marker_absent_or_false_requires_allocation() -> None:
+def test_prepare_continuation_fork_preserves_progress_and_allocates_on_reload(
+    tmp_path: Path,
+) -> None:
+    source_spec, program = _batch_counter_program_and_spec()
+    request = CheckpointContinuationRequest(
+        source_completed_batches=12_000,
+        additional_batches=4_500,
+    )
+    target_spec = source_spec.model_copy(
+        update={
+            "checkpoint_progress": source_spec.checkpoint_progress.model_copy(
+                update={"continuation": request}
+            )
+        }
+    )
+    source_slots = {
+        "model": BatchHistory(jnp.arange(12_000)),
+        "optimizer": {"count": 0},
+        "prng": [0, 1],
+        "batch_counter": 12_000,
+    }
+    target_slots = {
+        **source_slots,
+        "model": BatchHistory(jnp.full((4_500,), -1)),
+    }
+    write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=source_spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="pending",
+            phase="train_batch",
+            program_step=24,
+            completed_barrier="after_train_batch",
+        ),
+        slots=source_slots,
+        completed_training_batches=12_000,
+    )
+    undeclared_plan = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        targets=[
+            CheckpointForkTarget(
+                target_id="undeclared",
+                checkpoint_root_ref="undeclared",
+                run_spec_ref="source-run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    source_spec, program, target_slots
+                ),
+                history_policy=CheckpointForkHistoryPolicy(
+                    mode="prepare_continuation", continuation_request=request
+                ),
+            )
+        ],
+    )
+    with pytest.raises(CheckpointCompatibilityError, match="run spec to declare continuation"):
+        fork_checkpoint_plan(
+            undeclared_plan,
+            CheckpointForkPlanBindings(
+                checkpoint_roots={
+                    "source": tmp_path / "source",
+                    "undeclared": tmp_path / "undeclared",
+                },
+                run_specs={"source-run": source_spec},
+                slot_templates={"slots": target_slots},
+            ),
+        )
+    assert not (tmp_path / "undeclared").exists()
+
+    plan = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        targets=[
+            CheckpointForkTarget(
+                target_id="target",
+                checkpoint_root_ref="target",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    target_spec,
+                    program,
+                    target_slots,
+                ),
+                history_policy=CheckpointForkHistoryPolicy(
+                    mode="prepare_continuation",
+                    continuation_request=request,
+                ),
+            )
+        ],
+    )
+
+    forked = fork_checkpoint_plan(
+        plan,
+        CheckpointForkPlanBindings(
+            checkpoint_roots={
+                "source": tmp_path / "source",
+                "target": tmp_path / "target",
+            },
+            run_specs={"run": target_spec},
+            slot_templates={"slots": target_slots},
+        ),
+    )["target"]
+
+    assert forked.manifest.completed_training_batches == 12_000
+    assert forked.manifest.segment_lineage.start_batch == 0
+    assert forked.manifest.segment_lineage.segment_batch_count == 12_000
+    assert forked.manifest.metadata["checkpoint_continuation_applied"] is False
+    assert forked.manifest.metadata["checkpoint_continuation"] == request.model_dump(
+        mode="json", exclude_none=True
+    )
+    assert forked.slot_transfer_modes["model"] == "hardlink"
+
+    resumed = load_latest_checkpoint(
+        forked.root,
+        expected_run_spec=target_spec,
+        expected_phase_program=program,
+        expected_slots=target_slots,
+        continuation_request=request,
+    )
+    assert resumed.slots["batch_counter"] == 12_000
+    assert resumed.slots["model"].value.shape == (4_500,)
+    assert jnp.all(resumed.slots["model"].value == -1)
+
+    with pytest.raises(CheckpointCompatibilityError, match="pending fork contract"):
+        load_latest_checkpoint(
+            forked.root,
+            expected_run_spec=target_spec,
+            expected_phase_program=program,
+            expected_slots=target_slots,
+            continuation_request=request.model_copy(update={"additional_batches": 4_499}),
+        )
+
+
+def test_continuation_applied_marker_absent_or_valid_false_requires_allocation() -> None:
     request = CheckpointContinuationRequest(
         source_completed_batches=12_000,
         additional_batches=4_500,
     )
 
     for marker in (None, False):
-        metadata = {} if marker is None else {"checkpoint_continuation_applied": marker}
+        metadata = {} if marker is None else {
+            "checkpoint_continuation_applied": marker,
+            "checkpoint_continuation": request.model_dump(mode="json", exclude_none=True),
+        }
         manifest = type("Manifest", (), {"metadata": metadata})()
         assert custody_module._continuation_was_applied(manifest, request) is False
 

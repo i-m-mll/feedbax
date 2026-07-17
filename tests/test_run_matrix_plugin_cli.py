@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import feedbax.plugins
 import feedbax.training.run_matrix as run_matrix
 from feedbax import __main__ as feedbax_main
+from feedbax.analysis import evaluation
 from feedbax.analysis import harness
+from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.contracts.manifest import canonical_json_bytes, load_manifest, sha256_bytes
 from feedbax.contracts.training import default_training_method_registry
 from feedbax.plugins.discovery import load_training_method_plugins
 from feedbax.training.preparation import ExecutionPreparationProviderRegistry
@@ -99,3 +103,151 @@ def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Pa
             "downstream.recipes",
         ]
     ]
+
+
+def test_top_level_matrix_harness_executes_v3_axis_matrix(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    base = {"evaluation_type": "example.cli_axis", "params": {"gain": 0}}
+    (tmp_path / "base.json").write_text(json.dumps(base), encoding="utf-8")
+    payload = {
+        "schema_id": "feedbax.spec.evaluation_run_matrix",
+        "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+        "base": {"ref": "base.json", "sha256": sha256_bytes(canonical_json_bytes(base))},
+        "axes": [
+            {
+                "id": "gain",
+                "values": [
+                    {"id": "one", "deltas": [{"path": "params.gain", "value": 1}]}
+                ],
+            }
+        ],
+    }
+    spec = tmp_path / "matrix.json"
+    spec.write_text(json.dumps(payload), encoding="utf-8")
+    evaluation.register_evaluation_recipe(
+        "example.cli_axis", lambda *_args: EvaluationRecipeResult()
+    )
+    try:
+        result = feedbax_main.main(
+            [
+                "matrix-harness",
+                str(spec),
+                "--manifest-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+    finally:
+        evaluation.unregister_evaluation_recipe("example.cli_axis")
+
+    assert result == 0
+    manifest_path = next(
+        (tmp_path / "runs" / "gain-one" / "manifests" / "evaluation_runs").glob("*.json")
+    )
+    manifest = load_manifest(manifest_path)
+    assert manifest.metadata["matrix_harness"]["axis_expansion"]["pinned_base"]["ref"] == (
+        "base.json"
+    )
+
+
+def test_top_level_harness_cli_forwards_explicit_staged_runtime_bindings(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(harness, "main", lambda argv: calls.append(argv) or 0)
+    spec = tmp_path / "matrix.json"
+    manifest_root = tmp_path / "manifests"
+    parent_root = tmp_path / "parents"
+    descriptor = tmp_path / "descriptor.json"
+
+    result = feedbax_main.main(
+        [
+            "matrix-harness",
+            str(spec),
+            "--manifest-root",
+            str(manifest_root),
+            "--repo-root",
+            str(tmp_path),
+            "--parent-manifest-root",
+            str(parent_root),
+            "--execution-descriptor",
+            str(descriptor),
+            "--artifact-provider",
+            f"shared={tmp_path / 'provider'}",
+            "--checkpoint-custody",
+            f"checkpoints={tmp_path / 'checkpoints'}",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        [
+            str(spec),
+            "--manifest-root",
+            str(manifest_root),
+            "--repo-root",
+            str(tmp_path),
+            "--parent-manifest-root",
+            str(parent_root),
+            "--execution-descriptor",
+            str(descriptor),
+            "--artifact-provider",
+            f"shared={tmp_path / 'provider'}",
+            "--checkpoint-custody",
+            f"checkpoints={tmp_path / 'checkpoints'}",
+        ]
+    ]
+
+
+def test_harness_cli_parses_staged_runtime_bindings(monkeypatch, tmp_path: Path) -> None:
+    captured: list[tuple[dict[str, object], dict[str, object]]] = []
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "execute_evaluation_run_matrix",
+        lambda payload, **kwargs: captured.append((payload, kwargs)),
+    )
+    spec = tmp_path / "matrix.json"
+    descriptor = tmp_path / "descriptor.json"
+    spec.write_text(json.dumps({"schema_id": "matrix"}), encoding="utf-8")
+    descriptor.write_text(json.dumps({"schema_id": "descriptor"}), encoding="utf-8")
+
+    result = harness.main(
+        [
+            str(spec),
+            "--manifest-root",
+            str(tmp_path / "rows"),
+            "--repo-root",
+            str(tmp_path),
+            "--parent-manifest-root",
+            str(tmp_path / "parents"),
+            "--execution-descriptor",
+            str(descriptor),
+            "--artifact-provider",
+            f"shared={tmp_path / 'provider'}",
+            "--checkpoint-custody",
+            f"checkpoints={tmp_path / 'checkpoints'}",
+        ]
+    )
+
+    assert result == 0
+    payload, kwargs = captured[0]
+    assert payload == {"schema_id": "matrix"}
+    assert kwargs["repo_root"] == str(tmp_path)
+    assert kwargs["execution_descriptor"] == {"schema_id": "descriptor"}
+    assert kwargs["parent_manifest_root"] == str(tmp_path / "parents")
+    assert kwargs["artifact_provider_bindings"][0].name == "shared"
+    assert kwargs["artifact_provider_bindings"][0].root == str(tmp_path / "provider")
+    assert kwargs["checkpoint_custody_bindings"][0].name == "checkpoints"

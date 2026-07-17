@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -51,6 +51,7 @@ class HarnessResult:
     rows: tuple[MaterializedRow, ...]
     note: str
     escape_hatch_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def semantic_diff(before: Any, after: Any, *, path: str = "$") -> list[SemanticChange]:
@@ -119,6 +120,8 @@ class MatrixMaterializerHarness:
         title: str,
         source: str,
         escape_hatch_reason: str | None = None,
+        matrix_metadata: Mapping[str, Any] | None = None,
+        regeneration_parameters: Mapping[str, Any] | None = None,
     ) -> HarnessResult:
         """Execute resolved rows and emit standard custody and regeneration records."""
         if not rows:
@@ -126,6 +129,8 @@ class MatrixMaterializerHarness:
         if escape_hatch_reason is not None and not escape_hatch_reason.strip():
             raise ValueError("flat-spec escape hatch requires a stated non-empty reason")
         materialized: list[MaterializedRow] = []
+        shared_metadata = dict(matrix_metadata or {})
+        replay_parameters = dict(regeneration_parameters or {})
         for row_id, resolved in rows:
             if not row_id:
                 raise ValueError("materializer row_id must be non-empty")
@@ -134,11 +139,16 @@ class MatrixMaterializerHarness:
             result, manifest_path = execute(row_id, resolved, row_root)
             regeneration = RegenerationSpec(
                 command=RegenerationCommand(argv=list(command)),
-                parameters={"row_id": row_id, "resolved": dict(resolved)},
+                parameters={
+                    **replay_parameters,
+                    "row_id": row_id,
+                    "resolved": dict(resolved),
+                },
                 metadata={
                     "source": source,
                     "custody": self.custody,
                     "escape_hatch_reason": escape_hatch_reason,
+                    **shared_metadata,
                 },
             )
             artifacts: list[ArtifactRef] = []
@@ -170,6 +180,7 @@ class MatrixMaterializerHarness:
                         "source": source,
                         "custody": self.custody,
                         "escape_hatch_reason": escape_hatch_reason,
+                        **shared_metadata,
                         "regeneration_spec": regeneration.model_dump(
                             mode="json", exclude_none=True
                         ),
@@ -212,7 +223,15 @@ class MatrixMaterializerHarness:
                 suffix=".md",
                 metadata={"source": source, "escape_hatch_reason": escape_hatch_reason},
             )
-        return HarnessResult(tuple(materialized), note, escape_hatch_reason)
+        return HarnessResult(
+            tuple(materialized),
+            note,
+            escape_hatch_reason,
+            metadata={
+                **shared_metadata,
+                "regeneration_parameters": replay_parameters,
+            },
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -220,19 +239,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="feedbax matrix-harness")
     parser.add_argument("spec", help="EvaluationRunMatrixSpec JSON path")
     parser.add_argument("--manifest-root", required=True)
+    parser.add_argument("--repo-root")
     parser.add_argument("--plugin", action="append")
     parser.add_argument("--escape-hatch-reason")
+    parser.add_argument("--parent-manifest-root")
+    parser.add_argument("--execution-descriptor")
+    parser.add_argument("--artifact-provider", action="append", default=[])
+    parser.add_argument("--checkpoint-custody", action="append", default=[])
     args = parser.parse_args(argv)
     from feedbax.plugins import load_training_method_plugins
 
     load_training_method_plugins(modules=args.plugin)
     from feedbax.analysis.evaluation import execute_evaluation_run_matrix
+    from feedbax.analysis.execution_context import (
+        StagedArtifactProviderRootBinding,
+        StagedCheckpointCustodyRootBinding,
+    )
+
+    def binding_parts(value: str, *, option: str) -> tuple[str, str]:
+        name, separator, root = value.partition("=")
+        if not separator or not name or not root:
+            raise ValueError(f"{option} entries must use NAME=ROOT")
+        return name, root
 
     payload = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    execution_descriptor = (
+        json.loads(Path(args.execution_descriptor).read_text(encoding="utf-8"))
+        if args.execution_descriptor is not None
+        else None
+    )
     execute_evaluation_run_matrix(
         payload,
         root=args.manifest_root,
+        repo_root=args.repo_root,
         escape_hatch_reason=args.escape_hatch_reason,
+        parent_manifest_root=args.parent_manifest_root,
+        execution_descriptor=execution_descriptor,
+        artifact_provider_bindings=[
+            StagedArtifactProviderRootBinding(
+                *binding_parts(value, option="--artifact-provider")
+            )
+            for value in args.artifact_provider
+        ],
+        checkpoint_custody_bindings=[
+            StagedCheckpointCustodyRootBinding(
+                *binding_parts(value, option="--checkpoint-custody")
+            )
+            for value in args.checkpoint_custody
+        ],
     )
     return 0
 

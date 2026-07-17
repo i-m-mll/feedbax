@@ -32,6 +32,12 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from .context import AnalysisRunContext
+from .channel_evidence import (
+    AuthenticatedEvaluationChannels,
+    EvaluationChannelEvidence,
+    EvaluationChannelEvidenceError,
+    resolve_authenticated_evaluation_channels,
+)
 from .controller import (
     GraphControllerAdapter,
     GraphControllerStep,
@@ -88,13 +94,18 @@ from .validation import (
     validate_report_recipe,
 )
 from .evaluation import (
+    EvaluationAuthoringSchema,
     EvaluationRunMatrixSpec,
+    compile_evaluation_run_matrix,
     execute_evaluation_run_matrix,
     get_evaluation_recipe,
     materialize_evaluation_run_matrix,
+    register_evaluation_authoring_schema,
     register_evaluation_recipe,
     registered_evaluation_recipes,
+    resolve_staged_evaluation_prerequisite,
     unregister_evaluation_recipe,
+    unregister_evaluation_authoring_schema,
 )
 from feedbax.contracts.manifest import EvaluationParamsBase, StagedEvaluationPrerequisite
 from .evaluation_inputs import (
@@ -128,6 +139,7 @@ __all__ = [
     "AnalysisRecipeResult",
     "AnalysisRecipeProtocol",
     "AnalysisRunContext",
+    "AuthenticatedEvaluationChannels",
     "ResolvedManifestInput",
     "authenticated_manifest_ref",
     "is_authenticated_manifest_ref",
@@ -138,6 +150,8 @@ __all__ = [
     "ContextMaterializerFn",
     "DataContextMaterializerFn",
     "EvaluationRecipeProtocol",
+    "EvaluationChannelEvidence",
+    "EvaluationChannelEvidenceError",
     "EvaluationParamsBase",
     "EMPTY_STAGED_EXECUTION_CONTEXT",
     "EvaluationInputAmbiguityError",
@@ -147,7 +161,9 @@ __all__ = [
     "EvaluationInputPathError",
     "EvaluationInputReferenceError",
     "EvaluationInputResolutionError",
+    "EvaluationAuthoringSchema",
     "EvaluationRunMatrixSpec",
+    "compile_evaluation_run_matrix",
     "HarnessResult",
     "ExistingAnalysisArtifact",
     "GraphControllerAdapter",
@@ -186,6 +202,7 @@ __all__ = [
     "execute_analysis_bundle",
     "execute_analysis_run_spec",
     "execute_evaluation_run_matrix",
+    "resolve_staged_evaluation_prerequisite",
     "execute_report_spec",
     "execute_staged_analysis_bundle",
     "existing_file_artifact_group",
@@ -196,15 +213,18 @@ __all__ = [
     "materialization_metadata",
     "materialize_evaluation_run_matrix",
     "register_analysis_recipe",
+    "register_evaluation_authoring_schema",
     "register_evaluation_recipe",
     "register_report_recipe",
     "read_json_payload",
     "registered_evaluation_recipes",
     "resolve_evaluation_inputs",
+    "resolve_authenticated_evaluation_channels",
     "resolve_staged_execution_context",
     "registered_report_types",
     "get_evaluation_recipe",
     "unregister_analysis_recipe",
+    "unregister_evaluation_authoring_schema",
     "unregister_evaluation_recipe",
     "unregister_report_recipe",
     "validate_namespaced_type_key",

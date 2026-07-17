@@ -12,12 +12,13 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TextIO
+from typing import Any, Literal, Self, TextIO
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.metric_values import NumericBooleanJsonValue
 from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
 
 
@@ -38,6 +39,12 @@ RUN_EVENT_CORE_TYPES = frozenset(
 )
 MAPPED_METRIC_VALUE_SCHEMA_ID = "feedbax.manifest.mapped_metric_value"
 MAPPED_METRIC_VALUE_SCHEMA_VERSION = "feedbax.manifest.mapped_metric_value.v1"
+STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID = (
+    "feedbax.manifest.structured_mapped_metric_value"
+)
+STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION = (
+    "feedbax.manifest.structured_mapped_metric_value.v1"
+)
 
 
 class MappedMetricValue(StrictModel):
@@ -53,6 +60,102 @@ class MappedMetricValue(StrictModel):
     shape: tuple[int, ...]
     dtype: str
     axes: tuple[MaterializedSlotAxisBinding, ...]
+
+
+class StructuredMappedMetricValue(StrictModel):
+    """Named numeric/boolean metric leaves retaining one replica axis."""
+
+    schema_id: Literal["feedbax.manifest.structured_mapped_metric_value"] = (
+        STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.manifest.structured_mapped_metric_value.v1"] = (
+        STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION
+    )
+    value: dict[str, NumericBooleanJsonValue]
+    axes: tuple[MaterializedSlotAxisBinding, ...]
+
+    @model_validator(mode="after")
+    def _validate_carrier(self) -> Self:
+        if len(self.axes) != 1:
+            raise ValueError("structured mapped metric requires exactly one axis")
+        axis = self.axes[0]
+        if (axis.role, axis.level, axis.mode, axis.array_axis) != (
+            "replicate",
+            0,
+            "mapped",
+            0,
+        ):
+            raise ValueError("structured mapped metric requires one leading replica axis")
+
+        def validate_node(value: dict[str, NumericBooleanJsonValue], path: str) -> None:
+            if not value:
+                raise ValueError(f"structured mapped metric has an empty named node at {path}")
+            for name, item in value.items():
+                item_path = f"{path}.{name}"
+                if isinstance(item, dict):
+                    validate_node(item, item_path)
+                elif not isinstance(item, list):
+                    raise ValueError(f"structured mapped metric leaf {item_path} must be a list")
+                elif len(item) != axis.size:
+                    raise ValueError(
+                        f"structured mapped metric leaf {item_path} has leading size "
+                        f"{len(item)}; expected {axis.size}"
+                    )
+
+        validate_node(self.value, "value")
+        return self
+
+
+def _normalize_structured_mapped_value(
+    value: Mapping[Any, Any],
+    *,
+    metric_name: str,
+    replica_count: int,
+    path: str = "value",
+) -> dict[str, Any]:
+    if not value:
+        raise RunEventProtocolError(f"mapped metric {metric_name!r} has empty named node {path}")
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if type(key) is not str:
+            raise RunEventProtocolError(
+                f"mapped metric {metric_name!r} requires a string name at {path}"
+            )
+        item_path = f"{path}.{key}"
+        if isinstance(item, Mapping):
+            normalized[key] = _normalize_structured_mapped_value(
+                item,
+                metric_name=metric_name,
+                replica_count=replica_count,
+                path=item_path,
+            )
+            continue
+        try:
+            array = np.asarray(item)
+        except (TypeError, ValueError) as exc:
+            raise RunEventProtocolError(
+                f"mapped metric {metric_name!r} leaf {item_path} is not an array"
+            ) from exc
+        if array.ndim < 1:
+            raise RunEventProtocolError(
+                f"mapped metric {metric_name!r} leaf {item_path} lacks a replica dimension"
+            )
+        if array.shape[0] != replica_count:
+            raise RunEventProtocolError(
+                f"mapped metric {metric_name!r} leaf {item_path} has leading size "
+                f"{array.shape[0]}; expected {replica_count}"
+            )
+        if array.dtype.kind not in "biuf":
+            raise RunEventProtocolError(
+                f"mapped metric {metric_name!r} leaf {item_path} has unsupported dtype "
+                f"{array.dtype}"
+            )
+        if array.dtype.kind == "f" and not np.isfinite(array).all():
+            raise RunEventProtocolError(
+                f"mapped metric {metric_name!r} leaf {item_path} must be finite"
+            )
+        normalized[key] = array.tolist()
+    return normalized
 
 
 def normalize_serialized_metrics(
@@ -76,6 +179,26 @@ def normalize_serialized_metrics(
     ).model_dump(mode="json", exclude_none=True)
     normalized = dict(named_metrics)
     for name, axes in mapped.items():
+        if isinstance(named_metrics[name], Mapping):
+            if (
+                len(axes) != 1
+                or axes[0].role != "replicate"
+                or axes[0].level != 0
+                or axes[0].array_axis != 0
+            ):
+                raise RunEventProtocolError(
+                    f"mapped metric {name!r} requires one leading replica axis"
+                )
+            value = _normalize_structured_mapped_value(
+                named_metrics[name],
+                metric_name=name,
+                replica_count=axes[0].size,
+            )
+            normalized[name] = StructuredMappedMetricValue(
+                value=value,
+                axes=axes,
+            ).model_dump(mode="json")
+            continue
         try:
             array = np.asarray(named_metrics[name])
             value = array.tolist()
