@@ -14,12 +14,14 @@ from feedbax.contracts.manifest import (
     ArtifactRef,
     RegenerationCommand,
     RegenerationSpec,
+    sha256_bytes,
     store_bytes_artifact,
     store_json_artifact,
     write_manifest,
 )
 
 CustodyMode = Literal["manifest", "content-addressed"]
+SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG = "--allow-large-per-row"
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,7 @@ class HarnessResult:
 
 @dataclass(frozen=True)
 class _ExecutionPolicy:
+    content_sha256: str
     per_row_max_rows: int
     threshold_source: str
     override_flag: str
@@ -72,7 +75,16 @@ def _read_json_object(path: str, *, description: str) -> dict[str, Any]:
 
 
 def _load_execution_policy(path: str) -> _ExecutionPolicy:
-    payload = _read_json_object(path, description="execution policy")
+    try:
+        content = Path(path).read_bytes()
+    except OSError as exc:
+        raise ValueError(f"could not load execution policy {path!r}: {exc}") from exc
+    try:
+        payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not load execution policy {path!r}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"execution policy {path!r} must contain a JSON object")
     per_row_max_rows = payload.get("per_row_max_rows")
     threshold_source = payload.get("threshold_source")
     override_flag = payload.get("override_flag")
@@ -82,7 +94,13 @@ def _load_execution_policy(path: str) -> _ExecutionPolicy:
         raise ValueError("execution policy threshold_source must be a non-blank string")
     if not isinstance(override_flag, str) or not override_flag.strip():
         raise ValueError("execution policy override_flag must be a non-blank string")
+    if override_flag != SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG:
+        raise ValueError(
+            f"execution policy override_flag {override_flag!r} does not match the supported "
+            f"override surface {SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG!r}"
+        )
     return _ExecutionPolicy(
+        content_sha256=sha256_bytes(content),
         per_row_max_rows=per_row_max_rows,
         threshold_source=threshold_source,
         override_flag=override_flag,
@@ -281,10 +299,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--execution-descriptor")
     parser.add_argument("--artifact-provider", action="append", default=[])
     parser.add_argument("--checkpoint-custody", action="append", default=[])
-    parser.add_argument("--batch", action="store_true")
-    parser.add_argument("--locked-spec")
-    parser.add_argument("--execution-policy")
-    parser.add_argument("--allow-large-per-row", action="store_true")
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help=(
+            "Execute the whole matrix through its registered batch recipe; this bypasses "
+            "the execution policy's per-row row-count refusal."
+        ),
+    )
+    parser.add_argument(
+        "--locked-spec",
+        help=(
+            "Require the runtime matrix's exact ordered row_id sequence to equal the locked "
+            "EvaluationRunMatrixSpec sequence."
+        ),
+    )
+    parser.add_argument(
+        "--execution-policy",
+        help=(
+            "JSON policy requiring positive-integer per_row_max_rows, non-blank "
+            "threshold_source, and override_flag set to --allow-large-per-row."
+        ),
+    )
+    parser.add_argument(
+        "--allow-large-per-row",
+        action="store_true",
+        help=(
+            "Explicitly bypass an execution policy's oversized per-row refusal; the decision "
+            "is recorded in matrix-harness evidence."
+        ),
+    )
     args = parser.parse_args(argv)
     from feedbax.plugins import load_training_method_plugins
 
@@ -308,6 +352,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         payload = _read_json_object(args.spec, description="evaluation matrix spec")
+        policy = (
+            _load_execution_policy(args.execution_policy)
+            if args.execution_policy is not None
+            else None
+        )
         runtime_rows = None
         if args.locked_spec is not None:
             locked_document = _read_json_object(
@@ -331,8 +380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "runtime evaluation matrix row_id sequence does not match locked spec: "
                     f"runtime={runtime_row_ids!r}, locked={locked_row_ids!r}"
                 )
-        if args.execution_policy is not None:
-            policy = _load_execution_policy(args.execution_policy)
+        if policy is not None:
             if runtime_rows is None:
                 runtime_rows = materialize_evaluation_run_matrix(
                     payload,
@@ -351,6 +399,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
     except (TypeError, ValueError) as exc:
         parser.error(str(exc))
+    policy_metadata = (
+        {
+            "execution_policy": {
+                "content_sha256": policy.content_sha256,
+                "per_row_max_rows": policy.per_row_max_rows,
+                "threshold_source": policy.threshold_source,
+                "override_flag": policy.override_flag,
+                "execution_mode": "batch" if args.batch else "per-row",
+                "explicit_override_used": args.allow_large_per_row and not args.batch,
+            }
+        }
+        if policy is not None
+        else None
+    )
     execution_descriptor = (
         json.loads(Path(args.execution_descriptor).read_text(encoding="utf-8"))
         if args.execution_descriptor is not None
@@ -376,6 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for value in args.checkpoint_custody
         ],
         batch=EvaluationBatchExecution() if args.batch else None,
+        matrix_metadata=policy_metadata,
     )
     return 0
 

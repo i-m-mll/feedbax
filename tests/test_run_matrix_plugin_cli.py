@@ -157,6 +157,19 @@ def test_top_level_harness_cli_forwards_batch_and_gate_options(
     ]
 
 
+def test_matrix_harness_gate_options_have_public_help(capsys) -> None:
+    for entrypoint in (feedbax_main.main, harness.main):
+        with pytest.raises(SystemExit, match="0"):
+            entrypoint(
+                ["matrix-harness", "--help"] if entrypoint is feedbax_main.main else ["--help"]
+            )
+        help_text = " ".join(capsys.readouterr().out.split())
+        assert "exact ordered row_id sequence" in help_text
+        assert "positive-integer per_row_max_rows" in help_text
+        assert "registered batch recipe" in help_text
+        assert "decision is recorded" in help_text
+
+
 def test_top_level_matrix_harness_executes_v3_axis_matrix(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -415,8 +428,9 @@ def test_harness_cli_policy_blocks_large_per_row_execution(
     )
 
     with pytest.raises(SystemExit, match="2"):
-        harness.main(
+        feedbax_main.main(
             [
+                "matrix-harness",
                 str(spec),
                 "--manifest-root",
                 str(tmp_path / "rows"),
@@ -430,6 +444,55 @@ def test_harness_cli_policy_blocks_large_per_row_execution(
     assert "2 rows" in error
     assert "1 rows" in error
     assert "authored memory limit" in error
+    assert "--allow-large-per-row" in error
+
+
+def test_harness_cli_rejects_unsupported_authored_override_before_outputs(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "execute_evaluation_run_matrix",
+        lambda *_args, **_kwargs: pytest.fail("invalid override surface must not execute"),
+    )
+    spec = tmp_path / "matrix.json"
+    policy = tmp_path / "policy.json"
+    manifest_root = tmp_path / "rows"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one", "two")), encoding="utf-8")
+    policy.write_text(
+        json.dumps(
+            {
+                "per_row_max_rows": 1,
+                "threshold_source": "authored memory limit",
+                "override_flag": "--policy-forbids-cli-override",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        feedbax_main.main(
+            [
+                "matrix-harness",
+                str(spec),
+                "--manifest-root",
+                str(manifest_root),
+                "--execution-policy",
+                str(policy),
+                "--allow-large-per-row",
+            ]
+        )
+
+    assert not manifest_root.exists()
+    error = capsys.readouterr().err
+    assert "--policy-forbids-cli-override" in error
     assert "--allow-large-per-row" in error
 
 
@@ -478,6 +541,88 @@ def test_harness_cli_policy_allows_batch_or_explicit_override(
     assert result == 0
     assert len(executions) == 1
     assert (executions[0]["batch"] is not None) is (bypass == ["--batch"])
+
+
+@pytest.mark.parametrize(
+    ("bypass", "execution_mode", "explicit_override_used"),
+    [
+        (["--batch"], "batch", False),
+        (["--allow-large-per-row"], "per-row", True),
+    ],
+)
+def test_harness_cli_persists_execution_policy_evidence(
+    tmp_path: Path,
+    bypass: list[str],
+    execution_mode: str,
+    explicit_override_used: bool,
+) -> None:
+    spec = tmp_path / f"matrix-{execution_mode}.json"
+    policy = tmp_path / f"policy-{execution_mode}.json"
+    manifest_root = tmp_path / f"rows-{execution_mode}"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one", "two")), encoding="utf-8")
+    policy_content = json.dumps(
+        {
+            "per_row_max_rows": 1,
+            "threshold_source": "authored memory limit",
+            "override_flag": "--allow-large-per-row",
+        }
+    ).encode()
+    policy.write_bytes(policy_content)
+    evaluation.register_evaluation_recipe(
+        "example.cli_gate",
+        lambda *_args: EvaluationRecipeResult(),
+        batch_recipe=lambda items, _context: [EvaluationRecipeResult() for _item in items],
+        replace=True,
+    )
+    try:
+        result = harness.main(
+            [
+                str(spec),
+                "--manifest-root",
+                str(manifest_root),
+                "--execution-policy",
+                str(policy),
+                *bypass,
+            ]
+        )
+    finally:
+        evaluation.unregister_evaluation_recipe("example.cli_gate")
+
+    assert result == 0
+    manifest_path = next((manifest_root / "one" / "manifests" / "evaluation_runs").glob("*.json"))
+    manifest = load_manifest(manifest_path)
+    expected = {
+        "content_sha256": sha256_bytes(policy_content),
+        "per_row_max_rows": 1,
+        "threshold_source": "authored memory limit",
+        "override_flag": "--allow-large-per-row",
+        "execution_mode": execution_mode,
+        "explicit_override_used": explicit_override_used,
+    }
+    harness_metadata = manifest.metadata["matrix_harness"]
+    assert harness_metadata["execution_policy"] == expected
+    assert harness_metadata["regeneration_spec"]["metadata"]["execution_policy"] == expected
+
+
+def test_harness_cli_without_policy_omits_policy_evidence(tmp_path: Path) -> None:
+    spec = tmp_path / "matrix.json"
+    manifest_root = tmp_path / "rows"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one")), encoding="utf-8")
+    evaluation.register_evaluation_recipe(
+        "example.cli_gate",
+        lambda *_args: EvaluationRecipeResult(),
+        replace=True,
+    )
+    try:
+        result = harness.main([str(spec), "--manifest-root", str(manifest_root)])
+    finally:
+        evaluation.unregister_evaluation_recipe("example.cli_gate")
+
+    assert result == 0
+    manifest_path = next((manifest_root / "one" / "manifests" / "evaluation_runs").glob("*.json"))
+    harness_metadata = load_manifest(manifest_path).metadata["matrix_harness"]
+    assert "execution_policy" not in harness_metadata
+    assert "execution_policy" not in harness_metadata["regeneration_spec"]["metadata"]
 
 
 @pytest.mark.parametrize(

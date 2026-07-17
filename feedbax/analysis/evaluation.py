@@ -360,11 +360,12 @@ def execute_evaluation_run_matrix(
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     batch: EvaluationBatchExecution | None = None,
+    matrix_metadata: Mapping[str, Any] | None = None,
 ):
     """Resolve and execute every evaluation condition through the shared harness."""
     from feedbax.analysis.harness import MatrixMaterializerHarness
 
-    matrix_metadata: dict[str, Any] = {}
+    matrix_metadata = dict(matrix_metadata or {})
     staged_parents: dict[str, Any] = {}
     if isinstance(spec, EvaluationRunSpec) or (
         isinstance(spec, Mapping) and "evaluation_type" in spec and "base" not in spec
