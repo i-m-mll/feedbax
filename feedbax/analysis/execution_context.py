@@ -823,7 +823,7 @@ def _validate_relative_execution_uri(uri: str) -> str:
             f"parent execution_uri must be a plain relative path: {uri!r}"
         )
     decoded = unquote(split.path)
-    if "\\" in decoded:
+    if "\x00" in decoded or "\\" in decoded:
         raise StagedExecutionContextError(
             f"parent execution_uri contains an unsupported path separator: {uri!r}"
         )
