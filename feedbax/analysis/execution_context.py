@@ -50,6 +50,22 @@ class StagedExecutionContextError(ValueError):
     """Raised when a portable descriptor cannot be safely bound for execution."""
 
 
+class StagedLocatorMissingError(StagedExecutionContextError):
+    """Raised when a local evaluation-state artifact has no canonical locator."""
+
+
+class StagedLocatorMismatchError(StagedExecutionContextError):
+    """Raised when local evaluation-state artifact locators disagree."""
+
+
+class StagedLocatorAbsoluteError(StagedExecutionContextError):
+    """Raised when a local evaluation-state artifact claims an absolute URI."""
+
+
+class StagedLocatorTraversalError(StagedExecutionContextError):
+    """Raised when a local evaluation-state artifact locator escapes its root."""
+
+
 @dataclass(frozen=True, slots=True)
 class StagedArtifactProviderRootBinding:
     """One explicit runtime root for a logical immutable artifact provider."""
@@ -253,13 +269,7 @@ class StagedExecutionContext:
         artifact = artifacts[0]
         if location.artifact_provider is None:
             assert expected_root_identity is not None
-            canonical = artifact.metadata.get("relative_path")
-            if not isinstance(canonical, str):
-                raise StagedExecutionContextError(
-                    "local evaluation_states artifact requires metadata.relative_path"
-                )
-            canonical = _validate_relative_execution_uri(canonical)
-            _require_canonical_local_artifact_locators(artifact, canonical)
+            canonical = _require_canonical_local_artifact_locators(artifact)
             _require_directory_identity(
                 location.root, expected_root_identity, kind="parent execution"
             )
@@ -639,8 +649,7 @@ def _resolve_retained_local_manifest_input(
 
 def _require_canonical_local_artifact_locators(
     artifact: ArtifactRef,
-    canonical: str,
-) -> None:
+) -> str:
     """Reject ambiguous or noncanonical local artifact locator claims."""
     locators = {
         "uri": artifact.uri,
@@ -648,14 +657,34 @@ def _require_canonical_local_artifact_locators(
     }
     present = {name: value for name, value in locators.items() if value is not None}
     if not present:
-        raise StagedExecutionContextError(
+        raise StagedLocatorMissingError(
             "local evaluation_states artifact requires a canonical relative locator"
         )
+    uri = artifact.uri
+    if isinstance(uri, str) and Path(uri).is_absolute():
+        raise StagedLocatorAbsoluteError(
+            "local evaluation_states uri is a machine-local absolute path; "
+            f"a canonical relative locator is required: {uri}"
+        )
     for name, value in present.items():
-        if not isinstance(value, str) or value != canonical:
-            raise StagedExecutionContextError(
+        try:
+            _validate_relative_execution_uri(value)
+        except (StagedExecutionContextError, TypeError) as exc:
+            raise StagedLocatorTraversalError(
+                f"local evaluation_states locator escapes its explicit root: {value}"
+            ) from exc
+    canonical = artifact.metadata.get("relative_path")
+    if not isinstance(canonical, str):
+        raise StagedLocatorMissingError(
+            "local evaluation_states artifact requires a canonical relative locator"
+        )
+    canonical = _validate_relative_execution_uri(canonical)
+    for name, value in present.items():
+        if value != canonical:
+            raise StagedLocatorMismatchError(
                 f"local evaluation_states {name} must equal canonical path {canonical!r}"
             )
+    return canonical
 
 
 def _read_retained_local_artifact(

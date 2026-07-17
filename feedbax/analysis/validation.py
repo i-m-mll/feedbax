@@ -8,7 +8,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec, ReportSpec
+import jax.tree_util as jtu
+
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    ReportSpec,
+)
 
 if TYPE_CHECKING:
     from feedbax.analysis.execution_context import StagedExecutionContext
@@ -87,6 +94,13 @@ class AnalysisRecipeProtocol(Protocol):
         """Build executable analyses for one analysis run spec."""
 
 
+class EvaluationStatesStructureProviderProtocol(Protocol):
+    """Callable protocol for supplying a typed evaluation-states structure."""
+
+    def __call__(self, manifest: EvaluationRunManifest, /) -> jtu.PyTreeDef:
+        """Return the trusted pytree structure for one evaluation manifest."""
+
+
 class ReportRecipeProtocol(Protocol):
     """Callable protocol for registered executable ``ReportSpec`` recipes."""
 
@@ -116,6 +130,19 @@ def validate_evaluation_recipe(
     return recipe
 
 
+def validate_evaluation_batch_recipe(evaluation_type: str, recipe: Any) -> Any:
+    """Validate and return a registered batched evaluation recipe callable."""
+    validate_namespaced_type_key(evaluation_type, field="evaluation_type")
+    _validate_callable_shape(
+        kind="Evaluation batch recipe",
+        type_key=evaluation_type,
+        recipe=recipe,
+        example_args=(object(), object()),
+        expected="(items, execution_context)",
+    )
+    return recipe
+
+
 def validate_analysis_recipe(
     analysis_type: str,
     recipe: Any,
@@ -130,6 +157,21 @@ def validate_analysis_recipe(
         expected="(run_spec, root, inputs, execution_context)",
     )
     return recipe
+
+
+def validate_evaluation_states_structure_provider(
+    analysis_type: str,
+    provider: Any,
+) -> EvaluationStatesStructureProviderProtocol:
+    """Validate and return an evaluation-states structure provider callable."""
+    _validate_callable_shape(
+        kind="Evaluation states structure provider",
+        type_key=analysis_type,
+        recipe=provider,
+        example_args=(object(),),
+        expected="(evaluation_manifest)",
+    )
+    return provider
 
 
 def validate_report_recipe(
@@ -173,7 +215,7 @@ def _validate_callable_shape(
     try:
         signature.bind(*example_args)
     except TypeError as exc:
-        argument_count = {3: "three", 4: "four"}.get(
+        argument_count = {2: "two", 3: "three", 4: "four"}.get(
             len(example_args),
             str(len(example_args)),
         )
