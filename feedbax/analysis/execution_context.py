@@ -231,7 +231,11 @@ class StagedExecutionContext:
             )
 
     def load_evaluation_states(self, parent: ParentRef) -> Any:
-        """Load durable states through the authority retained for an exact eval parent."""
+        """Load v1/v2 states through the authority retained for an exact eval parent.
+
+        Typed v3 staged prerequisites fail closed with
+        ``EvaluationStatesCustodyUnavailable``.
+        """
         if parent.kind != "EvaluationRunManifest" or parent.role != "evaluation_run":
             raise StagedExecutionContextError(
                 "evaluation states require an EvaluationRunManifest evaluation_run parent"

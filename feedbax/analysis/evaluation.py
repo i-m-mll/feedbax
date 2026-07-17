@@ -148,8 +148,6 @@ class EvaluationBatchItem:
     """One addressable row supplied to a registered batch recipe."""
     row_id: str
     spec: EvaluationRunSpec
-    root: Path
-    states_path: Path
 
 
 class EvaluationBatchRowError(RuntimeError):
@@ -523,10 +521,6 @@ def _execute_evaluation_batch_rows(
             EvaluationBatchItem(
                 row_id=row_id,
                 spec=spec,
-                root=root / row_id,
-                states_path=evaluation_states_cache_path(
-                    evaluation_run_manifest_id(spec), root=root / row_id
-                ),
             )
             for row_id, spec in specs
         ]
@@ -564,6 +558,7 @@ def _execute_evaluation_batch_rows(
                     item,
                     result,
                     staging_root=staging / item.row_id,
+                    published_root=root / item.row_id,
                     provenance=provenance,
                     metadata={
                         "matrix_harness": {
@@ -630,6 +625,7 @@ def _store_batched_evaluation_result(
     result: EvaluationRecipeResult,
     *,
     staging_root: Path,
+    published_root: Path,
     provenance: Provenance,
     metadata: Mapping[str, Any],
 ) -> tuple[EvaluationRunManifest, Path]:
@@ -638,7 +634,7 @@ def _store_batched_evaluation_result(
     states_path = evaluation_states_cache_path(manifest_id, root=staging_root)
     states_path.parent.mkdir(parents=True, exist_ok=True)
     cache_metadata: dict[str, Any] = {
-        "states_path": str(item.states_path),
+        "states_path": str(evaluation_states_cache_path(manifest_id, root=published_root)),
         "states_cache_key": manifest_id,
         "states_cache_hit": False,
     }
@@ -678,7 +674,10 @@ def resolve_staged_evaluation_prerequisite(
     *,
     execution_context: StagedExecutionContext,
 ) -> Any:
-    """Resolve one staged evaluation-state prerequisite through retained authority."""
+    """Resolve a v1/v2 staged evaluation-state prerequisite through retained authority.
+
+    Typed v3 containers fail closed with ``EvaluationStatesCustodyUnavailable``.
+    """
     declared = StagedEvaluationPrerequisite.model_validate(prerequisite)
     location = execution_context.parent_execution_location(declared.parent)
     if location.artifact_provider != declared.artifact_provider:

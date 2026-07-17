@@ -95,7 +95,6 @@ from .validation import (
     validate_namespaced_type_key,
     validate_analysis_recipe,
     validate_evaluation_recipe,
-    validate_evaluation_batch_recipe,
     validate_report_recipe,
 )
 from .evaluation import (
@@ -239,7 +238,6 @@ __all__ = [
     "validate_namespaced_type_key",
     "validate_analysis_recipe",
     "validate_evaluation_recipe",
-    "validate_evaluation_batch_recipe",
     "validate_report_recipe",
     "with_staged_parent_execution_locations",
     "BundleParamsBase",
