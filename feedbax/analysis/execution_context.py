@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import stat
+import weakref
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -166,6 +168,18 @@ class _MemoEntry:
         return all(snapshot.is_current() for snapshot in self.snapshots)
 
 
+@dataclass(frozen=True, slots=True)
+class _ReconstructableEvaluationStates:
+    """Verified immutable leaves for a fresh custom-PyTree wrapper per lookup."""
+
+    structure: jtu.PyTreeDef
+    leaves: tuple[Any, ...]
+
+    def materialize(self) -> Any:
+        structure = copy.deepcopy(self.structure)
+        return structure.unflatten(list(self.leaves))
+
+
 @dataclass(slots=True)
 class _StagedExecutionMemo:
     manifests: dict[_ManifestAuthorityKey, _MemoEntry] = field(default_factory=dict)
@@ -173,6 +187,9 @@ class _StagedExecutionMemo:
         default_factory=dict
     )
     state_keys_by_object_id: dict[int, _EvaluationStatesAuthorityKey] = field(
+        default_factory=dict
+    )
+    state_object_refs_by_id: dict[int, weakref.ReferenceType[Any]] = field(
         default_factory=dict
     )
     authenticated_channels: dict[_EvaluationStatesAuthorityKey, Any] = field(
@@ -190,10 +207,44 @@ class _StagedExecutionMemo:
                 self.invalidate_evaluation_states(states_key)
 
     def invalidate_evaluation_states(self, key: _EvaluationStatesAuthorityKey) -> None:
-        entry = self.evaluation_states.pop(key, None)
-        if entry is not None:
-            self.state_keys_by_object_id.pop(id(entry.value), None)
+        self.evaluation_states.pop(key, None)
+        for identity, candidate in tuple(self.state_keys_by_object_id.items()):
+            if candidate == key:
+                self.state_keys_by_object_id.pop(identity, None)
+                self.state_object_refs_by_id.pop(identity, None)
         self.authenticated_channels.pop(key, None)
+
+    def remember_evaluation_states(
+        self,
+        value: Any,
+        key: _EvaluationStatesAuthorityKey,
+        *,
+        reconstructed: bool,
+    ) -> None:
+        identity = id(value)
+        self.state_keys_by_object_id[identity] = key
+        if not reconstructed:
+            return
+        try:
+            reference = weakref.ref(
+                value,
+                lambda observed, identity=identity: self._forget_evaluation_states(
+                    identity, observed
+                ),
+            )
+        except TypeError:
+            self.state_keys_by_object_id.pop(identity, None)
+            return
+        self.state_object_refs_by_id[identity] = reference
+
+    def _forget_evaluation_states(
+        self,
+        identity: int,
+        observed: weakref.ReferenceType[Any],
+    ) -> None:
+        if self.state_object_refs_by_id.get(identity) is observed:
+            self.state_object_refs_by_id.pop(identity, None)
+            self.state_keys_by_object_id.pop(identity, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,7 +476,15 @@ class StagedExecutionContext:
         cached = self._memo.evaluation_states.get(key)
         if cached is not None:
             if cached.is_current():
-                return cached.value
+                states = _materialize_evaluation_states(cached.value)
+                self._memo.remember_evaluation_states(
+                    states,
+                    key,
+                    reconstructed=isinstance(
+                        cached.value, _ReconstructableEvaluationStates
+                    ),
+                )
+                return states
             self._memo.invalidate_evaluation_states(key)
         if location.artifact_provider is None:
             location_index = self.parent_execution_locations.index(location)
@@ -448,9 +507,18 @@ class StagedExecutionContext:
                     data=data,
                     structure=structure,
                 )
-                states = _immutable_authenticated_snapshot(states)
-                self._memo.evaluation_states[key] = _MemoEntry(states, (snapshot,))
-                self._memo.state_keys_by_object_id[id(states)] = key
+                memo_value = _evaluation_states_memo_value(states)
+                if memo_value is None:
+                    return states
+                self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
+                states = _materialize_evaluation_states(memo_value)
+                self._memo.remember_evaluation_states(
+                    states,
+                    key,
+                    reconstructed=isinstance(
+                        memo_value, _ReconstructableEvaluationStates
+                    ),
+                )
                 return states
             finally:
                 _require_directory_identity(
@@ -487,7 +555,7 @@ class StagedExecutionContext:
                 data=data,
                 structure=structure,
             )
-            states = _immutable_authenticated_snapshot(states)
+            memo_value = _evaluation_states_memo_value(states)
             snapshot = _retained_file_snapshot(
                 Path(provider.root),
                 relative,
@@ -499,8 +567,15 @@ class StagedExecutionContext:
                 raise StagedExecutionContextError(
                     "provider-backed evaluation_states artifact identity changed during read"
                 )
-            self._memo.evaluation_states[key] = _MemoEntry(states, (snapshot,))
-            self._memo.state_keys_by_object_id[id(states)] = key
+            if memo_value is None:
+                return states
+            self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
+            states = _materialize_evaluation_states(memo_value)
+            self._memo.remember_evaluation_states(
+                states,
+                key,
+                reconstructed=isinstance(memo_value, _ReconstructableEvaluationStates),
+            )
             return states
         finally:
             _require_directory_identity(
@@ -514,7 +589,10 @@ class StagedExecutionContext:
         if key is None:
             return None
         entry = self._memo.evaluation_states.get(key)
-        if entry is None or entry.value is not states:
+        if entry is None or (
+            not isinstance(entry.value, _ReconstructableEvaluationStates)
+            and entry.value is not states
+        ):
             return None
         return self._memo.authenticated_channels.get(key)
 
@@ -525,7 +603,10 @@ class StagedExecutionContext:
                 "authenticated channels require a memoized evaluation-state snapshot"
             )
         entry = self._memo.evaluation_states.get(key)
-        if entry is None or entry.value is not states:
+        if entry is None or (
+            not isinstance(entry.value, _ReconstructableEvaluationStates)
+            and entry.value is not states
+        ):
             raise StagedExecutionContextError(
                 "authenticated channels disagree with the memoized state snapshot"
             )
@@ -1064,6 +1145,50 @@ def _immutable_authenticated_snapshot(value: Any) -> Any:
     """Return a recursively immutable snapshot of already-verified values."""
     _mark_numpy_arrays_read_only(value)
     return _immutable_snapshot_value(value)
+
+
+def _evaluation_states_memo_value(value: Any) -> Any | None:
+    """Freeze ordinary states or retain safe leaves for custom-PyTree rebuilds."""
+    _mark_numpy_arrays_read_only(value)
+    structure = jt.structure(value)
+    if not _structure_has_custom_nodes(structure):
+        return _immutable_snapshot_value(value)
+    frozen_leaves: list[Any] = []
+    for leaf in jt.leaves(value):
+        frozen = _immutable_snapshot_value(leaf)
+        if frozen is leaf and not _is_safe_shared_leaf(leaf):
+            return None
+        frozen_leaves.append(frozen)
+    return _ReconstructableEvaluationStates(
+        structure=copy.deepcopy(structure),
+        leaves=tuple(frozen_leaves),
+    )
+
+
+def _materialize_evaluation_states(value: Any) -> Any:
+    if isinstance(value, _ReconstructableEvaluationStates):
+        return value.materialize()
+    return value
+
+
+def _structure_has_custom_nodes(structure: jtu.PyTreeDef) -> bool:
+    node_data = structure.node_data()
+    if node_data is not None:
+        node_type, _aux = node_data
+        if node_type not in {dict, list, tuple, type(None)} and not (
+            isinstance(node_type, type) and issubclass(node_type, tuple)
+        ):
+            return True
+    return any(_structure_has_custom_nodes(child) for child in structure.children())
+
+
+def _is_safe_shared_leaf(value: Any) -> bool:
+    if isinstance(value, np.ndarray):
+        return not value.flags.writeable
+    return value is None or isinstance(
+        value,
+        (bool, int, float, complex, str, bytes, np.generic),
+    )
 
 
 def _immutable_resolved_manifest_input(

@@ -193,7 +193,10 @@ def test_authenticated_manifest_snapshot_rejects_authority_substitution(
         root=tmp_path,
         manifest_id=manifest_id,
     )
-    context, parent = _local_context(_manifest(first_artifact), tmp_path)
+    manifest = _manifest(first_artifact).model_copy(
+        update={"metadata": {"nested": {"labels": ["authenticated"]}}}
+    )
+    context, parent = _local_context(manifest, tmp_path)
     resolved = context.resolve_manifest_input(parent)
     replacement = second_artifact.model_copy(
         update={"uri": second_artifact.metadata["relative_path"]}
@@ -208,7 +211,44 @@ def test_authenticated_manifest_snapshot_rejects_authority_substitution(
 
     states = context.load_evaluation_states(parent)
     np.testing.assert_array_equal(states["trajectory"], np.asarray([1, 2]))
-    assert copy.deepcopy(resolved.manifest) == resolved.manifest
+
+
+def test_authenticated_manifest_deep_copies_are_independent_and_mutable(
+    tmp_path: Path,
+) -> None:
+    artifact = store_evaluation_states_artifact(
+        {"trajectory": np.asarray([1, 2], dtype=np.int32)},
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    manifest = _manifest(artifact).model_copy(
+        update={"metadata": {"nested": {"labels": ["authenticated"]}}}
+    )
+    context, parent = _local_context(manifest, tmp_path)
+    original = context.resolve_manifest_input(parent).manifest
+
+    for copied in (copy.deepcopy(original), original.model_copy(deep=True)):
+        assert type(copied) is EvaluationRunManifest
+        assert copied is not original
+        assert copied.artifacts is not original.artifacts
+        assert copied.artifacts[0] is not original.artifacts[0]
+        assert copied.artifacts[0].metadata is not original.artifacts[0].metadata
+        assert copied.metadata is not original.metadata
+        assert copied.metadata["nested"] is not original.metadata["nested"]
+        assert copied.metadata["nested"]["labels"] is not original.metadata["nested"][
+            "labels"
+        ]
+
+        copied.status = "failed"
+        copied.artifacts[0].metadata["copied"] = True
+        copied.metadata["nested"]["labels"].append("edited")
+
+        assert copied.status == "failed"
+        assert copied.artifacts[0].metadata["copied"] is True
+        assert copied.metadata["nested"]["labels"] == ["authenticated", "edited"]
+        assert original.status == "completed"
+        assert "copied" not in original.artifacts[0].metadata
+        assert original.metadata["nested"]["labels"] == ["authenticated"]
 
 
 class _MutableAux:
@@ -271,6 +311,50 @@ def test_mutated_custom_pytree_aux_misses_and_rechecks_structure_fingerprint(
 
     assert first.tag == "original"
     assert loads == 2
+
+
+def test_custom_pytree_wrapper_is_reconstructed_for_each_exact_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = store_evaluation_states_artifact(
+        _MutableStructureNode(np.asarray([8], dtype=np.int32), "original"),
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, parent = _local_context(_manifest(artifact), tmp_path)
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    first = context.load_evaluation_states(
+        parent,
+        structure=jt.structure(_MutableStructureNode(0, "original")),
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        first.value[0] = -1
+    first.tag = "corrupted-snapshot"
+    second = context.load_evaluation_states(
+        parent,
+        structure=jt.structure(_MutableStructureNode(0, "original")),
+    )
+
+    assert loads == 1
+    assert second is not first
+    assert second.tag == "original"
+    assert second.value is first.value
+    assert not second.value.flags.writeable
+    np.testing.assert_array_equal(second.value, np.asarray([8]))
 
 
 def test_requested_structure_is_part_of_authenticated_states_authority(
