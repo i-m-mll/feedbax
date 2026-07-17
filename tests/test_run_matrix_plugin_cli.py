@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import feedbax.plugins
 import feedbax.training.run_matrix as run_matrix
 from feedbax import __main__ as feedbax_main
@@ -14,6 +16,15 @@ from feedbax.contracts.manifest import canonical_json_bytes, load_manifest, sha2
 from feedbax.contracts.training import default_training_method_registry
 from feedbax.plugins.discovery import load_training_method_plugins
 from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+
+
+def _evaluation_matrix_payload(*row_ids: str) -> dict[str, object]:
+    return {
+        "schema_id": "feedbax.spec.evaluation_run_matrix",
+        "schema_version": "feedbax.spec.evaluation_run_matrix.v3",
+        "base": {"evaluation_type": "example.cli_gate"},
+        "rows": [{"row_id": row_id} for row_id in row_ids],
+    }
 
 
 def test_plugin_analysis_recipe_hook_is_loaded_fail_closed() -> None:
@@ -101,6 +112,47 @@ def test_top_level_harness_cli_forwards_plugins_lazily(monkeypatch, tmp_path: Pa
             str(tmp_path / "manifests"),
             "--plugin",
             "downstream.recipes",
+        ]
+    ]
+
+
+def test_top_level_harness_cli_forwards_batch_and_gate_options(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(harness, "main", lambda argv: calls.append(argv) or 0)
+    spec = tmp_path / "matrix.json"
+    locked_spec = tmp_path / "locked.json"
+    policy = tmp_path / "policy.json"
+
+    result = feedbax_main.main(
+        [
+            "matrix-harness",
+            str(spec),
+            "--manifest-root",
+            str(tmp_path / "manifests"),
+            "--batch",
+            "--locked-spec",
+            str(locked_spec),
+            "--execution-policy",
+            str(policy),
+            "--allow-large-per-row",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        [
+            str(spec),
+            "--manifest-root",
+            str(tmp_path / "manifests"),
+            "--batch",
+            "--locked-spec",
+            str(locked_spec),
+            "--execution-policy",
+            str(policy),
+            "--allow-large-per-row",
         ]
     ]
 
@@ -251,3 +303,219 @@ def test_harness_cli_parses_staged_runtime_bindings(monkeypatch, tmp_path: Path)
     assert kwargs["artifact_provider_bindings"][0].name == "shared"
     assert kwargs["artifact_provider_bindings"][0].root == str(tmp_path / "provider")
     assert kwargs["checkpoint_custody_bindings"][0].name == "checkpoints"
+
+
+def test_harness_cli_passes_batch_execution(monkeypatch, tmp_path: Path) -> None:
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "execute_evaluation_run_matrix",
+        lambda _payload, **kwargs: captured.append(kwargs),
+    )
+    spec = tmp_path / "matrix.json"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one")), encoding="utf-8")
+
+    result = harness.main(
+        [str(spec), "--manifest-root", str(tmp_path / "rows"), "--batch"]
+    )
+
+    assert result == 0
+    assert isinstance(captured[0]["batch"], evaluation.EvaluationBatchExecution)
+
+
+def test_harness_cli_locked_spec_requires_exact_row_id_sequence(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    executions: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "execute_evaluation_run_matrix",
+        lambda payload, **_kwargs: executions.append(payload),
+    )
+    spec = tmp_path / "matrix.json"
+    locked = tmp_path / "locked.json"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one", "two")), encoding="utf-8")
+    locked.write_text(
+        json.dumps({"evaluation_matrix": _evaluation_matrix_payload("one", "two")}),
+        encoding="utf-8",
+    )
+
+    result = harness.main(
+        [
+            str(spec),
+            "--manifest-root",
+            str(tmp_path / "matching"),
+            "--locked-spec",
+            str(locked),
+        ]
+    )
+    assert result == 0
+    assert len(executions) == 1
+
+    locked.write_text(
+        json.dumps(_evaluation_matrix_payload("two", "one")),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="2"):
+        harness.main(
+            [
+                str(spec),
+                "--manifest-root",
+                str(tmp_path / "mismatch"),
+                "--locked-spec",
+                str(locked),
+            ]
+        )
+
+    assert len(executions) == 1
+    assert "row_id sequence does not match locked spec" in capsys.readouterr().err
+
+
+def test_harness_cli_policy_blocks_large_per_row_execution(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    executions: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "execute_evaluation_run_matrix",
+        lambda payload, **_kwargs: executions.append(payload),
+    )
+    spec = tmp_path / "matrix.json"
+    policy = tmp_path / "policy.json"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one", "two")), encoding="utf-8")
+    policy.write_text(
+        json.dumps(
+            {
+                "schema_id": "caller.execution-policy",
+                "per_row_max_rows": 1,
+                "threshold_source": "authored memory limit",
+                "override_flag": "--allow-large-per-row",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        harness.main(
+            [
+                str(spec),
+                "--manifest-root",
+                str(tmp_path / "rows"),
+                "--execution-policy",
+                str(policy),
+            ]
+        )
+
+    assert executions == []
+    error = capsys.readouterr().err
+    assert "2 rows" in error
+    assert "1 rows" in error
+    assert "authored memory limit" in error
+    assert "--allow-large-per-row" in error
+
+
+@pytest.mark.parametrize("bypass", [["--batch"], ["--allow-large-per-row"]])
+def test_harness_cli_policy_allows_batch_or_explicit_override(
+    monkeypatch,
+    tmp_path: Path,
+    bypass: list[str],
+) -> None:
+    executions: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "execute_evaluation_run_matrix",
+        lambda payload, **kwargs: executions.append(kwargs),
+    )
+    spec = tmp_path / "matrix.json"
+    policy = tmp_path / "policy.json"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one", "two")), encoding="utf-8")
+    policy.write_text(
+        json.dumps(
+            {
+                "per_row_max_rows": 1,
+                "threshold_source": "authored memory limit",
+                "override_flag": "--allow-large-per-row",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = harness.main(
+        [
+            str(spec),
+            "--manifest-root",
+            str(tmp_path / "rows"),
+            "--execution-policy",
+            str(policy),
+            *bypass,
+        ]
+    )
+
+    assert result == 0
+    assert len(executions) == 1
+    assert (executions[0]["batch"] is not None) is (bypass == ["--batch"])
+
+
+@pytest.mark.parametrize(
+    "policy_payload",
+    [
+        {"per_row_max_rows": True, "threshold_source": "source", "override_flag": "--flag"},
+        {"per_row_max_rows": 0, "threshold_source": "source", "override_flag": "--flag"},
+        {"per_row_max_rows": 1, "threshold_source": " ", "override_flag": "--flag"},
+        {"per_row_max_rows": 1, "threshold_source": "source", "override_flag": ""},
+    ],
+)
+def test_harness_cli_rejects_malformed_execution_policy(
+    monkeypatch,
+    tmp_path: Path,
+    policy_payload: dict[str, object],
+) -> None:
+    monkeypatch.setattr(
+        feedbax.plugins,
+        "load_training_method_plugins",
+        lambda *, modules: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "execute_evaluation_run_matrix",
+        lambda *_args, **_kwargs: pytest.fail("malformed policy must abort before execution"),
+    )
+    spec = tmp_path / "matrix.json"
+    policy = tmp_path / "policy.json"
+    spec.write_text(json.dumps(_evaluation_matrix_payload("one")), encoding="utf-8")
+    policy.write_text(json.dumps(policy_payload), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="2"):
+        harness.main(
+            [
+                str(spec),
+                "--manifest-root",
+                str(tmp_path / "rows"),
+                "--execution-policy",
+                str(policy),
+            ]
+        )

@@ -409,6 +409,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     harness_parser.add_argument("--execution-descriptor")
     harness_parser.add_argument("--artifact-provider", action="append")
     harness_parser.add_argument("--checkpoint-custody", action="append")
+    harness_parser.add_argument("--batch", action="store_true")
+    harness_parser.add_argument("--locked-spec")
+    harness_parser.add_argument("--execution-policy")
+    harness_parser.add_argument("--allow-large-per-row", action="store_true")
 
     args = parser.parse_args(argv)
     if args.command == "matrix-harness":
@@ -429,6 +433,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             harness_argv.extend(("--artifact-provider", binding))
         for binding in args.checkpoint_custody or ():
             harness_argv.extend(("--checkpoint-custody", binding))
+        if args.batch:
+            harness_argv.append("--batch")
+        if args.locked_spec is not None:
+            harness_argv.extend(("--locked-spec", args.locked_spec))
+        if args.execution_policy is not None:
+            harness_argv.extend(("--execution-policy", args.execution_policy))
+        if args.allow_large_per_row:
+            harness_argv.append("--allow-large-per-row")
         return harness_main(harness_argv)
     if args.command == "execute-training-run-spec":
         _load_training_method_plugins(args.plugin)
