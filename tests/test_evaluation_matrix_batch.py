@@ -228,6 +228,41 @@ def test_batched_matrix_fails_closed_with_typed_row_diagnostic(tmp_path: Path) -
     assert not output.exists()
 
 
+def test_batched_matrix_fails_closed_when_staging_index_discard_fails(
+    tmp_path: Path,
+) -> None:
+    real_rmtree = evaluation_module.shutil.rmtree
+
+    def fail_index_discard(path, *args, **kwargs):
+        if Path(path).name == "index":
+            raise OSError("injected index discard failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    register_evaluation_recipe(
+        EVALUATION_TYPE,
+        lambda spec, *_args: _result(spec.params["gain"]),
+        batch_recipe=lambda items, _context: [
+            _result(item.spec.params["gain"]) for item in items
+        ],
+        replace=True,
+    )
+    output = tmp_path / "batched"
+    try:
+        with (
+            patch.object(evaluation_module.shutil, "rmtree", side_effect=fail_index_discard),
+            pytest.raises(OSError, match="injected index discard failure"),
+        ):
+            execute_evaluation_run_matrix(
+                _matrix(),
+                root=output,
+                batch=EvaluationBatchExecution(),
+            )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    assert not output.exists()
+
+
 def test_batched_matrix_authenticates_staged_prerequisites_before_publish(
     tmp_path: Path,
 ) -> None:

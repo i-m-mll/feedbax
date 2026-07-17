@@ -135,8 +135,12 @@ _EVALUATION_AUTHORING_SCHEMAS: dict[str, "EvaluationAuthoringSchema"] = {}
 
 @dataclass(frozen=True)
 class EvaluationBatchExecution:
-    """Hard kills may leave safe-to-delete sibling ``.{root}.batch-*`` directories.
-    Batch mode requires a fresh root; grids needing reuse or resume must use per-row mode."""
+    """Opt into process-atomic publication, not fsync or power-loss durability.
+
+    Hard kills may leave sibling ``.{root}.batch-*`` directories; delete one only
+    after confirming no live batch owns it. Batch mode requires a fresh root;
+    grids needing reuse or resume must use per-row mode.
+    """
 
 
 @dataclass(frozen=True)
@@ -599,7 +603,7 @@ def _execute_evaluation_batch_rows(
                 update={"artifacts": [publish(artifact) for artifact in row.result.artifacts]}
             )
             staged_path = write_manifest(manifest, root=staging / row.row_id, index=False)
-            shutil.rmtree(staging / row.row_id / "index", ignore_errors=True)
+            shutil.rmtree(staging / row.row_id / "index")
             index = connect_index(staging / row.row_id / "index" / "feedbax.sqlite")
             index_manifest(index, manifest, path=root / staged_path.relative_to(staging))
             index.close()
