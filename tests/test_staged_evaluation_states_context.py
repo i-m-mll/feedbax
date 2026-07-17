@@ -1,10 +1,15 @@
+import copy
 from pathlib import Path
+import hashlib
 import os
 import shutil
 
+import jax.tree as jt
+import jax.tree_util as jtu
 import numpy as np
 import pytest
 
+import feedbax.analysis.channel_evidence as channel_evidence_module
 import feedbax.analysis.execution_context as execution_context_module
 
 from feedbax.analysis import (
@@ -12,6 +17,7 @@ from feedbax.analysis import (
     StagedLocatorMismatchError,
     StagedLocatorMissingError,
     StagedLocatorTraversalError,
+    resolve_authenticated_evaluation_channels,
 )
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
@@ -132,6 +138,470 @@ def test_load_evaluation_states_uses_retained_local_authority(tmp_path: Path) ->
 
     states = context.load_evaluation_states(parent)
     np.testing.assert_array_equal(states["trajectory"], expected["trajectory"])
+
+
+def test_identical_authenticated_states_are_decoded_once_and_reused_immutably(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {"trajectory": np.arange(4, dtype=np.float32)}
+    artifact = store_evaluation_states_artifact(
+        expected,
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, parent = _local_context(_manifest(artifact), tmp_path)
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    first_manifest = context.resolve_manifest_input(parent)
+    first = context.load_evaluation_states(parent)
+    second = context.load_evaluation_states(parent)
+
+    assert context.resolve_manifest_input(parent) is first_manifest
+    assert second is first
+    assert loads == 1
+    assert not first["trajectory"].flags.writeable
+    with pytest.raises(ValueError, match="read-only"):
+        first["trajectory"][0] = -1
+    with pytest.raises(TypeError, match="immutable"):
+        first["trajectory"] = np.asarray([777], dtype=np.float32)
+
+
+def test_authenticated_manifest_snapshot_rejects_authority_substitution(
+    tmp_path: Path,
+) -> None:
+    manifest_id = "feedbax-evaluation-run:authority-test"
+    first_artifact = store_evaluation_states_artifact(
+        {"trajectory": np.asarray([1, 2], dtype=np.int32)},
+        root=tmp_path,
+        manifest_id=manifest_id,
+    )
+    second_artifact = store_evaluation_states_artifact(
+        {"trajectory": np.asarray([90, 91], dtype=np.int32)},
+        root=tmp_path,
+        manifest_id=manifest_id,
+    )
+    manifest = _manifest(first_artifact).model_copy(
+        update={"metadata": {"nested": {"labels": ["authenticated"]}}}
+    )
+    context, parent = _local_context(manifest, tmp_path)
+    resolved = context.resolve_manifest_input(parent)
+    replacement = second_artifact.model_copy(
+        update={"uri": second_artifact.metadata["relative_path"]}
+    )
+
+    with pytest.raises(TypeError, match="immutable"):
+        resolved.manifest.artifacts[0] = replacement
+    with pytest.raises((TypeError, ValueError), match="frozen|immutable"):
+        resolved.manifest.artifacts[0].metadata["relative_path"] = (
+            second_artifact.metadata["relative_path"]
+        )
+
+    states = context.load_evaluation_states(parent)
+    np.testing.assert_array_equal(states["trajectory"], np.asarray([1, 2]))
+
+
+def test_authenticated_manifest_deep_copies_are_independent_and_mutable(
+    tmp_path: Path,
+) -> None:
+    artifact = store_evaluation_states_artifact(
+        {"trajectory": np.asarray([1, 2], dtype=np.int32)},
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    manifest = _manifest(artifact).model_copy(
+        update={"metadata": {"nested": {"labels": ["authenticated"]}}}
+    )
+    context, parent = _local_context(manifest, tmp_path)
+    original = context.resolve_manifest_input(parent).manifest
+
+    for copied in (copy.deepcopy(original), original.model_copy(deep=True)):
+        assert type(copied) is EvaluationRunManifest
+        assert copied is not original
+        assert copied.artifacts is not original.artifacts
+        assert copied.artifacts[0] is not original.artifacts[0]
+        assert copied.artifacts[0].metadata is not original.artifacts[0].metadata
+        assert copied.metadata is not original.metadata
+        assert copied.metadata["nested"] is not original.metadata["nested"]
+        assert copied.metadata["nested"]["labels"] is not original.metadata["nested"][
+            "labels"
+        ]
+
+        copied.status = "failed"
+        copied.artifacts[0].metadata["copied"] = True
+        copied.metadata["nested"]["labels"].append("edited")
+
+        assert copied.status == "failed"
+        assert copied.artifacts[0].metadata["copied"] is True
+        assert copied.metadata["nested"]["labels"] == ["authenticated", "edited"]
+        assert original.status == "completed"
+        assert "copied" not in original.artifacts[0].metadata
+        assert original.metadata["nested"]["labels"] == ["authenticated"]
+
+
+class _MutableAux:
+    def __init__(self, tag: str):
+        self.tag = tag
+
+    def __hash__(self) -> int:
+        return 0
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _MutableAux) and self.tag == other.tag
+
+    def __repr__(self) -> str:
+        return f"_MutableAux({self.tag!r})"
+
+
+@jtu.register_pytree_node_class
+class _MutableStructureNode:
+    def __init__(self, value, tag: str):
+        self.value = value
+        self.tag = tag
+
+    def tree_flatten(self):
+        return (self.value,), _MutableAux(self.tag)
+
+    @classmethod
+    def tree_unflatten(cls, aux: _MutableAux, children):
+        return cls(children[0], aux.tag)
+
+
+def test_mutated_custom_pytree_aux_misses_and_rechecks_structure_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = store_evaluation_states_artifact(
+        _MutableStructureNode(np.asarray([8], dtype=np.int32), "original"),
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, parent = _local_context(_manifest(artifact), tmp_path)
+    structure = jt.structure(_MutableStructureNode(0, "original"))
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    first = context.load_evaluation_states(parent, structure=structure)
+    structure.node_data()[1].tag = "mutated"
+    with pytest.raises(ValueError, match="structure fingerprint"):
+        context.load_evaluation_states(parent, structure=structure)
+
+    assert first.tag == "original"
+    assert loads == 2
+
+
+def test_custom_pytree_wrapper_is_reconstructed_for_each_exact_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = store_evaluation_states_artifact(
+        _MutableStructureNode(np.asarray([8], dtype=np.int32), "original"),
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, parent = _local_context(_manifest(artifact), tmp_path)
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    first = context.load_evaluation_states(
+        parent,
+        structure=jt.structure(_MutableStructureNode(0, "original")),
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        first.value[0] = -1
+    first.tag = "corrupted-snapshot"
+    second = context.load_evaluation_states(
+        parent,
+        structure=jt.structure(_MutableStructureNode(0, "original")),
+    )
+
+    assert loads == 1
+    assert second is not first
+    assert second.tag == "original"
+    assert second.value is first.value
+    assert not second.value.flags.writeable
+    np.testing.assert_array_equal(second.value, np.asarray([8]))
+
+
+def test_requested_structure_is_part_of_authenticated_states_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {"trajectory": np.arange(4, dtype=np.float32)}
+    artifact = store_evaluation_states_artifact(
+        expected,
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, parent = _local_context(_manifest(artifact), tmp_path)
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    without_structure = context.load_evaluation_states(parent)
+    with_structure = context.load_evaluation_states(
+        parent,
+        structure=jt.structure(expected),
+    )
+
+    assert loads == 2
+    assert with_structure is not without_structure
+    np.testing.assert_array_equal(with_structure["trajectory"], expected["trajectory"])
+
+
+def test_parent_digest_and_execution_location_differences_miss_the_memo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roots = (tmp_path / "first", tmp_path / "second")
+    locations = []
+    parents = []
+    artifact_digests = []
+    for index, root in enumerate(roots):
+        manifest_id = f"feedbax-evaluation-run:authority-{index}"
+        artifact = store_evaluation_states_artifact(
+            {"trajectory": np.arange(4, dtype=np.float32) + index},
+            root=root,
+            manifest_id=manifest_id,
+        )
+        manifest = _manifest(artifact).model_copy(update={"id": manifest_id})
+        artifact_digests.append(artifact.sha256)
+        path = write_manifest(manifest, root=root, index=False)
+        parent = _parent(manifest, path.read_bytes())
+        parents.append(parent)
+        locations.append(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=root,
+                execution_uri=path.relative_to(root).as_posix(),
+            )
+        )
+    context = StagedExecutionContext(
+        descriptor=None,
+        opened_artifact_providers={},
+        checkpoint_custody_roots={},
+        parent_execution_locations=tuple(locations),
+    )
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    resolved = [context.load_evaluation_states(parent) for parent in parents]
+
+    assert loads == 2
+    assert resolved[0] is not resolved[1]
+    assert parents[0].metadata["manifest_sha256"] != parents[1].metadata["manifest_sha256"]
+    assert artifact_digests[0] != artifact_digests[1]
+    assert locations[0].root != locations[1].root
+
+
+def test_execution_location_difference_misses_with_identical_authenticated_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_root = tmp_path / "first"
+    artifact = store_evaluation_states_artifact(
+        {"trajectory": np.arange(4, dtype=np.float32)},
+        root=first_root,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    manifest = _manifest(artifact)
+    first_path = write_manifest(manifest, root=first_root, index=False)
+    second_root = tmp_path / "second"
+    shutil.copytree(first_root, second_root)
+    second_path = second_root / first_path.relative_to(first_root)
+    first_parent = _parent(manifest, first_path.read_bytes())
+    second_parent = first_parent.model_copy(
+        update={"metadata": {**first_parent.metadata, "location_variant": "second"}}
+    )
+    context = StagedExecutionContext(
+        descriptor=None,
+        opened_artifact_providers={},
+        checkpoint_custody_roots={},
+        parent_execution_locations=(
+            StagedParentExecutionLocation(
+                parent=first_parent,
+                root=first_root,
+                execution_uri=first_path.relative_to(first_root).as_posix(),
+            ),
+            StagedParentExecutionLocation(
+                parent=second_parent,
+                root=second_root,
+                execution_uri=second_path.relative_to(second_root).as_posix(),
+            ),
+        ),
+    )
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    first = context.load_evaluation_states(first_parent)
+    second = context.load_evaluation_states(second_parent)
+
+    assert first_parent.metadata["manifest_sha256"] == second_parent.metadata["manifest_sha256"]
+    assert first is not second
+    assert loads == 2
+
+
+def test_changed_retained_file_identity_invalidates_and_reverifies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {"trajectory": np.arange(4, dtype=np.float32)}
+    artifact = store_evaluation_states_artifact(
+        expected,
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    context, parent = _local_context(_manifest(artifact), tmp_path)
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+    first = context.load_evaluation_states(parent)
+    path = tmp_path / artifact.metadata["relative_path"]
+    replacement = tmp_path / "replacement.npz"
+    replacement.write_bytes(path.read_bytes())
+    os.replace(replacement, path)
+
+    second = context.load_evaluation_states(parent)
+
+    assert second is not first
+    assert loads == 2
+    np.testing.assert_array_equal(second["trajectory"], expected["trajectory"])
+
+
+def test_authenticated_channel_evidence_is_cached_with_its_state_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = np.arange(6, dtype=np.float64).reshape(2, 3)
+    states = {"channels": {"noise": channel}, "sample_index": np.arange(2)}
+    artifact = store_evaluation_states_artifact(
+        states,
+        root=tmp_path,
+        manifest_id="feedbax-evaluation-run:authority-test",
+    )
+    manifest = _manifest(artifact).model_copy(
+        update={
+            "metadata": {
+                "channels": [
+                    {
+                        "name": "noise",
+                        "index": 0,
+                        "shape": list(channel.shape),
+                        "dtype": channel.dtype.str,
+                        "byte_order": channel.dtype.str[0],
+                        "c_contiguous": True,
+                        "sha256": hashlib.sha256(
+                            channel.tobytes(order="C")
+                        ).hexdigest(),
+                    }
+                ]
+            }
+        }
+    )
+    context, parent = _local_context(manifest, tmp_path)
+    prerequisite = StagedEvaluationPrerequisite(parent=parent)
+    original_authenticate = channel_evidence_module._authenticate_channel
+    authentications = 0
+
+    def counted_authenticate(*args, **kwargs):
+        nonlocal authentications
+        authentications += 1
+        return original_authenticate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        channel_evidence_module,
+        "_authenticate_channel",
+        counted_authenticate,
+    )
+
+    first = resolve_authenticated_evaluation_channels(
+        prerequisite,
+        execution_context=context,
+    )
+    second = resolve_authenticated_evaluation_channels(
+        prerequisite,
+        execution_context=context,
+    )
+
+    assert second is first
+    assert authentications == 1
+    assert not first.channels["noise"].flags.writeable
 
 
 def test_load_evaluation_states_uses_bound_provider_after_source_deletion(

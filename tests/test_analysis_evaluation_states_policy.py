@@ -301,7 +301,7 @@ def test_require_durable_threads_typed_structure_provider_end_to_end(tmp_path: P
 
     register_evaluation_recipe(EVALUATION_TYPE, evaluation_recipe, replace=True)
     try:
-        manifest, _ = _evaluation(tmp_path, durable=True)
+        manifest, manifest_path = _evaluation(tmp_path, durable=True)
         register_analysis_recipe(
             ANALYSIS_TYPE,
             lambda *_args: None,
@@ -312,6 +312,13 @@ def test_require_durable_threads_typed_structure_provider_end_to_end(tmp_path: P
             _analysis_spec(manifest.id, policy="require_durable", root=tmp_path), root=tmp_path
         )[0]
         assert isinstance(resolved.states, TypedStates)
+        assert resolved.manifest_input is not None
+        assert resolved.manifest_input.ref == authenticated_manifest_ref(
+            manifest,
+            manifest_path,
+            "evaluation_run",
+        )
+        assert resolved.manifest_input.raw_bytes == manifest_path.read_bytes()
         assert resolved.evaluation_state_source.container_schema_version == (
             EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
         )

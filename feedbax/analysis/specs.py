@@ -71,13 +71,23 @@ from feedbax.analysis.types import AnalysisInputData
 
 @dataclass(frozen=True)
 class ResolvedAnalysisInput:
-    """A manifest parent resolved from an ``AnalysisRunSpec`` input ref."""
+    """A manifest parent resolved from an ``AnalysisRunSpec`` input ref.
+
+    ``manifest_input`` retains the exact already-authenticated manifest bytes,
+    reference, parsed value, and runtime path when the authored ref carries an
+    authenticated authority profile.
+    """
 
     ref: ParentRef
     manifest: AnyManifest | None
     path: Path | None
     states: Any = None
     evaluation_state_source: AnalysisEvaluationStateSource | None = None
+    manifest_input: ResolvedManifestInput | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -281,6 +291,7 @@ def resolve_analysis_inputs(
     for index, ref in enumerate(spec.inputs):
         manifest: AnyManifest | None = None
         manifest_path: Path | None = None
+        manifest_input: ResolvedManifestInput | None = None
         states: Any = None
         state_source: AnalysisEvaluationStateSource | None = None
         requires_authenticated_evaluation, has_authenticated_claim = (
@@ -298,6 +309,7 @@ def resolve_analysis_inputs(
                         raise _authenticated_manifest_resolution_error(ref, exc) from exc
                     raise
             manifest, manifest_path = authenticated.manifest, authenticated.path
+            manifest_input = authenticated
         elif ref.kind.endswith("Manifest"):
             manifest, manifest_path = find_manifest_by_id(ref.id, root=root_path)
         if ref.kind == "EvaluationRunManifest":
@@ -317,6 +329,7 @@ def resolve_analysis_inputs(
                         path=manifest_path,
                         states=states,
                         evaluation_state_source=state_source,
+                        manifest_input=manifest_input,
                     )
                 )
                 continue
@@ -395,6 +408,7 @@ def resolve_analysis_inputs(
                 path=manifest_path,
                 states=states,
                 evaluation_state_source=state_source,
+                manifest_input=manifest_input,
             )
         )
     return resolved
