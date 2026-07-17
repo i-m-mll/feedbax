@@ -20,11 +20,13 @@ Producer contract:
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 import json
 from math import prod
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Any, Sequence
 
 import dill as pickle
@@ -118,12 +120,39 @@ class EvaluationRecipeResult:
 
 
 EvaluationRecipe = EvaluationRecipeProtocol
+EvaluationBatchRecipe = Callable[
+    [Sequence["EvaluationBatchItem"], StagedExecutionContext],
+    Sequence[EvaluationRecipeResult],
+]
 STATES_SCHEMA_METADATA_KEY = "states_schema"
 EVALUATION_STATES_CACHE_SCHEMA_VERSION = "feedbax.analysis.evaluation-states-cache.v1"
 _MAX_FAILURE_DIAGNOSTICS_BYTES = 16 * 1024
 
 _EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
+_EVALUATION_BATCH_RECIPES: dict[str, EvaluationBatchRecipe] = {}
 _EVALUATION_AUTHORING_SCHEMAS: dict[str, "EvaluationAuthoringSchema"] = {}
+
+
+@dataclass(frozen=True)
+class EvaluationBatchExecution:
+    """Explicit runtime opt-in for one whole-matrix recipe invocation."""
+
+
+@dataclass(frozen=True)
+class EvaluationBatchItem:
+    """One addressable row supplied to a registered batch recipe."""
+    row_id: str
+    spec: EvaluationRunSpec
+    root: Path
+    states_path: Path
+
+
+class EvaluationBatchRowError(RuntimeError):
+    """Fail-closed batch diagnostic identifying the row that failed."""
+    def __init__(self, row_id: str, cause: BaseException):
+        super().__init__(f"evaluation batch row {row_id!r} failed: {cause}")
+        self.row_id = row_id
+        self.__cause__ = cause
 
 
 @dataclass(frozen=True)
@@ -327,6 +356,7 @@ def execute_evaluation_run_matrix(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    batch: EvaluationBatchExecution | None = None,
 ):
     """Resolve and execute every evaluation condition through the shared harness."""
     from feedbax.analysis.harness import MatrixMaterializerHarness
@@ -392,6 +422,42 @@ def execute_evaluation_run_matrix(
             }
         staged_parents = matrix_metadata.get("staged_parents", {})
 
+    regeneration_parameters = {
+        "executable_spec": executable_spec,
+        "manifest_root": str(Path(root).resolve()),
+        "repo_root": str(Path(repo_root).resolve()) if repo_root is not None else None,
+        "parent_manifest_root": (
+            str(Path(parent_manifest_root)) if parent_manifest_root is not None else None
+        ),
+        "execution_descriptor": (
+            execution_context.descriptor.model_dump(mode="json", exclude_none=True)
+            if execution_context.descriptor is not None
+            else None
+        ),
+        "artifact_provider_bindings": [
+            {"name": name, "root": str(provider.root)}
+            for name, provider in execution_context.opened_artifact_providers.items()
+        ],
+        "checkpoint_custody_bindings": [
+            {"name": name, "root": str(bound_root)}
+            for name, bound_root in execution_context.checkpoint_custody_roots.items()
+        ],
+        "staged_parents": staged_parents,
+    }
+    if batch is not None:
+        if escape_hatch_reason is not None:
+            raise ValueError("batched execution only accepts EvaluationRunMatrixSpec")
+        return _execute_evaluation_batch_rows(
+            rows,
+            root=Path(root),
+            execution_context=execution_context,
+            matrix_metadata=matrix_metadata,
+            regeneration_parameters={
+                **regeneration_parameters,
+                "batch_execution": {"mode": "whole_matrix"},
+            },
+        )
+
     def execute(row_id: str, resolved: Mapping[str, Any], row_root: Path):
         manifest, path = execute_evaluation_run_spec(
             EvaluationRunSpec.model_validate(resolved),
@@ -414,29 +480,150 @@ def execute_evaluation_run_matrix(
         source="EvaluationRunMatrixSpec",
         escape_hatch_reason=escape_hatch_reason,
         matrix_metadata=matrix_metadata,
-        regeneration_parameters={
-            "executable_spec": executable_spec,
-            "manifest_root": str(Path(root).resolve()),
-            "repo_root": str(Path(repo_root).resolve()) if repo_root is not None else None,
-            "parent_manifest_root": (
-                str(Path(parent_manifest_root)) if parent_manifest_root is not None else None
-            ),
-            "execution_descriptor": (
-                execution_context.descriptor.model_dump(mode="json", exclude_none=True)
-                if execution_context.descriptor is not None
-                else None
-            ),
-            "artifact_provider_bindings": [
-                {"name": name, "root": str(provider.root)}
-                for name, provider in execution_context.opened_artifact_providers.items()
-            ],
-            "checkpoint_custody_bindings": [
-                {"name": name, "root": str(bound_root)}
-                for name, bound_root in execution_context.checkpoint_custody_roots.items()
-            ],
-            "staged_parents": staged_parents,
-        },
+        regeneration_parameters=regeneration_parameters,
     )
+
+
+def _execute_evaluation_batch_rows(
+    rows: Sequence[tuple[str, Mapping[str, Any]]],
+    *,
+    root: Path,
+    execution_context: StagedExecutionContext,
+    matrix_metadata: Mapping[str, Any],
+    regeneration_parameters: Mapping[str, Any],
+):
+    """Run recipe blocks first, then atomically publish independent row custody."""
+    from feedbax.analysis.harness import MatrixMaterializerHarness
+
+    if root.exists():
+        raise FileExistsError("batched evaluation root must not already exist")
+    specs = [(row_id, EvaluationRunSpec.model_validate(resolved)) for row_id, resolved in rows]
+    evaluation_types = {spec.evaluation_type for _, spec in specs}
+    if len(evaluation_types) != 1:
+        raise ValueError("batched evaluation rows must share one evaluation_type")
+    evaluation_type = next(iter(evaluation_types))
+    try:
+        batch_recipe = _EVALUATION_BATCH_RECIPES[evaluation_type]
+    except KeyError as exc:
+        raise ValueError(
+            f"Evaluation recipe {evaluation_type!r} has no registered batch recipe"
+        ) from exc
+
+    root.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{root.name}.batch-", dir=root.parent))
+    try:
+        items = [
+            EvaluationBatchItem(
+                row_id=row_id,
+                spec=spec,
+                root=root / row_id,
+                states_path=evaluation_states_cache_path(
+                    evaluation_run_manifest_id(spec), root=root / row_id
+                ),
+            )
+            for row_id, spec in specs
+        ]
+        try:
+            results = list(batch_recipe(items, execution_context))
+        except EvaluationBatchRowError as exc:
+            if exc.row_id not in {item.row_id for item in items}:
+                raise ValueError(f"batch recipe named unknown failing row {exc.row_id!r}") from exc
+            raise
+        if len(results) != len(items) or any(
+            not isinstance(result, EvaluationRecipeResult) for result in results
+        ):
+            raise TypeError("batch recipe must return one EvaluationRecipeResult per row")
+        provenance = collect_git_provenance()
+        completed: dict[str, tuple[EvaluationRunManifest, Path]] = {}
+        batch_metadata = {"row_ids": [item.row_id for item in items]}
+        for item, result in zip(items, results, strict=True):
+            try:
+                completed[item.row_id] = _store_batched_evaluation_result(
+                    item,
+                    result,
+                    staging_root=staging / item.row_id,
+                    provenance=provenance,
+                    metadata={
+                        "matrix_harness": {
+                            "row_id": item.row_id,
+                            "batch_execution": batch_metadata,
+                        }
+                    },
+                )
+            except Exception as exc:
+                raise EvaluationBatchRowError(item.row_id, exc) from exc
+
+        def execute(row_id: str, _resolved: Mapping[str, Any], _row_root: Path):
+            return completed[row_id]
+
+        result = MatrixMaterializerHarness(root=staging).materialize(
+            rows,
+            execute=execute,
+            command=["python", "-m", "feedbax", "matrix-harness"],
+            title="Evaluation run matrix",
+            source="EvaluationRunMatrixSpec",
+            matrix_metadata=matrix_metadata,
+            regeneration_parameters=regeneration_parameters,
+        )
+        staging.rename(root)
+        return replace(
+            result,
+            rows=tuple(
+                replace(row, manifest_path=root / row.manifest_path.relative_to(staging))
+                for row in result.rows
+            ),
+        )
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def _store_batched_evaluation_result(
+    item: EvaluationBatchItem,
+    result: EvaluationRecipeResult,
+    *,
+    staging_root: Path,
+    provenance: Provenance,
+    metadata: Mapping[str, Any],
+) -> tuple[EvaluationRunManifest, Path]:
+    """Apply the existing per-row cache, custody, and manifest contracts."""
+    manifest_id = evaluation_run_manifest_id(item.spec)
+    states_path = evaluation_states_cache_path(manifest_id, root=staging_root)
+    states_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_metadata: dict[str, Any] = {
+        "states_path": str(item.states_path),
+        "states_cache_key": manifest_id,
+        "states_cache_hit": False,
+    }
+    if result.states is not None:
+        write_evaluation_states_cache(states_path, manifest_id=manifest_id, states=result.states)
+        cache_metadata["states_cache_saved"] = True
+    if _states_custody_for_spec(item.spec) == "durable":
+        result = _with_durable_states_artifact(
+            result,
+            root=staging_root,
+            manifest_id=manifest_id,
+        )
+    prov = provenance.model_copy(deep=True)
+    prerequisites = item.spec.params.get("staged_prerequisites") or {}
+    prov.parents = [
+        *item.spec.inputs,
+        *[
+            StagedEvaluationPrerequisite.model_validate(value).parent
+            for value in prerequisites.values()
+        ],
+    ]
+    prov.entrypoint = EntrypointRef(kind="feedbax-evaluation-recipe", name=item.spec.evaluation_type)
+    manifest = _build_evaluation_manifest(
+        manifest_id=manifest_id,
+        run_spec=item.spec,
+        status="completed",
+        provenance=prov,
+        summary_metrics={"input_training_runs": len(item.spec.inputs), **result.summary_metrics},
+        artifacts=result.artifacts,
+        metadata={**result.metadata, **metadata, "cache": cache_metadata},
+    )
+    return manifest, write_manifest(manifest, root=staging_root)
 
 
 def resolve_staged_evaluation_prerequisite(
@@ -661,6 +848,7 @@ def register_evaluation_recipe(
     evaluation_type: str,
     recipe: EvaluationRecipe,
     *,
+    batch_recipe: EvaluationBatchRecipe | None = None,
     replace: bool = False,
 ) -> None:
     """Register an executable evaluation recipe by stable type key."""
@@ -670,7 +858,14 @@ def register_evaluation_recipe(
     )
     if evaluation_type in _EVALUATION_RECIPES and not replace:
         raise ValueError(f"Evaluation recipe {evaluation_type!r} is already registered")
+    if batch_recipe is not None:
+        if not callable(batch_recipe):
+            raise TypeError("evaluation batch recipe must be callable")
     _EVALUATION_RECIPES[evaluation_type] = validate_evaluation_recipe(evaluation_type, recipe)
+    if replace:
+        _EVALUATION_BATCH_RECIPES.pop(evaluation_type, None)
+    if batch_recipe is not None:
+        _EVALUATION_BATCH_RECIPES[evaluation_type] = batch_recipe
 
 
 def register_evaluation_authoring_schema(
@@ -711,6 +906,7 @@ def unregister_evaluation_authoring_schema(evaluation_type: str) -> None:
 def unregister_evaluation_recipe(evaluation_type: str) -> None:
     """Remove a previously registered evaluation recipe."""
     _EVALUATION_RECIPES.pop(evaluation_type, None)
+    _EVALUATION_BATCH_RECIPES.pop(evaluation_type, None)
 
 
 def registered_evaluation_recipes() -> tuple[str, ...]:
