@@ -169,6 +169,53 @@ class FakeDriver:
         return {"torn_down": True}
 
 
+class BillingFakeDriver(FakeDriver):
+    def __init__(
+        self,
+        *,
+        provision_record: Mapping[str, Any],
+        probe_status: str = "completed",
+    ) -> None:
+        super().__init__()
+        self.provision_record = dict(provision_record)
+        self.probe_status = probe_status
+
+    def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+        self._call("provision")
+        return dict(self.provision_record)
+
+    def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
+        self._call("realize_env")
+        return json.dumps(
+            {
+                "image_id": self.provision_record.get("immutable_image_id"),
+                "runtime": {
+                    "device_kind": self.provision_record.get("gpu_model"),
+                    "device_count": self.provision_record.get("gpu_count"),
+                },
+            },
+            sort_keys=True,
+        )
+
+    def probe(self, bundle: RunBundle, row: RunRowSpec, state: RunSetState) -> DriverRowProbe:
+        self._call(f"probe:{row.row_id}")
+        return DriverRowProbe(status=self.probe_status)
+
+
+def _remote_billing_record() -> dict[str, Any]:
+    return {
+        "driver": "runpod",
+        "provider": "runpod",
+        "gpu_model": "NVIDIA GeForce RTX 4090",
+        "gpu_count": 1,
+        "region": "CA-MTL-1",
+        "immutable_image_id": "registry.example/feedbax@sha256:" + "a" * 64,
+        "billing_started_at": "1970-01-01T00:00:00+00:00",
+        "hourly_rate": 1.0,
+        "currency": "USD",
+    }
+
+
 def _deployment_policy(driver: str = "local") -> DeploymentPolicy:
     return DeploymentPolicy(
         driver=driver,
@@ -313,6 +360,7 @@ def _assembly_parts(
     rows: list[CompiledExecutionRow] | None = None,
     launch_policy: LaunchPolicy | None = None,
     max_wall_clock_seconds: float = 10.0,
+    max_spend_usd: float | None = None,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
     driver: str = "local",
@@ -344,7 +392,10 @@ def _assembly_parts(
         deployment_policy=_deployment_policy(driver),
         environment=EnvironmentDeclaration(python_version=python_version),
         launch_policy=launch_policy or LaunchPolicy(max_parallel_rows=2),
-        budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
+        budget=BudgetPolicy(
+            max_wall_clock_seconds=max_wall_clock_seconds,
+            max_spend_usd=max_spend_usd,
+        ),
         orchestration_root=str(tmp_path),
     )
     registry = AssemblyCompilerRegistry()
@@ -367,6 +418,7 @@ def _bundle(
     rows: list[CompiledExecutionRow] | None = None,
     launch_policy: LaunchPolicy | None = None,
     max_wall_clock_seconds: float = 10.0,
+    max_spend_usd: float | None = None,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
     driver: str = "local",
@@ -376,6 +428,7 @@ def _bundle(
         rows=rows,
         launch_policy=launch_policy,
         max_wall_clock_seconds=max_wall_clock_seconds,
+        max_spend_usd=max_spend_usd,
         run_set_id=run_set_id,
         python_version=python_version,
         driver=driver,
@@ -1202,6 +1255,135 @@ def test_local_executor_failure_records_absent_declared_output_as_secondary(
     ]
     assert failed_state.rows["row-a"].error == "exit=7"
     assert failed_state.stage("TEARDOWN").status == "completed"
+
+
+def test_capped_remote_execution_requires_observed_billing_evidence(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        max_spend_usd=1.0,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = FakeDriver()
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="usable observed provider billing evidence",
+    ):
+        StageEngine(bundle=bundle, driver=driver, store=store, wall_time=lambda: 0.0).run()
+
+    state = store.load()
+    assert state.stage("REALIZE_ENV").status == "failed"
+    assert state.stage("REALIZE_ENV").attempts == 1
+    assert state.abort_reason == "budget-evidence-unavailable"
+    assert state.budget_counters["budget_exceeded"] == "spend-evidence-unavailable"
+    assert not any(call.startswith("launch:") for call in driver.calls)
+    assert state.stage("TEARDOWN").status == "completed"
+    assert "teardown" in driver.calls
+
+
+def test_capped_remote_execution_rejects_spend_at_cap(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        max_spend_usd=1.0,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = BillingFakeDriver(provision_record=_remote_billing_record())
+
+    with pytest.raises(stages.BudgetExceeded, match="before REALIZE_ENV"):
+        StageEngine(bundle=bundle, driver=driver, store=store, wall_time=lambda: 3600.0).run()
+
+    state = store.load()
+    assert state.stage("REALIZE_ENV").attempts == 1
+    assert state.budget_counters["accrued_cost_usd"] == pytest.approx(1.0)
+    assert state.budget_counters["budget_exceeded"] == "spend"
+    assert state.abort_reason == "budget-exceeded"
+    assert not any(call.startswith("launch:") for call in driver.calls)
+    assert "teardown" in driver.calls
+
+
+def test_capped_remote_monitor_stops_at_observed_spend_cap(tmp_path: Path) -> None:
+    @dataclass
+    class Clock:
+        now: float = 0.0
+
+        def time(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += 1800.0
+
+    clock = Clock()
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        max_spend_usd=0.5,
+    )
+    driver = BillingFakeDriver(
+        provision_record=_remote_billing_record(),
+        probe_status="running",
+    )
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+        wall_time=clock.time,
+        sleep=clock.sleep,
+        poll_interval_seconds=1.0,
+    ).run()
+
+    assert state.abort_reason == "budget-exceeded"
+    assert state.budget_counters["accrued_cost_usd"] == pytest.approx(0.5)
+    assert state.budget_counters["budget_exceeded"] == "spend"
+    assert state.rows["row-a"].status == "stopped"
+    assert "stop:row-a" in driver.calls
+    assert "collect:row-a" in driver.calls
+    assert "teardown" in driver.calls
+
+
+def test_capped_remote_monitor_rejects_existing_spend_before_first_probe(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def wall_time() -> float:
+        nonlocal calls
+        calls += 1
+        return 0.0 if calls <= 2 else 1800.0
+
+    bundle = _bundle(tmp_path, driver="runpod", max_spend_usd=0.5)
+    driver = BillingFakeDriver(
+        provision_record=_remote_billing_record(),
+        probe_status="running",
+    )
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+        wall_time=wall_time,
+    ).run()
+
+    assert state.abort_reason == "budget-exceeded"
+    assert state.budget_counters["budget_exceeded"] == "spend"
+    assert not any(call.startswith("probe:") for call in driver.calls)
+    assert "stop:row-a" in driver.calls
+
+
+def test_local_spend_cap_does_not_require_provider_billing_evidence(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, max_spend_usd=0.0)
+    driver = FakeDriver()
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+    ).run()
+
+    assert state.stage("REGISTER").status == "completed"
+    assert "budget_exceeded" not in state.budget_counters
 
 
 def test_request_assembly_certifies_all_core_checks_with_independent_identity(
