@@ -806,7 +806,14 @@ def test_launch_row_routes_staged_payload_to_native_executor(tmp_path: Path) -> 
     driver.launch_row(bundle, row, _state(bundle))
 
     command = transport.ssh_commands[0]
-    assert "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/warm.json" in command and str(original.execution.payload.uri) not in command
+    remote = "/workspace/feedbax_runs/2026-01-02-deadbeef"
+    assert f"{remote}/inputs/warm.json" in command
+    assert str(original.execution.payload.uri) not in command
+    assert f"{remote}/rows/warm/checkpoints" in command
+    assert "--manifest-root" in command
+    assert "--checkpoint-root" in command
+    assert "--run-id" in command
+    assert "feedbax-training-run:smoke" in command
 
 
 def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:

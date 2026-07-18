@@ -43,7 +43,8 @@ from feedbax.training.run_matrix import (
 
 TRAINING_RUN_MATRIX_COMPILER_ID = "feedbax.training.run_matrix"
 TRAINING_RUN_MATRIX_COMPILER_VERSION_V1 = "feedbax.training.run_matrix.v1"
-TRAINING_RUN_MATRIX_COMPILER_VERSION = "feedbax.training.run_matrix.v2"
+TRAINING_RUN_MATRIX_COMPILER_VERSION_V2 = "feedbax.training.run_matrix.v2"
+TRAINING_RUN_MATRIX_COMPILER_VERSION = "feedbax.training.run_matrix.v3"
 
 
 class TrainingSpecStorageResult(StrictModel):
@@ -119,6 +120,18 @@ def compile_training_run_matrix(
             "row_provenance": row.provenance.model_dump(mode="json", exclude_none=True),
             "payload": row.payload,
         }
+        command = [
+            "python",
+            "-m",
+            "feedbax",
+            "execute-training-run-spec",
+        ]
+        checkpoint_progress = row.payload.get("checkpoint_progress")
+        if (
+            isinstance(checkpoint_progress, Mapping)
+            and checkpoint_progress.get("continuation") is not None
+        ):
+            command.append("--resume")
         rows.append(
             CompiledExecutionRow(
                 row_id=row.row_id,
@@ -127,14 +140,14 @@ def compile_training_run_matrix(
                 provenance=row.provenance,
                 immutable_inputs=list(context.resolved_inputs),
                 launch=RowLaunchSpec(
-                    command=[
-                        "python",
-                        "-m",
-                        "feedbax",
-                        "execute-training-run-spec",
-                    ],
+                    command=command,
                     collect=["manifest.json", "training-diagnostics.json"],
-                    payload_routing={"kind": "registered-execution-payload"},
+                    payload_routing={
+                        "kind": "registered-execution-payload",
+                        "spec": "execution.payload",
+                        "manifest_root": "row-local",
+                        "checkpoint_root": "row-local",
+                    },
                 ),
             )
         )
