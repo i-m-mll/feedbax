@@ -31,7 +31,8 @@ def test_legacy_dashboard_extra_is_retired():
     )
 
 
-def test_analysis_import_does_not_require_persistence_or_viz_extras():
+@pytest.mark.parametrize("module_name", ["feedbax.analysis", "feedbax.analysis.execution"])
+def test_analysis_import_does_not_require_persistence_or_viz_extras(module_name: str):
     script = textwrap.dedent(
         """
         import importlib.abc
@@ -46,11 +47,12 @@ def test_analysis_import_does_not_require_persistence_or_viz_extras():
                 return None
 
         sys.meta_path.insert(0, BlockOptionalImports())
-        import feedbax.analysis
+        import importlib
+        importlib.import_module(sys.argv[1])
         """
     )
     result = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", script, module_name],
         check=False,
         capture_output=True,
         text=True,

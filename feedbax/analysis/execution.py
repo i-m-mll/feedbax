@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Literal, Optional, Union
 
 import equinox as eqx
 import feedbax
@@ -46,19 +46,6 @@ from feedbax.config import PATHS
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.config.defaults import REPLICATE_CRITERION
 
-# `record_to_dict` converts SQLAlchemy records to plain dicts
-# Added utilities for unflattening record hyperparameters into namespaces
-from feedbax.persistence.database import (
-    EvaluationRecord,
-    ModelRecord,
-    add_evaluation,
-    check_model_files,
-    db_session,
-    fill_hps_with_train_params,
-    get_db_session,
-    get_model_record,
-)
-
 # `cast_hps` is needed to convert dictionaries (e.g. `where`) back into the expected objects
 from feedbax.config.hyperparams import (
     config_to_hps,
@@ -68,10 +55,12 @@ from feedbax.config.hyperparams import (
 from feedbax.contracts.manifest import AnalysisRunSpec, evaluation_states_cache_path
 from feedbax.training.support import log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.analysis.setup import query_and_load_model
 from feedbax.config.tree import _hash_pytree, tree_level_labels
 from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.namespace import TreeNamespace, namespace_to_dict
+
+if TYPE_CHECKING:
+    from feedbax.persistence.database import EvaluationRecord, ModelRecord
 
 STATES_CACHE_SUBDIR = "states"
 
@@ -100,6 +89,33 @@ class AnalysisSetupMetadataConfig:
 
     condition_metadata: Callable[[TreeNamespace], dict[str, Any] | None] | None = None
     eval_setup_params: Callable[[TreeNamespace], dict[str, Any] | None] | None = None
+
+
+def query_and_load_model(
+    db_session: Session,
+    setup_task_model_pair: Callable,
+    params_query: dict[str, Any],
+    noise_stds: Optional[dict[Literal["feedback", "motor"] | str, Optional[float]]] = None,
+    surgeries: Optional[dict[tuple, Any]] = None,
+    tree_inclusions: Optional[dict[type, Optional[Any | Sequence | Callable]]] = None,
+    exclude_underperformers_by: Optional[str] = None,
+    exclude_method: Literal["nan", "remove", "best-only"] = "nan",
+    return_task: bool = False,
+):
+    """Load models through the optional legacy database-backed analysis path."""
+    from feedbax.analysis.setup import query_and_load_model as _query_and_load_model
+
+    return _query_and_load_model(
+        db_session,
+        setup_task_model_pair,
+        params_query,
+        noise_stds,
+        surgeries,
+        tree_inclusions,
+        exclude_underperformers_by,
+        exclude_method,
+        return_task,
+    )
 
 
 def _required_model_load_config(
@@ -284,7 +300,6 @@ def load_trained_models_and_aux_objects(
     registry,
 ):
     """Given the analysis config, load the trained models and related objects (e.g. train tasks)."""
-
     # Load training module from registered packages
     training_module = registry.get_training_module(training_module_name)
     sweep_values = model_load_config.sweep_values(hps)
@@ -334,6 +349,7 @@ def setup_eval_for_module(
     1. Construct the task-model pairs to evaluate, to produce the state needed for the analyses.
     2. Add an evaluation record to the database.
     """
+    from feedbax.persistence.database import add_evaluation, fill_hps_with_train_params
 
     # Load analysis module from registered packages
     analysis_module: ModuleType = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
@@ -506,8 +522,8 @@ def perform_all_analyses(
     db_session: Session | None,
     analyses: dict[str, AbstractAnalysis],
     data: AnalysisInputData,
-    model_info: ModelRecord | None,
-    eval_info: EvaluationRecord | None,
+    model_info: "ModelRecord | None",
+    eval_info: "EvaluationRecord | None",
     *,
     analysis_context: AnalysisRunContext | None = None,
     fig_dump_path: Optional[Path] = None,
@@ -649,6 +665,8 @@ def check_records_for_analysis(
     module_key: str,
     module_config: dict,
 ):
+    from feedbax.persistence.database import db_session, get_model_record
+
     hps = config_to_hps(module_config, config_type="analysis")
     analysis_module: ModuleType = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
     model_load_config = _required_model_load_config(module_key, analysis_module)
@@ -696,7 +714,7 @@ def run_evaluation(
     data: AnalysisInputData,
     common_inputs: dict,
     transforms: AnalysisModuleTransformSpec,
-    eval_info: EvaluationRecord,
+    eval_info: "EvaluationRecord",
     *,
     no_pickle: bool = False,
     states_pkl_dir: Path | None = None,
@@ -873,8 +891,8 @@ def run_analyses(
     analysis_module: ModuleType,
     data: AnalysisInputData,
     common_inputs: dict,
-    model_info: ModelRecord,
-    eval_info: EvaluationRecord,
+    model_info: "ModelRecord",
+    eval_info: "EvaluationRecord",
     *,
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: list[str] = ["html", "webp", "svg"],
@@ -952,6 +970,8 @@ def run_analysis_module(
             this set (plus their transitive dependencies).
         key: JAX PRNG key for stochastic evaluation.
     """
+    from feedbax.persistence.database import check_model_files, get_db_session
+
     version_info = log_version_info(
         jax,
         eqx,
