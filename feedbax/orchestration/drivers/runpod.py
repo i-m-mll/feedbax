@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -876,6 +877,7 @@ class RunPodOrchestrationDriver:
         endpoint = self._endpoint or endpoint_classification(pod)
         return {
             "driver": "runpod",
+            **project_runpod_provision_facts(pod),
             "pod_id": self._pod_id,
             "provided_pod": provided_pod,
             "provided_endpoint": False,
@@ -1148,6 +1150,67 @@ def user_balance(user_payload: Mapping[str, Any]) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
+    """Project provenance from an already-returned pod response without I/O."""
+
+    def first(*paths: tuple[str, ...]) -> Any:
+        for path in paths:
+            value: Any = pod
+            for part in path:
+                if not isinstance(value, Mapping) or part not in value:
+                    value = None
+                    break
+                value = value[part]
+            if value not in (None, ""):
+                return value
+        return None
+
+    region = first(
+        ("dataCenterId",),
+        ("data_center_id",),
+        ("dataCenter", "id"),
+        ("machine", "dataCenterId"),
+    )
+    immutable_image_id = first(
+        ("imageName",),
+        ("image_name",),
+        ("containerImage",),
+        ("container", "image"),
+        ("template", "imageName"),
+        ("template", "image_name"),
+    )
+    hourly_rate_raw = first(
+        ("costPerHr",),
+        ("costPerHour",),
+        ("hourlyRate",),
+        ("machine", "costPerHr"),
+        ("machine", "costPerHour"),
+    )
+    try:
+        parsed_hourly_rate = float(hourly_rate_raw) if hourly_rate_raw is not None else None
+    except (TypeError, ValueError):
+        parsed_hourly_rate = None
+    hourly_rate = (
+        parsed_hourly_rate
+        if parsed_hourly_rate is not None and math.isfinite(parsed_hourly_rate)
+        else None
+    )
+    raw_rate_observation = hourly_rate_raw
+    if isinstance(raw_rate_observation, float) and not math.isfinite(raw_rate_observation):
+        raw_rate_observation = repr(raw_rate_observation)
+    return {
+        "provider": "runpod",
+        "region": str(region) if region is not None else None,
+        "immutable_image_id": (
+            str(immutable_image_id) if immutable_image_id is not None else None
+        ),
+        "hourly_rate": hourly_rate,
+        "hourly_rate_raw": raw_rate_observation,
+        "currency": "USD" if hourly_rate is not None else None,
+        "provider_observation_basis": "runpodctl pod get response",
+    }
 
 
 def _preflight_check(

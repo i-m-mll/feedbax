@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,12 +36,16 @@ from feedbax.orchestration.bundle import (
     SchemaArtifactRef,
 )
 from feedbax.orchestration.conformance import (
+    REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID,
+    REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION,
     RUN_CONFORMANCE_SCHEMA_ID,
     RUN_CONFORMANCE_SCHEMA_VERSION,
+    RUN_CONFORMANCE_SCHEMA_VERSION_V1,
     CheckEntry,
     CheckRegistry,
     ConformanceRowArtifacts,
     RunConformanceCertificate,
+    RealizedDeploymentRecord,
     assert_certificate_allows_completed_registration,
     build_core_check_registry,
     check_checkpoint_cadence,
@@ -50,6 +54,7 @@ from feedbax.orchestration.conformance import (
     check_execution_identity,
     check_lr_trace,
     check_manifest_valid,
+    check_realized_deployment,
     missing_input_check,
     pass_check,
     run_conformance_checks,
@@ -89,6 +94,39 @@ def _row(**updates: object) -> ConformanceRowArtifacts:
         },
         "recorded_environment_fingerprint": {"python": "3.12", "jax": "0.test"},
         "preflight_normalized_payload": {"method_payload": {"payload": {}}},
+        "deployment_policy": {
+            "driver": "local",
+            "venue": "local",
+            "resources": {"gpu_id": None, "regions": []},
+        },
+        "realized_deployment_evidence": {
+            "driver": "local",
+            "venue": "local",
+            "provider": "local",
+            "gpu_model": None,
+            "gpu_count": None,
+            "region": None,
+            "immutable_image_id": None,
+            "environment_fingerprint": '{"runtime":"local"}',
+            "provisioned_at": GENERATED_AT.isoformat(),
+            "billing_started_at": None,
+            "row_started_at": GENERATED_AT.isoformat(),
+            "row_completed_at": GENERATED_AT.isoformat(),
+            "observed_at": GENERATED_AT.isoformat(),
+            "wall_time_seconds": 0.0,
+            "hourly_rate": 0.0,
+            "accrued_cost": 0.0,
+            "currency": "USD",
+            "cost_basis": "local-not-billable",
+            "observation_basis": {"environment": "fixture", "timing": "fixture", "cost": "fixture"},
+            "unavailable": {
+                "gpu_model": "not applicable locally",
+                "gpu_count": "not applicable locally",
+                "region": "not applicable locally",
+                "immutable_image_id": "not applicable locally",
+                "billing_started_at": "not billable locally",
+            },
+        },
     }
     base.update(updates)
     return ConformanceRowArtifacts(**base)
@@ -194,6 +232,7 @@ def test_certificate_assembly_rules_and_deterministic_write(tmp_path: Path) -> N
     assert [check.check_id for check in certificate.rows["row-a"].checks] == [
         "a_missing",
         "m_skip",
+        "realized_deployment",
         "z_pass",
     ]
     skipped = next(
@@ -220,15 +259,24 @@ def test_empty_registry_cannot_certify() -> None:
         )
 
 
+def test_realized_deployment_cannot_be_declared_inapplicable() -> None:
+    with pytest.raises(ValueError, match="cannot be declared inapplicable"):
+        run_conformance_checks(
+            run_set_id="run-set-a",
+            rows=[_row()],
+            registry=build_core_check_registry(),
+            declared_inapplicable={"realized_deployment": "requested bypass"},
+            generated_at=GENERATED_AT,
+        )
+
+
 def test_schema_round_trip_and_registry_identity() -> None:
-    payload = {
-        "schema_id": RUN_CONFORMANCE_SCHEMA_ID,
-        "schema_version": RUN_CONFORMANCE_SCHEMA_VERSION,
-        "run_set_id": "run-set-a",
-        "generated_at": GENERATED_AT.isoformat(),
-        "overall": "pass",
-        "rows": {"row-a": {"checks": [{"check_id": "ok", "status": "pass"}]}},
-    }
+    payload = run_conformance_checks(
+        run_set_id="run-set-a",
+        rows=[_row()],
+        registry=CheckRegistry({"ok": lambda row: pass_check("ok")}),
+        generated_at=GENERATED_AT,
+    ).model_dump(mode="json")
 
     certificate = RunConformanceCertificate.model_validate(payload)
     assert certificate.model_dump(mode="json")["schema_version"] == RUN_CONFORMANCE_SCHEMA_VERSION
@@ -238,6 +286,228 @@ def test_schema_round_trip_and_registry_identity() -> None:
     assert family.current_version == RUN_CONFORMANCE_SCHEMA_VERSION
     migrated = migrate_structured_spec_payload("RunConformanceCertificate", payload)
     assert migrated.payload == payload
+
+    v1 = dict(payload, schema_version=RUN_CONFORMANCE_SCHEMA_VERSION_V1)
+    with pytest.raises(ValueError, match="no registered migration"):
+        migrate_structured_spec_payload("RunConformanceCertificate", v1)
+
+    record_payload = dict(payload["rows"]["row-a"]["realized_deployment"])
+    record = RealizedDeploymentRecord.model_validate(record_payload)
+    assert record.schema_id == REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID
+    assert record.schema_version == REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION
+    family = default_spec_registry.resolve("RealizedDeploymentRecord")
+    assert family.identity == REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID
+    assert family.current_version == REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION
+    migrated = migrate_structured_spec_payload("RealizedDeploymentRecord", record_payload)
+    assert migrated.payload == record_payload
+    with pytest.raises(ValueError, match="no registered migration"):
+        migrate_structured_spec_payload(
+            "RealizedDeploymentRecord",
+            dict(record_payload, schema_version=f"{REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID}.v0"),
+        )
+
+
+def test_certificate_schema_rejects_missing_realized_deployment_proof() -> None:
+    with pytest.raises(ValueError, match="exactly one realized_deployment check"):
+        RunConformanceCertificate.model_validate(
+            {
+                "schema_id": RUN_CONFORMANCE_SCHEMA_ID,
+                "schema_version": RUN_CONFORMANCE_SCHEMA_VERSION,
+                "run_set_id": "run-set-a",
+                "generated_at": GENERATED_AT.isoformat(),
+                "overall": "pass",
+                "rows": {"row-a": {"checks": [{"check_id": "ok", "status": "pass"}]}},
+            }
+        )
+
+    with pytest.raises(ValueError, match="at least 1 item"):
+        RunConformanceCertificate.model_validate(
+            {
+                "schema_id": RUN_CONFORMANCE_SCHEMA_ID,
+                "schema_version": RUN_CONFORMANCE_SCHEMA_VERSION,
+                "run_set_id": "run-set-a",
+                "generated_at": GENERATED_AT.isoformat(),
+                "overall": "pass",
+                "rows": {},
+            }
+        )
+
+
+@pytest.mark.parametrize("tamper_surface", ["typed", "check"])
+def test_certificate_schema_binds_raw_typed_and_check_realized_proof(
+    tamper_surface: str,
+) -> None:
+    payload = run_conformance_checks(
+        run_set_id="run-set-a",
+        rows=[_row()],
+        registry=CheckRegistry({"ok": lambda row: pass_check("ok")}),
+        generated_at=GENERATED_AT,
+    ).model_dump(mode="json")
+    row = payload["rows"]["row-a"]
+    if tamper_surface == "typed":
+        row["realized_deployment"]["cost_basis"] = "tampered"
+        message = "does not match its raw evidence"
+    else:
+        realized_check = next(
+            check for check in row["checks"] if check["check_id"] == "realized_deployment"
+        )
+        realized_check["observed"]["cost_basis"] = "tampered"
+        message = "does not bind the typed record"
+
+    with pytest.raises(ValueError, match=message):
+        RunConformanceCertificate.model_validate(payload)
+
+
+def test_realized_deployment_remote_fails_closed_and_preserves_raw_evidence() -> None:
+    raw = dict(_row().realized_deployment_evidence or {})
+    fingerprint = json.dumps(
+        {
+            "image_id": "runpod/image@sha256:" + "a" * 64,
+            "runtime": {"device_kind": "RTX 5090", "device_count": 1},
+        },
+        sort_keys=True,
+    )
+    raw.update(
+        {
+            "driver": "runpod",
+            "venue": "remote",
+            "provider": "runpod",
+            "gpu_model": "RTX 5090",
+            "gpu_count": 1,
+            "region": None,
+            "immutable_image_id": "runpod/image@sha256:" + "a" * 64,
+            "environment_fingerprint": fingerprint,
+            "billing_started_at": GENERATED_AT.isoformat(),
+            "hourly_rate": 1.0,
+            "accrued_cost": 0.0,
+            "cost_basis": "billing-start-to-certify-observation",
+        }
+    )
+    raw["unavailable"] = {"region": "pod response lacked region"}
+    row = _row(
+        deployment_policy={
+            "driver": "runpod",
+            "venue": "remote",
+            "resources": {"gpu_id": "RTX 5090", "regions": ["CA-MTL-1"]},
+        },
+        realized_deployment_evidence=raw,
+    )
+
+    check = check_realized_deployment(row)
+    certificate = run_conformance_checks(
+        run_set_id="run-set-a",
+        rows=[row],
+        registry=CheckRegistry({"realized_deployment": check_realized_deployment}),
+        generated_at=GENERATED_AT,
+    )
+
+    assert check.status == "fail"
+    assert "region" in str(check.detail)
+    assert certificate.rows["row-a"].realized_deployment is None
+    assert certificate.rows["row-a"].realized_deployment_evidence == raw
+    assert RealizedDeploymentRecord.model_validate(raw).region is None
+
+
+def _valid_remote_realized_evidence() -> dict[str, object]:
+    image_id = "runpod/image@sha256:" + "c" * 64
+    provisioned = GENERATED_AT - timedelta(hours=3)
+    started = GENERATED_AT - timedelta(hours=2)
+    completed = GENERATED_AT - timedelta(hours=1)
+    return {
+        "schema_id": REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID,
+        "schema_version": REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION,
+        "driver": "runpod",
+        "venue": "remote",
+        "provider": "runpod",
+        "gpu_model": "RTX 5090",
+        "gpu_count": 1,
+        "region": "CA-MTL-1",
+        "immutable_image_id": image_id,
+        "environment_fingerprint": json.dumps(
+            {
+                "image_id": image_id,
+                "runtime": {"device_kind": "RTX 5090", "device_count": 1},
+            },
+            sort_keys=True,
+        ),
+        "provisioned_at": provisioned.isoformat(),
+        "billing_started_at": provisioned.isoformat(),
+        "row_started_at": started.isoformat(),
+        "row_completed_at": completed.isoformat(),
+        "observed_at": GENERATED_AT.isoformat(),
+        "wall_time_seconds": 3600.0,
+        "hourly_rate": 2.0,
+        "accrued_cost": 6.0,
+        "currency": "USD",
+        "cost_basis": "billing-start-to-certify-observation",
+        "observation_basis": {"provider": "fixture", "timing": "fixture", "cost": "fixture"},
+        "provider_observations": {
+            "hourly_rate_raw": "2.0",
+            "immutable_image_id_raw": image_id,
+        },
+        "unavailable": {},
+    }
+
+
+@pytest.mark.parametrize(
+    "image_id",
+    [
+        "runpod/image@sha256:" + "a" * 63,
+        "runpod/image@sha256:" + "A" * 64,
+        "runpod/image@sha256:" + "g" * 64,
+        "@sha256:" + "a" * 64,
+    ],
+)
+def test_realized_deployment_rejects_incomplete_immutable_image_identity(
+    image_id: str,
+) -> None:
+    raw = _valid_remote_realized_evidence()
+    raw["immutable_image_id"] = image_id
+
+    with pytest.raises(ValueError, match="complete lowercase OCI digest"):
+        RealizedDeploymentRecord.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("billing_started_at", "2026-01-02T00:04:05", "timezone-aware"),
+        ("row_completed_at", (GENERATED_AT + timedelta(seconds=1)).isoformat(), "chronology"),
+        ("wall_time_seconds", 1.0, "wall_time_seconds"),
+        ("accrued_cost", 1.0, "accrued_cost"),
+        ("hourly_rate", float("inf"), "finite number"),
+    ],
+)
+def test_realized_deployment_recomputes_timing_and_cost_and_rejects_non_finite(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    raw = _valid_remote_realized_evidence()
+    raw[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        RealizedDeploymentRecord.model_validate(raw)
+
+
+def test_certificate_generated_at_must_equal_realized_observation() -> None:
+    raw = _valid_remote_realized_evidence()
+    row = _row(
+        deployment_policy={
+            "driver": "runpod",
+            "venue": "remote",
+            "resources": {"gpu_id": "RTX 5090", "regions": ["CA-MTL-1"]},
+        },
+        realized_deployment_evidence=raw,
+    )
+
+    with pytest.raises(ValueError, match="observed_at must equal generated_at"):
+        run_conformance_checks(
+            run_set_id="run-set-a",
+            rows=[row],
+            registry=CheckRegistry({"ok": lambda item: pass_check("ok")}),
+            generated_at=GENERATED_AT + timedelta(seconds=1),
+        )
 
 
 def test_core_checks_pass_fail_and_missing_inputs() -> None:
@@ -1020,11 +1290,11 @@ def test_conformance_plugin_discovery_ignores_non_conformance_registrars() -> No
 
 
 def test_register_coupling_rejects_failing_certificate() -> None:
-    certificate = RunConformanceCertificate(
+    certificate = run_conformance_checks(
         run_set_id="run-set-a",
+        rows=[_row()],
+        registry=CheckRegistry({"bad": lambda row: CheckEntry(check_id="bad", status="fail")}),
         generated_at=GENERATED_AT,
-        overall="fail",
-        rows={"row-a": {"checks": [{"check_id": "bad", "status": "fail"}]}},
     )
 
     with pytest.raises(ValueError, match="phase=completed"):

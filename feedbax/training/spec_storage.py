@@ -170,13 +170,11 @@ class TrainingRunMatrixCompiler:
 
     def compile(
         self,
-        request: Any,
         *,
         authored: Mapping[str, Any],
         run_set_id: str,
         context: Any,
     ) -> Any:
-        del request
         return compile_training_run_matrix(
             authored,
             run_set_id=run_set_id,

@@ -8,6 +8,7 @@ import os
 import tempfile
 import time
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,22 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _parse_observed_datetime(value: Any) -> datetime | None:
+    """Parse an already-recorded provider time without manufacturing a fallback."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 class OrchestrationStageError(RuntimeError):
@@ -370,6 +387,14 @@ class StageEngine:
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)
+        stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
+        state = state.with_stage(STAGE_PREFLIGHT, stage)
+        self.store.save(state)
+        failed = [check for check in checks if check.status == "fail"]
+        if failed:
+            raise PreflightFailed(
+                f"preflight failed: {', '.join(check.name for check in failed)}"
+            )
         driver_preflight = getattr(self.driver, "preflight_checks", None)
         if callable(driver_preflight):
             checks.extend(driver_preflight(self.bundle))
@@ -462,26 +487,39 @@ class StageEngine:
             raise OrchestrationStageError(
                 "CERTIFY requires at least one registered conformance check"
             )
-        rows = [self._conformance_artifacts(row, state) for row in self.bundle.rows]
+        observed_at = utc_now()
+        rows = [
+            self._conformance_artifacts(row, state, observed_at=observed_at)
+            for row in self.bundle.rows
+        ]
         certificate = write_conformance_certificate(
             run_set_dir=self.bundle.run_set_dir,
             run_set_id=self.bundle.run_set_id,
             rows=rows,
             registry=self.conformance_registry,
             declared_inapplicable=self.bundle.metadata.get("conformance_inapplicable"),
+            generated_at=observed_at,
         )
         certificate_path = self.bundle.run_set_dir / "conformance.json"
+        certificate_sha256 = hashlib.sha256(certificate_path.read_bytes()).hexdigest()
         state = state.model_copy(
             update={"certificate_ref": str(certificate_path), "updated_at": utc_now()}
         )
-        return state, {"certificate_ref": str(certificate_path), "overall": certificate.overall}
+        return state, {
+            "certificate_ref": str(certificate_path),
+            "certificate_sha256": certificate_sha256,
+            "overall": certificate.overall,
+        }
 
     def _conformance_artifacts(
         self,
         row: RunRowSpec,
         state: RunSetState,
+        *,
+        observed_at: datetime | None = None,
     ) -> ConformanceRowArtifacts:
         """Assemble all check inputs from one row's collected bundle outputs."""
+        observed_at = observed_at or utc_now()
         outputs = state.rows[row.row_id].collected_outputs
         discovered = _discover_conformance_artifacts(outputs)
         run_spec = _row_payload(row)
@@ -519,7 +557,155 @@ class StageEngine:
             preflight_normalized_payload=preflight_payload,
             row_state=state.rows.get(row.row_id),
             runtime_inputs=self.row_conformance_inputs.get(row.row_id),
+            deployment_policy=self.bundle.deployment_policy.model_dump(mode="json"),
+            realized_deployment_evidence=self._realized_deployment_evidence(
+                row, state, observed_at=observed_at
+            ),
         )
+
+    def _realized_deployment_evidence(
+        self,
+        row: RunRowSpec,
+        state: RunSetState,
+        *,
+        observed_at: datetime,
+    ) -> dict[str, Any]:
+        """Project only state already observed before CERTIFY into raw evidence."""
+        provision_stage = state.stage(STAGE_PROVISION)
+        if (
+            provision_stage.status != "completed"
+            or state.provision_record is None
+            or dict(provision_stage.outputs) != dict(state.provision_record)
+        ):
+            raise OrchestrationStageError(
+                "CERTIFY requires provision_record to exactly match completed PROVISION outputs"
+            )
+        realize_env_stage = state.stage(STAGE_REALIZE_ENV)
+        recorded_fingerprint = realize_env_stage.outputs.get("environment_fingerprint")
+        if (
+            realize_env_stage.status != "completed"
+            or not isinstance(recorded_fingerprint, str)
+            or recorded_fingerprint != state.environment_fingerprint
+        ):
+            raise OrchestrationStageError(
+                "CERTIFY requires environment_fingerprint to exactly match completed "
+                "REALIZE_ENV outputs"
+            )
+        provision = dict(state.provision_record or {})
+        row_state = state.rows[row.row_id]
+        venue = self.bundle.deployment_policy.venue
+        unavailable: dict[str, str] = {}
+
+        def absent(field_name: str, reason: str) -> None:
+            unavailable[field_name] = reason
+
+        started_at = row_state.started_at
+        completed_at = row_state.completed_at
+        wall_time = None
+        if started_at is not None and completed_at is not None:
+            wall_time = (completed_at - started_at).total_seconds()
+        else:
+            for name, value in (
+                ("row_started_at", started_at),
+                ("row_completed_at", completed_at),
+                ("wall_time_seconds", wall_time),
+            ):
+                if value is None:
+                    absent(name, "row state did not record this timing fact")
+
+        provisioned_at = state.stage(STAGE_PROVISION).completed_at
+        if provisioned_at is None:
+            absent("provisioned_at", "PROVISION did not record a completion time")
+        fingerprint = state.environment_fingerprint
+        if fingerprint is None:
+            absent("environment_fingerprint", "REALIZE_ENV did not record a fingerprint")
+
+        evidence: dict[str, Any] = {
+            "driver": provision.get("driver"),
+            "venue": venue,
+            "provider": provision.get("provider"),
+            "gpu_model": None,
+            "gpu_count": None,
+            "region": provision.get("region"),
+            "immutable_image_id": provision.get("immutable_image_id"),
+            "environment_fingerprint": fingerprint,
+            "provisioned_at": provisioned_at,
+            "billing_started_at": provision.get("billing_started_at"),
+            "row_started_at": started_at,
+            "row_completed_at": completed_at,
+            "observed_at": observed_at,
+            "wall_time_seconds": wall_time,
+            "hourly_rate": provision.get("hourly_rate"),
+            "accrued_cost": None,
+            "currency": provision.get("currency"),
+            "cost_basis": "local-not-billable" if venue == "local" else (
+                "billing-start-to-certify-observation"
+            ),
+            "observation_basis": {
+                "provider": provision.get(
+                    "provider_observation_basis", "durable orchestration provision record"
+                ),
+                "environment": "validated REALIZE_ENV fingerprint preserved exactly",
+                "timing": "durable PROVISION stage and row-state timestamps",
+                "cost": (
+                    "local route is non-billable"
+                    if venue == "local"
+                    else "provider billing start and observed hourly rate through CERTIFY"
+                ),
+            },
+            "provider_observations": {
+                "hourly_rate_raw": provision.get("hourly_rate_raw"),
+                "immutable_image_id_raw": provision.get("immutable_image_id"),
+                "billing_started_at_raw": provision.get("billing_started_at"),
+                "region_raw": provision.get("region"),
+            },
+            "unavailable": unavailable,
+        }
+        if venue == "local":
+            evidence.update(
+                {
+                    "provider": "local",
+                    "hourly_rate": 0.0,
+                    "accrued_cost": 0.0,
+                    "currency": "USD",
+                }
+            )
+            for name in ("gpu_model", "gpu_count", "region", "immutable_image_id"):
+                absent(name, "not applicable to the local deployment route")
+            absent("billing_started_at", "not applicable to the non-billable local route")
+            return evidence
+
+        try:
+            realized = json.loads(fingerprint or "")
+            runtime = realized.get("runtime", {})
+            evidence["gpu_model"] = runtime.get("device_kind")
+            evidence["gpu_count"] = runtime.get("device_count")
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        for name in ("provider", "gpu_model", "gpu_count", "region", "immutable_image_id"):
+            if evidence[name] is None:
+                absent(name, "remote observations did not prove this fact")
+        billing_started = _parse_observed_datetime(evidence["billing_started_at"])
+        hourly_rate = evidence["hourly_rate"]
+        if evidence["billing_started_at"] is None:
+            absent("billing_started_at", "provider response lacked billing start time")
+        if hourly_rate is None:
+            absent("hourly_rate", "provider response lacked an observed hourly rate")
+        if evidence["currency"] is None:
+            absent("currency", "provider response lacked rate currency")
+        if (
+            billing_started is not None
+            and billing_started <= observed_at
+            and isinstance(hourly_rate, (int, float))
+        ):
+            elapsed_hours = (observed_at - billing_started).total_seconds() / 3600.0
+            evidence["accrued_cost"] = float(hourly_rate) * elapsed_hours
+        else:
+            absent(
+                "accrued_cost",
+                "valid non-future billing start and hourly rate are required for observation",
+            )
+        return evidence
 
     def _execution_identity_adapter(self) -> Any:
         if self.request is None or self.assembly_registry is None:
@@ -534,11 +720,41 @@ class StageEngine:
             raise OrchestrationStageError(
                 "REGISTER requires at least one registered conformance check"
             )
-        certificate_path = Path(state.certificate_ref or "")
+        if state.run_set_id != self.bundle.run_set_id:
+            raise OrchestrationStageError(
+                "REGISTER state run_set_id does not match the assembled bundle"
+            )
+        certify_stage = state.stage(STAGE_CERTIFY)
+        certified_ref = certify_stage.outputs.get("certificate_ref")
+        if (
+            certify_stage.status != "completed"
+            or not isinstance(certified_ref, str)
+            or state.certificate_ref != certified_ref
+        ):
+            raise OrchestrationStageError(
+                "REGISTER certificate_ref does not match the completed CERTIFY stage"
+            )
+        certificate_path = Path(certified_ref)
         certificate_bytes = certificate_path.read_bytes()
+        certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+        certified_digest = state.stage(STAGE_CERTIFY).outputs.get("certificate_sha256")
+        if not isinstance(certified_digest, str) or certified_digest != certificate_digest:
+            raise OrchestrationStageError(
+                "REGISTER certificate digest does not match the completed CERTIFY stage"
+            )
         certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
         certificate = RunConformanceCertificate.model_validate(certificate_payload)
-        certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+        if certificate.run_set_id != self.bundle.run_set_id:
+            raise OrchestrationStageError(
+                "REGISTER certificate run_set_id does not match the assembled bundle"
+            )
+        bundle_row_ids = {row.row_id for row in self.bundle.rows}
+        state_row_ids = set(state.rows)
+        certificate_row_ids = set(certificate.rows)
+        if bundle_row_ids != state_row_ids or bundle_row_ids != certificate_row_ids:
+            raise OrchestrationStageError(
+                "REGISTER requires exact bundle, state, and certificate row-ID equality"
+            )
         row_statuses = {row_id: row.status for row_id, row in sorted(state.rows.items())}
         row_status_set = set(row_statuses.values())
         if certificate.overall == "fail":
@@ -854,8 +1070,8 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     checks.append(
         _check(
             "driver-preconditions",
-            bundle.driver in {"local", "worker-http", "runpod"},
-            observed=bundle.driver,
+            bundle.deployment_policy.driver in {"local", "worker-http", "runpod"},
+            observed=bundle.deployment_policy.driver,
         )
     )
     env_complete = bool(bundle.environment.python_version)
@@ -867,13 +1083,13 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     )
     checks.append(_check("custody-pins", not mutable_pin))
 
-    policy_failures, policy_observed = _preflight_training_execution_policy(bundle)
+    policy_failures, policy_observed = _preflight_deployment_policy(bundle)
     checks.append(
         _check(
-            "training-execution-policy",
+            "deployment-policy",
             not policy_failures,
             detail="; ".join(policy_failures) if policy_failures else None,
-            observed=policy_observed or "no-inline-run-specs",
+            observed=policy_observed,
         )
     )
 
@@ -910,38 +1126,23 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     return checks
 
 
-def _preflight_training_execution_policy(
+def _preflight_deployment_policy(
     bundle: RunBundle,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Reject launch drivers that contradict durable training execution policy."""
+    """Validate only the orchestration-owned deployment policy."""
+    policy = bundle.deployment_policy
     failures: list[str] = []
-    observed: dict[str, Any] = {}
-    requested_mode = "local" if bundle.driver == "local" else "remote"
-    for row in bundle.rows:
-        run_spec = _row_payload(row)
-        if not _is_training_run_payload(run_spec):
-            continue
-        policy = run_spec.get("execution")
-        if not isinstance(policy, Mapping):
-            policy = {}
-        mode = policy.get("mode", "local")
-        allow_cloud = policy.get("allow_cloud", False)
-        observed[row.row_id] = {
-            "driver": bundle.driver,
-            "mode": mode,
-            "allow_cloud": allow_cloud,
-            "require_review": policy.get("require_review", True),
-        }
-        if mode != requested_mode:
-            failures.append(
-                f"{row.row_id}: driver {bundle.driver!r} requires execution.mode="
-                f"{requested_mode!r}, got {mode!r}"
-            )
-        if bundle.driver == "runpod" and allow_cloud is not True:
-            failures.append(
-                f"{row.row_id}: driver 'runpod' requires execution.allow_cloud=true"
-            )
-    return failures, observed
+    expected_venue = "local" if policy.driver == "local" else "remote"
+    if policy.venue != expected_venue:
+        failures.append(
+            f"driver {policy.driver!r} requires venue={expected_venue!r}, "
+            f"observed {policy.venue!r}"
+        )
+    if policy.driver == "runpod" and not policy.cloud_authorized:
+        failures.append("runpod deployment requires explicit cloud authorization")
+    if policy.review_required and not policy.review_authorized:
+        failures.append("required deployment review has not been explicitly authorized")
+    return failures, policy.model_dump(mode="json")
 
 
 def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from feedbax.contracts.manifest import (
+    ArtifactMigrationRecord,
     SpecPayload,
     TrainingRunManifest,
     canonical_json_bytes,
@@ -69,8 +70,14 @@ def resolve_training_spec_payload_ref(
 
 def validate_training_run_spec(spec: TrainingRunSpec | Mapping[str, Any]) -> TrainingRunSpec:
     """Accept or migrate a TrainingRunSpec mapping for manifest preflight."""
+    return _validate_training_run_spec_with_evidence(spec)[0]
+
+
+def _validate_training_run_spec_with_evidence(
+    spec: TrainingRunSpec | Mapping[str, Any],
+) -> tuple[TrainingRunSpec, list[ArtifactMigrationRecord]]:
     if isinstance(spec, TrainingRunSpec):
-        return spec
+        return spec, []
 
     from feedbax.contracts.migrations import migrate_structured_spec_payload
 
@@ -78,8 +85,8 @@ def validate_training_run_spec(spec: TrainingRunSpec | Mapping[str, Any]) -> Tra
         "TrainingRunSpec",
         spec,
         path="training_run_spec",
-    ).payload
-    return TrainingRunSpec.model_validate(migrated)
+    )
+    return TrainingRunSpec.model_validate(migrated.payload), migrated.migration_records
 
 
 def build_training_run_manifest_spec_payloads(
@@ -91,6 +98,7 @@ def build_training_run_manifest_spec_payloads(
     training_spec_payload_schema_version: str | None = None,
     training_spec_payload_ref: str | None = None,
     task_binding_spec: Mapping[str, Any] | None = None,
+    migration_records: list[ArtifactMigrationRecord] | None = None,
 ) -> TrainingRunManifestSpecPayloads:
     """Build the exact spec payload fields embedded in a TrainingRunManifest."""
     graph_inline = dict(spec.graph.inline) if spec.graph.inline is not None else None
@@ -106,7 +114,7 @@ def build_training_run_manifest_spec_payloads(
             schema_id=training_spec_payload_schema_id,
             schema_version=training_spec_payload_schema_version,
             ref=training_spec_payload_ref,
-        ),
+        ).model_copy(update={"migration_records": migration_records or []}),
         task_spec=spec_payload("TaskSpec", spec.task.model_dump(mode="json")),
         task_binding_spec=(
             spec_payload("StudioTaskBindingSpec", dict(task_binding_spec))
@@ -132,7 +140,7 @@ def preflight_training_run_manifest_payloads(
 ) -> TrainingRunManifestSpecPayloads:
     """Validate final TrainingRunManifest spec payloads without running training."""
     try:
-        run_spec = validate_training_run_spec(spec)
+        run_spec, migration_records = _validate_training_run_spec_with_evidence(spec)
         effective_ref = resolve_training_spec_payload_ref(
             training_spec_payload_ref,
             authoritative_ref=authoritative_training_spec_payload_ref,
@@ -145,6 +153,7 @@ def preflight_training_run_manifest_payloads(
             training_spec_payload_schema_version=training_spec_payload_schema_version,
             training_spec_payload_ref=effective_ref,
             task_binding_spec=task_binding_spec,
+            migration_records=migration_records,
         )
     except Exception as exc:
         raise TrainingRunManifestPreflightError(

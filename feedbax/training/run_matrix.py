@@ -1313,7 +1313,6 @@ def _identity_training_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
             "method_payload",
             "method_extensions",
             "worker_execution",
-            "execution",
             "artifacts",
             "checkpoint_progress",
             "on_nan",

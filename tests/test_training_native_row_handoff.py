@@ -43,6 +43,7 @@ from feedbax.orchestration.assembly import (
 )
 from feedbax.orchestration.bundle import (
     BudgetPolicy,
+    DeploymentPolicy,
     EnvironmentDeclaration,
     ImmutableInputIdentity,
     RunBundle,
@@ -174,6 +175,13 @@ def _assemble_lowered_bundle(
         compiler=CompilerIdentity(
             compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
             compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        deployment_policy=DeploymentPolicy(
+            driver="local",
+            venue="local",
+            cloud_authorized=False,
+            review_required=False,
+            review_authorized=False,
         ),
         inputs=[
             AssemblyInputDeclaration(

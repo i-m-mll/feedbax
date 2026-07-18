@@ -154,7 +154,11 @@ def cmd_launch(args: argparse.Namespace) -> int:
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     if args.driver:
-        request = request.model_copy(update={"driver": args.driver})
+        if args.driver != request.deployment_policy.driver:
+            raise ValueError(
+                "--driver conflicts with deployment_policy.driver; edit and re-authorize "
+                "the versioned RunAssemblyRequest instead of overriding launch policy"
+            )
     overrides: dict[str, Any] = {}
     if args.deadman is not None:
         overrides["deadman_enabled"] = args.deadman
@@ -294,11 +298,12 @@ def _run_existing(
 
 
 def _driver_for_bundle(bundle: RunBundle) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
-    if bundle.driver == "local":
+    driver_name = bundle.deployment_policy.driver
+    if driver_name == "local":
         return LocalOrchestrationDriver()
-    if bundle.driver == "runpod":
+    if driver_name == "runpod":
         return RunPodOrchestrationDriver(config=_runpod_config_for_bundle(bundle))
-    raise RuntimeError(f"Unsupported orchestration driver: {bundle.driver!r}")
+    raise RuntimeError(f"Unsupported orchestration driver: {driver_name!r}")
 
 
 def _load_bundle(path: str | Path) -> RunBundle:
@@ -338,6 +343,7 @@ def _request_engine(
 
 def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
     metadata = bundle.environment.metadata
+    resources = bundle.deployment_policy.resources
     raw_patches = metadata.get("runpod_path_patches", ())
     path_patches = tuple(
         (str(item["remote_file"]), str(item["from"]), str(item["to"])) for item in raw_patches
@@ -346,8 +352,8 @@ def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
         pod_id=_optional_string(metadata.get("runpod_pod_id")),
         ssh_host=_optional_string(metadata.get("runpod_ssh_host")),
         ssh_port=(int(metadata["runpod_ssh_port"]) if metadata.get("runpod_ssh_port") else None),
-        gpu_id=_optional_string(metadata.get("runpod_gpu_id")),
-        datacenters=tuple(str(item) for item in metadata.get("runpod_datacenters", ())),
+        gpu_id=resources.gpu_id,
+        datacenters=tuple(resources.regions),
         api_key=load_runpod_api_key(),
         min_balance_usd=float(metadata.get("runpod_min_balance_usd", 5.0)),
         max_provision_attempts=int(metadata.get("runpod_max_provision_attempts", 3)),

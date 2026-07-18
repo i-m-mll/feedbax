@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -31,7 +32,7 @@ from feedbax.contracts.studio_training import (
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
-    ExecutionPolicySpec,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
     LrScheduleSpec,
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -62,6 +63,8 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION_V2,
     BudgetPolicy,
+    DeploymentPolicy,
+    DeploymentResourceRequest,
     EnvironmentDeclaration,
     LaunchPolicy,
     RepoRevision,
@@ -85,8 +88,11 @@ from feedbax.orchestration.drivers.local import (
     compute_environment_fingerprint,
 )
 from feedbax.orchestration.stages import (
+    STAGE_CERTIFY,
     STAGE_ORDER,
     STAGE_PREFLIGHT,
+    STAGE_PROVISION,
+    STAGE_REALIZE_ENV,
     OrchestrationStageError,
     PreflightFailed,
     StageEngine,
@@ -103,6 +109,7 @@ from feedbax.orchestration.state import (
 from feedbax.training.diagnostics import TRAINING_DIAGNOSTICS_SCHEMA_ID, TrainingDiagnostics
 from feedbax.training.interruption import CancellationAction, CancellationDecision
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
+from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 
 
 class FakeDriver:
@@ -119,7 +126,7 @@ class FakeDriver:
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
         self._call("provision")
-        return {"provisioned": True}
+        return {"driver": "local", "provisioned": True}
 
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         self._call("realize_env")
@@ -148,6 +155,20 @@ class FakeDriver:
     def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
         self._call("teardown")
         return {"torn_down": True}
+
+
+def _deployment_policy(driver: str = "local") -> DeploymentPolicy:
+    return DeploymentPolicy(
+        driver=driver,
+        venue="local" if driver == "local" else "remote",
+        cloud_authorized=driver == "runpod",
+        review_required=False,
+        review_authorized=False,
+        resources=DeploymentResourceRequest(
+            gpu_id="NVIDIA GeForce RTX 4090" if driver == "runpod" else None,
+            regions=["CA-MTL-1", "US-OR-1"] if driver == "runpod" else [],
+        ),
+    )
 
 
 class _IdentityFakeDriver(FakeDriver):
@@ -229,13 +250,12 @@ class _FixtureCompiler:
 
     def compile(
         self,
-        request: RunAssemblyRequest,
         *,
         authored: Mapping[str, Any],
         run_set_id: str,
         context: AssemblyContext,
     ) -> CompiledRunSet:
-        del request, authored, run_set_id, context
+        del authored, run_set_id, context
         return CompiledRunSet(rows=list(self.rows))
 
 
@@ -304,7 +324,7 @@ def _assembly_parts(
             compiler_id=compiler_id,
             compiler_version=compiler_version,
         ),
-        driver=driver,
+        deployment_policy=_deployment_policy(driver),
         environment=EnvironmentDeclaration(python_version=python_version),
         launch_policy=launch_policy or LaunchPolicy(max_parallel_rows=2),
         budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
@@ -349,6 +369,96 @@ def _bundle(
     )
 
 
+def test_deployment_policy_does_not_change_assembled_scientific_identity(
+    tmp_path: Path,
+) -> None:
+    request, context, registry = _assembly_parts(tmp_path)
+    reviewed_policy = request.deployment_policy.model_copy(
+        update={"review_required": True, "review_authorized": True}
+    )
+    reviewed_request = request.model_copy(update={"deployment_policy": reviewed_policy})
+
+    ordinary = assemble_run_bundle(
+        request,
+        run_set_id="2026-01-02-policy-identity",
+        context=context,
+        registry=registry,
+    )
+    reviewed = assemble_run_bundle(
+        reviewed_request,
+        run_set_id="2026-01-02-policy-identity",
+        context=context,
+        registry=registry,
+    )
+
+    assert request.deployment_policy != reviewed_request.deployment_policy
+    assert ordinary.deployment_policy != reviewed.deployment_policy
+    assert ordinary.rows[0].execution == reviewed.rows[0].execution
+
+
+def test_v3_policy_migration_evidence_survives_without_authorizing_launch(tmp_path: Path) -> None:
+    source = _identity_training_payload()
+    source["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
+    source["execution"] = {"mode": "remote", "allow_cloud": True, "require_review": False}
+    migrated = default_spec_registry.migrate("TrainingRunSpec", source)
+    source_bytes = training_spec_canonical_bytes(source)
+    source_path = tmp_path / "training-v3.json"
+    source_path.write_bytes(source_bytes)
+    request, context, _ = _assembly_parts(tmp_path)
+    request = request.model_copy(
+        update={
+            "authored": SchemaArtifactRef(
+                schema_id=TRAINING_RUN_SPEC_SCHEMA_ID,
+                schema_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+                artifact_id="fixture:training-v3",
+                sha256=hashlib.sha256(source_bytes).hexdigest(),
+                uri=str(source_path),
+            )
+        }
+    )
+    registry = AssemblyCompilerRegistry()
+    registry.register(
+        schema_id=TRAINING_RUN_SPEC_SCHEMA_ID,
+        compiler_id=request.compiler.compiler_id,
+        compiler_version=request.compiler.compiler_version,
+        compiler=_FixtureCompiler((_compiled_row("row-a", run_spec=migrated.payload),)),
+        identity_adapter=TrainingRunIdentityAdapter(),
+    )
+    bundle = assemble_run_bundle(request, run_set_id="v3-evidence", context=context, registry=registry)
+    record = bundle.migration_evidence[-1]
+
+    assert record.metadata["removed_execution_policy"]["normalized_values"]["allow_cloud"]
+    assert bundle.deployment_policy.cloud_authorized is False
+    assert bundle.model_copy(update={"migration_evidence": []}).rows[0].execution == bundle.rows[0].execution
+    manifest_payload = preflight_training_run_manifest_payloads(source).training_spec
+    assert (
+        manifest_payload.migration_records[-1].metadata["removed_execution_policy"]
+        == record.metadata["removed_execution_policy"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"cloud_authorized": False}, "cloud_authorized=true"),
+        (
+            {"review_required": True, "review_authorized": False},
+            "review_authorized=true",
+        ),
+        ({"venue": "local"}, "requires venue='remote'"),
+    ],
+)
+def test_deployment_policy_validation_fails_closed(
+    updates: dict[str, Any], message: str
+) -> None:
+    payload = {
+        **_deployment_policy("runpod").model_dump(mode="json"),
+        **updates,
+    }
+    with pytest.raises(ValueError, match=message):
+        DeploymentPolicy.model_validate(payload)
+
+
 def test_conformance_records_declared_inapplicability() -> None:
     registry = CheckRegistry({"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")})
 
@@ -359,8 +469,9 @@ def test_conformance_records_declared_inapplicability() -> None:
         declared_inapplicable={"lr_trace": "constant-rate rows have no schedule trace"},
     )
 
-    result = certificate.rows["constant-rate"].checks[0]
-    assert certificate.overall == "pass"
+    checks = {entry.check_id: entry for entry in certificate.rows["constant-rate"].checks}
+    result = checks["lr_trace"]
+    assert certificate.overall == "fail"
     assert result.status == "skipped"
     assert result.detail == (
         "inapplicable-by-declaration: constant-rate rows have no schedule trace"
@@ -456,6 +567,71 @@ def _fixture_pass_registry() -> CheckRegistry:
     )
 
 
+def _with_local_realized_proof(state: RunSetState) -> RunSetState:
+    completed_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=1)
+    started_at = completed_at - timedelta(seconds=1)
+    rows = {
+        row_id: row.model_copy(update={"started_at": started_at, "completed_at": completed_at})
+        for row_id, row in state.rows.items()
+    }
+    provision_record = {"driver": "local"}
+    provision = state.stage(STAGE_PROVISION).model_copy(
+        update={
+            "status": "completed",
+            "completed_at": started_at - timedelta(seconds=1),
+            "outputs": provision_record,
+        }
+    )
+
+    realize_env = state.stage(STAGE_REALIZE_ENV).model_copy(
+        update={
+            "status": "completed",
+            "completed_at": started_at,
+            "outputs": {"environment_fingerprint": "fake-fingerprint"},
+        }
+    )
+    return state.model_copy(
+        update={
+            "rows": rows,
+            "provision_record": provision_record,
+            "environment_fingerprint": "fake-fingerprint",
+            "stages": {
+                **state.stages,
+                STAGE_PROVISION: provision,
+                STAGE_REALIZE_ENV: realize_env,
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("tamper_surface", ["provision_record", "environment_fingerprint"])
+def test_certify_rejects_resumed_top_level_observation_substitution(
+    tmp_path: Path,
+    tamper_surface: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"row-a": RowState(status="completed")},
+        )
+    )
+    if tamper_surface == "provision_record":
+        state = state.model_copy(update={"provision_record": {"driver": "substituted"}})
+        message = "PROVISION outputs"
+    else:
+        state = state.model_copy(update={"environment_fingerprint": "substituted"})
+        message = "REALIZE_ENV outputs"
+
+    with pytest.raises(OrchestrationStageError, match=message):
+        engine._stage_certify(state)
+
+
 def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     old = RunSetState(run_set_id="set", rows={"row": RowState(status="pending")})
@@ -490,7 +666,7 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     old_payload = _bundle(tmp_path).model_dump(mode="json")
     for old_version in (RUN_BUNDLE_SCHEMA_VERSION_V1, RUN_BUNDLE_SCHEMA_VERSION_V2):
         old_payload["schema_version"] = old_version
-        with pytest.raises(UnsupportedSpecVersion, match="reassemble from the authored"):
+        with pytest.raises(UnsupportedSpecVersion, match="reassemble from a current"):
             default_spec_registry.migrate("RunBundle", old_payload)
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
@@ -515,6 +691,9 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
     state = RunSetState(
         run_set_id=bundle.run_set_id,
         rows={row.row_id: stopped},
+    )
+    state = _with_local_realized_proof(state).model_copy(
+        update={"rows": {row.row_id: stopped}}
     )
 
     artifacts = StageEngine(
@@ -615,7 +794,7 @@ def test_stage_retry_accounting_and_abort_teardown(tmp_path: Path) -> None:
     assert "teardown" in failing_driver.calls
 
 
-def test_request_assembly_certifies_all_eight_core_checks_with_independent_identity(
+def test_request_assembly_certifies_all_core_checks_with_independent_identity(
     tmp_path: Path,
 ) -> None:
     """Prove executor identity independently agrees with ASSEMBLE, then tamper it."""
@@ -631,13 +810,13 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "training": executable_payload,
     }
     expected_intent_hash = "da602d442a5356281bf648ca49032739ba6255cdb427bb0da09cfa65bb4d332f"
-    expected_root_hash = "7fbfbc6adbd201d33b7ecb5660c3b79256717e999d59b67bdc62ce3ab28103f7"
-    expected_execution_hash = "23ce65b81f2d24fbd8eb9184e98643dc7e21d6569426af76c6106d6783703863"
+    expected_root_hash = "4d61e465261b5115df71d07ea60d53b6121322a5527e0a033b62047fcb2310ad"
+    expected_execution_hash = "1d6dd9eb9f07694aeec192fe6b2bb53785711ddad17854569ac8f63b16aec921"
     expected_artifact_hashes = {
         "authored": "e1aeb77d847c6b24011becca0db24da2f25e68f3cf542fdb4639615a266f8dc9",
-        "payload": "4120b4037484a529dd76c0d1a56e4fdd7c3287311bf01d44341acb8338e1957f",
-        "snapshot": "785c84ce6d89ef77e5503673fd3979d69f835b9e12fa43114798393e47d5368e",
-        "capsule": "754e6dc16f630dfd1069a423d60278893ffb07a60d46ac8768f881836fadec08",
+        "payload": "7b32a1b9d28a5ccfd907a14904ed14c9af90074d996b0a27647d7ba1f3a3adbf",
+        "snapshot": "a36d64645240d7f3742b5af8367c4ad1f145981e2d0378528945d26a2fbfec8d",
+        "capsule": "a0657205c9b16c9247bf8177e588a6c48ce0a61f8940439b158f06ef83a5f14c",
     }
     assert (
         training_spec_sha256(StudioTrainingAssemblySpec.model_validate(authored).worker_payload())
@@ -684,6 +863,7 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
                 compiler_id=compiler_id,
                 compiler_version=compiler_version,
             ),
+            deployment_policy=_deployment_policy(),
             environment=EnvironmentDeclaration(python_version="3.13"),
             budget=BudgetPolicy(max_wall_clock_seconds=10),
             orchestration_root=str(root),
@@ -765,6 +945,7 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "execution_identity",
         "lr_trace",
         "manifest_valid",
+        "realized_deployment",
         "seeds",
     }
     assert all(check["status"] == "pass" for check in checks.values())
@@ -777,6 +958,10 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "execution_hash": expected_execution_hash,
         "input_data_identities": [],
     }
+    realized = certificate["rows"]["identity-row"]["realized_deployment"]
+    assert realized["provider"] == "local"
+    assert realized["accrued_cost"] == 0.0
+    assert realized["environment_fingerprint"] == "fake-fingerprint"
 
     tampered_root = tmp_path / "tampered"
     with pytest.raises(ValueError, match="phase=completed"):
@@ -826,67 +1011,47 @@ def test_preflight_failures_record_named_checks_and_do_not_call_driver(tmp_path:
     assert driver.calls == []
 
 
+def test_preflight_consumes_only_deployment_policy(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    check = {entry.name: entry for entry in run_preflight_checks(bundle)}["deployment-policy"]
+
+    assert check.status == "pass"
+    assert check.observed == bundle.deployment_policy.model_dump(mode="json")
+
+
 @pytest.mark.parametrize(
-    ("driver", "execution", "expected_status"),
+    ("updates", "detail"),
     [
-        ("local", ExecutionPolicySpec(), "pass"),
-        ("runpod", ExecutionPolicySpec(mode="remote", allow_cloud=True), "pass"),
-        ("runpod", ExecutionPolicySpec(), "fail"),
-        ("runpod", ExecutionPolicySpec(mode="remote", allow_cloud=False), "fail"),
-        ("local", ExecutionPolicySpec(mode="remote", allow_cloud=True), "fail"),
+        ({"cloud_authorized": False}, "cloud authorization"),
+        (
+            {"review_required": True, "review_authorized": False},
+            "review has not been explicitly authorized",
+        ),
+        ({"venue": "local"}, "requires venue='remote'"),
     ],
 )
-def test_preflight_enforces_training_execution_policy_against_driver(
+def test_stage_engine_rejects_invalid_deployment_policy_before_driver_calls(
     tmp_path: Path,
-    driver: str,
-    execution: ExecutionPolicySpec,
-    expected_status: str,
+    updates: dict[str, Any],
+    detail: str,
 ) -> None:
-    run_spec = _identity_training_payload()
-    run_spec["execution"] = execution.model_dump(mode="json")
-    bundle = _bundle(
-        tmp_path,
-        rows=[_compiled_row("policy-row", run_spec=run_spec)],
-        driver=driver,
+    bundle = _bundle(tmp_path, driver="runpod")
+    invalid_policy = bundle.deployment_policy.__class__.model_construct(
+        **{**bundle.deployment_policy.__dict__, **updates}
     )
-
-    check = {entry.name: entry for entry in run_preflight_checks(bundle)}[
-        "training-execution-policy"
-    ]
-
-    assert check.status == expected_status
-    assert check.observed == {
-        "policy-row": {
-            "driver": driver,
-            "mode": execution.mode,
-            "allow_cloud": execution.allow_cloud,
-            "require_review": execution.require_review,
-        }
-    }
-
-
-def test_stage_engine_rejects_runpod_disallowed_training_before_driver_calls(
-    tmp_path: Path,
-) -> None:
-    run_spec = _identity_training_payload()
-    run_spec["execution"] = ExecutionPolicySpec().model_dump(mode="json")
-    bundle = _bundle(
-        tmp_path,
-        rows=[_compiled_row("policy-row", run_spec=run_spec)],
-        driver="runpod",
-    )
+    bundle = bundle.model_copy(update={"deployment_policy": invalid_policy})
     driver = FakeDriver()
+    driver.preflight_checks = lambda _bundle: pytest.fail("driver preflight called")
 
-    with pytest.raises(PreflightFailed, match="training-execution-policy"):
+    with pytest.raises(PreflightFailed, match="deployment-policy"):
         StageEngine(bundle=bundle, driver=driver).run()
 
     state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
     check = {entry.name: entry for entry in state.stage(STAGE_PREFLIGHT).checks}[
-        "training-execution-policy"
+        "deployment-policy"
     ]
     assert check.status == "fail"
-    assert "execution.mode='remote'" in (check.detail or "")
-    assert "execution.allow_cloud=true" in (check.detail or "")
+    assert detail in (check.detail or "")
     assert driver.calls == []
 
 
@@ -1416,6 +1581,7 @@ def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
         driver=FakeDriver(),
         conformance_registry=build_default_check_registry(include_plugins=False),
     )
+    state = _with_local_realized_proof(state)
     _state, outputs = engine._stage_certify(state)
     certificate = json.loads((bundle.run_set_dir / "conformance.json").read_text())
     checks = {entry["check_id"]: entry for entry in certificate["rows"]["rewarm"]["checks"]}
@@ -1776,7 +1942,14 @@ def test_register_derives_passing_status_from_durable_row_lifecycle(
         rows=rows,
         abort_reason=abort_reason,
     )
-    state, _ = engine._stage_certify(state)
+    state = _with_local_realized_proof(state)
+    state, certify_outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(certify_outputs)}
+        ),
+    )
 
     registered, payload = engine._stage_register(state)
 
@@ -1805,7 +1978,14 @@ def test_register_stopped_payload_reentry_is_idempotent(tmp_path: Path) -> None:
             )
         },
     )
-    state, _ = engine._stage_certify(state)
+    state = _with_local_realized_proof(state)
+    state, certify_outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(certify_outputs)}
+        ),
+    )
     state, first_payload = engine._stage_register(state)
     first_mtime = register_path.stat().st_mtime_ns
 
@@ -1816,6 +1996,113 @@ def test_register_stopped_payload_reentry_is_idempotent(tmp_path: Path) -> None:
     assert json.loads(register_path.read_text(encoding="utf-8")) == first_payload
     assert second_payload == first_payload
     assert register_path.stat().st_mtime_ns == first_mtime
+
+
+@pytest.mark.parametrize("tamper_certificate", [False, True])
+def test_register_requires_the_digest_recorded_by_completed_certify(
+    tmp_path: Path,
+    tamper_certificate: bool,
+) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+    state = _with_local_realized_proof(state)
+    state, outputs = engine._stage_certify(state)
+    recorded_outputs = dict(outputs)
+    if tamper_certificate:
+        certificate_path = Path(state.certificate_ref or "")
+        certificate_path.write_bytes(certificate_path.read_bytes() + b" ")
+    else:
+        recorded_outputs.pop("certificate_sha256")
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": recorded_outputs}
+        ),
+    )
+
+    with pytest.raises(OrchestrationStageError, match="digest does not match"):
+        engine._stage_register(state)
+
+
+@pytest.mark.parametrize(
+    ("tamper_surface", "message"),
+    [
+        ("state_run", "state run_set_id"),
+        ("certificate_run", "certificate run_set_id"),
+        ("certificate_row_omission", "row-ID equality"),
+        ("certificate_row_addition", "row-ID equality"),
+        ("state_row_addition", "row-ID equality"),
+        ("path_substitution", "certificate_ref"),
+    ],
+)
+def test_register_binds_certificate_to_run_rows_and_certify_path(
+    tmp_path: Path,
+    tamper_surface: str,
+    message: str,
+) -> None:
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row-a"), _compiled_row("row-b")])
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={
+                "row-a": RowState(status="completed"),
+                "row-b": RowState(status="completed"),
+            },
+        )
+    )
+    state, outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(outputs)}
+        ),
+    )
+    certificate_path = Path(state.certificate_ref or "")
+
+    if tamper_surface == "state_run":
+        state = state.model_copy(update={"run_set_id": "substituted-run"})
+    elif tamper_surface == "state_row_addition":
+        state = state.model_copy(update={"rows": {**state.rows, "extra": RowState()}})
+    elif tamper_surface == "path_substitution":
+        substitute = bundle.run_set_dir / "substituted-conformance.json"
+        substitute.write_bytes(certificate_path.read_bytes())
+        state = state.model_copy(update={"certificate_ref": str(substitute)})
+    else:
+        payload = json.loads(certificate_path.read_text(encoding="utf-8"))
+        if tamper_surface == "certificate_run":
+            payload["run_set_id"] = "substituted-run"
+        elif tamper_surface == "certificate_row_omission":
+            del payload["rows"]["row-b"]
+        else:
+            payload["rows"]["extra"] = payload["rows"]["row-a"]
+        certificate_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        certified_outputs = dict(state.stage(STAGE_CERTIFY).outputs)
+        certified_outputs["certificate_sha256"] = hashlib.sha256(
+            certificate_path.read_bytes()
+        ).hexdigest()
+        state = state.with_stage(
+            STAGE_CERTIFY,
+            state.stage(STAGE_CERTIFY).model_copy(update={"outputs": certified_outputs}),
+        )
+
+    with pytest.raises(OrchestrationStageError, match=message):
+        engine._stage_register(state)
 
 
 def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:

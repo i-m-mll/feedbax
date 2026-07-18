@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.manifest import ArtifactMigrationRecord, StrictModel
 from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     canonicalize_immutable_input_identities,
@@ -25,7 +25,10 @@ RUN_BUNDLE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_bundle.v1"
 RUN_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_bundle.v2"
 RUN_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_bundle.v3"
 RUN_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_bundle.v4"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v5"
+RUN_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_bundle.v5"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v6"
+DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
+DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1 = "feedbax.spec.execution_identity_envelope.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = "feedbax.spec.execution_identity_envelope.v2"
@@ -242,6 +245,52 @@ class EnvironmentDeclaration(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class DeploymentResourceRequest(StrictModel):
+    """Requested resources, distinct from provider-realized resource facts."""
+
+    gpu_id: str | None = Field(default=None, min_length=1)
+    regions: list[str] = Field(default_factory=list)
+
+    @field_validator("regions")
+    @classmethod
+    def _validate_regions(cls, value: list[str]) -> list[str]:
+        if any(not region.strip() for region in value):
+            raise ValueError("requested regions must be non-empty strings")
+        if len(value) != len(set(value)):
+            raise ValueError("requested regions must be unique and remain in preference order")
+        return value
+
+
+class DeploymentPolicy(StrictModel):
+    """Versioned requested launch venue, authorization, and resource policy."""
+
+    schema_id: Literal["feedbax.spec.deployment_policy"] = DEPLOYMENT_POLICY_SCHEMA_ID
+    schema_version: Literal["feedbax.spec.deployment_policy.v1"] = (
+        DEPLOYMENT_POLICY_SCHEMA_VERSION
+    )
+    driver: Literal["local", "worker-http", "runpod"]
+    venue: Literal["local", "remote"]
+    cloud_authorized: bool
+    review_required: bool
+    review_authorized: bool
+    resources: DeploymentResourceRequest = Field(default_factory=DeploymentResourceRequest)
+
+    @model_validator(mode="after")
+    def _validate_authority(self) -> "DeploymentPolicy":
+        expected_venue = "local" if self.driver == "local" else "remote"
+        if self.venue != expected_venue:
+            raise ValueError(
+                f"deployment driver {self.driver!r} requires venue={expected_venue!r}"
+            )
+        if self.driver == "runpod" and not self.cloud_authorized:
+            raise ValueError("runpod deployment requires explicit cloud_authorized=true")
+        if self.review_required and not self.review_authorized:
+            raise ValueError(
+                "deployment with review_required=true requires explicit review_authorized=true"
+            )
+        return self
+
+
 class LaunchPolicy(StrictModel):
     """Row launch concurrency policy."""
 
@@ -277,9 +326,10 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v5"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v6"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
-    driver: str = "local"
+    deployment_policy: DeploymentPolicy
+    migration_evidence: list[ArtifactMigrationRecord] = Field(default_factory=list)
     rows: list[RunRowSpec] = Field(min_length=1)
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)

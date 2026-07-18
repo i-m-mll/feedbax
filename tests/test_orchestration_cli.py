@@ -20,6 +20,8 @@ from feedbax.orchestration import (
     CompiledExecutionRow,
     CompiledRunSet,
     CompilerIdentity,
+    DeploymentPolicy,
+    DeploymentResourceRequest,
     EnvironmentDeclaration,
     LaunchPolicy,
     RowLaunchSpec,
@@ -46,13 +48,12 @@ class _FixtureCompiler:
 
     def compile(
         self,
-        request: RunAssemblyRequest,
         *,
         authored: dict[str, Any],
         run_set_id: str,
         context: AssemblyContext,
     ) -> CompiledRunSet:
-        del request, run_set_id, context
+        del run_set_id, context
         return CompiledRunSet(
             rows=[
                 CompiledExecutionRow(
@@ -65,6 +66,20 @@ class _FixtureCompiler:
                 for row_id, launch in self.launches
             ]
         )
+
+
+def _deployment_policy(driver: str = "local") -> DeploymentPolicy:
+    return DeploymentPolicy(
+        driver=driver,
+        venue="local" if driver == "local" else "remote",
+        cloud_authorized=driver == "runpod",
+        review_required=False,
+        review_authorized=False,
+        resources=DeploymentResourceRequest(
+            gpu_id="NVIDIA GeForce RTX 4090" if driver == "runpod" else None,
+            regions=["CA-MTL-1", "US-OR-1"] if driver == "runpod" else [],
+        ),
+    )
 
 
 def _assembly_request(
@@ -92,7 +107,7 @@ def _assembly_request(
             compiler_id="feedbax.test.cli",
             compiler_version="feedbax.test.cli.v1",
         ),
-        driver=driver,
+        deployment_policy=_deployment_policy(driver),
         environment=environment or EnvironmentDeclaration(python_version="3.12"),
         launch_policy=LaunchPolicy(max_parallel_rows=2),
         budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
@@ -408,7 +423,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     ]
 
 
-def test_runpod_driver_is_constructed_from_durable_bundle_metadata(tmp_path: Path) -> None:
+def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Path) -> None:
     bundle = _bundle(
         tmp_path,
         driver="runpod",
@@ -419,7 +434,6 @@ def test_runpod_driver_is_constructed_from_durable_bundle_metadata(tmp_path: Pat
                 "runpod_pod_id": "pod-123",
                 "runpod_ssh_host": "198.51.100.10",
                 "runpod_ssh_port": 2222,
-                "runpod_gpu_id": "NVIDIA GeForce RTX 4090",
                 "runpod_path_patches": [
                     {
                         "remote_file": "/workspace/feedbax/pyproject.toml",
@@ -435,18 +449,47 @@ def test_runpod_driver_is_constructed_from_durable_bundle_metadata(tmp_path: Pat
 
     assert isinstance(driver, RunPodOrchestrationDriver)
     assert driver.config.pod_id == "pod-123"
+    assert driver.config.gpu_id == "NVIDIA GeForce RTX 4090"
+    assert driver.config.datacenters == ("CA-MTL-1", "US-OR-1")
     assert driver.config.path_patches[0][0] == "/workspace/feedbax/pyproject.toml"
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5"])
 def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
     path = tmp_path / "bundle-v1.json"
     payload = _bundle(tmp_path).model_dump(mode="json")
     payload["schema_version"] = f"feedbax.orchestration.run_bundle.{version}"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="reassemble from the authored RunAssemblyRequest"):
+    with pytest.raises(ValueError, match="reassemble from a current RunAssemblyRequest"):
         orchestrate._load_bundle(path)
+
+
+def test_load_assembly_request_rejects_v1_without_review_authorization(tmp_path: Path) -> None:
+    request, _ = _assembly_request(tmp_path)
+    payload = request.model_dump(mode="json")
+    payload["schema_version"] = "feedbax.spec.run_assembly_request.v1"
+    path = tmp_path / "request-v1.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="re-author a current request"):
+        orchestrate._load_assembly_request(path)
+
+
+def test_launch_driver_override_conflict_fails_before_engine_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _ = _assembly_request(tmp_path)
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("engine must not be constructed"),
+    )
+
+    assert orchestrate.main(
+        ["launch", "--assembly-request", str(path), "--driver", "runpod"]
+    ) == orchestrate.EXIT_OTHER
 
 
 def test_launch_cli_exposes_deadman_request_overrides() -> None:

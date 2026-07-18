@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
 from typing import Any
@@ -27,6 +28,8 @@ from feedbax.orchestration.assembly import (
 )
 from feedbax.orchestration.bundle import (
     BudgetPolicy,
+    DeploymentPolicy,
+    DeploymentResourceRequest,
     EnvironmentDeclaration,
     RunBundle,
     RowLaunchSpec,
@@ -43,9 +46,11 @@ from feedbax.orchestration.drivers.runpod import (
     compute_runpod_environment_fingerprint,
     declared_baselines,
     endpoint_classification,
+    project_runpod_provision_facts,
     rank_datacenters_for_gpu,
 )
-from feedbax.orchestration.stages import StageEngine
+from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
+from feedbax.orchestration.stages import STAGE_PROVISION, STAGE_REALIZE_ENV, StageEngine
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 
 
@@ -136,13 +141,12 @@ class _RunPodFixtureCompiler:
 
     def compile(
         self,
-        request: RunAssemblyRequest,
         *,
         authored: dict[str, Any],
         run_set_id: str,
         context: AssemblyContext,
     ) -> CompiledRunSet:
-        del request, run_set_id, context
+        del run_set_id, context
         payload = StudioTrainingAssemblySpec.model_validate(authored).worker_payload()
         return CompiledRunSet(
             rows=[
@@ -198,7 +202,17 @@ def _bundle(
             compiler_id="feedbax.tests.runpod-fixture",
             compiler_version="feedbax.tests.runpod-fixture.v1",
         ),
-        driver="runpod",
+        deployment_policy=DeploymentPolicy(
+            driver="runpod",
+            venue="remote",
+            cloud_authorized=True,
+            review_required=False,
+            review_authorized=False,
+            resources=DeploymentResourceRequest(
+                gpu_id="NVIDIA GeForce RTX 4090",
+                regions=["CA-MTL-1", "US-OR-1"],
+            ),
+        ),
         environment=EnvironmentDeclaration(
             python_version="3.12",
             image_id="runpod/pytorch:1.0.3@sha256:" + "a" * 64,
@@ -318,6 +332,46 @@ def test_ranks_datacenters_for_gpu_by_stock() -> None:
     ]
 
 
+def test_projects_provision_facts_from_existing_pod_response() -> None:
+    facts = project_runpod_provision_facts(
+        {
+            "dataCenter": {"id": "CA-MTL-1"},
+            "machine": {"costPerHr": "0.74"},
+            "template": {"imageName": "runpod/pytorch@sha256:" + "a" * 64},
+        }
+    )
+
+    assert facts == {
+        "provider": "runpod",
+        "region": "CA-MTL-1",
+        "immutable_image_id": "runpod/pytorch@sha256:" + "a" * 64,
+        "hourly_rate": 0.74,
+        "hourly_rate_raw": "0.74",
+        "currency": "USD",
+        "provider_observation_basis": "runpodctl pod get response",
+    }
+
+
+@pytest.mark.parametrize("raw_rate", ["invalid", "nan", "inf"])
+def test_projects_raw_malformed_or_non_finite_provision_rate(raw_rate: str) -> None:
+    facts = project_runpod_provision_facts(
+        {
+            "imageName": "runpod/pytorch@sha256:" + "b" * 64,
+            "costPerHr": raw_rate,
+        }
+    )
+
+    assert facts["hourly_rate_raw"] == raw_rate
+    assert facts["hourly_rate"] is None
+    assert facts["immutable_image_id"] == "runpod/pytorch@sha256:" + "b" * 64
+
+
+def test_provision_projection_does_not_invent_declared_image() -> None:
+    facts = project_runpod_provision_facts({"costPerHr": 0.5})
+
+    assert facts["immutable_image_id"] is None
+
+
 def test_subprocess_rsync_uses_portable_progress_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -356,6 +410,82 @@ def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path
     assert record["provided_endpoint"] is True
     assert "nvidia-smi >/dev/null" in transport.ssh_commands
     assert teardown["teardown"] == "skipped"
+    assert transport.runpodctl_calls == []
+
+
+def test_provided_endpoint_certify_fails_without_provider_realization_facts(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+    provision_record = dict(driver.provision(bundle, _state(bundle)))
+    declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+    fingerprint = _realized_fingerprint(
+        {
+            "declaration_sha256": declaration_fingerprint,
+            "image_id": bundle.environment.image_id,
+            "lockfile_hashes": bundle.environment.lockfile_hashes,
+            "python_version": bundle.environment.python_version,
+        }
+    )
+    completed_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=1)
+    started_at = completed_at - timedelta(seconds=1)
+    row_id = bundle.rows[0].row_id
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        provision_record=provision_record,
+        environment_fingerprint=fingerprint,
+        rows={
+            row_id: RowState(
+                status="completed",
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+        },
+    )
+    state = state.with_stage(
+        STAGE_PROVISION,
+        state.stage(STAGE_PROVISION).model_copy(
+            update={
+                "status": "completed",
+                "completed_at": started_at - timedelta(seconds=1),
+                "outputs": provision_record,
+            }
+        ),
+    )
+    state = state.with_stage(
+        STAGE_REALIZE_ENV,
+        state.stage(STAGE_REALIZE_ENV).model_copy(
+            update={
+                "status": "completed",
+                "completed_at": started_at,
+                "outputs": {"environment_fingerprint": fingerprint},
+            }
+        ),
+    )
+    engine = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=CheckRegistry(
+            {"fixture": lambda row: CheckEntry(check_id="fixture", status="pass")}
+        ),
+    )
+
+    _state_after, outputs = engine._stage_certify(state)
+    certificate = json.loads((bundle.run_set_dir / "conformance.json").read_text())
+    row = certificate["rows"][row_id]
+    realized_check = next(
+        check for check in row["checks"] if check["check_id"] == "realized_deployment"
+    )
+
+    assert outputs["overall"] == "fail"
+    assert realized_check["status"] == "fail"
+    assert row["realized_deployment_evidence"]["provider"] is None
+    assert row["realized_deployment_evidence"]["immutable_image_id"] is None
     assert transport.runpodctl_calls == []
 
 
