@@ -31,6 +31,7 @@ from feedbax.contracts.studio_training import (
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    ExecutionPolicySpec,
     LrScheduleSpec,
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -278,6 +279,7 @@ def _assembly_parts(
     max_wall_clock_seconds: float = 10.0,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
+    driver: str = "local",
 ) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
     authored = {
         "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
@@ -302,6 +304,7 @@ def _assembly_parts(
             compiler_id=compiler_id,
             compiler_version=compiler_version,
         ),
+        driver=driver,
         environment=EnvironmentDeclaration(python_version=python_version),
         launch_policy=launch_policy or LaunchPolicy(max_parallel_rows=2),
         budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
@@ -327,6 +330,7 @@ def _bundle(
     max_wall_clock_seconds: float = 10.0,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
+    driver: str = "local",
 ) -> RunBundle:
     request, context, registry = _assembly_parts(
         tmp_path,
@@ -335,6 +339,7 @@ def _bundle(
         max_wall_clock_seconds=max_wall_clock_seconds,
         run_set_id=run_set_id,
         python_version=python_version,
+        driver=driver,
     )
     return assemble_run_bundle(
         request,
@@ -818,6 +823,70 @@ def test_preflight_failures_record_named_checks_and_do_not_call_driver(tmp_path:
     checks = {check.name: check for check in state.stage(STAGE_PREFLIGHT).checks}
     assert checks["environment-declaration"].status == "fail"
     assert checks["manifest-payload-normalization"].status == "fail"
+    assert driver.calls == []
+
+
+@pytest.mark.parametrize(
+    ("driver", "execution", "expected_status"),
+    [
+        ("local", ExecutionPolicySpec(), "pass"),
+        ("runpod", ExecutionPolicySpec(mode="remote", allow_cloud=True), "pass"),
+        ("runpod", ExecutionPolicySpec(), "fail"),
+        ("runpod", ExecutionPolicySpec(mode="remote", allow_cloud=False), "fail"),
+        ("local", ExecutionPolicySpec(mode="remote", allow_cloud=True), "fail"),
+    ],
+)
+def test_preflight_enforces_training_execution_policy_against_driver(
+    tmp_path: Path,
+    driver: str,
+    execution: ExecutionPolicySpec,
+    expected_status: str,
+) -> None:
+    run_spec = _identity_training_payload()
+    run_spec["execution"] = execution.model_dump(mode="json")
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("policy-row", run_spec=run_spec)],
+        driver=driver,
+    )
+
+    check = {entry.name: entry for entry in run_preflight_checks(bundle)}[
+        "training-execution-policy"
+    ]
+
+    assert check.status == expected_status
+    assert check.observed == {
+        "policy-row": {
+            "driver": driver,
+            "mode": execution.mode,
+            "allow_cloud": execution.allow_cloud,
+            "require_review": execution.require_review,
+        }
+    }
+
+
+def test_stage_engine_rejects_runpod_disallowed_training_before_driver_calls(
+    tmp_path: Path,
+) -> None:
+    run_spec = _identity_training_payload()
+    run_spec["execution"] = ExecutionPolicySpec().model_dump(mode="json")
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("policy-row", run_spec=run_spec)],
+        driver="runpod",
+    )
+    driver = FakeDriver()
+
+    with pytest.raises(PreflightFailed, match="training-execution-policy"):
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    check = {entry.name: entry for entry in state.stage(STAGE_PREFLIGHT).checks}[
+        "training-execution-policy"
+    ]
+    assert check.status == "fail"
+    assert "execution.mode='remote'" in (check.detail or "")
+    assert "execution.allow_cloud=true" in (check.detail or "")
     assert driver.calls == []
 
 

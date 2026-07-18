@@ -867,6 +867,16 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     )
     checks.append(_check("custody-pins", not mutable_pin))
 
+    policy_failures, policy_observed = _preflight_training_execution_policy(bundle)
+    checks.append(
+        _check(
+            "training-execution-policy",
+            not policy_failures,
+            detail="; ".join(policy_failures) if policy_failures else None,
+            observed=policy_observed or "no-inline-run-specs",
+        )
+    )
+
     manifest_failures: list[str] = []
     normalized: dict[str, Any] = {}
     for row in bundle.rows:
@@ -898,6 +908,40 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
         )
     )
     return checks
+
+
+def _preflight_training_execution_policy(
+    bundle: RunBundle,
+) -> tuple[list[str], dict[str, Any]]:
+    """Reject launch drivers that contradict durable training execution policy."""
+    failures: list[str] = []
+    observed: dict[str, Any] = {}
+    requested_mode = "local" if bundle.driver == "local" else "remote"
+    for row in bundle.rows:
+        run_spec = _row_payload(row)
+        if not _is_training_run_payload(run_spec):
+            continue
+        policy = run_spec.get("execution")
+        if not isinstance(policy, Mapping):
+            policy = {}
+        mode = policy.get("mode", "local")
+        allow_cloud = policy.get("allow_cloud", False)
+        observed[row.row_id] = {
+            "driver": bundle.driver,
+            "mode": mode,
+            "allow_cloud": allow_cloud,
+            "require_review": policy.get("require_review", True),
+        }
+        if mode != requested_mode:
+            failures.append(
+                f"{row.row_id}: driver {bundle.driver!r} requires execution.mode="
+                f"{requested_mode!r}, got {mode!r}"
+            )
+        if bundle.driver == "runpod" and allow_cloud is not True:
+            failures.append(
+                f"{row.row_id}: driver 'runpod' requires execution.allow_cloud=true"
+            )
+    return failures, observed
 
 
 def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
