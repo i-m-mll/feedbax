@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,13 @@ from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
     inject_native_execution_context,
 )
+from feedbax.orchestration.input_materialization import (
+    InputMaterializationError,
+    InputProviderRootBinding,
+    materialize_bundle_inputs,
+)
 from feedbax.orchestration.state import RunSetState
+from feedbax.training import publish_directory_no_replace
 
 
 class LocalDriverError(RuntimeError):
@@ -68,15 +75,17 @@ class LocalOrchestrationDriver:
         cwd: Path | str | None = None,
         python_executable: str | None = None,
         freeze_lines: Sequence[str] | None = None,
+        input_provider_bindings: Sequence[InputProviderRootBinding] = (),
     ) -> None:
         self.cwd = Path(cwd or Path.cwd())
         self.python_executable = python_executable or sys.executable
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
+        self.input_provider_bindings = tuple(input_provider_bindings)
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         run_set_dir = bundle.run_set_dir
-        for dirname in ("events", "sentinels", "rows", "collected", "inputs"):
+        for dirname in ("events", "sentinels", "rows", "collected"):
             (run_set_dir / dirname).mkdir(parents=True, exist_ok=True)
         return {"driver": "local", "run_set_dir": str(run_set_dir)}
 
@@ -90,12 +99,18 @@ class LocalOrchestrationDriver:
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         inputs_dir = bundle.run_set_dir / "inputs"
-        inputs_dir.mkdir(parents=True, exist_ok=True)
-        pins = [pin.model_dump(mode="json", exclude_none=True) for pin in bundle.input_custody_pins]
-        (inputs_dir / "custody_pins.json").write_text(
-            json.dumps(pins, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        if os.path.lexists(inputs_dir):
+            raise LocalDriverError(f"input destination already exists: {inputs_dir}")
+        attempt_root = bundle.run_set_dir / ".stage-attempts" / (
+            f"stage-inputs-{state.stage('STAGE_INPUTS').attempts}")
+        try:
+            staged_inputs = materialize_bundle_inputs(
+                bundle,
+                destination_root=attempt_root,
+                provider_bindings=self.input_provider_bindings,
+            )
+        except InputMaterializationError as exc:
+            raise LocalDriverError(str(exc)) from exc
         payloads: list[dict[str, str]] = []
         for row in bundle.rows:
             if row.launch.payload_routing.get("kind") != "registered-execution-payload":
@@ -109,11 +124,29 @@ class LocalOrchestrationDriver:
                 raise LocalDriverError(
                     f"registered execution payload digest mismatch for row {row.row_id!r}"
                 )
-            target = inputs_dir / f"{row.row_id}.json"
+            target = attempt_root / "inputs" / f"{row.row_id}.json"
             shutil.copy2(source, target)
-            payloads.append({"row_id": row.row_id, "source": str(source), "target": str(target)})
+            payloads.append({"row_id": row.row_id, "source": str(source),
+                             "target": str(inputs_dir / target.name)})
+        parent_descriptor = os.open(bundle.run_set_dir, os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            source_name = (attempt_root / "inputs").relative_to(bundle.run_set_dir).as_posix()
+            publish_directory_no_replace(parent_descriptor, source_name, "inputs",
+                expected_identity=os.stat(source_name, dir_fd=parent_descriptor,
+                                          follow_symlinks=False))
+        finally:
+            os.close(parent_descriptor)
         return {
-            "input_count": len(pins),
+            "input_count": len(staged_inputs),
+            "inputs": [
+                {
+                    "target_role": staged.target_role,
+                    "destination": str(inputs_dir / staged.target_role),
+                    "files": [asdict(item) for item in staged.files],
+                }
+                for staged in staged_inputs
+            ],
             "inputs_dir": str(inputs_dir),
             "payload_count": len(payloads),
             "payloads": payloads,

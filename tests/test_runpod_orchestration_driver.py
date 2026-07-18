@@ -44,13 +44,17 @@ from feedbax.orchestration.drivers.runpod import (
     build_literal_path_patch_command,
     classify_pod_state,
     compute_runpod_environment_fingerprint,
-    declared_baselines,
     endpoint_classification,
     project_runpod_provision_facts,
     rank_datacenters_for_gpu,
 )
 from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
-from feedbax.orchestration.stages import STAGE_PROVISION, STAGE_REALIZE_ENV, StageEngine
+from feedbax.orchestration.stages import (
+    STAGE_PROVISION,
+    STAGE_REALIZE_ENV,
+    STAGE_STAGE_INPUTS,
+    StageEngine,
+)
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 
 
@@ -467,6 +471,12 @@ def test_provided_endpoint_certify_fails_without_provider_realization_facts(
             }
         ),
     )
+    state = state.with_stage(
+        STAGE_STAGE_INPUTS,
+        state.stage(STAGE_STAGE_INPUTS).model_copy(
+            update={"status": "completed", "outputs": {"inputs": [], "payloads": []}}
+        ),
+    )
     engine = StageEngine(
         bundle=bundle,
         driver=driver,
@@ -765,16 +775,7 @@ def test_literal_patch_command_cannot_rewrite_out_of_scope_file() -> None:
     assert command.count("/workspace/feedbax/pyproject.toml") == 1
 
 
-def test_stage_inputs_stages_and_verifies_declared_baseline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    baseline = repo / "_artifacts" / "run-a" / "checkpoint_100"
-    baseline.mkdir(parents=True)
-    (baseline / "latest.json").write_text(
-        json.dumps({"completed_training_batches": 100}), encoding="utf-8"
-    )
-    monkeypatch.chdir(repo)
+def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
@@ -784,27 +785,75 @@ def test_stage_inputs_stages_and_verifies_declared_baseline(
 
     outputs = driver.stage_inputs(bundle, _state(bundle))
 
-    assert outputs["baseline_count"] == 1
+    assert outputs["input_count"] == 0
     assert outputs["payload_count"] == 1
     payload = bundle.rows[0].execution.payload
     assert transport.rsync_calls == [
-        (str(baseline) + "/", "/workspace/_artifacts/run-a/checkpoint_100/", True, ()),
         (
-            str(payload.uri),
-            "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/warm.json",
-            False,
+            str(
+                bundle.run_set_dir
+                / ".stage-attempts/stage-inputs-0/inputs"
+            )
+            + "/",
+            "/workspace/feedbax_runs/2026-01-02-deadbeef/"
+            ".stage-attempts/stage-inputs-0/inputs/",
+            True,
             (),
         ),
     ]
-    assert all((any("completed_training_batches" in command for command in transport.ssh_commands), any(payload.sha256 in command for command in transport.ssh_commands)))
+    assert any(payload.sha256 in command for command in transport.ssh_commands)
+    publish = next(command for command in transport.ssh_commands if "renameat2" in command)
+    assert "stage-inputs-0/inputs" in publish
+    assert "/feedbax_runs/2026-01-02-deadbeef/inputs" in publish
+    assert transport.operations.index(
+        next(operation for operation in transport.operations if operation.startswith("rsync:"))
+    ) < transport.operations.index(f"ssh:{publish}")
+    assert not any("checkpoint_100" in command for command in transport.ssh_commands)
 
 
-def test_declared_baselines_accepts_bundle_metadata(tmp_path: Path) -> None:
+def test_stage_inputs_ignores_legacy_runpod_baseline_metadata(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path).model_copy(
         update={"metadata": {"runpod_baselines": [{"checkpoint_path": "/custody", "completed_batches": 12000}]}}
     )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
 
-    assert declared_baselines(bundle)[-1].completed_batch == "12000"
+    outputs = driver.stage_inputs(bundle, _state(bundle))
+
+    assert outputs["input_count"] == 0
+    assert all(call[0] != "/custody" for call in transport.rsync_calls)
+    assert not any("/_artifacts/" in call[1] for call in transport.rsync_calls)
+
+
+def test_stage_inputs_fails_closed_when_final_input_tree_exists(tmp_path: Path) -> None:
+    class ExistingFinalInputsTransport(FakeRunPodTransport):
+        def ssh(self, command: str) -> CommandResult:
+            result = super().ssh(command)
+            if "renameat2" in command:
+                return CommandResult(
+                    1,
+                    stderr="input publication target already exists",
+                )
+            return result
+
+    bundle = _bundle(tmp_path)
+    transport = ExistingFinalInputsTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodDriverError, match="publication target already exists"):
+        driver.stage_inputs(bundle, _state(bundle))
+
+    assert len(transport.rsync_calls) == 1
+    assert ".stage-attempts/stage-inputs-0/inputs/" in transport.rsync_calls[0][1]
+    assert transport.rsync_calls[0][1] != (
+        "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/"
+    )
 
 
 def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path) -> None:
@@ -1006,6 +1055,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     checks = driver.preflight_checks(bundle)
 
     assert [check.name for check in checks] == [
+        "input-provider-bindings",
         "runpod-image-immutable",
         "runpod-image-tag-exists",
         "runpod-lockfiles-declared",
@@ -1302,26 +1352,3 @@ def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) ->
         (),
     )
     assert transport.rsync_timeouts[-1] == 17
-
-
-def test_local_baseline_mismatch_raises_before_rsync(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    baseline = repo / "_artifacts" / "run-a" / "checkpoint_100"
-    baseline.mkdir(parents=True)
-    (baseline / "latest.json").write_text(
-        json.dumps({"completed_training_batches": 99}), encoding="utf-8"
-    )
-    monkeypatch.chdir(repo)
-    bundle = _bundle(tmp_path)
-    transport = FakeRunPodTransport()
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
-        transport=transport,
-    )
-
-    with pytest.raises(RunPodDriverError, match="completed_batch mismatch"):
-        driver.stage_inputs(bundle, _state(bundle))
-
-    assert transport.rsync_calls == []

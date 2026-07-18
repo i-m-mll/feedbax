@@ -131,6 +131,7 @@ from feedbax.training.diagnostics import (
 from feedbax.orchestration.bundle import (
     DEPLOYMENT_POLICY_SCHEMA_ID,
     DEPLOYMENT_POLICY_SCHEMA_VERSION,
+    DeploymentPolicy,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
@@ -518,6 +519,7 @@ def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
     assert old_version in message
     assert "migration_intentionally_absent=yes" in message
     assert "explicit deployment review authorization" in message
+    assert "authenticated input custody/materialization authority" in message
 
 
 def test_legacy_assembly_request_requires_reauthorization() -> None:
@@ -534,6 +536,21 @@ def test_deployment_policy_v0_is_explicitly_rejected() -> None:
             "DeploymentPolicy",
             {"schema_version": "feedbax.spec.deployment_policy.v0"},
         )
+
+
+def test_deployment_policy_preserves_pending_review_state() -> None:
+    pending = DeploymentPolicy(
+        driver="runpod",
+        venue="remote",
+        cloud_authorized=True,
+        review_required=True,
+        review_authorized=False,
+    )
+
+    restored = DeploymentPolicy.model_validate_json(pending.model_dump_json())
+
+    assert restored.review_required is True
+    assert restored.review_authorized is False
 
 
 @pytest.mark.parametrize(

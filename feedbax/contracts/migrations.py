@@ -2811,7 +2811,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 RUN_BUNDLE_SCHEMA_VERSION_V4,
                 RUN_BUNDLE_SCHEMA_VERSION_V5,
             ),
-            required_tests=("tests/test_orchestration_core.py",),
+            required_tests=(
+                "tests/test_orchestration_core.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "RunSetState",
@@ -3965,8 +3968,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             continue
         for old_version in family.policy.rejected_old_versions:
             remediation = (
-                "RunBundle v1-v5 lack explicit deployment review authorization; "
-                "reassemble from a current RunAssemblyRequest with a DeploymentPolicy."
+                "RunBundle v1-v5 lack explicit deployment review authorization and "
+                "v6 authenticated input custody/materialization authority; reassemble "
+                "from a current RunAssemblyRequest with a DeploymentPolicy."
                 if family.kind == "RunBundle"
                 else (
                     "RunAssemblyRequest v1 lacks explicit deployment review authorization; "

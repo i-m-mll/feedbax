@@ -36,6 +36,7 @@ from feedbax.orchestration.conformance import (
 )
 from feedbax.orchestration.drivers.base import OrchestrationDriver
 from feedbax.orchestration.events import RunEventReader
+from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     PreflightCheckEntry,
@@ -110,6 +111,11 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _canonical_json_sha256(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _parse_observed_datetime(value: Any) -> datetime | None:
@@ -487,6 +493,10 @@ class StageEngine:
             raise OrchestrationStageError(
                 "CERTIFY requires at least one registered conformance check"
             )
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS)
+        if stage_inputs.status != "completed":
+            raise OrchestrationStageError("CERTIFY requires completed STAGE_INPUTS authority")
+        stage_inputs_sha256 = _canonical_json_sha256(stage_inputs.outputs)
         observed_at = utc_now()
         rows = [
             self._conformance_artifacts(row, state, observed_at=observed_at)
@@ -508,6 +518,7 @@ class StageEngine:
         return state, {
             "certificate_ref": str(certificate_path),
             "certificate_sha256": certificate_sha256,
+            "stage_inputs_sha256": stage_inputs_sha256,
             "overall": certificate.overall,
         }
 
@@ -734,6 +745,18 @@ class StageEngine:
             raise OrchestrationStageError(
                 "REGISTER certificate_ref does not match the completed CERTIFY stage"
             )
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS)
+        certified_stage_inputs_digest = certify_stage.outputs.get("stage_inputs_sha256")
+        if stage_inputs.status != "completed":
+            raise OrchestrationStageError("REGISTER requires completed STAGE_INPUTS authority")
+        stage_inputs_digest = _canonical_json_sha256(stage_inputs.outputs)
+        if (
+            not isinstance(certified_stage_inputs_digest, str)
+            or certified_stage_inputs_digest != stage_inputs_digest
+        ):
+            raise OrchestrationStageError(
+                "REGISTER STAGE_INPUTS digest does not match the completed CERTIFY stage"
+            )
         certificate_path = Path(certified_ref)
         certificate_bytes = certificate_path.read_bytes()
         certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
@@ -773,6 +796,7 @@ class StageEngine:
             "abort_reason": state.abort_reason,
             "certificate_ref": str(certificate_path),
             "certificate_sha256": certificate_digest,
+            "stage_inputs_sha256": stage_inputs_digest,
             "certificate_overall": certificate.overall,
         }
         if status == "failed":
@@ -1078,10 +1102,15 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     checks.append(
         _check("environment-declaration", env_complete, observed=bundle.environment.python_version)
     )
-    mutable_pin = any(
-        "latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins
+    input_failures, input_observed = preflight_resolved_inputs(bundle)
+    checks.append(
+        _check(
+            "input-custody-authority",
+            not input_failures,
+            detail="; ".join(input_failures) if input_failures else None,
+            observed=input_observed or "no-resolved-inputs",
+        )
     )
-    checks.append(_check("custody-pins", not mutable_pin))
 
     policy_failures, policy_observed = _preflight_deployment_policy(bundle)
     checks.append(

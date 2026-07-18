@@ -1370,6 +1370,9 @@ def _rename_archive_directory_no_replace(
     _perform_archive_rename_no_replace(parent_descriptor, source_name, destination_name)
 
 
+publish_directory_no_replace = _rename_archive_directory_no_replace
+
+
 def _perform_archive_rename_no_replace(
     parent_descriptor: int, source_name: str, destination_name: str
 ) -> None:

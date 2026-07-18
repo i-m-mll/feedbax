@@ -6,7 +6,7 @@ import json
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -15,7 +15,8 @@ import pytest
 
 from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-from feedbax.contracts.manifest import TrainingRunManifest
+from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.manifest import ParentRef, TrainingRunManifest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
@@ -51,6 +52,7 @@ from feedbax.orchestration import conformance, schedule_eval, stages
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
+    AssemblyInputDeclaration,
     CompiledExecutionRow,
     CompiledRunSet,
     CompilerIdentity,
@@ -58,16 +60,25 @@ from feedbax.orchestration.assembly import (
     assemble_run_bundle,
 )
 from feedbax.orchestration.bundle import (
+    CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID,
+    CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION,
+    CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION_V2,
     BudgetPolicy,
+    CheckpointCustodyArchiveMaterializer,
     DeploymentPolicy,
     DeploymentResourceRequest,
     EnvironmentDeclaration,
+    ImmutableInputArtifactRef,
+    ImmutableInputIdentity,
+    InputCustodySource,
+    InputFormatIdentity,
     LaunchPolicy,
     RepoRevision,
+    ResolvedAssemblyInput,
     RunBundle,
     RunRowSpec,
     RowLaunchSpec,
@@ -93,6 +104,7 @@ from feedbax.orchestration.stages import (
     STAGE_PREFLIGHT,
     STAGE_PROVISION,
     STAGE_REALIZE_ENV,
+    STAGE_STAGE_INPUTS,
     OrchestrationStageError,
     PreflightFailed,
     StageEngine,
@@ -247,6 +259,7 @@ class _IdentityFakeDriver(FakeDriver):
 @dataclass(frozen=True)
 class _FixtureCompiler:
     rows: tuple[CompiledExecutionRow, ...]
+    expected_input_roles: tuple[str, ...] = ()
 
     def compile(
         self,
@@ -255,7 +268,8 @@ class _FixtureCompiler:
         run_set_id: str,
         context: AssemblyContext,
     ) -> CompiledRunSet:
-        del authored, run_set_id, context
+        assert tuple(item.role for item in context.resolved_inputs) == self.expected_input_roles
+        del authored, run_set_id
         return CompiledRunSet(rows=list(self.rows))
 
 
@@ -265,6 +279,7 @@ def _compiled_row(
     command: list[str] | None = None,
     collect: list[str] | None = None,
     run_spec: dict[str, Any] | None = None,
+    immutable_inputs: list[ImmutableInputIdentity] | None = None,
 ) -> CompiledExecutionRow:
     payload = (
         {
@@ -284,6 +299,7 @@ def _compiled_row(
         row_id=row_id,
         payload=payload,
         resolved_semantics=payload,
+        immutable_inputs=immutable_inputs or [],
         launch=RowLaunchSpec(
             command=command or [sys.executable, "-c", "pass"],
             collect=collect or [],
@@ -300,6 +316,7 @@ def _assembly_parts(
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
     driver: str = "local",
+    expected_input_roles: tuple[str, ...] = (),
 ) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
     authored = {
         "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
@@ -335,7 +352,9 @@ def _assembly_parts(
         schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
         compiler_id=compiler_id,
         compiler_version=compiler_version,
-        compiler=_FixtureCompiler(tuple(rows or [_compiled_row("row-a")])),
+        compiler=_FixtureCompiler(
+            tuple(rows or [_compiled_row("row-a")]), expected_input_roles
+        ),
         identity_adapter=StudioTrainingIdentityAdapter(),
     )
     context = AssemblyContext(custody_root=tmp_path / "fixture-custody" / run_set_id)
@@ -441,10 +460,6 @@ def test_v3_policy_migration_evidence_survives_without_authorizing_launch(tmp_pa
     ("updates", "message"),
     [
         ({"cloud_authorized": False}, "cloud_authorized=true"),
-        (
-            {"review_required": True, "review_authorized": False},
-            "review_authorized=true",
-        ),
         ({"venue": "local"}, "requires venue='remote'"),
     ],
 )
@@ -457,6 +472,141 @@ def test_deployment_policy_validation_fails_closed(
     }
     with pytest.raises(ValueError, match=message):
         DeploymentPolicy.model_validate(payload)
+
+
+def test_pending_review_is_durable_but_blocks_provider_until_authorized(
+    tmp_path: Path,
+) -> None:
+    pending = DeploymentPolicy(
+        driver="local",
+        venue="local",
+        cloud_authorized=False,
+        review_required=True,
+        review_authorized=False,
+    )
+    request, context, registry = _assembly_parts(tmp_path)
+    request = request.model_copy(update={"deployment_policy": pending})
+    request = RunAssemblyRequest.model_validate_json(request.model_dump_json())
+    bundle = assemble_run_bundle(
+        request, run_set_id="pending-review", context=context, registry=registry
+    )
+    bundle = RunBundle.model_validate_json(bundle.model_dump_json())
+    driver = FakeDriver()
+
+    with pytest.raises(PreflightFailed, match="deployment-policy"):
+        StageEngine(bundle=bundle, driver=driver).run()
+    assert driver.calls == []
+
+    authorized = DeploymentPolicy.model_validate(
+        {**pending.model_dump(mode="json"), "review_authorized": True}
+    )
+    rebound = bundle.model_copy(update={"deployment_policy": authorized})
+    assert {check.name: check for check in run_preflight_checks(rebound)}[
+        "deployment-policy"
+    ].status == "pass"
+
+
+def _resolved_checkpoint_input(
+    *, role: str = "checkpoint", digest_character: str = "d"
+) -> ResolvedAssemblyInput:
+    digest = digest_character * 64
+    return ResolvedAssemblyInput(
+        identity=ImmutableInputIdentity(
+            role=role,
+            kind="checkpoint-custody-archive",
+            identifier=f"checkpoint:tx-{role}",
+            digest={"value": digest},
+        ),
+        custody=InputCustodySource(
+            target_role=role,
+            provider=ImmutableArtifactBlobProviderSpec(),
+            provider_binding="checkpoint.inputs",
+            artifact=ImmutableInputArtifactRef(
+                artifact_id=f"artifact://sha256/{digest}",
+                sha256=digest,
+                size_bytes=123,
+                media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+                storage_backend="feedbax-local",
+            ),
+            format=InputFormatIdentity(
+                format_id=CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID,
+                format_version=CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION,
+                media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+            ),
+            materializer=CheckpointCustodyArchiveMaterializer(
+                expected_parent_ref=ParentRef(
+                    kind="TrainingCheckpointTransactionManifest",
+                    id=f"tx-{role}",
+                    role="training_checkpoint_custody",
+                    uri=f"transactions/tx-{role}/manifest.json",
+                    metadata={"manifest_sha256": "a" * 64},
+                ),
+                expected_transaction_root_sha256="b" * 64,
+            ),
+        ),
+    )
+
+
+def test_resolved_input_role_cannot_collide_with_row_payload_filename(
+    tmp_path: Path,
+) -> None:
+    resolved = _resolved_checkpoint_input(role="row-a.json")
+    bundle = _bundle(tmp_path)
+    execution = bundle.rows[0].execution
+    execution_hash = training_run_execution_hash(
+        execution.resolved_snapshot.root_hash,
+        [resolved.identity.model_dump(mode="json", exclude_none=True)],
+    )
+    row = bundle.rows[0].model_copy(
+        update={
+            "execution": execution.model_copy(
+                update={
+                    "immutable_inputs": [resolved.identity],
+                    "execution_capsule": execution.execution_capsule.model_copy(
+                        update={"execution_hash": execution_hash}
+                    ),
+                }
+            )
+        }
+    )
+    colliding = bundle.model_copy(
+        update={"rows": [row], "resolved_inputs": [resolved]}
+    )
+
+    with pytest.raises(ValueError, match="collide with generated row payload filenames"):
+        RunBundle.model_validate_json(colliding.model_dump_json())
+
+
+def test_assemble_canonicalizes_resolved_input_records(tmp_path: Path) -> None:
+    inputs = {
+        "zeta": _resolved_checkpoint_input(role="zeta"),
+        "alpha": _resolved_checkpoint_input(role="alpha", digest_character="e"),
+    }
+    request, context, registry = _assembly_parts(
+        tmp_path,
+        rows=[_compiled_row("row-a", immutable_inputs=[item.identity for item in inputs.values()])],
+        expected_input_roles=("alpha", "zeta"),
+    )
+    request = request.model_copy(
+        update={
+            "inputs": [
+                AssemblyInputDeclaration(
+                    role=role,
+                    kind="checkpoint-custody-archive",
+                    locator=f"checkpoint:tx-{role}",
+                )
+                for role in ("zeta", "alpha")
+            ]
+        }
+    )
+    bundle = assemble_run_bundle(
+        request,
+        run_set_id="canonical-input-order",
+        context=replace(context, input_resolver=lambda declaration: inputs[declaration.role]),
+        registry=registry,
+    )
+
+    assert [item.identity.role for item in bundle.resolved_inputs] == ["alpha", "zeta"]
 
 
 def test_conformance_records_declared_inapplicability() -> None:
@@ -590,6 +740,17 @@ def _with_local_realized_proof(state: RunSetState) -> RunSetState:
             "outputs": {"environment_fingerprint": "fake-fingerprint"},
         }
     )
+    stage_inputs = state.stage(STAGE_STAGE_INPUTS).model_copy(
+        update={
+            "status": "completed",
+            "completed_at": started_at,
+            "outputs": {
+                "input_count": 0,
+                "inputs": [],
+                "payload_count": len(rows),
+            },
+        }
+    )
     return state.model_copy(
         update={
             "rows": rows,
@@ -599,6 +760,7 @@ def _with_local_realized_proof(state: RunSetState) -> RunSetState:
                 **state.stages,
                 STAGE_PROVISION: provision,
                 STAGE_REALIZE_ENV: realize_env,
+                STAGE_STAGE_INPUTS: stage_inputs,
             },
         }
     )
@@ -629,6 +791,33 @@ def test_certify_rejects_resumed_top_level_observation_substitution(
         message = "REALIZE_ENV outputs"
 
     with pytest.raises(OrchestrationStageError, match=message):
+        engine._stage_certify(state)
+
+
+def test_certify_rejects_resumed_state_without_completed_stage_inputs(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"row-a": RowState(status="completed")},
+        )
+    )
+    state = state.model_copy(
+        update={
+            "stages": {
+                stage_id: stage
+                for stage_id, stage in state.stages.items()
+                if stage_id != STAGE_STAGE_INPUTS
+            }
+        }
+    )
+
+    with pytest.raises(OrchestrationStageError, match="completed STAGE_INPUTS authority"):
         engine._stage_certify(state)
 
 
@@ -1640,6 +1829,15 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
         state.registration_payload["certificate_sha256"]
         == hashlib.sha256((bundle.run_set_dir / "conformance.json").read_bytes()).hexdigest()
     )
+    stage_inputs_sha256 = hashlib.sha256(
+        json.dumps(
+            state.stage(STAGE_STAGE_INPUTS).outputs,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert state.stage(STAGE_CERTIFY).outputs["stage_inputs_sha256"] == stage_inputs_sha256
+    assert state.registration_payload["stage_inputs_sha256"] == stage_inputs_sha256
     assert {row_id: row.status for row_id, row in state.rows.items()} == {
         "warm": "completed",
         "second": "completed",
@@ -1817,6 +2015,7 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
     certificate_path = bundle.run_set_dir / "conformance.json"
     payload = json.loads(register_path.read_text(encoding="utf-8"))
     certificate_digest = hashlib.sha256(certificate_path.read_bytes()).hexdigest()
+    failed_state = store.load()
 
     assert payload == {
         "abort_reason": None,
@@ -1825,9 +2024,11 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
         "certificate_sha256": certificate_digest,
         "failure_reason": "conformance-failed",
         "run_set_id": bundle.run_set_id,
+        "stage_inputs_sha256": failed_state.stage(STAGE_CERTIFY).outputs[
+            "stage_inputs_sha256"
+        ],
         "status": "failed",
     }
-    failed_state = store.load()
     assert failed_state.stage("REGISTER").status == "failed"
     assert failed_state.registration_payload == payload
 
@@ -2029,6 +2230,58 @@ def test_register_requires_the_digest_recorded_by_completed_certify(
     )
 
     with pytest.raises(OrchestrationStageError, match="digest does not match"):
+        engine._stage_register(state)
+
+
+@pytest.mark.parametrize(
+    ("tamper_surface", "message"),
+    [
+        ("status", "completed STAGE_INPUTS authority"),
+        ("outputs", "STAGE_INPUTS digest does not match"),
+        ("certify_digest", "STAGE_INPUTS digest does not match"),
+    ],
+)
+def test_register_binds_resumed_stage_inputs_to_completed_certify(
+    tmp_path: Path,
+    tamper_surface: str,
+    message: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"row-a": RowState(status="completed")},
+        )
+    )
+    state, outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(outputs)}
+        ),
+    )
+    if tamper_surface == "status":
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS).model_copy(update={"status": "pending"})
+        state = state.with_stage(STAGE_STAGE_INPUTS, stage_inputs)
+    elif tamper_surface == "outputs":
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS).model_copy(
+            update={"outputs": {"substituted": True}}
+        )
+        state = state.with_stage(STAGE_STAGE_INPUTS, stage_inputs)
+    else:
+        certify_outputs = dict(state.stage(STAGE_CERTIFY).outputs)
+        certify_outputs.pop("stage_inputs_sha256")
+        state = state.with_stage(
+            STAGE_CERTIFY,
+            state.stage(STAGE_CERTIFY).model_copy(update={"outputs": certify_outputs}),
+        )
+
+    with pytest.raises(OrchestrationStageError, match=message):
         engine._stage_register(state)
 
 
