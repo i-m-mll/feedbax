@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
 from pathlib import Path
@@ -34,6 +35,8 @@ from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     ArtifactRef,
     ParentRef,
+    StrictModel,
+    canonical_json_bytes,
     load_manifest,
     spec_payload,
     write_manifest,
@@ -269,6 +272,173 @@ def test_execute_figure_spec_records_optional_omission_and_custody(tmp_path: Pat
         "missing-optional": "omitted",
     }
     assert figure_manifest.expression_results_digest
+
+
+def test_execute_figure_spec_routes_panel_and_figure_assembler_params(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="routed-assembler-params",
+        assembler="feedbax.grid_figure",
+        assembler_params={
+            "width": 1320,
+            "height": 520,
+            "title": "Declarative whole-figure layout",
+            "legend_tracegroupgap": 1,
+            "shared_yaxes": False,
+            "horizontal_spacing": 0.2,
+        },
+        panels=[
+            {"name": "left", "row": 1, "col": 1},
+            {"name": "right", "row": 1, "col": 2},
+        ],
+        traces=[
+            TraceBinding(
+                name="left-profile",
+                constructor="feedbax.profile_band",
+                panel="left",
+                data={"y": [[1, 2, 3], [2, 3, 4]]},
+            ),
+            TraceBinding(
+                name="right-profile",
+                constructor="feedbax.profile_band",
+                panel="right",
+                data={"y": [[4, 5, 6], [5, 6, 7]]},
+            ),
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    layout = rendered["layout"]
+    assert layout["width"] == 1320
+    assert layout["height"] == 520
+    assert layout["title"]["text"] == "Declarative whole-figure layout"
+    assert layout["legend"]["tracegroupgap"] == 1
+    assert layout["xaxis"]["domain"] == [0.0, 0.4]
+    assert layout["xaxis2"]["domain"] == [0.6000000000000001, 1.0]
+    assert "matches" not in layout["yaxis2"]
+
+
+def test_panel_only_assembler_params_preserve_constructor_payload(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="panel-only-assembler-params",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_yaxes": False, "horizontal_spacing": 0.2},
+        panels=[
+            {"name": "left", "row": 1, "col": 1},
+            {"name": "right", "row": 1, "col": 2},
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    panel_contents = [
+        PanelContent(name="left", row=1, col=1),
+        PanelContent(name="right", row=1, col=2),
+    ]
+    panel_registration = get_figure_constructor("feedbax.comparison_grid", tier="panel")
+    figure_registration = get_figure_constructor("feedbax.grid_figure", tier="figure")
+    expected = panel_registration.callable(
+        panel_contents,
+        panel_registration.params(spec.assembler_params),
+    )
+    expected = figure_registration.callable(
+        expected,
+        panel_contents,
+        figure_registration.params(),
+    )
+
+    assert rendered is not None
+    assert canonical_json_bytes(rendered) == canonical_json_bytes(json.loads(expected.to_json()))
+
+
+def test_execute_figure_spec_rejects_unowned_assembler_param_without_render(
+    tmp_path: Path,
+) -> None:
+    spec = FigureSpec(
+        name="unknown-assembler-param",
+        assembler="feedbax.grid_figure",
+        assembler_params={"unknown_layout_field": True},
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert exc_info.value.manifest.status == "failed"
+    assert exc_info.value.manifest.artifacts == []
+    assert "unknown_layout_field" in exc_info.value.manifest.failure["message"]
+    assert not (tmp_path / "figures").exists()
+
+
+def test_execute_figure_spec_rejects_assembler_param_owned_by_both_models(
+    tmp_path: Path,
+) -> None:
+    class AmbiguousPanelParams(StrictModel):
+        shared_setting: str | None = None
+
+    class AmbiguousFigureParams(StrictModel):
+        panel_constructor: str = "feedbax.test_ambiguous_panel"
+        shared_setting: str | None = None
+
+    panel = get_figure_constructor("feedbax.comparison_grid", tier="panel")
+    figure = get_figure_constructor("feedbax.grid_figure", tier="figure")
+    register_figure_constructor(
+        "feedbax.test_ambiguous_panel",
+        tier="panel",
+        constructor=panel.callable,
+        params_model=AmbiguousPanelParams,
+        description="Panel constructor with an intentionally ambiguous parameter.",
+        replace=True,
+    )
+    register_figure_constructor(
+        "feedbax.test_ambiguous_figure",
+        tier="figure",
+        constructor=figure.callable,
+        params_model=AmbiguousFigureParams,
+        description="Figure constructor with an intentionally ambiguous parameter.",
+        replace=True,
+    )
+    spec = FigureSpec(
+        name="ambiguous-assembler-param",
+        assembler="feedbax.test_ambiguous_figure",
+        assembler_params={
+            "panel_constructor": "feedbax.test_ambiguous_panel",
+            "shared_setting": "conflict",
+        },
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path)
+
+    assert exc_info.value.manifest.status == "failed"
+    assert exc_info.value.manifest.artifacts == []
+    assert "shared_setting" in exc_info.value.manifest.failure["message"]
+    assert "owned by both" in exc_info.value.manifest.failure["message"]
+    assert not (tmp_path / "figures").exists()
+
+
+def test_existing_panel_only_spec_preserves_rendered_payload(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="bundle-figure",
+        assembler="feedbax.grid_figure",
+        traces=[
+            TraceBinding(
+                name="demo",
+                constructor="feedbax.profile_band",
+                data={"y": [[1, 2, 3], [2, 3, 4]]},
+            )
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    assert hashlib.sha256(canonical_json_bytes(rendered)).hexdigest() == (
+        "7402f9fb0a4fb64e94a3cfcd336c709a87393c4d9aa29488e0342f83f15dab9e"
+    )
 
 
 def test_execute_figure_spec_required_absence_fails_with_manifest(tmp_path: Path) -> None:

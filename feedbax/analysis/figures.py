@@ -51,7 +51,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.plot.constructors import (
-    GridFigureParams,
+    FigureConstructorRegistration,
     PanelContent,
     get_figure_constructor,
     get_figure_piece,
@@ -440,6 +440,37 @@ def _portable_value(value: Any) -> Any:
     return value
 
 
+def _route_assembler_params(
+    assembler_params: Mapping[str, Any],
+    *,
+    panel_registration: FigureConstructorRegistration,
+    figure_registration: FigureConstructorRegistration,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Route authored assembler params to their owning strict constructor models."""
+    authored_fields = set(assembler_params)
+    panel_fields = set(panel_registration.params_model.model_fields)
+    figure_fields = set(figure_registration.params_model.model_fields)
+
+    ambiguous_fields = sorted(authored_fields & panel_fields & figure_fields)
+    if ambiguous_fields:
+        raise ValueError(
+            "FigureSpec assembler_params fields are owned by both the panel and figure "
+            f"parameter models: {ambiguous_fields}"
+        )
+
+    unknown_fields = sorted(authored_fields - panel_fields - figure_fields)
+    if unknown_fields:
+        raise ValueError(
+            "FigureSpec assembler_params fields are not owned by either the panel or figure "
+            f"parameter model: {unknown_fields}"
+        )
+
+    return (
+        {key: value for key, value in assembler_params.items() if key in panel_fields},
+        {key: value for key, value in assembler_params.items() if key in figure_fields},
+    )
+
+
 def _build_figures(
     spec: FigureSpec,
     context: ExpressionContext,
@@ -481,10 +512,15 @@ def _build_figures(
     panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
     panel_registration = get_figure_constructor(panel_constructor_key, tier="panel")
     exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
-    panel_params = panel_registration.params(assembler_params)
     figure_registration = get_figure_constructor(assembler_key, tier="figure")
     exec_trace.constructor_versions[assembler_key] = figure_registration.version
-    figure_params = figure_registration.params(assembler_params or GridFigureParams().model_dump())
+    panel_values, figure_values = _route_assembler_params(
+        assembler_params,
+        panel_registration=panel_registration,
+        figure_registration=figure_registration,
+    )
+    panel_params = panel_registration.params(panel_values)
+    figure_params = figure_registration.params(figure_values)
 
     if facet_combinations and template.facet_target == "panels":
         panel_contents = _facet_panel_contents(
