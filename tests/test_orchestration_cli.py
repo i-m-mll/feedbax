@@ -363,8 +363,10 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     request_path = _write_request(request, tmp_path / "assembly-request.json")
 
     class FastLocalDriver(LocalOrchestrationDriver):
-        def __init__(self) -> None:
-            super().__init__(cwd=tmp_path, freeze_lines=("feedbax==test",))
+        seen_bindings = ()
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(cwd=tmp_path, freeze_lines=("feedbax==test",), **kwargs)
+            type(self).seen_bindings = self.input_provider_bindings
 
     monkeypatch.setattr(orchestrate, "LocalOrchestrationDriver", FastLocalDriver)
     monkeypatch.setattr(orchestrate, "build_default_assembly_registry", lambda: registry)
@@ -389,7 +391,8 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert orchestrate.main(["status", "--run-set", "local-demo"]) == 0
     assert orchestrate.main(["certify", "--run-set", "local-demo"]) == 0
     assert orchestrate.main(["teardown", "--run-set", "local-demo"]) == 0
-    assert orchestrate.main(["resume", "--run-set", "local-demo"]) == 0
+    assert orchestrate.main(["resume", "--run-set", "local-demo", "--input-provider", f"checkpoint.inputs={tmp_path}"]) == 0
+    assert FastLocalDriver.seen_bindings[0].name == "checkpoint.inputs"
 
     status_lines = [
         line for line in capsys.readouterr().out.splitlines() if line.startswith("row=")
@@ -431,11 +434,13 @@ def test_runpod_driver_is_constructed_from_durable_bundle_metadata(tmp_path: Pat
         ),
     )
 
-    driver = orchestrate._driver_for_bundle(bundle)
+    bindings = orchestrate._input_provider_bindings([f"checkpoint.inputs={tmp_path}"])
+    driver = orchestrate._driver_for_bundle(bundle, bindings)
 
     assert isinstance(driver, RunPodOrchestrationDriver)
     assert driver.config.pod_id == "pod-123"
     assert driver.config.path_patches[0][0] == "/workspace/feedbax/pyproject.toml"
+    assert driver.input_provider_bindings == bindings
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
@@ -455,11 +460,12 @@ def test_launch_cli_exposes_deadman_request_overrides() -> None:
             "launch",
             "--assembly-request",
             "assembly-request.json",
-            "--deadman",
-            "--deadman-silence-seconds",
-            "900",
+            "--deadman", "--deadman-silence-seconds", "900",
+            "--input-provider", "/invalid-relative",
         ]
     )
 
     assert args.deadman is True
     assert args.deadman_silence_seconds == 900
+    with pytest.raises(ValueError, match="NAME=ABSOLUTE_PATH"):
+        orchestrate._input_provider_bindings(args.input_provider)

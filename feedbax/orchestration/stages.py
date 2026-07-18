@@ -35,6 +35,7 @@ from feedbax.orchestration.conformance import (
 )
 from feedbax.orchestration.drivers.base import OrchestrationDriver
 from feedbax.orchestration.events import RunEventReader
+from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     PreflightCheckEntry,
@@ -862,10 +863,15 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     checks.append(
         _check("environment-declaration", env_complete, observed=bundle.environment.python_version)
     )
-    mutable_pin = any(
-        "latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins
+    input_failures, input_observed = preflight_resolved_inputs(bundle)
+    checks.append(
+        _check(
+            "input-custody-authority",
+            not input_failures,
+            detail="; ".join(input_failures) if input_failures else None,
+            observed=input_observed or "no-resolved-inputs",
+        )
     )
-    checks.append(_check("custody-pins", not mutable_pin))
 
     manifest_failures: list[str] = []
     normalized: dict[str, Any] = {}

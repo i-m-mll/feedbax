@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.orchestration import (
     STAGE_ORDER,
     LocalOrchestrationDriver,
@@ -40,6 +41,7 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodOrchestrationDriver,
     load_runpod_api_key,
 )
+from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.stages import (
     BudgetExceeded,
     PreflightFailed,
@@ -110,6 +112,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the bundle dead-man silence threshold",
     )
     launch.add_argument("--resume-run-set", help="Resume an existing run-set id")
+    for sub in (preflight, launch):
+        sub.add_argument(
+            "--input-provider", action="append", default=[], metavar="NAME=ABSOLUTE_PATH"
+        )
     launch.set_defaults(func=cmd_launch)
 
     status = subparsers.add_parser("status", help="Print current run-set status")
@@ -125,6 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("collect", "certify", "resume"):
         sub = subparsers.add_parser(name, help=f"Run the {name} orchestration action")
         sub.add_argument("--run-set", required=True, help="Run-set id")
+        if name == "resume":
+            sub.add_argument("--input-provider", action="append", default=[])
         sub.set_defaults(func=globals()[f"cmd_{name}"])
 
     teardown = subparsers.add_parser("teardown", help="Tear down run-set resources")
@@ -138,7 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_preflight(args: argparse.Namespace) -> int:
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
-    engine = _request_engine(request, request_path=request_path)
+    engine = _request_engine(
+        request,
+        request_path=request_path,
+        input_provider_bindings=_input_provider_bindings(args.input_provider),
+    )
     try:
         state = engine.run(stop_after_stage="PREFLIGHT")
     except PreflightFailed:
@@ -170,6 +182,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             request_path=request_path,
             run_set_id=args.resume_run_set,
             interruption_probe=interruption.poll,
+            input_provider_bindings=_input_provider_bindings(args.input_provider),
         )
         state = engine.run()
     return _state_exit_code(state)
@@ -222,7 +235,7 @@ def cmd_teardown(args: argparse.Namespace) -> int:
 
 def cmd_resume(args: argparse.Namespace) -> int:
     with RunInterruptionController() as interruption:
-        state = _run_existing(args.run_set, interruption_probe=interruption.poll)
+        state = _run_existing(args.run_set, interruption_probe=interruption.poll, input_provider_bindings=_input_provider_bindings(args.input_provider))
     return _state_exit_code(state)
 
 
@@ -261,8 +274,9 @@ def _run_engine(
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
+    input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
 ) -> RunSetState:
-    driver = _driver_for_bundle(bundle)
+    driver = _driver_for_bundle(bundle, input_provider_bindings)
     state = StageEngine(
         bundle=bundle,
         driver=driver,
@@ -283,6 +297,7 @@ def _run_existing(
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
+    input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
 ) -> RunSetState:
     bundle = _load_existing_bundle(run_set_id)
     return _run_engine(
@@ -290,14 +305,20 @@ def _run_existing(
         stop_after_stage=stop_after_stage,
         break_stale_lock=break_stale_lock,
         interruption_probe=interruption_probe,
+        input_provider_bindings=input_provider_bindings,
     )
 
 
-def _driver_for_bundle(bundle: RunBundle) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
+def _driver_for_bundle(
+    bundle: RunBundle,
+    bindings: tuple[InputProviderRootBinding, ...] = (),
+) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
     if bundle.driver == "local":
-        return LocalOrchestrationDriver()
+        return LocalOrchestrationDriver(input_provider_bindings=bindings)
     if bundle.driver == "runpod":
-        return RunPodOrchestrationDriver(config=_runpod_config_for_bundle(bundle))
+        return RunPodOrchestrationDriver(
+            config=_runpod_config_for_bundle(bundle), input_provider_bindings=bindings
+        )
     raise RuntimeError(f"Unsupported orchestration driver: {bundle.driver!r}")
 
 
@@ -319,6 +340,7 @@ def _request_engine(
     request_path: Path,
     run_set_id: str | None = None,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
+    input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
 ) -> StageEngine:
     root = Path(request.orchestration_root).expanduser() if request.orchestration_root else request_path.parent
     context = AssemblyContext(
@@ -329,11 +351,23 @@ def _request_engine(
         request,
         context=context,
         registry=build_default_assembly_registry(),
-        driver_factory=_driver_for_bundle,
+        driver_factory=lambda bundle: _driver_for_bundle(bundle, input_provider_bindings),
         run_set_id=run_set_id,
         conformance_registry=build_default_check_registry(),
         interruption_probe=interruption_probe,
     )
+
+
+def _input_provider_bindings(values: list[str]) -> tuple[InputProviderRootBinding, ...]:
+    bindings = []
+    for value in values:
+        name, separator, raw_root = value.partition("=")
+        root = Path(raw_root)
+        if not separator or not name or not root.is_absolute():
+            raise ValueError("--input-provider requires NAME=ABSOLUTE_PATH")
+        validate_staged_binding_name(name)
+        bindings.append(InputProviderRootBinding(name, root))
+    return tuple(bindings)
 
 
 def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:

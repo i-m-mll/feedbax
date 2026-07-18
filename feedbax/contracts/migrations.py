@@ -255,6 +255,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V2,
     RUN_BUNDLE_SCHEMA_VERSION_V3,
     RUN_BUNDLE_SCHEMA_VERSION_V4,
+    RUN_BUNDLE_SCHEMA_VERSION_V5,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -2747,13 +2748,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 RUN_BUNDLE_SCHEMA_VERSION_V3,
                 RUN_BUNDLE_SCHEMA_VERSION_V4,
+                RUN_BUNDLE_SCHEMA_VERSION_V5,
             ),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
                 RUN_BUNDLE_SCHEMA_VERSION_V2,
             ),
-            required_tests=("tests/test_orchestration_core.py",),
+            required_tests=(
+                "tests/test_orchestration_core.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "RunSetState",
@@ -4031,6 +4036,26 @@ def _migrate_run_bundle_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, A
     return migrated
 
 
+def _migrate_run_bundle_v5_to_v6_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Retire unauthenticated custody pins when no authority would be lost."""
+    migrated = dict(payload)
+    pins = migrated.pop("input_custody_pins", [])
+    rows = migrated.get("rows", [])
+    has_immutable_inputs = any(
+        isinstance(row, Mapping)
+        and isinstance(row.get("execution"), Mapping)
+        and bool(row["execution"].get("immutable_inputs"))
+        for row in rows
+    ) if isinstance(rows, list) else False
+    if pins or has_immutable_inputs:
+        raise ValueError(
+            "RunBundle v5 lacks authenticated input artifact/format/materializer authority; "
+            "reassemble from the authored RunAssemblyRequest"
+        )
+    migrated["resolved_inputs"] = []
+    return migrated
+
+
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
 default_spec_registry.register_migration(
@@ -4102,12 +4127,25 @@ default_spec_registry.register_migration(
     "RunBundle",
     SchemaMigration(
         source_version=RUN_BUNDLE_SCHEMA_VERSION_V4,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION_V5,
         migration_id="run-bundle-v4-to-v5-envelope-row-provenance",
         migrate=_migrate_run_bundle_v4_to_v5_payload,
         description=(
             "Move optional training-row provenance from the RunRowSpec into the sole "
             "ExecutionIdentityEnvelope authority."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V5,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v5-to-v6-authenticated-input-custody",
+        migrate=_migrate_run_bundle_v5_to_v6_payload,
+        description=(
+            "Retire empty legacy custody pins while requiring reassembly whenever v5 "
+            "pins lack the authenticated artifact and materializer authority required by v6."
         ),
     ),
 )

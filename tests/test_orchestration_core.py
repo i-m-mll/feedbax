@@ -6,7 +6,7 @@ import json
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,7 +14,8 @@ import pytest
 
 from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-from feedbax.contracts.manifest import TrainingRunManifest
+from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.manifest import ParentRef, TrainingRunManifest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
@@ -49,6 +50,7 @@ from feedbax.orchestration import conformance, schedule_eval, stages
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
+    AssemblyInputDeclaration,
     CompiledExecutionRow,
     CompiledRunSet,
     CompilerIdentity,
@@ -56,14 +58,23 @@ from feedbax.orchestration.assembly import (
     assemble_run_bundle,
 )
 from feedbax.orchestration.bundle import (
+    CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID,
+    CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION,
+    CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION_V2,
     BudgetPolicy,
+    CheckpointCustodyArchiveMaterializer,
     EnvironmentDeclaration,
+    ImmutableInputArtifactRef,
+    ImmutableInputIdentity,
+    InputCustodySource,
+    InputFormatIdentity,
     LaunchPolicy,
     RepoRevision,
+    ResolvedAssemblyInput,
     RunBundle,
     RunRowSpec,
     RowLaunchSpec,
@@ -225,6 +236,7 @@ class _IdentityFakeDriver(FakeDriver):
 @dataclass(frozen=True)
 class _FixtureCompiler:
     rows: tuple[CompiledExecutionRow, ...]
+    expected_input_roles: tuple[str, ...] = ()
 
     def compile(
         self,
@@ -234,7 +246,8 @@ class _FixtureCompiler:
         run_set_id: str,
         context: AssemblyContext,
     ) -> CompiledRunSet:
-        del request, authored, run_set_id, context
+        assert tuple(item.role for item in context.resolved_inputs) == self.expected_input_roles
+        del request, authored, run_set_id
         return CompiledRunSet(rows=list(self.rows))
 
 
@@ -244,6 +257,7 @@ def _compiled_row(
     command: list[str] | None = None,
     collect: list[str] | None = None,
     run_spec: dict[str, Any] | None = None,
+    immutable_inputs: list[ImmutableInputIdentity] | None = None,
 ) -> CompiledExecutionRow:
     payload = (
         {
@@ -263,6 +277,7 @@ def _compiled_row(
         row_id=row_id,
         payload=payload,
         resolved_semantics=payload,
+        immutable_inputs=immutable_inputs or [],
         launch=RowLaunchSpec(
             command=command or [sys.executable, "-c", "pass"],
             collect=collect or [],
@@ -278,6 +293,7 @@ def _assembly_parts(
     max_wall_clock_seconds: float = 10.0,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
+    expected_input_roles: tuple[str, ...] = (),
 ) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
     authored = {
         "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
@@ -312,7 +328,9 @@ def _assembly_parts(
         schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
         compiler_id=compiler_id,
         compiler_version=compiler_version,
-        compiler=_FixtureCompiler(tuple(rows or [_compiled_row("row-a")])),
+        compiler=_FixtureCompiler(
+            tuple(rows or [_compiled_row("row-a")]), expected_input_roles
+        ),
         identity_adapter=StudioTrainingIdentityAdapter(),
     )
     context = AssemblyContext(custody_root=tmp_path / "fixture-custody" / run_set_id)
@@ -343,6 +361,78 @@ def _bundle(
         registry=registry,
     )
 
+
+def _resolved_checkpoint_input(
+    *, role: str = "checkpoint", digest_character: str = "d"
+) -> ResolvedAssemblyInput:
+    digest = digest_character * 64
+    return ResolvedAssemblyInput(
+        identity=ImmutableInputIdentity(
+            role=role,
+            kind="checkpoint-custody-archive",
+            identifier=f"checkpoint:tx-{role}",
+            digest={"value": digest},
+        ),
+        custody=InputCustodySource(
+            target_role=role,
+            provider=ImmutableArtifactBlobProviderSpec(),
+            provider_binding="checkpoint.inputs",
+            artifact=ImmutableInputArtifactRef(
+                artifact_id=f"artifact://sha256/{digest}",
+                sha256=digest,
+                size_bytes=123,
+                media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+                storage_backend="feedbax-local",
+            ),
+            format=InputFormatIdentity(
+                format_id=CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID,
+                format_version=CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION,
+                media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+            ),
+            materializer=CheckpointCustodyArchiveMaterializer(
+                expected_parent_ref=ParentRef(
+                    kind="TrainingCheckpointTransactionManifest",
+                    id=f"tx-{role}",
+                    role="training_checkpoint_custody",
+                    uri=f"transactions/tx-{role}/manifest.json",
+                    metadata={"manifest_sha256": "a" * 64},
+                ),
+                expected_transaction_root_sha256="b" * 64,
+            ),
+        ),
+    )
+
+
+def test_assemble_canonicalizes_resolved_input_records(tmp_path: Path) -> None:
+    inputs = {
+        "zeta": _resolved_checkpoint_input(role="zeta"),
+        "alpha": _resolved_checkpoint_input(role="alpha", digest_character="e"),
+    }
+    request, context, registry = _assembly_parts(
+        tmp_path,
+        rows=[_compiled_row("row-a", immutable_inputs=[item.identity for item in inputs.values()])],
+        expected_input_roles=("alpha", "zeta"),
+    )
+    request = request.model_copy(
+        update={
+            "inputs": [
+                AssemblyInputDeclaration(
+                    role=role,
+                    kind="checkpoint-custody-archive",
+                    locator=f"checkpoint:tx-{role}",
+                )
+                for role in ("zeta", "alpha")
+            ]
+        }
+    )
+    bundle = assemble_run_bundle(
+        request,
+        run_set_id="canonical-input-order",
+        context=replace(context, input_resolver=lambda declaration: inputs[declaration.role]),
+        registry=registry,
+    )
+
+    assert [item.identity.role for item in bundle.resolved_inputs] == ["alpha", "zeta"]
 
 def test_conformance_records_declared_inapplicability() -> None:
     registry = CheckRegistry({"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")})

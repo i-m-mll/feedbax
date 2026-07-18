@@ -136,6 +136,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V2,
     RUN_BUNDLE_SCHEMA_VERSION_V3,
     RUN_BUNDLE_SCHEMA_VERSION_V4,
+    RUN_BUNDLE_SCHEMA_VERSION_V5,
     RunBundle,
 )
 from feedbax.contracts.spec_storage import training_run_execution_hash
@@ -471,6 +472,7 @@ def test_run_bundle_v3_migrates_with_explicitly_unavailable_row_provenance() -> 
     assert [record.migration_id for record in migrated.migration_records] == [
         "run-bundle-v3-to-v4-training-row-provenance",
         "run-bundle-v4-to-v5-envelope-row-provenance",
+        "run-bundle-v5-to-v6-authenticated-input-custody",
     ]
 
 
@@ -492,7 +494,7 @@ def test_run_bundle_v4_moves_row_provenance_into_execution_envelope() -> None:
             {"lowerer_id": "feedbax.tests.lowerer", "lowerer_version": "v1"}
         ],
     }
-    migrated = default_spec_registry.migrate(
+    migrated_v5 = default_spec_registry.migrate(
         "RunBundle",
         {
             "schema_id": "feedbax.orchestration.run_bundle",
@@ -541,7 +543,9 @@ def test_run_bundle_v4_moves_row_provenance_into_execution_envelope() -> None:
             "environment": {"python_version": "3.12"},
             "budget": {"max_wall_clock_seconds": 60.0},
         },
+        target_version=RUN_BUNDLE_SCHEMA_VERSION_V5,
     )
+    migrated = default_spec_registry.migrate("RunBundle", migrated_v5.payload)
     row = migrated.payload["rows"][0]
     assert "provenance" not in row
     assert row["execution"]["schema_version"] == EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
@@ -556,6 +560,24 @@ def test_run_bundle_v4_moves_row_provenance_into_execution_envelope() -> None:
         bundle.rows[0].execution.row_provenance.lowered_execution_payload_hash
         == bundle.rows[0].execution.payload.sha256
     )
+
+
+@pytest.mark.parametrize("legacy_authority", ["pin", "row-input"])
+def test_run_bundle_v5_inputs_require_reassembly(legacy_authority: str) -> None:
+    payload = {
+        "schema_id": "feedbax.orchestration.run_bundle",
+        "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V5,
+        "input_custody_pins": [],
+        "rows": [],
+    }
+    if legacy_authority == "pin":
+        payload["input_custody_pins"] = [
+            {"role": "checkpoint", "checkpoint_transaction_id": "tx-legacy"}
+        ]
+    else:
+        payload["rows"] = [{"execution": {"immutable_inputs": [{"role": "checkpoint"}]}}]
+    with pytest.raises(ValueError, match="reassemble from the authored RunAssemblyRequest"):
+        default_spec_registry.migrate("RunBundle", payload)
 
 
 @pytest.mark.parametrize(

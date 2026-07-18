@@ -17,7 +17,10 @@ from feedbax.contracts.run_matrix import (
     TrainingRowLoweringResult,
     TrainingRunMatrixSpec,
 )
-from feedbax.contracts.spec_storage import training_spec_canonical_bytes
+from feedbax.contracts.spec_storage import (
+    training_run_execution_hash,
+    training_spec_canonical_bytes,
+)
 from feedbax.contracts.training import (
     CheckpointProgressPolicySpec,
     LossTermSpec,
@@ -44,7 +47,7 @@ from feedbax.orchestration.assembly import (
 from feedbax.orchestration.bundle import (
     BudgetPolicy,
     EnvironmentDeclaration,
-    ImmutableInputIdentity,
+    ResolvedAssemblyInput,
     RunBundle,
     SchemaArtifactRef,
 )
@@ -214,21 +217,28 @@ def _assemble_lowered_bundle(
         row_lowerer=lower,
     )
 
-    def resolve_input(declaration: AssemblyInputDeclaration) -> ImmutableInputIdentity:
-        return ImmutableInputIdentity(
-            role=declaration.role,
-            kind=declaration.kind,
-            identifier=declaration.locator,
-            digest={"algorithm": "sha256", "value": "d" * 64},
-        )
+    def resolve_input(declaration: AssemblyInputDeclaration) -> ResolvedAssemblyInput:
+        media_type = "application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip"
+        return ResolvedAssemblyInput.model_validate({
+            "identity": {"role": declaration.role, "kind": declaration.kind, "identifier": declaration.locator, "digest": {"value": "d" * 64}},
+            "custody": {"target_role": declaration.role, "provider": {}, "provider_binding": "checkpoint.inputs",
+                        "artifact": {"artifact_id": "artifact://sha256/" + "d" * 64, "sha256": "d" * 64,
+                                     "size_bytes": 123, "media_type": media_type, "storage_backend": "feedbax-local"},
+                        "format": {"format_id": "feedbax.archive.training_checkpoint_custody", "format_version": "feedbax.archive.training_checkpoint_custody.v1", "media_type": media_type},
+                        "materializer": {"expected_parent_ref": {"kind": "TrainingCheckpointTransactionManifest",
+                            "id": "tx-toy-v1", "role": "training_checkpoint_custody", "uri": "transactions/tx-toy-v1/manifest.json",
+                            "metadata": {"manifest_sha256": "a" * 64}},
+                            "expected_transaction_root_sha256": "b" * 64}}})
 
+    input_document = root / "resolved-input.json"
+    input_document.write_text(resolve_input(request.inputs[0]).model_dump_json(), encoding="utf-8")
+    request.inputs[0].locator = str(input_document)
     return assemble_run_bundle(
         request,
         run_set_id=f"run-set-{root.name}",
         context=AssemblyContext(
             custody_root=root / "assembly-custody",
             repo_root=root,
-            input_resolver=resolve_input,
             materializer_commit="feedbax-test-commit",
             dependency_lock_digest="e" * 64,
             environment_digest="f" * 64,
@@ -264,6 +274,20 @@ def _native_context(
             optimizer_build_context=schedule_context,
         ),
     )
+
+
+def _without_resolved_inputs(bundle: RunBundle) -> RunBundle:
+    """Return a valid no-input bundle for tests focused only on driver command binding."""
+    payload = bundle.model_dump(mode="json")
+    payload["resolved_inputs"] = []
+    for row in payload["rows"]:
+        execution = row["execution"]
+        execution["immutable_inputs"] = []
+        execution["execution_capsule"]["execution_hash"] = training_run_execution_hash(
+            execution["resolved_snapshot"]["root_hash"],
+            [],
+        )
+    return RunBundle.model_validate(payload)
 
 
 def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
@@ -309,6 +333,7 @@ def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
     assert [item.identifier for item in first_row.execution.immutable_inputs] == [
         "dataset:toy:v1"
     ]
+    assert first.resolved_inputs[0].identity == first_row.execution.immutable_inputs[0]
 
     snapshot = json.loads(
         Path(first_row.execution.resolved_snapshot.uri).read_text(encoding="utf-8")
@@ -504,7 +529,9 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     from feedbax.orchestration.drivers import local as local_driver_module
     from feedbax.orchestration.drivers import runpod as runpod_driver_module
 
-    bundle = _assemble_lowered_bundle(tmp_path / "drivers", gain=2)
+    bundle = _without_resolved_inputs(
+        _assemble_lowered_bundle(tmp_path / "drivers", gain=2)
+    )
     row = bundle.rows[0]
     state = RunSetState(
         run_set_id=bundle.run_set_id,
@@ -596,7 +623,9 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
 
 
 def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) -> None:
-    bundle = _assemble_lowered_bundle(tmp_path / "subprocess", gain=2)
+    bundle = _without_resolved_inputs(
+        _assemble_lowered_bundle(tmp_path / "subprocess", gain=2)
+    )
     row = bundle.rows[0]
     slots_path = tmp_path / "initial-slots.json"
     slots_path.write_text(

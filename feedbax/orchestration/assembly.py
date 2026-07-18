@@ -31,6 +31,7 @@ from feedbax.orchestration.bundle import (
     ImmutableInputIdentity,
     LaunchPolicy,
     ResolvedSnapshotRef,
+    ResolvedAssemblyInput,
     RowLaunchSpec,
     RunBundle,
     RunRowSpec,
@@ -168,7 +169,7 @@ class AssemblyCompiler(Protocol):
 
 
 ArtifactResolver = Callable[[SchemaArtifactRef], bytes]
-InputResolver = Callable[[AssemblyInputDeclaration], ImmutableInputIdentity]
+InputResolver = Callable[[AssemblyInputDeclaration], ResolvedAssemblyInput]
 
 
 @dataclass(frozen=True)
@@ -371,9 +372,11 @@ def assemble_run_bundle(
     """Compile a verified authored request and persist a current RunBundle."""
     authored = load_schema_artifact(request.authored, context=context)
     registration = registry.resolve(request)
-    resolved_inputs = [
-        _resolve_input(item, context=context) for item in request.inputs
-    ]
+    resolved_input_records = sorted(
+        (_resolve_input(item, context=context) for item in request.inputs),
+        key=lambda item: (item.identity.role, item.identity.kind, item.identity.identifier),
+    )
+    resolved_inputs = [item.identity for item in resolved_input_records]
     compiler_context = replace(context, resolved_inputs=tuple(resolved_inputs))
     compiled = registration.compiler.compile(
         request,
@@ -413,6 +416,7 @@ def assemble_run_bundle(
         environment=request.environment,
         launch_policy=request.launch_policy,
         budget=request.budget,
+        resolved_inputs=resolved_input_records,
         orchestration_root=request.orchestration_root,
         keep_alive=request.keep_alive,
         deadman_enabled=request.deadman_enabled,
@@ -425,12 +429,23 @@ def _resolve_input(
     declaration: AssemblyInputDeclaration,
     *,
     context: AssemblyContext,
-) -> ImmutableInputIdentity:
+) -> ResolvedAssemblyInput:
     if context.input_resolver is None:
-        raise ValueError(
-            f"input declaration {declaration.role!r} requires AssemblyContext.input_resolver"
-        )
-    return context.input_resolver(declaration)
+        resolved = ResolvedAssemblyInput.model_validate_json(
+            Path(declaration.locator).read_text(encoding="utf-8"))
+    else:
+        resolved = context.input_resolver(declaration)
+    identity = resolved.identity
+    if identity.role != declaration.role:
+        raise ValueError("resolved input role does not match its declaration")
+    if identity.kind != declaration.kind:
+        raise ValueError("resolved input kind does not match its declaration")
+    if (
+        identity.schema_id != declaration.schema_id
+        or identity.schema_version != declaration.schema_version
+    ):
+        raise ValueError("resolved input schema identity does not match its declaration")
+    return resolved
 
 
 def _schema_ref(payload: Mapping[str, Any], artifact: Any) -> SchemaArtifactRef:

@@ -40,7 +40,6 @@ from feedbax.orchestration.drivers.runpod import (
     build_literal_path_patch_command,
     classify_pod_state,
     compute_runpod_environment_fingerprint,
-    declared_baselines,
     endpoint_classification,
     rank_datacenters_for_gpu,
 )
@@ -573,16 +572,7 @@ def test_literal_patch_command_cannot_rewrite_out_of_scope_file() -> None:
     assert command.count("/workspace/feedbax/pyproject.toml") == 1
 
 
-def test_stage_inputs_stages_and_verifies_declared_baseline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    baseline = repo / "_artifacts" / "run-a" / "checkpoint_100"
-    baseline.mkdir(parents=True)
-    (baseline / "latest.json").write_text(
-        json.dumps({"completed_training_batches": 100}), encoding="utf-8"
-    )
-    monkeypatch.chdir(repo)
+def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
@@ -592,11 +582,10 @@ def test_stage_inputs_stages_and_verifies_declared_baseline(
 
     outputs = driver.stage_inputs(bundle, _state(bundle))
 
-    assert outputs["baseline_count"] == 1
+    assert outputs["input_count"] == 0
     assert outputs["payload_count"] == 1
     payload = bundle.rows[0].execution.payload
     assert transport.rsync_calls == [
-        (str(baseline) + "/", "/workspace/_artifacts/run-a/checkpoint_100/", True, ()),
         (
             str(payload.uri),
             "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/warm.json",
@@ -604,15 +593,25 @@ def test_stage_inputs_stages_and_verifies_declared_baseline(
             (),
         ),
     ]
-    assert all((any("completed_training_batches" in command for command in transport.ssh_commands), any(payload.sha256 in command for command in transport.ssh_commands)))
+    assert any(payload.sha256 in command for command in transport.ssh_commands)
+    assert not any("checkpoint_100" in command for command in transport.ssh_commands)
 
 
-def test_declared_baselines_accepts_bundle_metadata(tmp_path: Path) -> None:
+def test_stage_inputs_ignores_legacy_runpod_baseline_metadata(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path).model_copy(
         update={"metadata": {"runpod_baselines": [{"checkpoint_path": "/custody", "completed_batches": 12000}]}}
     )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
 
-    assert declared_baselines(bundle)[-1].completed_batch == "12000"
+    outputs = driver.stage_inputs(bundle, _state(bundle))
+
+    assert outputs["input_count"] == 0
+    assert all(call[0] != "/custody" for call in transport.rsync_calls)
+    assert not any("/_artifacts/" in call[1] for call in transport.rsync_calls)
 
 
 def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path) -> None:
@@ -814,6 +813,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     checks = driver.preflight_checks(bundle)
 
     assert [check.name for check in checks] == [
+        "input-provider-bindings",
         "runpod-image-tag-exists",
         "runpod-gpu-policy-declared",
         "runpod-credentials",
@@ -1005,26 +1005,3 @@ def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) ->
         (),
     )
     assert transport.rsync_timeouts[-1] == 17
-
-
-def test_local_baseline_mismatch_raises_before_rsync(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    baseline = repo / "_artifacts" / "run-a" / "checkpoint_100"
-    baseline.mkdir(parents=True)
-    (baseline / "latest.json").write_text(
-        json.dumps({"completed_training_batches": 99}), encoding="utf-8"
-    )
-    monkeypatch.chdir(repo)
-    bundle = _bundle(tmp_path)
-    transport = FakeRunPodTransport()
-    driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
-        transport=transport,
-    )
-
-    with pytest.raises(RunPodDriverError, match="completed_batch mismatch"):
-        driver.stage_inputs(bundle, _state(bundle))
-
-    assert transport.rsync_calls == []

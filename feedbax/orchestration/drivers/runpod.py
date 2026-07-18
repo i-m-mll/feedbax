@@ -27,6 +27,12 @@ from feedbax.orchestration.drivers.native_execution import (
     inject_native_execution_context,
     is_native_training_command,
 )
+from feedbax.orchestration.input_materialization import (
+    InputMaterializationError,
+    InputProviderRootBinding,
+    materialize_bundle_inputs,
+    preflight_input_provider_bindings,
+)
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 
 
@@ -40,20 +46,6 @@ RUNPOD_CODE_EXCLUDES = (
     "_artifacts",
     "web/node_modules",
 )
-LATEST_BATCH_KEYS = (
-    "completed_training_batches",
-    "completed_batches",
-    "completed_batch",
-    "completedBatch",
-)
-METADATA_BATCH_KEYS = (
-    "completed_training_batches",
-    "completed_batches",
-    "completed_batch",
-    "completedBatch",
-)
-
-
 class RunPodDriverError(RuntimeError):
     """Raised when the RunPod driver cannot complete a requested action."""
 
@@ -207,15 +199,6 @@ class EndpointClassification:
 
 
 @dataclass(frozen=True)
-class BaselineEntry:
-    """Declared baseline checkpoint that must be staged remotely."""
-
-    path: str
-    completed_batch: str
-    label: str
-
-
-@dataclass(frozen=True)
 class RunPodDriverConfig:
     """Configuration for the RunPod orchestration driver."""
 
@@ -256,6 +239,7 @@ class RunPodOrchestrationDriver:
         transport: RunPodTransport | None = None,
         sleep: Any = time.sleep,
         monotonic: Any = time.monotonic,
+        input_provider_bindings: Sequence[InputProviderRootBinding] = (),
     ) -> None:
         self.config = config or RunPodDriverConfig()
         self.transport = transport or SubprocessRunPodTransport(
@@ -264,6 +248,7 @@ class RunPodOrchestrationDriver:
         )
         self._sleep = sleep
         self._monotonic = monotonic
+        self.input_provider_bindings = tuple(input_provider_bindings)
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
@@ -323,7 +308,19 @@ class RunPodOrchestrationDriver:
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
-        checks: list[PreflightCheckEntry] = []
+        failures, observed = preflight_input_provider_bindings(
+            bundle, self.input_provider_bindings
+        )
+        binding_check = _preflight_check(
+            "input-provider-bindings",
+            not failures,
+            detail="; ".join(failures) if failures else None,
+            observed=observed or "no-resolved-inputs",
+        )
+        if failures:
+            self._preflight_passed = False
+            return [binding_check]
+        checks: list[PreflightCheckEntry] = [binding_check]
         image = bundle.environment.image_id or self.config.image
         image_exists = self.transport.image_exists(image)
         checks.append(_preflight_check("runpod-image-tag-exists", image_exists, observed=image))
@@ -452,23 +449,41 @@ class RunPodOrchestrationDriver:
         return fingerprint
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
-        """Stage declared baselines and custody pins on the pod."""
-        baselines = declared_baselines(bundle)
-        staged: list[dict[str, str]] = []
-        for baseline in baselines:
-            source = baseline_source_path(baseline.path, Path.cwd())
-            target = baseline_remote_target(
-                baseline.path, self.config.remote_artifacts_dir, Path.cwd()
+        """Materialize authenticated inputs locally, then transfer and verify them."""
+        try:
+            attempt_root = (
+                bundle.run_set_dir / ".stage-attempts"
+                / f"stage-inputs-{state.stage('STAGE_INPUTS').attempts}"
             )
-            verify_local_baseline(source, baseline)
-            self._ssh(f"mkdir -p {_sq(str(Path(target).parent))}")
+            staged_inputs = materialize_bundle_inputs(
+                bundle,
+                destination_root=attempt_root,
+                provider_bindings=self.input_provider_bindings,
+            )
+        except InputMaterializationError as exc:
+            raise RunPodDriverError(str(exc)) from exc
+        transferred: list[dict[str, Any]] = []
+        remote_run_dir = self._remote_run_dir(bundle)
+        for staged in staged_inputs:
+            target = f"{remote_run_dir}/inputs/{staged.target_role}"
+            self._ssh(f"mkdir -p {_sq(target)}")
             self.transport.rsync(
-                f"{source}/" if source.is_dir() else str(source),
-                f"{target}/" if source.is_dir() else target,
-                delete=source.is_dir(),
-            ).check(f"stage baseline {baseline.label}")
-            self._ssh(remote_baseline_verification_command(target, baseline.completed_batch))
-            staged.append({"label": baseline.label, "source": str(source), "target": target})
+                str(staged.destination) + "/",
+                target + "/",
+                delete=True,
+            ).check(f"stage authenticated input {staged.target_role}")
+            for item in staged.files:
+                remote_path = f"{remote_run_dir}/{item.relative_path}"
+                check_line = f"{item.sha256}  {remote_path}"
+                self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
+            transferred.append(
+                {
+                    "target_role": staged.target_role,
+                    "source": str(staged.destination),
+                    "target": target,
+                    "file_count": len(staged.files),
+                }
+            )
         payloads: list[dict[str, str]] = []
         for row in bundle.rows:
             if row.launch.payload_routing.get("kind") != "registered-execution-payload":
@@ -488,22 +503,9 @@ class RunPodOrchestrationDriver:
             check_line = row.execution.payload.sha256 + "  " + target
             self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
             payloads.append({"row_id": row.row_id, "source": str(source), "target": target})
-        if bundle.input_custody_pins:
-            payload = json.dumps(
-                [
-                    pin.model_dump(mode="json", exclude_none=True)
-                    for pin in bundle.input_custody_pins
-                ],
-                sort_keys=True,
-            )
-            self._ssh(
-                f"mkdir -p {_sq(self._remote_run_dir(bundle) + '/inputs')} && "
-                f"cat > {_sq(self._remote_run_dir(bundle) + '/inputs/custody_pins.json')} <<'JSON'\n"
-                f"{payload}\nJSON"
-            )
         return {
-            "baseline_count": len(staged),
-            "baselines": staged,
+            "input_count": len(transferred),
+            "inputs": transferred,
             "payload_count": len(payloads),
             "payloads": payloads,
         }
@@ -1008,137 +1010,6 @@ def build_literal_path_patch_command(
     )
 
 
-def declared_baselines(bundle: RunBundle) -> list[BaselineEntry]:
-    """Extract baseline declarations from inline row specs."""
-    entries: list[BaselineEntry] = []
-    for row in bundle.rows:
-        payload = _registered_row_payload(row)
-        if isinstance(payload, Mapping):
-            entries.extend(_baseline_entries(payload, f"row:{row.row_id}"))
-    declared = bundle.metadata.get("runpod_baselines", [])
-    if not isinstance(declared, list) or any(not isinstance(item, Mapping) for item in declared):
-        raise RunPodDriverError("runpod_baselines must be a list of baseline declarations")
-    for index, item in enumerate(declared):
-        baseline = _baseline_entries(item, f"bundle:runpod_baselines:{index}")
-        if len(baseline) != 1:
-            raise RunPodDriverError("each runpod_baselines entry must declare one checkpoint")
-        entries.extend(baseline)
-    return entries
-
-
-def _baseline_entries(payload: Mapping[str, Any], label: str) -> list[BaselineEntry]:
-    entries: list[BaselineEntry] = []
-    path = _first_string(
-        payload,
-        "baseline_checkpoint_path",
-        "baseline_checkpoint",
-        "checkpoint_path",
-    )
-    batch = _first_scalar(
-        payload,
-        "baseline_completed_batches",
-        "baseline_completed_batch",
-        "completed_batches",
-        "completed_batch",
-    )
-    if path:
-        entries.append(BaselineEntry(path=path, completed_batch=str(batch or ""), label=label))
-    resume = payload.get("resume")
-    if isinstance(resume, Mapping):
-        path = _first_string(
-            resume,
-            "baseline_checkpoint_path",
-            "baseline_checkpoint",
-            "checkpoint_path",
-            "checkpoint",
-        )
-        batch = _first_scalar(
-            resume,
-            "baseline_completed_batches",
-            "baseline_completed_batch",
-            "completed_batches",
-            "completed_batch",
-        )
-        if path:
-            entries.append(BaselineEntry(path=path, completed_batch=str(batch or ""), label=label))
-    training_config = payload.get("training_config")
-    if isinstance(training_config, Mapping):
-        entries.extend(_baseline_entries(training_config, f"{label}:training_config"))
-    return entries
-
-
-def baseline_source_path(source: str, repo_root: Path) -> Path:
-    """Resolve a baseline source path using the deploy-script rules."""
-    path = Path(source)
-    return path if path.is_absolute() else repo_root / path
-
-
-def baseline_remote_target(source: str, remote_artifacts_dir: str, repo_root: Path) -> str:
-    """Return the remote target path for a baseline source."""
-    source_path = baseline_source_path(source, repo_root)
-    if source.startswith("_artifacts/"):
-        return f"{remote_artifacts_dir.rstrip('/')}/{source.removeprefix('_artifacts/')}"
-    artifacts_prefix = str(repo_root / "_artifacts") + "/"
-    source_text = str(source_path)
-    if source_text.startswith(artifacts_prefix):
-        return f"{remote_artifacts_dir.rstrip('/')}/{source_text.removeprefix(artifacts_prefix)}"
-    return f"{remote_artifacts_dir.rstrip('/')}/baselines/{source_path.name}"
-
-
-def verify_local_baseline(source: Path, baseline: BaselineEntry) -> None:
-    """Verify a local baseline checkpoint before staging."""
-    if not source.exists():
-        raise RunPodDriverError(
-            f"baseline preflight failed: source checkpoint not found for {baseline.label}: {source}"
-        )
-    latest = source / "latest.json"
-    if not latest.is_file():
-        raise RunPodDriverError(
-            f"baseline preflight failed: custody latest.json not found for {baseline.label}: {latest}"
-        )
-    if not baseline.completed_batch or baseline.completed_batch == "null":
-        raise RunPodDriverError(
-            f"baseline preflight failed: declared completed_batch missing for {baseline.label}"
-        )
-    actual = latest_pointer_completed_batches(json.loads(latest.read_text(encoding="utf-8")))
-    if actual != baseline.completed_batch:
-        raise RunPodDriverError(
-            "baseline preflight failed: completed_batch mismatch for "
-            f"{baseline.label}: declared {baseline.completed_batch} but latest.json has {actual}"
-        )
-
-
-def latest_pointer_completed_batches(payload: Mapping[str, Any]) -> str | None:
-    """Extract completed-batch progress from a custody ``latest.json`` payload."""
-    for key in LATEST_BATCH_KEYS:
-        value = payload.get(key)
-        if value is not None:
-            return str(value)
-    metadata = payload.get("metadata")
-    if isinstance(metadata, Mapping):
-        for key in METADATA_BATCH_KEYS:
-            value = metadata.get(key)
-            if value is not None:
-                return str(value)
-    return None
-
-
-def remote_baseline_verification_command(target: str, expected_batch: str) -> str:
-    """Build a remote command that verifies a staged baseline."""
-    latest = f"{target.rstrip('/')}/latest.json"
-    jq_filter = (
-        ".completed_training_batches // .completed_batches // .completed_batch // "
-        ".completedBatch // .metadata.completed_training_batches // "
-        ".metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // "
-        "empty"
-    )
-    return (
-        f"test -e {_sq(target)} && test -f {_sq(latest)} && "
-        f"actual=$(jq -r {_sq(jq_filter)} {_sq(latest)}) && "
-        f'test -n "$actual" && test "$actual" = {_sq(expected_batch)}'
-    )
-
-
 def build_remote_nohup_sentinel_command(
     *,
     workdir: str,
@@ -1392,22 +1263,6 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _first_string(payload: Mapping[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = payload.get(key)
-        if value not in (None, ""):
-            return str(value)
-    return None
-
-
-def _first_scalar(payload: Mapping[str, Any], *keys: str) -> Any:
-    for key in keys:
-        value = payload.get(key)
-        if value not in (None, ""):
-            return value
-    return None
 
 
 def _looks_remote_path(value: str) -> bool:
