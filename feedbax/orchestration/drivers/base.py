@@ -20,6 +20,23 @@ class DriverRowProbe:
     metadata: Mapping[str, Any] | None = None
 
 
+class ProvisioningAttemptError(RuntimeError):
+    """One failed provisioning attempt with retry and cleanup evidence."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        attempt_record: Mapping[str, Any],
+        stop_reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.attempt_record = dict(attempt_record)
+        self.stop_reason = stop_reason
+
+
 class OrchestrationDriver(Protocol):
     """Synchronous idempotent driver interface used by the stage engine."""
 

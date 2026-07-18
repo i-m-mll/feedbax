@@ -48,6 +48,8 @@ from feedbax.orchestration.drivers.runpod import (
     project_runpod_provision_facts,
     rank_datacenters_for_gpu,
 )
+from feedbax.orchestration.drivers.base import ProvisioningAttemptError
+from feedbax.training.interruption import CancellationDecision
 from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
 from feedbax.orchestration.stages import (
     STAGE_PROVISION,
@@ -297,6 +299,121 @@ def _state(bundle: RunBundle) -> RunSetState:
         rows={row.row_id: RowState() for row in bundle.rows},
         environment_fingerprint="fingerprint-123",
     )
+
+
+class GovernedProvisionDriver:
+    """Fake one-attempt RunPod driver for stage retry policy tests."""
+
+    govern_provisioning_retries = True
+    provision_retry_delay_seconds = 1.0
+
+    def __init__(self, outcomes: list[object]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+        del bundle, state
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return dict(outcome)
+
+
+def _failed_attempt(
+    *,
+    acquired: bool = False,
+    retryable: bool = True,
+    stop_reason: str | None = None,
+    billing: bool = False,
+) -> ProvisioningAttemptError:
+    record: dict[str, Any] = {"driver": "runpod", "acquired": acquired}
+    if acquired:
+        record["cleanup"] = {"pod_absence": {"verified": True}}
+    if billing:
+        record.update(
+            {
+                "billing_started_at": "1969-12-31T23:59:59+00:00",
+                "hourly_rate": 7200.0,
+                "currency": "USD",
+            }
+        )
+    return ProvisioningAttemptError(
+        "transient provisioning failure",
+        retryable=retryable,
+        attempt_record=record,
+        stop_reason=stop_reason,
+    )
+
+
+def _governed_engine(tmp_path: Path, outcomes: list[object], **kwargs: Any) -> tuple[StageEngine, GovernedProvisionDriver, RunSetStateStore]:
+    bundle = _bundle(tmp_path)
+    clock = FakeClock()
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = GovernedProvisionDriver(outcomes)
+    return StageEngine(bundle=bundle, driver=driver, store=store, sleep=clock.sleep, wall_time=clock.monotonic, **kwargs), driver, store
+
+
+def test_stage_engine_governs_runpod_provisioning(tmp_path: Path) -> None:
+    engine, driver, store = _governed_engine(
+        tmp_path, [*[_failed_attempt() for _ in range(10)], {"pod_id": "ok"}]
+    )
+    state = engine.run(stop_after_stage=STAGE_PROVISION)
+    assert driver.calls == 11 and len(state.provisioning_attempts) == 10
+
+    deadline_root = tmp_path / "deadline"
+    deadline_root.mkdir()
+    engine, driver, store = _governed_engine(
+        deadline_root, [_failed_attempt(), {"pod_id": "must-not-run"}]
+    )
+    engine.bundle = engine.bundle.model_copy(
+        update={"budget": BudgetPolicy(max_wall_clock_seconds=1)}
+    )
+    with pytest.raises(OrchestrationStageError, match="wall-clock"):
+        engine.run(stop_after_stage=STAGE_PROVISION)
+    assert driver.calls == 1 and store.load().provisioning_stop_reason == "wall-clock-exceeded"
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason", "probe"),
+    [
+        (_failed_attempt(retryable=False), "non-retryable-error", None),
+        (_failed_attempt(acquired=True, stop_reason="teardown-failure"), "teardown-failure", None),
+        (None, "cancelled", lambda: CancellationDecision("stop", "test", 0.0)),
+    ],
+)
+def test_stage_engine_does_not_retry_governed_terminal_stops(
+    tmp_path: Path, failure: ProvisioningAttemptError | None, reason: str, probe: Any
+) -> None:
+    engine, driver, store = _governed_engine(tmp_path, [failure] if failure else [{"pod_id": "no"}], interruption_probe=probe)
+    with pytest.raises(OrchestrationStageError, match=reason):
+        engine.run(stop_after_stage=STAGE_PROVISION)
+    assert driver.calls == (0 if failure is None else 1)
+    assert store.load().provisioning_stop_reason == reason
+
+
+def test_provisioning_resume_reuses_deadline_and_failed_cost(tmp_path: Path) -> None:
+    engine, driver, store = _governed_engine(
+        tmp_path,
+        [_failed_attempt(acquired=True, billing=True), _failed_attempt(acquired=True, billing=True)],
+    )
+    engine.bundle = engine.bundle.model_copy(
+        update={"budget": BudgetPolicy(max_wall_clock_seconds=30, max_spend_usd=3.0)}
+    )
+    engine._sleep = lambda _seconds: (_ for _ in ()).throw(RuntimeError("restart"))
+    with pytest.raises(RuntimeError, match="restart"):
+        engine.run(stop_after_stage=STAGE_PROVISION)
+    interrupted = store.load()
+    deadline = interrupted.budget_counters["provisioning_deadline_at"]
+    cost = interrupted.budget_counters["failed_provision_cost_usd"]
+    resumed_engine = StageEngine(
+        bundle=engine.bundle, driver=driver, store=store, wall_time=engine._wall_time
+    )
+    with pytest.raises(OrchestrationStageError, match="spend-exceeded"):
+        resumed_engine.run(stop_after_stage=STAGE_PROVISION)
+    resumed = store.load()
+    assert resumed.budget_counters["provisioning_deadline_at"] == deadline
+    assert resumed.budget_counters["failed_provision_cost_usd"] > cost
 
 
 def test_classifies_secure_endpoint_shapes_and_dead_states() -> None:
@@ -583,8 +700,36 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
     assert "--dataCenterId" not in expected_call
 
 
-def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
+def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    call = (
+        "pod", "create", "--name", "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image", "runpod/pytorch:1.0.3@sha256:" + "a" * 64,
+        "--ports", "22/tcp,8080/http", "--gpu-id", "NVIDIA GeForce RTX 4090",
+        "--data-center-ids", "CA-MTL-1",
+    )
+    transport.queue_runpodctl(("user", "--output", "json"), CommandResult(0, '{"clientBalance":10}'))
+    transport.queue_runpodctl(call, CommandResult(401, '{"statusCode":401,"code":"unauthorized"}'))
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            datacenters=("CA-MTL-1",),
+            image=bundle.environment.image_id,
+        ),
+        transport=transport,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "authorization.json")
+    with pytest.raises(OrchestrationStageError, match="non-retryable-error"):
+        StageEngine(bundle=bundle, driver=driver, store=store).run(stop_after_stage=STAGE_PROVISION)
+    assert transport.runpodctl_calls.count(call) == 1
+    assert store.load().provisioning_stop_reason == "non-retryable-error"
+
+
+def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path).model_copy(
+        update={"budget": BudgetPolicy(max_wall_clock_seconds=30, max_spend_usd=3.0)}
+    )
     transport = FakeRunPodTransport()
     clock = FakeClock()
     create_call = (
@@ -603,7 +748,10 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
     transport.queue_runpodctl(create_call, CommandResult(0, json.dumps({"id": "pod-2"})))
     transport.queue_runpodctl(
         ("pod", "get", "pod-1", "--output", "json"),
-        CommandResult(0, "{}"),
+        CommandResult(
+            0,
+            '{"createdAt":"1969-12-31T23:59:59+00:00","costPerHr":3600}',
+        ),
     )
     transport.queue_runpodctl(
         ("pod", "get", "pod-1", "--output", "json"),
@@ -611,7 +759,10 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
     )
     transport.queue_runpodctl(
         ("pod", "get", "pod-2", "--output", "json"),
-        CommandResult(0, '{"createdAt":"now","ssh":{"ip":"203.0.113.2","port":22}}'),
+        CommandResult(
+            0,
+            '{"createdAt":"1970-01-01T00:00:01+00:00","costPerHr":1,"ssh":{"ip":"203.0.113.2","port":22}}',
+        ),
     )
     transport.queue_runpodctl(("user", "--output", "json"), CommandResult(0, '{"clientBalance": 10}'))
     driver = RunPodOrchestrationDriver(
@@ -619,19 +770,24 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
             gpu_id="NVIDIA RTX 2000 Ada Generation",
             image="runpod/pytorch:1.0.3",
             max_acquire_seconds=1,
-            max_provision_attempts=2,
             poll_seconds=1,
         ),
         transport=transport,
         sleep=clock.sleep,
         monotonic=clock.monotonic,
     )
-    assert all(check.status == "pass" for check in driver.preflight_checks(bundle))
-
-    record = driver.provision(bundle, _state(bundle))
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        store=RunSetStateStore(bundle.run_set_dir / "state.json"),
+        sleep=clock.sleep,
+        wall_time=clock.monotonic,
+    ).run(stop_after_stage=STAGE_PROVISION)
 
     assert ("remove", "pod", "pod-1") in transport.runpodctl_calls
-    assert record["pod_id"] == "pod-2"
+    assert state.provision_record["pod_id"] == "pod-2"
+    assert state.provisioning_attempts[0]["cleanup"]["pod_absence"]["verified"] is True
+    assert state.budget_counters["failed_provision_cost_usd"] == 2.0
     pod_get_timeouts = [
         timeout
         for call, timeout in zip(
@@ -687,7 +843,6 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
             gpu_id="NVIDIA RTX 2000 Ada Generation",
             image="runpod/pytorch:1.0.3",
             max_acquire_seconds=2,
-            max_provision_attempts=1,
             poll_seconds=1,
         ),
         transport=transport,
@@ -696,7 +851,7 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
     )
     assert all(check.status == "pass" for check in driver.preflight_checks(bundle))
 
-    with pytest.raises(RunPodDriverError, match="timed out waiting.*after 2s"):
+    with pytest.raises(ProvisioningAttemptError, match="timed out waiting.*after 2s"):
         driver.provision(bundle, _state(bundle))
 
     assert ("remove", "pod", "pod-late") in transport.runpodctl_calls

@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
-from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
     inject_native_execution_context,
@@ -352,7 +352,6 @@ class RunPodDriverConfig:
     image: str = "runpod/pytorch:latest"
     pod_name_prefix: str = "feedbax-orchestration"
     max_acquire_seconds: float = 900.0
-    max_provision_attempts: int = 3
     poll_seconds: float = 5.0
     env_step_timeout_seconds: float = 1800.0
     failure_log_pull_timeout_seconds: float = 60.0
@@ -372,6 +371,7 @@ class RunPodOrchestrationDriver:
     """Synchronous RunPod implementation of the orchestration driver protocol."""
 
     poll_interval_seconds = 5.0
+    govern_provisioning_retries = True
 
     def __init__(
         self,
@@ -398,9 +398,10 @@ class RunPodOrchestrationDriver:
             if self._provided_endpoint
             else None
         )
+        self._last_provision_pod: Mapping[str, Any] | None = None
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
-        """Acquire or reuse a pod and verify SSH/GPU readiness."""
+        """Perform one acquisition attempt; the stage engine owns retries."""
         if self._provided_endpoint:
             self._require_gpu_ready()
             return {
@@ -419,31 +420,56 @@ class RunPodOrchestrationDriver:
             return self._provision_record(pod, provided_pod=True)
 
         if not self._preflight_passed:
-            raise RunPodDriverError(
-                "RunPod creation requires passing named driver PREFLIGHT checks first"
+            raise ProvisioningAttemptError(
+                "RunPod creation requires passing named driver PREFLIGHT checks first",
+                retryable=False,
+                attempt_record={"driver": "runpod", "acquired": False},
             )
-        for attempt in range(self.config.max_provision_attempts):
-            try:
-                pod_id = self._create_pod(bundle)
-                self._pod_id = pod_id
-                self._endpoint, pod = self._wait_for_endpoint(pod_id)
-                self._configure_subprocess_endpoint(self._endpoint)
-                self._require_gpu_ready()
-                return self._provision_record(pod, provided_pod=False)
-            except Exception as exc:
-                if self._pod_id:
-                    try:
-                        self.teardown(bundle, state)
-                    except Exception as teardown_exc:
-                        raise RunPodDriverError(
-                            f"{exc}; automatic teardown failed: {teardown_exc}"
-                        ) from exc
-                self._pod_id = None
-                self._endpoint = None
-                if attempt + 1 >= self.config.max_provision_attempts:
-                    raise
-                self._sleep(self.config.poll_seconds)
-        raise AssertionError("unreachable")
+        pod: Mapping[str, Any] | None = None
+        self._last_provision_pod = None
+        acquired = False
+        pod_id: str | None = None
+        try:
+            pod_id = self._create_pod(bundle)
+            acquired = True
+            self._pod_id = pod_id
+            self._endpoint, pod = self._wait_for_endpoint(pod_id)
+            self._configure_subprocess_endpoint(self._endpoint)
+            self._require_gpu_ready()
+            return self._provision_record(pod, provided_pod=False)
+        except Exception as exc:
+            if isinstance(exc, ProvisioningAttemptError):
+                raise
+            record: dict[str, Any] = {"driver": "runpod", "acquired": acquired, "pod_id": pod_id}
+            pod = pod or self._last_provision_pod
+            if pod is not None:
+                record.update(project_runpod_provision_facts(pod))
+                record["billing_started_at"] = pod.get("createdAt") or pod.get("created_at")
+            if acquired:
+                try:
+                    record["cleanup"] = dict(self.teardown(bundle, state))
+                except Exception as teardown_exc:
+                    record["cleanup_error"] = str(teardown_exc)
+                    self._pod_id = None
+                    self._endpoint = None
+                    raise ProvisioningAttemptError(
+                        f"{exc}; automatic teardown failed: {teardown_exc}",
+                        retryable=False,
+                        attempt_record=record,
+                        stop_reason="teardown-failure",
+                    ) from exc
+            self._pod_id = None
+            self._endpoint = None
+            raise ProvisioningAttemptError(
+                str(exc),
+                retryable=not isinstance(exc, (ValueError, TypeError)),
+                attempt_record=record,
+            ) from exc
+
+    @property
+    def provision_retry_delay_seconds(self) -> float:
+        """Configured positive delay between governed acquisition attempts."""
+        return self.config.poll_seconds
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
@@ -1026,8 +1052,18 @@ class RunPodOrchestrationDriver:
                 pod_id = str(payload.get("id") or payload.get("podId") or "")
                 if pod_id:
                     return pod_id
-            last_error = _redact_secret(result.stderr or result.stdout, self.config.api_key)
-        raise RunPodDriverError(f"pod create failed: {last_error.strip()}")
+            classification, last_error = _classify_create_failure(result, self.config.api_key)
+            if classification == "non-retryable":
+                raise ProvisioningAttemptError(
+                    last_error,
+                    retryable=False,
+                    attempt_record={"driver": "runpod", "acquired": False},
+                )
+        raise ProvisioningAttemptError(
+            last_error,
+            retryable=True,
+            attempt_record={"driver": "runpod", "acquired": False},
+        )
 
     def _wait_for_endpoint(
         self,
@@ -1039,6 +1075,7 @@ class RunPodOrchestrationDriver:
             if remaining <= 0:
                 break
             pod = self._pod_get(pod_id, timeout_seconds=remaining)
+            self._last_provision_pod = pod
             if self._monotonic() > deadline:
                 break
             classification = classify_pod_state(pod)
@@ -1800,6 +1837,24 @@ def load_runpod_api_key(config_path: Path | str = "~/.runpod/config.toml") -> st
 
 def _redact_secret(value: str, secret: str | None) -> str:
     return value.replace(secret, "<redacted>") if secret else value
+
+
+def _classify_create_failure(
+    result: CommandResult, secret: str | None
+) -> tuple[Literal["retryable", "non-retryable"], str]:
+    """Classify only sanitized provider authorization and request failures."""
+    detail = _redact_secret(result.stderr or result.stdout, secret).strip()
+    try:
+        payload = json.loads(result.stdout or result.stderr)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, Mapping):
+        code = str(payload.get("statusCode") or payload.get("code") or "").lower()
+        if code in {"400", "401", "403", "422", "unauthorized", "forbidden", "invalid_request"}:
+            return "non-retryable", detail
+    if result.returncode in {400, 401, 403, 422}:
+        return "non-retryable", detail
+    return "retryable", detail
 
 
 def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:

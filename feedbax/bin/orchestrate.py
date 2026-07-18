@@ -391,7 +391,6 @@ def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
         datacenters=tuple(resources.regions),
         api_key=load_runpod_api_key(),
         min_balance_usd=float(metadata.get("runpod_min_balance_usd", 5.0)),
-        max_provision_attempts=int(metadata.get("runpod_max_provision_attempts", 3)),
         image=bundle.environment.image_id or "runpod/pytorch:latest",
         local_repos={
             str(name): str(path) for name, path in metadata.get("runpod_local_repos", {}).items()

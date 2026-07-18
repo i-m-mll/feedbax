@@ -35,7 +35,7 @@ from feedbax.orchestration.conformance import (
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
 )
-from feedbax.orchestration.drivers.base import OrchestrationDriver
+from feedbax.orchestration.drivers.base import OrchestrationDriver, ProvisioningAttemptError
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration import schedule_eval
@@ -342,10 +342,10 @@ class StageEngine:
                 failed = state.stage(stage_id).model_copy(update=failed_update)
                 state = state.with_stage(stage_id, failed)
                 self.store.save(state)
-                if (
-                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded))
-                    or attempts >= limit
-                ):
+                governed_provision = stage_id == STAGE_PROVISION and bool(
+                    getattr(self.driver, "govern_provisioning_retries", False)
+                )
+                if isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded)) or governed_provision or attempts >= limit:
                     raise
                 continue
             completed = state.stage(stage_id).model_copy(
@@ -460,9 +460,125 @@ class StageEngine:
         return state, {"checks": [check.model_dump(mode="json") for check in checks]}
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        outputs = dict(self.driver.provision(self.bundle, state))
-        state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
-        return state, outputs
+        """Provision RunPod through one durable, budget-governed retry authority."""
+        if not getattr(self.driver, "govern_provisioning_retries", False):
+            outputs = dict(self.driver.provision(self.bundle, state))
+            state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
+            return state, outputs
+
+        counters = dict(state.budget_counters)
+        started_at = float(counters.setdefault("provisioning_started_at", self._wall_time()))
+        deadline = float(counters.setdefault(
+            "provisioning_deadline_at", started_at + self.bundle.budget.max_wall_clock_seconds
+        ))
+        state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+        self.store.save(state)
+        attempts = list(state.provisioning_attempts)
+        while True:
+            decision = self._interruption_probe() if self._interruption_probe is not None else None
+            if decision is not None and decision.action != "continue":
+                self._stop_provisioning(state, attempts, "cancelled", decision.as_provenance())
+                raise BudgetExceeded("provisioning cancelled by operator")
+            now = self._wall_time()
+            if now >= deadline:
+                self._stop_provisioning(state, attempts, "wall-clock-exceeded")
+                raise BudgetExceeded("provisioning exceeded its wall-clock boundary")
+            try:
+                outputs = dict(self.driver.provision(self.bundle, state))
+            except ProvisioningAttemptError as exc:
+                finished_at = self._wall_time()
+                attempt = {
+                    **exc.attempt_record,
+                    "attempt": len(attempts) + 1,
+                    "started_at_unix_seconds": now,
+                    "finished_at_unix_seconds": finished_at,
+                    "error": str(exc),
+                    "retryable": exc.retryable,
+                }
+                attempts.append(attempt)
+                state = state.model_copy(
+                    update={"provisioning_attempts": attempts, "updated_at": utc_now()}
+                )
+                if exc.stop_reason is not None:
+                    self._stop_provisioning(state, attempts, exc.stop_reason)
+                    raise OrchestrationStageError(f"provisioning stopped: {exc.stop_reason}") from exc
+                cleanup = attempt.get("cleanup")
+                absence = cleanup.get("pod_absence") if isinstance(cleanup, Mapping) else None
+                if attempt.get("acquired") and not (
+                    isinstance(absence, Mapping) and absence.get("verified") is True
+                ):
+                    self._stop_provisioning(state, attempts, "cleanup-proof-unavailable")
+                    raise OrchestrationStageError(
+                        "provisioning stopped: cleanup-proof-unavailable"
+                    ) from exc
+                state, exceeded = self._apply_failed_provision_cost(state, attempt)
+                self.store.save(state)
+                if exceeded:
+                    reason = state.provisioning_stop_reason or "spend-exceeded"
+                    self._stop_provisioning(state, attempts, reason)
+                    raise BudgetExceeded(f"provisioning stopped: {reason}") from exc
+                if not exc.retryable:
+                    self._stop_provisioning(state, attempts, "non-retryable-error")
+                    raise OrchestrationStageError("provisioning stopped: non-retryable-error") from exc
+                if self._wall_time() >= deadline:
+                    self._stop_provisioning(state, attempts, "wall-clock-exceeded")
+                    raise BudgetExceeded("provisioning exceeded its wall-clock boundary") from exc
+                delay = float(getattr(self.driver, "provision_retry_delay_seconds", 0.0))
+                if delay <= 0.0:
+                    self._stop_provisioning(state, attempts, "invalid-retry-delay")
+                    raise OrchestrationStageError("RunPod provisioning retry delay must be positive")
+                self._sleep(min(delay, max(0.0, deadline - self._wall_time())))
+                continue
+            outputs["provisioning_attempts"] = attempts
+            state = state.model_copy(
+                update={"provision_record": outputs, "provisioning_attempts": attempts, "updated_at": utc_now()}
+            )
+            return state, outputs
+
+    def _stop_provisioning(
+        self,
+        state: RunSetState,
+        attempts: list[dict[str, Any]],
+        reason: str,
+        cancellation: Mapping[str, Any] | None = None,
+    ) -> RunSetState:
+        counters = dict(state.budget_counters)
+        counters["provisioning_stop_reason"] = reason
+        if cancellation is not None:
+            counters["provisioning_cancellation"] = dict(cancellation)
+        state = state.model_copy(
+            update={
+                "provisioning_attempts": attempts,
+                "provisioning_stop_reason": reason,
+                "budget_counters": counters,
+                "abort_reason": reason,
+                "updated_at": utc_now(),
+            }
+        )
+        self.store.save(state)
+        return state
+
+    def _apply_failed_provision_cost(
+        self, state: RunSetState, attempt: Mapping[str, Any]
+    ) -> tuple[RunSetState, bool]:
+        """Account for a torn-down acquired attempt before permitting another one."""
+        if not attempt.get("acquired") or self.bundle.budget.max_spend_usd is None:
+            return state, False
+        observed_at = datetime.fromtimestamp(
+            float(attempt["finished_at_unix_seconds"]), tz=timezone.utc
+        )
+        try:
+            cost, _rate, _started = _observed_spend_usd(attempt, observed_at=observed_at)
+        except BudgetExceeded:
+            return self._stop_provisioning(
+                state, list(state.provisioning_attempts), "budget-evidence-unavailable"
+            ), True
+        counters = dict(state.budget_counters)
+        total = float(counters.get("failed_provision_cost_usd", 0.0)) + cost
+        counters["failed_provision_cost_usd"] = total
+        counters["max_spend_usd"] = self.bundle.budget.max_spend_usd
+        state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+        return state, total >= self.bundle.budget.max_spend_usd
 
     def _stage_realize_env(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         state, spend_exceeded = self._apply_spend_budget(state)
@@ -552,7 +668,7 @@ class StageEngine:
         observed_at = datetime.fromtimestamp(self._wall_time(), tz=timezone.utc)
         counters = dict(state.budget_counters)
         try:
-            accrued_cost_usd, hourly_rate_usd, billing_started_at = _observed_spend_usd(
+            current_cost_usd, hourly_rate_usd, billing_started_at = _observed_spend_usd(
                 state.provision_record,
                 observed_at=observed_at,
             )
@@ -572,11 +688,15 @@ class StageEngine:
             )
             self.store.save(unavailable)
             raise
+        failed_provision_cost_usd = float(counters.get("failed_provision_cost_usd", 0.0))
+        accrued_cost_usd = failed_provision_cost_usd + current_cost_usd
         counters.update(
             {
                 "billing_started_at": billing_started_at.isoformat(),
                 "hourly_rate_usd": hourly_rate_usd,
                 "accrued_cost_usd": accrued_cost_usd,
+                "current_provision_cost_usd": current_cost_usd,
+                "failed_provision_cost_usd": failed_provision_cost_usd,
                 "max_spend_usd": max_spend_usd,
             }
         )
