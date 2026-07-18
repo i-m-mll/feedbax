@@ -85,6 +85,8 @@ class RunSetState(StrictModel):
     stages: dict[str, StageState] = Field(default_factory=dict)
     rows: dict[str, RowState] = Field(default_factory=dict)
     provision_record: dict[str, Any] | None = None
+    provisioning_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    provisioning_stop_reason: str | None = None
     environment_fingerprint: str | None = None
     budget_counters: dict[str, Any] = Field(default_factory=dict)
     certificate_ref: str | None = None
