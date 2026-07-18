@@ -595,6 +595,14 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
     transport.queue_runpodctl(create_call, CommandResult(0, json.dumps({"id": "pod-1"})))
     transport.queue_runpodctl(create_call, CommandResult(0, json.dumps({"id": "pod-2"})))
     transport.queue_runpodctl(
+        ("pod", "get", "pod-1", "--output", "json"),
+        CommandResult(0, "{}"),
+    )
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-1", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    transport.queue_runpodctl(
         ("pod", "get", "pod-2", "--output", "json"),
         CommandResult(0, '{"createdAt":"now","ssh":{"ip":"203.0.113.2","port":22}}'),
     )
@@ -626,7 +634,7 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
         )
         if call[:2] == ("pod", "get")
     ]
-    assert pod_get_timeouts == [1, 1]
+    assert pod_get_timeouts == [1, 60, 1]
 
 
 def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path) -> None:
@@ -1410,10 +1418,14 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
     )
 
 
-def test_teardown_removes_acquired_pod_and_falls_back_to_stop(tmp_path: Path) -> None:
+def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "busy"))
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(pod_id="pod-123"),
         transport=transport,
@@ -1421,15 +1433,146 @@ def test_teardown_removes_acquired_pod_and_falls_back_to_stop(tmp_path: Path) ->
 
     result = driver.teardown(bundle, _state(bundle))
 
-    assert result["teardown"] == "stopped"
-    assert ("remove", "pod", "pod-123") in transport.runpodctl_calls
+    assert result["teardown"] == "stopped-then-removed"
+    assert result["pod_absence"] == {
+        "verified": True,
+        "pod_id": "pod-123",
+        "polls": 1,
+        "terminal_observation": "not-found",
+    }
+    assert result["final_pod_inventory"] == {
+        "scope": "exact-owned-pod",
+        "queried_pod_id": "pod-123",
+        "pod_ids": [],
+    }
+    assert transport.runpodctl_calls.count(("remove", "pod", "pod-123")) == 2
     assert ("stop", "pod", "pod-123") in transport.runpodctl_calls
+    second_remove_index = transport.runpodctl_calls.index(
+        ("remove", "pod", "pod-123"), 1
+    )
+    assert transport.runpodctl_timeouts[second_remove_index] == 60
+
+
+def test_teardown_fails_closed_when_remove_after_stop_fails(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("remove", "pod", "pod-123"), CommandResult(1, "", "busy")
+    )
+    transport.queue_runpodctl(
+        ("remove", "pod", "pod-123"), CommandResult(1, "", "still busy")
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodDriverError, match="remove pod after stop failed"):
+        driver.teardown(bundle, _state(bundle))
+
+    assert transport.runpodctl_calls == [
+        ("remove", "pod", "pod-123"),
+        ("stop", "pod", "pod-123"),
+        ("remove", "pod", "pod-123"),
+    ]
+
+
+def test_teardown_polls_until_exact_owned_pod_is_absent(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    query = ("pod", "get", "pod-123", "--output", "json")
+    transport.queue_runpodctl(query, CommandResult(0, '{"id":"pod-123"}'))
+    transport.queue_runpodctl(query, CommandResult(1, "", "pod does not exist"))
+    clock = FakeClock()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-123",
+            poll_seconds=2,
+            teardown_absence_timeout_seconds=10,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    result = driver.teardown(bundle, _state(bundle))
+
+    assert result["teardown"] == "removed"
+    assert result["pod_absence"]["polls"] == 2
+    assert clock.sleeps == [2]
+
+
+def test_teardown_fails_when_exact_owned_pod_remains_present(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    query = ("pod", "get", "pod-123", "--output", "json")
+    for _ in range(2):
+        transport.queue_runpodctl(query, CommandResult(0, '{"id":"pod-123"}'))
+    clock = FakeClock()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-123",
+            poll_seconds=2,
+            teardown_absence_timeout_seconds=4,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    with pytest.raises(RunPodDriverError, match="remained present for 4s"):
+        driver.teardown(bundle, _state(bundle))
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CommandResult(0, "{}"),
+        CommandResult(0, '{"id":"other-pod"}'),
+        CommandResult(1, "", "provider query unavailable"),
+    ],
+)
+def test_teardown_fails_closed_on_ambiguous_absence_query(
+    tmp_path: Path,
+    result: CommandResult,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        result,
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodDriverError, match="ambiguous absence query"):
+        driver.teardown(bundle, _state(bundle))
+
+
+def test_teardown_keep_alive_skips_owned_pod_query(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    result = driver.teardown(bundle, _state(bundle))
+
+    assert result["teardown"] == "skipped"
+    assert transport.runpodctl_calls == []
 
 
 def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     transport.rsync_result = CommandResult(1, "", "diagnostic pull failed")
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             pod_id="pod-123",

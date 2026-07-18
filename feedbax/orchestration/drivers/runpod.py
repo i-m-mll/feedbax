@@ -65,6 +65,7 @@ RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
 )
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
 _REMOTE_ENVIRONMENT_PROBE = r"""
 import hashlib
 import importlib.metadata
@@ -354,6 +355,7 @@ class RunPodDriverConfig:
     poll_seconds: float = 5.0
     env_step_timeout_seconds: float = 1800.0
     failure_log_pull_timeout_seconds: float = 60.0
+    teardown_absence_timeout_seconds: float = 60.0
     volume_mount: str = "/workspace"
     remote_repo_root: str = "/workspace"
     remote_run_root: str = "/workspace/feedbax_runs"
@@ -861,11 +863,80 @@ class RunPodOrchestrationDriver:
             return {"driver": "runpod", "teardown": "skipped"}
         if not self._pod_id:
             return {"driver": "runpod", "teardown": "no-pod"}
-        result = self.transport.runpodctl("remove", "pod", self._pod_id)
+        pod_id = self._pod_id
+        result = self.transport.runpodctl("remove", "pod", pod_id)
         if result.returncode != 0:
-            self.transport.runpodctl("stop", "pod", self._pod_id).check("runpodctl stop pod")
-            return {"driver": "runpod", "teardown": "stopped", "pod_id": self._pod_id}
-        return {"driver": "runpod", "teardown": "removed", "pod_id": self._pod_id}
+            self.transport.runpodctl("stop", "pod", pod_id).check("runpodctl stop pod")
+            self.transport.runpodctl(
+                "remove",
+                "pod",
+                pod_id,
+                timeout_seconds=self.config.teardown_absence_timeout_seconds,
+            ).check("runpodctl remove pod after stop")
+            action = "stopped-then-removed"
+        else:
+            action = "removed"
+        absence = self._wait_for_pod_absence(pod_id)
+        self._pod_id = None
+        return {
+            "driver": "runpod",
+            "teardown": action,
+            "pod_id": pod_id,
+            "pod_absence": absence,
+            "final_pod_inventory": {
+                "scope": "exact-owned-pod",
+                "queried_pod_id": pod_id,
+                "pod_ids": [],
+            },
+        }
+
+    def _wait_for_pod_absence(self, pod_id: str) -> Mapping[str, Any]:
+        """Boundedly prove that one exact orchestration-owned pod is absent."""
+        deadline = self._monotonic() + self.config.teardown_absence_timeout_seconds
+        polls = 0
+        while self._monotonic() < deadline:
+            remaining = deadline - self._monotonic()
+            result = self.transport.runpodctl(
+                "pod",
+                "get",
+                pod_id,
+                "--output",
+                "json",
+                timeout_seconds=remaining,
+            )
+            polls += 1
+            if result.returncode != 0:
+                detail = (result.stderr.strip() or result.stdout.strip()).lower()
+                if any(marker in detail for marker in _POD_NOT_FOUND_MARKERS):
+                    return {
+                        "verified": True,
+                        "pod_id": pod_id,
+                        "polls": polls,
+                        "terminal_observation": "not-found",
+                    }
+                raise RunPodDriverError(
+                    f"ambiguous absence query for owned pod {pod_id!r}: "
+                    f"{detail or f'exit={result.returncode}'}"
+                )
+            try:
+                payload = _json_object(result.stdout)
+            except (TypeError, ValueError) as exc:
+                raise RunPodDriverError(
+                    f"ambiguous absence query for owned pod {pod_id!r}: invalid JSON object"
+                ) from exc
+            observed_id = str(payload.get("id") or payload.get("podId") or "")
+            if observed_id != pod_id:
+                raise RunPodDriverError(
+                    f"ambiguous absence query for owned pod {pod_id!r}: "
+                    f"observed id {observed_id!r}"
+                )
+            remaining = deadline - self._monotonic()
+            if remaining > 0:
+                self._sleep(min(self.config.poll_seconds, remaining))
+        raise RunPodDriverError(
+            f"owned pod {pod_id!r} remained present for "
+            f"{self.config.teardown_absence_timeout_seconds:g}s after teardown"
+        )
 
     def _pod_get(
         self,
