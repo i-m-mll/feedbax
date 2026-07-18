@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 import time
@@ -132,6 +133,39 @@ def _parse_observed_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed.astimezone(timezone.utc)
+
+
+def _observed_spend_usd(
+    provision_record: Mapping[str, Any] | None,
+    *,
+    observed_at: datetime,
+) -> tuple[float, float, datetime]:
+    """Return accrued USD spend from observed provider billing facts."""
+    record = provision_record or {}
+    billing_started_at = _parse_observed_datetime(record.get("billing_started_at"))
+    hourly_rate = record.get("hourly_rate")
+    currency = record.get("currency")
+    missing: list[str] = []
+    if billing_started_at is None or billing_started_at > observed_at:
+        missing.append("billing_started_at")
+    if (
+        isinstance(hourly_rate, bool)
+        or not isinstance(hourly_rate, (int, float))
+        or not math.isfinite(float(hourly_rate))
+        or float(hourly_rate) < 0.0
+    ):
+        missing.append("hourly_rate")
+    if currency != "USD":
+        missing.append("currency=USD")
+    if missing:
+        raise BudgetExceeded(
+            "capped remote execution requires usable observed provider billing evidence: "
+            + ", ".join(missing)
+        )
+    assert billing_started_at is not None
+    rate = float(hourly_rate)
+    elapsed_hours = (observed_at - billing_started_at).total_seconds() / 3600.0
+    return rate * elapsed_hours, rate, billing_started_at
 
 
 class OrchestrationStageError(RuntimeError):
@@ -308,7 +342,10 @@ class StageEngine:
                 failed = state.stage(stage_id).model_copy(update=failed_update)
                 state = state.with_stage(stage_id, failed)
                 self.store.save(state)
-                if isinstance(exc, _PrimaryExecutorFailure) or attempts >= limit:
+                if (
+                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded))
+                    or attempts >= limit
+                ):
                     raise
                 continue
             completed = state.stage(stage_id).model_copy(
@@ -428,6 +465,10 @@ class StageEngine:
         return state, outputs
 
     def _stage_realize_env(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        state, spend_exceeded = self._apply_spend_budget(state)
+        self.store.save(state)
+        if spend_exceeded:
+            raise BudgetExceeded("max_spend_usd reached before REALIZE_ENV")
         fingerprint = self.driver.realize_env(self.bundle, state)
         state = state.model_copy(
             update={"environment_fingerprint": fingerprint, "updated_at": utc_now()}
@@ -438,6 +479,10 @@ class StageEngine:
         return state, dict(self.driver.stage_inputs(self.bundle, state))
 
     def _stage_launch(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        state, spend_exceeded = self._apply_spend_budget(state)
+        self.store.save(state)
+        if spend_exceeded:
+            raise BudgetExceeded("max_spend_usd reached before LAUNCH")
         launched: list[str] = []
         for row in self._launchable_rows(state):
             state = self._launch_one(row, state)
@@ -455,11 +500,22 @@ class StageEngine:
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         self.store.save(state)
         budget_exceeded = False
+        spend_exceeded = False
         while True:
+            state, spend_exceeded = self._apply_spend_budget(state)
+            if spend_exceeded:
+                budget_exceeded = True
+                state = self._stop_unfinished(state, reason="budget-exceeded")
+                break
             decision = self._interruption_probe() if self._interruption_probe is not None else None
             if decision is not None and decision.action != "continue":
                 state = self._apply_interruption(state, decision)
             state = self._refresh_rows(state)
+            state, spend_exceeded = self._apply_spend_budget(state)
+            if spend_exceeded:
+                budget_exceeded = True
+                state = self._stop_unfinished(state, reason="budget-exceeded")
+                break
             if self._all_terminal(state):
                 break
             if self._wall_time() - started_at > self.bundle.budget.max_wall_clock_seconds:
@@ -476,7 +532,7 @@ class StageEngine:
         counters = dict(state.budget_counters)
         counters["wall_clock_seconds"] = max(0.0, self._wall_time() - started_at)
         if budget_exceeded:
-            counters["budget_exceeded"] = "wall-clock"
+            counters["budget_exceeded"] = "spend" if spend_exceeded else "wall-clock"
             state = state.model_copy(
                 update={
                     "budget_counters": counters,
@@ -487,6 +543,54 @@ class StageEngine:
             return state, counters
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         return state, counters
+
+    def _apply_spend_budget(self, state: RunSetState) -> tuple[RunSetState, bool]:
+        """Record and enforce capped spend using only observed provider facts."""
+        max_spend_usd = self.bundle.budget.max_spend_usd
+        if self.bundle.deployment_policy.venue == "local" or max_spend_usd is None:
+            return state, False
+        observed_at = datetime.fromtimestamp(self._wall_time(), tz=timezone.utc)
+        counters = dict(state.budget_counters)
+        try:
+            accrued_cost_usd, hourly_rate_usd, billing_started_at = _observed_spend_usd(
+                state.provision_record,
+                observed_at=observed_at,
+            )
+        except OrchestrationStageError:
+            counters.update(
+                {
+                    "max_spend_usd": max_spend_usd,
+                    "budget_exceeded": "spend-evidence-unavailable",
+                }
+            )
+            unavailable = state.model_copy(
+                update={
+                    "budget_counters": counters,
+                    "abort_reason": "budget-evidence-unavailable",
+                    "updated_at": utc_now(),
+                }
+            )
+            self.store.save(unavailable)
+            raise
+        counters.update(
+            {
+                "billing_started_at": billing_started_at.isoformat(),
+                "hourly_rate_usd": hourly_rate_usd,
+                "accrued_cost_usd": accrued_cost_usd,
+                "max_spend_usd": max_spend_usd,
+            }
+        )
+        exceeded = accrued_cost_usd >= max_spend_usd
+        if exceeded:
+            counters["budget_exceeded"] = "spend"
+        state = state.model_copy(
+            update={
+                "budget_counters": counters,
+                "abort_reason": "budget-exceeded" if exceeded else state.abort_reason,
+                "updated_at": utc_now(),
+            }
+        )
+        return state, exceeded
 
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected: dict[str, Mapping[str, str]] = {}
