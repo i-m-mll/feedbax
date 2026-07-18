@@ -65,6 +65,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.selection import TopKByMetricPerGroup
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
 
@@ -1868,7 +1869,9 @@ def test_staged_bundle_materialization_stage_emits_artifact_and_regeneration(
         assert stage.outputs[0].status == "materialized"
         payload_ref = stage.outputs[0].artifacts[0]
         assert payload_ref.role == "toy_materialized_payload"
-        assert json.loads(Path(payload_ref.uri).read_text(encoding="utf-8"))["value"] == 23
+        assert json.loads(ImmutableArtifactBlobProvider(tmp_path).get_bytes(payload_ref))[
+            "value"
+        ] == 23
         assert stage.regeneration_specs[0].kind == "RegenerationSpec"
         manifest = resolve_manifest_input(stage.manifest_refs[0], tmp_path).manifest
         assert manifest.artifacts[0].role == "toy_materialized_payload"

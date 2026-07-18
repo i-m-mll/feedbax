@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 
+import numpy as np
 import pytest
 
+import feedbax.analysis.execution_context as execution_context_module
 from feedbax.analysis.bundles import (
     AnalysisBundleSpec,
     BundleStageSpec,
@@ -375,6 +378,7 @@ def test_checkpoint_binding_rejects_malformed_relative_uri_before_resolution(
 
 def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_reference(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkpoint_root = tmp_path / "checkpoint-authority"
     run_spec = _run_spec(minimax=True)
@@ -413,13 +417,33 @@ def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_referenc
             StagedCheckpointCustodyRootBinding("training-checkpoints", checkpoint_root)
         ],
     )
+    original_resolve = execution_context_module.resolve_bound_checkpoint_custody_ref
+    resolutions = 0
+
+    def counted_resolve(*args, **kwargs):
+        nonlocal resolutions
+        resolutions += 1
+        return original_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "resolve_bound_checkpoint_custody_ref",
+        counted_resolve,
+    )
 
     explicit = context.resolve_checkpoint_custody_ref(
         parent,
         binding_name="training-checkpoints",
         slot_names=["controller"],
     )
+    repeated = context.resolve_checkpoint_custody_ref(
+        parent,
+        binding_name="training-checkpoints",
+        slot_names=["controller"],
+    )
     from_metadata = context.resolve_checkpoint_custody_ref(parent, slot_names=["rng"])
+    assert repeated is explicit
+    assert resolutions == 2
     assert explicit.parent_ref == parent
     assert explicit.manifest.transaction_id == result.manifest.transaction_id
     assert set(explicit.slots) == {"controller"}
@@ -438,6 +462,154 @@ def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_referenc
     checkpoint_root.symlink_to(replacement, target_is_directory=True)
     with pytest.raises(StagedExecutionContextError, match="unavailable|replaced"):
         context.resolve_checkpoint_custody_ref(parent, slot_names=["controller"])
+
+
+def test_cached_checkpoint_snapshot_recursively_rejects_mutation(tmp_path: Path) -> None:
+    checkpoint_root = tmp_path / "checkpoint-mutability"
+    run_spec = _run_spec(minimax=True)
+    slots = _minimax_slots()
+    slots["controller"] = {
+        "array": np.asarray([1, 2], dtype=np.int32),
+        "metadata": {"tag": "original", "labels": ["verified"]},
+    }
+    result = write_checkpoint_transaction(
+        checkpoint_root,
+        run_spec=run_spec,
+        phase_program=run_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+    parent = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=result.manifest.transaction_id,
+        role="training_checkpoint_custody",
+        uri=result.manifest_path.relative_to(checkpoint_root).as_posix(),
+        metadata={"manifest_sha256": sha256_bytes(result.manifest_path.read_bytes())},
+    )
+    descriptor = StagedExecutionDescriptor(
+        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
+        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
+        artifact_providers={},
+        checkpoint_custody={
+            "training-checkpoints": StagedCheckpointCustodySpec(
+                backend="feedbax-checkpoint-transaction-tree"
+            )
+        },
+    )
+    context = resolve_staged_execution_context(
+        descriptor,
+        checkpoint_custody_bindings=[
+            StagedCheckpointCustodyRootBinding(
+                "training-checkpoints", checkpoint_root
+            )
+        ],
+    )
+
+    first = context.resolve_checkpoint_custody_ref(
+        parent,
+        binding_name="training-checkpoints",
+        slot_names=["controller"],
+    )
+    controller = first.slots["controller"]
+    with pytest.raises(ValueError, match="read-only"):
+        controller["array"][0] = -1
+    with pytest.raises(TypeError, match="immutable"):
+        controller["metadata"]["tag"] = "mutated"
+    with pytest.raises(TypeError, match="immutable"):
+        controller["metadata"]["labels"].append("mutated")
+    with pytest.raises(TypeError, match="immutable"):
+        first.slots["controller"] = {"array": np.asarray([-1])}
+
+    second = context.resolve_checkpoint_custody_ref(
+        parent,
+        binding_name="training-checkpoints",
+        slot_names=["controller"],
+    )
+    assert second is first
+    np.testing.assert_array_equal(second.slots["controller"]["array"], [1, 2])
+    assert second.slots["controller"]["metadata"]["tag"] == "original"
+
+
+class _StatProxy:
+    def __init__(self, wrapped, **overrides):
+        self._wrapped = wrapped
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._wrapped, name)
+
+
+def test_retained_local_reader_rejects_ctime_only_identity_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "manifest.json"
+    data = b'{"probe":"ctime"}'
+    path.write_bytes(data)
+    original_fstat = os.fstat
+    regular_calls = 0
+
+    def changed_fstat(fd):
+        nonlocal regular_calls
+        result = original_fstat(fd)
+        if (result.st_mode & 0o170000) == 0o100000:
+            regular_calls += 1
+            if regular_calls == 2:
+                return _StatProxy(result, st_ctime_ns=result.st_ctime_ns + 1)
+        return result
+
+    monkeypatch.setattr(os, "fstat", changed_fstat)
+
+    with pytest.raises(StagedExecutionContextError, match="identity changed during read"):
+        execution_context_module._read_retained_local_file(
+            tmp_path,
+            path.name,
+            expected_root_identity=execution_context_module._directory_identity(
+                tmp_path, kind="test"
+            ),
+            expected_size=len(data),
+            expected_sha256=sha256_bytes(data),
+            kind="authenticated manifest",
+            require_single_link=True,
+        )
+
+
+def test_retained_local_reader_rejects_final_hard_link_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "manifest.json"
+    data = b'{"probe":"links"}'
+    path.write_bytes(data)
+    original_fstat = os.fstat
+    regular_calls = 0
+
+    def changed_fstat(fd):
+        nonlocal regular_calls
+        result = original_fstat(fd)
+        if (result.st_mode & 0o170000) == 0o100000:
+            regular_calls += 1
+            if regular_calls == 2:
+                return _StatProxy(result, st_nlink=result.st_nlink + 1)
+        return result
+
+    monkeypatch.setattr(os, "fstat", changed_fstat)
+
+    with pytest.raises(StagedExecutionContextError, match="hard-link count changed"):
+        execution_context_module._read_retained_local_file(
+            tmp_path,
+            path.name,
+            expected_root_identity=execution_context_module._directory_identity(
+                tmp_path, kind="test"
+            ),
+            expected_size=len(data),
+            expected_sha256=sha256_bytes(data),
+            kind="authenticated manifest",
+            require_single_link=True,
+        )
 
 
 def test_exact_immutable_parent_uses_complete_ref_location_and_preserves_ref(

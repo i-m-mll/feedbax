@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import stat
+import weakref
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -12,15 +14,18 @@ from types import MappingProxyType
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from pydantic import ValidationError
+import jax.tree as jt
+import jax.tree_util as jtu
+import numpy as np
+from pydantic import BaseModel, ValidationError
 
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
     is_authenticated_manifest_ref,
-    resolve_manifest_input as resolve_bound_manifest_input,
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
+    _treedef_structure_fingerprint,
     load_authenticated_evaluation_states_artifact,
 )
 from feedbax.contracts.manifest import (
@@ -42,6 +47,8 @@ from feedbax.persistence.artifact_custody import (
 )
 from feedbax.training.checkpoint_custody import (
     ResolvedCheckpointTransaction,
+    _immutable_model_snapshot,
+    _immutable_snapshot_value,
     resolve_checkpoint_custody_ref as resolve_bound_checkpoint_custody_ref,
 )
 
@@ -92,6 +99,154 @@ class StagedParentExecutionLocation:
     artifact_provider: str | None = None
 
 
+_FileState = tuple[int, int, int, int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _RetainedFileSnapshot:
+    root: Path
+    relative: str
+    expected_root_identity: tuple[int, int]
+    state: _FileState
+    kind: str
+    require_single_link: bool
+
+    def is_current(self) -> bool:
+        try:
+            observed = _retained_file_state(
+                self.root,
+                self.relative,
+                expected_root_identity=self.expected_root_identity,
+                kind=self.kind,
+                require_single_link=self.require_single_link,
+            )
+        except (OSError, StagedExecutionContextError):
+            return False
+        return observed == self.state
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestAuthorityKey:
+    parent: str
+    root: str
+    execution_uri: str
+    artifact_provider: str | None
+    manifest_sha256: str
+    manifest_size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationStatesAuthorityKey:
+    manifest: _ManifestAuthorityKey
+    states_sha256: str
+    states_size_bytes: int
+    requested_structure_fingerprint: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckpointLookupKey:
+    parent: str
+    root: str
+    binding_name: str
+    slot_names: tuple[str, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckpointAuthorityKey:
+    lookup: _CheckpointLookupKey
+    manifest_sha256: str
+    manifest_size_bytes: int
+    slots: tuple[tuple[str, str, int, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _MemoEntry:
+    value: Any
+    snapshots: tuple[_RetainedFileSnapshot, ...]
+
+    def is_current(self) -> bool:
+        return all(snapshot.is_current() for snapshot in self.snapshots)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReconstructableEvaluationStates:
+    """Verified immutable leaves for a fresh custom-PyTree wrapper per lookup."""
+
+    structure: jtu.PyTreeDef
+    leaves: tuple[Any, ...]
+
+    def materialize(self) -> Any:
+        structure = copy.deepcopy(self.structure)
+        return structure.unflatten(list(self.leaves))
+
+
+@dataclass(slots=True)
+class _StagedExecutionMemo:
+    manifests: dict[_ManifestAuthorityKey, _MemoEntry] = field(default_factory=dict)
+    evaluation_states: dict[_EvaluationStatesAuthorityKey, _MemoEntry] = field(
+        default_factory=dict
+    )
+    state_keys_by_object_id: dict[int, _EvaluationStatesAuthorityKey] = field(
+        default_factory=dict
+    )
+    state_object_refs_by_id: dict[int, weakref.ReferenceType[Any]] = field(
+        default_factory=dict
+    )
+    authenticated_channels: dict[_EvaluationStatesAuthorityKey, Any] = field(
+        default_factory=dict
+    )
+    checkpoint_lookup: dict[_CheckpointLookupKey, _CheckpointAuthorityKey] = field(
+        default_factory=dict
+    )
+    checkpoints: dict[_CheckpointAuthorityKey, _MemoEntry] = field(default_factory=dict)
+
+    def invalidate_manifest(self, key: _ManifestAuthorityKey) -> None:
+        self.manifests.pop(key, None)
+        for states_key in tuple(self.evaluation_states):
+            if states_key.manifest == key:
+                self.invalidate_evaluation_states(states_key)
+
+    def invalidate_evaluation_states(self, key: _EvaluationStatesAuthorityKey) -> None:
+        self.evaluation_states.pop(key, None)
+        for identity, candidate in tuple(self.state_keys_by_object_id.items()):
+            if candidate == key:
+                self.state_keys_by_object_id.pop(identity, None)
+                self.state_object_refs_by_id.pop(identity, None)
+        self.authenticated_channels.pop(key, None)
+
+    def remember_evaluation_states(
+        self,
+        value: Any,
+        key: _EvaluationStatesAuthorityKey,
+        *,
+        reconstructed: bool,
+    ) -> None:
+        identity = id(value)
+        self.state_keys_by_object_id[identity] = key
+        if not reconstructed:
+            return
+        try:
+            reference = weakref.ref(
+                value,
+                lambda observed, identity=identity: self._forget_evaluation_states(
+                    identity, observed
+                ),
+            )
+        except TypeError:
+            self.state_keys_by_object_id.pop(identity, None)
+            return
+        self.state_object_refs_by_id[identity] = reference
+
+    def _forget_evaluation_states(
+        self,
+        identity: int,
+        observed: weakref.ReferenceType[Any],
+    ) -> None:
+        if self.state_object_refs_by_id.get(identity) is observed:
+            self.state_object_refs_by_id.pop(identity, None)
+            self.state_keys_by_object_id.pop(identity, None)
+
+
 @dataclass(frozen=True, slots=True)
 class StagedExecutionContext:
     """Validated runtime-only resources for registered staged recipes."""
@@ -112,6 +267,11 @@ class StagedExecutionContext:
     )
     _parent_execution_root_identities: tuple[tuple[int, int], ...] = field(
         default=(), repr=False, compare=False
+    )
+    _memo: _StagedExecutionMemo = field(
+        default_factory=_StagedExecutionMemo,
+        repr=False,
+        compare=False,
     )
 
     def __post_init__(self) -> None:
@@ -191,12 +351,23 @@ class StagedExecutionContext:
     def resolve_manifest_input(self, parent: ParentRef) -> ResolvedManifestInput:
         """Resolve one authenticated manifest through its retained runtime authority."""
         location = self.parent_execution_location(parent)
+        key = _manifest_authority_key(parent, location)
+        cached = self._memo.manifests.get(key)
+        if cached is not None:
+            if cached.is_current():
+                return cached.value
+            self._memo.invalidate_manifest(key)
         if location.artifact_provider is None:
-            return resolve_bound_manifest_input(
+            location_index = self.parent_execution_locations.index(location)
+            resolved, snapshot = _resolve_retained_local_manifest_input(
                 parent,
-                location.root,
-                runtime_locator=location.execution_uri,
+                location,
+                expected_root_identity=self._parent_execution_root_identities[
+                    location_index
+                ],
             )
+            self._memo.manifests[key] = _MemoEntry(resolved, (snapshot,))
+            return resolved
         if not is_authenticated_manifest_ref(parent):
             raise StagedExecutionContextError(
                 "provider-backed manifest input requires an authenticated ParentRef"
@@ -209,6 +380,19 @@ class StagedExecutionContext:
         size_bytes = int(parent.metadata["size_bytes"])
         artifact_id = f"artifact://sha256/{digest}"
         try:
+            relative = _provider_artifact_relative_path(digest)
+            try:
+                before = _retained_file_snapshot(
+                    Path(provider.root),
+                    relative,
+                    expected_root_identity=expected_root_identity,
+                    kind="provider-backed manifest",
+                    require_single_link=True,
+                )
+            except StagedExecutionContextError:
+                # Preserve the provider's established missing/integrity diagnostics.
+                provider.get_bytes(artifact_id, size_bytes=size_bytes)
+                raise
             raw_bytes = provider.get_bytes(artifact_id, size_bytes=size_bytes)
             if hashlib.sha256(raw_bytes).hexdigest() != digest:
                 raise StagedExecutionContextError("provider-backed manifest digest changed")
@@ -217,12 +401,25 @@ class StagedExecutionContext:
                 raise StagedExecutionContextError(
                     "provider-backed manifest kind or id disagrees with ParentRef"
                 )
-            return ResolvedManifestInput(
+            resolved = _immutable_resolved_manifest_input(
                 ref=parent,
                 manifest=manifest,
                 path=Path(provider.root) / location.execution_uri,
                 raw_bytes=raw_bytes,
             )
+            snapshot = _retained_file_snapshot(
+                Path(provider.root),
+                relative,
+                expected_root_identity=expected_root_identity,
+                kind="provider-backed manifest",
+                require_single_link=True,
+            )
+            if snapshot.state != before.state:
+                raise StagedExecutionContextError(
+                    "provider-backed manifest identity changed during read"
+                )
+            self._memo.manifests[key] = _MemoEntry(resolved, (snapshot,))
+            return resolved
         finally:
             _require_directory_identity(
                 Path(provider.root),
@@ -230,7 +427,12 @@ class StagedExecutionContext:
                 kind="artifact provider",
             )
 
-    def load_evaluation_states(self, parent: ParentRef) -> Any:
+    def load_evaluation_states(
+        self,
+        parent: ParentRef,
+        *,
+        structure: jtu.PyTreeDef | None = None,
+    ) -> Any:
         """Load v1/v2 states through the authority retained for an exact eval parent.
 
         Typed v3 staged prerequisites fail closed with
@@ -241,17 +443,7 @@ class StagedExecutionContext:
                 "evaluation states require an EvaluationRunManifest evaluation_run parent"
             )
         location = self.parent_execution_location(parent)
-        expected_root_identity: tuple[int, int] | None = None
-        if location.artifact_provider is None:
-            location_index = self.parent_execution_locations.index(location)
-            expected_root_identity = self._parent_execution_root_identities[location_index]
-            resolved = _resolve_retained_local_manifest_input(
-                parent,
-                location,
-                expected_root_identity=expected_root_identity,
-            )
-        else:
-            resolved = self.resolve_manifest_input(parent)
+        resolved = self.resolve_manifest_input(parent)
         manifest = resolved.manifest
         if not isinstance(manifest, EvaluationRunManifest):
             raise StagedExecutionContextError(
@@ -271,25 +463,63 @@ class StagedExecutionContext:
                 "completed EvaluationRunManifest must have exactly one evaluation_states artifact"
             )
         artifact = artifacts[0]
+        key = _EvaluationStatesAuthorityKey(
+            manifest=_manifest_authority_key(parent, location),
+            states_sha256=str(artifact.sha256),
+            states_size_bytes=int(artifact.size_bytes),
+            requested_structure_fingerprint=(
+                _treedef_structure_fingerprint(structure)
+                if structure is not None
+                else None
+            ),
+        )
+        cached = self._memo.evaluation_states.get(key)
+        if cached is not None:
+            if cached.is_current():
+                states = _materialize_evaluation_states(cached.value)
+                self._memo.remember_evaluation_states(
+                    states,
+                    key,
+                    reconstructed=isinstance(
+                        cached.value, _ReconstructableEvaluationStates
+                    ),
+                )
+                return states
+            self._memo.invalidate_evaluation_states(key)
         if location.artifact_provider is None:
-            assert expected_root_identity is not None
+            location_index = self.parent_execution_locations.index(location)
+            expected_root_identity = self._parent_execution_root_identities[location_index]
             canonical = _require_canonical_local_artifact_locators(artifact)
             _require_directory_identity(
                 location.root, expected_root_identity, kind="parent execution"
             )
             try:
-                data = _read_retained_local_artifact(
+                data, snapshot = _read_retained_local_artifact(
                     location.root,
                     canonical,
                     expected_root_identity=expected_root_identity,
                     expected_size=artifact.size_bytes,
                     expected_sha256=artifact.sha256,
                 )
-                return load_authenticated_evaluation_states_artifact(
+                states = load_authenticated_evaluation_states_artifact(
                     artifact,
                     manifest_id=manifest.id,
                     data=data,
+                    structure=structure,
                 )
+                memo_value = _evaluation_states_memo_value(states)
+                if memo_value is None:
+                    return states
+                self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
+                states = _materialize_evaluation_states(memo_value)
+                self._memo.remember_evaluation_states(
+                    states,
+                    key,
+                    reconstructed=isinstance(
+                        memo_value, _ReconstructableEvaluationStates
+                    ),
+                )
+                return states
             finally:
                 _require_directory_identity(
                     location.root, expected_root_identity, kind="parent execution"
@@ -300,20 +530,87 @@ class StagedExecutionContext:
             location.artifact_provider
         ]
         try:
+            relative = _provider_artifact_relative_path(str(artifact.sha256))
+            try:
+                before = _retained_file_snapshot(
+                    Path(provider.root),
+                    relative,
+                    expected_root_identity=expected_root_identity,
+                    kind="provider-backed evaluation_states artifact",
+                    require_single_link=True,
+                )
+            except StagedExecutionContextError:
+                # Preserve the provider's established missing/integrity diagnostics.
+                provider.get_bytes(
+                    f"artifact://sha256/{artifact.sha256}",
+                    size_bytes=artifact.size_bytes,
+                )
+                raise
             data = provider.get_bytes(
                 f"artifact://sha256/{artifact.sha256}", size_bytes=artifact.size_bytes
             )
-            return load_authenticated_evaluation_states_artifact(
+            states = load_authenticated_evaluation_states_artifact(
                 artifact,
                 manifest_id=manifest.id,
                 data=data,
+                structure=structure,
             )
+            memo_value = _evaluation_states_memo_value(states)
+            snapshot = _retained_file_snapshot(
+                Path(provider.root),
+                relative,
+                expected_root_identity=expected_root_identity,
+                kind="provider-backed evaluation_states artifact",
+                require_single_link=True,
+            )
+            if snapshot.state != before.state:
+                raise StagedExecutionContextError(
+                    "provider-backed evaluation_states artifact identity changed during read"
+                )
+            if memo_value is None:
+                return states
+            self._memo.evaluation_states[key] = _MemoEntry(memo_value, (snapshot,))
+            states = _materialize_evaluation_states(memo_value)
+            self._memo.remember_evaluation_states(
+                states,
+                key,
+                reconstructed=isinstance(memo_value, _ReconstructableEvaluationStates),
+            )
+            return states
         finally:
             _require_directory_identity(
                 Path(provider.root),
                 expected_root_identity,
                 kind="artifact provider",
             )
+
+    def _cached_authenticated_channels(self, states: Any) -> Any | None:
+        key = self._memo.state_keys_by_object_id.get(id(states))
+        if key is None:
+            return None
+        entry = self._memo.evaluation_states.get(key)
+        if entry is None or (
+            not isinstance(entry.value, _ReconstructableEvaluationStates)
+            and entry.value is not states
+        ):
+            return None
+        return self._memo.authenticated_channels.get(key)
+
+    def _cache_authenticated_channels(self, states: Any, channels: Any) -> None:
+        key = self._memo.state_keys_by_object_id.get(id(states))
+        if key is None:
+            raise StagedExecutionContextError(
+                "authenticated channels require a memoized evaluation-state snapshot"
+            )
+        entry = self._memo.evaluation_states.get(key)
+        if entry is None or (
+            not isinstance(entry.value, _ReconstructableEvaluationStates)
+            and entry.value is not states
+        ):
+            raise StagedExecutionContextError(
+                "authenticated channels disagree with the memoized state snapshot"
+            )
+        self._memo.authenticated_channels[key] = channels
 
     def checkpoint_custody_root(self, name: str) -> Path:
         """Return one explicitly bound trusted checkpoint-custody root by name."""
@@ -378,12 +675,84 @@ class StagedExecutionContext:
         _validate_checkpoint_ref_uri(ref.uri)
         root = self.checkpoint_custody_root(selected_binding)
         expected_identity = self._checkpoint_custody_root_identities[selected_binding]
+        selection = _checkpoint_slot_selection_identity(slot_names)
+        lookup_key = _CheckpointLookupKey(
+            parent=ref.model_dump_json(exclude_none=False),
+            root=os.fspath(root),
+            binding_name=selected_binding,
+            slot_names=selection,
+        )
+        authority_key = self._memo.checkpoint_lookup.get(lookup_key)
+        if authority_key is not None:
+            cached = self._memo.checkpoints.get(authority_key)
+            if cached is not None and cached.is_current():
+                return cached.value
+            self._memo.checkpoint_lookup.pop(lookup_key, None)
+            self._memo.checkpoints.pop(authority_key, None)
         try:
-            return resolve_bound_checkpoint_custody_ref(
+            try:
+                manifest_before = _retained_file_snapshot(
+                    root,
+                    str(ref.uri),
+                    expected_root_identity=expected_identity,
+                    kind="checkpoint transaction manifest",
+                    require_single_link=False,
+                )
+            except StagedExecutionContextError:
+                # Preserve checkpoint custody's established public diagnostic.
+                resolve_bound_checkpoint_custody_ref(
+                    ref,
+                    allowed_root=root,
+                    slot_names=slot_names,
+                )
+                raise
+            resolved = resolve_bound_checkpoint_custody_ref(
                 ref,
                 allowed_root=root,
                 slot_names=slot_names,
             )
+            resolved = replace(
+                resolved,
+                slots=_immutable_authenticated_snapshot(resolved.slots),
+            )
+            manifest_snapshot = _retained_file_snapshot(
+                root,
+                str(ref.uri),
+                expected_root_identity=expected_identity,
+                kind="checkpoint transaction manifest",
+                require_single_link=False,
+            )
+            if manifest_snapshot.state != manifest_before.state:
+                raise StagedExecutionContextError(
+                    "checkpoint transaction manifest identity changed during resolution"
+                )
+            slots_by_name = {slot.slot: slot for slot in resolved.manifest.slots}
+            selected_slots = tuple(slots_by_name[name] for name in resolved.slots)
+            slot_snapshots = tuple(
+                _retained_file_snapshot(
+                    root,
+                    _checkpoint_slot_relative_path(str(ref.uri), slot.relative_path),
+                    expected_root_identity=expected_identity,
+                    kind=f"checkpoint slot {slot.slot!r}",
+                    require_single_link=False,
+                )
+                for slot in selected_slots
+            )
+            authority_key = _CheckpointAuthorityKey(
+                lookup=lookup_key,
+                manifest_sha256=resolved.manifest_sha256,
+                manifest_size_bytes=manifest_snapshot.state[4],
+                slots=tuple(
+                    (slot.slot, slot.sha256, slot.size_bytes, slot.relative_path)
+                    for slot in selected_slots
+                ),
+            )
+            self._memo.checkpoint_lookup[lookup_key] = authority_key
+            self._memo.checkpoints[authority_key] = _MemoEntry(
+                resolved,
+                (manifest_snapshot, *slot_snapshots),
+            )
+            return resolved
         finally:
             _require_directory_identity(
                 root,
@@ -479,6 +848,7 @@ def with_staged_parent_execution_locations(
         context,
         parent_execution_locations=tuple(normalized),
         _parent_execution_root_identities=(),
+        _memo=_StagedExecutionMemo(),
     )
 
 
@@ -615,12 +985,234 @@ def _require_directory_identity(
         )
 
 
+def _file_state(file_stat: os.stat_result) -> _FileState:
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_mode,
+        file_stat.st_nlink,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+        file_stat.st_ctime_ns,
+    )
+
+
+def _retained_file_state(
+    root: Path,
+    relative: str,
+    *,
+    expected_root_identity: tuple[int, int],
+    kind: str,
+    require_single_link: bool,
+) -> _FileState:
+    """Return one cheap no-follow file identity under a retained root."""
+    relative = _validate_relative_execution_uri(relative)
+    parts = PurePosixPath(relative).parts
+    descriptors = _open_directory_chain_no_follow(root, kind=kind)
+    directory_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        current = descriptors[-1]
+        root_stat = os.fstat(current)
+        if (root_stat.st_dev, root_stat.st_ino) != expected_root_identity:
+            raise StagedExecutionContextError(f"{kind} root authority changed")
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags, dir_fd=current)
+            descriptors.append(current)
+        observed = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+        if not stat.S_ISREG(observed.st_mode):
+            raise StagedExecutionContextError(f"{kind} is not a regular file")
+        if require_single_link and observed.st_nlink != 1:
+            raise StagedExecutionContextError(f"{kind} has mutable hard-link aliases")
+        return _file_state(observed)
+    except OSError as exc:
+        raise StagedExecutionContextError(
+            f"{kind} path traverses a symlink or unsafe component"
+        ) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _retained_file_snapshot(
+    root: Path,
+    relative: str,
+    *,
+    expected_root_identity: tuple[int, int],
+    kind: str,
+    require_single_link: bool,
+) -> _RetainedFileSnapshot:
+    relative = _validate_relative_execution_uri(relative)
+    return _RetainedFileSnapshot(
+        root=root,
+        relative=relative,
+        expected_root_identity=expected_root_identity,
+        state=_retained_file_state(
+            root,
+            relative,
+            expected_root_identity=expected_root_identity,
+            kind=kind,
+            require_single_link=require_single_link,
+        ),
+        kind=kind,
+        require_single_link=require_single_link,
+    )
+
+
+def _manifest_authority_key(
+    parent: ParentRef,
+    location: StagedParentExecutionLocation,
+) -> _ManifestAuthorityKey:
+    if not is_authenticated_manifest_ref(parent):
+        raise StagedExecutionContextError(
+            "staged manifest input requires an authenticated ParentRef"
+        )
+    return _ManifestAuthorityKey(
+        parent=parent.model_dump_json(exclude_none=False),
+        root=os.fspath(location.root),
+        execution_uri=location.execution_uri,
+        artifact_provider=location.artifact_provider,
+        manifest_sha256=str(parent.metadata["manifest_sha256"]),
+        manifest_size_bytes=int(parent.metadata["size_bytes"]),
+    )
+
+
+def _provider_artifact_relative_path(digest: str) -> str:
+    return f"artifacts/sha256/{digest[:2]}/{digest}"
+
+
+def _checkpoint_slot_selection_identity(
+    slot_names: Collection[str] | None,
+) -> tuple[str, ...] | None:
+    if slot_names is None:
+        return None
+    if isinstance(slot_names, (str, bytes, bytearray)):
+        return (str(slot_names),)
+    requested = tuple(slot_names)
+    if (
+        requested
+        and all(isinstance(name, str) and name for name in requested)
+        and len(requested) == len(set(requested))
+    ):
+        return tuple(sorted(requested))
+    return requested
+
+
+def _checkpoint_slot_relative_path(manifest_relative: str, slot_relative: str) -> str:
+    combined = os.path.normpath(
+        (PurePosixPath(manifest_relative).parent / PurePosixPath(slot_relative)).as_posix()
+    )
+    return _validate_relative_execution_uri(combined)
+
+
+def _mark_numpy_arrays_read_only(value: Any, *, _seen: set[int] | None = None) -> None:
+    """Freeze NumPy arrays below real containers, including mapping proxies."""
+    if isinstance(value, np.ndarray):
+        value.flags.writeable = False
+        return
+    if isinstance(value, (str, bytes, bytearray, memoryview)):
+        return
+    seen = set() if _seen is None else _seen
+    identity = id(value)
+    if identity in seen:
+        return
+    seen.add(identity)
+    if isinstance(value, BaseModel):
+        for field_name in type(value).model_fields:
+            _mark_numpy_arrays_read_only(getattr(value, field_name), _seen=seen)
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _mark_numpy_arrays_read_only(key, _seen=seen)
+            _mark_numpy_arrays_read_only(item, _seen=seen)
+        return
+    if isinstance(value, Sequence):
+        for item in value:
+            _mark_numpy_arrays_read_only(item, _seen=seen)
+        return
+    try:
+        leaves = jt.leaves(value)
+    except (TypeError, ValueError):
+        return
+    if len(leaves) == 1 and leaves[0] is value:
+        return
+    for leaf in leaves:
+        _mark_numpy_arrays_read_only(leaf, _seen=seen)
+
+
+def _immutable_authenticated_snapshot(value: Any) -> Any:
+    """Return a recursively immutable snapshot of already-verified values."""
+    _mark_numpy_arrays_read_only(value)
+    return _immutable_snapshot_value(value)
+
+
+def _evaluation_states_memo_value(value: Any) -> Any | None:
+    """Freeze ordinary states or retain safe leaves for custom-PyTree rebuilds."""
+    _mark_numpy_arrays_read_only(value)
+    structure = jt.structure(value)
+    if not _structure_has_custom_nodes(structure):
+        return _immutable_snapshot_value(value)
+    frozen_leaves: list[Any] = []
+    for leaf in jt.leaves(value):
+        frozen = _immutable_snapshot_value(leaf)
+        if frozen is leaf and not _is_safe_shared_leaf(leaf):
+            return None
+        frozen_leaves.append(frozen)
+    return _ReconstructableEvaluationStates(
+        structure=copy.deepcopy(structure),
+        leaves=tuple(frozen_leaves),
+    )
+
+
+def _materialize_evaluation_states(value: Any) -> Any:
+    if isinstance(value, _ReconstructableEvaluationStates):
+        return value.materialize()
+    return value
+
+
+def _structure_has_custom_nodes(structure: jtu.PyTreeDef) -> bool:
+    node_data = structure.node_data()
+    if node_data is not None:
+        node_type, _aux = node_data
+        if node_type not in {dict, list, tuple, type(None)} and not (
+            isinstance(node_type, type) and issubclass(node_type, tuple)
+        ):
+            return True
+    return any(_structure_has_custom_nodes(child) for child in structure.children())
+
+
+def _is_safe_shared_leaf(value: Any) -> bool:
+    if isinstance(value, np.ndarray):
+        return not value.flags.writeable
+    return value is None or isinstance(
+        value,
+        (bool, int, float, complex, str, bytes, np.generic),
+    )
+
+
+def _immutable_resolved_manifest_input(
+    *,
+    ref: ParentRef,
+    manifest: Any,
+    path: Path,
+    raw_bytes: bytes,
+) -> ResolvedManifestInput:
+    """Freeze the parsed authority while retaining its exact authenticated bytes."""
+    return ResolvedManifestInput(
+        ref=_immutable_model_snapshot(ref),
+        manifest=_immutable_model_snapshot(manifest),
+        path=path,
+        raw_bytes=raw_bytes,
+    )
+
+
 def _resolve_retained_local_manifest_input(
     parent: ParentRef,
     location: StagedParentExecutionLocation,
     *,
     expected_root_identity: tuple[int, int],
-) -> ResolvedManifestInput:
+) -> tuple[ResolvedManifestInput, _RetainedFileSnapshot]:
     """Resolve an authenticated manifest through the exact retained root authority."""
     if not is_authenticated_manifest_ref(parent):
         raise StagedExecutionContextError(
@@ -629,25 +1221,28 @@ def _resolve_retained_local_manifest_input(
     execution_uri = _validate_relative_execution_uri(location.execution_uri)
     digest = str(parent.metadata["manifest_sha256"])
     size_bytes = int(parent.metadata["size_bytes"])
-    raw_bytes = _read_retained_local_file(
+    raw_bytes, snapshot = _read_retained_local_file(
         location.root,
         execution_uri,
         expected_root_identity=expected_root_identity,
         expected_size=size_bytes,
         expected_sha256=digest,
         kind="local evaluation manifest",
-        require_single_link=False,
+        require_single_link=True,
     )
     manifest = parse_manifest_bytes(raw_bytes)
     if manifest.kind != parent.kind or manifest.id != parent.id:
         raise StagedExecutionContextError(
             "local evaluation manifest kind or id disagrees with ParentRef"
         )
-    return ResolvedManifestInput(
-        ref=parent,
-        manifest=manifest,
-        path=location.root / execution_uri,
-        raw_bytes=raw_bytes,
+    return (
+        _immutable_resolved_manifest_input(
+            ref=parent,
+            manifest=manifest,
+            path=location.root / execution_uri,
+            raw_bytes=raw_bytes,
+        ),
+        snapshot,
     )
 
 
@@ -698,7 +1293,7 @@ def _read_retained_local_artifact(
     expected_root_identity: tuple[int, int],
     expected_size: int,
     expected_sha256: str,
-) -> bytes:
+) -> tuple[bytes, _RetainedFileSnapshot]:
     """Read one root-relative regular single-link file without following aliases."""
     return _read_retained_local_file(
         root,
@@ -720,7 +1315,7 @@ def _read_retained_local_file(
     expected_sha256: str,
     kind: str,
     require_single_link: bool,
-) -> bytes:
+) -> tuple[bytes, _RetainedFileSnapshot]:
     """Read one authenticated file relative to an exact retained root authority."""
     parts = PurePosixPath(relative).parts
     directory_flags = (
@@ -767,11 +1362,22 @@ def _read_retained_local_file(
         while chunk := os.read(file_descriptor, 1024 * 1024):
             chunks.append(chunk)
         after = os.fstat(file_descriptor)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        if require_single_link and after.st_nlink != 1:
+            raise StagedExecutionContextError(
+                f"{kind} hard-link count changed during read"
+            )
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
             after.st_dev,
             after.st_ino,
             after.st_size,
             after.st_mtime_ns,
+            after.st_ctime_ns,
         ):
             raise StagedExecutionContextError(f"{kind} identity changed during read")
         path_after = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
@@ -782,6 +1388,7 @@ def _read_retained_local_file(
             path_before.st_nlink,
             path_before.st_size,
             path_before.st_mtime_ns,
+            path_before.st_ctime_ns,
         ) != (
             path_after.st_dev,
             path_after.st_ino,
@@ -789,6 +1396,7 @@ def _read_retained_local_file(
             path_after.st_nlink,
             path_after.st_size,
             path_after.st_mtime_ns,
+            path_after.st_ctime_ns,
         ):
             raise StagedExecutionContextError(f"{kind} path changed during read")
         for parent_descriptor, component, expected_identity in directory_records:
@@ -808,7 +1416,17 @@ def _read_retained_local_file(
         data = b"".join(chunks)
         if hashlib.sha256(data).hexdigest() != expected_sha256:
             raise StagedExecutionContextError(f"{kind} sha256 mismatch")
-        return data
+        return (
+            data,
+            _RetainedFileSnapshot(
+                root=root,
+                relative=relative,
+                expected_root_identity=expected_root_identity,
+                state=_file_state(path_after),
+                kind=kind,
+                require_single_link=require_single_link,
+            ),
+        )
     except OSError as exc:
         raise StagedExecutionContextError(
             f"{kind} path traverses a symlink or unsafe component"

@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import (
+    ArtifactRef,
     BaseManifest,
     MANIFEST_MODELS,
     StrictModel,
@@ -30,6 +31,7 @@ from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     default_spec_registry,
 )
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 
 MANIFEST_PACKET_SCHEMA_ID = "feedbax.spec.manifest_packet"
@@ -601,8 +603,13 @@ def _resolve_artifact_source_path(ref: Mapping[str, Any], *, root: Path) -> Path
     candidates: list[Path] = []
     uri = ref.get("uri")
     if isinstance(uri, str) and uri:
-        path = Path(uri).expanduser()
-        candidates.append(path if path.is_absolute() else root / path)
+        if uri.startswith("artifact://sha256/"):
+            artifact = ArtifactRef.model_validate(ref)
+            provider = ImmutableArtifactBlobProvider(root.absolute())
+            candidates.append(provider.root / provider.canonical_relative_path(artifact))
+        else:
+            path = Path(uri).expanduser()
+            candidates.append(path if path.is_absolute() else root / path)
     metadata = ref.get("metadata")
     if isinstance(metadata, Mapping):
         relative_path = metadata.get("relative_path")

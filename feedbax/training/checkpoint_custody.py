@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import ctypes
 import hashlib
 import gzip
@@ -119,7 +120,7 @@ _READ_ONLY_MODEL_TYPES: dict[type[BaseModel], type[BaseModel]] = {}
 
 
 def _reject_snapshot_mutation(*_args: Any, **_kwargs: Any) -> None:
-    raise TypeError("verified checkpoint lineage snapshots are immutable")
+    raise TypeError("verified authenticated snapshots are immutable")
 
 
 class _FrozenDict(dict[Any, Any]):
@@ -133,6 +134,18 @@ class _FrozenDict(dict[Any, Any]):
     setdefault = _reject_snapshot_mutation
     update = _reject_snapshot_mutation
     __ior__ = _reject_snapshot_mutation
+
+    def __copy__(self) -> "_FrozenDict":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> dict[Any, Any]:
+        copied: dict[Any, Any] = {}
+        memo[id(self)] = copied
+        copied.update(
+            (copy.deepcopy(key, memo), copy.deepcopy(value, memo))
+            for key, value in self.items()
+        )
+        return copied
 
 
 class _FrozenList(list[Any]):
@@ -150,6 +163,15 @@ class _FrozenList(list[Any]):
     sort = _reject_snapshot_mutation
     __iadd__ = _reject_snapshot_mutation
     __imul__ = _reject_snapshot_mutation
+
+    def __copy__(self) -> "_FrozenList":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> list[Any]:
+        copied: list[Any] = []
+        memo[id(self)] = copied
+        copied.extend(copy.deepcopy(item, memo) for item in self)
+        return copied
 
 
 class CheckpointCustodyError(ValueError):
@@ -1747,6 +1769,22 @@ def _immutable_model_snapshot(value: BaseModel) -> Any:
                 self
             ) == _snapshot_comparison_value(other)
 
+        def snapshot_deepcopy(
+            self: BaseModel,
+            memo: dict[int, Any] | None = None,
+        ) -> BaseModel:
+            memo = {} if memo is None else memo
+            existing = memo.get(id(self))
+            if existing is not None:
+                return existing
+            payload = copy.deepcopy(
+                self.model_dump(mode="python", round_trip=True),
+                memo,
+            )
+            copied = model_type.model_validate(payload)
+            memo[id(self)] = copied
+            return copied
+
         read_only_type = type(
             f"_ReadOnly{model_type.__name__}",
             (model_type,),
@@ -1754,6 +1792,7 @@ def _immutable_model_snapshot(value: BaseModel) -> Any:
                 "model_config": config,
                 "__module__": __name__,
                 "__eq__": snapshot_eq,
+                "__deepcopy__": snapshot_deepcopy,
             },
         )
         _READ_ONLY_MODEL_TYPES[model_type] = read_only_type
@@ -1781,7 +1820,10 @@ def _immutable_snapshot_value(value: Any) -> Any:
     if isinstance(value, list):
         return _FrozenList(_immutable_snapshot_value(item) for item in value)
     if isinstance(value, tuple):
-        return tuple(_immutable_snapshot_value(item) for item in value)
+        items = tuple(_immutable_snapshot_value(item) for item in value)
+        if hasattr(value, "_fields"):
+            return type(value)(*items)
+        return items
     if isinstance(value, (set, frozenset)):
         return frozenset(_immutable_snapshot_value(item) for item in value)
     return value

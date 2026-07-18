@@ -39,6 +39,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
 )
 from feedbax.persistence.manifest_index import rebuild_manifest_index
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.analysis.types import AnalysisInputData
 from tests.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
@@ -407,8 +408,35 @@ def test_context_materializer_emits_json_payload_with_explicit_compute_contract(
     assert payload_ref.role == "toy_materialized_payload"
     assert payload_ref.logical_name == "toy/materialized.json"
     assert payload_ref.metadata["schema_boundary"] == "toy-owned payload"
-    payload = json.loads(Path(payload_ref.uri).read_text(encoding="utf-8"))
+    payload = json.loads(ImmutableArtifactBlobProvider(tmp_path).get_bytes(payload_ref))
     assert payload == all_results["materializer"]
+
+
+def test_record_json_artifact_ingestion_failure_does_not_record_manifest_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="toy_failed_json_ingestion"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+
+    def fail_ingestion(*_args, **_kwargs):
+        raise OSError("simulated CAS ingestion failure")
+
+    monkeypatch.setattr(ImmutableArtifactBlobProvider, "store_bytes", fail_ingestion)
+
+    with pytest.raises(OSError, match="simulated CAS ingestion failure"):
+        context.record_json_artifact(
+            {"value": 23},
+            role="toy_payload",
+            logical_name="toy/payload.json",
+        )
+
+    assert context.artifacts == ()
+    manifest, _path = context.finalize(status="failed")
+    assert manifest.artifacts == []
 
 
 def test_context_materializer_records_embedded_refs_groups_and_regeneration_specs(
@@ -509,9 +537,9 @@ def test_context_materializer_records_embedded_refs_groups_and_regeneration_spec
     existing_ref = artifacts_by_role["toy_existing_summary"]
     bulk_ref = artifacts_by_role["toy_bulk_arrays"]
 
-    assert json.loads(Path(payload_ref.uri).read_text(encoding="utf-8"))["nested"]["refs"][0][
-        "artifact_id"
-    ] == external_ref.artifact_id
+    assert json.loads(ImmutableArtifactBlobProvider(tmp_path).get_bytes(payload_ref))["nested"][
+        "refs"
+    ][0]["artifact_id"] == external_ref.artifact_id
     assert Path(existing_ref.uri).exists()
     assert Path(bulk_ref.uri).exists()
     assert bulk_ref.metadata["artifact_group"]["id"] == "toy_bulk_group"

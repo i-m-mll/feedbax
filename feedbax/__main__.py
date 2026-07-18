@@ -409,6 +409,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     harness_parser.add_argument("--execution-descriptor")
     harness_parser.add_argument("--artifact-provider", action="append")
     harness_parser.add_argument("--checkpoint-custody", action="append")
+    harness_parser.add_argument(
+        "--batch",
+        action="store_true",
+        help=(
+            "Execute the whole matrix through its registered batch recipe; this bypasses "
+            "the execution policy's per-row row-count refusal."
+        ),
+    )
+    harness_parser.add_argument(
+        "--locked-spec",
+        help=(
+            "Require the runtime matrix's exact ordered row_id sequence to equal the locked "
+            "EvaluationRunMatrixSpec sequence."
+        ),
+    )
+    harness_parser.add_argument(
+        "--execution-policy",
+        help=(
+            "JSON policy requiring positive-integer per_row_max_rows, non-blank "
+            "threshold_source, and override_flag set to --allow-large-per-row."
+        ),
+    )
+    harness_parser.add_argument(
+        "--allow-large-per-row",
+        action="store_true",
+        help=(
+            "Explicitly bypass an execution policy's oversized per-row refusal; the decision "
+            "is recorded in matrix-harness evidence."
+        ),
+    )
 
     args = parser.parse_args(argv)
     if args.command == "matrix-harness":
@@ -429,6 +459,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             harness_argv.extend(("--artifact-provider", binding))
         for binding in args.checkpoint_custody or ():
             harness_argv.extend(("--checkpoint-custody", binding))
+        if args.batch:
+            harness_argv.append("--batch")
+        if args.locked_spec is not None:
+            harness_argv.extend(("--locked-spec", args.locked_spec))
+        if args.execution_policy is not None:
+            harness_argv.extend(("--execution-policy", args.execution_policy))
+        if args.allow_large_per_row:
+            harness_argv.append("--allow-large-per-row")
         return harness_main(harness_argv)
     if args.command == "execute-training-run-spec":
         _load_training_method_plugins(args.plugin)

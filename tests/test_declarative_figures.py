@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 import feedbax.plugins
+from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.figures import (
     FIGURE_RENDER_ROLE,
     FigureSpecExecutionError,
@@ -29,6 +31,7 @@ from feedbax.contracts.figures import (
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisRunManifest,
+    AnalysisRunSpec,
     ArtifactRef,
     ParentRef,
     load_manifest,
@@ -50,8 +53,18 @@ from feedbax.plot.constructors import (
     registered_figure_constructors,
 )
 from feedbax.plugins.registry import ExperimentRegistry
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 pytestmark = [pytest.mark.feedbax_contract]
+
+
+def _plotly_array_values(value: object) -> list[float]:
+    if isinstance(value, dict):
+        return np.frombuffer(
+            base64.b64decode(value["bdata"]),
+            dtype=np.dtype(value["dtype"]),
+        ).tolist()
+    return list(value)  # type: ignore[arg-type]
 
 
 def _analysis_manifest(root: Path) -> AnalysisRunManifest:
@@ -414,9 +427,55 @@ def test_artifact_backed_piece_supplies_trace_data(tmp_path: Path) -> None:
         pieces=["feedbax.test_piece"],
     )
     manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
     assert manifest.status == "completed"
     assert manifest.resolved_pieces[0].name == "feedbax.test_piece"
     assert manifest.binding_records[0].status == "included"
+    assert rendered is not None
+    assert _plotly_array_values(rendered["data"][0]["x"]) == [0.0, 1.0, 2.0]
+    assert _plotly_array_values(rendered["data"][0]["y"]) == [1.5, 2.5, 3.5]
+
+
+def test_canonical_artifact_backed_piece_supplies_exact_trace_data(tmp_path: Path) -> None:
+    payload = {"payload": {"x": [10, 20, 30], "y": [[4, 5, 6], [7, 8, 9]]}}
+    expected_bytes = json.dumps(payload, indent=2, sort_keys=True).encode() + b"\n"
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="test.canonical_figure_piece"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+    artifact = context.record_json_artifact(
+        payload,
+        role="figure_piece",
+        logical_name="canonical-piece.json",
+    )
+    register_figure_piece(
+        FigurePiece(
+            name="feedbax.test_canonical_piece",
+            description="Canonical artifact-backed piece",
+            artifact_ref=artifact,
+            data_path="payload",
+            label="Canonical piece",
+            constructor="feedbax.profile_band",
+        ),
+        replace=True,
+    )
+    spec = FigureSpec(
+        name="canonical-piece-demo",
+        assembler="feedbax.grid_figure",
+        pieces=["feedbax.test_canonical_piece"],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert artifact.uri == artifact.artifact_id
+    assert ImmutableArtifactBlobProvider(tmp_path).get_bytes(artifact) == expected_bytes
+    assert manifest.status == "completed"
+    assert rendered is not None
+    assert _plotly_array_values(rendered["data"][0]["x"]) == [10.0, 20.0, 30.0]
+    assert _plotly_array_values(rendered["data"][0]["y"]) == [5.5, 6.5, 7.5]
 
 
 def test_endpoint_markers_derive_curved_reach_guides_from_trajectory() -> None:

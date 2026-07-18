@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import feedbax.analysis.evaluation as evaluation_module
+import feedbax.analysis.execution_context as execution_context_module
 from feedbax.analysis.evaluation import (
     EvaluationBatchExecution,
     EvaluationBatchRowError,
@@ -17,6 +18,7 @@ from feedbax.analysis.evaluation import (
     execute_evaluation_run_matrix,
     load_evaluation_states,
     register_evaluation_recipe,
+    resolve_staged_evaluation_prerequisite,
     unregister_evaluation_recipe,
 )
 from feedbax.analysis.execution_context import StagedExecutionContextError
@@ -180,6 +182,67 @@ def test_batched_typed_v3_outputs_accept_normalized_staged_v2_parent(tmp_path: P
     restored = _resolve_typed_rows(batch, root)
     assert isinstance(restored[0], TypedRowStates)
     np.testing.assert_array_equal(restored[0].value, np.asarray([3, 4]))
+
+
+def test_batch_preflight_primes_transaction_memo_for_recipe_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_root, _artifact, matrix = _staged_matrix(
+        tmp_path,
+        {"value": np.asarray([3, 5], dtype=np.int32)},
+    )
+    matrix = matrix.model_copy(
+        update={
+            "rows": [
+                MatrixRow(
+                    row_id=f"row-{index}",
+                    deltas=[OverridePatch(path="params.gain", value=float(index + 1))],
+                )
+                for index in range(3)
+            ]
+        }
+    )
+    original_load = execution_context_module.load_authenticated_evaluation_states_artifact
+    loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_context_module,
+        "load_authenticated_evaluation_states_artifact",
+        counted_load,
+    )
+
+    def batch_recipe(items, execution_context):
+        for item in items:
+            prerequisite = item.spec.params["staged_prerequisites"]["parent"]
+            resolve_staged_evaluation_prerequisite(
+                prerequisite,
+                execution_context=execution_context,
+            )
+        return [_result(item.spec.params["gain"]) for item in items]
+
+    register_evaluation_recipe(
+        EVALUATION_TYPE,
+        lambda *_args: pytest.fail("scalar recipe must not run"),
+        batch_recipe=batch_recipe,
+        replace=True,
+    )
+    try:
+        execute_evaluation_run_matrix(
+            matrix,
+            root=tmp_path / "batched",
+            parent_manifest_root=parent_root,
+            batch=EvaluationBatchExecution(),
+        )
+    finally:
+        unregister_evaluation_recipe(EVALUATION_TYPE)
+
+    assert loads == 1
 
 
 def test_batched_preflight_rejects_typed_v3_staged_parent(tmp_path: Path) -> None:
