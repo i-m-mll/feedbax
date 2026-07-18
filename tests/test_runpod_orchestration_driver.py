@@ -61,6 +61,7 @@ from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 class FakeRunPodTransport:
     def __init__(self) -> None:
         self.runpodctl_calls: list[tuple[str, ...]] = []
+        self.runpodctl_timeouts: list[float | None] = []
         self.ssh_commands: list[str] = []
         self.rsync_calls: list[tuple[str, str, bool, tuple[str, ...]]] = []
         self.runpodctl_results: dict[tuple[str, ...], list[CommandResult]] = {}
@@ -78,8 +79,13 @@ class FakeRunPodTransport:
     def queue_ssh(self, result: CommandResult) -> None:
         self.ssh_results.append(result)
 
-    def runpodctl(self, *args: str) -> CommandResult:
+    def runpodctl(
+        self,
+        *args: str,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
         self.runpodctl_calls.append(args)
+        self.runpodctl_timeouts.append(timeout_seconds)
         self.operations.append(f"runpodctl:{' '.join(args)}")
         queued = self.runpodctl_results.get(args)
         if queued:
@@ -400,6 +406,35 @@ def test_subprocess_rsync_uses_portable_progress_flags(
     assert all(not arg.startswith("--info=") for arg in calls[0])
 
 
+def test_subprocess_runpodctl_applies_endpoint_poll_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[list[str], float | None]] = []
+
+    def run_command(
+        args: list[str],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
+        observed.append((args, timeout_seconds))
+        return CommandResult(0, "{}")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+
+    SubprocessRunPodTransport().runpodctl(
+        "pod",
+        "get",
+        "pod-1",
+        "--output",
+        "json",
+        timeout_seconds=12.5,
+    )
+
+    assert observed == [
+        (["runpodctl", "pod", "get", "pod-1", "--output", "json"], 12.5)
+    ]
+
+
 def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
@@ -568,7 +603,7 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
         config=RunPodDriverConfig(
             gpu_id="NVIDIA RTX 2000 Ada Generation",
             image="runpod/pytorch:1.0.3",
-            max_acquire_seconds=0,
+            max_acquire_seconds=1,
             max_provision_attempts=2,
             poll_seconds=1,
         ),
@@ -582,6 +617,75 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
 
     assert ("remove", "pod", "pod-1") in transport.runpodctl_calls
     assert record["pod_id"] == "pod-2"
+    pod_get_timeouts = [
+        timeout
+        for call, timeout in zip(
+            transport.runpodctl_calls,
+            transport.runpodctl_timeouts,
+            strict=True,
+        )
+        if call[:2] == ("pod", "get")
+    ]
+    assert pod_get_timeouts == [1, 1]
+
+
+def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path) -> None:
+    clock = FakeClock()
+
+    class LateReadyTransport(FakeRunPodTransport):
+        def runpodctl(
+            self,
+            *args: str,
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            result = super().runpodctl(*args, timeout_seconds=timeout_seconds)
+            if args[:2] == ("pod", "get"):
+                assert timeout_seconds == 2
+                clock.sleep(timeout_seconds + 1)
+                return CommandResult(
+                    0,
+                    '{"createdAt":"now","ssh":{"ip":"203.0.113.1","port":22}}',
+                )
+            return result
+
+    bundle = _bundle(tmp_path)
+    transport = LateReadyTransport()
+    create_call = (
+        "pod",
+        "create",
+        "--name",
+        "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image",
+        "runpod/pytorch:1.0.3",
+        "--ports",
+        "22/tcp,8080/http",
+        "--gpu-id",
+        "NVIDIA RTX 2000 Ada Generation",
+    )
+    transport.queue_runpodctl(create_call, CommandResult(0, '{"id":"pod-late"}'))
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, '{"clientBalance":10}'),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA RTX 2000 Ada Generation",
+            image="runpod/pytorch:1.0.3",
+            max_acquire_seconds=2,
+            max_provision_attempts=1,
+            poll_seconds=1,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+    assert all(check.status == "pass" for check in driver.preflight_checks(bundle))
+
+    with pytest.raises(RunPodDriverError, match="timed out waiting.*after 2s"):
+        driver.provision(bundle, _state(bundle))
+
+    assert ("remove", "pod", "pod-late") in transport.runpodctl_calls
+    assert all("nvidia-smi" not in command for command in transport.ssh_commands)
 
 
 def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) -> None:

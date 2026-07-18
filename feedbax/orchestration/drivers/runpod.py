@@ -195,7 +195,11 @@ class CommandResult:
 class RunPodTransport(Protocol):
     """Transport surface used by :class:`RunPodOrchestrationDriver`."""
 
-    def runpodctl(self, *args: str) -> CommandResult:
+    def runpodctl(
+        self,
+        *args: str,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
         """Run a ``runpodctl`` command."""
 
     def image_exists(self, image: str) -> bool:
@@ -226,8 +230,15 @@ class SubprocessRunPodTransport:
     ssh_user: str = "root"
     runpodctl_executable: str = "runpodctl"
 
-    def runpodctl(self, *args: str) -> CommandResult:
-        return _run_command([self.runpodctl_executable, *args])
+    def runpodctl(
+        self,
+        *args: str,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
+        return _run_command(
+            [self.runpodctl_executable, *args],
+            timeout_seconds=timeout_seconds,
+        )
 
     def image_exists(self, image: str) -> bool:
         tagged_image = image.split("@", 1)[0]
@@ -398,8 +409,7 @@ class RunPodOrchestrationDriver:
             }
 
         if self._pod_id:
-            pod = self._pod_get(self._pod_id)
-            endpoint = self._wait_for_endpoint(self._pod_id, pod)
+            endpoint, pod = self._wait_for_endpoint(self._pod_id)
             self._endpoint = endpoint
             self._configure_subprocess_endpoint(endpoint)
             self._require_gpu_ready()
@@ -413,8 +423,7 @@ class RunPodOrchestrationDriver:
             try:
                 pod_id = self._create_pod(bundle)
                 self._pod_id = pod_id
-                pod = self._pod_get(pod_id)
-                self._endpoint = self._wait_for_endpoint(pod_id, pod)
+                self._endpoint, pod = self._wait_for_endpoint(pod_id)
                 self._configure_subprocess_endpoint(self._endpoint)
                 self._require_gpu_ready()
                 return self._provision_record(pod, provided_pod=False)
@@ -858,10 +867,20 @@ class RunPodOrchestrationDriver:
             return {"driver": "runpod", "teardown": "stopped", "pod_id": self._pod_id}
         return {"driver": "runpod", "teardown": "removed", "pod_id": self._pod_id}
 
-    def _pod_get(self, pod_id: str) -> Mapping[str, Any]:
-        result = self.transport.runpodctl("pod", "get", pod_id, "--output", "json").check(
-            "runpodctl pod get"
-        )
+    def _pod_get(
+        self,
+        pod_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Mapping[str, Any]:
+        result = self.transport.runpodctl(
+            "pod",
+            "get",
+            pod_id,
+            "--output",
+            "json",
+            timeout_seconds=timeout_seconds,
+        ).check("runpodctl pod get")
         return _json_object(result.stdout)
 
     def _create_pod(self, bundle: RunBundle) -> str:
@@ -897,25 +916,36 @@ class RunPodOrchestrationDriver:
     def _wait_for_endpoint(
         self,
         pod_id: str,
-        first_pod: Mapping[str, Any] | None = None,
-    ) -> EndpointClassification:
+    ) -> tuple[EndpointClassification, Mapping[str, Any]]:
         deadline = self._monotonic() + self.config.max_acquire_seconds
-        pod = first_pod
-        while self._monotonic() <= deadline:
-            pod = pod or self._pod_get(pod_id)
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
+            pod = self._pod_get(pod_id, timeout_seconds=remaining)
+            if self._monotonic() > deadline:
+                break
             classification = classify_pod_state(pod)
             if classification.status == "ready":
-                return EndpointClassification(
-                    "ssh_object",
-                    classification.ip,
-                    classification.port,
-                    endpoint_classification(pod).ssh_command,
+                return (
+                    EndpointClassification(
+                        "ssh_object",
+                        classification.ip,
+                        classification.port,
+                        endpoint_classification(pod).ssh_command,
+                    ),
+                    pod,
                 )
             if classification.status == "dead":
                 raise RunPodDriverError(f"pod entered dead state: {classification.reason}")
-            self._sleep(self.config.poll_seconds)
-            pod = None
-        raise RunPodDriverError("timed out waiting for RunPod SSH endpoint")
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
+            self._sleep(min(self.config.poll_seconds, remaining))
+        raise RunPodDriverError(
+            "timed out waiting for RunPod SSH endpoint after "
+            f"{self.config.max_acquire_seconds:g}s"
+        )
 
     def _require_gpu_ready(self) -> None:
         self._ssh("nvidia-smi >/dev/null").check("nvidia-smi readiness")
