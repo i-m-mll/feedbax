@@ -7,13 +7,12 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import plotly.graph_objects as go
 from jaxtyping import PyTree
 from sqlalchemy.orm import Session
 
-from feedbax.persistence.database import EvaluationRecord, ModelRecord, add_evaluation_figure
 from feedbax.contracts.manifest import (
     AnalysisEvaluationStateResolutionDiagnostic,
     AnalysisEvaluationStateSource,
@@ -36,9 +35,10 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.plot.lifecycle import close_figure
-from feedbax.plot.utils import savefig
 from jax_cookbook import arrays_to_lists
+
+if TYPE_CHECKING:
+    from feedbax.persistence.database import EvaluationRecord, ModelRecord
 
 
 _MEDIA_TYPES = {
@@ -309,7 +309,12 @@ class AnalysisRunContext:
         dump_formats: Sequence[str] | None = None,
     ) -> list[ArtifactRef]:
         """Persist one figure and record it as an ``AnalysisRunManifest`` artifact."""
+        from feedbax.plot.lifecycle import close_figure
+        from feedbax.plot.utils import savefig
+
         if self.db_session is not None and self.eval_info is not None:
+            from feedbax.persistence.database import add_evaluation_figure
+
             add_evaluation_figure(
                 self.db_session,
                 self.eval_info,

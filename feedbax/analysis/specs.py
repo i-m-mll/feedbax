@@ -29,7 +29,6 @@ from feedbax.contracts.evaluation_states import (
     EvaluationStatesSchemaMismatch,
     load_authenticated_evaluation_states_artifact,
 )
-from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedExecutionContext,
@@ -762,6 +761,8 @@ def execute_analysis_run_spec(
             raise ValueError(f"Analysis recipe {run_spec.analysis_type!r} returned no analyses")
         if validate_result is not None:
             validate_result(run_spec.analysis_type, result)
+        from feedbax.analysis.execution import run_analyses_with_context
+
         run_analyses_with_context(
             result.analyses,
             result.data,

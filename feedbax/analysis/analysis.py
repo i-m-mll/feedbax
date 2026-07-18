@@ -46,8 +46,6 @@ from feedbax.config import PATHS, STRINGS
 from feedbax.config.namespace import TreeNamespace
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.config.utils import deep_merge
-from feedbax.persistence.database import EvaluationRecord, add_evaluation_figure
-from feedbax.plot.lifecycle import close_figure
 from feedbax.analysis.support import (
     camel_to_snake,
     field_names,
@@ -57,7 +55,6 @@ from feedbax.analysis.support import (
     is_json_serializable,
 )
 from feedbax.persistence.support import get_md5_hexdigest
-from feedbax.plot.utils import figs_flatten_with_paths, savefig
 from feedbax.config.tree import (
     DoNotHashTree,
     _align_trees_to_structure,
@@ -115,6 +112,7 @@ if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
 
     from feedbax.analysis.context import AnalysisRunContext
+    from feedbax.persistence.database import EvaluationRecord
 else:
     from equinox import AbstractClassVar  # noqa: F401
 
@@ -895,7 +893,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     def save_figs(
         self,
         db_session: Session,
-        eval_info: EvaluationRecord,
+        eval_info: "EvaluationRecord",
         result,
         figs: PyTree[go.Figure],
         hps: PyTree[TreeNamespace],  # dict level: variant
@@ -908,14 +906,19 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         """
         Save to disk and record in the database each figure in a PyTree of figures, for this analysis.
         """
+        from feedbax.persistence.database import add_evaluation_figure
+        from feedbax.plot.lifecycle import close_figure
+        from feedbax.plot.utils import savefig
+
         if dump_path is not None:
             dump_path = Path(dump_path)
             dump_path.mkdir(exist_ok=True, parents=True)
 
+        figure_records = self._figure_output_records(result, figs, hps, dependencies)
         for i, _path, fig, params in piter(
-            self._figure_output_records(result, figs, hps, dependencies),
+            figure_records,
             description="Saving figures",
-            total=len(figs_flatten_with_paths(figs)),
+            total=len(figure_records),
             eta_halflife=1.0,
         ):
             add_evaluation_figure(
@@ -991,6 +994,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         dependencies: Mapping[str, Any],
     ) -> list[tuple[int, Any, go.Figure, dict[str, Any]]]:
         """Return flattened figure records with legacy-compatible metadata."""
+        from feedbax.plot.utils import figs_flatten_with_paths
+
         # `sep="_"`` switches the label dunders for single underscores, so
         # in `_params_to_save` we can use an argument e.g. `train_pert_std` rather than
         # `train__pert__std`.
