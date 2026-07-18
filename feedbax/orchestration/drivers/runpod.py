@@ -867,7 +867,13 @@ class RunPodOrchestrationDriver:
         result = self.transport.runpodctl("remove", "pod", pod_id)
         if result.returncode != 0:
             self.transport.runpodctl("stop", "pod", pod_id).check("runpodctl stop pod")
-            action = "stopped"
+            self.transport.runpodctl(
+                "remove",
+                "pod",
+                pod_id,
+                timeout_seconds=self.config.teardown_absence_timeout_seconds,
+            ).check("runpodctl remove pod after stop")
+            action = "stopped-then-removed"
         else:
             action = "removed"
         absence = self._wait_for_pod_absence(pod_id)

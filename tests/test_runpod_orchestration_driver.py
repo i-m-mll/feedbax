@@ -1418,7 +1418,7 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
     )
 
 
-def test_teardown_removes_acquired_pod_and_falls_back_to_stop(tmp_path: Path) -> None:
+def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "busy"))
@@ -1433,7 +1433,7 @@ def test_teardown_removes_acquired_pod_and_falls_back_to_stop(tmp_path: Path) ->
 
     result = driver.teardown(bundle, _state(bundle))
 
-    assert result["teardown"] == "stopped"
+    assert result["teardown"] == "stopped-then-removed"
     assert result["pod_absence"] == {
         "verified": True,
         "pod_id": "pod-123",
@@ -1445,8 +1445,36 @@ def test_teardown_removes_acquired_pod_and_falls_back_to_stop(tmp_path: Path) ->
         "queried_pod_id": "pod-123",
         "pod_ids": [],
     }
-    assert ("remove", "pod", "pod-123") in transport.runpodctl_calls
+    assert transport.runpodctl_calls.count(("remove", "pod", "pod-123")) == 2
     assert ("stop", "pod", "pod-123") in transport.runpodctl_calls
+    second_remove_index = transport.runpodctl_calls.index(
+        ("remove", "pod", "pod-123"), 1
+    )
+    assert transport.runpodctl_timeouts[second_remove_index] == 60
+
+
+def test_teardown_fails_closed_when_remove_after_stop_fails(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("remove", "pod", "pod-123"), CommandResult(1, "", "busy")
+    )
+    transport.queue_runpodctl(
+        ("remove", "pod", "pod-123"), CommandResult(1, "", "still busy")
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodDriverError, match="remove pod after stop failed"):
+        driver.teardown(bundle, _state(bundle))
+
+    assert transport.runpodctl_calls == [
+        ("remove", "pod", "pod-123"),
+        ("stop", "pod", "pod-123"),
+        ("remove", "pod", "pod-123"),
+    ]
 
 
 def test_teardown_polls_until_exact_owned_pod_is_absent(tmp_path: Path) -> None:
