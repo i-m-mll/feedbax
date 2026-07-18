@@ -31,6 +31,11 @@ class ProfileParams(StrictModel):
     n_std_plot: float = 1.0
     stride_curves: int = 1
     mode: Literal["std", "curves"] = "std"
+
+
+class ProfileBandParams(ProfileParams):
+    """Style and visibility controls for a profile mean and band."""
+
     line_dash: str | None = None
     line_width: float | None = None
     showlegend: bool | None = None
@@ -432,7 +437,7 @@ def _array(value: Any) -> np.ndarray:
 
 
 def _profile_band(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]:
-    p = ProfileParams.model_validate(params.model_dump())
+    p = ProfileBandParams.model_validate(params.model_dump())
     has_mean = "mean" in data
     has_std = "std" in data
     if has_mean != has_std:
@@ -782,7 +787,7 @@ def register_default_figure_constructors() -> None:
             "feedbax.profile_band",
             "trace",
             _profile_band,
-            ProfileParams,
+            ProfileBandParams,
             "Mean line with standard-deviation band.",
         ),
         (

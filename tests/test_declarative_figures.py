@@ -46,6 +46,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.plot.constructors import (
     PanelContent,
+    constructor_catalog,
     get_figure_constructor,
     get_figure_piece,
     get_figure_template,
@@ -168,6 +169,54 @@ def test_constructor_registry_validates_tiers_and_duplicates() -> None:
         )
 
 
+def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Path) -> None:
+    expected = {
+        "feedbax.profile_band": "v2",
+        "feedbax.profile_curves": "v1",
+        "feedbax.comparison_grid": "v2",
+        "feedbax.grid_figure": "v2",
+    }
+    catalog_versions = {item["key"]: item["version"] for item in constructor_catalog()}
+    assert {key: catalog_versions[key] for key in expected} == expected
+
+    spec = FigureSpec(
+        name="constructor-versions",
+        assembler="feedbax.grid_figure",
+        traces=[
+            TraceBinding(
+                name="band",
+                constructor="feedbax.profile_band",
+                data={"y": [[1.0, 2.0]]},
+            ),
+            TraceBinding(
+                name="curves",
+                constructor="feedbax.profile_curves",
+                data={"y": [[1.0, 2.0]]},
+            ),
+        ],
+    )
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    assert manifest.constructor_versions == expected
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("line_dash", "dash"),
+        ("line_width", 2.0),
+        ("showlegend", False),
+        ("show_band", False),
+    ],
+)
+def test_profile_band_only_params_are_scoped_to_profile_band(key: str, value: object) -> None:
+    band = get_figure_constructor("feedbax.profile_band", tier="trace")
+    curves = get_figure_constructor("feedbax.profile_curves", tier="trace")
+
+    assert getattr(band.params({key: value}), key) == value
+    with pytest.raises(ValidationError, match=key):
+        curves.params({key: value})
+
+
 def test_profile_band_uses_supplied_statistics_without_touching_raw_samples() -> None:
     class ExplosiveRawSamples:
         def __array__(self, *_args, **_kwargs):
@@ -261,6 +310,16 @@ def test_profile_band_rejects_missing_statistics_and_samples() -> None:
 
     with pytest.raises(ValueError, match="or raw 'y'/'values' samples"):
         constructor.callable({}, constructor.params())
+
+
+def test_profile_band_rejects_invalid_plotly_dash() -> None:
+    constructor = get_figure_constructor("feedbax.profile_band", tier="trace")
+
+    with pytest.raises(ValueError, match="dash"):
+        constructor.callable(
+            {"mean": [1.0, 2.0], "std": [0.1, 0.2]},
+            constructor.params({"line_dash": "not-a-plotly-dash"}),
+        )
 
 
 def test_execute_figure_spec_records_optional_omission_and_custody(tmp_path: Path) -> None:
@@ -425,6 +484,21 @@ def test_grid_figure_rejects_invalid_typed_chrome(params, match: str) -> None:
         constructor.params(params)
 
 
+@pytest.mark.parametrize(("params", "present"), [({}, False), ({"hovermode": False}, True)])
+def test_grid_figure_distinguishes_omitted_and_false_hovermode(params, present: bool) -> None:
+    panel_constructor = get_figure_constructor("feedbax.comparison_grid", tier="panel")
+    figure_constructor = get_figure_constructor("feedbax.grid_figure", tier="figure")
+    fig = panel_constructor.callable([], panel_constructor.params())
+
+    rendered = figure_constructor.callable(
+        fig, [], figure_constructor.params(params)
+    ).to_plotly_json()
+
+    assert ("hovermode" in rendered["layout"]) is present
+    if present:
+        assert rendered["layout"]["hovermode"] is False
+
+
 def test_panel_axis_rejects_invalid_type_and_range_shape() -> None:
     with pytest.raises(ValidationError, match="panels.0.y_axis.type"):
         FigureSpec(
@@ -437,6 +511,12 @@ def test_panel_axis_rejects_invalid_type_and_range_shape() -> None:
             name="invalid-axis-range",
             assembler="feedbax.grid_figure",
             panels=[{"name": "main", "y_axis": {"range": [0, 1, 2]}}],
+        )
+    with pytest.raises(ValidationError, match="panels.0.x_axis.secondary_y"):
+        FigureSpec(
+            name="invalid-axis-extra-key",
+            assembler="feedbax.grid_figure",
+            panels=[{"name": "main", "x_axis": {"secondary_y": True}}],
         )
 
 
@@ -609,6 +689,13 @@ def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(tmp_path: Path
         name="faceted-panels",
         template="feedbax.test_faceted_panels",
         inputs=[_contained_analysis_ref(manifest)],
+        panels=[
+            {
+                "name": "facet-base",
+                "x_axis": {"type": "log", "range": [-2, 1]},
+                "y_axis": {"type": "linear", "range": [-1, 4]},
+            }
+        ],
         slot_bindings={
             "profiles": TraceBinding(
                 name="profile",
@@ -628,6 +715,11 @@ def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(tmp_path: Path
     rendered = figure_manifest_plotly_json(figure_manifest)
 
     assert rendered is not None
+    for suffix in ("", "2", "3"):
+        assert rendered["layout"][f"xaxis{suffix}"]["type"] == "log"
+        assert rendered["layout"][f"xaxis{suffix}"]["range"] == [-2.0, 1.0]
+        assert rendered["layout"][f"yaxis{suffix}"]["type"] == "linear"
+        assert rendered["layout"][f"yaxis{suffix}"]["range"] == [-1.0, 4.0]
     assert [annotation["text"] for annotation in rendered["layout"]["annotations"]] == [
         "condition=slow",
         "condition=fast",
