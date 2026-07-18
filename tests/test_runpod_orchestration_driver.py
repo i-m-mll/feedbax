@@ -53,6 +53,7 @@ from feedbax.orchestration.stages import (
     STAGE_PROVISION,
     STAGE_REALIZE_ENV,
     STAGE_STAGE_INPUTS,
+    OrchestrationStageError,
     StageEngine,
 )
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
@@ -75,6 +76,12 @@ class FakeRunPodTransport:
 
     def queue_runpodctl(self, args: tuple[str, ...], result: CommandResult) -> None:
         self.runpodctl_results.setdefault(args, []).append(result)
+
+    def queue_empty_global_inventory(self, payload: str = "[]") -> None:
+        self.queue_runpodctl(
+            ("pod", "list", "--output", "json"),
+            CommandResult(0, payload),
+        )
 
     def queue_ssh(self, result: CommandResult) -> None:
         self.ssh_results.append(result)
@@ -1426,6 +1433,7 @@ def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) ->
         ("pod", "get", "pod-123", "--output", "json"),
         CommandResult(1, "", "pod not found"),
     )
+    transport.queue_empty_global_inventory()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(pod_id="pod-123"),
         transport=transport,
@@ -1440,9 +1448,13 @@ def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) ->
         "polls": 1,
         "terminal_observation": "not-found",
     }
-    assert result["final_pod_inventory"] == {
-        "scope": "exact-owned-pod",
-        "queried_pod_id": "pod-123",
+    assert result["final_pod_inventory"] | {"observed_at": "<time>"} == {
+        "scope": "provider-account",
+        "verified": True,
+        "observed_at": "<time>",
+        "observation_basis": "runpodctl pod list --output json",
+        "outcome": "empty",
+        "pod_count": 0,
         "pod_ids": [],
     }
     assert transport.runpodctl_calls.count(("remove", "pod", "pod-123")) == 2
@@ -1451,6 +1463,142 @@ def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) ->
         ("remove", "pod", "pod-123"), 1
     )
     assert transport.runpodctl_timeouts[second_remove_index] == 60
+
+
+@pytest.mark.parametrize(
+    "inventory_payload",
+    [
+        "[]",
+        '{"pods":[]}',
+        '{"data":[]}',
+        '{"data":{"pods":[]}}',
+    ],
+)
+def test_teardown_accepts_supported_empty_provider_inventory_shapes(
+    tmp_path: Path,
+    inventory_payload: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    transport.queue_empty_global_inventory(inventory_payload)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    result = driver.teardown(bundle, _state(bundle))
+
+    assert result["pod_absence"]["verified"] is True
+    assert result["final_pod_inventory"]["verified"] is True
+    assert result["final_pod_inventory"]["pod_ids"] == []
+    assert transport.runpodctl_calls[-1] == ("pod", "list", "--output", "json")
+
+
+@pytest.mark.parametrize(
+    ("inventory_result", "expected_outcome", "expected_count", "expected_ids"),
+    [
+        (
+            CommandResult(0, '[{"id":"pod-other","name":"top-secret-name"}]'),
+            "non-empty",
+            1,
+            ["pod-other"],
+        ),
+        (CommandResult(0, "{}"), "invalid", None, []),
+        (CommandResult(0, '{"pods":[],"data":[]}'), "invalid", None, []),
+        (CommandResult(0, '[{"id":"unsafe secret"}]'), "invalid", None, []),
+        (
+            CommandResult(1, "", "provider failed with top-secret-token"),
+            "unavailable",
+            None,
+            [],
+        ),
+    ],
+)
+def test_teardown_records_sanitized_unverified_provider_inventory(
+    tmp_path: Path,
+    inventory_result: CommandResult,
+    expected_outcome: str,
+    expected_count: int | None,
+    expected_ids: list[str],
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    transport.queue_runpodctl(
+        ("pod", "list", "--output", "json"),
+        inventory_result,
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+
+    result = driver.teardown(bundle, _state(bundle))
+
+    inventory = result["final_pod_inventory"]
+    assert inventory["verified"] is False
+    assert inventory["outcome"] == expected_outcome
+    assert inventory["pod_count"] == expected_count
+    assert inventory["pod_ids"] == expected_ids
+    serialized = json.dumps(result, sort_keys=True)
+    assert "top-secret" not in serialized
+    assert "unsafe secret" not in serialized
+    assert transport.runpodctl_calls[-1] == ("pod", "list", "--output", "json")
+
+
+@pytest.mark.parametrize(
+    ("inventory_result", "expected_outcome"),
+    [
+        (CommandResult(0, '[{"id":"pod-other"}]'), "non-empty"),
+        (CommandResult(0, "{}"), "invalid"),
+        (CommandResult(1, "", "provider unavailable"), "unavailable"),
+    ],
+)
+def test_unverified_global_inventory_survives_teardown_and_blocks_register(
+    tmp_path: Path,
+    inventory_result: CommandResult,
+    expected_outcome: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    transport.queue_runpodctl(
+        ("pod", "list", "--output", "json"),
+        inventory_result,
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+    engine = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=CheckRegistry(
+            {"fixture": lambda _row: CheckEntry(check_id="fixture", status="pass")}
+        ),
+    )
+
+    state = engine._run_teardown(_state(bundle), abort=False)
+
+    assert state.stage("TEARDOWN").status == "completed"
+    inventory = state.stage("TEARDOWN").outputs["final_pod_inventory"]
+    assert inventory["verified"] is False
+    assert inventory["outcome"] == expected_outcome
+    with pytest.raises(
+        OrchestrationStageError,
+        match="globally empty RunPod provider inventory",
+    ):
+        engine._stage_register(state)
 
 
 def test_teardown_fails_closed_when_remove_after_stop_fails(tmp_path: Path) -> None:
@@ -1483,6 +1631,7 @@ def test_teardown_polls_until_exact_owned_pod_is_absent(tmp_path: Path) -> None:
     query = ("pod", "get", "pod-123", "--output", "json")
     transport.queue_runpodctl(query, CommandResult(0, '{"id":"pod-123"}'))
     transport.queue_runpodctl(query, CommandResult(1, "", "pod does not exist"))
+    transport.queue_empty_global_inventory()
     clock = FakeClock()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
@@ -1573,6 +1722,7 @@ def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) ->
         ("pod", "get", "pod-123", "--output", "json"),
         CommandResult(1, "", "pod not found"),
     )
+    transport.queue_empty_global_inventory()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             pod_id="pod-123",

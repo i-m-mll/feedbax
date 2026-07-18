@@ -35,7 +35,7 @@ from feedbax.orchestration.input_materialization import (
     materialize_bundle_inputs,
     preflight_input_provider_bindings,
 )
-from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
+from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
 
 
 RUNPOD_CODE_EXCLUDES = (
@@ -66,6 +66,7 @@ RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
+_SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _REMOTE_ENVIRONMENT_PROBE = r"""
 import hashlib
 import importlib.metadata
@@ -878,16 +879,60 @@ class RunPodOrchestrationDriver:
             action = "removed"
         absence = self._wait_for_pod_absence(pod_id)
         self._pod_id = None
+        final_inventory = self._observe_global_pod_inventory()
         return {
             "driver": "runpod",
             "teardown": action,
             "pod_id": pod_id,
             "pod_absence": absence,
-            "final_pod_inventory": {
-                "scope": "exact-owned-pod",
-                "queried_pod_id": pod_id,
+            "final_pod_inventory": final_inventory,
+        }
+
+    def _observe_global_pod_inventory(self) -> Mapping[str, Any]:
+        """Return sanitized evidence from the provider-wide RunPod pod inventory."""
+        result = self.transport.runpodctl("pod", "list", "--output", "json")
+        observed_at = utc_now().isoformat()
+        basis = "runpodctl pod list --output json"
+        if result.returncode != 0:
+            return {
+                "scope": "provider-account",
+                "verified": False,
+                "observed_at": observed_at,
+                "observation_basis": basis,
+                "outcome": "unavailable",
+                "pod_count": None,
                 "pod_ids": [],
-            },
+            }
+        try:
+            pod_ids = _parse_runpod_pod_inventory(result.stdout)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                "scope": "provider-account",
+                "verified": False,
+                "observed_at": observed_at,
+                "observation_basis": basis,
+                "outcome": "invalid",
+                "pod_count": None,
+                "pod_ids": [],
+            }
+        if pod_ids:
+            return {
+                "scope": "provider-account",
+                "verified": False,
+                "observed_at": observed_at,
+                "observation_basis": basis,
+                "outcome": "non-empty",
+                "pod_count": len(pod_ids),
+                "pod_ids": list(pod_ids),
+            }
+        return {
+            "scope": "provider-account",
+            "verified": True,
+            "observed_at": observed_at,
+            "observation_basis": basis,
+            "outcome": "empty",
+            "pod_count": 0,
+            "pod_ids": [],
         }
 
     def _wait_for_pod_absence(self, pod_id: str) -> Mapping[str, Any]:
@@ -1781,6 +1826,53 @@ def _json_object(payload: str) -> dict[str, Any]:
     if isinstance(loaded, Mapping):
         return dict(loaded)
     raise RunPodDriverError("expected JSON object")
+
+
+def _parse_runpod_pod_inventory(payload: str) -> tuple[str, ...]:
+    """Parse supported ``runpodctl pod list`` shapes into sanitized pod IDs."""
+    loaded = json.loads(payload)
+    if isinstance(loaded, list):
+        pods = loaded
+    elif isinstance(loaded, Mapping):
+        candidates: list[Any] = []
+        if "pods" in loaded:
+            candidates.append(loaded["pods"])
+        if "data" in loaded:
+            data = loaded["data"]
+            if isinstance(data, list):
+                candidates.append(data)
+            elif isinstance(data, Mapping) and "pods" in data:
+                candidates.append(data["pods"])
+            else:
+                raise ValueError("unsupported RunPod inventory data wrapper")
+        if len(candidates) != 1:
+            raise ValueError("ambiguous RunPod inventory wrapper")
+        pods = candidates[0]
+    else:
+        raise TypeError("RunPod inventory must be a list or wrapper object")
+    if not isinstance(pods, list):
+        raise TypeError("RunPod inventory wrapper must contain a list")
+
+    pod_ids: list[str] = []
+    for pod in pods:
+        if not isinstance(pod, Mapping):
+            raise TypeError("RunPod inventory entries must be objects")
+        candidates = [pod.get("id"), pod.get("podId")]
+        nested = pod.get("pod")
+        if isinstance(nested, Mapping):
+            candidates.append(nested.get("id"))
+        identities = {
+            value for value in candidates if isinstance(value, str) and value
+        }
+        if len(identities) != 1:
+            raise ValueError("RunPod inventory entry has ambiguous pod identity")
+        pod_id = identities.pop()
+        if _SAFE_POD_ID_PATTERN.fullmatch(pod_id) is None:
+            raise ValueError("RunPod inventory entry has unsafe pod identity")
+        pod_ids.append(pod_id)
+    if len(pod_ids) != len(set(pod_ids)):
+        raise ValueError("RunPod inventory contains duplicate pod identities")
+    return tuple(sorted(pod_ids))
 
 
 def _safe_reason(reason: str) -> str:

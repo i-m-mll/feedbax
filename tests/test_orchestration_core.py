@@ -105,6 +105,7 @@ from feedbax.orchestration.stages import (
     STAGE_PROVISION,
     STAGE_REALIZE_ENV,
     STAGE_STAGE_INPUTS,
+    STAGE_TEARDOWN,
     OrchestrationStageError,
     PreflightFailed,
     StageEngine,
@@ -200,6 +201,21 @@ class BillingFakeDriver(FakeDriver):
     def probe(self, bundle: RunBundle, row: RunRowSpec, state: RunSetState) -> DriverRowProbe:
         self._call(f"probe:{row.row_id}")
         return DriverRowProbe(status=self.probe_status)
+
+    def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+        self._call("teardown")
+        return {
+            "driver": "runpod",
+            "final_pod_inventory": {
+                "scope": "provider-account",
+                "verified": True,
+                "observed_at": "2026-07-18T20:00:00+00:00",
+                "observation_basis": "runpodctl pod list --output json",
+                "outcome": "empty",
+                "pod_count": 0,
+                "pod_ids": [],
+            },
+        }
 
 
 def _remote_billing_record() -> dict[str, Any]:
@@ -1341,6 +1357,11 @@ def test_capped_remote_monitor_stops_at_observed_spend_cap(tmp_path: Path) -> No
     assert "stop:row-a" in driver.calls
     assert "collect:row-a" in driver.calls
     assert "teardown" in driver.calls
+    assert state.stage(STAGE_TEARDOWN).outputs["final_pod_inventory"]["verified"] is True
+    assert (
+        state.registration_payload["final_pod_inventory"]
+        == state.stage(STAGE_TEARDOWN).outputs["final_pod_inventory"]
+    )
 
 
 def test_capped_remote_monitor_rejects_existing_spend_before_first_probe(
@@ -2461,6 +2482,103 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
             store=store,
             conformance_registry=registry,
         ).run()
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    [
+        None,
+        {"scope": "exact-owned-pod", "pod_ids": []},
+        {
+            "scope": "provider-account",
+            "verified": False,
+            "observed_at": "2026-07-18T20:00:00+00:00",
+            "observation_basis": "runpodctl pod list --output json",
+            "outcome": "unavailable",
+            "pod_count": 0,
+            "pod_ids": [],
+        },
+        {
+            "scope": "provider-account",
+            "verified": True,
+            "observed_at": "2026-07-18T20:00:00+00:00",
+            "observation_basis": "runpodctl pod list --output json",
+            "outcome": "non-empty",
+            "pod_count": 1,
+            "pod_ids": ["pod-leftover"],
+        },
+        {
+            "scope": "provider-account",
+            "verified": True,
+            "observation_basis": "runpodctl pod list --output json",
+            "outcome": "empty",
+            "pod_count": 0,
+            "pod_ids": [],
+        },
+    ],
+)
+def test_register_refuses_runpod_without_verified_globally_empty_inventory(
+    tmp_path: Path,
+    inventory: dict[str, Any] | None,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+    teardown = state.stage(STAGE_TEARDOWN).model_copy(
+        update={
+            "status": "completed",
+            "outputs": ({"final_pod_inventory": inventory} if inventory else {}),
+        }
+    )
+    state = state.with_stage(STAGE_TEARDOWN, teardown)
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="globally empty RunPod provider inventory",
+    ):
+        engine._stage_register(state)
+
+
+def test_register_accepts_verified_globally_empty_runpod_inventory_gate(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+    teardown = state.stage(STAGE_TEARDOWN).model_copy(
+        update={
+            "status": "completed",
+            "outputs": {
+                "final_pod_inventory": {
+                    "scope": "provider-account",
+                    "verified": True,
+                    "observed_at": "2026-07-18T20:00:00+00:00",
+                    "observation_basis": "runpodctl pod list --output json",
+                    "outcome": "empty",
+                    "pod_count": 0,
+                    "pod_ids": [],
+                }
+            },
+        }
+    )
+    state = state.with_stage(STAGE_TEARDOWN, teardown)
+
+    with pytest.raises(OrchestrationStageError, match="certificate_ref"):
+        engine._stage_register(state)
 
 
 @pytest.mark.parametrize(
