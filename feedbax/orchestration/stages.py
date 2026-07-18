@@ -146,6 +146,14 @@ class BudgetExceeded(OrchestrationStageError):
     """Raised when a run-set budget guard aborts monitoring."""
 
 
+class _PrimaryExecutorFailure(OrchestrationStageError):
+    """Carry terminal executor failure plus secondary collection evidence."""
+
+    def __init__(self, message: str, *, stage_outputs: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.stage_outputs = dict(stage_outputs)
+
+
 class StageEngine:
     """Execute a run bundle through the orchestration stage sequence."""
 
@@ -294,12 +302,13 @@ class StageEngine:
             except Exception as exc:
                 if self.store.path.exists():
                     state = self.store.load()
-                failed = state.stage(stage_id).model_copy(
-                    update={"status": "failed", "error": str(exc)}
-                )
+                failed_update: dict[str, Any] = {"status": "failed", "error": str(exc)}
+                if isinstance(exc, _PrimaryExecutorFailure):
+                    failed_update["outputs"] = exc.stage_outputs
+                failed = state.stage(stage_id).model_copy(update=failed_update)
                 state = state.with_stage(stage_id, failed)
                 self.store.save(state)
-                if attempts >= limit:
+                if isinstance(exc, _PrimaryExecutorFailure) or attempts >= limit:
                     raise
                 continue
             completed = state.stage(stage_id).model_copy(
@@ -481,12 +490,56 @@ class StageEngine:
 
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected: dict[str, Mapping[str, str]] = {}
+        executor_failures = [
+            {
+                "row_id": row.row_id,
+                "error": state.rows[row.row_id].error
+                or "executor reported failure without detail",
+            }
+            for row in self.bundle.rows
+            if state.rows[row.row_id].status == "failed"
+        ]
+        preserve_executor_failure = bool(executor_failures)
+        secondary_evidence: list[dict[str, Any]] = []
         for row in self.bundle.rows:
-            outputs = dict(self.driver.collect(self.bundle, row, state))
+            row_state = state.rows[row.row_id]
+            try:
+                outputs = dict(self.driver.collect(self.bundle, row, state))
+            except Exception as exc:
+                if not preserve_executor_failure:
+                    raise
+                outputs = {}
+                secondary_evidence.append(
+                    {
+                        "kind": "collection_error_after_executor_failure",
+                        "row_id": row.row_id,
+                        "detail": str(exc),
+                    }
+                )
+            missing_outputs = _missing_declared_collection_outputs(row, outputs)
+            if missing_outputs and preserve_executor_failure:
+                secondary_evidence.append(
+                    {
+                        "kind": "absent_collection_outputs",
+                        "row_id": row.row_id,
+                        "missing_outputs": missing_outputs,
+                    }
+                )
             collected[row.row_id] = outputs
-            row_state = state.rows[row.row_id].model_copy(update={"collected_outputs": outputs})
+            row_state = row_state.model_copy(update={"collected_outputs": outputs})
             state = state.with_row(row.row_id, row_state)
-        return state, {"rows": collected}
+            self.store.save(state)
+        stage_outputs: dict[str, Any] = {"rows": collected}
+        if secondary_evidence:
+            stage_outputs["secondary_evidence"] = secondary_evidence
+        if executor_failures:
+            stage_outputs["executor_failures"] = executor_failures
+            primary = executor_failures[0]
+            raise _PrimaryExecutorFailure(
+                f"executor failed for row {primary['row_id']!r}: {primary['error']}",
+                stage_outputs=stage_outputs,
+            )
+        return state, stage_outputs
 
     def _stage_certify(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         if len(self.conformance_registry) == 0:
@@ -863,15 +916,20 @@ class StageEngine:
         stage = state.stage(STAGE_TEARDOWN)
         if stage.status == "completed":
             return state
+        failure_log_collection: dict[str, Any] | None = None
         if abort:
             collect_failure_logs = getattr(self.driver, "collect_failure_logs", None)
             if collect_failure_logs is not None:
                 try:
-                    collect_failure_logs(self.bundle, state)
-                except Exception:
+                    diagnostic_outputs = dict(collect_failure_logs(self.bundle, state))
+                    failure_log_collection = {
+                        "status": "completed",
+                        "outputs": diagnostic_outputs,
+                    }
+                except Exception as exc:
                     # Failure diagnostics are best-effort and must never mask
                     # the error that caused abort teardown.
-                    pass
+                    failure_log_collection = {"status": "failed", "error": str(exc)}
         try:
             outputs = dict(self.driver.teardown(self.bundle, state))
             status = "completed"
@@ -880,13 +938,16 @@ class StageEngine:
             outputs = {}
             status = "failed"
             error = str(exc)
+        teardown_outputs: dict[str, Any] = {**outputs, "abort_path": abort}
+        if failure_log_collection is not None:
+            teardown_outputs["failure_log_collection"] = failure_log_collection
         updated = stage.model_copy(
             update={
                 "status": status,
                 "attempts": stage.attempts + 1,
                 "started_at": stage.started_at or utc_now(),
                 "completed_at": utc_now(),
-                "outputs": {**outputs, "abort_path": abort},
+                "outputs": teardown_outputs,
                 "error": error,
             }
         )
@@ -1083,6 +1144,14 @@ class StageEngine:
 
     def _all_terminal(self, state: RunSetState) -> bool:
         return all(row.status in ("completed", "failed", "stopped") for row in state.rows.values())
+
+
+def _missing_declared_collection_outputs(
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+) -> list[str]:
+    expected = {Path(source).name for source in row.launch.collect}
+    return sorted(expected - set(collected))
 
 
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:

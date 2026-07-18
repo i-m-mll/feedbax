@@ -983,6 +983,227 @@ def test_stage_retry_accounting_and_abort_teardown(tmp_path: Path) -> None:
     assert "teardown" in failing_driver.calls
 
 
+@pytest.mark.parametrize(
+    ("collection_raises", "failure_logs_raise", "teardown_raises"),
+    [(False, False, False), (True, True, True)],
+)
+def test_executor_failure_remains_primary_when_declared_collection_output_is_absent(
+    tmp_path: Path,
+    collection_raises: bool,
+    failure_logs_raise: bool,
+    teardown_raises: bool,
+) -> None:
+    class FailedExecutorDriver(FakeDriver):
+        def probe(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> DriverRowProbe:
+            self._call(f"probe:{row.row_id}")
+            return DriverRowProbe(status="failed", detail="duplicate plugin registration")
+
+        def collect(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call(f"collect:{row.row_id}")
+            if collection_raises:
+                raise RuntimeError("manifest.json is absent")
+            return {}
+
+        def collect_failure_logs(
+            self,
+            bundle: RunBundle,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call("collect_failure_logs")
+            if failure_logs_raise:
+                raise RuntimeError("failure log pull timed out")
+            return {"failure_logs": str(bundle.run_set_dir / "failure-logs")}
+
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a", collect=["manifest.json"])],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = FailedExecutorDriver(fail={"teardown": 1} if teardown_raises else None)
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="executor failed for row 'row-a': duplicate plugin registration",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    failed_state = store.load()
+    collect_stage = failed_state.stage("COLLECT")
+    assert collect_stage.status == "failed"
+    assert collect_stage.attempts == 1
+    assert collect_stage.outputs["executor_failures"] == [
+        {"row_id": "row-a", "error": "duplicate plugin registration"}
+    ]
+    evidence = collect_stage.outputs["secondary_evidence"]
+    assert {
+        "kind": "absent_collection_outputs",
+        "row_id": "row-a",
+        "missing_outputs": ["manifest.json"],
+    } in evidence
+    if collection_raises:
+        assert {
+            "kind": "collection_error_after_executor_failure",
+            "row_id": "row-a",
+            "detail": "manifest.json is absent",
+        } in evidence
+    assert failed_state.rows["row-a"].error == "duplicate plugin registration"
+    assert driver.calls.count("collect:row-a") == 1
+    assert driver.calls.count("collect_failure_logs") == 1
+    assert driver.calls.count("teardown") == 1
+    teardown_stage = failed_state.stage("TEARDOWN")
+    assert teardown_stage.status == ("failed" if teardown_raises else "completed")
+    diagnostic = teardown_stage.outputs["failure_log_collection"]
+    assert diagnostic["status"] == ("failed" if failure_logs_raise else "completed")
+    if failure_logs_raise:
+        assert diagnostic["error"] == "failure log pull timed out"
+
+
+def test_collection_error_for_completed_executor_remains_primary_and_retries(
+    tmp_path: Path,
+) -> None:
+    class MissingOutputDriver(FakeDriver):
+        def collect(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call(f"collect:{row.row_id}")
+            raise RuntimeError("manifest collection failed")
+
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a", collect=["manifest.json"])],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = MissingOutputDriver()
+
+    with pytest.raises(RuntimeError, match="manifest collection failed"):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    failed_state = store.load()
+    assert failed_state.stage("COLLECT").attempts == 5
+    assert "executor failed" not in (failed_state.stage("COLLECT").error or "")
+    assert driver.calls.count("collect:row-a") == 5
+    assert driver.calls.count("teardown") == 1
+
+
+def test_later_executor_failure_precedes_earlier_row_collection_error(tmp_path: Path) -> None:
+    class MixedOutcomeDriver(FakeDriver):
+        def probe(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> DriverRowProbe:
+            self._call(f"probe:{row.row_id}")
+            if row.row_id == "failed-row":
+                return DriverRowProbe(status="failed", detail="executor payload mismatch")
+            return DriverRowProbe(status="completed")
+
+        def collect(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call(f"collect:{row.row_id}")
+            if row.row_id == "completed-row":
+                raise RuntimeError("completed row output transport failed")
+            return {}
+
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row("completed-row", collect=["manifest.json"]),
+            _compiled_row("failed-row", collect=["manifest.json"]),
+        ],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = MixedOutcomeDriver()
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="executor failed for row 'failed-row': executor payload mismatch",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    failed_state = store.load()
+    evidence = failed_state.stage("COLLECT").outputs["secondary_evidence"]
+    assert {
+        "kind": "collection_error_after_executor_failure",
+        "row_id": "completed-row",
+        "detail": "completed row output transport failed",
+    } in evidence
+    assert driver.calls.count("collect:completed-row") == 1
+    assert driver.calls.count("collect:failed-row") == 1
+
+
+def test_local_executor_failure_records_absent_declared_output_as_secondary(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                command=[sys.executable, "-c", "raise SystemExit(7)"],
+                collect=["manifest.json"],
+            )
+        ],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="executor failed for row 'row-a': exit=7",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+            poll_interval_seconds=0.01,
+        ).run()
+
+    failed_state = store.load()
+    assert failed_state.stage("COLLECT").outputs["secondary_evidence"] == [
+        {
+            "kind": "absent_collection_outputs",
+            "row_id": "row-a",
+            "missing_outputs": ["manifest.json"],
+        }
+    ]
+    assert failed_state.rows["row-a"].error == "exit=7"
+    assert failed_state.stage("TEARDOWN").status == "completed"
+
+
 def test_request_assembly_certifies_all_core_checks_with_independent_identity(
     tmp_path: Path,
 ) -> None:
@@ -2519,16 +2740,19 @@ def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> 
     (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
     (sentinels / "row-a.pid").write_text("999999999\n", encoding="utf-8")
 
-    final_state = StageEngine(
-        bundle=bundle,
-        driver=driver,
-        store=store,
-        conformance_registry=_fixture_pass_registry(),
-        poll_interval_seconds=0.01,
-    ).run()
+    with pytest.raises(OrchestrationStageError, match="executor failed for row 'row-a'"):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+            poll_interval_seconds=0.01,
+        ).run()
 
+    final_state = store.load()
     assert final_state.rows["row-a"].status == "failed"
     assert final_state.rows["row-a"].event_discrepancies[0]["code"] == "orphaned_launch"
+    assert final_state.stage("TEARDOWN").status == "completed"
     assert not marker.exists()
 
 
