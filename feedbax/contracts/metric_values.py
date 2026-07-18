@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated, Any
+from typing import Annotated, Any, TypeAliasType
 
 from pydantic import BeforeValidator
-from typing_extensions import TypeAliasType
 
 
 def _validate_numeric_boolean_json(value: Any) -> Any:
