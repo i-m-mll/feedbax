@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+import shlex
 from typing import Any
 
 import pytest
@@ -60,6 +61,7 @@ class FakeRunPodTransport:
         self.operations: list[str] = []
         self.rsync_timeouts: list[float | None] = []
         self.rsync_result = CommandResult(0, "")
+        self.environment_probe_result: CommandResult | None = None
 
     def queue_runpodctl(self, args: tuple[str, ...], result: CommandResult) -> None:
         self.runpodctl_results.setdefault(args, []).append(result)
@@ -76,7 +78,7 @@ class FakeRunPodTransport:
         return CommandResult(0, "{}")
 
     def image_exists(self, image: str) -> bool:
-        return image == "runpod/pytorch:1.0.3"
+        return image == "runpod/pytorch:1.0.3@sha256:" + "a" * 64
 
     def ssh(self, command: str) -> CommandResult:
         self.ssh_commands.append(command)
@@ -87,6 +89,14 @@ class FakeRunPodTransport:
             return CommandResult(0, "done")
         if command.startswith("tail -n 50 -- "):
             return self.log_tail_result
+        if (
+            "uv run --no-sync python -c" in command
+            and "feedbax.runpod_environment_fingerprint.v1" in command
+        ):
+            if self.environment_probe_result is not None:
+                return self.environment_probe_result
+            declaration = json.loads(shlex.split(command)[-1])
+            return CommandResult(0, _realized_fingerprint(declaration))
         if command.startswith("cat ") and not self.ssh_results:
             return CommandResult(0, "4321\n")
         if self.ssh_results:
@@ -158,6 +168,9 @@ def _bundle(
     deadman_enabled: bool = False,
     baseline: bool = True,
 ) -> RunBundle:
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    lockfile_sha256 = hashlib.sha256(lockfile.read_bytes()).hexdigest()
     training_config = None
     if baseline:
         # The baseline extension lives inside a schema-valid authored field and
@@ -188,7 +201,8 @@ def _bundle(
         driver="runpod",
         environment=EnvironmentDeclaration(
             python_version="3.12",
-            image_id="runpod/pytorch:1.0.3",
+            image_id="runpod/pytorch:1.0.3@sha256:" + "a" * 64,
+            lockfile_hashes={"uv.lock": lockfile_sha256},
             overlay_steps=["uv pip install extra"],
         ),
         budget=BudgetPolicy(max_wall_clock_seconds=30),
@@ -210,6 +224,39 @@ def _bundle(
         run_set_id="2026-01-02-deadbeef",
         context=AssemblyContext(custody_root=tmp_path / "custody"),
         registry=registry,
+    )
+
+
+def _realized_fingerprint(declaration: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "schema_version": "feedbax.runpod_environment_fingerprint.v1",
+            "declaration_sha256": declaration["declaration_sha256"],
+            "image_id": declaration["image_id"],
+            "lockfile_hashes": declaration["lockfile_hashes"],
+            "runtime": {
+                "device_count": 1,
+                "device_kind": "NVIDIA GeForce RTX 5090",
+                "equinox": "0.13.2",
+                "feedbax": "0.1.0",
+                "jax": "0.7.2",
+                "jax_platform": "gpu",
+                "jax_platform_version": "CUDA 12.8",
+                "jaxlib": "0.7.2",
+                "python": "3.12.8",
+                "python_implementation": "CPython",
+            },
+            "feedbax_plugins": [
+                {
+                    "distribution": "rlrmp2",
+                    "distribution_version": "0.1.0",
+                    "name": "rlrmp2",
+                    "value": "rlrmp2.feedbax_plugin",
+                }
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
@@ -423,7 +470,12 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
 
     fingerprint = driver.realize_env(bundle, _state(bundle))
 
-    assert fingerprint
+    fingerprint_payload = json.loads(fingerprint)
+    assert fingerprint_payload["schema_version"] == (
+        "feedbax.runpod_environment_fingerprint.v1"
+    )
+    assert fingerprint_payload["runtime"]["jax_platform"] == "gpu"
+    assert fingerprint_payload["feedbax_plugins"][0]["name"] == "rlrmp2"
     assert transport.rsync_calls == [
         (
             str(local_repo) + "/",
@@ -449,6 +501,8 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "uv pip install extra" in joined
     assert "jax.__version__" in joined
     assert "jax[cuda12]" in joined
+    assert "entry_point.load()" in joined
+    assert "lockfile digest mismatch" in joined
 
 
 def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
@@ -482,7 +536,7 @@ def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
     fingerprint_write = next(
         index
         for index, command in enumerate(transport.ssh_commands)
-        if "env-fingerprint.txt" in command and "printf %s" in command
+        if "env-fingerprint.json" in command and "printf %s" in command
     )
     sentinel_probe = max(
         index
@@ -540,13 +594,21 @@ def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
 
 def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
-    fingerprint = compute_runpod_environment_fingerprint(bundle)
+    declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+    declaration = {
+        "declaration_sha256": declaration_fingerprint,
+        "image_id": bundle.environment.image_id,
+        "lockfile_hashes": bundle.environment.lockfile_hashes,
+        "python_version": bundle.environment.python_version,
+    }
+    realized_fingerprint = _realized_fingerprint(declaration)
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))
-    transport.queue_ssh(CommandResult(0, fingerprint))
+    transport.queue_ssh(CommandResult(0, declaration_fingerprint))
+    transport.queue_ssh(CommandResult(0, realized_fingerprint))
     driver = RunPodOrchestrationDriver(transport=transport)
 
-    assert driver.realize_env(bundle, _state(bundle)) == fingerprint
+    assert driver.realize_env(bundle, _state(bundle)) == realized_fingerprint
     assert transport.rsync_calls == []
     assert all("uv sync --frozen" not in command for command in transport.ssh_commands)
     assert all("overlay-" not in command for command in transport.ssh_commands)
@@ -807,7 +869,10 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     checks = driver.preflight_checks(bundle)
 
     assert [check.name for check in checks] == [
+        "runpod-image-immutable",
         "runpod-image-tag-exists",
+        "runpod-lockfiles-declared",
+        "runpod-python-version-declared",
         "runpod-gpu-policy-declared",
         "runpod-credentials",
         "runpod-balance-floor",
@@ -815,6 +880,107 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     ]
     assert all(check.status == "pass" for check in checks)
     assert transport.runpodctl_calls == [("user", "--output", "json")]
+
+
+@pytest.mark.parametrize(
+    ("environment_update", "failed_check"),
+    [
+        ({"image_id": "runpod/pytorch:mutable"}, "runpod-image-immutable"),
+        ({"image_id": None}, "runpod-image-immutable"),
+        ({"lockfile_hashes": {}}, "runpod-lockfiles-declared"),
+        (
+            {"lockfile_hashes": {"uv.lock": "not-a-sha256"}},
+            "runpod-lockfiles-declared",
+        ),
+        ({"python_version": None}, "runpod-python-version-declared"),
+    ],
+)
+def test_preflight_rejects_non_deterministic_environment_declarations(
+    tmp_path: Path,
+    environment_update: dict[str, Any],
+    failed_check: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(update=environment_update)
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(gpu_id="NVIDIA GeForce RTX 5090"),
+        transport=transport,
+    )
+
+    checks = {check.name: check for check in driver.preflight_checks(bundle)}
+
+    assert checks[failed_check].status == "fail"
+    assert driver._preflight_passed is False
+
+
+def test_realize_env_rejects_mutable_image_before_remote_access(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(
+                update={"image_id": "runpod/pytorch:mutable"}
+            )
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(transport=transport)
+
+    with pytest.raises(RunPodDriverError, match="pinned by @sha256"):
+        driver.realize_env(bundle, _state(bundle))
+
+    assert transport.ssh_commands == []
+
+
+@pytest.mark.parametrize("mismatch", ["lockfile", "cuda"])
+def test_realize_env_rejects_runtime_provenance_mismatch(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, ""))
+    transport.queue_ssh(CommandResult(1, ""))
+    declaration_sha256 = compute_runpod_environment_fingerprint(bundle)
+    mismatched = json.loads(
+        _realized_fingerprint(
+            {
+                "declaration_sha256": declaration_sha256,
+                "image_id": bundle.environment.image_id,
+                "lockfile_hashes": bundle.environment.lockfile_hashes,
+                "python_version": bundle.environment.python_version,
+            }
+        )
+    )
+    if mismatch == "lockfile":
+        mismatched["lockfile_hashes"]["uv.lock"] = "b" * 64
+        expected_error = "lockfile_hashes"
+    else:
+        mismatched["runtime"]["jax_platform"] = "cpu"
+        expected_error = "JAX CUDA backend"
+    transport.environment_probe_result = CommandResult(0, json.dumps(mismatched))
+    driver = RunPodOrchestrationDriver(transport=transport)
+
+    with pytest.raises(RunPodDriverError, match=expected_error):
+        driver.realize_env(bundle, _state(bundle))
+
+
+def test_rlrmp2_is_the_primary_environment_workdir() -> None:
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            remote_repos={
+                "feedbax": "/workspace/feedbax",
+                "rlrmp2": "/workspace/rlrmp2",
+            }
+        ),
+        transport=FakeRunPodTransport(),
+    )
+
+    assert driver._primary_workdir() == "/workspace/rlrmp2"
 
 
 def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Path) -> None:
@@ -829,7 +995,8 @@ def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Pat
     state = StageEngine(bundle=bundle, driver=driver, store=store).run(stop_after_stage="PREFLIGHT")
 
     names = [check.name for check in state.stage("PREFLIGHT").checks]
-    assert "runpod-image-tag-exists" in names
+    assert "runpod-image-immutable" in names
+    assert "runpod-lockfiles-declared" in names
     assert "runpod-balance-floor" in names
     assert state.stage("PROVISION").status == "pending"
     assert transport.ssh_commands == []

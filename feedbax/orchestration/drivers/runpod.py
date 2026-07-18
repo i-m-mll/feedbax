@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -17,7 +18,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
@@ -48,6 +49,90 @@ METADATA_BATCH_KEYS = (
     "completed_batch",
     "completedBatch",
 )
+RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
+    "feedbax.runpod_environment_fingerprint.v1"
+)
+_IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_REMOTE_ENVIRONMENT_PROBE = r"""
+import hashlib
+import importlib.metadata
+import json
+import platform
+from pathlib import Path
+import sys
+
+declaration = json.loads(sys.argv[1])
+declared_python = declaration["python_version"]
+observed_python = platform.python_version()
+python_matches = observed_python == declared_python or (
+    declared_python is not None
+    and declared_python.count(".") == 1
+    and observed_python.startswith(declared_python + ".")
+)
+if not python_matches:
+    raise RuntimeError(
+        f"Python version mismatch: expected {declared_python}, observed {observed_python}"
+    )
+
+observed_lockfiles = {}
+for relative_path, expected in declaration["lockfile_hashes"].items():
+    path = Path(relative_path)
+    observed = hashlib.sha256(path.read_bytes()).hexdigest()
+    if observed != expected:
+        raise RuntimeError(
+            f"lockfile digest mismatch for {relative_path}: expected {expected}, observed {observed}"
+        )
+    observed_lockfiles[relative_path] = observed
+
+import equinox
+import jax
+import jaxlib
+
+devices = jax.devices()
+if not devices:
+    raise RuntimeError("JAX reported no runtime devices")
+plugins = []
+for entry_point in importlib.metadata.entry_points(group="feedbax.plugins"):
+    entry_point.load()
+    distribution = entry_point.dist
+    plugins.append(
+        {
+            "distribution": distribution.name if distribution is not None else None,
+            "distribution_version": (
+                distribution.version if distribution is not None else None
+            ),
+            "name": entry_point.name,
+            "value": entry_point.value,
+        }
+    )
+primary_device = devices[0]
+client = getattr(primary_device, "client", None)
+if getattr(primary_device, "platform", None) not in {"cuda", "gpu"}:
+    raise RuntimeError(
+        f"JAX CUDA backend is unavailable: observed platform {primary_device.platform!r}"
+    )
+payload = {
+    "schema_version": "feedbax.runpod_environment_fingerprint.v1",
+    "declaration_sha256": declaration["declaration_sha256"],
+    "image_id": declaration["image_id"],
+    "lockfile_hashes": observed_lockfiles,
+    "runtime": {
+        "device_count": len(devices),
+        "device_kind": getattr(primary_device, "device_kind", None),
+        "jax": jax.__version__,
+        "jax_platform": getattr(primary_device, "platform", None),
+        "jax_platform_version": getattr(client, "platform_version", None),
+        "jaxlib": jaxlib.__version__,
+        "python": observed_python,
+        "python_implementation": platform.python_implementation(),
+        "equinox": equinox.__version__,
+        "feedbax": importlib.metadata.version("feedbax"),
+    },
+    "feedbax_plugins": sorted(plugins, key=lambda item: (item["name"], item["value"])),
+}
+print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+"""
 
 
 class RunPodDriverError(RuntimeError):
@@ -108,7 +193,8 @@ class SubprocessRunPodTransport:
         return _run_command([self.runpodctl_executable, *args])
 
     def image_exists(self, image: str) -> bool:
-        repository, separator, tag = image.rpartition(":")
+        tagged_image = image.split("@", 1)[0]
+        repository, separator, tag = tagged_image.rpartition(":")
         if not separator or not repository or not tag or "/" not in repository:
             return False
         namespace, name = repository.split("/", 1)
@@ -320,9 +406,51 @@ class RunPodOrchestrationDriver:
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
         checks: list[PreflightCheckEntry] = []
-        image = bundle.environment.image_id or self.config.image
-        image_exists = self.transport.image_exists(image)
-        checks.append(_preflight_check("runpod-image-tag-exists", image_exists, observed=image))
+        image = bundle.environment.image_id
+        image_is_immutable = is_immutable_runpod_image_id(image)
+        checks.append(
+            _preflight_check(
+                "runpod-image-immutable",
+                image_is_immutable,
+                detail=(
+                    None
+                    if image_is_immutable
+                    else "environment.image_id must be an OCI image pinned by @sha256:<64 hex>"
+                ),
+                observed=image,
+            )
+        )
+        image_exists = bool(image_is_immutable and self.transport.image_exists(image or ""))
+        checks.append(
+            _preflight_check(
+                "runpod-image-tag-exists",
+                image_exists,
+                observed=image,
+            )
+        )
+        lockfile_error = runpod_lockfile_declaration_error(
+            bundle.environment.lockfile_hashes
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-lockfiles-declared",
+                lockfile_error is None,
+                detail=lockfile_error,
+                observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
+            )
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-python-version-declared",
+                bool(bundle.environment.python_version),
+                detail=(
+                    None
+                    if bundle.environment.python_version
+                    else "environment.python_version is required for deterministic realization"
+                ),
+                observed=bundle.environment.python_version,
+            )
+        )
 
         gpu_policy = bool(self._provided_endpoint or self._pod_id or self.config.gpu_id)
         checks.append(
@@ -393,14 +521,18 @@ class RunPodOrchestrationDriver:
 
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
-        fingerprint = compute_runpod_environment_fingerprint(bundle)
+        require_deterministic_runpod_environment(bundle)
+        declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} {_sq(remote_run_dir + '/logs')}"
         )
         self._ensure_deadman(bundle)
-        if self._should_reuse_remote_environment(bundle, fingerprint):
-            return fingerprint
+        reused_fingerprint = self._reused_remote_environment_fingerprint(
+            bundle, declaration_fingerprint
+        )
+        if reused_fingerprint is not None:
+            return reused_fingerprint
 
         for name, local_root in self._local_repos().items():
             remote_root = self._remote_repos()[name]
@@ -444,8 +576,16 @@ class RunPodOrchestrationDriver:
                 failed_file=f"{sentinel_dir}/overlay-{index}.failed",
                 log_file=f"{logs_dir}/overlay-{index}.log",
             )
-        self._ssh(f"printf %s {_sq(fingerprint)} > {_sq(self._remote_fingerprint_path(bundle))}")
-        return fingerprint
+        realized_fingerprint = self._probe_realized_environment(
+            bundle, declaration_fingerprint
+        )
+        self._ssh(
+            f"printf %s {_sq(declaration_fingerprint)} > "
+            f"{_sq(self._remote_declaration_fingerprint_path(bundle))} && "
+            f"printf %s {_sq(realized_fingerprint)} > "
+            f"{_sq(self._remote_fingerprint_path(bundle))}"
+        )
+        return realized_fingerprint
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Stage declared baselines and custody pins on the pod."""
@@ -752,12 +892,52 @@ class RunPodOrchestrationDriver:
             excludes=RUNPOD_CODE_EXCLUDES,
         ).check(f"rsync repo {source}")
 
-    def _should_reuse_remote_environment(self, bundle: RunBundle, fingerprint: str) -> bool:
+    def _reused_remote_environment_fingerprint(
+        self,
+        bundle: RunBundle,
+        declaration_fingerprint: str,
+    ) -> str | None:
         result = self.transport.ssh(
+            f"test -f {_sq(self._remote_declaration_fingerprint_path(bundle))} && "
+            f"cat {_sq(self._remote_declaration_fingerprint_path(bundle))}"
+        )
+        if result.returncode != 0 or result.stdout.strip() != declaration_fingerprint:
+            return None
+        realized = self.transport.ssh(
             f"test -f {_sq(self._remote_fingerprint_path(bundle))} && "
             f"cat {_sq(self._remote_fingerprint_path(bundle))}"
+        ).check("read realized RunPod environment fingerprint").stdout.strip()
+        validate_realized_runpod_environment_fingerprint(
+            realized,
+            bundle=bundle,
+            declaration_fingerprint=declaration_fingerprint,
         )
-        return result.returncode == 0 and result.stdout.strip() == fingerprint
+        return realized
+
+    def _probe_realized_environment(
+        self,
+        bundle: RunBundle,
+        declaration_fingerprint: str,
+    ) -> str:
+        declaration = {
+            "declaration_sha256": declaration_fingerprint,
+            "image_id": bundle.environment.image_id,
+            "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
+            "python_version": bundle.environment.python_version,
+        }
+        command = (
+            "uv run --no-sync python -c "
+            f"{_sq(_REMOTE_ENVIRONMENT_PROBE)} "
+            f"{_sq(json.dumps(declaration, sort_keys=True, separators=(',', ':')))}"
+        )
+        result = self._ssh(f"cd {_sq(self._primary_workdir())} && {command}")
+        realized = result.stdout.strip()
+        validate_realized_runpod_environment_fingerprint(
+            realized,
+            bundle=bundle,
+            declaration_fingerprint=declaration_fingerprint,
+        )
+        return realized
 
     def _read_remote_pid(self, bundle: RunBundle, row_id: str) -> int | None:
         result = self.transport.ssh(
@@ -781,7 +961,10 @@ class RunPodOrchestrationDriver:
     def _primary_workdir(self) -> str:
         remote_repos = self._remote_repos()
         return (
-            remote_repos.get("rlrmp") or remote_repos.get("feedbax") or self.config.remote_repo_root
+            remote_repos.get("rlrmp2")
+            or remote_repos.get("rlrmp")
+            or remote_repos.get("feedbax")
+            or self.config.remote_repo_root
         )
 
     def _row_workdir(self, row: RunRowSpec) -> str:
@@ -801,7 +984,10 @@ class RunPodOrchestrationDriver:
         return f"{self._remote_run_dir(bundle)}/events"
 
     def _remote_fingerprint_path(self, bundle: RunBundle) -> str:
-        return f"{self._remote_run_dir(bundle)}/env-fingerprint.txt"
+        return f"{self._remote_run_dir(bundle)}/env-fingerprint.json"
+
+    def _remote_declaration_fingerprint_path(self, bundle: RunBundle) -> str:
+        return f"{self._remote_run_dir(bundle)}/env-declaration-fingerprint.txt"
 
     def _remote_nohup_sentinel(
         self,
@@ -972,6 +1158,112 @@ def _preflight_check(
         status="pass" if passed else "fail",
         detail=detail,
         observed=observed,
+    )
+
+
+def is_immutable_runpod_image_id(image_id: str | None) -> bool:
+    """Return whether an image identity is pinned to an OCI SHA-256 digest."""
+    return bool(image_id and _IMMUTABLE_IMAGE_PATTERN.fullmatch(image_id))
+
+
+def runpod_lockfile_declaration_error(lockfile_hashes: Mapping[str, str]) -> str | None:
+    """Validate remote lockfile paths and their expected SHA-256 digests."""
+    if not lockfile_hashes:
+        return "environment.lockfile_hashes must declare at least one locked dependency file"
+    for path_text, digest in lockfile_hashes.items():
+        path = PurePosixPath(path_text)
+        if (
+            not path_text
+            or path.is_absolute()
+            or path_text != path.as_posix()
+            or ".." in path.parts
+        ):
+            return (
+                "environment.lockfile_hashes keys must be safe paths relative to the "
+                f"primary remote workdir: {path_text!r}"
+            )
+        if not _SHA256_PATTERN.fullmatch(digest):
+            return f"invalid SHA-256 digest for lockfile {path_text!r}: {digest!r}"
+    return None
+
+
+def require_deterministic_runpod_environment(bundle: RunBundle) -> None:
+    """Reject RunPod declarations that cannot realize an immutable environment."""
+    if not is_immutable_runpod_image_id(bundle.environment.image_id):
+        raise RunPodDriverError(
+            "RunPod REALIZE_ENV requires environment.image_id pinned by @sha256:<64 hex>"
+        )
+    lockfile_error = runpod_lockfile_declaration_error(
+        bundle.environment.lockfile_hashes
+    )
+    if lockfile_error is not None:
+        raise RunPodDriverError(lockfile_error)
+    if not bundle.environment.python_version:
+        raise RunPodDriverError(
+            "RunPod REALIZE_ENV requires environment.python_version"
+        )
+
+
+def validate_realized_runpod_environment_fingerprint(
+    fingerprint: str,
+    *,
+    bundle: RunBundle,
+    declaration_fingerprint: str,
+) -> None:
+    """Fail closed unless a realized fingerprint binds the declared environment."""
+    try:
+        payload = json.loads(fingerprint)
+    except json.JSONDecodeError as exc:
+        raise RunPodDriverError("realized RunPod environment probe returned invalid JSON") from exc
+    expected = {
+        "schema_version": RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION,
+        "declaration_sha256": declaration_fingerprint,
+        "image_id": bundle.environment.image_id,
+        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
+    }
+    for field_name, expected_value in expected.items():
+        if payload.get(field_name) != expected_value:
+            raise RunPodDriverError(
+                "realized RunPod environment fingerprint mismatch for "
+                f"{field_name}: expected {expected_value!r}, observed {payload.get(field_name)!r}"
+            )
+    runtime = payload.get("runtime")
+    required_runtime = {
+        "device_count",
+        "device_kind",
+        "equinox",
+        "feedbax",
+        "jax",
+        "jax_platform",
+        "jax_platform_version",
+        "jaxlib",
+        "python",
+        "python_implementation",
+    }
+    if not isinstance(runtime, Mapping) or not required_runtime <= runtime.keys():
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint lacks required runtime provenance"
+        )
+    if not _python_version_matches(
+        str(bundle.environment.python_version), str(runtime["python"])
+    ):
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint Python version does not match declaration"
+        )
+    if runtime["jax_platform"] not in {"cuda", "gpu"}:
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint does not prove a JAX CUDA backend"
+        )
+    plugins = payload.get("feedbax_plugins")
+    if not isinstance(plugins, list) or any(not isinstance(item, Mapping) for item in plugins):
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint lacks Feedbax plugin provenance"
+        )
+
+
+def _python_version_matches(declared: str, observed: str) -> bool:
+    return observed == declared or (
+        declared.count(".") == 1 and observed.startswith(declared + ".")
     )
 
 
