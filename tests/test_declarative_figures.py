@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import plotly.io as pio
 import pytest
 from pydantic import ValidationError
 
@@ -538,7 +539,11 @@ def test_execute_figure_spec_rejects_assembler_param_owned_by_both_models(
     assert not (tmp_path / "figures").exists()
 
 
-def test_existing_panel_only_spec_preserves_rendered_payload(tmp_path: Path) -> None:
+def test_existing_panel_only_spec_preserves_rendered_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pio.templates, "default", "plotly_white")
     spec = FigureSpec(
         name="bundle-figure",
         assembler="feedbax.grid_figure",
