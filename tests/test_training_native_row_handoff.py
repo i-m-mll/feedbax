@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -452,6 +453,19 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     resumed_row = resumed_bundle.rows[0]
     resumed_provenance = resumed_row.execution.row_provenance
     assert resumed_provenance is not None
+    assert resumed_row.launch.command == [
+        "python",
+        "-m",
+        "feedbax",
+        "execute-training-run-spec",
+        "--resume",
+    ]
+    assert resumed_row.launch.payload_routing == {
+        "kind": "registered-execution-payload",
+        "spec": "execution.payload",
+        "manifest_root": "row-local",
+        "checkpoint_root": "row-local",
+    }
     resumed_payload = json.loads(
         Path(resumed_row.execution.payload.uri).read_text(encoding="utf-8")
     )
@@ -499,6 +513,7 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     )
     local_driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
     local_driver.provision(bundle, state)
+    local_driver.stage_inputs(bundle, state)
     local_capture: dict[str, Any] = {}
 
     class _Process:
@@ -516,7 +531,14 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     local_command = local_capture["command"]
     assert local_command[-2] == "--execution-context-json"
     local_context = json.loads(local_command[-1])
-    assert local_context["execution"] == row.execution.model_dump(
+    expected_local_execution = row.execution.model_copy(
+        update={
+            "payload": row.execution.payload.model_copy(
+                update={"uri": str(bundle.run_set_dir / "inputs" / f"{row.row_id}.json")}
+            )
+        }
+    )
+    assert local_context["execution"] == expected_local_execution.model_dump(
         mode="json", exclude_none=True
     )
     assert local_context["execution"]["row_provenance"] == (
@@ -554,7 +576,14 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     runpod_command = runpod_capture["command"]
     assert runpod_command[-2] == "--execution-context-json"
     runpod_context = json.loads(runpod_command[-1])
-    assert runpod_context["execution"] == row.execution.model_dump(
+    expected_runpod_execution = row.execution.model_copy(
+        update={
+            "payload": row.execution.payload.model_copy(
+                update={"uri": "/remote/run-set/inputs/science-row.json"}
+            )
+        }
+    )
+    assert runpod_context["execution"] == expected_runpod_execution.model_dump(
         mode="json", exclude_none=True
     )
     assert runpod_context["execution"]["row_provenance"] == (
@@ -564,3 +593,65 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     )
     assert runpod_context["environment_fingerprint"] == "environment:driver-route"
     assert runpod_context["collection_root"] == "/remote/run-set/rows/science-row"
+
+
+def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) -> None:
+    bundle = _assemble_lowered_bundle(tmp_path / "subprocess", gain=2)
+    row = bundle.rows[0]
+    slots_path = tmp_path / "initial-slots.json"
+    slots_path.write_text(
+        json.dumps(
+            {
+                "model": 0,
+                "optimizer": {"count": 1},
+                "prng": [0, 1],
+                "batch_counter": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    row = row.model_copy(
+        update={
+            "launch": row.launch.model_copy(
+                update={
+                    "command": [
+                        *row.launch.command,
+                        "--initial-slots",
+                        str(slots_path),
+                        "--no-progress",
+                    ]
+                }
+            )
+        }
+    )
+    bundle = bundle.model_copy(update={"rows": [row]})
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="environment:subprocess-route",
+        rows={row.row_id: RowState()},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
+    driver.provision(bundle, state)
+    staged = driver.stage_inputs(bundle, state)
+
+    launched = driver.launch_row(bundle, row, state)
+    for _ in range(400):
+        probe = driver.probe(bundle, row, state)
+        if probe.status != "running":
+            break
+        time.sleep(0.05)
+
+    assert probe.status == "completed"
+    command = launched["command"]
+    command_index = command.index("execute-training-run-spec")
+    staged_payload = Path(staged["payloads"][0]["target"])
+    assert command[command_index + 1] == str(staged_payload)
+    assert command[command.index("--checkpoint-root") + 1] == str(
+        bundle.run_set_dir / "rows" / row.row_id / "checkpoints"
+    )
+    assert command[command.index("--run-id") + 1] == (
+        row.execution.row_provenance.planned_run_id
+    )
+    row_dir = bundle.run_set_dir / "rows" / row.row_id
+    assert (row_dir / "manifest.json").is_file()
+    assert (row_dir / "training-diagnostics.json").is_file()

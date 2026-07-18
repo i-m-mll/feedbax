@@ -22,7 +22,11 @@ from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.drivers.native_execution import inject_native_execution_context, is_native_training_command
+from feedbax.orchestration.drivers.native_execution import (
+    bind_native_execution_command,
+    inject_native_execution_context,
+    is_native_training_command,
+)
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
 
 
@@ -1186,16 +1190,12 @@ def build_launch_row_command(
         if row.launch.command
         else ["uv", "run", "--no-sync", "python", row.launch.entry or ""]
     )
-    if (
-        row.launch.payload_routing.get("kind") == "registered-execution-payload"
-        and is_native_training_command(command_parts)
-    ):
-        command_index = command_parts.index("execute-training-run-spec")
-        if command_index + 1 == len(command_parts) or command_parts[
-            command_index + 1
-        ].startswith("-"):
-            command_parts.insert(command_index + 1, f"{remote_run_dir}/inputs/{row.row_id}.json")
-        row = row.model_copy(update={"execution": row.execution.model_copy(update={"payload": row.execution.payload.model_copy(update={"uri": f"{remote_run_dir}/inputs/{row.row_id}.json"})})})
+    command_parts, row = bind_native_execution_command(
+        command_parts,
+        row=row,
+        payload_path=f"{remote_run_dir}/inputs/{row.row_id}.json",
+        collection_root=row_dir,
+    )
     command_parts = inject_native_execution_context(
         command_parts,
         row=row,

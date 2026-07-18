@@ -17,7 +17,10 @@ from typing import Any
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.drivers.native_execution import inject_native_execution_context
+from feedbax.orchestration.drivers.native_execution import (
+    bind_native_execution_command,
+    inject_native_execution_context,
+)
 from feedbax.orchestration.state import RunSetState
 
 
@@ -93,7 +96,28 @@ class LocalOrchestrationDriver:
             json.dumps(pins, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        return {"input_count": len(pins), "inputs_dir": str(inputs_dir)}
+        payloads: list[dict[str, str]] = []
+        for row in bundle.rows:
+            if row.launch.payload_routing.get("kind") != "registered-execution-payload":
+                continue
+            source = Path(row.execution.payload.uri or "")
+            if not source.is_file():
+                raise LocalDriverError(
+                    f"registered execution payload is not materialized for row {row.row_id!r}"
+                )
+            if _sha256_file(source) != row.execution.payload.sha256:
+                raise LocalDriverError(
+                    f"registered execution payload digest mismatch for row {row.row_id!r}"
+                )
+            target = inputs_dir / f"{row.row_id}.json"
+            shutil.copy2(source, target)
+            payloads.append({"row_id": row.row_id, "source": str(source), "target": str(target)})
+        return {
+            "input_count": len(pins),
+            "inputs_dir": str(inputs_dir),
+            "payload_count": len(payloads),
+            "payloads": payloads,
+        }
 
     def launch_row(
         self,
@@ -151,9 +175,15 @@ class LocalOrchestrationDriver:
             }
         )
         env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
-        command = inject_native_execution_context(
+        command, bound_row = bind_native_execution_command(
             _row_command(row, self.python_executable),
             row=row,
+            payload_path=bundle.run_set_dir / "inputs" / f"{row.row_id}.json",
+            collection_root=paths["row_dir"],
+        )
+        command = inject_native_execution_context(
+            command,
+            row=bound_row,
             environment_fingerprint=state.environment_fingerprint or "",
             collection_root=paths["row_dir"],
         )
