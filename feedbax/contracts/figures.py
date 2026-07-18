@@ -35,6 +35,13 @@ class AxisLabels(StrictModel):
     y: str | None = None
 
 
+class PanelAxis(StrictModel):
+    """Declarative settings for one panel axis."""
+
+    type: Literal["linear", "log"] | None = None
+    range: tuple[float, float] | None = None
+
+
 class TraceBinding(StrictModel):
     """One logical trace group in a declarative figure."""
 
@@ -54,6 +61,8 @@ class PanelSpec(StrictModel):
     name: str
     title: str | ValueExpr | None = None
     axes_labels: AxisLabels | None = None
+    x_axis: PanelAxis | None = None
+    y_axis: PanelAxis | None = None
     row: int | None = None
     col: int | None = None
 
