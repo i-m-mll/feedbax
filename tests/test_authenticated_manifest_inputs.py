@@ -21,6 +21,7 @@ from feedbax.analysis.reports import (
     unregister_report_recipe,
 )
 from feedbax.analysis.specs import (
+    AnalysisRecipeExecutionError,
     execute_analysis_run_spec,
     register_analysis_recipe,
     unregister_analysis_recipe,
@@ -32,6 +33,7 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     ParentRef,
     ReportSpec,
+    load_manifest,
     spec_payload,
     write_manifest,
 )
@@ -276,13 +278,28 @@ def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
     register_analysis_recipe(spec.analysis_type, recipe, replace=True)
     before = _file_snapshot(tmp_path)
     try:
-        with pytest.raises(ValueError, match="size mismatch"):
+        with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
             execute_analysis_run_spec(spec, root=tmp_path)
     finally:
         unregister_analysis_recipe(spec.analysis_type)
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "size mismatch" in str(excinfo.value.__cause__)
     assert calls == []
+
+    failed = load_manifest(excinfo.value.path)
+    assert isinstance(failed, AnalysisRunManifest)
+    assert failed.status == "failed"
+    assert failed.metadata["error"]["type"] == "ValueError"
+    assert "size mismatch" in failed.metadata["error"]["message"]
+
     after = _file_snapshot(tmp_path)
-    assert after == before
+    failed_relative_path = str(excinfo.value.path.relative_to(tmp_path))
+    assert set(after) == set(before) | {failed_relative_path}
+    assert all(
+        after[path] == contents
+        for path, contents in before.items()
+        if path != "index/feedbax.sqlite"
+    )
     assert not (tmp_path / "cache").exists()
 
 
