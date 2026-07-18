@@ -881,7 +881,8 @@ class StageEngine:
         return self.assembly_registry.resolve(self.request).identity_adapter
 
     def _stage_teardown(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        return self._run_teardown(state, abort=False), {}
+        state = self._run_teardown(state, abort=False)
+        return state, state.stage(STAGE_TEARDOWN).outputs
 
     def _stage_register(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         if len(self.conformance_registry) == 0:
@@ -892,6 +893,9 @@ class StageEngine:
             raise OrchestrationStageError(
                 "REGISTER state run_set_id does not match the assembled bundle"
             )
+        final_pod_inventory: Mapping[str, Any] | None = None
+        if self.bundle.deployment_policy.driver == "runpod":
+            final_pod_inventory = self._require_globally_empty_runpod_inventory(state)
         certify_stage = state.stage(STAGE_CERTIFY)
         certified_ref = certify_stage.outputs.get("certificate_ref")
         if (
@@ -956,6 +960,8 @@ class StageEngine:
             "stage_inputs_sha256": stage_inputs_digest,
             "certificate_overall": certificate.overall,
         }
+        if final_pod_inventory is not None:
+            payload["final_pod_inventory"] = dict(final_pod_inventory)
         if status == "failed":
             payload["failure_reason"] = "conformance-failed"
         elif status in {"stopped", "mixed"}:
@@ -976,6 +982,35 @@ class StageEngine:
         self.store.save(state)
         assert_certificate_allows_completed_registration(certificate_payload)
         return state, payload
+
+    @staticmethod
+    def _require_globally_empty_runpod_inventory(
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Require verified provider-wide RunPod absence before registration."""
+        teardown = state.stage(STAGE_TEARDOWN)
+        inventory = teardown.outputs.get("final_pod_inventory")
+        valid = (
+            teardown.status == "completed"
+            and isinstance(inventory, Mapping)
+            and inventory.get("scope") == "provider-account"
+            and inventory.get("verified") is True
+            and inventory.get("observation_basis")
+            == "runpodctl pod list --output json"
+            and inventory.get("outcome") == "empty"
+            and type(inventory.get("pod_count")) is int
+            and inventory.get("pod_count") == 0
+            and type(inventory.get("pod_ids")) is list
+            and inventory.get("pod_ids") == []
+            and _parse_observed_datetime(inventory.get("observed_at")) is not None
+        )
+        if not valid:
+            raise OrchestrationStageError(
+                "REGISTER requires TEARDOWN evidence proving a globally empty "
+                "RunPod provider inventory"
+            )
+        assert isinstance(inventory, Mapping)
+        return inventory
 
     def _write_or_verify_registration(
         self,
