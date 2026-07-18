@@ -212,6 +212,35 @@ def test_profile_band_raw_samples_preserve_statistics_and_alpha_scaling() -> Non
     assert single_traces[2].fillcolor == "rgba(31,119,180, 0.8)"
 
 
+def test_profile_band_applies_mean_style_and_can_suppress_band(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="styled-mean-only-profile",
+        assembler="feedbax.grid_figure",
+        traces=[
+            TraceBinding(
+                name="profile",
+                constructor="feedbax.profile_band",
+                data={"y": [[1, 2, 3], [2, 3, 4]]},
+                params={
+                    "line_dash": "dashdot",
+                    "line_width": 3.5,
+                    "showlegend": False,
+                    "show_band": False,
+                },
+            )
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    assert len(rendered["data"]) == 1
+    assert rendered["data"][0]["line"]["dash"] == "dashdot"
+    assert rendered["data"][0]["line"]["width"] == 3.5
+    assert rendered["data"][0]["showlegend"] is False
+
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -318,6 +347,96 @@ def test_execute_figure_spec_routes_panel_and_figure_assembler_params(tmp_path: 
     assert layout["xaxis"]["domain"] == [0.0, 0.4]
     assert layout["xaxis2"]["domain"] == [0.6000000000000001, 1.0]
     assert "matches" not in layout["yaxis2"]
+
+
+def test_execute_figure_spec_emits_panel_axes_and_figure_chrome(tmp_path: Path) -> None:
+    spec = FigureSpec(
+        name="panel-axes-and-figure-chrome",
+        assembler="feedbax.grid_figure",
+        assembler_params={
+            "shared_yaxes": False,
+            "legend_x": 1.05,
+            "legend_y": 0.5,
+            "legend_xanchor": "left",
+            "legend_yanchor": "middle",
+            "margin": {
+                "l": 12,
+                "r": 30,
+                "t": 40,
+                "b": 20,
+                "pad": 3,
+                "autoexpand": False,
+            },
+            "hovermode": "x unified",
+            "template": "plotly_white",
+        },
+        panels=[
+            {
+                "name": "left",
+                "row": 1,
+                "col": 1,
+                "x_axis": {"range": [0, 5]},
+                "y_axis": {"type": "log", "range": [-3, 1]},
+            },
+            {"name": "right", "row": 1, "col": 2, "y_axis": {"range": [-1, 2]}},
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    layout = rendered["layout"]
+    assert layout["xaxis"]["range"] == [0.0, 5.0]
+    assert layout["yaxis"]["type"] == "log"
+    assert layout["yaxis"]["range"] == [-3.0, 1.0]
+    assert layout["yaxis2"]["range"] == [-1.0, 2.0]
+    assert layout["legend"] == {
+        "x": 1.05,
+        "xanchor": "left",
+        "y": 0.5,
+        "yanchor": "middle",
+    }
+    assert layout["margin"] == {
+        "autoexpand": False,
+        "b": 20.0,
+        "l": 12.0,
+        "pad": 3.0,
+        "r": 30.0,
+        "t": 40.0,
+    }
+    assert layout["hovermode"] == "x unified"
+    assert layout["template"]["layout"]["paper_bgcolor"] == "white"
+
+
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        ({"legend_xanchor": "outside"}, "legend_xanchor"),
+        ({"hovermode": "diagonal"}, "hovermode"),
+        ({"margin": {"top": 10}}, "margin.top"),
+    ],
+)
+def test_grid_figure_rejects_invalid_typed_chrome(params, match: str) -> None:
+    constructor = get_figure_constructor("feedbax.grid_figure", tier="figure")
+
+    with pytest.raises(ValidationError, match=match):
+        constructor.params(params)
+
+
+def test_panel_axis_rejects_invalid_type_and_range_shape() -> None:
+    with pytest.raises(ValidationError, match="panels.0.y_axis.type"):
+        FigureSpec(
+            name="invalid-axis-type",
+            assembler="feedbax.grid_figure",
+            panels=[{"name": "main", "y_axis": {"type": "polar"}}],
+        )
+    with pytest.raises(ValidationError, match="panels.0.y_axis.range"):
+        FigureSpec(
+            name="invalid-axis-range",
+            assembler="feedbax.grid_figure",
+            panels=[{"name": "main", "y_axis": {"range": [0, 1, 2]}}],
+        )
 
 
 def test_panel_only_assembler_params_preserve_constructor_payload(tmp_path: Path) -> None:
