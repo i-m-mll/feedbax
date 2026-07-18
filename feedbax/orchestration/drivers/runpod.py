@@ -8,20 +8,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
+import re
 import shlex
 import subprocess
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
-from feedbax.orchestration.drivers.base import DriverRowProbe
-from feedbax.orchestration.drivers.native_execution import inject_native_execution_context
-from feedbax.orchestration.state import PreflightCheckEntry, RunSetState
+from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
+from feedbax.orchestration.drivers.native_execution import (
+    bind_native_execution_command,
+    inject_native_execution_context,
+    is_native_training_command,
+)
+from feedbax.orchestration.input_materialization import (
+    InputMaterializationError,
+    InputProviderRootBinding,
+    materialize_bundle_inputs,
+    preflight_input_provider_bindings,
+)
+from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
 
 
 RUNPOD_CODE_EXCLUDES = (
@@ -46,6 +60,118 @@ METADATA_BATCH_KEYS = (
     "completed_batch",
     "completedBatch",
 )
+RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
+    "feedbax.runpod_environment_fingerprint.v1"
+)
+_IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
+_SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_REMOTE_ENVIRONMENT_PROBE = r"""
+import hashlib
+import importlib.metadata
+import json
+import platform
+from pathlib import Path
+import sys
+
+declaration = json.loads(sys.argv[1])
+declared_python = declaration["python_version"]
+observed_python = platform.python_version()
+python_matches = observed_python == declared_python or (
+    declared_python is not None
+    and declared_python.count(".") == 1
+    and observed_python.startswith(declared_python + ".")
+)
+if not python_matches:
+    raise RuntimeError(
+        f"Python version mismatch: expected {declared_python}, observed {observed_python}"
+    )
+
+observed_lockfiles = {}
+for relative_path, expected in declaration["lockfile_hashes"].items():
+    path = Path(relative_path)
+    observed = hashlib.sha256(path.read_bytes()).hexdigest()
+    if observed != expected:
+        raise RuntimeError(
+            f"lockfile digest mismatch for {relative_path}: expected {expected}, observed {observed}"
+        )
+    observed_lockfiles[relative_path] = observed
+
+import equinox
+import jax
+import jaxlib
+
+devices = jax.devices()
+if not devices:
+    raise RuntimeError("JAX reported no runtime devices")
+plugins = []
+for entry_point in importlib.metadata.entry_points(group="feedbax.plugins"):
+    entry_point.load()
+    distribution = entry_point.dist
+    plugins.append(
+        {
+            "distribution": distribution.name if distribution is not None else None,
+            "distribution_version": (
+                distribution.version if distribution is not None else None
+            ),
+            "name": entry_point.name,
+            "value": entry_point.value,
+        }
+    )
+primary_device = devices[0]
+client = getattr(primary_device, "client", None)
+if getattr(primary_device, "platform", None) not in {"cuda", "gpu"}:
+    raise RuntimeError(
+        f"JAX CUDA backend is unavailable: observed platform {primary_device.platform!r}"
+    )
+payload = {
+    "schema_version": "feedbax.runpod_environment_fingerprint.v1",
+    "declaration_sha256": declaration["declaration_sha256"],
+    "image_id": declaration["image_id"],
+    "lockfile_hashes": observed_lockfiles,
+    "runtime": {
+        "device_count": len(devices),
+        "device_kind": getattr(primary_device, "device_kind", None),
+        "jax": jax.__version__,
+        "jax_platform": getattr(primary_device, "platform", None),
+        "jax_platform_version": getattr(client, "platform_version", None),
+        "jaxlib": jaxlib.__version__,
+        "python": observed_python,
+        "python_implementation": platform.python_implementation(),
+        "equinox": equinox.__version__,
+        "feedbax": importlib.metadata.version("feedbax"),
+    },
+    "feedbax_plugins": sorted(plugins, key=lambda item: (item["name"], item["value"])),
+}
+print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+"""
+_REMOTE_ATOMIC_DIRECTORY_PUBLISH = r"""
+import ctypes
+import errno
+import os
+import sys
+
+source, destination = sys.argv[1:]
+libc = ctypes.CDLL(None, use_errno=True)
+try:
+    renameat2 = libc.renameat2
+except AttributeError as exc:
+    raise RuntimeError("atomic no-replace directory publication is unavailable") from exc
+renameat2.argtypes = (
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.c_uint,
+)
+renameat2.restype = ctypes.c_int
+if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(f"input publication target already exists: {destination}")
+    raise OSError(error, os.strerror(error), destination)
+"""
 
 
 class RunPodDriverError(RuntimeError):
@@ -71,7 +197,11 @@ class CommandResult:
 class RunPodTransport(Protocol):
     """Transport surface used by :class:`RunPodOrchestrationDriver`."""
 
-    def runpodctl(self, *args: str) -> CommandResult:
+    def runpodctl(
+        self,
+        *args: str,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
         """Run a ``runpodctl`` command."""
 
     def image_exists(self, image: str) -> bool:
@@ -102,11 +232,19 @@ class SubprocessRunPodTransport:
     ssh_user: str = "root"
     runpodctl_executable: str = "runpodctl"
 
-    def runpodctl(self, *args: str) -> CommandResult:
-        return _run_command([self.runpodctl_executable, *args])
+    def runpodctl(
+        self,
+        *args: str,
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
+        return _run_command(
+            [self.runpodctl_executable, *args],
+            timeout_seconds=timeout_seconds,
+        )
 
     def image_exists(self, image: str) -> bool:
-        repository, separator, tag = image.rpartition(":")
+        tagged_image = image.split("@", 1)[0]
+        repository, separator, tag = tagged_image.rpartition(":")
         if not separator or not repository or not tag or "/" not in repository:
             return False
         namespace, name = repository.split("/", 1)
@@ -201,15 +339,6 @@ class EndpointClassification:
 
 
 @dataclass(frozen=True)
-class BaselineEntry:
-    """Declared baseline checkpoint that must be staged remotely."""
-
-    path: str
-    completed_batch: str
-    label: str
-
-
-@dataclass(frozen=True)
 class RunPodDriverConfig:
     """Configuration for the RunPod orchestration driver."""
 
@@ -218,6 +347,7 @@ class RunPodDriverConfig:
     ssh_port: int | None = None
     gpu_id: str | None = None
     datacenters: tuple[str, ...] = ()
+    api_key: str | None = field(default=None, repr=False)
     min_balance_usd: float = 5.0
     image: str = "runpod/pytorch:latest"
     pod_name_prefix: str = "feedbax-orchestration"
@@ -225,6 +355,7 @@ class RunPodDriverConfig:
     poll_seconds: float = 5.0
     env_step_timeout_seconds: float = 1800.0
     failure_log_pull_timeout_seconds: float = 60.0
+    teardown_absence_timeout_seconds: float = 60.0
     volume_mount: str = "/workspace"
     remote_repo_root: str = "/workspace"
     remote_run_root: str = "/workspace/feedbax_runs"
@@ -232,7 +363,7 @@ class RunPodDriverConfig:
     local_repos: Mapping[str, Path | str] = field(default_factory=dict)
     remote_repos: Mapping[str, str] = field(default_factory=dict)
     path_patches: tuple[tuple[str, str, str], ...] = ()
-    overlay_steps: tuple[str, ...] = ("uv pip install -U 'jax[cuda12]'",)
+    overlay_steps: tuple[str, ...] = ("uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",)
     auto_teardown: bool = True
 
 
@@ -240,6 +371,7 @@ class RunPodOrchestrationDriver:
     """Synchronous RunPod implementation of the orchestration driver protocol."""
 
     poll_interval_seconds = 5.0
+    govern_provisioning_retries = True
 
     def __init__(
         self,
@@ -248,6 +380,7 @@ class RunPodOrchestrationDriver:
         transport: RunPodTransport | None = None,
         sleep: Any = time.sleep,
         monotonic: Any = time.monotonic,
+        input_provider_bindings: Sequence[InputProviderRootBinding] = (),
     ) -> None:
         self.config = config or RunPodDriverConfig()
         self.transport = transport or SubprocessRunPodTransport(
@@ -256,6 +389,7 @@ class RunPodOrchestrationDriver:
         )
         self._sleep = sleep
         self._monotonic = monotonic
+        self.input_provider_bindings = tuple(input_provider_bindings)
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
@@ -264,9 +398,10 @@ class RunPodOrchestrationDriver:
             if self._provided_endpoint
             else None
         )
+        self._last_provision_pod: Mapping[str, Any] | None = None
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
-        """Acquire or reuse a pod and verify SSH/GPU readiness."""
+        """Perform one acquisition attempt; the stage engine owns retries."""
         if self._provided_endpoint:
             self._require_gpu_ready()
             return {
@@ -278,31 +413,124 @@ class RunPodOrchestrationDriver:
             }
 
         if self._pod_id:
-            pod = self._pod_get(self._pod_id)
-            endpoint = self._wait_for_endpoint(self._pod_id, pod)
+            endpoint, pod = self._wait_for_endpoint(self._pod_id)
             self._endpoint = endpoint
             self._configure_subprocess_endpoint(endpoint)
             self._require_gpu_ready()
             return self._provision_record(pod, provided_pod=True)
 
         if not self._preflight_passed:
-            raise RunPodDriverError(
-                "RunPod creation requires passing named driver PREFLIGHT checks first"
+            raise ProvisioningAttemptError(
+                "RunPod creation requires passing named driver PREFLIGHT checks first",
+                retryable=False,
+                attempt_record={"driver": "runpod", "acquired": False},
             )
-        pod_id = self._create_pod(bundle)
-        self._pod_id = pod_id
-        pod = self._pod_get(pod_id)
-        self._endpoint = self._wait_for_endpoint(pod_id, pod)
-        self._configure_subprocess_endpoint(self._endpoint)
-        self._require_gpu_ready()
-        return self._provision_record(pod, provided_pod=False)
+        pod: Mapping[str, Any] | None = None
+        self._last_provision_pod = None
+        acquired = False
+        pod_id: str | None = None
+        try:
+            pod_id = self._create_pod(bundle)
+            acquired = True
+            self._pod_id = pod_id
+            self._endpoint, pod = self._wait_for_endpoint(pod_id)
+            self._configure_subprocess_endpoint(self._endpoint)
+            self._require_gpu_ready()
+            return self._provision_record(pod, provided_pod=False)
+        except Exception as exc:
+            if isinstance(exc, ProvisioningAttemptError):
+                raise
+            record: dict[str, Any] = {"driver": "runpod", "acquired": acquired, "pod_id": pod_id}
+            pod = pod or self._last_provision_pod
+            if pod is not None:
+                record.update(project_runpod_provision_facts(pod))
+                record["billing_started_at"] = pod.get("createdAt") or pod.get("created_at")
+            if acquired:
+                try:
+                    record["cleanup"] = dict(self.teardown(bundle, state))
+                except Exception as teardown_exc:
+                    record["cleanup_error"] = str(teardown_exc)
+                    self._pod_id = None
+                    self._endpoint = None
+                    raise ProvisioningAttemptError(
+                        f"{exc}; automatic teardown failed: {teardown_exc}",
+                        retryable=False,
+                        attempt_record=record,
+                        stop_reason="teardown-failure",
+                    ) from exc
+            self._pod_id = None
+            self._endpoint = None
+            raise ProvisioningAttemptError(
+                str(exc),
+                retryable=not isinstance(exc, (ValueError, TypeError)),
+                attempt_record=record,
+            ) from exc
+
+    @property
+    def provision_retry_delay_seconds(self) -> float:
+        """Configured positive delay between governed acquisition attempts."""
+        return self.config.poll_seconds
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
-        checks: list[PreflightCheckEntry] = []
-        image = bundle.environment.image_id or self.config.image
-        image_exists = self.transport.image_exists(image)
-        checks.append(_preflight_check("runpod-image-tag-exists", image_exists, observed=image))
+        failures, observed = preflight_input_provider_bindings(
+            bundle, self.input_provider_bindings
+        )
+        binding_check = _preflight_check(
+            "input-provider-bindings",
+            not failures,
+            detail="; ".join(failures) if failures else None,
+            observed=observed or "no-resolved-inputs",
+        )
+        if failures:
+            self._preflight_passed = False
+            return [binding_check]
+        checks: list[PreflightCheckEntry] = [binding_check]
+        image = bundle.environment.image_id
+        image_is_immutable = is_immutable_runpod_image_id(image)
+        checks.append(
+            _preflight_check(
+                "runpod-image-immutable",
+                image_is_immutable,
+                detail=(
+                    None
+                    if image_is_immutable
+                    else "environment.image_id must be an OCI image pinned by @sha256:<64 hex>"
+                ),
+                observed=image,
+            )
+        )
+        image_exists = bool(image_is_immutable and self.transport.image_exists(image or ""))
+        checks.append(
+            _preflight_check(
+                "runpod-image-tag-exists",
+                image_exists,
+                observed=image,
+            )
+        )
+        lockfile_error = runpod_lockfile_declaration_error(
+            bundle.environment.lockfile_hashes
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-lockfiles-declared",
+                lockfile_error is None,
+                detail=lockfile_error,
+                observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
+            )
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-python-version-declared",
+                bool(bundle.environment.python_version),
+                detail=(
+                    None
+                    if bundle.environment.python_version
+                    else "environment.python_version is required for deterministic realization"
+                ),
+                observed=bundle.environment.python_version,
+            )
+        )
 
         gpu_policy = bool(self._provided_endpoint or self._pod_id or self.config.gpu_id)
         checks.append(
@@ -361,19 +589,30 @@ class RunPodOrchestrationDriver:
                 observed=balance if balance_required else "not-required-existing-target",
             )
         )
+        checks.append(
+            _preflight_check(
+                "runpod-deadman-credentials",
+                not bundle.deadman_enabled or bool(self.config.api_key),
+                observed="available" if self.config.api_key else "not-required-or-missing",
+            )
+        )
         self._preflight_passed = all(check.status == "pass" for check in checks)
         return checks
 
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
-        fingerprint = compute_runpod_environment_fingerprint(bundle)
+        require_deterministic_runpod_environment(bundle)
+        declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} {_sq(remote_run_dir + '/logs')}"
         )
         self._ensure_deadman(bundle)
-        if self._should_reuse_remote_environment(bundle, fingerprint):
-            return fingerprint
+        reused_fingerprint = self._reused_remote_environment_fingerprint(
+            bundle, declaration_fingerprint
+        )
+        if reused_fingerprint is not None:
+            return reused_fingerprint
 
         for name, local_root in self._local_repos().items():
             remote_root = self._remote_repos()[name]
@@ -417,41 +656,110 @@ class RunPodOrchestrationDriver:
                 failed_file=f"{sentinel_dir}/overlay-{index}.failed",
                 log_file=f"{logs_dir}/overlay-{index}.log",
             )
-        self._ssh(f"printf %s {_sq(fingerprint)} > {_sq(self._remote_fingerprint_path(bundle))}")
-        return fingerprint
+        realized_fingerprint = self._probe_realized_environment(
+            bundle, declaration_fingerprint
+        )
+        self._ssh(
+            f"printf %s {_sq(declaration_fingerprint)} > "
+            f"{_sq(self._remote_declaration_fingerprint_path(bundle))} && "
+            f"printf %s {_sq(realized_fingerprint)} > "
+            f"{_sq(self._remote_fingerprint_path(bundle))}"
+        )
+        return realized_fingerprint
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
-        """Stage declared baselines and custody pins on the pod."""
-        baselines = declared_baselines(bundle)
-        staged: list[dict[str, str]] = []
-        for baseline in baselines:
-            source = baseline_source_path(baseline.path, Path.cwd())
-            target = baseline_remote_target(
-                baseline.path, self.config.remote_artifacts_dir, Path.cwd()
+        """Publish one verified input tree without exposing partial final paths."""
+        attempt = state.stage("STAGE_INPUTS").attempts
+        attempt_root = (
+            bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
+        )
+        try:
+            staged_inputs = materialize_bundle_inputs(
+                bundle,
+                destination_root=attempt_root,
+                provider_bindings=self.input_provider_bindings,
             )
-            verify_local_baseline(source, baseline)
-            self._ssh(f"mkdir -p {_sq(str(Path(target).parent))}")
-            self.transport.rsync(
-                f"{source}/" if source.is_dir() else str(source),
-                f"{target}/" if source.is_dir() else target,
-                delete=source.is_dir(),
-            ).check(f"stage baseline {baseline.label}")
-            self._ssh(remote_baseline_verification_command(target, baseline.completed_batch))
-            staged.append({"label": baseline.label, "source": str(source), "target": target})
-        if bundle.input_custody_pins:
-            payload = json.dumps(
-                [
-                    pin.model_dump(mode="json", exclude_none=True)
-                    for pin in bundle.input_custody_pins
-                ],
-                sort_keys=True,
+        except InputMaterializationError as exc:
+            raise RunPodDriverError(str(exc)) from exc
+        attempt_inputs = attempt_root / "inputs"
+        payloads: list[dict[str, str]] = []
+        payload_hashes: list[tuple[str, str]] = []
+        for row in bundle.rows:
+            if row.launch.payload_routing.get("kind") != "registered-execution-payload":
+                continue
+            source = Path(row.execution.payload.uri or "")
+            if not source.is_file():
+                raise RunPodDriverError(
+                    f"registered execution payload is not materialized for row {row.row_id!r}"
+                )
+            data = source.read_bytes()
+            if hashlib.sha256(data).hexdigest() != row.execution.payload.sha256:
+                raise RunPodDriverError(
+                    f"registered execution payload digest mismatch for row {row.row_id!r}"
+                )
+            local_target = attempt_inputs / f"{row.row_id}.json"
+            try:
+                with local_target.open("xb") as handle:
+                    handle.write(data)
+            except FileExistsError as exc:
+                raise RunPodDriverError(
+                    f"input attempt path already exists for row {row.row_id!r}"
+                ) from exc
+            payload_hashes.append((local_target.name, row.execution.payload.sha256))
+            payloads.append(
+                {
+                    "row_id": row.row_id,
+                    "source": str(source),
+                    "target": self._remote_payload_path(bundle, row),
+                }
             )
-            self._ssh(
-                f"mkdir -p {_sq(self._remote_run_dir(bundle) + '/inputs')} && "
-                f"cat > {_sq(self._remote_run_dir(bundle) + '/inputs/custody_pins.json')} <<'JSON'\n"
-                f"{payload}\nJSON"
+
+        remote_run_dir = self._remote_run_dir(bundle)
+        remote_attempt_root = (
+            f"{remote_run_dir}/.stage-attempts/stage-inputs-{attempt}"
+        )
+        remote_attempt_inputs = f"{remote_attempt_root}/inputs"
+        self._ssh(
+            f"mkdir -p {_sq(remote_run_dir + '/.stage-attempts')} && "
+            f"mkdir -- {_sq(remote_attempt_root)}"
+        )
+        self.transport.rsync(
+            str(attempt_inputs) + "/",
+            remote_attempt_inputs + "/",
+            delete=True,
+        ).check("stage authenticated input tree")
+
+        transferred: list[dict[str, Any]] = []
+        for staged in staged_inputs:
+            target = f"{remote_run_dir}/inputs/{staged.target_role}"
+            for item in staged.files:
+                relative_path = PurePosixPath(item.relative_path).relative_to("inputs")
+                remote_path = f"{remote_attempt_inputs}/{relative_path}"
+                check_line = f"{item.sha256}  {remote_path}"
+                self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
+            transferred.append(
+                {
+                    "target_role": staged.target_role,
+                    "source": str(staged.destination),
+                    "target": target,
+                    "file_count": len(staged.files),
+                }
             )
-        return {"baseline_count": len(staged), "baselines": staged}
+        for name, digest in payload_hashes:
+            check_line = f"{digest}  {remote_attempt_inputs}/{name}"
+            self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
+        self._ssh(
+            build_atomic_directory_publish_command(
+                remote_attempt_inputs,
+                f"{remote_run_dir}/inputs",
+            )
+        )
+        return {
+            "input_count": len(transferred),
+            "inputs": transferred,
+            "payload_count": len(payloads),
+            "payloads": payloads,
+        }
 
     def launch_row(
         self,
@@ -552,12 +860,25 @@ class RunPodOrchestrationDriver:
         ]
         collected: dict[str, str] = {}
         for source in sources:
-            remote_source = source if source.startswith("/") else f"{remote_run_dir}/{source}"
+            if source.startswith("/"):
+                remote_source = source
+            elif "/" not in source and is_native_training_command(row.launch.command):
+                remote_source = f"{remote_run_dir}/rows/{row.row_id}/{source}"
+            else:
+                remote_source = f"{remote_run_dir}/{source}"
             target = dest_dir / Path(source).name
             self.transport.rsync(remote_source, str(target), delete=False).check(
                 f"collect {row.row_id}:{source}"
             )
             collected[Path(source).name] = str(target)
+        if is_native_training_command(row.launch.command):
+            event_name = f"{row.row_id}.events.jsonl"
+            event_target = bundle.run_set_dir / "events" / event_name
+            event_target.parent.mkdir(parents=True, exist_ok=True)
+            self.transport.rsync(
+                f"{remote_run_dir}/events/{event_name}", str(event_target), delete=False
+            ).check(f"collect {row.row_id}:events")
+            collected[event_name] = str(event_target)
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256:
             verify_collected_payload(dest_dir, str(payload_sha256))
@@ -569,16 +890,139 @@ class RunPodOrchestrationDriver:
             return {"driver": "runpod", "teardown": "skipped"}
         if not self._pod_id:
             return {"driver": "runpod", "teardown": "no-pod"}
-        result = self.transport.runpodctl("remove", "pod", self._pod_id)
+        pod_id = self._pod_id
+        result = self.transport.runpodctl("remove", "pod", pod_id)
         if result.returncode != 0:
-            self.transport.runpodctl("stop", "pod", self._pod_id).check("runpodctl stop pod")
-            return {"driver": "runpod", "teardown": "stopped", "pod_id": self._pod_id}
-        return {"driver": "runpod", "teardown": "removed", "pod_id": self._pod_id}
+            self.transport.runpodctl("stop", "pod", pod_id).check("runpodctl stop pod")
+            self.transport.runpodctl(
+                "remove",
+                "pod",
+                pod_id,
+                timeout_seconds=self.config.teardown_absence_timeout_seconds,
+            ).check("runpodctl remove pod after stop")
+            action = "stopped-then-removed"
+        else:
+            action = "removed"
+        absence = self._wait_for_pod_absence(pod_id)
+        self._pod_id = None
+        final_inventory = self._observe_global_pod_inventory()
+        return {
+            "driver": "runpod",
+            "teardown": action,
+            "pod_id": pod_id,
+            "pod_absence": absence,
+            "final_pod_inventory": final_inventory,
+        }
 
-    def _pod_get(self, pod_id: str) -> Mapping[str, Any]:
-        result = self.transport.runpodctl("pod", "get", pod_id, "--output", "json").check(
-            "runpodctl pod get"
+    def _observe_global_pod_inventory(self) -> Mapping[str, Any]:
+        """Return sanitized evidence from the provider-wide RunPod pod inventory."""
+        result = self.transport.runpodctl("pod", "list", "--output", "json")
+        observed_at = utc_now().isoformat()
+        basis = "runpodctl pod list --output json"
+        if result.returncode != 0:
+            return {
+                "scope": "provider-account",
+                "verified": False,
+                "observed_at": observed_at,
+                "observation_basis": basis,
+                "outcome": "unavailable",
+                "pod_count": None,
+                "pod_ids": [],
+            }
+        try:
+            pod_ids = _parse_runpod_pod_inventory(result.stdout)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                "scope": "provider-account",
+                "verified": False,
+                "observed_at": observed_at,
+                "observation_basis": basis,
+                "outcome": "invalid",
+                "pod_count": None,
+                "pod_ids": [],
+            }
+        if pod_ids:
+            return {
+                "scope": "provider-account",
+                "verified": False,
+                "observed_at": observed_at,
+                "observation_basis": basis,
+                "outcome": "non-empty",
+                "pod_count": len(pod_ids),
+                "pod_ids": list(pod_ids),
+            }
+        return {
+            "scope": "provider-account",
+            "verified": True,
+            "observed_at": observed_at,
+            "observation_basis": basis,
+            "outcome": "empty",
+            "pod_count": 0,
+            "pod_ids": [],
+        }
+
+    def _wait_for_pod_absence(self, pod_id: str) -> Mapping[str, Any]:
+        """Boundedly prove that one exact orchestration-owned pod is absent."""
+        deadline = self._monotonic() + self.config.teardown_absence_timeout_seconds
+        polls = 0
+        while self._monotonic() < deadline:
+            remaining = deadline - self._monotonic()
+            result = self.transport.runpodctl(
+                "pod",
+                "get",
+                pod_id,
+                "--output",
+                "json",
+                timeout_seconds=remaining,
+            )
+            polls += 1
+            if result.returncode != 0:
+                detail = (result.stderr.strip() or result.stdout.strip()).lower()
+                if any(marker in detail for marker in _POD_NOT_FOUND_MARKERS):
+                    return {
+                        "verified": True,
+                        "pod_id": pod_id,
+                        "polls": polls,
+                        "terminal_observation": "not-found",
+                    }
+                raise RunPodDriverError(
+                    f"ambiguous absence query for owned pod {pod_id!r}: "
+                    f"{detail or f'exit={result.returncode}'}"
+                )
+            try:
+                payload = _json_object(result.stdout)
+            except (TypeError, ValueError) as exc:
+                raise RunPodDriverError(
+                    f"ambiguous absence query for owned pod {pod_id!r}: invalid JSON object"
+                ) from exc
+            observed_id = str(payload.get("id") or payload.get("podId") or "")
+            if observed_id != pod_id:
+                raise RunPodDriverError(
+                    f"ambiguous absence query for owned pod {pod_id!r}: "
+                    f"observed id {observed_id!r}"
+                )
+            remaining = deadline - self._monotonic()
+            if remaining > 0:
+                self._sleep(min(self.config.poll_seconds, remaining))
+        raise RunPodDriverError(
+            f"owned pod {pod_id!r} remained present for "
+            f"{self.config.teardown_absence_timeout_seconds:g}s after teardown"
         )
+
+    def _pod_get(
+        self,
+        pod_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Mapping[str, Any]:
+        result = self.transport.runpodctl(
+            "pod",
+            "get",
+            pod_id,
+            "--output",
+            "json",
+            timeout_seconds=timeout_seconds,
+        ).check("runpodctl pod get")
         return _json_object(result.stdout)
 
     def _create_pod(self, bundle: RunBundle) -> str:
@@ -600,37 +1044,61 @@ class RunPodOrchestrationDriver:
                 args.extend(["--gpu-id", self.config.gpu_id])
             if dc:
                 args.extend(["--data-center-ids", dc])
+            if self.config.api_key:
+                args.extend(["--env", json.dumps({"FEEDBAX_RUNPOD_API_KEY": self.config.api_key})])
             result = self.transport.runpodctl(*args)
             if result.returncode == 0:
                 payload = _json_object(result.stdout)
                 pod_id = str(payload.get("id") or payload.get("podId") or "")
                 if pod_id:
                     return pod_id
-            last_error = result.stderr or result.stdout
-        raise RunPodDriverError(f"pod create failed: {last_error.strip()}")
+            classification, last_error = _classify_create_failure(result, self.config.api_key)
+            if classification == "non-retryable":
+                raise ProvisioningAttemptError(
+                    last_error,
+                    retryable=False,
+                    attempt_record={"driver": "runpod", "acquired": False},
+                )
+        raise ProvisioningAttemptError(
+            last_error,
+            retryable=True,
+            attempt_record={"driver": "runpod", "acquired": False},
+        )
 
     def _wait_for_endpoint(
         self,
         pod_id: str,
-        first_pod: Mapping[str, Any] | None = None,
-    ) -> EndpointClassification:
+    ) -> tuple[EndpointClassification, Mapping[str, Any]]:
         deadline = self._monotonic() + self.config.max_acquire_seconds
-        pod = first_pod
-        while self._monotonic() <= deadline:
-            pod = pod or self._pod_get(pod_id)
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
+            pod = self._pod_get(pod_id, timeout_seconds=remaining)
+            self._last_provision_pod = pod
+            if self._monotonic() > deadline:
+                break
             classification = classify_pod_state(pod)
             if classification.status == "ready":
-                return EndpointClassification(
-                    "ssh_object",
-                    classification.ip,
-                    classification.port,
-                    endpoint_classification(pod).ssh_command,
+                return (
+                    EndpointClassification(
+                        "ssh_object",
+                        classification.ip,
+                        classification.port,
+                        endpoint_classification(pod).ssh_command,
+                    ),
+                    pod,
                 )
             if classification.status == "dead":
                 raise RunPodDriverError(f"pod entered dead state: {classification.reason}")
-            self._sleep(self.config.poll_seconds)
-            pod = None
-        raise RunPodDriverError("timed out waiting for RunPod SSH endpoint")
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
+            self._sleep(min(self.config.poll_seconds, remaining))
+        raise RunPodDriverError(
+            "timed out waiting for RunPod SSH endpoint after "
+            f"{self.config.max_acquire_seconds:g}s"
+        )
 
     def _require_gpu_ready(self) -> None:
         self._ssh("nvidia-smi >/dev/null").check("nvidia-smi readiness")
@@ -648,11 +1116,12 @@ class RunPodOrchestrationDriver:
             return
         if not self._pod_id:
             raise RunPodDriverError("dead-man switch requires a RunPod pod id")
+        auth = "export RUNPOD_API_KEY=$(tr '\\0' '\\n' </proc/1/environ | sed -n 's/^FEEDBAX_RUNPOD_API_KEY=//p'); "
         self._ssh(
-            "command -v runpodctl >/dev/null && runpodctl user --output json >/dev/null"
+            auth + f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
         ).check("in-pod runpodctl presence and authentication")
         self._ssh(
-            build_deadman_watchdog_command(
+            auth + build_deadman_watchdog_command(
                 pod_id=self._pod_id,
                 remote_run_dir=self._remote_run_dir(bundle),
                 remote_sentinel_dir=self._remote_sentinel_dir(bundle),
@@ -665,6 +1134,7 @@ class RunPodOrchestrationDriver:
         endpoint = self._endpoint or endpoint_classification(pod)
         return {
             "driver": "runpod",
+            **project_runpod_provision_facts(pod),
             "pod_id": self._pod_id,
             "provided_pod": provided_pod,
             "provided_endpoint": False,
@@ -685,12 +1155,52 @@ class RunPodOrchestrationDriver:
             excludes=RUNPOD_CODE_EXCLUDES,
         ).check(f"rsync repo {source}")
 
-    def _should_reuse_remote_environment(self, bundle: RunBundle, fingerprint: str) -> bool:
+    def _reused_remote_environment_fingerprint(
+        self,
+        bundle: RunBundle,
+        declaration_fingerprint: str,
+    ) -> str | None:
         result = self.transport.ssh(
+            f"test -f {_sq(self._remote_declaration_fingerprint_path(bundle))} && "
+            f"cat {_sq(self._remote_declaration_fingerprint_path(bundle))}"
+        )
+        if result.returncode != 0 or result.stdout.strip() != declaration_fingerprint:
+            return None
+        realized = self.transport.ssh(
             f"test -f {_sq(self._remote_fingerprint_path(bundle))} && "
             f"cat {_sq(self._remote_fingerprint_path(bundle))}"
+        ).check("read realized RunPod environment fingerprint").stdout.strip()
+        validate_realized_runpod_environment_fingerprint(
+            realized,
+            bundle=bundle,
+            declaration_fingerprint=declaration_fingerprint,
         )
-        return result.returncode == 0 and result.stdout.strip() == fingerprint
+        return realized
+
+    def _probe_realized_environment(
+        self,
+        bundle: RunBundle,
+        declaration_fingerprint: str,
+    ) -> str:
+        declaration = {
+            "declaration_sha256": declaration_fingerprint,
+            "image_id": bundle.environment.image_id,
+            "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
+            "python_version": bundle.environment.python_version,
+        }
+        command = (
+            "uv run --no-sync python -c "
+            f"{_sq(_REMOTE_ENVIRONMENT_PROBE)} "
+            f"{_sq(json.dumps(declaration, sort_keys=True, separators=(',', ':')))}"
+        )
+        result = self._ssh(f"cd {_sq(self._primary_workdir())} && {command}")
+        realized = result.stdout.strip()
+        validate_realized_runpod_environment_fingerprint(
+            realized,
+            bundle=bundle,
+            declaration_fingerprint=declaration_fingerprint,
+        )
+        return realized
 
     def _read_remote_pid(self, bundle: RunBundle, row_id: str) -> int | None:
         result = self.transport.ssh(
@@ -714,7 +1224,10 @@ class RunPodOrchestrationDriver:
     def _primary_workdir(self) -> str:
         remote_repos = self._remote_repos()
         return (
-            remote_repos.get("rlrmp") or remote_repos.get("feedbax") or self.config.remote_repo_root
+            remote_repos.get("rlrmp2")
+            or remote_repos.get("rlrmp")
+            or remote_repos.get("feedbax")
+            or self.config.remote_repo_root
         )
 
     def _row_workdir(self, row: RunRowSpec) -> str:
@@ -727,11 +1240,17 @@ class RunPodOrchestrationDriver:
     def _remote_sentinel_dir(self, bundle: RunBundle) -> str:
         return f"{self._remote_run_dir(bundle)}/sentinels"
 
+    def _remote_payload_path(self, bundle: RunBundle, row: RunRowSpec) -> str:
+        return f"{self._remote_run_dir(bundle)}/inputs/{row.row_id}.json"
+
     def _remote_events_dir(self, bundle: RunBundle) -> str:
         return f"{self._remote_run_dir(bundle)}/events"
 
     def _remote_fingerprint_path(self, bundle: RunBundle) -> str:
-        return f"{self._remote_run_dir(bundle)}/env-fingerprint.txt"
+        return f"{self._remote_run_dir(bundle)}/env-fingerprint.json"
+
+    def _remote_declaration_fingerprint_path(self, bundle: RunBundle) -> str:
+        return f"{self._remote_run_dir(bundle)}/env-declaration-fingerprint.txt"
 
     def _remote_nohup_sentinel(
         self,
@@ -890,6 +1409,67 @@ def user_balance(user_payload: Mapping[str, Any]) -> float | None:
         return None
 
 
+def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
+    """Project provenance from an already-returned pod response without I/O."""
+
+    def first(*paths: tuple[str, ...]) -> Any:
+        for path in paths:
+            value: Any = pod
+            for part in path:
+                if not isinstance(value, Mapping) or part not in value:
+                    value = None
+                    break
+                value = value[part]
+            if value not in (None, ""):
+                return value
+        return None
+
+    region = first(
+        ("dataCenterId",),
+        ("data_center_id",),
+        ("dataCenter", "id"),
+        ("machine", "dataCenterId"),
+    )
+    immutable_image_id = first(
+        ("imageName",),
+        ("image_name",),
+        ("containerImage",),
+        ("container", "image"),
+        ("template", "imageName"),
+        ("template", "image_name"),
+    )
+    hourly_rate_raw = first(
+        ("costPerHr",),
+        ("costPerHour",),
+        ("hourlyRate",),
+        ("machine", "costPerHr"),
+        ("machine", "costPerHour"),
+    )
+    try:
+        parsed_hourly_rate = float(hourly_rate_raw) if hourly_rate_raw is not None else None
+    except (TypeError, ValueError):
+        parsed_hourly_rate = None
+    hourly_rate = (
+        parsed_hourly_rate
+        if parsed_hourly_rate is not None and math.isfinite(parsed_hourly_rate)
+        else None
+    )
+    raw_rate_observation = hourly_rate_raw
+    if isinstance(raw_rate_observation, float) and not math.isfinite(raw_rate_observation):
+        raw_rate_observation = repr(raw_rate_observation)
+    return {
+        "provider": "runpod",
+        "region": str(region) if region is not None else None,
+        "immutable_image_id": (
+            str(immutable_image_id) if immutable_image_id is not None else None
+        ),
+        "hourly_rate": hourly_rate,
+        "hourly_rate_raw": raw_rate_observation,
+        "currency": "USD" if hourly_rate is not None else None,
+        "provider_observation_basis": "runpodctl pod get response",
+    }
+
+
 def _preflight_check(
     name: str,
     passed: bool,
@@ -902,6 +1482,112 @@ def _preflight_check(
         status="pass" if passed else "fail",
         detail=detail,
         observed=observed,
+    )
+
+
+def is_immutable_runpod_image_id(image_id: str | None) -> bool:
+    """Return whether an image identity is pinned to an OCI SHA-256 digest."""
+    return bool(image_id and _IMMUTABLE_IMAGE_PATTERN.fullmatch(image_id))
+
+
+def runpod_lockfile_declaration_error(lockfile_hashes: Mapping[str, str]) -> str | None:
+    """Validate remote lockfile paths and their expected SHA-256 digests."""
+    if not lockfile_hashes:
+        return "environment.lockfile_hashes must declare at least one locked dependency file"
+    for path_text, digest in lockfile_hashes.items():
+        path = PurePosixPath(path_text)
+        if (
+            not path_text
+            or path.is_absolute()
+            or path_text != path.as_posix()
+            or ".." in path.parts
+        ):
+            return (
+                "environment.lockfile_hashes keys must be safe paths relative to the "
+                f"primary remote workdir: {path_text!r}"
+            )
+        if not _SHA256_PATTERN.fullmatch(digest):
+            return f"invalid SHA-256 digest for lockfile {path_text!r}: {digest!r}"
+    return None
+
+
+def require_deterministic_runpod_environment(bundle: RunBundle) -> None:
+    """Reject RunPod declarations that cannot realize an immutable environment."""
+    if not is_immutable_runpod_image_id(bundle.environment.image_id):
+        raise RunPodDriverError(
+            "RunPod REALIZE_ENV requires environment.image_id pinned by @sha256:<64 hex>"
+        )
+    lockfile_error = runpod_lockfile_declaration_error(
+        bundle.environment.lockfile_hashes
+    )
+    if lockfile_error is not None:
+        raise RunPodDriverError(lockfile_error)
+    if not bundle.environment.python_version:
+        raise RunPodDriverError(
+            "RunPod REALIZE_ENV requires environment.python_version"
+        )
+
+
+def validate_realized_runpod_environment_fingerprint(
+    fingerprint: str,
+    *,
+    bundle: RunBundle,
+    declaration_fingerprint: str,
+) -> None:
+    """Fail closed unless a realized fingerprint binds the declared environment."""
+    try:
+        payload = json.loads(fingerprint)
+    except json.JSONDecodeError as exc:
+        raise RunPodDriverError("realized RunPod environment probe returned invalid JSON") from exc
+    expected = {
+        "schema_version": RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION,
+        "declaration_sha256": declaration_fingerprint,
+        "image_id": bundle.environment.image_id,
+        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
+    }
+    for field_name, expected_value in expected.items():
+        if payload.get(field_name) != expected_value:
+            raise RunPodDriverError(
+                "realized RunPod environment fingerprint mismatch for "
+                f"{field_name}: expected {expected_value!r}, observed {payload.get(field_name)!r}"
+            )
+    runtime = payload.get("runtime")
+    required_runtime = {
+        "device_count",
+        "device_kind",
+        "equinox",
+        "feedbax",
+        "jax",
+        "jax_platform",
+        "jax_platform_version",
+        "jaxlib",
+        "python",
+        "python_implementation",
+    }
+    if not isinstance(runtime, Mapping) or not required_runtime <= runtime.keys():
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint lacks required runtime provenance"
+        )
+    if not _python_version_matches(
+        str(bundle.environment.python_version), str(runtime["python"])
+    ):
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint Python version does not match declaration"
+        )
+    if runtime["jax_platform"] not in {"cuda", "gpu"}:
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint does not prove a JAX CUDA backend"
+        )
+    plugins = payload.get("feedbax_plugins")
+    if not isinstance(plugins, list) or any(not isinstance(item, Mapping) for item in plugins):
+        raise RunPodDriverError(
+            "realized RunPod environment fingerprint lacks Feedbax plugin provenance"
+        )
+
+
+def _python_version_matches(declared: str, observed: str) -> bool:
+    return observed == declared or (
+        declared.count(".") == 1 and observed.startswith(declared + ".")
     )
 
 
@@ -934,126 +1620,11 @@ def build_literal_path_patch_command(
     )
 
 
-def declared_baselines(bundle: RunBundle) -> list[BaselineEntry]:
-    """Extract baseline declarations from inline row specs."""
-    entries: list[BaselineEntry] = []
-    for row in bundle.rows:
-        payload = _registered_row_payload(row)
-        if isinstance(payload, Mapping):
-            entries.extend(_baseline_entries(payload, f"row:{row.row_id}"))
-    return entries
-
-
-def _baseline_entries(payload: Mapping[str, Any], label: str) -> list[BaselineEntry]:
-    entries: list[BaselineEntry] = []
-    path = _first_string(
-        payload,
-        "baseline_checkpoint_path",
-        "baseline_checkpoint",
-        "checkpoint_path",
-    )
-    batch = _first_scalar(
-        payload,
-        "baseline_completed_batches",
-        "baseline_completed_batch",
-        "completed_batches",
-        "completed_batch",
-    )
-    if path:
-        entries.append(BaselineEntry(path=path, completed_batch=str(batch or ""), label=label))
-    resume = payload.get("resume")
-    if isinstance(resume, Mapping):
-        path = _first_string(
-            resume,
-            "baseline_checkpoint_path",
-            "baseline_checkpoint",
-            "checkpoint_path",
-            "checkpoint",
-        )
-        batch = _first_scalar(
-            resume,
-            "baseline_completed_batches",
-            "baseline_completed_batch",
-            "completed_batches",
-            "completed_batch",
-        )
-        if path:
-            entries.append(BaselineEntry(path=path, completed_batch=str(batch or ""), label=label))
-    training_config = payload.get("training_config")
-    if isinstance(training_config, Mapping):
-        entries.extend(_baseline_entries(training_config, f"{label}:training_config"))
-    return entries
-
-
-def baseline_source_path(source: str, repo_root: Path) -> Path:
-    """Resolve a baseline source path using the deploy-script rules."""
-    path = Path(source)
-    return path if path.is_absolute() else repo_root / path
-
-
-def baseline_remote_target(source: str, remote_artifacts_dir: str, repo_root: Path) -> str:
-    """Return the remote target path for a baseline source."""
-    source_path = baseline_source_path(source, repo_root)
-    if source.startswith("_artifacts/"):
-        return f"{remote_artifacts_dir.rstrip('/')}/{source.removeprefix('_artifacts/')}"
-    artifacts_prefix = str(repo_root / "_artifacts") + "/"
-    source_text = str(source_path)
-    if source_text.startswith(artifacts_prefix):
-        return f"{remote_artifacts_dir.rstrip('/')}/{source_text.removeprefix(artifacts_prefix)}"
-    return f"{remote_artifacts_dir.rstrip('/')}/baselines/{source_path.name}"
-
-
-def verify_local_baseline(source: Path, baseline: BaselineEntry) -> None:
-    """Verify a local baseline checkpoint before staging."""
-    if not source.exists():
-        raise RunPodDriverError(
-            f"baseline preflight failed: source checkpoint not found for {baseline.label}: {source}"
-        )
-    latest = source / "latest.json"
-    if not latest.is_file():
-        raise RunPodDriverError(
-            f"baseline preflight failed: custody latest.json not found for {baseline.label}: {latest}"
-        )
-    if not baseline.completed_batch or baseline.completed_batch == "null":
-        raise RunPodDriverError(
-            f"baseline preflight failed: declared completed_batch missing for {baseline.label}"
-        )
-    actual = latest_pointer_completed_batches(json.loads(latest.read_text(encoding="utf-8")))
-    if actual != baseline.completed_batch:
-        raise RunPodDriverError(
-            "baseline preflight failed: completed_batch mismatch for "
-            f"{baseline.label}: declared {baseline.completed_batch} but latest.json has {actual}"
-        )
-
-
-def latest_pointer_completed_batches(payload: Mapping[str, Any]) -> str | None:
-    """Extract completed-batch progress from a custody ``latest.json`` payload."""
-    for key in LATEST_BATCH_KEYS:
-        value = payload.get(key)
-        if value is not None:
-            return str(value)
-    metadata = payload.get("metadata")
-    if isinstance(metadata, Mapping):
-        for key in METADATA_BATCH_KEYS:
-            value = metadata.get(key)
-            if value is not None:
-                return str(value)
-    return None
-
-
-def remote_baseline_verification_command(target: str, expected_batch: str) -> str:
-    """Build a remote command that verifies a staged baseline."""
-    latest = f"{target.rstrip('/')}/latest.json"
-    jq_filter = (
-        ".completed_training_batches // .completed_batches // .completed_batch // "
-        ".completedBatch // .metadata.completed_training_batches // "
-        ".metadata.completed_batches // .metadata.completed_batch // .metadata.completedBatch // "
-        "empty"
-    )
+def build_atomic_directory_publish_command(source: str, destination: str) -> str:
+    """Build a fail-closed Linux atomic directory publish with no replacement."""
     return (
-        f"test -e {_sq(target)} && test -f {_sq(latest)} && "
-        f"actual=$(jq -r {_sq(jq_filter)} {_sq(latest)}) && "
-        f'test -n "$actual" && test "$actual" = {_sq(expected_batch)}'
+        f"python3 -c {_sq(_REMOTE_ATOMIC_DIRECTORY_PUBLISH)} "
+        f"{_sq(source)} {_sq(destination)}"
     )
 
 
@@ -1107,6 +1678,12 @@ def build_launch_row_command(
         [str(part) for part in row.launch.command]
         if row.launch.command
         else ["uv", "run", "--no-sync", "python", row.launch.entry or ""]
+    )
+    command_parts, row = bind_native_execution_command(
+        command_parts,
+        row=row,
+        payload_path=f"{remote_run_dir}/inputs/{row.row_id}.json",
+        collection_root=row_dir,
     )
     command_parts = inject_native_execution_context(
         command_parts,
@@ -1246,6 +1823,40 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     return dict(payload)
 
 
+def load_runpod_api_key(config_path: Path | str = "~/.runpod/config.toml") -> str | None:
+    """Load the RunPod key without exposing it through durable orchestration state."""
+    if key := os.environ.get("RUNPOD_API_KEY"):
+        return key
+    try:
+        payload = tomllib.loads(Path(config_path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    key = payload.get("apikey")
+    return str(key) if key else None
+
+
+def _redact_secret(value: str, secret: str | None) -> str:
+    return value.replace(secret, "<redacted>") if secret else value
+
+
+def _classify_create_failure(
+    result: CommandResult, secret: str | None
+) -> tuple[Literal["retryable", "non-retryable"], str]:
+    """Classify only sanitized provider authorization and request failures."""
+    detail = _redact_secret(result.stderr or result.stdout, secret).strip()
+    try:
+        payload = json.loads(result.stdout or result.stderr)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, Mapping):
+        code = str(payload.get("statusCode") or payload.get("code") or "").lower()
+        if code in {"400", "401", "403", "422", "unauthorized", "forbidden", "invalid_request"}:
+            return "non-retryable", detail
+    if result.returncode in {400, 401, 403, 422}:
+        return "non-retryable", detail
+    return "retryable", detail
+
+
 def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:
     try:
         result = subprocess.run(
@@ -1272,6 +1883,53 @@ def _json_object(payload: str) -> dict[str, Any]:
     raise RunPodDriverError("expected JSON object")
 
 
+def _parse_runpod_pod_inventory(payload: str) -> tuple[str, ...]:
+    """Parse supported ``runpodctl pod list`` shapes into sanitized pod IDs."""
+    loaded = json.loads(payload)
+    if isinstance(loaded, list):
+        pods = loaded
+    elif isinstance(loaded, Mapping):
+        candidates: list[Any] = []
+        if "pods" in loaded:
+            candidates.append(loaded["pods"])
+        if "data" in loaded:
+            data = loaded["data"]
+            if isinstance(data, list):
+                candidates.append(data)
+            elif isinstance(data, Mapping) and "pods" in data:
+                candidates.append(data["pods"])
+            else:
+                raise ValueError("unsupported RunPod inventory data wrapper")
+        if len(candidates) != 1:
+            raise ValueError("ambiguous RunPod inventory wrapper")
+        pods = candidates[0]
+    else:
+        raise TypeError("RunPod inventory must be a list or wrapper object")
+    if not isinstance(pods, list):
+        raise TypeError("RunPod inventory wrapper must contain a list")
+
+    pod_ids: list[str] = []
+    for pod in pods:
+        if not isinstance(pod, Mapping):
+            raise TypeError("RunPod inventory entries must be objects")
+        candidates = [pod.get("id"), pod.get("podId")]
+        nested = pod.get("pod")
+        if isinstance(nested, Mapping):
+            candidates.append(nested.get("id"))
+        identities = {
+            value for value in candidates if isinstance(value, str) and value
+        }
+        if len(identities) != 1:
+            raise ValueError("RunPod inventory entry has ambiguous pod identity")
+        pod_id = identities.pop()
+        if _SAFE_POD_ID_PATTERN.fullmatch(pod_id) is None:
+            raise ValueError("RunPod inventory entry has unsafe pod identity")
+        pod_ids.append(pod_id)
+    if len(pod_ids) != len(set(pod_ids)):
+        raise ValueError("RunPod inventory contains duplicate pod identities")
+    return tuple(sorted(pod_ids))
+
+
 def _safe_reason(reason: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "_.:/=@,+-" else "_" for ch in reason).rstrip("_")
 
@@ -1288,22 +1946,6 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _first_string(payload: Mapping[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = payload.get(key)
-        if value not in (None, ""):
-            return str(value)
-    return None
-
-
-def _first_scalar(payload: Mapping[str, Any], *keys: str) -> Any:
-    for key in keys:
-        value = payload.get(key)
-        if value not in (None, ""):
-            return value
-    return None
 
 
 def _looks_remote_path(value: str) -> bool:

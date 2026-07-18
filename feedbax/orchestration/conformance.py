@@ -10,8 +10,10 @@ Project plugins may publish additional checks through the existing
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import math
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,7 +40,11 @@ from feedbax.orchestration.schedule_eval import (
 from feedbax.orchestration.state import RowState
 
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
-RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
+RUN_CONFORMANCE_SCHEMA_VERSION_V1 = "feedbax.run_conformance.v1"
+RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v2"
+REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID = "feedbax.manifest.realized_deployment"
+REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION = "feedbax.manifest.realized_deployment.v1"
+_IMMUTABLE_OCI_IMAGE_PATTERN = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
 
 CHECK_STATUS_PASS = "pass"
 CHECK_STATUS_FAIL = "fail"
@@ -85,24 +91,187 @@ class CheckEntry(StrictModel):
         return self
 
 
+class RealizedDeploymentRecord(StrictModel):
+    """Typed realized launch, environment, timing, and cost evidence."""
+
+    schema_id: Literal["feedbax.manifest.realized_deployment"] = (
+        REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.manifest.realized_deployment.v1"] = (
+        REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION
+    )
+    driver: str = Field(min_length=1)
+    venue: Literal["local", "remote"]
+    provider: str | None = None
+    gpu_model: str | None = None
+    gpu_count: int | None = Field(default=None, ge=1)
+    region: str | None = None
+    immutable_image_id: str | None = None
+    environment_fingerprint: str | None = None
+    provisioned_at: datetime | None = None
+    billing_started_at: datetime | None = None
+    row_started_at: datetime | None = None
+    row_completed_at: datetime | None = None
+    observed_at: datetime
+    wall_time_seconds: float | None = Field(
+        default=None, ge=0.0, strict=True, allow_inf_nan=False
+    )
+    hourly_rate: float | None = Field(default=None, ge=0.0, strict=True, allow_inf_nan=False)
+    accrued_cost: float | None = Field(default=None, ge=0.0, strict=True, allow_inf_nan=False)
+    currency: str | None = None
+    cost_basis: str = Field(min_length=1)
+    observation_basis: dict[str, str] = Field(min_length=1)
+    provider_observations: dict[str, Any] = Field(default_factory=dict)
+    unavailable: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_explicit_unavailable_reasons(self) -> "RealizedDeploymentRecord":
+        nullable = (
+            "provider",
+            "gpu_model",
+            "gpu_count",
+            "region",
+            "immutable_image_id",
+            "environment_fingerprint",
+            "provisioned_at",
+            "billing_started_at",
+            "row_started_at",
+            "row_completed_at",
+            "wall_time_seconds",
+            "hourly_rate",
+            "accrued_cost",
+            "currency",
+        )
+        for field_name in nullable:
+            reason = self.unavailable.get(field_name)
+            if getattr(self, field_name) is None and (not reason or not reason.strip()):
+                raise ValueError(f"missing {field_name!r} requires an unavailable reason")
+            if getattr(self, field_name) is not None and reason is not None:
+                raise ValueError(f"present {field_name!r} cannot be marked unavailable")
+        unknown = self.unavailable.keys() - set(nullable)
+        if unknown:
+            raise ValueError(f"unknown unavailable evidence fields: {sorted(unknown)!r}")
+        timestamps = {
+            name: value
+            for name, value in (
+                ("provisioned_at", self.provisioned_at),
+                ("billing_started_at", self.billing_started_at),
+                ("row_started_at", self.row_started_at),
+                ("row_completed_at", self.row_completed_at),
+                ("observed_at", self.observed_at),
+            )
+            if value is not None
+        }
+        naive = [name for name, value in timestamps.items() if value.tzinfo is None]
+        if naive:
+            raise ValueError(f"realized deployment timestamps must be timezone-aware: {naive!r}")
+        if all(
+            value is not None
+            for value in (
+                self.provisioned_at,
+                self.row_started_at,
+                self.row_completed_at,
+            )
+        ) and not (
+            self.provisioned_at <= self.row_started_at <= self.row_completed_at <= self.observed_at
+        ):
+            raise ValueError(
+                "realized deployment chronology must satisfy "
+                "provisioned_at <= row_started_at <= row_completed_at <= observed_at"
+            )
+        if self.billing_started_at is not None and self.billing_started_at > self.observed_at:
+            raise ValueError("billing_started_at cannot be later than observed_at")
+        if (
+            self.venue == "remote"
+            and self.immutable_image_id is not None
+            and _IMMUTABLE_OCI_IMAGE_PATTERN.fullmatch(self.immutable_image_id) is None
+        ):
+            raise ValueError(
+                "remote immutable_image_id must be a complete lowercase OCI digest reference"
+            )
+        if (
+            self.row_started_at is not None
+            and self.row_completed_at is not None
+            and self.wall_time_seconds is not None
+        ):
+            expected_wall_time = (self.row_completed_at - self.row_started_at).total_seconds()
+            if not math.isclose(
+                self.wall_time_seconds, expected_wall_time, rel_tol=1e-9, abs_tol=1e-9
+            ):
+                raise ValueError("wall_time_seconds does not match the observed row timestamps")
+        if (
+            self.billing_started_at is not None
+            and self.hourly_rate is not None
+            and self.accrued_cost is not None
+        ):
+            elapsed_hours = (self.observed_at - self.billing_started_at).total_seconds() / 3600.0
+            expected_cost = self.hourly_rate * elapsed_hours
+            if not math.isclose(
+                self.accrued_cost, expected_cost, rel_tol=1e-9, abs_tol=1e-9
+            ):
+                raise ValueError(
+                    "accrued_cost does not match hourly_rate and observed billing duration"
+                )
+        return self
+
+
 class CertificateRow(StrictModel):
     """Conformance checks attached to one row id."""
 
     checks: list[CheckEntry]
+    realized_deployment: RealizedDeploymentRecord | None = None
+    realized_deployment_evidence: dict[str, Any] | None = None
 
 
 class RunConformanceCertificate(StrictModel):
     """Durable red/green conformance artifact for a run set."""
 
     schema_id: Literal["feedbax.run_conformance"] = RUN_CONFORMANCE_SCHEMA_ID
-    schema_version: Literal["feedbax.run_conformance.v1"] = RUN_CONFORMANCE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.run_conformance.v2"] = RUN_CONFORMANCE_SCHEMA_VERSION
     run_set_id: str = Field(min_length=1)
     generated_at: datetime
     overall: OverallStatus
-    rows: dict[str, CertificateRow]
+    rows: dict[str, CertificateRow] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _validate_overall(self) -> "RunConformanceCertificate":
+        if self.generated_at.tzinfo is None:
+            raise ValueError("certificate generated_at must be timezone-aware")
+        for row_id, row in self.rows.items():
+            realized_checks = [
+                check for check in row.checks if check.check_id == "realized_deployment"
+            ]
+            if len(realized_checks) != 1:
+                raise ValueError(
+                    f"certificate row {row_id!r} requires exactly one realized_deployment check"
+                )
+            if row.realized_deployment_evidence is None:
+                raise ValueError(
+                    f"certificate row {row_id!r} requires raw realized deployment evidence"
+                )
+            realized_check = realized_checks[0]
+            if realized_check.status == CHECK_STATUS_PASS:
+                if row.realized_deployment is None:
+                    raise ValueError(
+                        f"passing certificate row {row_id!r} requires typed realized deployment"
+                    )
+                if row.realized_deployment.observed_at != self.generated_at:
+                    raise ValueError(
+                        f"certificate row {row_id!r} observed_at must equal generated_at"
+                    )
+                evidence_record = RealizedDeploymentRecord.model_validate(
+                    row.realized_deployment_evidence
+                )
+                if evidence_record != row.realized_deployment:
+                    raise ValueError(
+                        f"certificate row {row_id!r} typed realized deployment does not "
+                        "match its raw evidence"
+                    )
+                if realized_check.observed != row.realized_deployment.model_dump(mode="json"):
+                    raise ValueError(
+                        f"certificate row {row_id!r} realized_deployment check does not "
+                        "bind the typed record"
+                    )
         expected = aggregate_overall(self.rows)
         if self.overall != expected:
             raise ValueError(
@@ -137,6 +306,8 @@ class ConformanceRowArtifacts:
     manifest_payload: Mapping[str, Any] | None = None
     row_state: RowState | None = None
     runtime_inputs: RowConformanceRuntimeInputs | None = None
+    deployment_policy: Mapping[str, Any] | None = None
+    realized_deployment_evidence: Mapping[str, Any] | None = None
 
 
 class CheckRegistry:
@@ -236,12 +407,27 @@ def assemble_certificate(
     run_set_id: str,
     row_checks: Mapping[str, Sequence[CheckEntry]],
     generated_at: datetime,
+    row_artifacts: Mapping[str, ConformanceRowArtifacts] | None = None,
 ) -> RunConformanceCertificate:
     """Assemble and validate a deterministic certificate model."""
-    rows = {
-        row_id: CertificateRow(checks=sorted(checks, key=lambda check: check.check_id))
-        for row_id, checks in sorted(row_checks.items())
-    }
+    artifacts = dict(row_artifacts or {})
+    rows = {}
+    for row_id, checks in sorted(row_checks.items()):
+        raw = artifacts.get(row_id)
+        evidence = dict(raw.realized_deployment_evidence) if (
+            raw is not None and raw.realized_deployment_evidence is not None
+        ) else {"unavailable_evidence": "realized_deployment_evidence was not supplied"}
+        evidence_check = next(
+            (check for check in checks if check.check_id == "realized_deployment"), None
+        )
+        realized = None
+        if evidence is not None and evidence_check is not None and evidence_check.status == "pass":
+            realized = RealizedDeploymentRecord.model_validate(evidence)
+        rows[row_id] = CertificateRow(
+            checks=sorted(checks, key=lambda check: check.check_id),
+            realized_deployment=realized,
+            realized_deployment_evidence=evidence,
+        )
     return RunConformanceCertificate(
         run_set_id=run_set_id,
         generated_at=generated_at,
@@ -255,15 +441,38 @@ def run_conformance_checks(
     run_set_id: str,
     rows: Sequence[ConformanceRowArtifacts],
     registry: CheckRegistry,
+    declared_inapplicable: Mapping[str, str] | None = None,
     generated_at: datetime | None = None,
 ) -> RunConformanceCertificate:
     """Run registered checks over collected row artifacts."""
     if len(registry) == 0:
         raise ValueError("CERTIFY requires at least one registered conformance check")
+    declarations = dict(declared_inapplicable or {})
+    if "realized_deployment" in declarations:
+        raise ValueError("realized_deployment cannot be declared inapplicable")
+    registered = dict(registry.items())
+    registered.setdefault("realized_deployment", check_realized_deployment)
+    unknown = declarations.keys() - registered.keys()
+    if unknown:
+        raise ValueError(f"unknown declared-inapplicable checks: {sorted(unknown)!r}")
+    if any(not isinstance(reason, str) or not reason.strip() for reason in declarations.values()):
+        raise ValueError("declared-inapplicable checks require non-empty reasons")
     row_results: dict[str, list[CheckEntry]] = {}
+    row_artifacts: dict[str, ConformanceRowArtifacts] = {}
     for row in sorted(rows, key=lambda item: item.row_id):
+        row_artifacts[row.row_id] = row
         checks: list[CheckEntry] = []
-        for check_id, check in registry.items():
+        for check_id, check in sorted(registered.items()):
+            if check_id == "realized_deployment":
+                check = check_realized_deployment
+            if check_id in declarations:
+                checks.append(
+                    skipped_check(
+                        check_id,
+                        detail=f"inapplicable-by-declaration: {declarations[check_id]}",
+                    )
+                )
+                continue
             try:
                 result = check(row)
             except Exception as exc:  # plugin/core failures belong in the certificate.
@@ -288,6 +497,7 @@ def run_conformance_checks(
         run_set_id=run_set_id,
         row_checks=row_results,
         generated_at=generated_at or datetime.now(timezone.utc).replace(microsecond=0),
+        row_artifacts=row_artifacts,
     )
 
 
@@ -297,6 +507,7 @@ def write_conformance_certificate(
     run_set_id: str,
     rows: Sequence[ConformanceRowArtifacts],
     registry: CheckRegistry,
+    declared_inapplicable: Mapping[str, str] | None = None,
     generated_at: datetime | None = None,
 ) -> RunConformanceCertificate:
     """Run checks and write ``<run_set_dir>/conformance.json`` deterministically."""
@@ -304,6 +515,7 @@ def write_conformance_certificate(
         run_set_id=run_set_id,
         rows=rows,
         registry=registry,
+        declared_inapplicable=declared_inapplicable,
         generated_at=generated_at,
     )
     output = Path(run_set_dir) / "conformance.json"
@@ -327,9 +539,109 @@ def build_core_check_registry() -> CheckRegistry:
             "events_terminal": check_events_terminal,
             "lr_trace": check_lr_trace,
             "manifest_valid": check_manifest_valid,
+            "realized_deployment": check_realized_deployment,
             "seeds": check_seeds,
         }
     )
+
+
+def check_realized_deployment(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Fail closed unless realized operational facts are independently evidenced."""
+    check_id = "realized_deployment"
+    raw = row.realized_deployment_evidence
+    if raw is None:
+        return missing_input_check(check_id, "realized_deployment_evidence")
+    try:
+        record = RealizedDeploymentRecord.model_validate(raw)
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="well-formed realized deployment evidence",
+            observed=dict(raw),
+            detail=str(exc),
+        )
+
+    policy = dict(row.deployment_policy or {})
+    expected = {
+        "driver": policy.get("driver"),
+        "venue": policy.get("venue"),
+        "requested_resources": policy.get("resources", {}),
+    }
+    problems: list[str] = []
+    if record.driver != expected["driver"] or record.venue != expected["venue"]:
+        problems.append("realized driver/venue does not match the deployment route")
+    required_timing = (
+        record.provisioned_at,
+        record.row_started_at,
+        record.row_completed_at,
+        record.wall_time_seconds,
+    )
+    if any(item is None for item in required_timing):
+        problems.append("provision and row timing are incomplete")
+    if record.environment_fingerprint is None:
+        problems.append("validated environment fingerprint is unavailable")
+
+    if record.venue == "local":
+        if record.provider != "local":
+            problems.append("local evidence must identify provider=local")
+        if any(
+            value is not None
+            for value in (record.gpu_model, record.gpu_count, record.region, record.immutable_image_id)
+        ):
+            problems.append("local GPU, image, and region must use explicit not-applicable facts")
+        if (record.hourly_rate, record.accrued_cost, record.currency, record.cost_basis) != (
+            0.0,
+            0.0,
+            "USD",
+            "local-not-billable",
+        ):
+            problems.append("local cost evidence must be zero USD with local-not-billable basis")
+    else:
+        required_remote = {
+            "provider": record.provider,
+            "gpu_model": record.gpu_model,
+            "gpu_count": record.gpu_count,
+            "region": record.region,
+            "immutable_image_id": record.immutable_image_id,
+            "billing_started_at": record.billing_started_at,
+            "hourly_rate": record.hourly_rate,
+            "accrued_cost": record.accrued_cost,
+            "currency": record.currency,
+        }
+        missing = [name for name, value in required_remote.items() if value is None]
+        if missing:
+            problems.append("remote evidence unavailable: " + ", ".join(missing))
+        if record.cost_basis != "billing-start-to-certify-observation":
+            problems.append("remote accrued cost lacks the CERTIFY observation-time basis")
+        if (
+            record.immutable_image_id
+            and _IMMUTABLE_OCI_IMAGE_PATTERN.fullmatch(record.immutable_image_id) is None
+        ):
+            problems.append("remote image identity is not immutable")
+        try:
+            fingerprint = json.loads(record.environment_fingerprint or "")
+            runtime = fingerprint["runtime"]
+            if fingerprint.get("image_id") != record.immutable_image_id:
+                problems.append("environment fingerprint does not prove the recorded image")
+            if runtime.get("device_kind") != record.gpu_model:
+                problems.append("environment fingerprint does not prove the recorded GPU model")
+            if runtime.get("device_count") != record.gpu_count:
+                problems.append("environment fingerprint does not prove the recorded GPU count")
+        except (json.JSONDecodeError, KeyError, TypeError):
+            problems.append("remote environment fingerprint lacks realized runtime proof")
+        resources = expected["requested_resources"]
+        if isinstance(resources, Mapping):
+            requested_gpu = resources.get("gpu_id")
+            requested_regions = resources.get("regions") or []
+            if requested_gpu and record.gpu_model != requested_gpu:
+                problems.append("observed GPU does not satisfy requested GPU policy")
+            if requested_regions and record.region not in requested_regions:
+                problems.append("observed region does not satisfy requested region policy")
+
+    observed = record.model_dump(mode="json")
+    if problems:
+        return fail_check(check_id, expected=expected, observed=observed, detail="; ".join(problems))
+    return pass_check(check_id, expected=expected, observed=observed)
 
 
 def check_execution_identity(row: ConformanceRowArtifacts) -> CheckEntry:
@@ -571,6 +883,15 @@ def assert_certificate_allows_completed_registration(
     cert = RunConformanceCertificate.model_validate(certificate)
     if cert.overall != CHECK_STATUS_PASS:
         raise ValueError("REGISTER cannot emit phase=completed for a failing certificate")
+    for row_id, row in cert.rows.items():
+        realized_check = next(
+            check for check in row.checks if check.check_id == "realized_deployment"
+        )
+        if realized_check.status != CHECK_STATUS_PASS or row.realized_deployment is None:
+            raise ValueError(
+                f"REGISTER cannot emit phase=completed without realized deployment proof "
+                f"for row {row_id!r}"
+            )
     return cert
 
 
@@ -585,6 +906,7 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "n_batches"),
     )
     observed = _first_present(
+        _path(row.training_diagnostics, "segment_completed_batches"),
         _path(row.training_diagnostics, "completed_batches"),
         _path(row.training_diagnostics, "summary", "completed_batches"),
         _path(row.training_diagnostics, "summary_metrics", "completed_batches"),
@@ -765,7 +1087,7 @@ def check_manifest_valid(row: ConformanceRowArtifacts) -> CheckEntry:
     expected_spec = dict(row.preflight_normalized_payload)
     if observed_spec is _MISSING:
         return missing_input_check(check_id, "manifest.training_spec.inline")
-    if _canonical(observed_spec) == _canonical(expected_spec):
+    if _canonical(json.loads(json.dumps(observed_spec), object_pairs_hook=lambda pairs: {key: value for key, value in pairs if value is not None})) == _canonical(json.loads(json.dumps(expected_spec), object_pairs_hook=lambda pairs: {key: value for key, value in pairs if value is not None})):
         return pass_check(check_id, expected=expected_spec, observed=observed_spec)
     return fail_check(check_id, expected=expected_spec, observed=observed_spec)
 

@@ -25,12 +25,14 @@ from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
     AuthoredIntentRef,
     BudgetPolicy,
+    DeploymentPolicy,
     EnvironmentDeclaration,
     ExecutionCapsuleRef,
     ExecutionIdentityEnvelope,
     ImmutableInputIdentity,
     LaunchPolicy,
     ResolvedSnapshotRef,
+    ResolvedAssemblyInput,
     RowLaunchSpec,
     RunBundle,
     RunRowSpec,
@@ -38,11 +40,12 @@ from feedbax.orchestration.bundle import (
 )
 
 if TYPE_CHECKING:
-    from feedbax.contracts.migrations import SpecSchemaRegistry
+    from feedbax.contracts.migrations import SpecMigrationResult, SpecSchemaRegistry
 
 
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v1"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v1"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v2"
 
 
 class CompilerIdentity(StrictModel):
@@ -76,7 +79,7 @@ class RunAssemblyRequest(StrictModel):
     authored: SchemaArtifactRef
     compiler: CompilerIdentity
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
-    driver: str = "local"
+    deployment_policy: DeploymentPolicy
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
     budget: BudgetPolicy
@@ -159,7 +162,6 @@ class AssemblyCompiler(Protocol):
 
     def compile(
         self,
-        request: RunAssemblyRequest,
         *,
         authored: Mapping[str, Any],
         run_set_id: str,
@@ -168,7 +170,7 @@ class AssemblyCompiler(Protocol):
 
 
 ArtifactResolver = Callable[[SchemaArtifactRef], bytes]
-InputResolver = Callable[[AssemblyInputDeclaration], ImmutableInputIdentity]
+InputResolver = Callable[[AssemblyInputDeclaration], ResolvedAssemblyInput]
 
 
 @dataclass(frozen=True)
@@ -254,7 +256,7 @@ def load_schema_artifact(
     ref: SchemaArtifactRef,
     *,
     context: AssemblyContext,
-) -> dict[str, Any]:
+) -> "SpecMigrationResult":
     """Dereference, digest-check, migrate, and validate a governed JSON artifact."""
     if context.artifact_resolver is not None:
         data = context.artifact_resolver(ref)
@@ -283,7 +285,7 @@ def load_schema_artifact(
     )
     if family is None:
         raise ValueError(f"unknown registered artifact schema_id: {ref.schema_id!r}")
-    return registry.migrate(family.kind, payload).payload
+    return registry.migrate(family.kind, payload)
 
 
 def persist_compiled_row(
@@ -369,14 +371,16 @@ def assemble_run_bundle(
     registry: AssemblyCompilerRegistry,
 ) -> RunBundle:
     """Compile a verified authored request and persist a current RunBundle."""
-    authored = load_schema_artifact(request.authored, context=context)
+    authored_result = load_schema_artifact(request.authored, context=context)
+    authored = authored_result.payload
     registration = registry.resolve(request)
-    resolved_inputs = [
-        _resolve_input(item, context=context) for item in request.inputs
-    ]
+    resolved_input_records = sorted(
+        (_resolve_input(item, context=context) for item in request.inputs),
+        key=lambda item: (item.identity.role, item.identity.kind, item.identity.identifier),
+    )
+    resolved_inputs = [item.identity for item in resolved_input_records]
     compiler_context = replace(context, resolved_inputs=tuple(resolved_inputs))
     compiled = registration.compiler.compile(
-        request,
         authored=authored,
         run_set_id=run_set_id,
         context=compiler_context,
@@ -401,7 +405,8 @@ def assemble_run_bundle(
     ]
     return RunBundle(
         run_set_id=run_set_id,
-        driver=request.driver,
+        deployment_policy=request.deployment_policy,
+        migration_evidence=authored_result.migration_records,
         rows=[
             RunRowSpec(
                 row_id=item.row_id,
@@ -413,6 +418,7 @@ def assemble_run_bundle(
         environment=request.environment,
         launch_policy=request.launch_policy,
         budget=request.budget,
+        resolved_inputs=resolved_input_records,
         orchestration_root=request.orchestration_root,
         keep_alive=request.keep_alive,
         deadman_enabled=request.deadman_enabled,
@@ -425,12 +431,23 @@ def _resolve_input(
     declaration: AssemblyInputDeclaration,
     *,
     context: AssemblyContext,
-) -> ImmutableInputIdentity:
+) -> ResolvedAssemblyInput:
     if context.input_resolver is None:
-        raise ValueError(
-            f"input declaration {declaration.role!r} requires AssemblyContext.input_resolver"
-        )
-    return context.input_resolver(declaration)
+        resolved = ResolvedAssemblyInput.model_validate_json(
+            Path(declaration.locator).read_text(encoding="utf-8"))
+    else:
+        resolved = context.input_resolver(declaration)
+    identity = resolved.identity
+    if identity.role != declaration.role:
+        raise ValueError("resolved input role does not match its declaration")
+    if identity.kind != declaration.kind:
+        raise ValueError("resolved input kind does not match its declaration")
+    if (
+        identity.schema_id != declaration.schema_id
+        or identity.schema_version != declaration.schema_version
+    ):
+        raise ValueError("resolved input schema identity does not match its declaration")
+    return resolved
 
 
 def _schema_ref(payload: Mapping[str, Any], artifact: Any) -> SchemaArtifactRef:

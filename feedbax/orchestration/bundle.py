@@ -11,8 +11,10 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.manifest import ArtifactMigrationRecord, ParentRef, StrictModel
 from feedbax.contracts.run_matrix import TrainingRowProvenance
+from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.contracts.spec_storage import (
     canonicalize_immutable_input_identities,
     training_run_execution_hash,
@@ -25,11 +27,27 @@ RUN_BUNDLE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_bundle.v1"
 RUN_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_bundle.v2"
 RUN_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_bundle.v3"
 RUN_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_bundle.v4"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v5"
+RUN_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_bundle.v5"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v6"
+DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
+DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1 = "feedbax.spec.execution_identity_envelope.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = "feedbax.spec.execution_identity_envelope.v2"
 ROW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID = "feedbax.archive.training_checkpoint_custody"
+CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION = (
+    "feedbax.archive.training_checkpoint_custody.v1"
+)
+CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE = (
+    "application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip"
+)
+CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_ID = (
+    "feedbax.materializer.training_checkpoint_custody_archive"
+)
+CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_VERSION = (
+    "feedbax.materializer.training_checkpoint_custody_archive.v1"
+)
 
 
 def mint_run_set_id(now: datetime | None = None) -> str:
@@ -242,6 +260,48 @@ class EnvironmentDeclaration(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class DeploymentResourceRequest(StrictModel):
+    """Requested resources, distinct from provider-realized resource facts."""
+
+    gpu_id: str | None = Field(default=None, min_length=1)
+    regions: list[str] = Field(default_factory=list)
+
+    @field_validator("regions")
+    @classmethod
+    def _validate_regions(cls, value: list[str]) -> list[str]:
+        if any(not region.strip() for region in value):
+            raise ValueError("requested regions must be non-empty strings")
+        if len(value) != len(set(value)):
+            raise ValueError("requested regions must be unique and remain in preference order")
+        return value
+
+
+class DeploymentPolicy(StrictModel):
+    """Versioned requested launch venue, authorization, and resource policy."""
+
+    schema_id: Literal["feedbax.spec.deployment_policy"] = DEPLOYMENT_POLICY_SCHEMA_ID
+    schema_version: Literal["feedbax.spec.deployment_policy.v1"] = (
+        DEPLOYMENT_POLICY_SCHEMA_VERSION
+    )
+    driver: Literal["local", "worker-http", "runpod"]
+    venue: Literal["local", "remote"]
+    cloud_authorized: bool
+    review_required: bool
+    review_authorized: bool
+    resources: DeploymentResourceRequest = Field(default_factory=DeploymentResourceRequest)
+
+    @model_validator(mode="after")
+    def _validate_authority(self) -> "DeploymentPolicy":
+        expected_venue = "local" if self.driver == "local" else "remote"
+        if self.venue != expected_venue:
+            raise ValueError(
+                f"deployment driver {self.driver!r} requires venue={expected_venue!r}"
+            )
+        if self.driver == "runpod" and not self.cloud_authorized:
+            raise ValueError("runpod deployment requires explicit cloud_authorized=true")
+        return self
+
+
 class LaunchPolicy(StrictModel):
     """Row launch concurrency policy."""
 
@@ -257,34 +317,147 @@ class BudgetPolicy(StrictModel):
     max_spend_usd: float | None = Field(default=None, ge=0.0)
 
 
-class InputCustodyPin(StrictModel):
-    """Immutable input custody pin."""
+class ImmutableInputArtifactRef(StrictModel):
+    """Immutable provider artifact containing bytes staged for an input."""
 
-    role: str = Field(min_length=1)
-    checkpoint_transaction_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    sha256: str
+    size_bytes: int = Field(ge=0)
+    media_type: str = Field(min_length=1)
+    storage_backend: str = Field(min_length=1)
 
-    @field_validator("checkpoint_transaction_id")
+    @field_validator("sha256")
+    @classmethod
+    def _validate_sha256(cls, value: str) -> str:
+        validate_sha256(value, field_name="sha256")
+        return value
+
+    @field_validator("artifact_id")
     @classmethod
     def _reject_mutable_latest(cls, value: str) -> str:
         if "latest.json" in value:
-            raise ValueError(
-                "input custody pins must name checkpoint transactions, not latest.json"
-            )
+            raise ValueError("input artifacts must name immutable bytes, not latest.json")
         return value
+
+    @model_validator(mode="after")
+    def _bind_artifact_id_to_digest(self) -> "ImmutableInputArtifactRef":
+        if self.artifact_id != f"artifact://sha256/{self.sha256}":
+            raise ValueError("input artifact_id does not match its SHA-256 digest")
+        return self
+
+
+class InputFormatIdentity(StrictModel):
+    """Stable identity for the byte format consumed by an input materializer."""
+
+    format_id: str = Field(min_length=1)
+    format_version: str = Field(min_length=1)
+    media_type: str = Field(min_length=1)
+
+
+class CheckpointCustodyArchiveMaterializer(StrictModel):
+    """Authenticated materialization authority for a checkpoint-custody archive."""
+
+    kind: Literal["checkpoint-custody-archive"] = "checkpoint-custody-archive"
+    materializer_id: Literal[
+        "feedbax.materializer.training_checkpoint_custody_archive"
+    ] = CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_ID
+    materializer_version: Literal[
+        "feedbax.materializer.training_checkpoint_custody_archive.v1"
+    ] = CHECKPOINT_CUSTODY_ARCHIVE_MATERIALIZER_VERSION
+    expected_parent_ref: ParentRef
+    expected_transaction_root_sha256: str
+
+    @field_validator("expected_transaction_root_sha256")
+    @classmethod
+    def _validate_transaction_root(cls, value: str) -> str:
+        validate_sha256(value, field_name="expected_transaction_root_sha256")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_parent_ref(self) -> "CheckpointCustodyArchiveMaterializer":
+        ref = self.expected_parent_ref
+        if ref.kind != "TrainingCheckpointTransactionManifest":
+            raise ValueError("checkpoint archive ParentRef has the wrong kind")
+        if ref.role != "training_checkpoint_custody":
+            raise ValueError("checkpoint archive ParentRef has the wrong role")
+        if not ref.id:
+            raise ValueError("checkpoint archive ParentRef requires a transaction id")
+        if (
+            not ref.uri
+            or "latest.json" in ref.uri
+            or ref.uri.startswith("/")
+            or "://" in ref.uri
+            or "\\" in ref.uri
+            or any(part in {"", ".", ".."} for part in ref.uri.split("/"))
+        ):
+            raise ValueError("checkpoint archive ParentRef requires an immutable manifest uri")
+        digest = ref.metadata.get("manifest_sha256")
+        if not isinstance(digest, str):
+            raise ValueError("checkpoint archive ParentRef requires metadata.manifest_sha256")
+        validate_sha256(digest, field_name="expected_parent_ref.metadata.manifest_sha256")
+        return self
+
+
+class InputCustodySource(StrictModel):
+    """Driver-neutral authenticated source for one materialized execution input."""
+
+    target_role: str = Field(min_length=1)
+    provider: ImmutableArtifactBlobProviderSpec
+    provider_binding: str = Field(min_length=1)
+    artifact: ImmutableInputArtifactRef
+    format: InputFormatIdentity
+    materializer: CheckpointCustodyArchiveMaterializer
+
+    @model_validator(mode="after")
+    def _validate_checkpoint_archive_contract(self) -> "InputCustodySource":
+        validate_staged_binding_name(self.provider_binding)
+        if self.artifact.storage_backend != self.provider.config.storage_backend:
+            raise ValueError("input artifact storage_backend does not match its provider")
+        expected = (
+            CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID,
+            CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION,
+            CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+        )
+        observed = (
+            self.format.format_id,
+            self.format.format_version,
+            self.format.media_type,
+        )
+        if observed != expected:
+            raise ValueError("checkpoint custody source has an unsupported format identity")
+        if self.artifact.media_type != self.format.media_type:
+            raise ValueError("input artifact media_type does not match its format identity")
+        return self
+
+
+class ResolvedAssemblyInput(StrictModel):
+    """Canonical scientific identity paired with authenticated staging custody."""
+
+    identity: ImmutableInputIdentity
+    custody: InputCustodySource
+
+    @model_validator(mode="after")
+    def _bind_identity_to_custody(self) -> "ResolvedAssemblyInput":
+        if self.identity.role != self.custody.target_role:
+            raise ValueError("input identity role does not match custody target_role")
+        if self.identity.digest.value != self.custody.artifact.sha256:
+            raise ValueError("input identity digest does not match custody artifact bytes")
+        return self
 
 
 class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v5"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v6"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
-    driver: str = "local"
+    deployment_policy: DeploymentPolicy
+    migration_evidence: list[ArtifactMigrationRecord] = Field(default_factory=list)
     rows: list[RunRowSpec] = Field(min_length=1)
     environment: EnvironmentDeclaration
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
     budget: BudgetPolicy
-    input_custody_pins: list[InputCustodyPin] = Field(default_factory=list)
+    resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
     orchestration_root: str | None = None
     keep_alive: bool = False
     deadman_enabled: bool = False
@@ -298,6 +471,33 @@ class RunBundle(StrictModel):
             if row.row_id in seen:
                 raise ValueError(f"duplicate row_id: {row.row_id!r}")
             seen.add(row.row_id)
+        canonical_identities = canonicalize_immutable_input_identities(
+            [item.identity for item in self.resolved_inputs]
+        )
+        supplied_identities = [
+            item.identity.model_dump(mode="json", exclude_none=True)
+            for item in self.resolved_inputs
+        ]
+        if supplied_identities != canonical_identities:
+            raise ValueError("resolved_inputs must be in canonical immutable-input order")
+        target_roles = [item.custody.target_role for item in self.resolved_inputs]
+        if len(target_roles) != len(set(target_roles)):
+            raise ValueError("resolved_inputs contain duplicate custody target roles")
+        payload_filenames = {f"{row.row_id}.json" for row in self.rows}
+        collisions = sorted(set(target_roles) & payload_filenames)
+        if collisions:
+            raise ValueError(
+                "resolved input custody target roles collide with generated row payload "
+                f"filenames: {collisions!r}"
+            )
+        for row in self.rows:
+            row_identities = canonicalize_immutable_input_identities(
+                row.execution.immutable_inputs
+            )
+            if row_identities != canonical_identities:
+                raise ValueError(
+                    f"row {row.row_id!r} immutable inputs do not match resolved_inputs"
+                )
         return self
 
     @property

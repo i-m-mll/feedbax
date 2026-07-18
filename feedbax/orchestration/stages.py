@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 import time
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +35,9 @@ from feedbax.orchestration.conformance import (
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
 )
-from feedbax.orchestration.drivers.base import OrchestrationDriver
+from feedbax.orchestration.drivers.base import OrchestrationDriver, ProvisioningAttemptError
 from feedbax.orchestration.events import RunEventReader
+from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     PreflightCheckEntry,
@@ -47,6 +50,7 @@ from feedbax.orchestration.state import (
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
     TrainingDiagnostics,
 )
 from feedbax.training.interruption import CancellationDecision
@@ -110,6 +114,60 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _canonical_json_sha256(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _parse_observed_datetime(value: Any) -> datetime | None:
+    """Parse an already-recorded provider time without manufacturing a fallback."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _observed_spend_usd(
+    provision_record: Mapping[str, Any] | None,
+    *,
+    observed_at: datetime,
+) -> tuple[float, float, datetime]:
+    """Return accrued USD spend from observed provider billing facts."""
+    record = provision_record or {}
+    billing_started_at = _parse_observed_datetime(record.get("billing_started_at"))
+    hourly_rate = record.get("hourly_rate")
+    currency = record.get("currency")
+    missing: list[str] = []
+    if billing_started_at is None or billing_started_at > observed_at:
+        missing.append("billing_started_at")
+    if (
+        isinstance(hourly_rate, bool)
+        or not isinstance(hourly_rate, (int, float))
+        or not math.isfinite(float(hourly_rate))
+        or float(hourly_rate) < 0.0
+    ):
+        missing.append("hourly_rate")
+    if currency != "USD":
+        missing.append("currency=USD")
+    if missing:
+        raise BudgetExceeded(
+            "capped remote execution requires usable observed provider billing evidence: "
+            + ", ".join(missing)
+        )
+    assert billing_started_at is not None
+    rate = float(hourly_rate)
+    elapsed_hours = (observed_at - billing_started_at).total_seconds() / 3600.0
+    return rate * elapsed_hours, rate, billing_started_at
+
+
 class OrchestrationStageError(RuntimeError):
     """Raised when a run-set stage fails."""
 
@@ -120,6 +178,14 @@ class PreflightFailed(OrchestrationStageError):
 
 class BudgetExceeded(OrchestrationStageError):
     """Raised when a run-set budget guard aborts monitoring."""
+
+
+class _PrimaryExecutorFailure(OrchestrationStageError):
+    """Carry terminal executor failure plus secondary collection evidence."""
+
+    def __init__(self, message: str, *, stage_outputs: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.stage_outputs = dict(stage_outputs)
 
 
 class StageEngine:
@@ -176,6 +242,7 @@ class StageEngine:
             row_id: RowConformanceRuntimeInputs.model_validate(inputs)
             for row_id, inputs in (row_conformance_inputs or {}).items()
         }
+        self._poll_interval_explicit = poll_interval_seconds is not None
         self.poll_interval_seconds = (
             float(getattr(driver, "poll_interval_seconds", 0.05))
             if poll_interval_seconds is None
@@ -269,12 +336,16 @@ class StageEngine:
             except Exception as exc:
                 if self.store.path.exists():
                     state = self.store.load()
-                failed = state.stage(stage_id).model_copy(
-                    update={"status": "failed", "error": str(exc)}
-                )
+                failed_update: dict[str, Any] = {"status": "failed", "error": str(exc)}
+                if isinstance(exc, _PrimaryExecutorFailure):
+                    failed_update["outputs"] = exc.stage_outputs
+                failed = state.stage(stage_id).model_copy(update=failed_update)
                 state = state.with_stage(stage_id, failed)
                 self.store.save(state)
-                if attempts >= limit:
+                governed_provision = stage_id == STAGE_PROVISION and bool(
+                    getattr(self.driver, "govern_provisioning_retries", False)
+                )
+                if isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded)) or governed_provision or attempts >= limit:
                     raise
                 continue
             completed = state.stage(stage_id).model_copy(
@@ -303,6 +374,10 @@ class StageEngine:
             )
             assert self.driver_factory is not None
             self.driver = self.driver_factory(self.bundle)
+            if not self._poll_interval_explicit:
+                self.poll_interval_seconds = float(
+                    getattr(self.driver, "poll_interval_seconds", 0.05)
+                )
             state = state.model_copy(
                 update={
                     "rows": {row.row_id: RowState() for row in self.bundle.rows},
@@ -364,6 +439,14 @@ class StageEngine:
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)
+        stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
+        state = state.with_stage(STAGE_PREFLIGHT, stage)
+        self.store.save(state)
+        failed = [check for check in checks if check.status == "fail"]
+        if failed:
+            raise PreflightFailed(
+                f"preflight failed: {', '.join(check.name for check in failed)}"
+            )
         driver_preflight = getattr(self.driver, "preflight_checks", None)
         if callable(driver_preflight):
             checks.extend(driver_preflight(self.bundle))
@@ -377,11 +460,131 @@ class StageEngine:
         return state, {"checks": [check.model_dump(mode="json") for check in checks]}
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        outputs = dict(self.driver.provision(self.bundle, state))
-        state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
-        return state, outputs
+        """Provision RunPod through one durable, budget-governed retry authority."""
+        if not getattr(self.driver, "govern_provisioning_retries", False):
+            outputs = dict(self.driver.provision(self.bundle, state))
+            state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
+            return state, outputs
+
+        counters = dict(state.budget_counters)
+        started_at = float(counters.setdefault("provisioning_started_at", self._wall_time()))
+        deadline = float(counters.setdefault(
+            "provisioning_deadline_at", started_at + self.bundle.budget.max_wall_clock_seconds
+        ))
+        state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+        self.store.save(state)
+        attempts = list(state.provisioning_attempts)
+        while True:
+            decision = self._interruption_probe() if self._interruption_probe is not None else None
+            if decision is not None and decision.action != "continue":
+                self._stop_provisioning(state, attempts, "cancelled", decision.as_provenance())
+                raise BudgetExceeded("provisioning cancelled by operator")
+            now = self._wall_time()
+            if now >= deadline:
+                self._stop_provisioning(state, attempts, "wall-clock-exceeded")
+                raise BudgetExceeded("provisioning exceeded its wall-clock boundary")
+            try:
+                outputs = dict(self.driver.provision(self.bundle, state))
+            except ProvisioningAttemptError as exc:
+                finished_at = self._wall_time()
+                attempt = {
+                    **exc.attempt_record,
+                    "attempt": len(attempts) + 1,
+                    "started_at_unix_seconds": now,
+                    "finished_at_unix_seconds": finished_at,
+                    "error": str(exc),
+                    "retryable": exc.retryable,
+                }
+                attempts.append(attempt)
+                state = state.model_copy(
+                    update={"provisioning_attempts": attempts, "updated_at": utc_now()}
+                )
+                if exc.stop_reason is not None:
+                    self._stop_provisioning(state, attempts, exc.stop_reason)
+                    raise OrchestrationStageError(f"provisioning stopped: {exc.stop_reason}") from exc
+                cleanup = attempt.get("cleanup")
+                absence = cleanup.get("pod_absence") if isinstance(cleanup, Mapping) else None
+                if attempt.get("acquired") and not (
+                    isinstance(absence, Mapping) and absence.get("verified") is True
+                ):
+                    self._stop_provisioning(state, attempts, "cleanup-proof-unavailable")
+                    raise OrchestrationStageError(
+                        "provisioning stopped: cleanup-proof-unavailable"
+                    ) from exc
+                state, exceeded = self._apply_failed_provision_cost(state, attempt)
+                self.store.save(state)
+                if exceeded:
+                    reason = state.provisioning_stop_reason or "spend-exceeded"
+                    self._stop_provisioning(state, attempts, reason)
+                    raise BudgetExceeded(f"provisioning stopped: {reason}") from exc
+                if not exc.retryable:
+                    self._stop_provisioning(state, attempts, "non-retryable-error")
+                    raise OrchestrationStageError("provisioning stopped: non-retryable-error") from exc
+                if self._wall_time() >= deadline:
+                    self._stop_provisioning(state, attempts, "wall-clock-exceeded")
+                    raise BudgetExceeded("provisioning exceeded its wall-clock boundary") from exc
+                delay = float(getattr(self.driver, "provision_retry_delay_seconds", 0.0))
+                if delay <= 0.0:
+                    self._stop_provisioning(state, attempts, "invalid-retry-delay")
+                    raise OrchestrationStageError("RunPod provisioning retry delay must be positive")
+                self._sleep(min(delay, max(0.0, deadline - self._wall_time())))
+                continue
+            outputs["provisioning_attempts"] = attempts
+            state = state.model_copy(
+                update={"provision_record": outputs, "provisioning_attempts": attempts, "updated_at": utc_now()}
+            )
+            return state, outputs
+
+    def _stop_provisioning(
+        self,
+        state: RunSetState,
+        attempts: list[dict[str, Any]],
+        reason: str,
+        cancellation: Mapping[str, Any] | None = None,
+    ) -> RunSetState:
+        counters = dict(state.budget_counters)
+        counters["provisioning_stop_reason"] = reason
+        if cancellation is not None:
+            counters["provisioning_cancellation"] = dict(cancellation)
+        state = state.model_copy(
+            update={
+                "provisioning_attempts": attempts,
+                "provisioning_stop_reason": reason,
+                "budget_counters": counters,
+                "abort_reason": reason,
+                "updated_at": utc_now(),
+            }
+        )
+        self.store.save(state)
+        return state
+
+    def _apply_failed_provision_cost(
+        self, state: RunSetState, attempt: Mapping[str, Any]
+    ) -> tuple[RunSetState, bool]:
+        """Account for a torn-down acquired attempt before permitting another one."""
+        if not attempt.get("acquired") or self.bundle.budget.max_spend_usd is None:
+            return state, False
+        observed_at = datetime.fromtimestamp(
+            float(attempt["finished_at_unix_seconds"]), tz=timezone.utc
+        )
+        try:
+            cost, _rate, _started = _observed_spend_usd(attempt, observed_at=observed_at)
+        except BudgetExceeded:
+            return self._stop_provisioning(
+                state, list(state.provisioning_attempts), "budget-evidence-unavailable"
+            ), True
+        counters = dict(state.budget_counters)
+        total = float(counters.get("failed_provision_cost_usd", 0.0)) + cost
+        counters["failed_provision_cost_usd"] = total
+        counters["max_spend_usd"] = self.bundle.budget.max_spend_usd
+        state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+        return state, total >= self.bundle.budget.max_spend_usd
 
     def _stage_realize_env(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        state, spend_exceeded = self._apply_spend_budget(state)
+        self.store.save(state)
+        if spend_exceeded:
+            raise BudgetExceeded("max_spend_usd reached before REALIZE_ENV")
         fingerprint = self.driver.realize_env(self.bundle, state)
         state = state.model_copy(
             update={"environment_fingerprint": fingerprint, "updated_at": utc_now()}
@@ -392,6 +595,10 @@ class StageEngine:
         return state, dict(self.driver.stage_inputs(self.bundle, state))
 
     def _stage_launch(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
+        state, spend_exceeded = self._apply_spend_budget(state)
+        self.store.save(state)
+        if spend_exceeded:
+            raise BudgetExceeded("max_spend_usd reached before LAUNCH")
         launched: list[str] = []
         for row in self._launchable_rows(state):
             state = self._launch_one(row, state)
@@ -409,11 +616,22 @@ class StageEngine:
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         self.store.save(state)
         budget_exceeded = False
+        spend_exceeded = False
         while True:
+            state, spend_exceeded = self._apply_spend_budget(state)
+            if spend_exceeded:
+                budget_exceeded = True
+                state = self._stop_unfinished(state, reason="budget-exceeded")
+                break
             decision = self._interruption_probe() if self._interruption_probe is not None else None
             if decision is not None and decision.action != "continue":
                 state = self._apply_interruption(state, decision)
             state = self._refresh_rows(state)
+            state, spend_exceeded = self._apply_spend_budget(state)
+            if spend_exceeded:
+                budget_exceeded = True
+                state = self._stop_unfinished(state, reason="budget-exceeded")
+                break
             if self._all_terminal(state):
                 break
             if self._wall_time() - started_at > self.bundle.budget.max_wall_clock_seconds:
@@ -430,7 +648,7 @@ class StageEngine:
         counters = dict(state.budget_counters)
         counters["wall_clock_seconds"] = max(0.0, self._wall_time() - started_at)
         if budget_exceeded:
-            counters["budget_exceeded"] = "wall-clock"
+            counters["budget_exceeded"] = "spend" if spend_exceeded else "wall-clock"
             state = state.model_copy(
                 update={
                     "budget_counters": counters,
@@ -442,39 +660,154 @@ class StageEngine:
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         return state, counters
 
+    def _apply_spend_budget(self, state: RunSetState) -> tuple[RunSetState, bool]:
+        """Record and enforce capped spend using only observed provider facts."""
+        max_spend_usd = self.bundle.budget.max_spend_usd
+        if self.bundle.deployment_policy.venue == "local" or max_spend_usd is None:
+            return state, False
+        observed_at = datetime.fromtimestamp(self._wall_time(), tz=timezone.utc)
+        counters = dict(state.budget_counters)
+        try:
+            current_cost_usd, hourly_rate_usd, billing_started_at = _observed_spend_usd(
+                state.provision_record,
+                observed_at=observed_at,
+            )
+        except OrchestrationStageError:
+            counters.update(
+                {
+                    "max_spend_usd": max_spend_usd,
+                    "budget_exceeded": "spend-evidence-unavailable",
+                }
+            )
+            unavailable = state.model_copy(
+                update={
+                    "budget_counters": counters,
+                    "abort_reason": "budget-evidence-unavailable",
+                    "updated_at": utc_now(),
+                }
+            )
+            self.store.save(unavailable)
+            raise
+        failed_provision_cost_usd = float(counters.get("failed_provision_cost_usd", 0.0))
+        accrued_cost_usd = failed_provision_cost_usd + current_cost_usd
+        counters.update(
+            {
+                "billing_started_at": billing_started_at.isoformat(),
+                "hourly_rate_usd": hourly_rate_usd,
+                "accrued_cost_usd": accrued_cost_usd,
+                "current_provision_cost_usd": current_cost_usd,
+                "failed_provision_cost_usd": failed_provision_cost_usd,
+                "max_spend_usd": max_spend_usd,
+            }
+        )
+        exceeded = accrued_cost_usd >= max_spend_usd
+        if exceeded:
+            counters["budget_exceeded"] = "spend"
+        state = state.model_copy(
+            update={
+                "budget_counters": counters,
+                "abort_reason": "budget-exceeded" if exceeded else state.abort_reason,
+                "updated_at": utc_now(),
+            }
+        )
+        return state, exceeded
+
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected: dict[str, Mapping[str, str]] = {}
+        executor_failures = [
+            {
+                "row_id": row.row_id,
+                "error": state.rows[row.row_id].error
+                or "executor reported failure without detail",
+            }
+            for row in self.bundle.rows
+            if state.rows[row.row_id].status == "failed"
+        ]
+        preserve_executor_failure = bool(executor_failures)
+        secondary_evidence: list[dict[str, Any]] = []
         for row in self.bundle.rows:
-            outputs = dict(self.driver.collect(self.bundle, row, state))
+            row_state = state.rows[row.row_id]
+            try:
+                outputs = dict(self.driver.collect(self.bundle, row, state))
+            except Exception as exc:
+                if not preserve_executor_failure:
+                    raise
+                outputs = {}
+                secondary_evidence.append(
+                    {
+                        "kind": "collection_error_after_executor_failure",
+                        "row_id": row.row_id,
+                        "detail": str(exc),
+                    }
+                )
+            missing_outputs = _missing_declared_collection_outputs(row, outputs)
+            if missing_outputs and preserve_executor_failure:
+                secondary_evidence.append(
+                    {
+                        "kind": "absent_collection_outputs",
+                        "row_id": row.row_id,
+                        "missing_outputs": missing_outputs,
+                    }
+                )
             collected[row.row_id] = outputs
-            row_state = state.rows[row.row_id].model_copy(update={"collected_outputs": outputs})
+            row_state = row_state.model_copy(update={"collected_outputs": outputs})
             state = state.with_row(row.row_id, row_state)
-        return state, {"rows": collected}
+            self.store.save(state)
+        stage_outputs: dict[str, Any] = {"rows": collected}
+        if secondary_evidence:
+            stage_outputs["secondary_evidence"] = secondary_evidence
+        if executor_failures:
+            stage_outputs["executor_failures"] = executor_failures
+            primary = executor_failures[0]
+            raise _PrimaryExecutorFailure(
+                f"executor failed for row {primary['row_id']!r}: {primary['error']}",
+                stage_outputs=stage_outputs,
+            )
+        return state, stage_outputs
 
     def _stage_certify(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         if len(self.conformance_registry) == 0:
             raise OrchestrationStageError(
                 "CERTIFY requires at least one registered conformance check"
             )
-        rows = [self._conformance_artifacts(row, state) for row in self.bundle.rows]
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS)
+        if stage_inputs.status != "completed":
+            raise OrchestrationStageError("CERTIFY requires completed STAGE_INPUTS authority")
+        stage_inputs_sha256 = _canonical_json_sha256(stage_inputs.outputs)
+        observed_at = utc_now()
+        rows = [
+            self._conformance_artifacts(row, state, observed_at=observed_at)
+            for row in self.bundle.rows
+        ]
         certificate = write_conformance_certificate(
             run_set_dir=self.bundle.run_set_dir,
             run_set_id=self.bundle.run_set_id,
             rows=rows,
             registry=self.conformance_registry,
+            declared_inapplicable=self.bundle.metadata.get("conformance_inapplicable"),
+            generated_at=observed_at,
         )
         certificate_path = self.bundle.run_set_dir / "conformance.json"
+        certificate_sha256 = hashlib.sha256(certificate_path.read_bytes()).hexdigest()
         state = state.model_copy(
             update={"certificate_ref": str(certificate_path), "updated_at": utc_now()}
         )
-        return state, {"certificate_ref": str(certificate_path), "overall": certificate.overall}
+        return state, {
+            "certificate_ref": str(certificate_path),
+            "certificate_sha256": certificate_sha256,
+            "stage_inputs_sha256": stage_inputs_sha256,
+            "overall": certificate.overall,
+        }
 
     def _conformance_artifacts(
         self,
         row: RunRowSpec,
         state: RunSetState,
+        *,
+        observed_at: datetime | None = None,
     ) -> ConformanceRowArtifacts:
         """Assemble all check inputs from one row's collected bundle outputs."""
+        observed_at = observed_at or utc_now()
         outputs = state.rows[row.row_id].collected_outputs
         discovered = _discover_conformance_artifacts(outputs)
         run_spec = _row_payload(row)
@@ -512,7 +845,155 @@ class StageEngine:
             preflight_normalized_payload=preflight_payload,
             row_state=state.rows.get(row.row_id),
             runtime_inputs=self.row_conformance_inputs.get(row.row_id),
+            deployment_policy=self.bundle.deployment_policy.model_dump(mode="json"),
+            realized_deployment_evidence=self._realized_deployment_evidence(
+                row, state, observed_at=observed_at
+            ),
         )
+
+    def _realized_deployment_evidence(
+        self,
+        row: RunRowSpec,
+        state: RunSetState,
+        *,
+        observed_at: datetime,
+    ) -> dict[str, Any]:
+        """Project only state already observed before CERTIFY into raw evidence."""
+        provision_stage = state.stage(STAGE_PROVISION)
+        if (
+            provision_stage.status != "completed"
+            or state.provision_record is None
+            or dict(provision_stage.outputs) != dict(state.provision_record)
+        ):
+            raise OrchestrationStageError(
+                "CERTIFY requires provision_record to exactly match completed PROVISION outputs"
+            )
+        realize_env_stage = state.stage(STAGE_REALIZE_ENV)
+        recorded_fingerprint = realize_env_stage.outputs.get("environment_fingerprint")
+        if (
+            realize_env_stage.status != "completed"
+            or not isinstance(recorded_fingerprint, str)
+            or recorded_fingerprint != state.environment_fingerprint
+        ):
+            raise OrchestrationStageError(
+                "CERTIFY requires environment_fingerprint to exactly match completed "
+                "REALIZE_ENV outputs"
+            )
+        provision = dict(state.provision_record or {})
+        row_state = state.rows[row.row_id]
+        venue = self.bundle.deployment_policy.venue
+        unavailable: dict[str, str] = {}
+
+        def absent(field_name: str, reason: str) -> None:
+            unavailable[field_name] = reason
+
+        started_at = row_state.started_at
+        completed_at = row_state.completed_at
+        wall_time = None
+        if started_at is not None and completed_at is not None:
+            wall_time = (completed_at - started_at).total_seconds()
+        else:
+            for name, value in (
+                ("row_started_at", started_at),
+                ("row_completed_at", completed_at),
+                ("wall_time_seconds", wall_time),
+            ):
+                if value is None:
+                    absent(name, "row state did not record this timing fact")
+
+        provisioned_at = state.stage(STAGE_PROVISION).completed_at
+        if provisioned_at is None:
+            absent("provisioned_at", "PROVISION did not record a completion time")
+        fingerprint = state.environment_fingerprint
+        if fingerprint is None:
+            absent("environment_fingerprint", "REALIZE_ENV did not record a fingerprint")
+
+        evidence: dict[str, Any] = {
+            "driver": provision.get("driver"),
+            "venue": venue,
+            "provider": provision.get("provider"),
+            "gpu_model": None,
+            "gpu_count": None,
+            "region": provision.get("region"),
+            "immutable_image_id": provision.get("immutable_image_id"),
+            "environment_fingerprint": fingerprint,
+            "provisioned_at": provisioned_at,
+            "billing_started_at": provision.get("billing_started_at"),
+            "row_started_at": started_at,
+            "row_completed_at": completed_at,
+            "observed_at": observed_at,
+            "wall_time_seconds": wall_time,
+            "hourly_rate": provision.get("hourly_rate"),
+            "accrued_cost": None,
+            "currency": provision.get("currency"),
+            "cost_basis": "local-not-billable" if venue == "local" else (
+                "billing-start-to-certify-observation"
+            ),
+            "observation_basis": {
+                "provider": provision.get(
+                    "provider_observation_basis", "durable orchestration provision record"
+                ),
+                "environment": "validated REALIZE_ENV fingerprint preserved exactly",
+                "timing": "durable PROVISION stage and row-state timestamps",
+                "cost": (
+                    "local route is non-billable"
+                    if venue == "local"
+                    else "provider billing start and observed hourly rate through CERTIFY"
+                ),
+            },
+            "provider_observations": {
+                "hourly_rate_raw": provision.get("hourly_rate_raw"),
+                "immutable_image_id_raw": provision.get("immutable_image_id"),
+                "billing_started_at_raw": provision.get("billing_started_at"),
+                "region_raw": provision.get("region"),
+            },
+            "unavailable": unavailable,
+        }
+        if venue == "local":
+            evidence.update(
+                {
+                    "provider": "local",
+                    "hourly_rate": 0.0,
+                    "accrued_cost": 0.0,
+                    "currency": "USD",
+                }
+            )
+            for name in ("gpu_model", "gpu_count", "region", "immutable_image_id"):
+                absent(name, "not applicable to the local deployment route")
+            absent("billing_started_at", "not applicable to the non-billable local route")
+            return evidence
+
+        try:
+            realized = json.loads(fingerprint or "")
+            runtime = realized.get("runtime", {})
+            evidence["gpu_model"] = runtime.get("device_kind")
+            evidence["gpu_count"] = runtime.get("device_count")
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        for name in ("provider", "gpu_model", "gpu_count", "region", "immutable_image_id"):
+            if evidence[name] is None:
+                absent(name, "remote observations did not prove this fact")
+        billing_started = _parse_observed_datetime(evidence["billing_started_at"])
+        hourly_rate = evidence["hourly_rate"]
+        if evidence["billing_started_at"] is None:
+            absent("billing_started_at", "provider response lacked billing start time")
+        if hourly_rate is None:
+            absent("hourly_rate", "provider response lacked an observed hourly rate")
+        if evidence["currency"] is None:
+            absent("currency", "provider response lacked rate currency")
+        if (
+            billing_started is not None
+            and billing_started <= observed_at
+            and isinstance(hourly_rate, (int, float))
+        ):
+            elapsed_hours = (observed_at - billing_started).total_seconds() / 3600.0
+            evidence["accrued_cost"] = float(hourly_rate) * elapsed_hours
+        else:
+            absent(
+                "accrued_cost",
+                "valid non-future billing start and hourly rate are required for observation",
+            )
+        return evidence
 
     def _execution_identity_adapter(self) -> Any:
         if self.request is None or self.assembly_registry is None:
@@ -520,18 +1001,64 @@ class StageEngine:
         return self.assembly_registry.resolve(self.request).identity_adapter
 
     def _stage_teardown(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        return self._run_teardown(state, abort=False), {}
+        state = self._run_teardown(state, abort=False)
+        return state, state.stage(STAGE_TEARDOWN).outputs
 
     def _stage_register(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         if len(self.conformance_registry) == 0:
             raise OrchestrationStageError(
                 "REGISTER requires at least one registered conformance check"
             )
-        certificate_path = Path(state.certificate_ref or "")
+        if state.run_set_id != self.bundle.run_set_id:
+            raise OrchestrationStageError(
+                "REGISTER state run_set_id does not match the assembled bundle"
+            )
+        final_pod_inventory: Mapping[str, Any] | None = None
+        if self.bundle.deployment_policy.driver == "runpod":
+            final_pod_inventory = self._require_globally_empty_runpod_inventory(state)
+        certify_stage = state.stage(STAGE_CERTIFY)
+        certified_ref = certify_stage.outputs.get("certificate_ref")
+        if (
+            certify_stage.status != "completed"
+            or not isinstance(certified_ref, str)
+            or state.certificate_ref != certified_ref
+        ):
+            raise OrchestrationStageError(
+                "REGISTER certificate_ref does not match the completed CERTIFY stage"
+            )
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS)
+        certified_stage_inputs_digest = certify_stage.outputs.get("stage_inputs_sha256")
+        if stage_inputs.status != "completed":
+            raise OrchestrationStageError("REGISTER requires completed STAGE_INPUTS authority")
+        stage_inputs_digest = _canonical_json_sha256(stage_inputs.outputs)
+        if (
+            not isinstance(certified_stage_inputs_digest, str)
+            or certified_stage_inputs_digest != stage_inputs_digest
+        ):
+            raise OrchestrationStageError(
+                "REGISTER STAGE_INPUTS digest does not match the completed CERTIFY stage"
+            )
+        certificate_path = Path(certified_ref)
         certificate_bytes = certificate_path.read_bytes()
+        certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+        certified_digest = state.stage(STAGE_CERTIFY).outputs.get("certificate_sha256")
+        if not isinstance(certified_digest, str) or certified_digest != certificate_digest:
+            raise OrchestrationStageError(
+                "REGISTER certificate digest does not match the completed CERTIFY stage"
+            )
         certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
         certificate = RunConformanceCertificate.model_validate(certificate_payload)
-        certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+        if certificate.run_set_id != self.bundle.run_set_id:
+            raise OrchestrationStageError(
+                "REGISTER certificate run_set_id does not match the assembled bundle"
+            )
+        bundle_row_ids = {row.row_id for row in self.bundle.rows}
+        state_row_ids = set(state.rows)
+        certificate_row_ids = set(certificate.rows)
+        if bundle_row_ids != state_row_ids or bundle_row_ids != certificate_row_ids:
+            raise OrchestrationStageError(
+                "REGISTER requires exact bundle, state, and certificate row-ID equality"
+            )
         row_statuses = {row_id: row.status for row_id, row in sorted(state.rows.items())}
         row_status_set = set(row_statuses.values())
         if certificate.overall == "fail":
@@ -550,8 +1077,11 @@ class StageEngine:
             "abort_reason": state.abort_reason,
             "certificate_ref": str(certificate_path),
             "certificate_sha256": certificate_digest,
+            "stage_inputs_sha256": stage_inputs_digest,
             "certificate_overall": certificate.overall,
         }
+        if final_pod_inventory is not None:
+            payload["final_pod_inventory"] = dict(final_pod_inventory)
         if status == "failed":
             payload["failure_reason"] = "conformance-failed"
         elif status in {"stopped", "mixed"}:
@@ -572,6 +1102,35 @@ class StageEngine:
         self.store.save(state)
         assert_certificate_allows_completed_registration(certificate_payload)
         return state, payload
+
+    @staticmethod
+    def _require_globally_empty_runpod_inventory(
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Require verified provider-wide RunPod absence before registration."""
+        teardown = state.stage(STAGE_TEARDOWN)
+        inventory = teardown.outputs.get("final_pod_inventory")
+        valid = (
+            teardown.status == "completed"
+            and isinstance(inventory, Mapping)
+            and inventory.get("scope") == "provider-account"
+            and inventory.get("verified") is True
+            and inventory.get("observation_basis")
+            == "runpodctl pod list --output json"
+            and inventory.get("outcome") == "empty"
+            and type(inventory.get("pod_count")) is int
+            and inventory.get("pod_count") == 0
+            and type(inventory.get("pod_ids")) is list
+            and inventory.get("pod_ids") == []
+            and _parse_observed_datetime(inventory.get("observed_at")) is not None
+        )
+        if not valid:
+            raise OrchestrationStageError(
+                "REGISTER requires TEARDOWN evidence proving a globally empty "
+                "RunPod provider inventory"
+            )
+        assert isinstance(inventory, Mapping)
+        return inventory
 
     def _write_or_verify_registration(
         self,
@@ -616,15 +1175,20 @@ class StageEngine:
         stage = state.stage(STAGE_TEARDOWN)
         if stage.status == "completed":
             return state
+        failure_log_collection: dict[str, Any] | None = None
         if abort:
             collect_failure_logs = getattr(self.driver, "collect_failure_logs", None)
             if collect_failure_logs is not None:
                 try:
-                    collect_failure_logs(self.bundle, state)
-                except Exception:
+                    diagnostic_outputs = dict(collect_failure_logs(self.bundle, state))
+                    failure_log_collection = {
+                        "status": "completed",
+                        "outputs": diagnostic_outputs,
+                    }
+                except Exception as exc:
                     # Failure diagnostics are best-effort and must never mask
                     # the error that caused abort teardown.
-                    pass
+                    failure_log_collection = {"status": "failed", "error": str(exc)}
         try:
             outputs = dict(self.driver.teardown(self.bundle, state))
             status = "completed"
@@ -633,13 +1197,16 @@ class StageEngine:
             outputs = {}
             status = "failed"
             error = str(exc)
+        teardown_outputs: dict[str, Any] = {**outputs, "abort_path": abort}
+        if failure_log_collection is not None:
+            teardown_outputs["failure_log_collection"] = failure_log_collection
         updated = stage.model_copy(
             update={
                 "status": status,
                 "attempts": stage.attempts + 1,
                 "started_at": stage.started_at or utc_now(),
                 "completed_at": utc_now(),
-                "outputs": {**outputs, "abort_path": abort},
+                "outputs": teardown_outputs,
                 "error": error,
             }
         )
@@ -838,6 +1405,14 @@ class StageEngine:
         return all(row.status in ("completed", "failed", "stopped") for row in state.rows.values())
 
 
+def _missing_declared_collection_outputs(
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+) -> list[str]:
+    expected = {Path(source).name for source in row.launch.collect}
+    return sorted(expected - set(collected))
+
+
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     checks: list[PreflightCheckEntry] = []
@@ -847,18 +1422,33 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     checks.append(
         _check(
             "driver-preconditions",
-            bundle.driver in {"local", "worker-http", "runpod"},
-            observed=bundle.driver,
+            bundle.deployment_policy.driver in {"local", "worker-http", "runpod"},
+            observed=bundle.deployment_policy.driver,
         )
     )
     env_complete = bool(bundle.environment.python_version)
     checks.append(
         _check("environment-declaration", env_complete, observed=bundle.environment.python_version)
     )
-    mutable_pin = any(
-        "latest.json" in pin.checkpoint_transaction_id for pin in bundle.input_custody_pins
+    input_failures, input_observed = preflight_resolved_inputs(bundle)
+    checks.append(
+        _check(
+            "input-custody-authority",
+            not input_failures,
+            detail="; ".join(input_failures) if input_failures else None,
+            observed=input_observed or "no-resolved-inputs",
+        )
     )
-    checks.append(_check("custody-pins", not mutable_pin))
+
+    policy_failures, policy_observed = _preflight_deployment_policy(bundle)
+    checks.append(
+        _check(
+            "deployment-policy",
+            not policy_failures,
+            detail="; ".join(policy_failures) if policy_failures else None,
+            observed=policy_observed,
+        )
+    )
 
     manifest_failures: list[str] = []
     normalized: dict[str, Any] = {}
@@ -891,6 +1481,25 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
         )
     )
     return checks
+
+
+def _preflight_deployment_policy(
+    bundle: RunBundle,
+) -> tuple[list[str], dict[str, Any]]:
+    """Validate only the orchestration-owned deployment policy."""
+    policy = bundle.deployment_policy
+    failures: list[str] = []
+    expected_venue = "local" if policy.driver == "local" else "remote"
+    if policy.venue != expected_venue:
+        failures.append(
+            f"driver {policy.driver!r} requires venue={expected_venue!r}, "
+            f"observed {policy.venue!r}"
+        )
+    if policy.driver == "runpod" and not policy.cloud_authorized:
+        failures.append("runpod deployment requires explicit cloud authorization")
+    if policy.review_required and not policy.review_authorized:
+        failures.append("required deployment review has not been explicitly authorized")
+    return failures, policy.model_dump(mode="json")
 
 
 def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
@@ -973,6 +1582,15 @@ def _evaluate_optimizer_schedule_at_preflight(
         )
         optimizer.init({"preflight": 0.0})
         return {"optimizer_index": optimizer_index, "scheduled": False, "points": 0}
+    if optimizer_spec.lr_schedule.kind == "constant":
+        optimizer = build_optimizer(
+            optimizer_spec,
+            schedule_origin_step=0,
+            current_step=0,
+            optimizer_count_at_current_step=0,
+        )
+        optimizer.init({"preflight": 0.0})
+        return {"optimizer_index": optimizer_index, "scheduled": True, "points": 1}
 
     expected_context = schedule_eval.require_schedule_context(
         schedule_eval.extract_resume_context(run_spec),
@@ -1014,6 +1632,7 @@ def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         _path(run_spec, "training", "optimizer"),
         _path(run_spec, "training_config", "optimizer"),
         _path(run_spec, "method_payload", "payload", "optimizer"),
+        _path(run_spec, "method_payload", "payload", "training", "optimizer"),
         _path(run_spec, "method_payload", "payload", "controller_optimizer"),
         _path(run_spec, "method_payload", "inline", "payload", "optimizer"),
         _path(run_spec, "method_payload", "inline", "payload", "controller_optimizer"),
@@ -1101,7 +1720,8 @@ def _is_typed_training_diagnostics(payload: Mapping[str, Any]) -> bool:
     if (
         payload.get("kind") != "TrainingDiagnostics"
         or payload.get("schema_id") != TRAINING_DIAGNOSTICS_SCHEMA_ID
-        or payload.get("schema_version") != TRAINING_DIAGNOSTICS_SCHEMA_VERSION
+        or payload.get("schema_version")
+        not in {TRAINING_DIAGNOSTICS_SCHEMA_VERSION, TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3}
     ):
         return False
     try:

@@ -7,7 +7,6 @@ from feedbax.orchestration.drivers.local import (
     compute_environment_fingerprint,
 )
 from feedbax.orchestration.drivers.runpod import (
-    BaselineEntry,
     CommandResult,
     EndpointClassification,
     PodStateClassification,
@@ -20,14 +19,15 @@ from feedbax.orchestration.drivers.runpod import (
     endpoint_classification,
     rank_datacenters_for_gpu,
 )
+from feedbax.orchestration.input_materialization import InputProviderRootBinding
 
 __all__ = [
-    "BaselineEntry",
     "CommandResult",
     "DriverRowProbe",
     "EndpointClassification",
     "LocalDriverError",
     "LocalOrchestrationDriver",
+    "InputProviderRootBinding",
     "OrchestrationDriver",
     "PodStateClassification",
     "RunPodDriverConfig",

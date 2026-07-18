@@ -1340,8 +1340,14 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(tmp_path: Path) 
         analysis_spec = AnalysisRunSpec.model_validate(analysis_manifest.analysis_spec.inline)
         evaluation_input = resolve_manifest_input(first.stages[0].manifest_refs[0], tmp_path)
         evaluation_input.path.write_bytes(evaluation_input.raw_bytes + b"\n")
-        with pytest.raises(ValueError, match="size mismatch"):
+        with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
             execute_analysis_run_spec(analysis_spec, root=tmp_path)
+        assert isinstance(excinfo.value.__cause__, ValueError)
+        assert "size mismatch" in str(excinfo.value.__cause__)
+        failed_manifest = load_manifest(excinfo.value.path)
+        assert failed_manifest.status == "failed"
+        assert failed_manifest.metadata["error"]["type"] == "ValueError"
+        assert "size mismatch" in failed_manifest.metadata["error"]["message"]
         assert analysis_calls == [7]
 
         rebuilt_ref = authenticated_manifest_ref(

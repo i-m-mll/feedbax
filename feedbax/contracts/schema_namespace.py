@@ -85,7 +85,7 @@ def validate_schema_version(version: str, *, family: str) -> None:
         raise SchemaNamespaceError(f"{family} current_version must be non-empty")
     if not version.startswith("feedbax."):
         return
-    if version == "feedbax.run_conformance.v1":
+    if version in {"feedbax.run_conformance.v1", "feedbax.run_conformance.v2"}:
         return
     if (
         version.startswith("feedbax.spec.")

@@ -35,6 +35,7 @@ from feedbax.training.spec_storage import (
     emit_training_run_spec_storage,
     stamp_training_run_manifest_identities,
 )
+from feedbax.orchestration.bundle import DeploymentPolicy
 
 
 def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
@@ -614,6 +615,13 @@ def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) 
         compiler=CompilerIdentity(
             compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
             compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        deployment_policy=DeploymentPolicy(
+            driver="local",
+            venue="local",
+            cloud_authorized=False,
+            review_required=False,
+            review_authorized=False,
         ),
         environment=EnvironmentDeclaration(python_version="3.13"),
         budget=BudgetPolicy(max_wall_clock_seconds=1),

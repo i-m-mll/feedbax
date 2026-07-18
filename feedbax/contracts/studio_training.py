@@ -19,7 +19,6 @@ if TYPE_CHECKING:
         CompiledExecutionRow,
         CompiledRunSet,
         RowIdentities,
-        RunAssemblyRequest,
     )
 
 
@@ -79,13 +78,12 @@ class StudioTrainingCompiler:
 
     def compile(
         self,
-        request: "RunAssemblyRequest",
         *,
         authored: Mapping[str, Any],
         run_set_id: str,
         context: "AssemblyContext",
     ) -> "CompiledRunSet":
-        del request, context
+        del context
         from feedbax.orchestration.assembly import CompiledExecutionRow, CompiledRunSet
         from feedbax.orchestration.bundle import RowLaunchSpec
 

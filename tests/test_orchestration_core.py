@@ -6,7 +6,8 @@ import json
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,7 +15,8 @@ import pytest
 
 from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-from feedbax.contracts.manifest import TrainingRunManifest
+from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.manifest import ParentRef, TrainingRunManifest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
@@ -31,6 +33,7 @@ from feedbax.contracts.studio_training import (
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
     LrScheduleSpec,
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -49,6 +52,7 @@ from feedbax.orchestration import conformance, schedule_eval, stages
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
+    AssemblyInputDeclaration,
     CompiledExecutionRow,
     CompiledRunSet,
     CompilerIdentity,
@@ -56,14 +60,25 @@ from feedbax.orchestration.assembly import (
     assemble_run_bundle,
 )
 from feedbax.orchestration.bundle import (
+    CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID,
+    CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION,
+    CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
     RUN_BUNDLE_SCHEMA_ID,
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION_V2,
     BudgetPolicy,
+    CheckpointCustodyArchiveMaterializer,
+    DeploymentPolicy,
+    DeploymentResourceRequest,
     EnvironmentDeclaration,
+    ImmutableInputArtifactRef,
+    ImmutableInputIdentity,
+    InputCustodySource,
+    InputFormatIdentity,
     LaunchPolicy,
     RepoRevision,
+    ResolvedAssemblyInput,
     RunBundle,
     RunRowSpec,
     RowLaunchSpec,
@@ -72,7 +87,9 @@ from feedbax.orchestration.bundle import (
 from feedbax.orchestration.conformance import (
     CheckEntry,
     CheckRegistry,
+    ConformanceRowArtifacts,
     build_default_check_registry,
+    run_conformance_checks,
 )
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.local import (
@@ -82,8 +99,13 @@ from feedbax.orchestration.drivers.local import (
     compute_environment_fingerprint,
 )
 from feedbax.orchestration.stages import (
+    STAGE_CERTIFY,
     STAGE_ORDER,
     STAGE_PREFLIGHT,
+    STAGE_PROVISION,
+    STAGE_REALIZE_ENV,
+    STAGE_STAGE_INPUTS,
+    STAGE_TEARDOWN,
     OrchestrationStageError,
     PreflightFailed,
     StageEngine,
@@ -100,6 +122,7 @@ from feedbax.orchestration.state import (
 from feedbax.training.diagnostics import TRAINING_DIAGNOSTICS_SCHEMA_ID, TrainingDiagnostics
 from feedbax.training.interruption import CancellationAction, CancellationDecision
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
+from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 
 
 class FakeDriver:
@@ -116,7 +139,7 @@ class FakeDriver:
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
         self._call("provision")
-        return {"provisioned": True}
+        return {"driver": "local", "provisioned": True}
 
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         self._call("realize_env")
@@ -145,6 +168,82 @@ class FakeDriver:
     def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
         self._call("teardown")
         return {"torn_down": True}
+
+
+class BillingFakeDriver(FakeDriver):
+    def __init__(
+        self,
+        *,
+        provision_record: Mapping[str, Any],
+        probe_status: str = "completed",
+    ) -> None:
+        super().__init__()
+        self.provision_record = dict(provision_record)
+        self.probe_status = probe_status
+
+    def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+        self._call("provision")
+        return dict(self.provision_record)
+
+    def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
+        self._call("realize_env")
+        return json.dumps(
+            {
+                "image_id": self.provision_record.get("immutable_image_id"),
+                "runtime": {
+                    "device_kind": self.provision_record.get("gpu_model"),
+                    "device_count": self.provision_record.get("gpu_count"),
+                },
+            },
+            sort_keys=True,
+        )
+
+    def probe(self, bundle: RunBundle, row: RunRowSpec, state: RunSetState) -> DriverRowProbe:
+        self._call(f"probe:{row.row_id}")
+        return DriverRowProbe(status=self.probe_status)
+
+    def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+        self._call("teardown")
+        return {
+            "driver": "runpod",
+            "final_pod_inventory": {
+                "scope": "provider-account",
+                "verified": True,
+                "observed_at": "2026-07-18T20:00:00+00:00",
+                "observation_basis": "runpodctl pod list --output json",
+                "outcome": "empty",
+                "pod_count": 0,
+                "pod_ids": [],
+            },
+        }
+
+
+def _remote_billing_record() -> dict[str, Any]:
+    return {
+        "driver": "runpod",
+        "provider": "runpod",
+        "gpu_model": "NVIDIA GeForce RTX 4090",
+        "gpu_count": 1,
+        "region": "CA-MTL-1",
+        "immutable_image_id": "registry.example/feedbax@sha256:" + "a" * 64,
+        "billing_started_at": "1970-01-01T00:00:00+00:00",
+        "hourly_rate": 1.0,
+        "currency": "USD",
+    }
+
+
+def _deployment_policy(driver: str = "local") -> DeploymentPolicy:
+    return DeploymentPolicy(
+        driver=driver,
+        venue="local" if driver == "local" else "remote",
+        cloud_authorized=driver == "runpod",
+        review_required=False,
+        review_authorized=False,
+        resources=DeploymentResourceRequest(
+            gpu_id="NVIDIA GeForce RTX 4090" if driver == "runpod" else None,
+            regions=["CA-MTL-1", "US-OR-1"] if driver == "runpod" else [],
+        ),
+    )
 
 
 class _IdentityFakeDriver(FakeDriver):
@@ -223,16 +322,17 @@ class _IdentityFakeDriver(FakeDriver):
 @dataclass(frozen=True)
 class _FixtureCompiler:
     rows: tuple[CompiledExecutionRow, ...]
+    expected_input_roles: tuple[str, ...] = ()
 
     def compile(
         self,
-        request: RunAssemblyRequest,
         *,
         authored: Mapping[str, Any],
         run_set_id: str,
         context: AssemblyContext,
     ) -> CompiledRunSet:
-        del request, authored, run_set_id, context
+        assert tuple(item.role for item in context.resolved_inputs) == self.expected_input_roles
+        del authored, run_set_id
         return CompiledRunSet(rows=list(self.rows))
 
 
@@ -242,6 +342,7 @@ def _compiled_row(
     command: list[str] | None = None,
     collect: list[str] | None = None,
     run_spec: dict[str, Any] | None = None,
+    immutable_inputs: list[ImmutableInputIdentity] | None = None,
 ) -> CompiledExecutionRow:
     payload = (
         {
@@ -261,6 +362,7 @@ def _compiled_row(
         row_id=row_id,
         payload=payload,
         resolved_semantics=payload,
+        immutable_inputs=immutable_inputs or [],
         launch=RowLaunchSpec(
             command=command or [sys.executable, "-c", "pass"],
             collect=collect or [],
@@ -274,8 +376,11 @@ def _assembly_parts(
     rows: list[CompiledExecutionRow] | None = None,
     launch_policy: LaunchPolicy | None = None,
     max_wall_clock_seconds: float = 10.0,
+    max_spend_usd: float | None = None,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
+    driver: str = "local",
+    expected_input_roles: tuple[str, ...] = (),
 ) -> tuple[RunAssemblyRequest, AssemblyContext, AssemblyCompilerRegistry]:
     authored = {
         "schema_id": STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
@@ -300,9 +405,13 @@ def _assembly_parts(
             compiler_id=compiler_id,
             compiler_version=compiler_version,
         ),
+        deployment_policy=_deployment_policy(driver),
         environment=EnvironmentDeclaration(python_version=python_version),
         launch_policy=launch_policy or LaunchPolicy(max_parallel_rows=2),
-        budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
+        budget=BudgetPolicy(
+            max_wall_clock_seconds=max_wall_clock_seconds,
+            max_spend_usd=max_spend_usd,
+        ),
         orchestration_root=str(tmp_path),
     )
     registry = AssemblyCompilerRegistry()
@@ -310,7 +419,9 @@ def _assembly_parts(
         schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
         compiler_id=compiler_id,
         compiler_version=compiler_version,
-        compiler=_FixtureCompiler(tuple(rows or [_compiled_row("row-a")])),
+        compiler=_FixtureCompiler(
+            tuple(rows or [_compiled_row("row-a")]), expected_input_roles
+        ),
         identity_adapter=StudioTrainingIdentityAdapter(),
     )
     context = AssemblyContext(custody_root=tmp_path / "fixture-custody" / run_set_id)
@@ -323,22 +434,266 @@ def _bundle(
     rows: list[CompiledExecutionRow] | None = None,
     launch_policy: LaunchPolicy | None = None,
     max_wall_clock_seconds: float = 10.0,
+    max_spend_usd: float | None = None,
     run_set_id: str = "2026-01-02-deadbeef",
     python_version: str | None = "3.12",
+    driver: str = "local",
 ) -> RunBundle:
     request, context, registry = _assembly_parts(
         tmp_path,
         rows=rows,
         launch_policy=launch_policy,
         max_wall_clock_seconds=max_wall_clock_seconds,
+        max_spend_usd=max_spend_usd,
         run_set_id=run_set_id,
         python_version=python_version,
+        driver=driver,
     )
     return assemble_run_bundle(
         request,
         run_set_id=run_set_id,
         context=context,
         registry=registry,
+    )
+
+
+def test_deployment_policy_does_not_change_assembled_scientific_identity(
+    tmp_path: Path,
+) -> None:
+    request, context, registry = _assembly_parts(tmp_path)
+    reviewed_policy = request.deployment_policy.model_copy(
+        update={"review_required": True, "review_authorized": True}
+    )
+    reviewed_request = request.model_copy(update={"deployment_policy": reviewed_policy})
+
+    ordinary = assemble_run_bundle(
+        request,
+        run_set_id="2026-01-02-policy-identity",
+        context=context,
+        registry=registry,
+    )
+    reviewed = assemble_run_bundle(
+        reviewed_request,
+        run_set_id="2026-01-02-policy-identity",
+        context=context,
+        registry=registry,
+    )
+
+    assert request.deployment_policy != reviewed_request.deployment_policy
+    assert ordinary.deployment_policy != reviewed.deployment_policy
+    assert ordinary.rows[0].execution == reviewed.rows[0].execution
+
+
+def test_v3_policy_migration_evidence_survives_without_authorizing_launch(tmp_path: Path) -> None:
+    source = _identity_training_payload()
+    source["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
+    source["execution"] = {"mode": "remote", "allow_cloud": True, "require_review": False}
+    migrated = default_spec_registry.migrate("TrainingRunSpec", source)
+    source_bytes = training_spec_canonical_bytes(source)
+    source_path = tmp_path / "training-v3.json"
+    source_path.write_bytes(source_bytes)
+    request, context, _ = _assembly_parts(tmp_path)
+    request = request.model_copy(
+        update={
+            "authored": SchemaArtifactRef(
+                schema_id=TRAINING_RUN_SPEC_SCHEMA_ID,
+                schema_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+                artifact_id="fixture:training-v3",
+                sha256=hashlib.sha256(source_bytes).hexdigest(),
+                uri=str(source_path),
+            )
+        }
+    )
+    registry = AssemblyCompilerRegistry()
+    registry.register(
+        schema_id=TRAINING_RUN_SPEC_SCHEMA_ID,
+        compiler_id=request.compiler.compiler_id,
+        compiler_version=request.compiler.compiler_version,
+        compiler=_FixtureCompiler((_compiled_row("row-a", run_spec=migrated.payload),)),
+        identity_adapter=TrainingRunIdentityAdapter(),
+    )
+    bundle = assemble_run_bundle(request, run_set_id="v3-evidence", context=context, registry=registry)
+    record = bundle.migration_evidence[-1]
+
+    assert record.metadata["removed_execution_policy"]["normalized_values"]["allow_cloud"]
+    assert bundle.deployment_policy.cloud_authorized is False
+    assert bundle.model_copy(update={"migration_evidence": []}).rows[0].execution == bundle.rows[0].execution
+    manifest_payload = preflight_training_run_manifest_payloads(source).training_spec
+    assert (
+        manifest_payload.migration_records[-1].metadata["removed_execution_policy"]
+        == record.metadata["removed_execution_policy"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"cloud_authorized": False}, "cloud_authorized=true"),
+        ({"venue": "local"}, "requires venue='remote'"),
+    ],
+)
+def test_deployment_policy_validation_fails_closed(
+    updates: dict[str, Any], message: str
+) -> None:
+    payload = {
+        **_deployment_policy("runpod").model_dump(mode="json"),
+        **updates,
+    }
+    with pytest.raises(ValueError, match=message):
+        DeploymentPolicy.model_validate(payload)
+
+
+def test_pending_review_is_durable_but_blocks_provider_until_authorized(
+    tmp_path: Path,
+) -> None:
+    pending = DeploymentPolicy(
+        driver="local",
+        venue="local",
+        cloud_authorized=False,
+        review_required=True,
+        review_authorized=False,
+    )
+    request, context, registry = _assembly_parts(tmp_path)
+    request = request.model_copy(update={"deployment_policy": pending})
+    request = RunAssemblyRequest.model_validate_json(request.model_dump_json())
+    bundle = assemble_run_bundle(
+        request, run_set_id="pending-review", context=context, registry=registry
+    )
+    bundle = RunBundle.model_validate_json(bundle.model_dump_json())
+    driver = FakeDriver()
+
+    with pytest.raises(PreflightFailed, match="deployment-policy"):
+        StageEngine(bundle=bundle, driver=driver).run()
+    assert driver.calls == []
+
+    authorized = DeploymentPolicy.model_validate(
+        {**pending.model_dump(mode="json"), "review_authorized": True}
+    )
+    rebound = bundle.model_copy(update={"deployment_policy": authorized})
+    assert {check.name: check for check in run_preflight_checks(rebound)}[
+        "deployment-policy"
+    ].status == "pass"
+
+
+def _resolved_checkpoint_input(
+    *, role: str = "checkpoint", digest_character: str = "d"
+) -> ResolvedAssemblyInput:
+    digest = digest_character * 64
+    return ResolvedAssemblyInput(
+        identity=ImmutableInputIdentity(
+            role=role,
+            kind="checkpoint-custody-archive",
+            identifier=f"checkpoint:tx-{role}",
+            digest={"value": digest},
+        ),
+        custody=InputCustodySource(
+            target_role=role,
+            provider=ImmutableArtifactBlobProviderSpec(),
+            provider_binding="checkpoint.inputs",
+            artifact=ImmutableInputArtifactRef(
+                artifact_id=f"artifact://sha256/{digest}",
+                sha256=digest,
+                size_bytes=123,
+                media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+                storage_backend="feedbax-local",
+            ),
+            format=InputFormatIdentity(
+                format_id=CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID,
+                format_version=CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION,
+                media_type=CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE,
+            ),
+            materializer=CheckpointCustodyArchiveMaterializer(
+                expected_parent_ref=ParentRef(
+                    kind="TrainingCheckpointTransactionManifest",
+                    id=f"tx-{role}",
+                    role="training_checkpoint_custody",
+                    uri=f"transactions/tx-{role}/manifest.json",
+                    metadata={"manifest_sha256": "a" * 64},
+                ),
+                expected_transaction_root_sha256="b" * 64,
+            ),
+        ),
+    )
+
+
+def test_resolved_input_role_cannot_collide_with_row_payload_filename(
+    tmp_path: Path,
+) -> None:
+    resolved = _resolved_checkpoint_input(role="row-a.json")
+    bundle = _bundle(tmp_path)
+    execution = bundle.rows[0].execution
+    execution_hash = training_run_execution_hash(
+        execution.resolved_snapshot.root_hash,
+        [resolved.identity.model_dump(mode="json", exclude_none=True)],
+    )
+    row = bundle.rows[0].model_copy(
+        update={
+            "execution": execution.model_copy(
+                update={
+                    "immutable_inputs": [resolved.identity],
+                    "execution_capsule": execution.execution_capsule.model_copy(
+                        update={"execution_hash": execution_hash}
+                    ),
+                }
+            )
+        }
+    )
+    colliding = bundle.model_copy(
+        update={"rows": [row], "resolved_inputs": [resolved]}
+    )
+
+    with pytest.raises(ValueError, match="collide with generated row payload filenames"):
+        RunBundle.model_validate_json(colliding.model_dump_json())
+
+
+def test_assemble_canonicalizes_resolved_input_records(tmp_path: Path) -> None:
+    inputs = {
+        "zeta": _resolved_checkpoint_input(role="zeta"),
+        "alpha": _resolved_checkpoint_input(role="alpha", digest_character="e"),
+    }
+    request, context, registry = _assembly_parts(
+        tmp_path,
+        rows=[_compiled_row("row-a", immutable_inputs=[item.identity for item in inputs.values()])],
+        expected_input_roles=("alpha", "zeta"),
+    )
+    request = request.model_copy(
+        update={
+            "inputs": [
+                AssemblyInputDeclaration(
+                    role=role,
+                    kind="checkpoint-custody-archive",
+                    locator=f"checkpoint:tx-{role}",
+                )
+                for role in ("zeta", "alpha")
+            ]
+        }
+    )
+    bundle = assemble_run_bundle(
+        request,
+        run_set_id="canonical-input-order",
+        context=replace(context, input_resolver=lambda declaration: inputs[declaration.role]),
+        registry=registry,
+    )
+
+    assert [item.identity.role for item in bundle.resolved_inputs] == ["alpha", "zeta"]
+
+
+def test_conformance_records_declared_inapplicability() -> None:
+    registry = CheckRegistry({"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")})
+
+    certificate = run_conformance_checks(
+        run_set_id="declared-inapplicable",
+        rows=[ConformanceRowArtifacts(row_id="constant-rate")],
+        registry=registry,
+        declared_inapplicable={"lr_trace": "constant-rate rows have no schedule trace"},
+    )
+
+    checks = {entry.check_id: entry for entry in certificate.rows["constant-rate"].checks}
+    result = checks["lr_trace"]
+    assert certificate.overall == "fail"
+    assert result.status == "skipped"
+    assert result.detail == (
+        "inapplicable-by-declaration: constant-rate rows have no schedule trace"
     )
 
 
@@ -431,6 +786,110 @@ def _fixture_pass_registry() -> CheckRegistry:
     )
 
 
+def _with_local_realized_proof(state: RunSetState) -> RunSetState:
+    completed_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=1)
+    started_at = completed_at - timedelta(seconds=1)
+    rows = {
+        row_id: row.model_copy(update={"started_at": started_at, "completed_at": completed_at})
+        for row_id, row in state.rows.items()
+    }
+    provision_record = {"driver": "local"}
+    provision = state.stage(STAGE_PROVISION).model_copy(
+        update={
+            "status": "completed",
+            "completed_at": started_at - timedelta(seconds=1),
+            "outputs": provision_record,
+        }
+    )
+
+    realize_env = state.stage(STAGE_REALIZE_ENV).model_copy(
+        update={
+            "status": "completed",
+            "completed_at": started_at,
+            "outputs": {"environment_fingerprint": "fake-fingerprint"},
+        }
+    )
+    stage_inputs = state.stage(STAGE_STAGE_INPUTS).model_copy(
+        update={
+            "status": "completed",
+            "completed_at": started_at,
+            "outputs": {
+                "input_count": 0,
+                "inputs": [],
+                "payload_count": len(rows),
+            },
+        }
+    )
+    return state.model_copy(
+        update={
+            "rows": rows,
+            "provision_record": provision_record,
+            "environment_fingerprint": "fake-fingerprint",
+            "stages": {
+                **state.stages,
+                STAGE_PROVISION: provision,
+                STAGE_REALIZE_ENV: realize_env,
+                STAGE_STAGE_INPUTS: stage_inputs,
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("tamper_surface", ["provision_record", "environment_fingerprint"])
+def test_certify_rejects_resumed_top_level_observation_substitution(
+    tmp_path: Path,
+    tamper_surface: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"row-a": RowState(status="completed")},
+        )
+    )
+    if tamper_surface == "provision_record":
+        state = state.model_copy(update={"provision_record": {"driver": "substituted"}})
+        message = "PROVISION outputs"
+    else:
+        state = state.model_copy(update={"environment_fingerprint": "substituted"})
+        message = "REALIZE_ENV outputs"
+
+    with pytest.raises(OrchestrationStageError, match=message):
+        engine._stage_certify(state)
+
+
+def test_certify_rejects_resumed_state_without_completed_stage_inputs(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"row-a": RowState(status="completed")},
+        )
+    )
+    state = state.model_copy(
+        update={
+            "stages": {
+                stage_id: stage
+                for stage_id, stage in state.stages.items()
+                if stage_id != STAGE_STAGE_INPUTS
+            }
+        }
+    )
+
+    with pytest.raises(OrchestrationStageError, match="completed STAGE_INPUTS authority"):
+        engine._stage_certify(state)
+
+
 def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> None:
     store = RunSetStateStore(tmp_path / "state.json")
     old = RunSetState(run_set_id="set", rows={"row": RowState(status="pending")})
@@ -465,7 +924,7 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
     old_payload = _bundle(tmp_path).model_dump(mode="json")
     for old_version in (RUN_BUNDLE_SCHEMA_VERSION_V1, RUN_BUNDLE_SCHEMA_VERSION_V2):
         old_payload["schema_version"] = old_version
-        with pytest.raises(UnsupportedSpecVersion, match="reassemble from the authored"):
+        with pytest.raises(UnsupportedSpecVersion, match="reassemble from a current"):
             default_spec_registry.migrate("RunBundle", old_payload)
     with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
         default_spec_registry.migrate(
@@ -491,6 +950,9 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
         run_set_id=bundle.run_set_id,
         rows={row.row_id: stopped},
     )
+    state = _with_local_realized_proof(state).model_copy(
+        update={"rows": {row.row_id: stopped}}
+    )
 
     artifacts = StageEngine(
         bundle=bundle,
@@ -500,6 +962,22 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
 
     assert artifacts.row_state == stopped
     assert artifacts.runtime_inputs == runtime_inputs
+
+
+def test_request_engine_adopts_constructed_driver_poll_interval(tmp_path: Path) -> None:
+    request, context, registry = _assembly_parts(tmp_path)
+    driver = FakeDriver()
+    driver.poll_interval_seconds = 7.0
+    engine = StageEngine.from_request(
+        request,
+        context=context,
+        registry=registry,
+        driver_factory=lambda _bundle: driver,
+    )
+
+    engine.run(stop_after_stage="ASSEMBLE")
+
+    assert engine.poll_interval_seconds == 7.0
 
 
 @pytest.mark.parametrize("stop_after", STAGE_ORDER[:-1])
@@ -574,7 +1052,362 @@ def test_stage_retry_accounting_and_abort_teardown(tmp_path: Path) -> None:
     assert "teardown" in failing_driver.calls
 
 
-def test_request_assembly_certifies_all_eight_core_checks_with_independent_identity(
+@pytest.mark.parametrize(
+    ("collection_raises", "failure_logs_raise", "teardown_raises"),
+    [(False, False, False), (True, True, True)],
+)
+def test_executor_failure_remains_primary_when_declared_collection_output_is_absent(
+    tmp_path: Path,
+    collection_raises: bool,
+    failure_logs_raise: bool,
+    teardown_raises: bool,
+) -> None:
+    class FailedExecutorDriver(FakeDriver):
+        def probe(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> DriverRowProbe:
+            self._call(f"probe:{row.row_id}")
+            return DriverRowProbe(status="failed", detail="duplicate plugin registration")
+
+        def collect(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call(f"collect:{row.row_id}")
+            if collection_raises:
+                raise RuntimeError("manifest.json is absent")
+            return {}
+
+        def collect_failure_logs(
+            self,
+            bundle: RunBundle,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call("collect_failure_logs")
+            if failure_logs_raise:
+                raise RuntimeError("failure log pull timed out")
+            return {"failure_logs": str(bundle.run_set_dir / "failure-logs")}
+
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a", collect=["manifest.json"])],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = FailedExecutorDriver(fail={"teardown": 1} if teardown_raises else None)
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="executor failed for row 'row-a': duplicate plugin registration",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    failed_state = store.load()
+    collect_stage = failed_state.stage("COLLECT")
+    assert collect_stage.status == "failed"
+    assert collect_stage.attempts == 1
+    assert collect_stage.outputs["executor_failures"] == [
+        {"row_id": "row-a", "error": "duplicate plugin registration"}
+    ]
+    evidence = collect_stage.outputs["secondary_evidence"]
+    assert {
+        "kind": "absent_collection_outputs",
+        "row_id": "row-a",
+        "missing_outputs": ["manifest.json"],
+    } in evidence
+    if collection_raises:
+        assert {
+            "kind": "collection_error_after_executor_failure",
+            "row_id": "row-a",
+            "detail": "manifest.json is absent",
+        } in evidence
+    assert failed_state.rows["row-a"].error == "duplicate plugin registration"
+    assert driver.calls.count("collect:row-a") == 1
+    assert driver.calls.count("collect_failure_logs") == 1
+    assert driver.calls.count("teardown") == 1
+    teardown_stage = failed_state.stage("TEARDOWN")
+    assert teardown_stage.status == ("failed" if teardown_raises else "completed")
+    diagnostic = teardown_stage.outputs["failure_log_collection"]
+    assert diagnostic["status"] == ("failed" if failure_logs_raise else "completed")
+    if failure_logs_raise:
+        assert diagnostic["error"] == "failure log pull timed out"
+
+
+def test_collection_error_for_completed_executor_remains_primary_and_retries(
+    tmp_path: Path,
+) -> None:
+    class MissingOutputDriver(FakeDriver):
+        def collect(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call(f"collect:{row.row_id}")
+            raise RuntimeError("manifest collection failed")
+
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a", collect=["manifest.json"])],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = MissingOutputDriver()
+
+    with pytest.raises(RuntimeError, match="manifest collection failed"):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    failed_state = store.load()
+    assert failed_state.stage("COLLECT").attempts == 5
+    assert "executor failed" not in (failed_state.stage("COLLECT").error or "")
+    assert driver.calls.count("collect:row-a") == 5
+    assert driver.calls.count("teardown") == 1
+
+
+def test_later_executor_failure_precedes_earlier_row_collection_error(tmp_path: Path) -> None:
+    class MixedOutcomeDriver(FakeDriver):
+        def probe(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> DriverRowProbe:
+            self._call(f"probe:{row.row_id}")
+            if row.row_id == "failed-row":
+                return DriverRowProbe(status="failed", detail="executor payload mismatch")
+            return DriverRowProbe(status="completed")
+
+        def collect(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call(f"collect:{row.row_id}")
+            if row.row_id == "completed-row":
+                raise RuntimeError("completed row output transport failed")
+            return {}
+
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row("completed-row", collect=["manifest.json"]),
+            _compiled_row("failed-row", collect=["manifest.json"]),
+        ],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = MixedOutcomeDriver()
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="executor failed for row 'failed-row': executor payload mismatch",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    failed_state = store.load()
+    evidence = failed_state.stage("COLLECT").outputs["secondary_evidence"]
+    assert {
+        "kind": "collection_error_after_executor_failure",
+        "row_id": "completed-row",
+        "detail": "completed row output transport failed",
+    } in evidence
+    assert driver.calls.count("collect:completed-row") == 1
+    assert driver.calls.count("collect:failed-row") == 1
+
+
+def test_local_executor_failure_records_absent_declared_output_as_secondary(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                command=[sys.executable, "-c", "raise SystemExit(7)"],
+                collect=["manifest.json"],
+            )
+        ],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="executor failed for row 'row-a': exit=7",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+            poll_interval_seconds=0.01,
+        ).run()
+
+    failed_state = store.load()
+    assert failed_state.stage("COLLECT").outputs["secondary_evidence"] == [
+        {
+            "kind": "absent_collection_outputs",
+            "row_id": "row-a",
+            "missing_outputs": ["manifest.json"],
+        }
+    ]
+    assert failed_state.rows["row-a"].error == "exit=7"
+    assert failed_state.stage("TEARDOWN").status == "completed"
+
+
+def test_capped_remote_execution_requires_observed_billing_evidence(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        max_spend_usd=1.0,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = FakeDriver()
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="usable observed provider billing evidence",
+    ):
+        StageEngine(bundle=bundle, driver=driver, store=store, wall_time=lambda: 0.0).run()
+
+    state = store.load()
+    assert state.stage("REALIZE_ENV").status == "failed"
+    assert state.stage("REALIZE_ENV").attempts == 1
+    assert state.abort_reason == "budget-evidence-unavailable"
+    assert state.budget_counters["budget_exceeded"] == "spend-evidence-unavailable"
+    assert not any(call.startswith("launch:") for call in driver.calls)
+    assert state.stage("TEARDOWN").status == "completed"
+    assert "teardown" in driver.calls
+
+
+def test_capped_remote_execution_rejects_spend_at_cap(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        max_spend_usd=1.0,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = BillingFakeDriver(provision_record=_remote_billing_record())
+
+    with pytest.raises(stages.BudgetExceeded, match="before REALIZE_ENV"):
+        StageEngine(bundle=bundle, driver=driver, store=store, wall_time=lambda: 3600.0).run()
+
+    state = store.load()
+    assert state.stage("REALIZE_ENV").attempts == 1
+    assert state.budget_counters["accrued_cost_usd"] == pytest.approx(1.0)
+    assert state.budget_counters["budget_exceeded"] == "spend"
+    assert state.abort_reason == "budget-exceeded"
+    assert not any(call.startswith("launch:") for call in driver.calls)
+    assert "teardown" in driver.calls
+
+
+def test_capped_remote_monitor_stops_at_observed_spend_cap(tmp_path: Path) -> None:
+    @dataclass
+    class Clock:
+        now: float = 0.0
+
+        def time(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += 1800.0
+
+    clock = Clock()
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        max_spend_usd=0.5,
+    )
+    driver = BillingFakeDriver(
+        provision_record=_remote_billing_record(),
+        probe_status="running",
+    )
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+        wall_time=clock.time,
+        sleep=clock.sleep,
+        poll_interval_seconds=1.0,
+    ).run()
+
+    assert state.abort_reason == "budget-exceeded"
+    assert state.budget_counters["accrued_cost_usd"] == pytest.approx(0.5)
+    assert state.budget_counters["budget_exceeded"] == "spend"
+    assert state.rows["row-a"].status == "stopped"
+    assert "stop:row-a" in driver.calls
+    assert "collect:row-a" in driver.calls
+    assert "teardown" in driver.calls
+    assert state.stage(STAGE_TEARDOWN).outputs["final_pod_inventory"]["verified"] is True
+    assert (
+        state.registration_payload["final_pod_inventory"]
+        == state.stage(STAGE_TEARDOWN).outputs["final_pod_inventory"]
+    )
+
+
+def test_capped_remote_monitor_rejects_existing_spend_before_first_probe(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def wall_time() -> float:
+        nonlocal calls
+        calls += 1
+        return 0.0 if calls <= 2 else 1800.0
+
+    bundle = _bundle(tmp_path, driver="runpod", max_spend_usd=0.5)
+    driver = BillingFakeDriver(
+        provision_record=_remote_billing_record(),
+        probe_status="running",
+    )
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+        wall_time=wall_time,
+    ).run()
+
+    assert state.abort_reason == "budget-exceeded"
+    assert state.budget_counters["budget_exceeded"] == "spend"
+    assert not any(call.startswith("probe:") for call in driver.calls)
+    assert "stop:row-a" in driver.calls
+
+
+def test_local_spend_cap_does_not_require_provider_billing_evidence(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, max_spend_usd=0.0)
+    driver = FakeDriver()
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=_fixture_pass_registry(),
+    ).run()
+
+    assert state.stage("REGISTER").status == "completed"
+    assert "budget_exceeded" not in state.budget_counters
+
+
+def test_request_assembly_certifies_all_core_checks_with_independent_identity(
     tmp_path: Path,
 ) -> None:
     """Prove executor identity independently agrees with ASSEMBLE, then tamper it."""
@@ -590,13 +1423,13 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "training": executable_payload,
     }
     expected_intent_hash = "da602d442a5356281bf648ca49032739ba6255cdb427bb0da09cfa65bb4d332f"
-    expected_root_hash = "7fbfbc6adbd201d33b7ecb5660c3b79256717e999d59b67bdc62ce3ab28103f7"
-    expected_execution_hash = "23ce65b81f2d24fbd8eb9184e98643dc7e21d6569426af76c6106d6783703863"
+    expected_root_hash = "4d61e465261b5115df71d07ea60d53b6121322a5527e0a033b62047fcb2310ad"
+    expected_execution_hash = "1d6dd9eb9f07694aeec192fe6b2bb53785711ddad17854569ac8f63b16aec921"
     expected_artifact_hashes = {
         "authored": "e1aeb77d847c6b24011becca0db24da2f25e68f3cf542fdb4639615a266f8dc9",
-        "payload": "4120b4037484a529dd76c0d1a56e4fdd7c3287311bf01d44341acb8338e1957f",
-        "snapshot": "785c84ce6d89ef77e5503673fd3979d69f835b9e12fa43114798393e47d5368e",
-        "capsule": "754e6dc16f630dfd1069a423d60278893ffb07a60d46ac8768f881836fadec08",
+        "payload": "7b32a1b9d28a5ccfd907a14904ed14c9af90074d996b0a27647d7ba1f3a3adbf",
+        "snapshot": "a36d64645240d7f3742b5af8367c4ad1f145981e2d0378528945d26a2fbfec8d",
+        "capsule": "a0657205c9b16c9247bf8177e588a6c48ce0a61f8940439b158f06ef83a5f14c",
     }
     assert (
         training_spec_sha256(StudioTrainingAssemblySpec.model_validate(authored).worker_payload())
@@ -643,6 +1476,7 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
                 compiler_id=compiler_id,
                 compiler_version=compiler_version,
             ),
+            deployment_policy=_deployment_policy(),
             environment=EnvironmentDeclaration(python_version="3.13"),
             budget=BudgetPolicy(max_wall_clock_seconds=10),
             orchestration_root=str(root),
@@ -724,6 +1558,7 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "execution_identity",
         "lr_trace",
         "manifest_valid",
+        "realized_deployment",
         "seeds",
     }
     assert all(check["status"] == "pass" for check in checks.values())
@@ -736,6 +1571,10 @@ def test_request_assembly_certifies_all_eight_core_checks_with_independent_ident
         "execution_hash": expected_execution_hash,
         "input_data_identities": [],
     }
+    realized = certificate["rows"]["identity-row"]["realized_deployment"]
+    assert realized["provider"] == "local"
+    assert realized["accrued_cost"] == 0.0
+    assert realized["environment_fingerprint"] == "fake-fingerprint"
 
     tampered_root = tmp_path / "tampered"
     with pytest.raises(ValueError, match="phase=completed"):
@@ -782,6 +1621,50 @@ def test_preflight_failures_record_named_checks_and_do_not_call_driver(tmp_path:
     checks = {check.name: check for check in state.stage(STAGE_PREFLIGHT).checks}
     assert checks["environment-declaration"].status == "fail"
     assert checks["manifest-payload-normalization"].status == "fail"
+    assert driver.calls == []
+
+
+def test_preflight_consumes_only_deployment_policy(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    check = {entry.name: entry for entry in run_preflight_checks(bundle)}["deployment-policy"]
+
+    assert check.status == "pass"
+    assert check.observed == bundle.deployment_policy.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    ("updates", "detail"),
+    [
+        ({"cloud_authorized": False}, "cloud authorization"),
+        (
+            {"review_required": True, "review_authorized": False},
+            "review has not been explicitly authorized",
+        ),
+        ({"venue": "local"}, "requires venue='remote'"),
+    ],
+)
+def test_stage_engine_rejects_invalid_deployment_policy_before_driver_calls(
+    tmp_path: Path,
+    updates: dict[str, Any],
+    detail: str,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    invalid_policy = bundle.deployment_policy.__class__.model_construct(
+        **{**bundle.deployment_policy.__dict__, **updates}
+    )
+    bundle = bundle.model_copy(update={"deployment_policy": invalid_policy})
+    driver = FakeDriver()
+    driver.preflight_checks = lambda _bundle: pytest.fail("driver preflight called")
+
+    with pytest.raises(PreflightFailed, match="deployment-policy"):
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    check = {entry.name: entry for entry in state.stage(STAGE_PREFLIGHT).checks}[
+        "deployment-policy"
+    ]
+    assert check.status == "fail"
+    assert detail in (check.detail or "")
     assert driver.calls == []
 
 
@@ -852,6 +1735,14 @@ def test_preflight_schedule_realization_discovers_controller_optimizer_metadata_
     assert row_observed["expected_context"] == context
     assert row_observed["observed_context"] == context
     assert len(row_observed["samples"]) >= 4
+
+
+def test_preflight_discovers_nested_method_training_optimizer(tmp_path: Path) -> None:
+    payload = (run_spec := _identity_training_payload())["method_payload"]["payload"]
+    payload.pop("optimizer")
+    payload["training"] = {"optimizer": {"type": "adamw", "params": {}, "lr_schedule": LrScheduleSpec(kind="constant", learning_rate_0=0.1).model_dump(mode="json")}}
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row-a", run_spec=run_spec)])
+    assert {check.name: check for check in run_preflight_checks(bundle)}["schedule-realization"].status == "pass"
 
 
 def test_preflight_schedule_realization_requires_controller_optimizer_metadata_contexts(
@@ -1303,6 +2194,7 @@ def test_production_default_certificate_rejects_declared_rewarm_with_flat_lr(
         driver=FakeDriver(),
         conformance_registry=build_default_check_registry(include_plugins=False),
     )
+    state = _with_local_realized_proof(state)
     _state, outputs = engine._stage_certify(state)
     certificate = json.loads((bundle.run_set_dir / "conformance.json").read_text())
     checks = {entry["check_id"]: entry for entry in certificate["rows"]["rewarm"]["checks"]}
@@ -1361,6 +2253,15 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
         state.registration_payload["certificate_sha256"]
         == hashlib.sha256((bundle.run_set_dir / "conformance.json").read_bytes()).hexdigest()
     )
+    stage_inputs_sha256 = hashlib.sha256(
+        json.dumps(
+            state.stage(STAGE_STAGE_INPUTS).outputs,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert state.stage(STAGE_CERTIFY).outputs["stage_inputs_sha256"] == stage_inputs_sha256
+    assert state.registration_payload["stage_inputs_sha256"] == stage_inputs_sha256
     assert {row_id: row.status for row_id, row in state.rows.items()} == {
         "warm": "completed",
         "second": "completed",
@@ -1538,6 +2439,7 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
     certificate_path = bundle.run_set_dir / "conformance.json"
     payload = json.loads(register_path.read_text(encoding="utf-8"))
     certificate_digest = hashlib.sha256(certificate_path.read_bytes()).hexdigest()
+    failed_state = store.load()
 
     assert payload == {
         "abort_reason": None,
@@ -1546,9 +2448,11 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
         "certificate_sha256": certificate_digest,
         "failure_reason": "conformance-failed",
         "run_set_id": bundle.run_set_id,
+        "stage_inputs_sha256": failed_state.stage(STAGE_CERTIFY).outputs[
+            "stage_inputs_sha256"
+        ],
         "status": "failed",
     }
-    failed_state = store.load()
     assert failed_state.stage("REGISTER").status == "failed"
     assert failed_state.registration_payload == payload
 
@@ -1578,6 +2482,103 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
             store=store,
             conformance_registry=registry,
         ).run()
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    [
+        None,
+        {"scope": "exact-owned-pod", "pod_ids": []},
+        {
+            "scope": "provider-account",
+            "verified": False,
+            "observed_at": "2026-07-18T20:00:00+00:00",
+            "observation_basis": "runpodctl pod list --output json",
+            "outcome": "unavailable",
+            "pod_count": 0,
+            "pod_ids": [],
+        },
+        {
+            "scope": "provider-account",
+            "verified": True,
+            "observed_at": "2026-07-18T20:00:00+00:00",
+            "observation_basis": "runpodctl pod list --output json",
+            "outcome": "non-empty",
+            "pod_count": 1,
+            "pod_ids": ["pod-leftover"],
+        },
+        {
+            "scope": "provider-account",
+            "verified": True,
+            "observation_basis": "runpodctl pod list --output json",
+            "outcome": "empty",
+            "pod_count": 0,
+            "pod_ids": [],
+        },
+    ],
+)
+def test_register_refuses_runpod_without_verified_globally_empty_inventory(
+    tmp_path: Path,
+    inventory: dict[str, Any] | None,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+    teardown = state.stage(STAGE_TEARDOWN).model_copy(
+        update={
+            "status": "completed",
+            "outputs": ({"final_pod_inventory": inventory} if inventory else {}),
+        }
+    )
+    state = state.with_stage(STAGE_TEARDOWN, teardown)
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="globally empty RunPod provider inventory",
+    ):
+        engine._stage_register(state)
+
+
+def test_register_accepts_verified_globally_empty_runpod_inventory_gate(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod")
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+    teardown = state.stage(STAGE_TEARDOWN).model_copy(
+        update={
+            "status": "completed",
+            "outputs": {
+                "final_pod_inventory": {
+                    "scope": "provider-account",
+                    "verified": True,
+                    "observed_at": "2026-07-18T20:00:00+00:00",
+                    "observation_basis": "runpodctl pod list --output json",
+                    "outcome": "empty",
+                    "pod_count": 0,
+                    "pod_ids": [],
+                }
+            },
+        }
+    )
+    state = state.with_stage(STAGE_TEARDOWN, teardown)
+
+    with pytest.raises(OrchestrationStageError, match="certificate_ref"):
+        engine._stage_register(state)
 
 
 @pytest.mark.parametrize(
@@ -1663,7 +2664,14 @@ def test_register_derives_passing_status_from_durable_row_lifecycle(
         rows=rows,
         abort_reason=abort_reason,
     )
-    state, _ = engine._stage_certify(state)
+    state = _with_local_realized_proof(state)
+    state, certify_outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(certify_outputs)}
+        ),
+    )
 
     registered, payload = engine._stage_register(state)
 
@@ -1692,7 +2700,14 @@ def test_register_stopped_payload_reentry_is_idempotent(tmp_path: Path) -> None:
             )
         },
     )
-    state, _ = engine._stage_certify(state)
+    state = _with_local_realized_proof(state)
+    state, certify_outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(certify_outputs)}
+        ),
+    )
     state, first_payload = engine._stage_register(state)
     first_mtime = register_path.stat().st_mtime_ns
 
@@ -1703,6 +2718,165 @@ def test_register_stopped_payload_reentry_is_idempotent(tmp_path: Path) -> None:
     assert json.loads(register_path.read_text(encoding="utf-8")) == first_payload
     assert second_payload == first_payload
     assert register_path.stat().st_mtime_ns == first_mtime
+
+
+@pytest.mark.parametrize("tamper_certificate", [False, True])
+def test_register_requires_the_digest_recorded_by_completed_certify(
+    tmp_path: Path,
+    tamper_certificate: bool,
+) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+    state = _with_local_realized_proof(state)
+    state, outputs = engine._stage_certify(state)
+    recorded_outputs = dict(outputs)
+    if tamper_certificate:
+        certificate_path = Path(state.certificate_ref or "")
+        certificate_path.write_bytes(certificate_path.read_bytes() + b" ")
+    else:
+        recorded_outputs.pop("certificate_sha256")
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": recorded_outputs}
+        ),
+    )
+
+    with pytest.raises(OrchestrationStageError, match="digest does not match"):
+        engine._stage_register(state)
+
+
+@pytest.mark.parametrize(
+    ("tamper_surface", "message"),
+    [
+        ("status", "completed STAGE_INPUTS authority"),
+        ("outputs", "STAGE_INPUTS digest does not match"),
+        ("certify_digest", "STAGE_INPUTS digest does not match"),
+    ],
+)
+def test_register_binds_resumed_stage_inputs_to_completed_certify(
+    tmp_path: Path,
+    tamper_surface: str,
+    message: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"row-a": RowState(status="completed")},
+        )
+    )
+    state, outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(outputs)}
+        ),
+    )
+    if tamper_surface == "status":
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS).model_copy(update={"status": "pending"})
+        state = state.with_stage(STAGE_STAGE_INPUTS, stage_inputs)
+    elif tamper_surface == "outputs":
+        stage_inputs = state.stage(STAGE_STAGE_INPUTS).model_copy(
+            update={"outputs": {"substituted": True}}
+        )
+        state = state.with_stage(STAGE_STAGE_INPUTS, stage_inputs)
+    else:
+        certify_outputs = dict(state.stage(STAGE_CERTIFY).outputs)
+        certify_outputs.pop("stage_inputs_sha256")
+        state = state.with_stage(
+            STAGE_CERTIFY,
+            state.stage(STAGE_CERTIFY).model_copy(update={"outputs": certify_outputs}),
+        )
+
+    with pytest.raises(OrchestrationStageError, match=message):
+        engine._stage_register(state)
+
+
+@pytest.mark.parametrize(
+    ("tamper_surface", "message"),
+    [
+        ("state_run", "state run_set_id"),
+        ("certificate_run", "certificate run_set_id"),
+        ("certificate_row_omission", "row-ID equality"),
+        ("certificate_row_addition", "row-ID equality"),
+        ("state_row_addition", "row-ID equality"),
+        ("path_substitution", "certificate_ref"),
+    ],
+)
+def test_register_binds_certificate_to_run_rows_and_certify_path(
+    tmp_path: Path,
+    tamper_surface: str,
+    message: str,
+) -> None:
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row-a"), _compiled_row("row-b")])
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = _with_local_realized_proof(
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={
+                "row-a": RowState(status="completed"),
+                "row-b": RowState(status="completed"),
+            },
+        )
+    )
+    state, outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(outputs)}
+        ),
+    )
+    certificate_path = Path(state.certificate_ref or "")
+
+    if tamper_surface == "state_run":
+        state = state.model_copy(update={"run_set_id": "substituted-run"})
+    elif tamper_surface == "state_row_addition":
+        state = state.model_copy(update={"rows": {**state.rows, "extra": RowState()}})
+    elif tamper_surface == "path_substitution":
+        substitute = bundle.run_set_dir / "substituted-conformance.json"
+        substitute.write_bytes(certificate_path.read_bytes())
+        state = state.model_copy(update={"certificate_ref": str(substitute)})
+    else:
+        payload = json.loads(certificate_path.read_text(encoding="utf-8"))
+        if tamper_surface == "certificate_run":
+            payload["run_set_id"] = "substituted-run"
+        elif tamper_surface == "certificate_row_omission":
+            del payload["rows"]["row-b"]
+        else:
+            payload["rows"]["extra"] = payload["rows"]["row-a"]
+        certificate_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        certified_outputs = dict(state.stage(STAGE_CERTIFY).outputs)
+        certified_outputs["certificate_sha256"] = hashlib.sha256(
+            certificate_path.read_bytes()
+        ).hexdigest()
+        state = state.with_stage(
+            STAGE_CERTIFY,
+            state.stage(STAGE_CERTIFY).model_copy(update={"outputs": certified_outputs}),
+        )
+
+    with pytest.raises(OrchestrationStageError, match=message):
+        engine._stage_register(state)
 
 
 def test_local_driver_adopts_live_started_pid_without_spawning(tmp_path: Path) -> None:
@@ -1866,16 +3040,19 @@ def test_stage_resume_records_orphaned_started_pid_as_failed(tmp_path: Path) -> 
     (sentinels / "row-a.started").write_text("1\n", encoding="utf-8")
     (sentinels / "row-a.pid").write_text("999999999\n", encoding="utf-8")
 
-    final_state = StageEngine(
-        bundle=bundle,
-        driver=driver,
-        store=store,
-        conformance_registry=_fixture_pass_registry(),
-        poll_interval_seconds=0.01,
-    ).run()
+    with pytest.raises(OrchestrationStageError, match="executor failed for row 'row-a'"):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+            poll_interval_seconds=0.01,
+        ).run()
 
+    final_state = store.load()
     assert final_state.rows["row-a"].status == "failed"
     assert final_state.rows["row-a"].event_discrepancies[0]["code"] == "orphaned_launch"
+    assert final_state.stage("TEARDOWN").status == "completed"
     assert not marker.exists()
 
 

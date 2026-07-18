@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -206,6 +207,7 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
 from feedbax.contracts.training import (
+    ExecutionPolicySpec,
     LR_SCHEDULE_SPEC_SCHEMA_ID,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION,
     LR_SCHEDULE_SPEC_SCHEMA_VERSION_V1,
@@ -220,8 +222,8 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
     LossTermSpec,
-    TrainingRunSpec,
 )
 from feedbax.contracts.worker import (
     WORKER_CONTRACT_SCHEMA_ID,
@@ -247,6 +249,8 @@ from feedbax.orchestration.events import (
     RUN_EVENT_SCHEMA_VERSION,
 )
 from feedbax.orchestration.bundle import (
+    DEPLOYMENT_POLICY_SCHEMA_ID,
+    DEPLOYMENT_POLICY_SCHEMA_VERSION,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
@@ -256,6 +260,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V2,
     RUN_BUNDLE_SCHEMA_VERSION_V3,
     RUN_BUNDLE_SCHEMA_VERSION_V4,
+    RUN_BUNDLE_SCHEMA_VERSION_V5,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -268,9 +273,13 @@ from feedbax.orchestration.events import (
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
 )
 RUN_CONFORMANCE_SCHEMA_ID = "feedbax.run_conformance"
-RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v1"
+RUN_CONFORMANCE_SCHEMA_VERSION_V1 = "feedbax.run_conformance.v1"
+RUN_CONFORMANCE_SCHEMA_VERSION = "feedbax.run_conformance.v2"
+REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID = "feedbax.manifest.realized_deployment"
+REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION = "feedbax.manifest.realized_deployment.v1"
 RUN_ASSEMBLY_REQUEST_SCHEMA_ID = "feedbax.spec.run_assembly_request"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v1"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1 = "feedbax.spec.run_assembly_request.v1"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v2"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID = "feedbax.spec.studio.training_assembly"
 STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION = "feedbax.spec.studio.training_assembly.v1"
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID = "feedbax.spec.native_execution_context"
@@ -291,7 +300,9 @@ CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION = (
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
+MigrationRecordMetadataFn = Callable[[MigrationPayload], Mapping[str, Any]]
 ComponentParamMigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
+_SCHEMA_MIGRATION_RESERVED_METADATA_KEYS = frozenset({"description"})
 
 
 class MigrationError(ValueError):
@@ -330,16 +341,28 @@ class SchemaMigration:
     migration_id: str
     migrate: MigrationFn
     description: str = ""
+    record_metadata: MigrationRecordMetadataFn | None = None
 
     def apply(self, payload: MigrationPayload) -> tuple[dict[str, Any], ArtifactMigrationRecord]:
         """Apply this migration edge and return the migrated payload plus record."""
-        migrated = self.migrate(dict(payload))
+        source_payload = deepcopy(dict(payload))
+        metadata = {"description": self.description} if self.description else {}
+        if self.record_metadata is not None:
+            record_metadata = dict(self.record_metadata(deepcopy(source_payload)))
+            reserved = sorted(_SCHEMA_MIGRATION_RESERVED_METADATA_KEYS & record_metadata.keys())
+            if reserved:
+                raise ValueError(
+                    "SchemaMigration record_metadata returned reserved metadata keys: "
+                    f"{reserved!r}"
+                )
+            metadata.update(record_metadata)
+        migrated = self.migrate(deepcopy(source_payload))
         migrated["schema_version"] = self.target_version
         record = ArtifactMigrationRecord(
             migration_id=self.migration_id,
             source_schema_version=self.source_version,
             target_schema_version=self.target_version,
-            metadata={"description": self.description} if self.description else {},
+            metadata=metadata,
         )
         return migrated, record
 
@@ -1134,14 +1157,10 @@ def _migrate_run_contract_projection_to_v2(payload: Mapping[str, Any]) -> dict[s
     projection = dict(payload)
     training_run_spec = projection.get("training_run_spec")
     if isinstance(training_run_spec, Mapping):
-        migrated_spec = migrate_structured_spec_payload(
-            "TrainingRunSpec",
-            training_run_spec,
-            path="checkpoint_manifest/run_contract_binding/canonical_projection/training_run_spec",
-        ).payload
-        projection["training_run_spec"] = TrainingRunSpec.model_validate(migrated_spec).model_dump(
-            mode="json", exclude_none=True
-        )
+        # Preserve the authenticated historical projection. Compatibility with
+        # the current TrainingRunSpec is proven later from this exact source,
+        # after its binding digest has been checked.
+        projection["training_run_spec"] = deepcopy(dict(training_run_spec))
     projection["schema_id"] = "feedbax.manifest.training_checkpoint.run_contract_projection"
     projection["schema_version"] = "feedbax.manifest.training_checkpoint.run_contract_projection.v1"
     projection["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
@@ -1301,7 +1320,7 @@ def _migrate_worker_execution_program_v1_to_v2_payload(
 def _migrate_training_run_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     migrated["schema_id"] = TRAINING_RUN_SPEC_SCHEMA_ID
-    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION
+    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
     execution = migrated.get("worker_execution")
     if isinstance(execution, dict):
         migrated_execution = dict(execution)
@@ -1314,6 +1333,27 @@ def _migrate_training_run_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict
         migrated_execution.setdefault("mapping_levels", None)
         migrated["worker_execution"] = migrated_execution
     return migrated
+
+
+def _migrate_training_run_spec_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_id"] = TRAINING_RUN_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION
+    migrated.pop("execution", None)
+    return migrated
+
+
+def _training_run_spec_v3_policy_evidence(payload: MigrationPayload) -> Mapping[str, Any]:
+    source_field_present = "execution" in payload
+    raw_policy = payload["execution"] if source_field_present else {}
+    policy = ExecutionPolicySpec.model_validate(raw_policy).model_dump(mode="json")
+    return {
+        "removed_execution_policy": {
+            "source_field_present": source_field_present,
+            "normalized_values": policy,
+            "canonical_sha256": _canonical_sha256(policy),
+        }
+    }
 
 
 def _migrate_training_run_set_manifest_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2225,6 +2265,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             notes="v1 omitted the complete canonical lowered execution-payload hash.",
         ),
         _family(
+            "DeploymentPolicy",
+            DEPLOYMENT_POLICY_SCHEMA_ID,
+            DEPLOYMENT_POLICY_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.bundle",
+            emitted_by=(
+                "feedbax.orchestration.assembly.RunAssemblyRequest",
+                "feedbax.orchestration.bundle.RunBundle",
+            ),
+            consumed_by=(
+                "feedbax.orchestration.stages.run_preflight_checks",
+                "orchestration CLI",
+            ),
+            description="Requested venue, launch authorization, and resource policy.",
+            rejected_old_versions=(f"{DEPLOYMENT_POLICY_SCHEMA_ID}.v0",),
+        ),
+        _family(
             "RunAssemblyRequest",
             RUN_ASSEMBLY_REQUEST_SCHEMA_ID,
             RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
@@ -2232,7 +2288,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.assembly.RunAssemblyRequest",),
             consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
             description="Authored request resolved and compiled by persisted ASSEMBLE.",
-            rejected_old_versions=(f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",),
+            rejected_old_versions=(
+                f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
+            ),
         ),
         _family(
             "ExecutionIdentityEnvelope",
@@ -2551,13 +2610,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "downstream run-spec consumers",
             ),
             description=(
-                "Public durable request envelope for graph, task, objective, method, "
-                "worker, execution, artifact, checkpoint, and progress policy."
+                "Public durable scientific request envelope for graph, task, objective, "
+                "method, worker, artifact, checkpoint, and progress policy."
             ),
             stance="migrate",
             supported_old_versions=(
                 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
                 TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+                TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
             ),
             rejected_old_versions=("feedbax.spec.training_run.v0",),
             required_tests=(
@@ -2744,17 +2804,18 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration CLI",
             ),
             description="Durable run-set orchestration request bundle.",
-            stance="migrate",
-            supported_old_versions=(
-                RUN_BUNDLE_SCHEMA_VERSION_V3,
-                RUN_BUNDLE_SCHEMA_VERSION_V4,
-            ),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
                 RUN_BUNDLE_SCHEMA_VERSION_V2,
+                RUN_BUNDLE_SCHEMA_VERSION_V3,
+                RUN_BUNDLE_SCHEMA_VERSION_V4,
+                RUN_BUNDLE_SCHEMA_VERSION_V5,
             ),
-            required_tests=("tests/test_orchestration_core.py",),
+            required_tests=(
+                "tests/test_orchestration_core.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "RunSetState",
@@ -2791,6 +2852,23 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "RealizedDeploymentRecord",
+            REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID,
+            REALIZED_DEPLOYMENT_RECORD_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.conformance",
+            emitted_by=("feedbax.orchestration.stages.StageEngine",),
+            consumed_by=(
+                "feedbax.orchestration.conformance.check_realized_deployment",
+                "feedbax.orchestration.conformance.RunConformanceCertificate",
+            ),
+            description="Per-row realized provider, environment, timing, and cost proof.",
+            rejected_old_versions=(f"{REALIZED_DEPLOYMENT_RECORD_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_run_conformance.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "RunConformanceCertificate",
             RUN_CONFORMANCE_SCHEMA_ID,
             RUN_CONFORMANCE_SCHEMA_VERSION,
@@ -2801,7 +2879,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "REGISTER stage",
             ),
             description="Run-set red/green certificate for realized spec conformance.",
-            rejected_old_versions=("feedbax.run_conformance.v0",),
+            rejected_old_versions=(
+                "feedbax.run_conformance.v0",
+                RUN_CONFORMANCE_SCHEMA_VERSION_V1,
+            ),
             required_tests=("tests/test_run_conformance.py",),
         ),
         _family(
@@ -3888,16 +3969,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             continue
         for old_version in family.policy.rejected_old_versions:
             remediation = (
-                "RunBundle v1/v2 lack the execution-identity evidence required by v3; "
-                "reassemble from the authored RunAssemblyRequest."
-                if family.kind == "RunBundle" and old_version in {
-                    RUN_BUNDLE_SCHEMA_VERSION_V1,
-                    RUN_BUNDLE_SCHEMA_VERSION_V2,
-                }
+                "RunBundle v1-v5 lack explicit deployment review authorization and "
+                "v6 authenticated input custody/materialization authority; reassemble "
+                "from a current RunAssemblyRequest with a DeploymentPolicy."
+                if family.kind == "RunBundle"
                 else (
-                    f"{family.kind} has no registered migration from {old_version!r}; "
-                    f"{family.policy.owner_module} owns this schema and current-version "
-                    "recreation or an explicit new migration is required."
+                    "RunAssemblyRequest v1 lacks explicit deployment review authorization; "
+                    "re-author a current request with a DeploymentPolicy."
+                    if family.kind == "RunAssemblyRequest"
+                    else (
+                        f"{family.kind} has no registered migration from {old_version!r}; "
+                        f"{family.policy.owner_module} owns this schema and current-version "
+                        "recreation or an explicit new migration is required."
+                    )
                 )
             )
             registry.reject_version(
@@ -4083,32 +4167,6 @@ default_spec_registry.register_migration(
         description=(
             "Preserve existing stages while adding explicit selective authenticated "
             "prerequisite bindings."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "RunBundle",
-    SchemaMigration(
-        source_version=RUN_BUNDLE_SCHEMA_VERSION_V3,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION_V4,
-        migration_id="run-bundle-v3-to-v4-training-row-provenance",
-        migrate=_migrate_run_bundle_v3_to_v4_payload,
-        description=(
-            "Preserve v3 execution envelopes while explicitly recording that typed "
-            "training-row provenance was not emitted."
-        ),
-    ),
-)
-default_spec_registry.register_migration(
-    "RunBundle",
-    SchemaMigration(
-        source_version=RUN_BUNDLE_SCHEMA_VERSION_V4,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION,
-        migration_id="run-bundle-v4-to-v5-envelope-row-provenance",
-        migrate=_migrate_run_bundle_v4_to_v5_payload,
-        description=(
-            "Move optional training-row provenance from the RunRowSpec into the sole "
-            "ExecutionIdentityEnvelope authority."
         ),
     ),
 )
@@ -4380,10 +4438,21 @@ default_spec_registry.register_migration(
     "TrainingRunSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
-        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION,
+        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
         migration_id="training-run-spec-v2-to-v3-mapped-axis-vocabulary",
         migrate=_migrate_training_run_spec_v2_to_v3_payload,
         description="Add optional mapping levels and migrate embedded worker contracts to v2.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+        target_version=TRAINING_RUN_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-spec-v3-to-v4-separate-launch-policy",
+        migrate=_migrate_training_run_spec_v3_to_v4_payload,
+        description="Remove operational execution policy from scientific run identity.",
+        record_metadata=_training_run_spec_v3_policy_evidence,
     ),
 )
 default_spec_registry.register_migration(

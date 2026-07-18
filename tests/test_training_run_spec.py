@@ -5,7 +5,12 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-from feedbax.contracts.manifest import TrainingRunManifest, spec_payload
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
+    canonical_json_bytes,
+    sha256_bytes,
+    spec_payload,
+)
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
@@ -15,6 +20,8 @@ from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+    ExecutionPolicySpec,
     LossTermSpec,
     ObjectiveSlotSpec,
     TaskSpec,
@@ -111,7 +118,7 @@ def test_training_run_spec_old_version_rejection_policy_is_explicit() -> None:
     assert "migration_intentionally_absent=yes" in message
 
 
-def test_training_run_spec_v1_migrates_through_v3_with_fail_loud_nan_policy() -> None:
+def test_training_run_spec_v1_migrates_through_v4_with_fail_loud_nan_policy() -> None:
     payload = _training_run_payload()
     payload.pop("on_nan")
     payload["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V1
@@ -125,6 +132,7 @@ def test_training_run_spec_v1_migrates_through_v3_with_fail_loud_nan_policy() ->
     assert [record.migration_id for record in result.migration_records] == [
         "training-run-spec-v1-to-v2-nan-policy",
         "training-run-spec-v2-to-v3-mapped-axis-vocabulary",
+        "training-run-spec-v3-to-v4-separate-launch-policy",
     ]
     assert TrainingRunSpec.model_validate(result.payload).on_nan == "raise"
 
@@ -156,6 +164,59 @@ def test_training_run_spec_v2_migrates_embedded_worker_contracts_to_v2() -> None
             == "feedbax.spec.worker.execution_program.v2"
         )
     assert TrainingRunSpec.model_validate(result.payload).worker_execution.mapping_levels is None
+
+
+@pytest.mark.parametrize(
+    ("execution", "source_field_present"),
+    [
+        (None, False),
+        (
+            {
+                "mode": "remote",
+                "require_review": False,
+                "allow_cloud": True,
+                "max_wallclock_seconds": 7200,
+                "metadata": {"venue": "gpu-west", "queue": 3},
+            },
+            True,
+        ),
+    ],
+)
+def test_training_run_spec_v3_migration_preserves_removed_policy_as_evidence(
+    execution: dict[str, object] | None,
+    source_field_present: bool,
+) -> None:
+    payload = _training_run_payload()
+    payload["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
+    if execution is None:
+        payload.pop("execution", None)
+    else:
+        payload["execution"] = execution
+
+    with pytest.raises(ValidationError):
+        TrainingRunSpec.model_validate(payload)
+
+    result = default_spec_registry.migrate("TrainingRunSpec", payload)
+
+    assert "execution" not in result.payload
+    migrated = TrainingRunSpec.model_validate(result.payload)
+    assert migrated.schema_version == TRAINING_RUN_SPEC_SCHEMA_VERSION
+    evidence = result.migration_records[-1].metadata["removed_execution_policy"]
+    expected_policy = ExecutionPolicySpec.model_validate(execution or {}).model_dump(mode="json")
+    assert evidence == {
+        "source_field_present": source_field_present,
+        "normalized_values": expected_policy,
+        "canonical_sha256": sha256_bytes(canonical_json_bytes(expected_policy)),
+    }
+
+
+def test_training_run_spec_v3_migration_rejects_invalid_removed_policy() -> None:
+    payload = _training_run_payload()
+    payload["schema_version"] = TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
+    payload["execution"] = {"mode": "remote", "unrecognized": True}
+
+    with pytest.raises(ValidationError, match="unrecognized"):
+        default_spec_registry.migrate("TrainingRunSpec", payload)
 
 
 def test_standard_supervised_method_payload_validates_and_round_trips() -> None:

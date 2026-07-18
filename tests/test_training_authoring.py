@@ -17,7 +17,6 @@ from feedbax.contracts.run_matrix import (
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
-    ExecutionPolicySpec,
     MethodExtensionsSpec,
     MethodPayloadEnvelope,
     MethodRefSpec,
@@ -297,7 +296,7 @@ def test_compile_authoring_projects_once_and_returns_canonical_contracts(
     assert holder["authoring_calls"] == 1
     assert holder["row_compiler_calls"] == 0
     assert row.model_dump(mode="python") == before
-    assert compiled.run_spec.schema_version == "feedbax.spec.training_run.v3"
+    assert compiled.run_spec.schema_version == "feedbax.spec.training_run.v4"
     assert compiled.worker_execution == holder["worker"]
     assert compiled.run_spec.metadata == {"domain_family": "toy", "authored_gain": 3}
     assert compiled.run_spec.training_config.n_batches == 4
@@ -390,7 +389,7 @@ def test_compile_authoring_leaves_mapping_validation_to_worker_contract(
     assert holder["row_compiler_calls"] == 0
 
 
-def test_compile_authoring_owns_default_and_explicit_policies(authoring_registry) -> None:
+def test_compile_authoring_owns_scientific_policies_only(authoring_registry) -> None:
     defaulted = compile_training_method_authoring(
         _authored_row(),
         method_ref=METHOD_REF,
@@ -398,13 +397,12 @@ def test_compile_authoring_owns_default_and_explicit_policies(authoring_registry
         projectors=_projectors(),
     )
 
-    assert defaulted.run_spec.execution == ExecutionPolicySpec()
+    assert "execution" not in TrainingRunSpec.model_fields
     assert defaulted.run_spec.artifacts == ArtifactPolicySpec()
     assert defaulted.run_spec.risk_aggregation == RiskAggregationSpec()
     assert defaulted.run_spec.checkpoint_progress.checkpoint_interval == 2
     assert defaulted.run_spec.checkpoint_progress.progress_interval == 1
 
-    execution = ExecutionPolicySpec(mode="remote", allow_cloud=True)
     artifacts = ArtifactPolicySpec(custody="mandible", artifact_root="artifacts")
     risk = RiskAggregationSpec(realization="mean", replicate="max")
     explicit = compile_training_method_authoring(
@@ -412,23 +410,13 @@ def test_compile_authoring_owns_default_and_explicit_policies(authoring_registry
         method_ref=METHOD_REF,
         run_control=_run_control(),
         projectors=_projectors(),
-        execution=execution,
         artifacts=artifacts,
         risk_aggregation=risk,
     )
 
-    assert explicit.run_spec.execution == execution
     assert explicit.run_spec.artifacts == artifacts
     assert explicit.run_spec.risk_aggregation == risk
-
-    with pytest.raises(TrainingMethodAuthoringError, match="exact ExecutionPolicySpec"):
-        compile_training_method_authoring(
-            _authored_row(),
-            method_ref=METHOD_REF,
-            run_control=_run_control(),
-            projectors=_projectors(),
-            execution={"mode": "dry_run"},  # type: ignore[arg-type]
-        )
+    assert "execution" not in explicit.lowering_result.execution_payload
 
 
 def test_compiler_result_is_consumed_as_an_ordinary_row_lowerer(

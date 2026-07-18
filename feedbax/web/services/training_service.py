@@ -35,6 +35,7 @@ from feedbax.orchestration.assembly import (
 )
 from feedbax.orchestration.bundle import (
     BudgetPolicy,
+    DeploymentPolicy,
     EnvironmentDeclaration,
     LaunchPolicy,
     RunBundle,
@@ -672,7 +673,13 @@ class TrainingService:
                 compiler_id=STUDIO_TRAINING_COMPILER_ID,
                 compiler_version=STUDIO_TRAINING_COMPILER_VERSION,
             ),
-            driver="worker-http",
+            deployment_policy=DeploymentPolicy(
+                driver="worker-http",
+                venue="remote",
+                cloud_authorized=False,
+                review_required=False,
+                review_authorized=False,
+            ),
             environment=EnvironmentDeclaration(python_version=sys.version.split()[0]),
             launch_policy=LaunchPolicy(max_parallel_rows=1),
             budget=BudgetPolicy(max_wall_clock_seconds=24 * 60 * 60),

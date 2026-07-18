@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import copy
 import hashlib
 import gzip
 import io
@@ -71,7 +72,13 @@ from feedbax.contracts.manifest import (
     sha256_bytes,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_VERSION_V1, TrainingRunSpec
+from feedbax.contracts.training import (
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+    TrainingRunSpec,
+)
 from feedbax.contracts.worker import (
     CheckpointBarrierSpec,
     CheckpointSlotSpec,
@@ -108,6 +115,7 @@ LEGACY_CHECKPOINT_ADOPTION_ENTRYPOINT = (
 LEGACY_CHECKPOINT_ADOPTION_DOCS = "docs/structure.md#legacy-checkpoint-adoption"
 _RUN_CONTRACT_BINDING_ALGORITHM_V2 = "feedbax.training_checkpoint.run_contract_binding.v2"
 _RUN_CONTRACT_BINDING_ALGORITHM_V3 = "feedbax.training_checkpoint.run_contract_binding.v3"
+_RUN_CONTRACT_BINDING_ALGORITHM_V4 = "feedbax.training_checkpoint.run_contract_binding.v4"
 _RUN_CONTRACT_HASH_DOMAIN = "migrated-canonical-json"
 _CONTENT_INTEGRITY_SCHEMA_ID = ContentIntegrityDigest.model_fields["schema_id"].default
 _CONTENT_INTEGRITY_SCHEMA_VERSION = ContentIntegrityDigest.model_fields["schema_version"].default
@@ -1382,6 +1390,9 @@ def _rename_archive_directory_no_replace(
             "checkpoint archive private staging identity changed before publication"
         )
     _perform_archive_rename_no_replace(parent_descriptor, source_name, destination_name)
+
+
+publish_directory_no_replace = _rename_archive_directory_no_replace
 
 
 def _perform_archive_rename_no_replace(
@@ -4117,7 +4128,7 @@ def run_contract_binding(
         for binding in phase_program.optimizer_bindings
     ]
     return RunContractBinding(
-        algorithm_version=_RUN_CONTRACT_BINDING_ALGORITHM_V3,
+        algorithm_version=_RUN_CONTRACT_BINDING_ALGORITHM_V4,
         training_run_spec_schema_id=training_run_spec["schema_id"],
         training_run_spec_schema_version=training_run_spec["schema_version"],
         training_run_spec_sha256=_run_contract_hash(training_run_spec),
@@ -4137,20 +4148,19 @@ def run_contract_canonical_projection(
     run_spec: TrainingRunSpec,
     phase_program: PhaseProgramSpec,
 ) -> dict[str, Any]:
-    """Return the stored semantic projection for run-contract binding v3.
+    """Return the stored scientific projection for run-contract binding v4.
 
     The projection intentionally includes the full migrated ``TrainingRunSpec``
-    payload and the phase program used by the checkpoint barrier. No
-    non-semantic fields are excluded today; adding exclusions would be a
-    binding-algorithm change and must bump ``RunContractBinding.algorithm_version``.
-    The projection-envelope algorithm remains v2 because its selection and
-    shape did not change in v3; v3 normalizes signed zero only while hashing.
+    v4 payload and the phase program used by the checkpoint barrier. Operational
+    launch policy is absent because it is no longer part of ``TrainingRunSpec``.
+    Binding v4 retains signed-zero normalization while changing the scientific
+    projection identity.
     """
     migrated_run_spec = _canonical_training_run_spec_payload(run_spec)
     return {
         "schema_id": "feedbax.manifest.training_checkpoint.run_contract_projection",
         "schema_version": "feedbax.manifest.training_checkpoint.run_contract_projection.v1",
-        "algorithm_version": "feedbax.training_checkpoint.run_contract_binding.v2",
+        "algorithm_version": _RUN_CONTRACT_BINDING_ALGORITHM_V4,
         "training_run_spec": migrated_run_spec,
         "phase_program": phase_program.model_dump(mode="json", exclude_none=True),
     }
@@ -4438,6 +4448,17 @@ def _validate_contract_binding(
     if diffs:
         diff_text = "; ".join(_format_binding_diff(diff) for diff in diffs[:8])
         diff_suffix = f"; differing_fields={diff_text}"
+    elif (
+        manifest.run_contract_binding.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3
+        and (
+            manifest.run_contract_binding.canonical_projection is None
+            or manifest.run_contract_binding.canonical_projection_sha256 is None
+        )
+    ):
+        diff_suffix = (
+            "; v3-to-v4 compatibility requires an authenticated stored canonical projection; "
+            "projection is unavailable and v3 launch policy will not be synthesized"
+        )
     else:
         diff_suffix = (
             "; stored canonical projection is unavailable for this legacy binding"
@@ -4462,10 +4483,14 @@ def _contract_binding_matches(
     expected_phase_program: PhaseProgramSpec,
 ) -> bool:
     if (
-        expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V3
+        expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V4
         or expected.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
         or recorded.algorithm_version
-        not in {_RUN_CONTRACT_BINDING_ALGORITHM_V2, _RUN_CONTRACT_BINDING_ALGORITHM_V3}
+        not in {
+            _RUN_CONTRACT_BINDING_ALGORITHM_V2,
+            _RUN_CONTRACT_BINDING_ALGORITHM_V3,
+            _RUN_CONTRACT_BINDING_ALGORITHM_V4,
+        }
         or recorded.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
     ):
         return False
@@ -4473,12 +4498,17 @@ def _contract_binding_matches(
         recorded.canonical_projection_sha256 is not None
         and expected.canonical_projection_sha256 is not None
     ):
-        if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
+        if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V4:
             return (
                 recorded.canonical_projection_sha256
                 == expected.canonical_projection_sha256
             )
         return _compatible_stored_canonical_projection(recorded, expected)
+
+    if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
+        # A v3 binding cannot be compared to v4 without its authenticated
+        # projection: reconstructing v3 from v4 would invent launch policy.
+        return False
 
     if _binding_hash_fields(recorded) == _binding_hash_fields(expected):
         return True
@@ -4506,10 +4536,11 @@ def _compatible_stored_canonical_projection(
     recorded: RunContractBinding,
     expected: RunContractBinding,
 ) -> bool:
-    """Prove equality for a binding stored before signed-zero normalization."""
+    """Authenticate an old projection, migrate its run spec, and compare science."""
     if (
-        recorded.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V2
-        or expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V3
+        recorded.algorithm_version
+        not in {_RUN_CONTRACT_BINDING_ALGORITHM_V2, _RUN_CONTRACT_BINDING_ALGORITHM_V3}
+        or expected.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V4
         or recorded.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
         or expected.hash_domain != _RUN_CONTRACT_HASH_DOMAIN
     ):
@@ -4520,18 +4551,72 @@ def _compatible_stored_canonical_projection(
     if projection is None or recorded_sha256 is None or expected_projection is None:
         return False
 
-    # The stored projection is evidence only when its content agrees with its
-    # binding. Accept either the legacy lexical hash or the normalized current
-    # hash; never use projection equality to excuse a stale or forged digest.
-    valid_projection_hashes = {
-        _canonical_hash(projection),
-        _run_contract_hash(projection),
-    }
+    # Authenticate the original bytes before applying any migration. Binding
+    # v2 predates signed-zero normalization, while v3 requires it.
+    valid_projection_hashes = {_run_contract_hash(projection)}
+    if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V2:
+        valid_projection_hashes.add(_canonical_hash(projection))
     if recorded_sha256 not in valid_projection_hashes:
         return False
-    return canonical_json_bytes(_normalize_signed_zero(projection)) == canonical_json_bytes(
+    if not _historical_projection_is_coherent(recorded, projection):
+        return False
+
+    migrated_projection = copy.deepcopy(projection)
+    training_run_spec = migrated_projection.get("training_run_spec")
+    if not isinstance(training_run_spec, Mapping):
+        return False
+    try:
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        migrated_run_spec = migrate_structured_spec_payload(
+            "TrainingRunSpec",
+            training_run_spec,
+            path="checkpoint_binding/canonical_projection/training_run_spec",
+        ).payload
+        migrated_projection["training_run_spec"] = TrainingRunSpec.model_validate(
+            migrated_run_spec
+        ).model_dump(mode="json", exclude_none=True)
+    except (TypeError, ValueError):
+        return False
+    migrated_projection["algorithm_version"] = _RUN_CONTRACT_BINDING_ALGORITHM_V4
+    return canonical_json_bytes(
+        _normalize_signed_zero(migrated_projection)
+    ) == canonical_json_bytes(
         _normalize_signed_zero(expected_projection)
     )
+
+
+def _historical_projection_is_coherent(
+    recorded: RunContractBinding,
+    projection: Mapping[str, Any],
+) -> bool:
+    """Require a self-consistent historical binding before schema migration."""
+    if (
+        projection.get("schema_id")
+        != "feedbax.manifest.training_checkpoint.run_contract_projection"
+        or projection.get("schema_version")
+        != "feedbax.manifest.training_checkpoint.run_contract_projection.v1"
+        or projection.get("algorithm_version") != _RUN_CONTRACT_BINDING_ALGORITHM_V2
+    ):
+        return False
+    training_run_spec = projection.get("training_run_spec")
+    if not isinstance(training_run_spec, Mapping):
+        return False
+    embedded_schema_id = training_run_spec.get("schema_id")
+    embedded_schema_version = training_run_spec.get("schema_version")
+    if (
+        embedded_schema_id != TRAINING_RUN_SPEC_SCHEMA_ID
+        or recorded.training_run_spec_schema_id != embedded_schema_id
+        or recorded.training_run_spec_schema_version != embedded_schema_version
+    ):
+        return False
+    if recorded.algorithm_version == _RUN_CONTRACT_BINDING_ALGORITHM_V3:
+        return embedded_schema_version == TRAINING_RUN_SPEC_SCHEMA_VERSION_V3
+    return embedded_schema_version in {
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V2,
+        TRAINING_RUN_SPEC_SCHEMA_VERSION_V3,
+    }
 
 
 def _format_binding_hash_field_summary(

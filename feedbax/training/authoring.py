@@ -21,7 +21,6 @@ from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
     CheckpointProgressPolicySpec,
-    ExecutionPolicySpec,
     GraphTopologySourceSpec,
     MethodPayloadEnvelope,
     MethodRefSpec,
@@ -234,7 +233,6 @@ def compile_training_method_authoring(
     method_ref: MethodRefSpec | str | Mapping[str, Any],
     run_control: RunControlSpec | Mapping[str, Any],
     projectors: TrainingMethodAuthoringProjectors[Any],
-    execution: ExecutionPolicySpec | None = None,
     artifacts: ArtifactPolicySpec | None = None,
     risk_aggregation: RiskAggregationSpec | None = None,
 ) -> TrainingMethodAuthoringCompilation:
@@ -261,11 +259,6 @@ def compile_training_method_authoring(
     normalized_ref = _normalize_method_ref(method_ref)
     control = _validate_run_control(run_control)
     descriptor = _descriptor_for_authoring(normalized_ref)
-    execution_policy = _copy_typed_option(
-        execution,
-        ExecutionPolicySpec,
-        path="/execution",
-    )
     artifact_policy = _copy_typed_option(
         artifacts,
         ArtifactPolicySpec,
@@ -361,7 +354,6 @@ def compile_training_method_authoring(
         method_payload=envelope,
         method_extensions=contribution.method_extensions,
         worker_execution=expected_worker,
-        execution=execution_policy,
         artifacts=artifact_policy,
         checkpoint_progress=CheckpointProgressPolicySpec(
             checkpoint_interval=control.checkpoint_interval,

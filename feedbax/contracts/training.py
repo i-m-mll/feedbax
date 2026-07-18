@@ -41,7 +41,8 @@ if TYPE_CHECKING:
 TRAINING_RUN_SPEC_SCHEMA_ID = "feedbax.spec.training_run"
 TRAINING_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run.v1"
 TRAINING_RUN_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run.v2"
-TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v3"
+TRAINING_RUN_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.training_run.v3"
+TRAINING_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run.v4"
 RUN_CONTROL_SPEC_SCHEMA_ID = "feedbax.spec.training.run_control"
 RUN_CONTROL_SPEC_SCHEMA_VERSION = "feedbax.spec.training.run_control.v1"
 LR_SCHEDULE_SPEC_SCHEMA_ID = "feedbax.spec.training.lr_schedule"
@@ -1159,7 +1160,6 @@ class TrainingRunSpec(TrainingRunContractModel):
     method_payload: MethodPayloadEnvelope
     method_extensions: MethodExtensionsSpec = Field(default_factory=MethodExtensionsSpec)
     worker_execution: WorkerExecutionSpec
-    execution: ExecutionPolicySpec = Field(default_factory=ExecutionPolicySpec)
     artifacts: ArtifactPolicySpec = Field(default_factory=ArtifactPolicySpec)
     checkpoint_progress: CheckpointProgressPolicySpec = Field(
         default_factory=CheckpointProgressPolicySpec

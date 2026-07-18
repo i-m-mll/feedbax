@@ -548,9 +548,9 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
     assert migrated_binding["algorithm_version"].endswith(".run_contract_binding.v2")
     assert (
         migrated_binding["canonical_projection"]["training_run_spec"]["schema_version"]
-        == run_spec.schema_version
+        == "feedbax.spec.training_run.v1"
     )
-    assert migrated_binding["canonical_projection"]["training_run_spec"]["on_nan"] == "raise"
+    assert "on_nan" not in migrated_binding["canonical_projection"]["training_run_spec"]
 
 
 def test_checkpoint_transaction_manifest_v3_migrates_batch_progress_metadata(
@@ -994,6 +994,10 @@ def test_checkpoint_transaction_manifest_persists_binding_projection(
 
     payload = json.loads(result.manifest_path.read_text())
     binding = payload["run_contract_binding"]
+    assert binding["algorithm_version"] == "feedbax.training_checkpoint.run_contract_binding.v4"
+    assert binding["canonical_projection"]["algorithm_version"] == (
+        "feedbax.training_checkpoint.run_contract_binding.v4"
+    )
 
     assert binding["canonical_projection"]["training_run_spec"]["schema_id"]
     assert binding["canonical_projection"]["phase_program"]["checkpoint_barriers"]
@@ -1045,25 +1049,303 @@ def _set_graph_gain(run_spec: TrainingRunSpec, gain: float) -> None:
     run_spec.graph.inline["nodes"]["gain"]["params"]["gain"] = gain
 
 
-def _rewrite_binding_as_legacy_lexical_hashes(binding: dict[str, object]) -> None:
+def _rewrite_binding_as_historical(
+    binding: dict[str, object],
+    *,
+    binding_algorithm: str,
+    training_spec_version: str,
+    execution: dict[str, object] | None = None,
+) -> None:
     projection = binding["canonical_projection"]
     training_run_spec = projection["training_run_spec"]
     phase_program = projection["phase_program"]
     optimizer_bindings = phase_program["optimizer_bindings"]
-    binding["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
-    binding["training_run_spec_sha256"] = custody_module._canonical_hash(training_run_spec)
-    binding["method_payload_sha256"] = custody_module._canonical_hash(
+    projection["algorithm_version"] = "feedbax.training_checkpoint.run_contract_binding.v2"
+    training_run_spec["schema_version"] = training_spec_version
+    if training_spec_version in {
+        "feedbax.spec.training_run.v1",
+        "feedbax.spec.training_run.v2",
+    }:
+        training_run_spec["worker_execution"].pop("mapping_levels", None)
+        for field_name in ("method_contract", "effective_phase"):
+            embedded = training_run_spec["worker_execution"][field_name]
+            embedded["schema_version"] = "feedbax.spec.worker.execution_program.v1"
+            embedded["phase_program"]["schema_version"] = (
+                "feedbax.spec.worker.execution_program.v1"
+            )
+    if training_spec_version == "feedbax.spec.training_run.v1":
+        training_run_spec.pop("on_nan", None)
+    if training_spec_version == "feedbax.spec.training_run.v3":
+        training_run_spec["execution"] = execution or {}
+
+    binding["algorithm_version"] = binding_algorithm
+    binding["training_run_spec_schema_id"] = training_run_spec["schema_id"]
+    binding["training_run_spec_schema_version"] = training_spec_version
+    hash_value = (
+        custody_module._canonical_hash
+        if binding_algorithm == "feedbax.training_checkpoint.run_contract_binding.v2"
+        else custody_module._run_contract_hash
+    )
+    binding["training_run_spec_sha256"] = hash_value(training_run_spec)
+    binding["method_payload_sha256"] = hash_value(
         training_run_spec["method_payload"]
     )
-    binding["phase_program_sha256"] = custody_module._canonical_hash(phase_program)
-    binding["objective_sha256"] = custody_module._canonical_hash(training_run_spec["objective"])
-    binding["graph_sha256"] = custody_module._canonical_hash(training_run_spec["graph"])
-    binding["optimizer_bindings_sha256"] = custody_module._canonical_hash(optimizer_bindings)
-    binding["canonical_projection_sha256"] = custody_module._canonical_hash(projection)
+    binding["phase_program_sha256"] = hash_value(phase_program)
+    binding["objective_sha256"] = hash_value(training_run_spec["objective"])
+    binding["graph_sha256"] = hash_value(training_run_spec["graph"])
+    binding["optimizer_bindings_sha256"] = hash_value(optimizer_bindings)
+    binding["canonical_projection_sha256"] = hash_value(projection)
 
 
+def _rewrite_binding_as_legacy_lexical_hashes(binding: dict[str, object]) -> None:
+    _rewrite_binding_as_historical(
+        binding,
+        binding_algorithm="feedbax.training_checkpoint.run_contract_binding.v2",
+        training_spec_version="feedbax.spec.training_run.v3",
+    )
+
+
+def _rewrite_binding_as_v3(
+    binding: dict[str, object],
+    *,
+    execution: dict[str, object],
+) -> None:
+    _rewrite_binding_as_historical(
+        binding,
+        binding_algorithm="feedbax.training_checkpoint.run_contract_binding.v3",
+        training_spec_version="feedbax.spec.training_run.v3",
+        execution=execution,
+    )
+
+
+def test_strict_load_accepts_authenticated_v3_projection_with_different_launch_policy(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    _set_graph_gain(run_spec, -0.0)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    _rewrite_binding_as_v3(
+        payload["run_contract_binding"],
+        execution={
+            "mode": "remote",
+            "require_review": False,
+            "allow_cloud": True,
+            "max_wallclock_seconds": 3600,
+            "metadata": {"region": "different"},
+        },
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    expected_run_spec = run_spec.model_copy(deep=True)
+    _set_graph_gain(expected_run_spec, 0.0)
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=expected_run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+
+    assert loaded.manifest.transaction_id == result.manifest.transaction_id
+
+
+def test_strict_load_rejects_v3_projection_with_scientific_difference(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+    _rewrite_binding_as_v3(binding, execution={})
+    binding["canonical_projection"]["training_run_spec"]["training_config"][
+        "learning_rate"
+    ] = 0.5
+    binding["canonical_projection_sha256"] = custody_module._run_contract_hash(
+        binding["canonical_projection"]
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointContractBindingError, match="learning_rate"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+def test_strict_load_rejects_v3_policy_tamper_before_migration(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+    _rewrite_binding_as_v3(binding, execution={})
+    binding["canonical_projection"]["training_run_spec"]["execution"]["metadata"] = {
+        "tampered": True
+    }
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointContractBindingError):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+def test_strict_load_rejects_v3_binding_relabeling_current_v4_projection(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    payload["run_contract_binding"]["algorithm_version"] = (
+        "feedbax.training_checkpoint.run_contract_binding.v3"
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointContractBindingError):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+def test_strict_load_rejects_v3_projection_inner_outer_version_mismatch(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+    _rewrite_binding_as_v3(binding, execution={})
+    binding["training_run_spec_schema_version"] = "feedbax.spec.training_run.v2"
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointContractBindingError):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+def test_strict_load_rejects_v3_projection_with_nonhistorical_inner_algorithm(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+    _rewrite_binding_as_v3(binding, execution={})
+    binding["canonical_projection"]["algorithm_version"] = (
+        "feedbax.training_checkpoint.run_contract_binding.v3"
+    )
+    binding["canonical_projection_sha256"] = custody_module._run_contract_hash(
+        binding["canonical_projection"]
+    )
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointContractBindingError):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+def test_strict_load_rejects_projectionless_v3_to_v4_compatibility(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    payload = json.loads(result.manifest_path.read_text())
+    binding = payload["run_contract_binding"]
+    _rewrite_binding_as_v3(binding, execution={})
+    binding.pop("canonical_projection")
+    binding.pop("canonical_projection_sha256")
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(
+        CheckpointContractBindingError,
+        match="v3-to-v4 compatibility requires an authenticated stored canonical projection",
+    ):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
+@pytest.mark.parametrize(
+    "training_spec_version",
+    [
+        "feedbax.spec.training_run.v1",
+        "feedbax.spec.training_run.v2",
+        "feedbax.spec.training_run.v3",
+    ],
+)
 def test_strict_load_accepts_legacy_signed_zero_projection_with_proof(
     tmp_path: Path,
+    training_spec_version: str,
 ) -> None:
     recorded_run_spec = _run_spec(minimax=True)
     _set_graph_gain(recorded_run_spec, -0.0)
@@ -1077,7 +1359,11 @@ def test_strict_load_accepts_legacy_signed_zero_projection_with_proof(
         slots=_minimax_slots(),
     )
     payload = json.loads(result.manifest_path.read_text())
-    _rewrite_binding_as_legacy_lexical_hashes(payload["run_contract_binding"])
+    _rewrite_binding_as_historical(
+        payload["run_contract_binding"],
+        binding_algorithm="feedbax.training_checkpoint.run_contract_binding.v2",
+        training_spec_version=training_spec_version,
+    )
     _rewrite_manifest_and_latest(result, payload)
     expected_run_spec = recorded_run_spec.model_copy(deep=True)
     _set_graph_gain(expected_run_spec, 0.0)
@@ -1092,7 +1378,18 @@ def test_strict_load_accepts_legacy_signed_zero_projection_with_proof(
     assert loaded.manifest.transaction_id == result.manifest.transaction_id
 
 
-def test_strict_load_accepts_zero_free_v2_projection_with_proof(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "training_spec_version",
+    [
+        "feedbax.spec.training_run.v1",
+        "feedbax.spec.training_run.v2",
+        "feedbax.spec.training_run.v3",
+    ],
+)
+def test_strict_load_accepts_zero_free_v2_projection_with_proof(
+    tmp_path: Path,
+    training_spec_version: str,
+) -> None:
     run_spec = _run_spec(minimax=True)
     program = run_spec.worker_execution.method_contract.phase_program
     result = write_checkpoint_transaction(
@@ -1104,8 +1401,10 @@ def test_strict_load_accepts_zero_free_v2_projection_with_proof(tmp_path: Path) 
         slots=_minimax_slots(),
     )
     payload = json.loads(result.manifest_path.read_text())
-    payload["run_contract_binding"]["algorithm_version"] = (
-        "feedbax.training_checkpoint.run_contract_binding.v2"
+    _rewrite_binding_as_historical(
+        payload["run_contract_binding"],
+        binding_algorithm="feedbax.training_checkpoint.run_contract_binding.v2",
+        training_spec_version=training_spec_version,
     )
     _rewrite_manifest_and_latest(result, payload)
 
@@ -1195,7 +1494,7 @@ def test_legacy_signed_zero_projection_compatibility_fails_closed(
         )
 
 
-def test_projectionless_legacy_signed_zero_binding_keeps_lexical_match(
+def test_projectionless_v2_binding_with_v3_spec_fails_closed(
     tmp_path: Path,
 ) -> None:
     run_spec = _run_spec(minimax=True)
@@ -1216,14 +1515,13 @@ def test_projectionless_legacy_signed_zero_binding_keeps_lexical_match(
     binding.pop("canonical_projection_sha256")
     _rewrite_manifest_and_latest(result, payload)
 
-    loaded = load_latest_checkpoint(
-        tmp_path,
-        expected_run_spec=run_spec,
-        expected_phase_program=program,
-        expected_slots=_minimax_slots(),
-    )
-
-    assert loaded.manifest.run_contract_binding.canonical_projection is None
+    with pytest.raises(CheckpointContractBindingError):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
 
 
 def test_checkpoint_fork_hardlinks_three_targets_and_survives_source_quarantine(
@@ -1950,10 +2248,11 @@ def test_defaulted_legacy_projection_migrates_and_resumes(
 
     assert loaded.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     assert loaded.manifest.run_contract_binding.canonical_projection is not None
-    assert (
-        loaded.manifest.run_contract_binding.canonical_projection["training_run_spec"]["on_nan"]
-        == "raise"
-    )
+    stored_run_spec = loaded.manifest.run_contract_binding.canonical_projection[
+        "training_run_spec"
+    ]
+    assert stored_run_spec["schema_version"] == "feedbax.spec.training_run.v1"
+    assert "on_nan" not in stored_run_spec
 
 
 def test_checkpoint_fork_cli_batch_smoke_partial_failure(tmp_path: Path) -> None:
