@@ -724,6 +724,8 @@ def _panel_contents(
         panel = panel_map.get(panel_name)
         title = _evaluate_panel_title(panel.title, context) if panel is not None else panel_name
         axes_labels = panel.axes_labels.model_dump() if panel and panel.axes_labels else None
+        x_axis = panel.x_axis.model_dump(exclude_none=True) if panel and panel.x_axis else None
+        y_axis = panel.y_axis.model_dump(exclude_none=True) if panel and panel.y_axis else None
         contents.append(
             PanelContent(
                 name=panel_name,
@@ -732,6 +734,8 @@ def _panel_contents(
                 row=panel.row if panel else index + 1,
                 col=panel.col if panel else 1,
                 axes_labels=axes_labels,
+                x_axis=x_axis,
+                y_axis=y_axis,
             )
         )
     return contents
@@ -775,6 +779,16 @@ def _facet_panel_contents(
                 axes_labels=(
                     base_panel.axes_labels.model_dump()
                     if base_panel is not None and base_panel.axes_labels is not None
+                    else None
+                ),
+                x_axis=(
+                    base_panel.x_axis.model_dump(exclude_none=True)
+                    if base_panel is not None and base_panel.x_axis is not None
+                    else None
+                ),
+                y_axis=(
+                    base_panel.y_axis.model_dump(exclude_none=True)
+                    if base_panel is not None and base_panel.y_axis is not None
                     else None
                 ),
             )

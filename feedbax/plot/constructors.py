@@ -31,6 +31,10 @@ class ProfileParams(StrictModel):
     n_std_plot: float = 1.0
     stride_curves: int = 1
     mode: Literal["std", "curves"] = "std"
+    line_dash: str | None = None
+    line_width: float | None = None
+    showlegend: bool | None = None
+    show_band: bool = True
 
 
 class Trajectory2DParams(StrictModel):
@@ -87,6 +91,17 @@ class ComparisonGridParams(StrictModel):
     vertical_spacing: float | None = None
 
 
+class FigureMarginParams(StrictModel):
+    """Optional Plotly figure margins."""
+
+    l: float | None = None
+    r: float | None = None
+    t: float | None = None
+    b: float | None = None
+    pad: float | None = None
+    autoexpand: bool | None = None
+
+
 class GridFigureParams(StrictModel):
     """Defaults for whole-figure layout."""
 
@@ -95,6 +110,13 @@ class GridFigureParams(StrictModel):
     height: int | None = None
     title: str | None = None
     legend_tracegroupgap: int | None = None
+    legend_x: float | None = None
+    legend_y: float | None = None
+    legend_xanchor: Literal["auto", "left", "center", "right"] | None = None
+    legend_yanchor: Literal["auto", "top", "middle", "bottom"] | None = None
+    margin: FigureMarginParams | None = None
+    hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
+    template: str | None = None
 
 
 class Trajectories2DRowParams(StrictModel):
@@ -117,6 +139,8 @@ class PanelContent:
     row: int | None = None
     col: int | None = None
     axes_labels: Mapping[str, str | None] | None = None
+    x_axis: Mapping[str, Any] | None = None
+    y_axis: Mapping[str, Any] | None = None
 
 
 TraceConstructor = Callable[[Mapping[str, Any], StrictModel], Sequence[Any]]
@@ -436,15 +460,27 @@ def _profile_band(data: Mapping[str, Any], params: StrictModel) -> Sequence[Any]
     lower = _array(data["lower"] if "lower" in data else mean - p.n_std_plot * std)
     label = p.label or str(data.get("label", "Profile"))
     color = p.color or str(data.get("color", "rgb(31,119,180)"))
+    line: dict[str, Any] = {"color": color}
+    if p.line_dash is not None:
+        line["dash"] = p.line_dash
+    if p.line_width is not None:
+        line["width"] = p.line_width
+    mean_trace_kwargs: dict[str, Any] = {}
+    if p.showlegend is not None:
+        mean_trace_kwargs["showlegend"] = p.showlegend
+    mean_trace = go.Scatter(
+        name=label,
+        legendgroup=label,
+        x=x,
+        y=mean,
+        mode="lines",
+        line=line,
+        **mean_trace_kwargs,
+    )
+    if not p.show_band:
+        return [mean_trace]
     return [
-        go.Scatter(
-            name=label,
-            legendgroup=label,
-            x=x,
-            y=mean,
-            mode="lines",
-            line={"color": color},
-        ),
+        mean_trace,
         go.Scatter(
             name="Upper bound",
             legendgroup=label,
@@ -689,6 +725,10 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
         if panel.axes_labels:
             fig.update_xaxes(title_text=panel.axes_labels.get("x"), row=row, col=col)
             fig.update_yaxes(title_text=panel.axes_labels.get("y"), row=row, col=col)
+        if panel.x_axis:
+            fig.update_xaxes(**panel.x_axis, row=row, col=col)
+        if panel.y_axis:
+            fig.update_yaxes(**panel.y_axis, row=row, col=col)
     return fig
 
 
@@ -703,6 +743,20 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
         updates["title_text"] = p.title
     if p.legend_tracegroupgap is not None:
         updates["legend_tracegroupgap"] = p.legend_tracegroupgap
+    if p.legend_x is not None:
+        updates["legend_x"] = p.legend_x
+    if p.legend_y is not None:
+        updates["legend_y"] = p.legend_y
+    if p.legend_xanchor is not None:
+        updates["legend_xanchor"] = p.legend_xanchor
+    if p.legend_yanchor is not None:
+        updates["legend_yanchor"] = p.legend_yanchor
+    if p.margin is not None:
+        updates["margin"] = p.margin.model_dump(exclude_none=True)
+    if p.hovermode is not None:
+        updates["hovermode"] = p.hovermode
+    if p.template is not None:
+        updates["template"] = p.template
     if updates:
         fig.update_layout(**updates)
     return fig
@@ -777,10 +831,13 @@ def register_default_figure_constructors() -> None:
         ),
     ]
     changed_versions = {
+        "feedbax.profile_band": "v2",
         "feedbax.trajectory_2d": "v2",
         "feedbax.endpoint_markers": "v2",
         "feedbax.hline": "v2",
         "feedbax.vrect": "v2",
+        "feedbax.comparison_grid": "v2",
+        "feedbax.grid_figure": "v2",
     }
     for key, tier, constructor, params_model, description in defaults:
         register_figure_constructor(
