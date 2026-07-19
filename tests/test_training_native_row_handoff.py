@@ -85,7 +85,10 @@ from feedbax.orchestration.drivers.runpod import (
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.state import RowState, RunSetState
-from feedbax.orchestration.stages import _verify_collected_native_checkpoint_custody
+from feedbax.orchestration.stages import (
+    OrchestrationStageError,
+    _verify_collected_native_checkpoint_custody,
+)
 from feedbax.training.diagnostics import (
     LearningRateDiagnostic,
     NativeExecutionProducerContext,
@@ -575,6 +578,21 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         "optimizer",
         "prng",
     }
+
+    collected_manifest_path = Path(collected["manifest.json"])
+    collected_manifest_bytes = collected_manifest_path.read_bytes()
+    mismatched_manifest = json.loads(collected_manifest_bytes)
+    mismatched_manifest["checkpoint_custody"][-1]["id"] = "tx-stale-input"
+    collected_manifest_path.write_text(
+        json.dumps(mismatched_manifest, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        OrchestrationStageError,
+        match="not the terminal training manifest authority",
+    ):
+        _verify_collected_native_checkpoint_custody(row, collected)
+    collected_manifest_path.write_bytes(collected_manifest_bytes)
 
     continuation = CheckpointContinuationRequest(
         source_completed_batches=1,

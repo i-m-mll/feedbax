@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import pickle
 import shutil
 import subprocess
@@ -71,6 +72,8 @@ from feedbax.training.checkpoint_custody import (
     CheckpointForkPlanBindings,
     CheckpointForkTransformRegistration,
     CheckpointForkTransformRegistry,
+    authenticate_checkpoint_custody_ref,
+    authenticate_published_checkpoint_custody,
     checkpoint_slot_names,
     derive_checkpoint_fork_compatibility_projection,
     detect_known_legacy_checkpoint_layout,
@@ -85,6 +88,18 @@ from feedbax.training.checkpoint_custody import (
     concatenate_checkpoint_histories,
     materialize_concatenated_checkpoint_histories,
 )
+
+
+def _touch_marker(path: str) -> None:
+    Path(path).touch()
+
+
+class _TouchMarkerOnUnpickle:
+    def __init__(self, marker_path: Path) -> None:
+        self.marker_path = marker_path
+
+    def __reduce__(self):
+        return (_touch_marker, (str(self.marker_path),))
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -3438,6 +3453,111 @@ def test_public_checkpoint_custody_ref_resolver_round_trip_all_and_selected(
     assert tuple(selected.slots) == ("controller", "rng")
     assert selected.slots["rng"].dtype == jnp.uint32
     assert resolved.migration_records == ()
+
+
+def test_checkpoint_custody_authentication_never_executes_pickle_payload(
+    tmp_path: Path,
+) -> None:
+    marker_path = tmp_path / "pickle-executed"
+    result = _write_resolver_checkpoint(tmp_path)
+    _replace_resolver_slot_blob(
+        result,
+        "controller",
+        _TouchMarkerOnUnpickle(marker_path),
+    )
+
+    authenticated = authenticate_checkpoint_custody_ref(
+        _resolver_parent_ref(result),
+        allowed_root=tmp_path,
+    )
+
+    assert "controller" in authenticated.slot_names
+    assert not marker_path.exists()
+
+
+def _published_custody_target(result, surface: str) -> Path:
+    if surface == "latest":
+        return result.latest_pointer_path
+    if surface == "manifest":
+        return result.manifest_path
+    if surface == "slot":
+        return _slot_blob_path(result.manifest_path, "controller")
+    raise AssertionError(f"unknown custody surface: {surface}")
+
+
+@pytest.mark.parametrize("surface", ["latest", "manifest", "slot"])
+def test_published_checkpoint_authentication_rejects_internal_symlink(
+    tmp_path: Path,
+    surface: str,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    target = _published_custody_target(result, surface)
+    backup = target.with_name(f"{target.name}.real")
+    target.rename(backup)
+    target.symlink_to(backup.name)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="regular|unsafe|traversal"):
+        authenticate_published_checkpoint_custody(tmp_path)
+
+
+@pytest.mark.parametrize("surface", ["latest", "manifest", "slot"])
+def test_published_checkpoint_authentication_rejects_non_regular_member(
+    tmp_path: Path,
+    surface: str,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    target = _published_custody_target(result, surface)
+    target.unlink()
+    target.mkdir()
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="regular|unsafe"):
+        authenticate_published_checkpoint_custody(tmp_path)
+
+
+def test_published_checkpoint_authentication_rejects_fifo_without_opening_it(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    target = result.latest_pointer_path
+    target.unlink()
+    os.mkfifo(target)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="regular"):
+        authenticate_published_checkpoint_custody(tmp_path)
+
+
+@pytest.mark.parametrize("surface", ["latest", "manifest", "slot"])
+def test_published_checkpoint_authentication_rejects_member_replacement_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    target = _published_custody_target(result, surface)
+    original_bytes = target.read_bytes()
+    backup = target.with_name(f"{target.name}.raced")
+    real_open = custody_module.os.open
+    replaced = False
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if (
+            not replaced
+            and dir_fd is not None
+            and path == target.name
+            and flags & custody_module.os.O_NOFOLLOW
+            and not flags & custody_module.os.O_DIRECTORY
+        ):
+            replaced = True
+            target.rename(backup)
+            target.write_bytes(original_bytes)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(custody_module.os, "open", racing_open)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="stable|identity"):
+        authenticate_published_checkpoint_custody(tmp_path)
+    assert replaced
 
 
 def test_checkpoint_custody_ref_resolver_returns_immutable_lineage_snapshots(
