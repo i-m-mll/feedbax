@@ -1,5 +1,8 @@
 import importlib
 import importlib.util
+import subprocess
+import sys
+import textwrap
 import tomllib
 from pathlib import Path
 
@@ -26,3 +29,33 @@ def test_legacy_dashboard_extra_is_retired():
         "dash" not in dependency.lower()
         for dependency in optional_dependencies["all"]
     )
+
+
+@pytest.mark.parametrize("module_name", ["feedbax.analysis", "feedbax.analysis.execution"])
+def test_analysis_import_does_not_require_persistence_or_viz_extras(module_name: str):
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import sys
+
+        blocked = {"alembic", "matplotlib", "polars", "pyexiv2"}
+
+        class BlockOptionalImports(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.partition(".")[0] in blocked:
+                    raise ModuleNotFoundError(fullname)
+                return None
+
+        sys.meta_path.insert(0, BlockOptionalImports())
+        import importlib
+        importlib.import_module(sys.argv[1])
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, module_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr

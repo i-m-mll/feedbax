@@ -29,7 +29,6 @@ from feedbax.contracts.evaluation_states import (
     EvaluationStatesSchemaMismatch,
     load_authenticated_evaluation_states_artifact,
 )
-from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedExecutionContext,
@@ -707,15 +706,6 @@ def execute_analysis_run_spec(
     """Execute a serialized analysis spec and write an ``AnalysisRunManifest``."""
     run_spec = coerce_analysis_run_spec(spec)
     root_path = Path(root) if root is not None else default_manifest_root()
-    authentication_diagnostic: AnalysisEvaluationStatesResolutionError | None = None
-    try:
-        authenticated_inputs = _resolve_authenticated_input_authorities(
-            run_spec,
-            root=root_path,
-        )
-    except AnalysisEvaluationStatesResolutionError as exc:
-        authentication_diagnostic = exc
-        authenticated_inputs = {}
     context = AnalysisRunContext(
         spec=run_spec,
         root=root_path,
@@ -727,8 +717,10 @@ def execute_analysis_run_spec(
     )
 
     try:
-        if authentication_diagnostic is not None:
-            raise authentication_diagnostic
+        authenticated_inputs = _resolve_authenticated_input_authorities(
+            run_spec,
+            root=root_path,
+        )
         recipe = get_analysis_recipe(run_spec.analysis_type)
         manifest_id = analysis_run_manifest_id(run_spec)
         if use_cache and not force:
@@ -762,6 +754,8 @@ def execute_analysis_run_spec(
             raise ValueError(f"Analysis recipe {run_spec.analysis_type!r} returned no analyses")
         if validate_result is not None:
             validate_result(run_spec.analysis_type, result)
+        from feedbax.analysis.execution import run_analyses_with_context
+
         run_analyses_with_context(
             result.analyses,
             result.data,
