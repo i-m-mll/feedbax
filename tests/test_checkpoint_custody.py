@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import pickle
 import shutil
 import subprocess
@@ -3495,7 +3496,7 @@ def test_published_checkpoint_authentication_rejects_internal_symlink(
     target.rename(backup)
     target.symlink_to(backup.name)
 
-    with pytest.raises(CheckpointReferenceResolutionError, match="unsafe|traversal"):
+    with pytest.raises(CheckpointReferenceResolutionError, match="regular|unsafe|traversal"):
         authenticate_published_checkpoint_custody(tmp_path)
 
 
@@ -3510,6 +3511,18 @@ def test_published_checkpoint_authentication_rejects_non_regular_member(
     target.mkdir()
 
     with pytest.raises(CheckpointReferenceResolutionError, match="regular|unsafe"):
+        authenticate_published_checkpoint_custody(tmp_path)
+
+
+def test_published_checkpoint_authentication_rejects_fifo_without_opening_it(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    target = result.latest_pointer_path
+    target.unlink()
+    os.mkfifo(target)
+
+    with pytest.raises(CheckpointReferenceResolutionError, match="regular"):
         authenticate_published_checkpoint_custody(tmp_path)
 
 

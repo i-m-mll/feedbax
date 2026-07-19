@@ -1872,7 +1872,13 @@ def _read_checkpoint_custody_member(
         flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         try:
             before = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(before.st_mode):
+                raise CheckpointReferenceResolutionError(
+                    f"{context} is not a regular file"
+                )
             descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+        except CheckpointReferenceResolutionError:
+            raise
         except OSError as exc:
             raise CheckpointReferenceResolutionError(
                 f"{context} is unsafe or unavailable"
@@ -1885,8 +1891,7 @@ def _read_checkpoint_custody_member(
                 follow_symlinks=False,
             )
             if (
-                not stat.S_ISREG(before.st_mode)
-                or not stat.S_ISREG(opened.st_mode)
+                not stat.S_ISREG(opened.st_mode)
                 or _identity(before) != _identity(opened)
                 or _identity(after_open) != _identity(opened)
             ):

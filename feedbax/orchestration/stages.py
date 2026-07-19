@@ -1517,6 +1517,8 @@ def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
             dir_fd=parent_descriptor,
             follow_symlinks=False,
         )
+        if not stat.S_ISREG(before.st_mode):
+            raise OrchestrationStageError(f"{context} is not a regular file")
         flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         descriptor = os.open(path_obj.name, flags, dir_fd=parent_descriptor)
         opened = os.fstat(descriptor)
@@ -1526,8 +1528,7 @@ def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
             follow_symlinks=False,
         )
         if (
-            not stat.S_ISREG(before.st_mode)
-            or not stat.S_ISREG(opened.st_mode)
+            not stat.S_ISREG(opened.st_mode)
             or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
             or (after_open.st_dev, after_open.st_ino) != (opened.st_dev, opened.st_ino)
         ):
