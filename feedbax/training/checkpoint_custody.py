@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import ctypes
-import copy
 import hashlib
 import gzip
 import io
@@ -507,6 +506,22 @@ class ResolvedCheckpointTransaction:
 
 
 @dataclass(frozen=True)
+class AuthenticatedCheckpointTransaction:
+    """Checkpoint transaction authenticated without decoding slot payloads.
+
+    This evidence is safe to derive from untrusted collected custody bytes:
+    every declared blob is contained under the custody root and its exact size
+    and SHA-256 digest are verified, but pickle payloads are never executed.
+    """
+
+    parent_ref: ParentRef
+    manifest_sha256: str
+    manifest: CheckpointTransactionManifest
+    slot_names: tuple[str, ...]
+    migration_records: tuple[ArtifactMigrationRecord, ...]
+
+
+@dataclass(frozen=True)
 class CheckpointCustodyArchiveEvidence:
     """Authenticated identities and exact sizes bound into a custody archive."""
 
@@ -663,6 +678,53 @@ def resolve_checkpoint_custody_ref(
     except Exception as exc:
         raise CheckpointReferenceResolutionError(
             f"checkpoint custody reference resolution failed: {exc}"
+        ) from exc
+
+
+def authenticate_checkpoint_custody_ref(
+    ref: ParentRef,
+    *,
+    allowed_root: str | Path,
+) -> AuthenticatedCheckpointTransaction:
+    """Authenticate one checkpoint transaction without deserializing its slots.
+
+    This is the verification boundary for checkpoint custody collected from an
+    untrusted executor or provider. It validates the exact parent reference,
+    manifest identity and integrity records, path containment, and every slot
+    blob's declared size and SHA-256 digest. It deliberately never calls
+    ``pickle.loads``.
+    """
+    try:
+        (
+            root_path,
+            manifest_path,
+            manifest_sha256,
+            loaded_manifest,
+            slots_by_name,
+        ) = _load_authenticated_checkpoint_custody_ref(ref, allowed_root=allowed_root)
+        transaction_dir = manifest_path.parent.resolve()
+        for slot in slots_by_name.values():
+            blob_path = _resolve_checkpoint_slot_path(
+                slot,
+                transaction_dir=transaction_dir,
+                allowed_root=root_path,
+            )
+            _verify_checkpoint_slot_blob_without_deserializing(slot, blob_path)
+        return AuthenticatedCheckpointTransaction(
+            parent_ref=_immutable_model_snapshot(ref),
+            manifest_sha256=manifest_sha256,
+            manifest=_immutable_model_snapshot(loaded_manifest.document),
+            slot_names=tuple(slots_by_name),
+            migration_records=tuple(
+                _immutable_model_snapshot(record)
+                for record in loaded_manifest.migration_records
+            ),
+        )
+    except CheckpointReferenceResolutionError:
+        raise
+    except Exception as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint custody authentication failed: {exc}"
         ) from exc
 
 
@@ -1471,6 +1533,61 @@ def _resolve_checkpoint_custody_ref(
     allowed_root: str | Path,
     slot_names: Collection[str] | None,
 ) -> ResolvedCheckpointTransaction:
+    (
+        root_path,
+        manifest_path,
+        manifest_sha256,
+        loaded_manifest,
+        slots_by_name,
+    ) = _load_authenticated_checkpoint_custody_ref(ref, allowed_root=allowed_root)
+    manifest = loaded_manifest.document
+    selected_names = _checkpoint_slot_selection(slot_names, slots_by_name)
+    transaction_dir = manifest_path.parent.resolve()
+    loaded_slots: dict[str, Any] = {}
+    for name in selected_names:
+        slot = slots_by_name[name]
+        blob_path = _resolve_checkpoint_slot_path(
+            slot,
+            transaction_dir=transaction_dir,
+            allowed_root=root_path,
+        )
+        try:
+            value = _deserialize_checkpoint_slot(slot, blob_path)
+        except (CheckpointIntegrityError, OSError) as exc:
+            raise CheckpointReferenceResolutionError(str(exc)) from exc
+        _validate_decoded_slot_integrity(slot, value)
+        loaded_slots[name] = value
+
+    try:
+        provenance_notices, _ = _validate_manifest_structural_abi(manifest, loaded_slots)
+    except CheckpointIntegrityError as exc:
+        raise CheckpointReferenceResolutionError(str(exc)) from exc
+    return ResolvedCheckpointTransaction(
+        parent_ref=_immutable_model_snapshot(ref),
+        manifest_sha256=manifest_sha256,
+        manifest=_immutable_model_snapshot(manifest),
+        slots=MappingProxyType(loaded_slots),
+        migration_records=tuple(
+            _immutable_model_snapshot(record) for record in loaded_manifest.migration_records
+        ),
+        provenance_notices=tuple(
+            _immutable_model_snapshot(notice) for notice in provenance_notices
+        ),
+    )
+
+
+def _load_authenticated_checkpoint_custody_ref(
+    ref: ParentRef,
+    *,
+    allowed_root: str | Path,
+) -> tuple[
+    Path,
+    Path,
+    str,
+    CheckpointDocumentLoadResult[CheckpointTransactionManifest],
+    dict[str, CheckpointSlotBlobRef],
+]:
+    """Load and authenticate one exact checkpoint reference and its manifest."""
     if not isinstance(ref, ParentRef):
         raise CheckpointReferenceResolutionError("ref must be a ParentRef")
     if ref.kind != "TrainingCheckpointTransactionManifest":
@@ -1527,41 +1644,78 @@ def _resolve_checkpoint_custody_ref(
         raise CheckpointReferenceResolutionError(
             "checkpoint custody ParentRef id does not match manifest transaction_id"
         )
-
     slots_by_name = _validate_checkpoint_transaction_integrity_records(manifest)
-    selected_names = _checkpoint_slot_selection(slot_names, slots_by_name)
-    transaction_dir = manifest_path.parent.resolve()
-    loaded_slots: dict[str, Any] = {}
-    for name in selected_names:
-        slot = slots_by_name[name]
-        blob_path = _resolve_checkpoint_slot_path(
-            slot,
-            transaction_dir=transaction_dir,
-            allowed_root=root_path,
-        )
-        try:
-            value = _deserialize_checkpoint_slot(slot, blob_path)
-        except (CheckpointIntegrityError, OSError) as exc:
-            raise CheckpointReferenceResolutionError(str(exc)) from exc
-        _validate_decoded_slot_integrity(slot, value)
-        loaded_slots[name] = value
+    return root_path, manifest_path, manifest_sha256, loaded_manifest, slots_by_name
 
+
+def _verify_checkpoint_slot_blob_without_deserializing(
+    slot: CheckpointSlotBlobRef,
+    path: Path,
+) -> None:
+    """Verify one regular-file slot blob without executing pickle payloads."""
     try:
-        provenance_notices, _ = _validate_manifest_structural_abi(manifest, loaded_slots)
-    except CheckpointIntegrityError as exc:
-        raise CheckpointReferenceResolutionError(str(exc)) from exc
-    return ResolvedCheckpointTransaction(
-        parent_ref=_immutable_model_snapshot(ref),
-        manifest_sha256=manifest_sha256,
-        manifest=_immutable_model_snapshot(manifest),
-        slots=MappingProxyType(loaded_slots),
-        migration_records=tuple(
-            _immutable_model_snapshot(record) for record in loaded_manifest.migration_records
-        ),
-        provenance_notices=tuple(
-            _immutable_model_snapshot(notice) for notice in provenance_notices
-        ),
-    )
+        path_stat = path.lstat()
+    except OSError as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} blob could not be inspected"
+        ) from exc
+    if not stat.S_ISREG(path_stat.st_mode):
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} blob is not a regular file"
+        )
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint slot authentication requires no-follow file opening"
+        )
+    flags |= nofollow
+    digest = hashlib.sha256()
+    size_bytes = 0
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            opened_stat = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or _identity(opened_stat) != _identity(path_stat)
+            ):
+                raise CheckpointReferenceResolutionError(
+                    f"checkpoint slot {slot.slot!r} blob identity changed before reading"
+                )
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                size_bytes += len(chunk)
+                digest.update(chunk)
+            completed_stat = os.fstat(descriptor)
+            if (
+                _identity(completed_stat) != _identity(opened_stat)
+                or completed_stat.st_size != opened_stat.st_size
+                or completed_stat.st_mtime_ns != opened_stat.st_mtime_ns
+            ):
+                raise CheckpointReferenceResolutionError(
+                    f"checkpoint slot {slot.slot!r} blob changed while reading"
+                )
+        finally:
+            os.close(descriptor)
+    except CheckpointReferenceResolutionError:
+        raise
+    except OSError as exc:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} blob could not be read safely"
+        ) from exc
+
+    if size_bytes != slot.size_bytes:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} size mismatch"
+        )
+    if digest.hexdigest() != slot.sha256:
+        raise CheckpointReferenceResolutionError(
+            f"checkpoint slot {slot.slot!r} hash mismatch"
+        )
 
 
 def _resolve_checkpoint_parent_ref_uri(uri: str | None, root_path: Path) -> Path:

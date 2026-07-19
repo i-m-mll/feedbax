@@ -71,6 +71,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointForkPlanBindings,
     CheckpointForkTransformRegistration,
     CheckpointForkTransformRegistry,
+    authenticate_checkpoint_custody_ref,
     checkpoint_slot_names,
     derive_checkpoint_fork_compatibility_projection,
     detect_known_legacy_checkpoint_layout,
@@ -85,6 +86,18 @@ from feedbax.training.checkpoint_custody import (
     concatenate_checkpoint_histories,
     materialize_concatenated_checkpoint_histories,
 )
+
+
+def _touch_marker(path: str) -> None:
+    Path(path).touch()
+
+
+class _TouchMarkerOnUnpickle:
+    def __init__(self, marker_path: Path) -> None:
+        self.marker_path = marker_path
+
+    def __reduce__(self):
+        return (_touch_marker, (str(self.marker_path),))
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -3438,6 +3451,26 @@ def test_public_checkpoint_custody_ref_resolver_round_trip_all_and_selected(
     assert tuple(selected.slots) == ("controller", "rng")
     assert selected.slots["rng"].dtype == jnp.uint32
     assert resolved.migration_records == ()
+
+
+def test_checkpoint_custody_authentication_never_executes_pickle_payload(
+    tmp_path: Path,
+) -> None:
+    marker_path = tmp_path / "pickle-executed"
+    result = _write_resolver_checkpoint(tmp_path)
+    _replace_resolver_slot_blob(
+        result,
+        "controller",
+        _TouchMarkerOnUnpickle(marker_path),
+    )
+
+    authenticated = authenticate_checkpoint_custody_ref(
+        _resolver_parent_ref(result),
+        allowed_root=tmp_path,
+    )
+
+    assert "controller" in authenticated.slot_names
+    assert not marker_path.exists()
 
 
 def test_checkpoint_custody_ref_resolver_returns_immutable_lineage_snapshots(

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -54,8 +54,8 @@ from feedbax.orchestration.state import (
     utc_now,
 )
 from feedbax.training.checkpoint_custody import (
+    authenticate_checkpoint_custody_ref,
     load_checkpoint_custody_documents,
-    resolve_checkpoint_custody_ref,
 )
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
@@ -1474,21 +1474,44 @@ def _verify_collected_native_checkpoint_custody(
         raise OrchestrationStageError(
             f"collected checkpoint manifest path mismatch for row {row.row_id!r}"
         )
-    resolved = resolve_checkpoint_custody_ref(
-        ParentRef(
-            kind="TrainingCheckpointTransactionManifest",
-            id=manifest.transaction_id,
-            role="training_checkpoint_custody",
-            uri=manifest_relative_path,
-            metadata={"manifest_sha256": manifest_sha256},
-        ),
+
+    training_manifest = load_manifest(collected["manifest.json"])
+    if not isinstance(training_manifest, TrainingRunManifest):
+        raise OrchestrationStageError(
+            f"collected native manifest is not a TrainingRunManifest for row {row.row_id!r}"
+        )
+    if not training_manifest.checkpoint_custody:
+        raise OrchestrationStageError(
+            f"collected training manifest has no terminal checkpoint for row {row.row_id!r}"
+        )
+    terminal_ref = training_manifest.checkpoint_custody[-1]
+    if not isinstance(terminal_ref, ParentRef):
+        raise OrchestrationStageError(
+            f"collected training manifest terminal checkpoint is not a ParentRef "
+            f"for row {row.row_id!r}"
+        )
+    expected_terminal_ref = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=manifest.transaction_id,
+        role="training_checkpoint_custody",
+        uri=manifest_relative_path,
+        metadata={"manifest_sha256": manifest_sha256},
+    )
+    if terminal_ref != expected_terminal_ref:
+        raise OrchestrationStageError(
+            f"collected checkpoint custody is not the terminal training manifest authority "
+            f"for row {row.row_id!r}"
+        )
+
+    authenticated = authenticate_checkpoint_custody_ref(
+        terminal_ref,
         allowed_root=checkpoint_root,
     )
     return {
-        "transaction_id": resolved.manifest.transaction_id,
-        "manifest_sha256": resolved.manifest_sha256,
+        "transaction_id": authenticated.manifest.transaction_id,
+        "manifest_sha256": authenticated.manifest_sha256,
         "transaction_root_sha256": transaction_root_sha256,
-        "slot_names": sorted(resolved.slots),
+        "slot_names": sorted(authenticated.slot_names),
     }
 
 
