@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import shlex
 from typing import Any
@@ -540,9 +541,15 @@ def test_subprocess_rsync_protects_remote_upload_arguments(
     def run_command(args: list[str], *, timeout_seconds: float | None = None) -> CommandResult:
         assert timeout_seconds is None
         calls.append(args)
+        if args[-1] == "--version":
+            return CommandResult(0, "rsync 3.4.1")
         return CommandResult(0, "")
 
     monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.runpod.shutil.which",
+        lambda executable: "/opt/homebrew/bin/rsync",
+    )
     source = tmp_path / "checkpoint [draft]; $HOME"
     source.mkdir()
     transport = SubprocessRunPodTransport(
@@ -559,11 +566,14 @@ def test_subprocess_rsync_protects_remote_upload_arguments(
     )
 
     assert calls == [
+        ["/opt/homebrew/bin/rsync", "--version"],
+        ["/opt/homebrew/bin/rsync", "--secluded-args", "--version"],
         [
-            "rsync",
+            "/opt/homebrew/bin/rsync",
             "-az",
             "--no-owner",
             "--no-group",
+            "--secluded-args",
             "--progress",
             "--stats",
             "--delete",
@@ -573,8 +583,8 @@ def test_subprocess_rsync_protects_remote_upload_arguments(
             "ssh -i '/keys/runpod key' -p 2222 -o StrictHostKeyChecking=no "
             "-o UserKnownHostsFile=/dev/null",
             str(source) + "/",
-            "root@198.51.100.10:'/workspace/checkout [draft]; $HOME/'",
-        ]
+            "root@198.51.100.10:/workspace/checkout [draft]; $HOME/",
+        ],
     ]
 
 
@@ -585,11 +595,20 @@ def test_subprocess_rsync_protects_remote_download_arguments(
     calls: list[list[str]] = []
 
     def run_command(args: list[str], *, timeout_seconds: float | None = None) -> CommandResult:
-        assert timeout_seconds == 17
         calls.append(args)
+        if args[-1] == "--version":
+            assert timeout_seconds is None
+            if "--secluded-args" in args:
+                return CommandResult(1, stderr="rsync: unrecognized option `--secluded-args'")
+            return CommandResult(0, "openrsync: protocol version 29")
+        assert timeout_seconds == 17
         return CommandResult(0, "")
 
     monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.runpod.shutil.which",
+        lambda executable: "/usr/bin/rsync",
+    )
     target = tmp_path / "collected outputs"
     key_path = tmp_path / "runpod key"
     transport = SubprocessRunPodTransport(
@@ -605,8 +624,10 @@ def test_subprocess_rsync_protects_remote_download_arguments(
     )
 
     assert calls == [
+        ["/usr/bin/rsync", "--version"],
+        ["/usr/bin/rsync", "--secluded-args", "--version"],
         [
-            "rsync",
+            "/usr/bin/rsync",
             "-az",
             "--no-owner",
             "--no-group",
@@ -617,7 +638,7 @@ def test_subprocess_rsync_protects_remote_download_arguments(
             "-o UserKnownHostsFile=/dev/null",
             "root@198.51.100.10:'/workspace/run [r5]; $(touch nope)/'",
             str(target) + "/",
-        ]
+        ],
     ]
 
 
@@ -629,20 +650,156 @@ def test_subprocess_rsync_preserves_normal_path_endpoints(
 
     def run_command(args: list[str], *, timeout_seconds: float | None = None) -> CommandResult:
         calls.append(args)
+        if args[-1] == "--version":
+            if "--secluded-args" in args:
+                return CommandResult(1, stderr="rsync: unrecognized option `--secluded-args'")
+            return CommandResult(0, "openrsync: protocol version 29")
         return CommandResult(0, "")
 
     monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.runpod.shutil.which",
+        lambda executable: "/usr/bin/rsync",
+    )
     source = tmp_path / "checkpoint"
     source.mkdir()
     transport = SubprocessRunPodTransport(ssh_host="198.51.100.10", ssh_port=2222)
 
     transport.rsync(str(source) + "/", "/workspace/checkpoint/", delete=True)
 
-    assert calls[0][-2:] == [
+    assert calls[-1][-2:] == [
         str(source) + "/",
         "root@198.51.100.10:/workspace/checkpoint/",
     ]
-    assert all(not arg.startswith("--info=") for arg in calls[0])
+    assert all(not arg.startswith("--info=") for arg in calls[-1])
+
+
+@pytest.mark.parametrize("direction", ["upload", "download"])
+@pytest.mark.parametrize(
+    "rsync_executable",
+    [
+        pytest.param("/usr/bin/rsync", id="apple-openrsync"),
+        pytest.param("/opt/homebrew/bin/rsync", id="modern-rsync"),
+    ],
+)
+def test_subprocess_rsync_real_protocol_preserves_exact_remote_path(
+    direction: str,
+    rsync_executable: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not Path(rsync_executable).is_file():
+        pytest.skip(f"rsync implementation is not installed: {rsync_executable}")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text(
+        "#!/bin/sh\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  case "$1" in\n'
+        "    -i|-p|-o|-l) shift 2 ;;\n"
+        "    -n) shift ;;\n"
+        "    *) shift; break ;;\n"
+        "  esac\n"
+        "done\n"
+        '[ "$1" = rsync ] || exit 92\n'
+        'if [ -n "$FEEDBAX_FAKE_REMOTE_SOURCE" ]; then\n'
+        '  mkdir -p "$FEEDBAX_FAKE_REMOTE_SOURCE" || exit 93\n'
+        '  printf download > "$FEEDBAX_FAKE_REMOTE_SOURCE/payload.txt" || exit 94\n'
+        "fi\n"
+        "shift\n"
+        'exec /bin/sh -c "$FEEDBAX_REMOTE_RSYNC $*"\n'
+    )
+    fake_ssh.chmod(0o755)
+    monkeypatch.setenv("FEEDBAX_REMOTE_RSYNC", rsync_executable)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    local_path = tmp_path / "local payload [r5]; $HOME"
+    remote_path = tmp_path / "remote payload [r5]; $(printf injected)"
+    marker = "payload.txt"
+    if direction == "upload":
+        local_path.mkdir()
+        (local_path / marker).write_text("upload")
+        source, target = str(local_path) + "/", str(remote_path) + "/"
+    else:
+        monkeypatch.setenv("FEEDBAX_FAKE_REMOTE_SOURCE", str(remote_path))
+        local_path.mkdir()
+        source, target = str(remote_path) + "/", str(local_path) + "/"
+    transport = SubprocessRunPodTransport(
+        ssh_host="198.51.100.10",
+        ssh_port=2222,
+        rsync_executable=rsync_executable,
+    )
+
+    result = transport.rsync(source, target)
+
+    assert result.returncode == 0, result.stderr
+    destination = remote_path if direction == "upload" else local_path
+    assert (destination / marker).read_text() == direction
+    assert not any("'" in path.name for path in tmp_path.rglob("*"))
+
+
+def test_subprocess_rsync_fails_before_transfer_when_executable_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.runpod.shutil.which",
+        lambda executable: None,
+    )
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.runpod._run_command",
+        lambda args, **kwargs: calls.append(args),
+    )
+    transport = SubprocessRunPodTransport(ssh_host="198.51.100.10", ssh_port=2222)
+
+    with pytest.raises(RunPodDriverError, match="rsync executable is unavailable"):
+        transport.rsync(str(source) + "/", "/workspace/target/")
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("probe_result", "error"),
+    [
+        (CommandResult(72, stderr="loader failure"), "rsync executable is unusable"),
+        (
+            CommandResult(0, "rsync 3.4.1"),
+            "could not determine rsync secluded-argument support",
+        ),
+    ],
+    ids=["unusable", "ambiguous-capability"],
+)
+def test_subprocess_rsync_fails_before_transfer_on_invalid_capability_probe(
+    probe_result: CommandResult,
+    error: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.runpod.shutil.which",
+        lambda executable: "/resolved/rsync",
+    )
+
+    def run_command(args: list[str], **kwargs: Any) -> CommandResult:
+        calls.append(args)
+        if len(calls) == 1:
+            return probe_result
+        return CommandResult(74, stderr="unexpected secluded probe failure")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    transport = SubprocessRunPodTransport(ssh_host="198.51.100.10", ssh_port=2222)
+
+    with pytest.raises(RunPodDriverError, match=error):
+        transport.rsync(str(source) + "/", "/workspace/target/")
+
+    expected_calls = 1 if probe_result.returncode else 2
+    assert len(calls) == expected_calls
 
 
 def test_subprocess_runpodctl_applies_endpoint_poll_timeout(

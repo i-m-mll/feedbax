@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 import tomllib
@@ -250,6 +251,7 @@ class SubprocessRunPodTransport:
     ssh_key_path: Path | str = Path("~/.runpod/ssh/RunPod-Key-Go")
     ssh_user: str = "root"
     runpodctl_executable: str = "runpodctl"
+    rsync_executable: str = "rsync"
 
     def runpodctl(
         self,
@@ -288,14 +290,25 @@ class SubprocessRunPodTransport:
         timeout_seconds: float | None = None,
     ) -> CommandResult:
         host = self._require_host()
+        rsync_executable, secluded_args = self._resolve_rsync_capability()
         rsync_target = target
         source_is_local = Path(source.rstrip("/")).exists()
         if source_is_local and _looks_remote_path(target):
-            rsync_target = f"{host}:{shlex.quote(target)}"
+            remote_target = target if secluded_args else shlex.quote(target)
+            rsync_target = f"{host}:{remote_target}"
         rsync_source = source
         if not source_is_local and _looks_remote_path(source):
-            rsync_source = f"{host}:{shlex.quote(source)}"
-        args = ["rsync", "-az", "--no-owner", "--no-group", "--progress", "--stats"]
+            remote_source = source if secluded_args else shlex.quote(source)
+            rsync_source = f"{host}:{remote_source}"
+        args = [
+            rsync_executable,
+            "-az",
+            "--no-owner",
+            "--no-group",
+        ]
+        if secluded_args:
+            args.append("--secluded-args")
+        args.extend(["--progress", "--stats"])
         if delete:
             args.append("--delete")
         for exclude in excludes:
@@ -309,6 +322,32 @@ class SubprocessRunPodTransport:
             ]
         )
         return _run_command(args, timeout_seconds=timeout_seconds)
+
+    def _resolve_rsync_capability(self) -> tuple[str, bool]:
+        executable = shutil.which(self.rsync_executable)
+        if executable is None:
+            raise RunPodDriverError(f"rsync executable is unavailable: {self.rsync_executable!r}")
+        version = _run_command([executable, "--version"])
+        if version.returncode != 0:
+            detail = (
+                version.stderr.strip() or version.stdout.strip() or f"exit={version.returncode}"
+            )
+            raise RunPodDriverError(f"rsync executable is unusable: {detail}")
+        secluded_probe = _run_command([executable, "--secluded-args", "--version"])
+        if secluded_probe.returncode == 0:
+            return executable, True
+        detail = secluded_probe.stderr.strip() or secluded_probe.stdout.strip()
+        unsupported_markers = (
+            "unrecognized option `--secluded-args'",
+            'unknown option "--secluded-args"',
+            "unknown option --secluded-args",
+        )
+        if any(marker in detail for marker in unsupported_markers):
+            return executable, False
+        raise RunPodDriverError(
+            "could not determine rsync secluded-argument support: "
+            + (detail or f"exit={secluded_probe.returncode}")
+        )
 
     def _require_host(self) -> str:
         if not self.ssh_host or self.ssh_port is None:
