@@ -56,13 +56,16 @@ from feedbax.orchestration.drivers.runpod import (
     rank_datacenters_for_gpu,
 )
 from feedbax.orchestration.drivers.base import ProvisioningAttemptError
+from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.training.interruption import CancellationDecision
 from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
 from feedbax.orchestration.stages import (
+    STAGE_PREFLIGHT,
     STAGE_PROVISION,
     STAGE_REALIZE_ENV,
     STAGE_STAGE_INPUTS,
     OrchestrationStageError,
+    PreflightFailed,
     StageEngine,
 )
 from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
@@ -945,7 +948,7 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
         "--name",
         "feedbax-orchestration-2026-01-02-deadbeef",
         "--image",
-        "runpod/pytorch:1.0.3",
+        bundle.environment.image_id,
         "--ports",
         "22/tcp,8080/http",
         "--gpu-id",
@@ -966,7 +969,7 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
             gpu_id="NVIDIA GeForce RTX 4090",
             datacenters=("CA-MTL-1", "EU-CZ-1"),
             api_key="dummy-key",
-            image="runpod/pytorch:1.0.3",
+            image=bundle.environment.image_id or "",
         ),
         transport=transport,
     )
@@ -1016,7 +1019,7 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
         "--name",
         "feedbax-orchestration-2026-01-02-deadbeef",
         "--image",
-        "runpod/pytorch:1.0.3",
+        bundle.environment.image_id,
         "--ports",
         "22/tcp,8080/http",
         "--gpu-id",
@@ -1046,7 +1049,7 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA RTX 2000 Ada Generation",
-            image="runpod/pytorch:1.0.3",
+            image=bundle.environment.image_id or "",
             max_acquire_seconds=1,
             poll_seconds=1,
         ),
@@ -1353,7 +1356,11 @@ def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> 
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        config=RunPodDriverConfig(
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+            image=bundle.environment.image_id or "",
+        ),
         transport=transport,
     )
 
@@ -1391,7 +1398,11 @@ def test_stage_inputs_ignores_legacy_runpod_baseline_metadata(tmp_path: Path) ->
     )
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        config=RunPodDriverConfig(
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+            image=bundle.environment.image_id or "",
+        ),
         transport=transport,
     )
 
@@ -1780,7 +1791,10 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
         CommandResult(0, json.dumps({"clientBalance": 12.5})),
     )
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(gpu_id="NVIDIA GeForce RTX 4090"),
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+        ),
         transport=transport,
     )
 
@@ -1906,7 +1920,11 @@ def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Pat
     bundle = _bundle(tmp_path, baseline=False)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        config=RunPodDriverConfig(
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+            image=bundle.environment.image_id or "",
+        ),
         transport=transport,
     )
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
@@ -1920,6 +1938,356 @@ def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Pat
     assert state.stage("PROVISION").status == "pending"
     assert transport.ssh_commands == []
     assert transport.runpodctl_calls == []
+
+
+def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    first_transport = FakeRunPodTransport()
+    first_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    first_driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            datacenters=tuple(bundle.deployment_policy.resources.regions),
+            image=bundle.environment.image_id or "",
+        ),
+        transport=first_transport,
+    )
+    StageEngine(bundle=bundle, driver=first_driver, store=store).run(stop_after_stage="PREFLIGHT")
+
+    class RestoredDriver(RunPodOrchestrationDriver):
+        provision_calls = 0
+
+        def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+            del bundle, state
+            assert self._preflight_passed is True
+            type(self).provision_calls += 1
+            return {"driver": "fake-restored-runpod"}
+
+    resume_transport = FakeRunPodTransport()
+    resumed = StageEngine(
+        bundle=bundle,
+        driver=RestoredDriver(
+            config=RunPodDriverConfig(
+                gpu_id="NVIDIA GeForce RTX 4090",
+                datacenters=tuple(bundle.deployment_policy.resources.regions),
+                image=bundle.environment.image_id or "",
+            ),
+            transport=resume_transport,
+        ),
+        store=store,
+    ).run(stop_after_stage="PROVISION")
+
+    assert resumed.stage(STAGE_PROVISION).status == "completed"
+    assert RestoredDriver.provision_calls == 1
+    assert resume_transport.operations == []
+
+
+@pytest.mark.parametrize(
+    "tamper", ["evidence-shape", "checks", "bundle", "timestamps", "driver", "teardown"]
+)
+def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provision(
+    tmp_path: Path, tamper: str
+) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    first_transport = FakeRunPodTransport()
+    first_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    first_driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+        ),
+        transport=first_transport,
+    )
+    state = StageEngine(bundle=bundle, driver=first_driver, store=store).run(
+        stop_after_stage="PREFLIGHT"
+    )
+    preflight = state.stage(STAGE_PREFLIGHT)
+    if tamper == "evidence-shape":
+        preflight = preflight.model_copy(
+            update={"outputs": {**preflight.outputs, "driver_evidence": []}}
+        )
+    elif tamper == "checks":
+        checks = list(preflight.checks)
+        checks[0] = checks[0].model_copy(update={"status": "fail"})
+        preflight = preflight.model_copy(update={"checks": checks})
+    elif tamper == "bundle":
+        assemble = state.stage("ASSEMBLE").model_copy(
+            update={"outputs": {**state.stage("ASSEMBLE").outputs, "bundle_sha256": "0" * 64}}
+        )
+        state = state.with_stage("ASSEMBLE", assemble)
+    elif tamper == "timestamps":
+        preflight = preflight.model_copy(update={"completed_at": None})
+    state = state.with_stage(STAGE_PREFLIGHT, preflight)
+    store.save(state)
+
+    class MustNotProvision(RunPodOrchestrationDriver):
+        def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+            del bundle, state
+            pytest.fail("invalid completed PREFLIGHT must fail before provision")
+
+    resume_transport = FakeRunPodTransport()
+    resume_config = RunPodDriverConfig(
+        gpu_id="NVIDIA GeForce RTX 4090",
+        min_balance_usd=6.0 if tamper == "driver" else 5.0,
+        image=bundle.environment.image_id or "",
+        auto_teardown=tamper != "teardown",
+    )
+    with pytest.raises(PreflightFailed, match="persisted driver PREFLIGHT evidence is invalid"):
+        StageEngine(
+            bundle=bundle,
+            driver=MustNotProvision(
+                config=resume_config,
+                transport=resume_transport,
+            ),
+            store=store,
+        ).run(stop_after_stage="PROVISION")
+
+    assert resume_transport.operations == []
+
+
+def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    first_transport = FakeRunPodTransport()
+    first_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    state = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(
+            config=RunPodDriverConfig(
+                gpu_id="NVIDIA GeForce RTX 4090",
+                image=bundle.environment.image_id or "",
+            ),
+            transport=first_transport,
+        ),
+        store=store,
+    ).run(stop_after_stage="PREFLIGHT")
+    preflight = state.stage(STAGE_PREFLIGHT).model_copy(
+        update={
+            "outputs": {
+                key: value
+                for key, value in state.stage(STAGE_PREFLIGHT).outputs.items()
+                if key != "driver_evidence"
+            }
+        }
+    )
+    failed_provision = state.stage(STAGE_PROVISION).model_copy(
+        update={"status": "failed", "attempts": 1, "error": "non-retryable-error"}
+    )
+    state = state.with_stage(STAGE_PREFLIGHT, preflight).with_stage(
+        STAGE_PROVISION, failed_provision
+    )
+    state = state.model_copy(
+        update={
+            "abort_reason": "non-retryable-error",
+            "provisioning_stop_reason": "non-retryable-error",
+            "budget_counters": {"provisioning_stop_reason": "non-retryable-error"},
+        }
+    )
+    store.save(state)
+
+    class LegacyRestoredDriver(RunPodOrchestrationDriver):
+        provision_calls = 0
+
+        def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+            del bundle, state
+            assert self._preflight_passed is True
+            type(self).provision_calls += 1
+            return {"driver": "fake-legacy-restored-runpod"}
+
+    resume_transport = FakeRunPodTransport()
+    resumed = StageEngine(
+        bundle=bundle,
+        driver=LegacyRestoredDriver(
+            config=RunPodDriverConfig(
+                gpu_id="NVIDIA GeForce RTX 4090",
+                image=bundle.environment.image_id or "",
+            ),
+            transport=resume_transport,
+        ),
+        store=store,
+    ).run(stop_after_stage="PROVISION")
+
+    assert resumed.stage(STAGE_PROVISION).status == "completed"
+    assert LegacyRestoredDriver.provision_calls == 1
+    assert resume_transport.operations == []
+    assert resumed.abort_reason is None
+    assert resumed.provisioning_stop_reason is None
+    assert "provisioning_stop_reason" not in resumed.budget_counters
+
+
+def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"),
+        CommandResult(0, json.dumps({"clientBalance": 12.5})),
+    )
+    state = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(
+            config=RunPodDriverConfig(
+                gpu_id="NVIDIA GeForce RTX 4090",
+                datacenters=tuple(bundle.deployment_policy.resources.regions),
+                image=bundle.environment.image_id or "",
+            ),
+            transport=transport,
+        ),
+        store=store,
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 19
+    preflight = state.stage(STAGE_PREFLIGHT)
+    preflight = preflight.model_copy(
+        update={
+            "outputs": {
+                key: value
+                for key, value in preflight.outputs.items()
+                if key != "driver_evidence"
+            }
+        }
+    )
+    failed_provision = state.stage(STAGE_PROVISION).model_copy(
+        update={"status": "failed", "attempts": 1, "error": "non-retryable-error"}
+    )
+    state = state.with_stage(STAGE_PREFLIGHT, preflight).with_stage(
+        STAGE_PROVISION, failed_provision
+    )
+    state = state.model_copy(
+        update={
+            "abort_reason": "non-retryable-error",
+            "provisioning_stop_reason": "non-retryable-error",
+            "budget_counters": {"provisioning_stop_reason": "non-retryable-error"},
+        }
+    )
+    store.save(state)
+
+    script = r'''
+import json
+import sys
+
+from feedbax.bin import orchestrate
+from feedbax.orchestration.drivers.runpod import RunPodDriverConfig, RunPodOrchestrationDriver
+
+class NoProviderTransport:
+    def __getattr__(self, name):
+        raise AssertionError(f"provider transport accessed: {name}")
+
+class ProviderFreeDriver(RunPodOrchestrationDriver):
+    def provision(self, bundle, state):
+        assert self._preflight_passed is True
+        return {"driver": "provider-free-subprocess", "acquired": False}
+
+def driver_for_bundle(bundle, bindings=()):
+    return ProviderFreeDriver(
+        config=RunPodDriverConfig(
+            gpu_id=bundle.deployment_policy.resources.gpu_id,
+            datacenters=tuple(bundle.deployment_policy.resources.regions),
+            image=bundle.environment.image_id or "",
+        ),
+        transport=NoProviderTransport(),
+        input_provider_bindings=bindings,
+    )
+
+orchestrate._driver_for_bundle = driver_for_bundle
+result = orchestrate._run_existing(sys.argv[1], stop_after_stage="PROVISION")
+print(json.dumps({
+    "abort_reason": result.abort_reason,
+    "provisioning_stop_reason": result.provisioning_stop_reason,
+    "provision_status": result.stage("PROVISION").status,
+}))
+'''
+    env = {**os.environ, "FEEDBAX_ORCHESTRATION_ROOT": str(tmp_path)}
+    result = subprocess.run(
+        [sys.executable, "-c", script, bundle.run_set_id],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    observed = json.loads(result.stdout)
+    assert observed == {
+        "abort_reason": None,
+        "provisioning_stop_reason": None,
+        "provision_status": "completed",
+    }
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["checks-both", "balance", "timestamps", "bindings", "config", "image", "run-set", "bundle"],
+)
+def test_legacy_completed_preflight_rejects_semantic_tampering_offline(
+    tmp_path: Path, tamper: str
+) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    first_transport = FakeRunPodTransport()
+    first_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    state = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(
+            config=RunPodDriverConfig(
+                gpu_id="NVIDIA GeForce RTX 4090",
+                image=bundle.environment.image_id or "",
+            ),
+            transport=first_transport,
+        ),
+        store=store,
+    ).run(stop_after_stage="PREFLIGHT")
+    preflight = state.stage(STAGE_PREFLIGHT)
+    copied_checks = list(preflight.checks)
+    if tamper == "checks-both":
+        index = next(i for i, check in enumerate(copied_checks) if check.name == "runpod-image-immutable")
+        copied_checks[index] = copied_checks[index].model_copy(update={"observed": "tampered"})
+    elif tamper == "balance":
+        index = next(i for i, check in enumerate(copied_checks) if check.name == "runpod-balance-floor")
+        copied_checks[index] = copied_checks[index].model_copy(update={"observed": "not-a-number"})
+    elif tamper == "timestamps":
+        preflight = preflight.model_copy(update={"completed_at": None})
+    outputs = {
+        "checks": [check.model_dump(mode="json") for check in copied_checks],
+    }
+    preflight = preflight.model_copy(update={"checks": copied_checks, "outputs": outputs})
+    state = state.with_stage(STAGE_PREFLIGHT, preflight)
+    if tamper == "run-set":
+        state = state.model_copy(update={"run_set_id": "different-run-set"})
+    store.save(state)
+
+    bindings = (
+        [InputProviderRootBinding("unexpected.binding", tmp_path)] if tamper == "bindings" else []
+    )
+    resume_config = RunPodDriverConfig(
+        gpu_id="NVIDIA GeForce RTX 5090" if tamper == "config" else "NVIDIA GeForce RTX 4090",
+        image=(
+            "runpod/pytorch:different"
+            if tamper == "image"
+            else bundle.environment.image_id or ""
+        ),
+    )
+    resume_bundle = bundle.model_copy(update={"keep_alive": False}) if tamper == "bundle" else bundle
+    resume_transport = FakeRunPodTransport()
+    with pytest.raises(PreflightFailed, match="persisted driver PREFLIGHT evidence is invalid"):
+        StageEngine(
+            bundle=resume_bundle,
+            driver=RunPodOrchestrationDriver(
+                config=resume_config,
+                transport=resume_transport,
+                input_provider_bindings=bindings,
+            ),
+            store=store,
+        ).run(stop_after_stage="PROVISION")
+
+    assert resume_transport.operations == []
 
 
 def test_probe_parses_one_round_trip_report(tmp_path: Path) -> None:

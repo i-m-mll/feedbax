@@ -30,6 +30,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION,
     RunBundle,
     RunRowSpec,
+    canonical_run_bundle_sha256,
     default_orchestration_root,
     mint_run_set_id,
 )
@@ -300,6 +301,7 @@ class StageEngine:
         with self.store.lock(break_stale=break_stale_lock):
             state = self.store.initialize(initial)
             state = self._hydrate_completed_assembly(state)
+            self._restore_completed_driver_preflight(state)
             if retry_failed_certification:
                 retry_state = self._reset_failed_certification(state)
                 if retry_state is not state:
@@ -437,12 +439,11 @@ class StageEngine:
             request_sha256 = None
         run_set_dir.mkdir(parents=True, exist_ok=True)
         payload = self.bundle.model_dump(mode="json", exclude_none=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         bundle_path = run_set_dir / "bundle.json"
         _atomic_write_json(bundle_path, payload)
         outputs = {
             "bundle_path": str(bundle_path),
-            "bundle_sha256": hashlib.sha256(encoded).hexdigest(),
+            "bundle_sha256": canonical_run_bundle_sha256(self.bundle),
         }
         if request_path is not None:
             outputs.update(
@@ -470,10 +471,7 @@ class StageEngine:
         bundle_path = self.store.path.parent / "bundle.json"
         data = bundle_path.read_bytes()
         expected = state.stage(STAGE_ASSEMBLE).outputs.get("bundle_sha256")
-        canonical = json.dumps(json.loads(data), sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        actual = hashlib.sha256(canonical).hexdigest()
+        actual = canonical_run_bundle_sha256(RunBundle.model_validate_json(data))
         if expected != actual:
             raise OrchestrationStageError(
                 f"persisted ASSEMBLE bundle hash mismatch: expected={expected!r} actual={actual!r}"
@@ -482,6 +480,19 @@ class StageEngine:
         assert self.driver_factory is not None
         self.driver = self.driver_factory(self.bundle)
         return state
+
+    def _restore_completed_driver_preflight(self, state: RunSetState) -> None:
+        """Restore driver-local preflight authority before skipping a completed stage."""
+        if state.stage(STAGE_PREFLIGHT).status != "completed":
+            return
+        restore = getattr(self.driver, "restore_completed_preflight", None)
+        if callable(restore):
+            try:
+                restore(self.bundle, state)
+            except Exception as exc:
+                raise PreflightFailed(
+                    f"persisted driver PREFLIGHT evidence is invalid: {exc}"
+                ) from exc
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)
@@ -503,7 +514,11 @@ class StageEngine:
         if failed:
             names = ", ".join(check.name for check in failed)
             raise PreflightFailed(f"preflight failed: {names}")
-        return state, {"checks": [check.model_dump(mode="json") for check in checks]}
+        outputs: dict[str, Any] = {"checks": [check.model_dump(mode="json") for check in checks]}
+        evidence = getattr(self.driver, "preflight_evidence", None)
+        if callable(evidence):
+            outputs["driver_evidence"] = dict(evidence(self.bundle, state, checks))
+        return state, outputs
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
@@ -576,8 +591,22 @@ class StageEngine:
                 self._sleep(min(delay, max(0.0, deadline - self._wall_time())))
                 continue
             outputs["provisioning_attempts"] = attempts
+            counters = dict(state.budget_counters)
+            counters.pop("provisioning_stop_reason", None)
+            prior_stop_reason = state.provisioning_stop_reason
             state = state.model_copy(
-                update={"provision_record": outputs, "provisioning_attempts": attempts, "updated_at": utc_now()}
+                update={
+                    "provision_record": outputs,
+                    "provisioning_attempts": attempts,
+                    "provisioning_stop_reason": None,
+                    "budget_counters": counters,
+                    "abort_reason": (
+                        None
+                        if state.abort_reason == prior_stop_reason
+                        else state.abort_reason
+                    ),
+                    "updated_at": utc_now(),
+                }
             )
             return state, outputs
 

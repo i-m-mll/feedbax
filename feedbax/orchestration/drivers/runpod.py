@@ -24,7 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
-from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import (
+    ResolvedAssemblyInput,
+    RunBundle,
+    RunRowSpec,
+    canonical_run_bundle_sha256,
+)
 from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
@@ -67,6 +72,21 @@ METADATA_BATCH_KEYS = (
 )
 RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
     "feedbax.runpod_environment_fingerprint.v1"
+)
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.runpod_preflight_evidence"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = "feedbax.runpod_preflight_evidence.v1"
+_RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
+    {
+        "input-provider-bindings",
+        "runpod-image-immutable",
+        "runpod-image-tag-exists",
+        "runpod-lockfiles-declared",
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+        "runpod-credentials",
+        "runpod-balance-floor",
+        "runpod-deadman-credentials",
+    }
 )
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -658,6 +678,173 @@ class RunPodOrchestrationDriver:
         )
         self._preflight_passed = all(check.status == "pass" for check in checks)
         return checks
+
+    def preflight_evidence(
+        self,
+        bundle: RunBundle,
+        state: RunSetState,
+        checks: Sequence[PreflightCheckEntry],
+    ) -> Mapping[str, Any]:
+        """Create durable authority for a completed, named RunPod preflight."""
+        evidence = self._preflight_evidence_payload(bundle, state, checks)
+        return {**evidence, "sha256": _sha256_json(evidence)}
+
+    def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> None:
+        """Restore only cryptographically bound completed preflight authority.
+
+        This is deliberately offline: it validates persisted evidence without
+        querying RunPod or repeating mutable credential/balance observations.
+        """
+        stage = state.stage("PREFLIGHT")
+        evidence = stage.outputs.get("driver_evidence")
+        persisted_checks = stage.outputs.get("checks")
+        if persisted_checks != [check.model_dump(mode="json") for check in stage.checks]:
+            raise RunPodDriverError("completed PREFLIGHT checks are internally inconsistent")
+        if state.run_set_id != bundle.run_set_id:
+            raise RunPodDriverError("completed PREFLIGHT run-set binding is mismatched")
+        assemble_completed = state.stage("ASSEMBLE").completed_at
+        if (
+            assemble_completed is None
+            or stage.started_at is None
+            or stage.completed_at is None
+            or not assemble_completed <= stage.started_at <= stage.completed_at
+        ):
+            raise RunPodDriverError("completed PREFLIGHT timestamps are internally inconsistent")
+        expected = self._preflight_evidence_payload(bundle, state, stage.checks)
+        if evidence is None:
+            self._preflight_passed = True
+            return
+        if not isinstance(evidence, Mapping):
+            raise RunPodDriverError("completed PREFLIGHT RunPod evidence has invalid shape")
+        if evidence.get("sha256") != _sha256_json(expected):
+            raise RunPodDriverError("completed PREFLIGHT evidence digest mismatch")
+        if dict(evidence) != {**expected, "sha256": _sha256_json(expected)}:
+            raise RunPodDriverError("completed PREFLIGHT evidence is not canonical")
+        self._preflight_passed = True
+
+    def _preflight_evidence_payload(
+        self,
+        bundle: RunBundle,
+        state: RunSetState,
+        checks: Sequence[PreflightCheckEntry],
+    ) -> dict[str, Any]:
+        assemble_sha256 = state.stage("ASSEMBLE").outputs.get("bundle_sha256")
+        bundle_sha256 = canonical_run_bundle_sha256(bundle)
+        if not isinstance(assemble_sha256, str) or assemble_sha256 != bundle_sha256:
+            raise RunPodDriverError("completed PREFLIGHT bundle binding is missing or mismatched")
+        self._validate_preflight_checks(bundle, checks)
+        return {
+            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+            "run_set_id": bundle.run_set_id,
+            "bundle_sha256": bundle_sha256,
+            "checks_sha256": _sha256_json([check.model_dump(mode="json") for check in checks]),
+            "driver_contract": self._preflight_driver_contract(),
+        }
+
+    def _preflight_driver_contract(self) -> dict[str, Any]:
+        """Project the complete effective RunPod config without exposing secrets."""
+        return {
+            "pod_id": self.config.pod_id,
+            "ssh_host": self.config.ssh_host,
+            "ssh_port": self.config.ssh_port,
+            "gpu_id": self.config.gpu_id,
+            "datacenters": list(self.config.datacenters),
+            "api_key_sha256": (
+                hashlib.sha256(self.config.api_key.encode("utf-8")).hexdigest()
+                if self.config.api_key
+                else None
+            ),
+            "min_balance_usd": self.config.min_balance_usd,
+            "image": self.config.image,
+            "pod_name_prefix": self.config.pod_name_prefix,
+            "max_acquire_seconds": self.config.max_acquire_seconds,
+            "poll_seconds": self.config.poll_seconds,
+            "env_step_timeout_seconds": self.config.env_step_timeout_seconds,
+            "failure_log_pull_timeout_seconds": self.config.failure_log_pull_timeout_seconds,
+            "teardown_absence_timeout_seconds": self.config.teardown_absence_timeout_seconds,
+            "volume_mount": self.config.volume_mount,
+            "remote_repo_root": self.config.remote_repo_root,
+            "remote_run_root": self.config.remote_run_root,
+            "remote_artifacts_dir": self.config.remote_artifacts_dir,
+            "local_repos_sha256": _sha256_json(
+                {str(name): str(path) for name, path in sorted(self.config.local_repos.items())}
+            ),
+            "remote_repos": {
+                str(name): str(path) for name, path in sorted(self.config.remote_repos.items())
+            },
+            "path_patches": [list(patch) for patch in self.config.path_patches],
+            "overlay_steps_sha256": _sha256_json(list(self.config.overlay_steps)),
+            "auto_teardown": self.config.auto_teardown,
+            "provided_endpoint": self._provided_endpoint,
+            "input_provider_bindings": sorted(
+                binding.name for binding in self.input_provider_bindings
+            ),
+        }
+
+    def _validate_preflight_checks(
+        self, bundle: RunBundle, checks: Sequence[PreflightCheckEntry]
+    ) -> None:
+        """Validate persisted RunPod checks without provider or input access."""
+        named = {check.name: check for check in checks if check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES}
+        if len(named) != len(_RUNPOD_PREFLIGHT_CHECK_NAMES) or any(
+            check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES
+            and sum(item.name == check.name for item in checks) != 1
+            for check in named.values()
+        ):
+            raise RunPodDriverError("completed PREFLIGHT lacks a unique RunPod check set")
+        if any(check.status != "pass" for check in checks):
+            raise RunPodDriverError("completed PREFLIGHT includes a failing check")
+
+        failures, resolved_observed = preflight_input_provider_bindings(
+            bundle, self.input_provider_bindings
+        )
+        if failures:
+            raise RunPodDriverError("current bundle no longer has valid resolved input declarations")
+        current_bindings = {binding.name for binding in self.input_provider_bindings}
+        required_bindings = {item.custody.provider_binding for item in bundle.resolved_inputs}
+        if current_bindings != required_bindings:
+            raise RunPodDriverError("current input-provider bindings do not cover the bundle")
+        expected_observed = resolved_observed or "no-resolved-inputs"
+        if named["input-provider-bindings"].observed != expected_observed:
+            raise RunPodDriverError("input-provider preflight observation does not match the bundle")
+
+        image = bundle.environment.image_id
+        if self.config.image != image:
+            raise RunPodDriverError("RunPod driver image does not match the bundle")
+        expected_checks = {
+            "runpod-image-immutable": image,
+            "runpod-image-tag-exists": image,
+            "runpod-lockfiles-declared": dict(sorted(bundle.environment.lockfile_hashes.items())),
+            "runpod-python-version-declared": bundle.environment.python_version,
+            "runpod-gpu-policy-declared": {
+                "gpu_id": self.config.gpu_id,
+                "datacenter_fallbacks": list(self.config.datacenters),
+                "provided_target": bool(self._provided_endpoint or self._pod_id),
+            },
+        }
+        for name, observed in expected_checks.items():
+            if named[name].observed != observed:
+                raise RunPodDriverError(f"{name} observation does not match current declarations")
+
+        credentials_required = not self._provided_endpoint or bundle.deadman_enabled
+        expected_credentials = "verified" if credentials_required else "not-required-provided-endpoint"
+        if named["runpod-credentials"].observed != expected_credentials:
+            raise RunPodDriverError("credential preflight observation is inconsistent")
+        balance_required = not self._provided_endpoint and not self._pod_id
+        balance = named["runpod-balance-floor"].observed
+        if balance_required:
+            if isinstance(balance, bool) or not isinstance(balance, (int, float)):
+                raise RunPodDriverError("balance preflight observation is not numeric")
+            if not math.isfinite(float(balance)) or balance < self.config.min_balance_usd:
+                raise RunPodDriverError("balance preflight observation does not meet the current threshold")
+        elif balance != "not-required-existing-target":
+            raise RunPodDriverError("balance preflight observation is inconsistent")
+        expected_deadman = "available" if self.config.api_key else "not-required-or-missing"
+        if named["runpod-deadman-credentials"].observed != expected_deadman:
+            raise RunPodDriverError("deadman credential observation is inconsistent")
+        if bundle.deadman_enabled and not self.config.api_key:
+            raise RunPodDriverError("deadman requires an available API key")
 
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
@@ -1546,6 +1733,11 @@ def _preflight_check(
         detail=detail,
         observed=observed,
     )
+
+
+def _sha256_json(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def is_immutable_runpod_image_id(image_id: str | None) -> bool:
