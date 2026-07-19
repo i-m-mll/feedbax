@@ -229,7 +229,12 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
 
 def cmd_certify(args: argparse.Namespace) -> int:
-    state = _run_existing(args.run_set, stop_after_stage="CERTIFY")
+    load_training_method_plugins(fail_on_load_error=True)
+    state = _run_existing(
+        args.run_set,
+        stop_after_stage="CERTIFY",
+        retry_failed_certification=True,
+    )
     if state.stage("CERTIFY").outputs.get("overall") == "fail":
         return EXIT_PREFLIGHT
     return _state_exit_code(state)
@@ -280,6 +285,7 @@ def _run_engine(
     *,
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
+    retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
 ) -> RunSetState:
@@ -292,6 +298,7 @@ def _run_engine(
     ).run(
         break_stale_lock=break_stale_lock,
         stop_after_stage=stop_after_stage,
+        retry_failed_certification=retry_failed_certification,
     )
     if state.abort_reason == "budget-exceeded":
         raise BudgetExceeded("budget exceeded")
@@ -303,6 +310,7 @@ def _run_existing(
     *,
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
+    retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
 ) -> RunSetState:
@@ -311,6 +319,7 @@ def _run_existing(
         bundle,
         stop_after_stage=stop_after_stage,
         break_stale_lock=break_stale_lock,
+        retry_failed_certification=retry_failed_certification,
         interruption_probe=interruption_probe,
         input_provider_bindings=input_provider_bindings,
     )

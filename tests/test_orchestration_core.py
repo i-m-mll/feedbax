@@ -965,6 +965,54 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
     assert artifacts.runtime_inputs == runtime_inputs
 
 
+def test_failed_completed_certificate_can_be_reset_for_explicit_retry(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={bundle.rows[0].row_id: RowState(status="completed")},
+        stages={
+            STAGE_CERTIFY: stages.StageState(
+                status="completed",
+                attempts=1,
+                started_at=stages.utc_now(),
+                completed_at=stages.utc_now(),
+                outputs={"overall": "fail", "certificate_sha256": "old"},
+            )
+        },
+        certificate_ref="old-conformance.json",
+    )
+
+    reset = StageEngine(bundle=bundle, driver=FakeDriver())._reset_failed_certification(state)
+
+    certify = reset.stage(STAGE_CERTIFY)
+    assert certify.status == "pending"
+    assert certify.attempts == 1
+    assert certify.started_at is None
+    assert certify.completed_at is None
+    assert certify.outputs == {}
+    assert reset.certificate_ref is None
+
+
+def test_passing_completed_certificate_is_not_reset(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={bundle.rows[0].row_id: RowState(status="completed")},
+        stages={
+            STAGE_CERTIFY: stages.StageState(
+                status="completed",
+                outputs={"overall": "pass"},
+            )
+        },
+        certificate_ref="passing-conformance.json",
+    )
+
+    assert (
+        StageEngine(bundle=bundle, driver=FakeDriver())._reset_failed_certification(state)
+        is state
+    )
+
+
 def test_request_engine_adopts_constructed_driver_poll_interval(tmp_path: Path) -> None:
     request, context, registry = _assembly_parts(tmp_path)
     driver = FakeDriver()

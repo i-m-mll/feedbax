@@ -608,6 +608,44 @@ def test_collect_and_teardown_are_idempotent_after_completed_run(
     assert orchestrate.main(["teardown", "--run-set", bundle.run_set_id, "--force"]) == 0
 
 
+def test_certify_explicitly_retries_a_completed_failed_certificate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    def run_existing(_run_set_id: str, **kwargs: Any) -> RunSetState:
+        calls.append(("run", kwargs))
+        return RunSetState(
+            run_set_id="failed-certificate",
+            rows={"row-a": RowState(status="completed")},
+            stages={
+                "CERTIFY": StageState(
+                    status="completed",
+                    outputs={"overall": "pass"},
+                )
+            },
+        )
+
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda **kwargs: calls.append(("plugins", kwargs)),
+    )
+    monkeypatch.setattr(orchestrate, "_run_existing", run_existing)
+
+    assert orchestrate.main(["certify", "--run-set", "failed-certificate"]) == 0
+    assert calls == [
+        ("plugins", {"fail_on_load_error": True}),
+        (
+            "run",
+            {
+                "stop_after_stage": "CERTIFY",
+                "retry_failed_certification": True,
+            },
+        ),
+    ]
+
+
 def test_two_row_local_driver_demo_through_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
