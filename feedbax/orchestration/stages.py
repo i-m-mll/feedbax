@@ -289,12 +289,18 @@ class StageEngine:
         *,
         break_stale_lock: bool = False,
         stop_after_stage: str | None = None,
+        retry_failed_certification: bool = False,
     ) -> RunSetState:
         """Run or resume the bundle through all stages."""
         initial = self._initial_state()
         with self.store.lock(break_stale=break_stale_lock):
             state = self.store.initialize(initial)
             state = self._hydrate_completed_assembly(state)
+            if retry_failed_certification:
+                retry_state = self._reset_failed_certification(state)
+                if retry_state is not state:
+                    self.store.save(retry_state)
+                state = retry_state
             try:
                 for stage_id in STAGE_ORDER:
                     if state.stage(stage_id).status == "completed":
@@ -313,6 +319,32 @@ class StageEngine:
                 ):
                     latest = self._run_teardown(latest, abort=True)
                 raise
+
+    @staticmethod
+    def _reset_failed_certification(state: RunSetState) -> RunSetState:
+        """Make a completed failing certificate eligible for one explicit retry."""
+        certify = state.stage(STAGE_CERTIFY)
+        if certify.status != "completed" or certify.outputs.get("overall") != "fail":
+            return state
+        return state.model_copy(
+            update={
+                "certificate_ref": None,
+                "stages": {
+                    **state.stages,
+                    STAGE_CERTIFY: certify.model_copy(
+                        update={
+                            "status": "pending",
+                            "checks": [],
+                            "started_at": None,
+                            "completed_at": None,
+                            "outputs": {},
+                            "error": None,
+                        }
+                    ),
+                },
+                "updated_at": utc_now(),
+            }
+        )
 
     def _initial_state(self) -> RunSetState:
         return RunSetState(
@@ -976,7 +1008,9 @@ class StageEngine:
             "provider_observations": {
                 "hourly_rate_raw": provision.get("hourly_rate_raw"),
                 "immutable_image_id_raw": provision.get("immutable_image_id"),
-                "billing_started_at_raw": provision.get("billing_started_at"),
+                "billing_started_at_raw": provision.get(
+                    "billing_started_at_raw", provision.get("billing_started_at")
+                ),
                 "region_raw": provision.get("region"),
             },
             "unavailable": unavailable,

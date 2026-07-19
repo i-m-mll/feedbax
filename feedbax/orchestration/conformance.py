@@ -1262,24 +1262,51 @@ def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
 def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     """Verify realized learning-rate samples against the declared schedule."""
     check_id = "lr_trace"
-    optimizer_spec_payload = _optimizer_spec_payload(row)
     trace = _lr_trace(row)
     context = extract_resume_context(row.bundle_row_spec, row.training_diagnostics)
+    try:
+        optimizer_spec_payload = _optimizer_spec_payload(row)
+        optimizer_spec = (
+            None
+            if optimizer_spec_payload is _MISSING
+            else OptimizerSpec.model_validate(optimizer_spec_payload)
+        )
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="one unambiguous governed optimizer spec",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
     if optimizer_spec_payload is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec optimizer spec")
     if trace is None:
         return missing_input_check(check_id, "training_diagnostics.lr_trace")
+    assert optimizer_spec is not None
     missing_context = [
         key
         for key in ("schedule_origin_step", "current_step", "optimizer_count_at_current_step")
         if context.get(key) is _SCHEDULE_MISSING
     ]
-    if missing_context:
+    context_independent = (
+        optimizer_spec.lr_schedule is None or optimizer_spec.lr_schedule.kind == "constant"
+    )
+    if missing_context and not context_independent:
         return missing_input_check(check_id, *missing_context)
 
     try:
-        eval_context = require_schedule_context(context, label="resume_context")
-        optimizer_spec = OptimizerSpec.model_validate(optimizer_spec_payload)
+        eval_context = require_schedule_context(
+            (
+                {
+                    "schedule_origin_step": 0,
+                    "current_step": 0,
+                    "optimizer_count_at_current_step": 0,
+                }
+                if missing_context
+                else context
+            ),
+            label="resume_context",
+        )
         declared_coordinates = _declared_mapping_coordinates(row)
         if declared_coordinates is not None and set(trace) != declared_coordinates:
             raise ValueError(
@@ -1359,30 +1386,77 @@ def _selected_lr_samples(
 
 
 def _optimizer_spec_payload(row: ConformanceRowArtifacts) -> Any:
-    return _first_present(
-        _path(row.bundle_row_spec, "optimizer"),
-        _path(row.bundle_row_spec, "optimizer_spec"),
-        _path(row.bundle_row_spec, "training", "optimizer"),
-        _path(row.bundle_row_spec, "training_spec", "method_payload", "payload", "optimizer"),
-        _path(
-            _training_spec_payload(_manifest_payload(row)), "method_payload", "payload", "optimizer"
+    training_manifest = _training_spec_payload(_manifest_payload(row))
+    candidates = (
+        ("bundle_row_spec.optimizer", _path(row.bundle_row_spec, "optimizer")),
+        ("bundle_row_spec.optimizer_spec", _path(row.bundle_row_spec, "optimizer_spec")),
+        ("bundle_row_spec.training.optimizer", _path(row.bundle_row_spec, "training", "optimizer")),
+        (
+            "bundle_row_spec.training_config.optimizer",
+            _path(row.bundle_row_spec, "training_config", "optimizer"),
         ),
-        _path(row.bundle_row_spec, "method_payload", "payload", "optimizer"),
-        _path(row.bundle_row_spec, "method_payload", "payload", "controller_optimizer"),
-        _path(
-            row.bundle_row_spec,
-            "training_spec",
-            "method_payload",
-            "payload",
-            "controller_optimizer",
+        (
+            "bundle_row_spec.training_spec.method_payload.payload.optimizer",
+            _path(
+                row.bundle_row_spec,
+                "training_spec",
+                "method_payload",
+                "payload",
+                "optimizer",
+            ),
         ),
-        _path(
-            _training_spec_payload(_manifest_payload(row)),
-            "method_payload",
-            "payload",
-            "controller_optimizer",
+        (
+            "bundle_row_spec.method_payload.payload.optimizer",
+            _path(row.bundle_row_spec, "method_payload", "payload", "optimizer"),
+        ),
+        (
+            "bundle_row_spec.method_payload.payload.training.optimizer",
+            _path(row.bundle_row_spec, "method_payload", "payload", "training", "optimizer"),
+        ),
+        (
+            "bundle_row_spec.method_payload.payload.controller_optimizer",
+            _path(row.bundle_row_spec, "method_payload", "payload", "controller_optimizer"),
+        ),
+        (
+            "bundle_row_spec.training_spec.method_payload.payload.controller_optimizer",
+            _path(
+                row.bundle_row_spec,
+                "training_spec",
+                "method_payload",
+                "payload",
+                "controller_optimizer",
+            ),
+        ),
+        (
+            "manifest.training_spec.method_payload.payload.optimizer",
+            _path(training_manifest, "method_payload", "payload", "optimizer"),
+        ),
+        (
+            "manifest.training_spec.method_payload.payload.training.optimizer",
+            _path(training_manifest, "method_payload", "payload", "training", "optimizer"),
+        ),
+        (
+            "manifest.training_spec.method_payload.payload.controller_optimizer",
+            _path(training_manifest, "method_payload", "payload", "controller_optimizer"),
         ),
     )
+    present = [(location, payload) for location, payload in candidates if payload is not _MISSING]
+    if not present:
+        return _MISSING
+
+    normalized: list[tuple[str, dict[str, Any]]] = []
+    for location, payload in present:
+        try:
+            spec = OptimizerSpec.model_validate(payload)
+        except Exception as exc:
+            raise ValueError(f"invalid governed optimizer spec at {location}: {exc}") from exc
+        normalized.append((location, spec.model_dump(mode="json")))
+    authority = normalized[0][1]
+    conflicts = [location for location, payload in normalized[1:] if payload != authority]
+    if conflicts:
+        locations = [normalized[0][0], *conflicts]
+        raise ValueError(f"ambiguous governed optimizer specs at {locations!r}")
+    return authority
 
 
 def _lr_trace(

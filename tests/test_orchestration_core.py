@@ -98,6 +98,7 @@ from feedbax.orchestration.drivers.local import (
     _canonicalize_dependency_inventory,
     compute_environment_fingerprint,
 )
+from feedbax.orchestration.drivers.runpod import project_runpod_provision_facts
 from feedbax.orchestration.stages import (
     STAGE_CERTIFY,
     STAGE_ORDER,
@@ -964,6 +965,54 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
     assert artifacts.runtime_inputs == runtime_inputs
 
 
+def test_failed_completed_certificate_can_be_reset_for_explicit_retry(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={bundle.rows[0].row_id: RowState(status="completed")},
+        stages={
+            STAGE_CERTIFY: stages.StageState(
+                status="completed",
+                attempts=1,
+                started_at=stages.utc_now(),
+                completed_at=stages.utc_now(),
+                outputs={"overall": "fail", "certificate_sha256": "old"},
+            )
+        },
+        certificate_ref="old-conformance.json",
+    )
+
+    reset = StageEngine(bundle=bundle, driver=FakeDriver())._reset_failed_certification(state)
+
+    certify = reset.stage(STAGE_CERTIFY)
+    assert certify.status == "pending"
+    assert certify.attempts == 1
+    assert certify.started_at is None
+    assert certify.completed_at is None
+    assert certify.outputs == {}
+    assert reset.certificate_ref is None
+
+
+def test_passing_completed_certificate_is_not_reset(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={bundle.rows[0].row_id: RowState(status="completed")},
+        stages={
+            STAGE_CERTIFY: stages.StageState(
+                status="completed",
+                outputs={"overall": "pass"},
+            )
+        },
+        certificate_ref="passing-conformance.json",
+    )
+
+    assert (
+        StageEngine(bundle=bundle, driver=FakeDriver())._reset_failed_certification(state)
+        is state
+    )
+
+
 def test_request_engine_adopts_constructed_driver_poll_interval(tmp_path: Path) -> None:
     request, context, registry = _assembly_parts(tmp_path)
     driver = FakeDriver()
@@ -1331,6 +1380,71 @@ def test_capped_remote_execution_requires_observed_billing_evidence(tmp_path: Pa
     assert state.budget_counters["budget_exceeded"] == "spend-evidence-unavailable"
     assert not any(call.startswith("launch:") for call in driver.calls)
     assert state.stage("TEARDOWN").status == "completed"
+    assert "teardown" in driver.calls
+
+
+def test_runpod_go_timestamp_allows_realize_env_under_spend_cap(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, driver="runpod", max_spend_usd=1.0)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    provision_record = {
+        **_remote_billing_record(),
+        **project_runpod_provision_facts(
+            {
+                "createdAt": "2026-07-19 18:05:00.898 +0000 UTC",
+                "costPerHr": 0.99,
+            }
+        ),
+    }
+    driver = BillingFakeDriver(provision_record=provision_record)
+    observed_at = datetime(2026, 7, 19, 18, 6, tzinfo=timezone.utc).timestamp()
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        store=store,
+        wall_time=lambda: observed_at,
+    ).run(stop_after_stage=STAGE_REALIZE_ENV)
+
+    assert state.stage(STAGE_PROVISION).status == "completed"
+    assert state.stage(STAGE_REALIZE_ENV).status == "completed"
+    assert state.provision_record["billing_started_at"] == "2026-07-19T18:05:00.898000+00:00"
+    assert state.provision_record["billing_started_at_raw"] == (
+        "2026-07-19 18:05:00.898 +0000 UTC"
+    )
+    assert state.budget_counters["accrued_cost_usd"] == pytest.approx(0.99 * 59.102 / 3600)
+
+
+@pytest.mark.parametrize(
+    "raw_timestamp",
+    [None, "not-a-timestamp", "2026-07-19T18:07:00Z"],
+)
+def test_runpod_unusable_timestamp_still_fails_closed_before_realize_env(
+    tmp_path: Path,
+    raw_timestamp: str | None,
+) -> None:
+    bundle = _bundle(tmp_path, driver="runpod", max_spend_usd=1.0)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    provision_record = {
+        **_remote_billing_record(),
+        **project_runpod_provision_facts(
+            {"createdAt": raw_timestamp, "costPerHr": 0.99}
+        ),
+    }
+    driver = BillingFakeDriver(provision_record=provision_record)
+    observed_at = datetime(2026, 7, 19, 18, 6, tzinfo=timezone.utc).timestamp()
+
+    with pytest.raises(OrchestrationStageError, match="billing_started_at"):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            wall_time=lambda: observed_at,
+        ).run(stop_after_stage=STAGE_REALIZE_ENV)
+
+    state = store.load()
+    assert state.stage(STAGE_REALIZE_ENV).status == "failed"
+    assert state.abort_reason == "budget-evidence-unavailable"
+    assert "realize_env" not in driver.calls
     assert "teardown" in driver.calls
 
 

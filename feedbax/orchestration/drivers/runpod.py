@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 import tomllib
@@ -19,15 +20,19 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
-from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
     inject_native_execution_context,
     is_native_training_command,
+    native_resume_checkpoint_authority_json,
+    native_resume_checkpoint_source,
+    SECURE_CHECKPOINT_SEED_SCRIPT,
 )
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
@@ -67,6 +72,9 @@ _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
 _SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_RUNPOD_GO_UTC_PATTERN = re.compile(
+    r"^(?P<instant>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) \+0000 UTC$"
+)
 _REMOTE_ENVIRONMENT_PROBE = r"""
 import hashlib
 import importlib.metadata
@@ -178,6 +186,21 @@ class RunPodDriverError(RuntimeError):
     """Raised when the RunPod driver cannot complete a requested action."""
 
 
+def _canonical_runpod_timestamp(value: Any) -> str | None:
+    """Return a canonical UTC instant for a RunPod client timestamp."""
+    if not isinstance(value, str) or not value:
+        return None
+    match = _RUNPOD_GO_UTC_PATTERN.fullmatch(value)
+    candidate = f"{match.group('instant')}+00:00" if match is not None else value
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 @dataclass(frozen=True)
 class CommandResult:
     """Captured command result from a RunPod transport."""
@@ -231,6 +254,7 @@ class SubprocessRunPodTransport:
     ssh_key_path: Path | str = Path("~/.runpod/ssh/RunPod-Key-Go")
     ssh_user: str = "root"
     runpodctl_executable: str = "runpodctl"
+    rsync_executable: str = "rsync"
 
     def runpodctl(
         self,
@@ -269,14 +293,25 @@ class SubprocessRunPodTransport:
         timeout_seconds: float | None = None,
     ) -> CommandResult:
         host = self._require_host()
+        rsync_executable, secluded_args = self._resolve_rsync_capability()
         rsync_target = target
         source_is_local = Path(source.rstrip("/")).exists()
         if source_is_local and _looks_remote_path(target):
-            rsync_target = f"{host}:{target}"
+            remote_target = target if secluded_args else shlex.quote(target)
+            rsync_target = f"{host}:{remote_target}"
         rsync_source = source
         if not source_is_local and _looks_remote_path(source):
-            rsync_source = f"{host}:{source}"
-        args = ["rsync", "-az", "--no-owner", "--no-group", "--progress", "--stats"]
+            remote_source = source if secluded_args else shlex.quote(source)
+            rsync_source = f"{host}:{remote_source}"
+        args = [
+            rsync_executable,
+            "-az",
+            "--no-owner",
+            "--no-group",
+        ]
+        if secluded_args:
+            args.append("--secluded-args")
+        args.extend(["--progress", "--stats"])
         if delete:
             args.append("--delete")
         for exclude in excludes:
@@ -290,6 +325,32 @@ class SubprocessRunPodTransport:
             ]
         )
         return _run_command(args, timeout_seconds=timeout_seconds)
+
+    def _resolve_rsync_capability(self) -> tuple[str, bool]:
+        executable = shutil.which(self.rsync_executable)
+        if executable is None:
+            raise RunPodDriverError(f"rsync executable is unavailable: {self.rsync_executable!r}")
+        version = _run_command([executable, "--version"])
+        if version.returncode != 0:
+            detail = (
+                version.stderr.strip() or version.stdout.strip() or f"exit={version.returncode}"
+            )
+            raise RunPodDriverError(f"rsync executable is unusable: {detail}")
+        secluded_probe = _run_command([executable, "--secluded-args", "--version"])
+        if secluded_probe.returncode == 0:
+            return executable, True
+        detail = secluded_probe.stderr.strip() or secluded_probe.stdout.strip()
+        unsupported_markers = (
+            "unrecognized option `--secluded-args'",
+            'unknown option "--secluded-args"',
+            "unknown option --secluded-args",
+        )
+        if any(marker in detail for marker in unsupported_markers):
+            return executable, False
+        raise RunPodDriverError(
+            "could not determine rsync secluded-argument support: "
+            + (detail or f"exit={secluded_probe.returncode}")
+        )
 
     def _require_host(self) -> str:
         if not self.ssh_host or self.ssh_port is None:
@@ -444,7 +505,6 @@ class RunPodOrchestrationDriver:
             pod = pod or self._last_provision_pod
             if pod is not None:
                 record.update(project_runpod_provision_facts(pod))
-                record["billing_started_at"] = pod.get("createdAt") or pod.get("created_at")
             if acquired:
                 try:
                     record["cleanup"] = dict(self.teardown(bundle, state))
@@ -1140,7 +1200,6 @@ class RunPodOrchestrationDriver:
             "provided_endpoint": False,
             "ssh_host": endpoint.ip,
             "ssh_port": endpoint.port,
-            "billing_started_at": pod.get("createdAt") or pod.get("created_at"),
             "teardown_allowed": not provided_pod,
         }
 
@@ -1445,6 +1504,7 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ("machine", "costPerHr"),
         ("machine", "costPerHour"),
     )
+    billing_started_at_raw = first(("createdAt",), ("created_at",))
     try:
         parsed_hourly_rate = float(hourly_rate_raw) if hourly_rate_raw is not None else None
     except (TypeError, ValueError):
@@ -1465,6 +1525,8 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "hourly_rate": hourly_rate,
         "hourly_rate_raw": raw_rate_observation,
+        "billing_started_at": _canonical_runpod_timestamp(billing_started_at_raw),
+        "billing_started_at_raw": billing_started_at_raw,
         "currency": "USD" if hourly_rate is not None else None,
         "provider_observation_basis": "runpodctl pod get response",
     }
@@ -1628,6 +1690,17 @@ def build_atomic_directory_publish_command(source: str, destination: str) -> str
     )
 
 
+def build_native_resume_seed_command(
+    source: str, attempt: str, target: str, resolved: ResolvedAssemblyInput
+) -> str:
+    """Build the shared secure clone plus atomic no-replace publication protocol."""
+
+    return (
+        f"python3 -c {_sq(SECURE_CHECKPOINT_SEED_SCRIPT)} {_sq(source)} {_sq(attempt)} "
+        f"{_sq(target)} {_sq(native_resume_checkpoint_authority_json(resolved))}"
+    )
+
+
 def build_remote_nohup_sentinel_command(
     *,
     workdir: str,
@@ -1656,6 +1729,22 @@ def build_remote_nohup_sentinel_command(
     )
 
 
+def _normalize_explicit_native_launch_command(command: Sequence[str]) -> list[str]:
+    """Run an explicit native executor command in the realized uv environment."""
+    normalized = [str(part) for part in command]
+    if not is_native_training_command(normalized):
+        return normalized
+    if not normalized or Path(normalized[0]).name != "uv":
+        return ["uv", "run", "--no-sync", *normalized]
+    if len(normalized) < 2 or normalized[1] != "run":
+        raise RunPodDriverError(
+            "explicit native launch command beginning with uv must use 'uv run'"
+        )
+    if len(normalized) < 3 or normalized[2] != "--no-sync":
+        normalized.insert(2, "--no-sync")
+    return normalized
+
+
 def build_launch_row_command(
     *,
     bundle: RunBundle,
@@ -1674,6 +1763,7 @@ def build_launch_row_command(
     log_file = f"{remote_run_dir}/logs/{row.row_id}.log"
     events_dir = f"{remote_run_dir}/events"
     row_dir = f"{remote_run_dir}/rows/{row.row_id}"
+    checkpoint_source = native_resume_checkpoint_source(bundle, row)
     command_parts = (
         [str(part) for part in row.launch.command]
         if row.launch.command
@@ -1691,6 +1781,8 @@ def build_launch_row_command(
         environment_fingerprint=env_fingerprint,
         collection_root=row_dir,
     )
+    if row.launch.command:
+        command_parts = _normalize_explicit_native_launch_command(command_parts)
     command = " ".join(shlex.quote(part) for part in command_parts)
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "
@@ -1712,6 +1804,14 @@ def build_launch_row_command(
         f'if [ "$rc" -eq 0 ]; then success=1; touch {_sq(done_file)}; '
         f'else touch {_sq(failed_file)}; exit "$rc"; fi'
     )
+    seed_command = ""
+    if checkpoint_source is not None:
+        source = f"{remote_run_dir}/inputs/{checkpoint_source.custody.target_role}"
+        attempt = f"{row_dir}/.checkpoint-seed-attempt"
+        target = f"{row_dir}/checkpoints"
+        seed_command = (
+            f"{build_native_resume_seed_command(source, attempt, target, checkpoint_source)} && "
+        )
     return (
         f"mkdir -p {_sq(remote_sentinel_dir)} {_sq(remote_run_dir + '/logs')} "
         f"{_sq(events_dir)} {_sq(row_dir)} {_sq(jax_cache_dir)} && "
@@ -1721,6 +1821,7 @@ def build_launch_row_command(
         'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi; '
         f"echo 'orphaned launch: started sentinel present, process dead, "
         f"no terminal sentinel' > {_sq(failed_file)}; exit 0; fi && "
+        f"{seed_command}"
         f"touch {_sq(started_file)} && "
         f"nohup bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 &"
     )
