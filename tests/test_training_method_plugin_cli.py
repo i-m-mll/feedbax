@@ -197,6 +197,24 @@ def test_entry_point_can_register_training_method() -> None:
     assert DUMMY_METHOD_REF in registry.available_keys()
 
 
+def test_entry_point_load_failure_remains_non_strict_by_default(caplog) -> None:
+    load_training_method_plugins(
+        registry=default_training_method_registry(),
+        preparation_registry=ExecutionPreparationProviderRegistry(),
+        entry_points=[
+            SimpleNamespace(
+                name="broken-default-plugin",
+                load=lambda: (_ for _ in ()).throw(RuntimeError("broken by design")),
+            )
+        ],
+    )
+
+    assert (
+        "Failed to load Feedbax plugin entry point "
+        "entry-point:broken-default-plugin: broken by design"
+    ) in caplog.text
+
+
 def test_preparation_rng_algorithm_has_frozen_tokens_and_key_vectors() -> None:
     assert preparation_rng_token("algorithm", PREPARATION_RNG_ALGORITHM_VERSION) == 3959945493
     assert preparation_rng_token("root", "model") == 2366028346

@@ -145,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    load_training_method_plugins()
+    load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     engine = _request_engine(
@@ -165,7 +165,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
-    load_training_method_plugins()
+    load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     if args.driver:

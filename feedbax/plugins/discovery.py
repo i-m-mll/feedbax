@@ -101,6 +101,7 @@ def load_training_method_plugins(
     entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP,
     entry_points: Iterable[Any] | None = None,
     modules: Sequence[str] | None = None,
+    fail_on_load_error: bool = False,
 ) -> None:
     """Load training-method registration hooks from Feedbax plugins.
 
@@ -110,6 +111,8 @@ def load_training_method_plugins(
     ``register_feedbax_execution_preparations(registry)`` or
     ``register_execution_preparations(registry)``. Explicit module names are imported as an
     escape hatch for local/downstream code that is not installed as an entry point.
+    Set ``fail_on_load_error`` for pre-provider validation surfaces that must reject any
+    broken installed entry point rather than continuing with a partial registry.
     """
     uses_default_method_registry = registry is None
     if uses_default_method_registry:
@@ -135,6 +138,11 @@ def load_training_method_plugins(
         try:
             plugin = entry_point.load()
         except Exception as exc:
+            if fail_on_load_error:
+                raise RuntimeError(
+                    "Failed to load Feedbax training-method plugin "
+                    f"{provenance}: {exc}"
+                ) from exc
             logger.warning("Failed to load Feedbax plugin entry point %s: %s", provenance, exc)
             continue
         _register_training_plugin(

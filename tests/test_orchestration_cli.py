@@ -12,6 +12,7 @@ import pytest
 
 from feedbax.bin import orchestrate
 import feedbax.contracts.training as training_contracts
+import feedbax.plugins.discovery as plugin_discovery
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -214,8 +215,8 @@ def _register_orchestration_plugin_method(registry: Any) -> None:
     )
 
 
-def _plugin_training_run_payload() -> dict[str, Any]:
-    payload = TrainingRunSpec(
+def _standard_training_run_payload() -> dict[str, Any]:
+    return TrainingRunSpec(
         graph={
             "inline": {
                 "nodes": {
@@ -250,6 +251,10 @@ def _plugin_training_run_payload() -> dict[str, Any]:
             effective_phase=standard_supervised_effective_phase_spec(),
         ),
     ).model_dump(mode="json", exclude_none=True)
+
+
+def _plugin_training_run_payload() -> dict[str, Any]:
+    payload = _standard_training_run_payload()
     payload["method_ref"] = {
         "package": "tests",
         "name": "orchestration_plugin",
@@ -271,12 +276,16 @@ def _plugin_training_run_payload() -> dict[str, Any]:
     return payload
 
 
-def _plugin_matrix_request(tmp_path: Path) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+def _matrix_request(
+    tmp_path: Path,
+    *,
+    training_run_payload: dict[str, Any],
+) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
     matrix = {
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         "name": "orchestration plugin discovery",
-        "base": {"kind": "inline", "inline": _plugin_training_run_payload()},
+        "base": {"kind": "inline", "inline": training_run_payload},
         "rows": [{"row_id": "plugin-row", "seed": 7}],
     }
     authored_bytes = json.dumps(matrix, sort_keys=True).encode("utf-8")
@@ -303,6 +312,10 @@ def _plugin_matrix_request(tmp_path: Path) -> tuple[RunAssemblyRequest, Assembly
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(registry, allow_inline_base=True)
     return request, registry
+
+
+def _plugin_matrix_request(tmp_path: Path) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    return _matrix_request(tmp_path, training_run_payload=_plugin_training_run_payload())
 
 
 def _save_state(bundle: RunBundle, state: RunSetState) -> None:
@@ -333,9 +346,10 @@ def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_a
     monkeypatch.setattr(
         orchestrate,
         "load_training_method_plugins",
-        lambda: load_training_method_plugins(
+        lambda **kwargs: load_training_method_plugins(
             preparation_registry=preparation_registry,
             entry_points=[SimpleNamespace(name="orchestration-method", load=lambda: plugin)],
+            **kwargs,
         ),
     )
     request, assembly_registry = _plugin_matrix_request(tmp_path)
@@ -363,12 +377,12 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
 ) -> None:
     request, _ = _assembly_request(tmp_path)
     request_path = _write_request(request, tmp_path / "assembly-request.json")
-    events: list[str] = []
+    events: list[tuple[str, bool] | str] = []
 
     monkeypatch.setattr(
         orchestrate,
         "load_training_method_plugins",
-        lambda: events.append("plugins"),
+        lambda *, fail_on_load_error: events.append(("plugins", fail_on_load_error)),
     )
     monkeypatch.setattr(
         orchestrate,
@@ -392,48 +406,45 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
     monkeypatch.setattr(orchestrate, "_request_engine", lambda *_args, **_kwargs: FakeEngine())
 
     assert orchestrate.main([command, "--assembly-request", str(request_path)]) == 0
-    assert events == ["plugins", "request"]
+    assert events == [("plugins", True), "request"]
 
 
-def test_broken_training_plugin_discovery_fails_closed_during_matrix_assembly(
+def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: Any,
 ) -> None:
-    method_registry = training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
     monkeypatch.setattr(
-        method_registry,
-        "_registrations",
-        method_registry._registrations.copy(),
+        plugin_discovery,
+        "feedbax_plugin_entry_points",
+        lambda _group: [
+            SimpleNamespace(
+                name="broken-orchestration-method",
+                load=lambda: (_ for _ in ()).throw(RuntimeError("broken plugin")),
+            )
+        ],
     )
-    monkeypatch.setattr(
-        method_registry,
-        "_descriptors",
-        method_registry._descriptors.copy(),
+    request, _ = _matrix_request(
+        tmp_path,
+        training_run_payload=_standard_training_run_payload(),
     )
-    monkeypatch.setattr(
-        orchestrate,
-        "load_training_method_plugins",
-        lambda: load_training_method_plugins(
-            preparation_registry=ExecutionPreparationProviderRegistry(),
-            entry_points=[
-                SimpleNamespace(
-                    name="broken-orchestration-method",
-                    load=lambda: (_ for _ in ()).throw(RuntimeError("broken plugin")),
-                )
-            ],
-        ),
-    )
-    request, assembly_registry = _plugin_matrix_request(tmp_path)
     request_path = _write_request(request, tmp_path / "assembly-request.json")
     monkeypatch.setattr(
         orchestrate,
-        "build_default_assembly_registry",
-        lambda: assembly_registry,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("assembly engine must not be constructed"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "LocalOrchestrationDriver",
+        lambda *_args, **_kwargs: pytest.fail("provider driver must not be constructed"),
     )
 
     assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 1
-    assert f"unknown method_ref '{_PLUGIN_METHOD_REF}'" in capsys.readouterr().err
+    assert capsys.readouterr().err.strip().endswith(
+        "Failed to load Feedbax training-method plugin "
+        "entry-point:broken-orchestration-method: broken plugin"
+    )
 
 
 def test_status_line_format_is_stable(tmp_path: Path) -> None:
