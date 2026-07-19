@@ -24,12 +24,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
-from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
     inject_native_execution_context,
     is_native_training_command,
+    native_resume_checkpoint_authority_json,
+    native_resume_checkpoint_source,
+    SECURE_CHECKPOINT_SEED_SCRIPT,
 )
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
@@ -1687,6 +1690,17 @@ def build_atomic_directory_publish_command(source: str, destination: str) -> str
     )
 
 
+def build_native_resume_seed_command(
+    source: str, attempt: str, target: str, resolved: ResolvedAssemblyInput
+) -> str:
+    """Build the shared secure clone plus atomic no-replace publication protocol."""
+
+    return (
+        f"python3 -c {_sq(SECURE_CHECKPOINT_SEED_SCRIPT)} {_sq(source)} {_sq(attempt)} "
+        f"{_sq(target)} {_sq(native_resume_checkpoint_authority_json(resolved))}"
+    )
+
+
 def build_remote_nohup_sentinel_command(
     *,
     workdir: str,
@@ -1749,6 +1763,7 @@ def build_launch_row_command(
     log_file = f"{remote_run_dir}/logs/{row.row_id}.log"
     events_dir = f"{remote_run_dir}/events"
     row_dir = f"{remote_run_dir}/rows/{row.row_id}"
+    checkpoint_source = native_resume_checkpoint_source(bundle, row)
     command_parts = (
         [str(part) for part in row.launch.command]
         if row.launch.command
@@ -1789,6 +1804,14 @@ def build_launch_row_command(
         f'if [ "$rc" -eq 0 ]; then success=1; touch {_sq(done_file)}; '
         f'else touch {_sq(failed_file)}; exit "$rc"; fi'
     )
+    seed_command = ""
+    if checkpoint_source is not None:
+        source = f"{remote_run_dir}/inputs/{checkpoint_source.custody.target_role}"
+        attempt = f"{row_dir}/.checkpoint-seed-attempt"
+        target = f"{row_dir}/checkpoints"
+        seed_command = (
+            f"{build_native_resume_seed_command(source, attempt, target, checkpoint_source)} && "
+        )
     return (
         f"mkdir -p {_sq(remote_sentinel_dir)} {_sq(remote_run_dir + '/logs')} "
         f"{_sq(events_dir)} {_sq(row_dir)} {_sq(jax_cache_dir)} && "
@@ -1798,6 +1821,7 @@ def build_launch_row_command(
         'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi; '
         f"echo 'orphaned launch: started sentinel present, process dead, "
         f"no terminal sentinel' > {_sq(failed_file)}; exit 0; fi && "
+        f"{seed_command}"
         f"touch {_sq(started_file)} && "
         f"nohup bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 &"
     )

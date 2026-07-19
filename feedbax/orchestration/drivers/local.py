@@ -16,11 +16,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
     inject_native_execution_context,
+    native_resume_checkpoint_source,
+    seed_authenticated_checkpoint,
 )
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
@@ -195,6 +197,13 @@ class LocalOrchestrationDriver:
         paths["row_dir"].mkdir(parents=True, exist_ok=True)
         paths["sentinels"].mkdir(parents=True, exist_ok=True)
         paths["events"].mkdir(parents=True, exist_ok=True)
+        checkpoint_source = native_resume_checkpoint_source(bundle, row)
+        if checkpoint_source is not None:
+            _seed_native_resume_checkpoint_root(
+                bundle.run_set_dir / "inputs" / checkpoint_source.custody.target_role,
+                paths["row_dir"],
+                checkpoint_source,
+            )
         paths["started"].write_text(str(time.time()), encoding="utf-8")
 
         env = os.environ.copy()
@@ -536,6 +545,27 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _seed_native_resume_checkpoint_root(
+    source: Path, row_dir: Path, resolved: ResolvedAssemblyInput
+) -> None:
+    """Clone one staged checkpoint tree and publish it without replacement."""
+
+    if not source.is_dir() or source.is_symlink():
+        raise LocalDriverError(f"native resume checkpoint source is not a directory: {source}")
+    target = row_dir / "checkpoints"
+    attempt = row_dir / ".checkpoint-seed-attempt"
+    if os.path.lexists(target):
+        raise LocalDriverError(f"native resume checkpoint target already exists: {target}")
+    if os.path.lexists(attempt):
+        raise LocalDriverError(f"native resume checkpoint attempt already exists: {attempt}")
+    try:
+        seed_authenticated_checkpoint(source, attempt, target, resolved)
+    except LocalDriverError:
+        raise
+    except Exception as exc:
+        raise LocalDriverError(f"native resume checkpoint seeding failed: {exc}") from exc
 
 
 def _read_pid(path: Path) -> int | None:
