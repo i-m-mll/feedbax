@@ -695,36 +695,92 @@ def authenticate_checkpoint_custody_ref(
     ``pickle.loads``.
     """
     try:
-        (
-            root_path,
-            manifest_path,
-            manifest_sha256,
-            loaded_manifest,
-            slots_by_name,
-        ) = _load_authenticated_checkpoint_custody_ref(ref, allowed_root=allowed_root)
-        transaction_dir = manifest_path.parent.resolve()
-        for slot in slots_by_name.values():
-            blob_path = _resolve_checkpoint_slot_path(
-                slot,
-                transaction_dir=transaction_dir,
-                allowed_root=root_path,
+        root_descriptor = _open_checkpoint_custody_root(allowed_root)
+        try:
+            manifest_parts = _checkpoint_custody_relative_parts(
+                ref.uri,
+                context="checkpoint custody ParentRef manifest uri",
             )
-            _verify_checkpoint_slot_blob_without_deserializing(slot, blob_path)
-        return AuthenticatedCheckpointTransaction(
-            parent_ref=_immutable_model_snapshot(ref),
-            manifest_sha256=manifest_sha256,
-            manifest=_immutable_model_snapshot(loaded_manifest.document),
-            slot_names=tuple(slots_by_name),
-            migration_records=tuple(
-                _immutable_model_snapshot(record)
-                for record in loaded_manifest.migration_records
-            ),
-        )
+            raw_manifest = _read_checkpoint_custody_member(
+                root_descriptor,
+                manifest_parts,
+                context="checkpoint custody ParentRef manifest",
+            )
+            return _authenticate_checkpoint_custody_bytes(
+                ref,
+                raw_manifest=raw_manifest,
+                manifest_parts=manifest_parts,
+                root_descriptor=root_descriptor,
+            )
+        finally:
+            os.close(root_descriptor)
     except CheckpointReferenceResolutionError:
         raise
     except Exception as exc:
         raise CheckpointReferenceResolutionError(
             f"checkpoint custody authentication failed: {exc}"
+        ) from exc
+
+
+def authenticate_published_checkpoint_custody(
+    root: str | Path,
+) -> AuthenticatedCheckpointTransaction:
+    """Authenticate the published latest checkpoint without executing payloads."""
+    try:
+        root_descriptor = _open_checkpoint_custody_root(root)
+        try:
+            raw_latest = _read_checkpoint_custody_member(
+                root_descriptor,
+                (LATEST_POINTER_NAME,),
+                context="checkpoint latest pointer",
+            )
+            latest_result = load_checkpoint_latest_pointer_json(
+                raw_latest,
+                path=LATEST_POINTER_NAME,
+            )
+            latest = latest_result.document
+            manifest_parts = _checkpoint_custody_relative_parts(
+                latest.manifest_relative_path,
+                context="checkpoint latest pointer manifest_relative_path",
+            )
+            raw_manifest = _read_checkpoint_custody_member(
+                root_descriptor,
+                manifest_parts,
+                context="checkpoint transaction manifest",
+            )
+            manifest_sha256 = sha256_bytes(raw_manifest)
+            if manifest_sha256 != latest.manifest_sha256:
+                raise CheckpointReferenceResolutionError(
+                    "checkpoint latest pointer manifest_sha256 does not match raw manifest bytes"
+                )
+            ref = ParentRef(
+                kind="TrainingCheckpointTransactionManifest",
+                id=latest.transaction_id,
+                role="training_checkpoint_custody",
+                uri="/".join(manifest_parts),
+                metadata={"manifest_sha256": manifest_sha256},
+            )
+            authenticated = _authenticate_checkpoint_custody_bytes(
+                ref,
+                raw_manifest=raw_manifest,
+                manifest_parts=manifest_parts,
+                root_descriptor=root_descriptor,
+            )
+            if (
+                authenticated.manifest.content_integrity_digest.transaction_root_sha256
+                != latest.transaction_root_sha256
+            ):
+                raise CheckpointReferenceResolutionError(
+                    "checkpoint latest pointer transaction root does not match manifest"
+                )
+            return authenticated
+        finally:
+            os.close(root_descriptor)
+    except CheckpointReferenceResolutionError:
+        raise
+    except Exception as exc:
+        raise CheckpointReferenceResolutionError(
+            f"published checkpoint custody authentication failed: {exc}"
         ) from exc
 
 
@@ -1539,7 +1595,7 @@ def _resolve_checkpoint_custody_ref(
         manifest_sha256,
         loaded_manifest,
         slots_by_name,
-    ) = _load_authenticated_checkpoint_custody_ref(ref, allowed_root=allowed_root)
+    ) = _load_trusted_checkpoint_custody_ref(ref, allowed_root=allowed_root)
     manifest = loaded_manifest.document
     selected_names = _checkpoint_slot_selection(slot_names, slots_by_name)
     transaction_dir = manifest_path.parent.resolve()
@@ -1576,7 +1632,7 @@ def _resolve_checkpoint_custody_ref(
     )
 
 
-def _load_authenticated_checkpoint_custody_ref(
+def _load_trusted_checkpoint_custody_ref(
     ref: ParentRef,
     *,
     allowed_root: str | Path,
@@ -1587,26 +1643,9 @@ def _load_authenticated_checkpoint_custody_ref(
     CheckpointDocumentLoadResult[CheckpointTransactionManifest],
     dict[str, CheckpointSlotBlobRef],
 ]:
-    """Load and authenticate one exact checkpoint reference and its manifest."""
-    if not isinstance(ref, ParentRef):
-        raise CheckpointReferenceResolutionError("ref must be a ParentRef")
-    if ref.kind != "TrainingCheckpointTransactionManifest":
-        raise CheckpointReferenceResolutionError(
-            "checkpoint custody ParentRef kind must be 'TrainingCheckpointTransactionManifest'"
-        )
-    if ref.role != "training_checkpoint_custody":
-        raise CheckpointReferenceResolutionError(
-            "checkpoint custody ParentRef role must be 'training_checkpoint_custody'"
-        )
-    if not ref.id:
-        raise CheckpointReferenceResolutionError("checkpoint custody ParentRef id is empty")
-
-    manifest_sha256 = ref.metadata.get("manifest_sha256")
-    if not _is_sha256(manifest_sha256):
-        raise CheckpointReferenceResolutionError(
-            "checkpoint custody ParentRef metadata.manifest_sha256 must be "
-            "64 lowercase hexadecimal characters"
-        )
+    """Load one exact reference from a caller-designated trusted custody root."""
+    _validate_checkpoint_custody_parent_ref(ref)
+    manifest_sha256 = ref.metadata["manifest_sha256"]
 
     root_path = Path(allowed_root).expanduser().resolve()
     if not root_path.is_dir():
@@ -1648,74 +1687,238 @@ def _load_authenticated_checkpoint_custody_ref(
     return root_path, manifest_path, manifest_sha256, loaded_manifest, slots_by_name
 
 
-def _verify_checkpoint_slot_blob_without_deserializing(
-    slot: CheckpointSlotBlobRef,
-    path: Path,
-) -> None:
-    """Verify one regular-file slot blob without executing pickle payloads."""
+def _authenticate_checkpoint_custody_bytes(
+    ref: ParentRef,
+    *,
+    raw_manifest: bytes,
+    manifest_parts: tuple[str, ...],
+    root_descriptor: int,
+) -> AuthenticatedCheckpointTransaction:
+    """Authenticate exact manifest bytes and all declared blobs under one root fd."""
+    _validate_checkpoint_custody_parent_ref(ref)
+    manifest_sha256 = ref.metadata["manifest_sha256"]
+    if sha256_bytes(raw_manifest) != manifest_sha256:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef manifest_sha256 does not match raw manifest bytes"
+        )
     try:
-        path_stat = path.lstat()
-    except OSError as exc:
+        loaded_manifest = load_checkpoint_transaction_manifest_json(
+            raw_manifest,
+            path="/".join(manifest_parts),
+        )
+    except CheckpointIntegrityError as exc:
         raise CheckpointReferenceResolutionError(
-            f"checkpoint slot {slot.slot!r} blob could not be inspected"
+            f"checkpoint custody ParentRef manifest is invalid: {exc}"
         ) from exc
-    if not stat.S_ISREG(path_stat.st_mode):
+    manifest = loaded_manifest.document
+    if manifest.transaction_id != ref.id:
         raise CheckpointReferenceResolutionError(
-            f"checkpoint slot {slot.slot!r} blob is not a regular file"
+            "checkpoint custody ParentRef id does not match manifest transaction_id"
         )
 
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is None:
-        raise CheckpointReferenceResolutionError(
-            "checkpoint slot authentication requires no-follow file opening"
+    slots_by_name = _validate_checkpoint_transaction_integrity_records(manifest)
+    transaction_parts = manifest_parts[:-1]
+    for slot in slots_by_name.values():
+        if slot.media_type != "application/x-python-pickle":
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {slot.slot!r} has unsupported media_type "
+                f"{slot.media_type!r}"
+            )
+        slot_parts = _checkpoint_custody_relative_parts(
+            slot.relative_path,
+            context=f"checkpoint slot {slot.slot!r} relative_path",
         )
-    flags |= nofollow
-    digest = hashlib.sha256()
-    size_bytes = 0
+        blob_bytes = _read_checkpoint_custody_member(
+            root_descriptor,
+            (*transaction_parts, *slot_parts),
+            context=f"checkpoint slot {slot.slot!r} blob",
+        )
+        if len(blob_bytes) != slot.size_bytes:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {slot.slot!r} size mismatch"
+            )
+        if sha256_bytes(blob_bytes) != slot.sha256:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {slot.slot!r} hash mismatch"
+            )
+
+    return AuthenticatedCheckpointTransaction(
+        parent_ref=_immutable_model_snapshot(ref),
+        manifest_sha256=manifest_sha256,
+        manifest=_immutable_model_snapshot(manifest),
+        slot_names=tuple(slots_by_name),
+        migration_records=tuple(
+            _immutable_model_snapshot(record)
+            for record in loaded_manifest.migration_records
+        ),
+    )
+
+
+def _validate_checkpoint_custody_parent_ref(ref: ParentRef) -> None:
+    if not isinstance(ref, ParentRef):
+        raise CheckpointReferenceResolutionError("ref must be a ParentRef")
+    if ref.kind != "TrainingCheckpointTransactionManifest":
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef kind must be 'TrainingCheckpointTransactionManifest'"
+        )
+    if ref.role != "training_checkpoint_custody":
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef role must be 'training_checkpoint_custody'"
+        )
+    if not ref.id:
+        raise CheckpointReferenceResolutionError("checkpoint custody ParentRef id is empty")
+    if not _is_sha256(ref.metadata.get("manifest_sha256")):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody ParentRef metadata.manifest_sha256 must be "
+            "64 lowercase hexadecimal characters"
+        )
+
+
+def _checkpoint_custody_relative_parts(
+    value: str | None,
+    *,
+    context: str,
+) -> tuple[str, ...]:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise CheckpointReferenceResolutionError(
+            f"{context} is not a safe POSIX relative path"
+        )
+    path = PurePosixPath(value)
+    parts = tuple(value.split("/"))
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
+        raise CheckpointReferenceResolutionError(
+            f"{context} is not a canonical relative path"
+        )
+    return parts
+
+
+def _open_checkpoint_custody_root(root: str | Path) -> int:
+    """Pin one real custody root directory without following symlinks."""
+    root_path = os.fspath(root)
     try:
-        descriptor = os.open(path, flags)
+        before = os.stat(root_path, follow_symlinks=False)
+        descriptor = os.open(root_path, _archive_directory_flags())
+    except OSError as exc:
+        raise CheckpointReferenceResolutionError(
+            "checkpoint custody root is not an available real directory"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        after = os.stat(root_path, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(before.st_mode)
+            or not stat.S_ISDIR(opened.st_mode)
+            or _identity(before) != _identity(opened)
+            or _identity(after) != _identity(opened)
+        ):
+            raise CheckpointReferenceResolutionError(
+                "checkpoint custody root identity changed while opening"
+            )
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _read_checkpoint_custody_member(
+    root_descriptor: int,
+    parts: tuple[str, ...],
+    *,
+    context: str,
+) -> bytes:
+    """Read one regular file via no-follow traversal from a pinned root fd."""
+    directory_descriptor = os.dup(root_descriptor)
+    try:
+        for part in parts[:-1]:
+            try:
+                before = os.stat(
+                    part,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+                next_descriptor = os.open(
+                    part,
+                    _archive_directory_flags(),
+                    dir_fd=directory_descriptor,
+                )
+            except OSError as exc:
+                raise CheckpointReferenceResolutionError(
+                    f"{context} directory traversal is unsafe or unavailable"
+                ) from exc
+            try:
+                opened = os.fstat(next_descriptor)
+                after = os.stat(
+                    part,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(before.st_mode)
+                    or not stat.S_ISDIR(opened.st_mode)
+                    or _identity(before) != _identity(opened)
+                    or _identity(after) != _identity(opened)
+                ):
+                    raise CheckpointReferenceResolutionError(
+                        f"{context} directory identity changed while traversing"
+                    )
+                os.close(directory_descriptor)
+                directory_descriptor = next_descriptor
+                next_descriptor = -1
+            finally:
+                if next_descriptor >= 0:
+                    os.close(next_descriptor)
+
+        name = parts[-1]
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         try:
-            opened_stat = os.fstat(descriptor)
+            before = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+            descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+        except OSError as exc:
+            raise CheckpointReferenceResolutionError(
+                f"{context} is unsafe or unavailable"
+            ) from exc
+        try:
+            opened = os.fstat(descriptor)
+            after_open = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
             if (
-                not stat.S_ISREG(opened_stat.st_mode)
-                or _identity(opened_stat) != _identity(path_stat)
+                not stat.S_ISREG(before.st_mode)
+                or not stat.S_ISREG(opened.st_mode)
+                or _identity(before) != _identity(opened)
+                or _identity(after_open) != _identity(opened)
             ):
                 raise CheckpointReferenceResolutionError(
-                    f"checkpoint slot {slot.slot!r} blob identity changed before reading"
+                    f"{context} is not one stable regular file"
                 )
+            chunks: list[bytes] = []
             while True:
                 chunk = os.read(descriptor, 1024 * 1024)
                 if not chunk:
                     break
-                size_bytes += len(chunk)
-                digest.update(chunk)
-            completed_stat = os.fstat(descriptor)
+                chunks.append(chunk)
+            completed = os.fstat(descriptor)
+            after_read = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
             if (
-                _identity(completed_stat) != _identity(opened_stat)
-                or completed_stat.st_size != opened_stat.st_size
-                or completed_stat.st_mtime_ns != opened_stat.st_mtime_ns
+                _identity(completed) != _identity(opened)
+                or _identity(after_read) != _identity(opened)
+                or completed.st_size != opened.st_size
+                or completed.st_mtime_ns != opened.st_mtime_ns
             ):
                 raise CheckpointReferenceResolutionError(
-                    f"checkpoint slot {slot.slot!r} blob changed while reading"
+                    f"{context} identity changed while reading"
                 )
+            return b"".join(chunks)
         finally:
             os.close(descriptor)
-    except CheckpointReferenceResolutionError:
-        raise
-    except OSError as exc:
-        raise CheckpointReferenceResolutionError(
-            f"checkpoint slot {slot.slot!r} blob could not be read safely"
-        ) from exc
-
-    if size_bytes != slot.size_bytes:
-        raise CheckpointReferenceResolutionError(
-            f"checkpoint slot {slot.slot!r} size mismatch"
-        )
-    if digest.hexdigest() != slot.sha256:
-        raise CheckpointReferenceResolutionError(
-            f"checkpoint slot {slot.slot!r} hash mismatch"
-        )
+    finally:
+        os.close(directory_descriptor)
 
 
 def _resolve_checkpoint_parent_ref_uri(uri: str | None, root_path: Path) -> Path:

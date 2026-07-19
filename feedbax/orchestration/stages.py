@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -13,7 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest
+from feedbax.contracts.manifest import (
+    ParentRef,
+    TrainingRunManifest,
+    load_manifest_bytes,
+)
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -54,8 +59,7 @@ from feedbax.orchestration.state import (
     utc_now,
 )
 from feedbax.training.checkpoint_custody import (
-    authenticate_checkpoint_custody_ref,
-    load_checkpoint_custody_documents,
+    authenticate_published_checkpoint_custody,
 )
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
@@ -1452,30 +1456,18 @@ def _verify_collected_native_checkpoint_custody(
     """Authenticate the published native checkpoint transaction before teardown."""
 
     checkpoint_root = Path(collected["checkpoints"])
-    documents = load_checkpoint_custody_documents(checkpoint_root)
-    latest = documents.latest_pointer.document
-    manifest = documents.manifest.document
-    manifest_sha256 = hashlib.sha256(documents.manifest_path.read_bytes()).hexdigest()
-    transaction_root_sha256 = (
-        manifest.content_integrity_digest.transaction_root_sha256
-    )
-    if (
-        latest.transaction_id != manifest.transaction_id
-        or latest.manifest_sha256 != manifest_sha256
-        or latest.transaction_root_sha256 != transaction_root_sha256
-    ):
-        raise OrchestrationStageError(
-            f"collected checkpoint custody authority mismatch for row {row.row_id!r}"
-        )
-    manifest_relative_path = documents.manifest_path.relative_to(
-        checkpoint_root.resolve()
-    ).as_posix()
-    if latest.manifest_relative_path != manifest_relative_path:
-        raise OrchestrationStageError(
-            f"collected checkpoint manifest path mismatch for row {row.row_id!r}"
-        )
+    authenticated = authenticate_published_checkpoint_custody(checkpoint_root)
+    manifest = authenticated.manifest
+    manifest_sha256 = authenticated.manifest_sha256
+    transaction_root_sha256 = manifest.content_integrity_digest.transaction_root_sha256
+    manifest_relative_path = authenticated.parent_ref.uri
 
-    training_manifest = load_manifest(collected["manifest.json"])
+    training_manifest = load_manifest_bytes(
+        _read_collected_regular_file(
+            collected["manifest.json"],
+            context=f"collected training manifest for row {row.row_id!r}",
+        )
+    )
     if not isinstance(training_manifest, TrainingRunManifest):
         raise OrchestrationStageError(
             f"collected native manifest is not a TrainingRunManifest for row {row.row_id!r}"
@@ -1503,16 +1495,72 @@ def _verify_collected_native_checkpoint_custody(
             f"for row {row.row_id!r}"
         )
 
-    authenticated = authenticate_checkpoint_custody_ref(
-        terminal_ref,
-        allowed_root=checkpoint_root,
-    )
     return {
         "transaction_id": authenticated.manifest.transaction_id,
         "manifest_sha256": authenticated.manifest_sha256,
         "transaction_root_sha256": transaction_root_sha256,
         "slot_names": sorted(authenticated.slot_names),
     }
+
+
+def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
+    """Read one collected file without following or accepting a replaced entry."""
+    path_obj = Path(path)
+    parent_descriptor: int | None = None
+    descriptor: int | None = None
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        parent_descriptor = os.open(path_obj.parent, directory_flags)
+        before = os.stat(
+            path_obj.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path_obj.name, flags, dir_fd=parent_descriptor)
+        opened = os.fstat(descriptor)
+        after_open = os.stat(
+            path_obj.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or (after_open.st_dev, after_open.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise OrchestrationStageError(f"{context} is not one stable regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        completed = os.fstat(descriptor)
+        after_read = os.stat(
+            path_obj.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            (completed.st_dev, completed.st_ino) != (opened.st_dev, opened.st_ino)
+            or (after_read.st_dev, after_read.st_ino) != (opened.st_dev, opened.st_ino)
+            or completed.st_size != opened.st_size
+            or completed.st_mtime_ns != opened.st_mtime_ns
+        ):
+            raise OrchestrationStageError(f"{context} identity changed while reading")
+        return b"".join(chunks)
+    except OrchestrationStageError:
+        raise
+    except OSError as exc:
+        raise OrchestrationStageError(f"{context} is unsafe or unavailable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
 
 
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
