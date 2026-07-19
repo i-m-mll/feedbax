@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
@@ -67,6 +68,9 @@ _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
 _SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_RUNPOD_GO_UTC_PATTERN = re.compile(
+    r"^(?P<instant>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) \+0000 UTC$"
+)
 _REMOTE_ENVIRONMENT_PROBE = r"""
 import hashlib
 import importlib.metadata
@@ -176,6 +180,21 @@ if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
 
 class RunPodDriverError(RuntimeError):
     """Raised when the RunPod driver cannot complete a requested action."""
+
+
+def _canonical_runpod_timestamp(value: Any) -> str | None:
+    """Return a canonical UTC instant for a RunPod client timestamp."""
+    if not isinstance(value, str) or not value:
+        return None
+    match = _RUNPOD_GO_UTC_PATTERN.fullmatch(value)
+    candidate = f"{match.group('instant')}+00:00" if match is not None else value
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True)
@@ -444,7 +463,6 @@ class RunPodOrchestrationDriver:
             pod = pod or self._last_provision_pod
             if pod is not None:
                 record.update(project_runpod_provision_facts(pod))
-                record["billing_started_at"] = pod.get("createdAt") or pod.get("created_at")
             if acquired:
                 try:
                     record["cleanup"] = dict(self.teardown(bundle, state))
@@ -1140,7 +1158,6 @@ class RunPodOrchestrationDriver:
             "provided_endpoint": False,
             "ssh_host": endpoint.ip,
             "ssh_port": endpoint.port,
-            "billing_started_at": pod.get("createdAt") or pod.get("created_at"),
             "teardown_allowed": not provided_pod,
         }
 
@@ -1445,6 +1462,7 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ("machine", "costPerHr"),
         ("machine", "costPerHour"),
     )
+    billing_started_at_raw = first(("createdAt",), ("created_at",))
     try:
         parsed_hourly_rate = float(hourly_rate_raw) if hourly_rate_raw is not None else None
     except (TypeError, ValueError):
@@ -1465,6 +1483,8 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "hourly_rate": hourly_rate,
         "hourly_rate_raw": raw_rate_observation,
+        "billing_started_at": _canonical_runpod_timestamp(billing_started_at_raw),
+        "billing_started_at_raw": billing_started_at_raw,
         "currency": "USD" if hourly_rate is not None else None,
         "provider_observation_basis": "runpodctl pod get response",
     }

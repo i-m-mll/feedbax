@@ -944,7 +944,9 @@ class StageEngine:
             "provider_observations": {
                 "hourly_rate_raw": provision.get("hourly_rate_raw"),
                 "immutable_image_id_raw": provision.get("immutable_image_id"),
-                "billing_started_at_raw": provision.get("billing_started_at"),
+                "billing_started_at_raw": provision.get(
+                    "billing_started_at_raw", provision.get("billing_started_at")
+                ),
                 "region_raw": provision.get("region"),
             },
             "unavailable": unavailable,

@@ -472,6 +472,7 @@ def test_projects_provision_facts_from_existing_pod_response() -> None:
             "dataCenter": {"id": "CA-MTL-1"},
             "machine": {"costPerHr": "0.74"},
             "template": {"imageName": "runpod/pytorch@sha256:" + "a" * 64},
+            "createdAt": "2026-07-19 18:05:00.898 +0000 UTC",
         }
     )
 
@@ -481,6 +482,8 @@ def test_projects_provision_facts_from_existing_pod_response() -> None:
         "immutable_image_id": "runpod/pytorch@sha256:" + "a" * 64,
         "hourly_rate": 0.74,
         "hourly_rate_raw": "0.74",
+        "billing_started_at": "2026-07-19T18:05:00.898000+00:00",
+        "billing_started_at_raw": "2026-07-19 18:05:00.898 +0000 UTC",
         "currency": "USD",
         "provider_observation_basis": "runpodctl pod get response",
     }
@@ -498,6 +501,28 @@ def test_projects_raw_malformed_or_non_finite_provision_rate(raw_rate: str) -> N
     assert facts["hourly_rate_raw"] == raw_rate
     assert facts["hourly_rate"] is None
     assert facts["immutable_image_id"] == "runpod/pytorch@sha256:" + "b" * 64
+
+
+@pytest.mark.parametrize(
+    ("raw_timestamp", "canonical"),
+    [
+        ("2026-07-19T18:05:00.898Z", "2026-07-19T18:05:00.898000+00:00"),
+        ("2026-07-19T14:05:00.898-04:00", "2026-07-19T18:05:00.898000+00:00"),
+        ("2026-07-19 18:05:00 +0000 UTC", "2026-07-19T18:05:00+00:00"),
+        ("2026-07-19 18:05:00.898 +0000 UTC", "2026-07-19T18:05:00.898000+00:00"),
+        ("2026-07-19 18:05:00.898 UTC", None),
+        ("not-a-timestamp", None),
+        (None, None),
+    ],
+)
+def test_projects_canonical_and_raw_runpod_billing_timestamp(
+    raw_timestamp: str | None,
+    canonical: str | None,
+) -> None:
+    facts = project_runpod_provision_facts({"createdAt": raw_timestamp})
+
+    assert facts["billing_started_at"] == canonical
+    assert facts["billing_started_at_raw"] == raw_timestamp
 
 
 def test_provision_projection_does_not_invent_declared_image() -> None:
