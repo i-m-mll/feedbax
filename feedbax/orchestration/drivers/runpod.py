@@ -291,19 +291,11 @@ class SubprocessRunPodTransport:
         rsync_target = target
         source_is_local = Path(source.rstrip("/")).exists()
         if source_is_local and _looks_remote_path(target):
-            rsync_target = f"{host}:{target}"
+            rsync_target = f"{host}:{shlex.quote(target)}"
         rsync_source = source
         if not source_is_local and _looks_remote_path(source):
-            rsync_source = f"{host}:{source}"
-        args = [
-            "rsync",
-            "-az",
-            "--no-owner",
-            "--no-group",
-            "--protect-args",
-            "--progress",
-            "--stats",
-        ]
+            rsync_source = f"{host}:{shlex.quote(source)}"
+        args = ["rsync", "-az", "--no-owner", "--no-group", "--progress", "--stats"]
         if delete:
             args.append("--delete")
         for exclude in excludes:

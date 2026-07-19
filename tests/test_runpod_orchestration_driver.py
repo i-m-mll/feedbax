@@ -564,7 +564,6 @@ def test_subprocess_rsync_protects_remote_upload_arguments(
             "-az",
             "--no-owner",
             "--no-group",
-            "--protect-args",
             "--progress",
             "--stats",
             "--delete",
@@ -574,7 +573,7 @@ def test_subprocess_rsync_protects_remote_upload_arguments(
             "ssh -i '/keys/runpod key' -p 2222 -o StrictHostKeyChecking=no "
             "-o UserKnownHostsFile=/dev/null",
             str(source) + "/",
-            "root@198.51.100.10:/workspace/checkout [draft]; $HOME/",
+            "root@198.51.100.10:'/workspace/checkout [draft]; $HOME/'",
         ]
     ]
 
@@ -611,13 +610,12 @@ def test_subprocess_rsync_protects_remote_download_arguments(
             "-az",
             "--no-owner",
             "--no-group",
-            "--protect-args",
             "--progress",
             "--stats",
             "-e",
             f"ssh -i '{key_path}' -p 2222 -o StrictHostKeyChecking=no "
             "-o UserKnownHostsFile=/dev/null",
-            "root@198.51.100.10:/workspace/run [r5]; $(touch nope)/",
+            "root@198.51.100.10:'/workspace/run [r5]; $(touch nope)/'",
             str(target) + "/",
         ]
     ]
