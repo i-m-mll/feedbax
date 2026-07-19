@@ -1715,6 +1715,22 @@ def build_remote_nohup_sentinel_command(
     )
 
 
+def _normalize_explicit_native_launch_command(command: Sequence[str]) -> list[str]:
+    """Run an explicit native executor command in the realized uv environment."""
+    normalized = [str(part) for part in command]
+    if not is_native_training_command(normalized):
+        return normalized
+    if not normalized or Path(normalized[0]).name != "uv":
+        return ["uv", "run", "--no-sync", *normalized]
+    if len(normalized) < 2 or normalized[1] != "run":
+        raise RunPodDriverError(
+            "explicit native launch command beginning with uv must use 'uv run'"
+        )
+    if len(normalized) < 3 or normalized[2] != "--no-sync":
+        normalized.insert(2, "--no-sync")
+    return normalized
+
+
 def build_launch_row_command(
     *,
     bundle: RunBundle,
@@ -1750,6 +1766,8 @@ def build_launch_row_command(
         environment_fingerprint=env_fingerprint,
         collection_root=row_dir,
     )
+    if row.launch.command:
+        command_parts = _normalize_explicit_native_launch_command(command_parts)
     command = " ".join(shlex.quote(part) for part in command_parts)
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "

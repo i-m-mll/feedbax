@@ -1510,12 +1510,81 @@ def test_launch_row_injects_native_execution_context_from_bundle_row(
     driver.launch_row(bundle, row, _state(bundle))
 
     launch_command = transport.ssh_commands[0]
+    assert launch_command.count("uv run --no-sync") == 1
     assert "--execution-context-json" in launch_command
     assert planned_run_id in launch_command
     assert '"environment_fingerprint":"fingerprint-123"' in launch_command
     assert '"row_id":"warm"' in launch_command
     assert '"lowerer_id":"feedbax.tests.runpod"' in launch_command
     assert "feedbax-training-run:feedbax-training-run:" not in launch_command
+
+
+def test_launch_row_does_not_double_wrap_normalized_native_command(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    row = original.model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=[
+                    "uv",
+                    "run",
+                    "--no-sync",
+                    "python",
+                    "-m",
+                    "feedbax",
+                    "execute-training-run-spec",
+                    "specs/warm.json",
+                ]
+            ),
+            "execution": original.execution.model_copy(
+                update={
+                    "row_provenance": TrainingRowProvenance(
+                        row_id=original.row_id,
+                        row_index=0,
+                        planned_run_id="feedbax-training-run:normalized-warm",
+                        authored_payload_hash="a" * 64,
+                        lowered_execution_payload_hash=original.execution.payload.sha256,
+                        axis_coordinates={},
+                        lowerer_identities=[],
+                    )
+                }
+            ),
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
+
+    driver.launch_row(bundle, row, _state(bundle))
+
+    launch_command = transport.ssh_commands[0]
+    assert launch_command.count("uv run --no-sync") == 1
+    assert "--execution-context-json" in launch_command
+    assert "specs/warm.json" in launch_command
+
+
+def test_launch_row_entry_fallback_keeps_single_uv_environment_prefix(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    row = original.model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                entry="scripts/run worker.py",
+                collect=original.launch.collect,
+            )
+        }
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
+
+    driver.launch_row(bundle, row, _state(bundle))
+
+    launch_command = transport.ssh_commands[0]
+    assert launch_command.count("uv run --no-sync") == 1
+    assert shlex.quote("scripts/run worker.py") in launch_command
 
 
 def test_launch_row_routes_staged_payload_to_native_executor(tmp_path: Path) -> None:
