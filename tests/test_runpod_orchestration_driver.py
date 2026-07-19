@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
-from datetime import datetime, timedelta, timezone
 import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
 from typing import Any
@@ -42,7 +46,9 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodDriverError,
     RunPodOrchestrationDriver,
     SubprocessRunPodTransport,
+    build_launch_row_command,
     build_literal_path_patch_command,
+    build_remote_nohup_sentinel_command,
     classify_pod_state,
     compute_runpod_environment_fingerprint,
     endpoint_classification,
@@ -1440,8 +1446,9 @@ def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path)
 
     assert outputs["pid"] == 4321
     launch_command = transport.ssh_commands[0]
-    assert "nohup bash -lc" in launch_command
+    assert "setsid -f bash -lc" in launch_command
     assert "</dev/null" in launch_command
+    assert "while [ ! -s" in launch_command
     assert "FEEDBAX_RUN_SET_ID=2026-01-02-deadbeef" in launch_command
     assert "FEEDBAX_ROW_ID=warm" in launch_command
     assert (
@@ -1456,8 +1463,92 @@ def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path)
         "orphaned launch: started sentinel present, process dead, no terminal sentinel"
         in launch_command
     )
-    assert "rm -f" not in launch_command
+    assert "rm -f" in launch_command
     assert all("deadman" not in command for command in transport.ssh_commands)
+
+
+def test_remote_sentinel_uses_session_detacher_instead_of_background_shell() -> None:
+    command = build_remote_nohup_sentinel_command(
+        workdir="/workspace/feedbax",
+        command="python -c 'import time; time.sleep(30)'",
+        done_file="/workspace/run/sentinels/bootstrap.done",
+        failed_file="/workspace/run/sentinels/bootstrap.failed",
+        log_file="/workspace/run/logs/bootstrap.log",
+    )
+
+    assert "setsid -f bash -lc" in command
+    assert "nohup" not in command
+    assert "</dev/null" in command
+    assert command.endswith("2>&1")
+
+
+def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    setsid = fake_bin / "setsid"
+    setsid.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import sys\n"
+        "assert sys.argv[1] == '-f'\n"
+        "if os.fork():\n"
+        "    raise SystemExit(0)\n"
+        "os.setsid()\n"
+        "os.execvp(sys.argv[2], sys.argv[2:])\n",
+        encoding="utf-8",
+    )
+    setsid.chmod(0o755)
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    row = original.model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=[
+                    sys.executable,
+                    "-c",
+                    "import time; print('buffered', end=''); time.sleep(10)",
+                ]
+            )
+        }
+    )
+    remote_run_dir = tmp_path / "run"
+    sentinel_dir = remote_run_dir / "sentinels"
+    sentinel_dir.mkdir(parents=True)
+    pid_path = sentinel_dir / "warm.pid"
+    pid_path.write_text("999999\n", encoding="utf-8")
+    command = build_launch_row_command(
+        bundle=bundle,
+        row=row,
+        remote_run_dir=str(remote_run_dir),
+        remote_sentinel_dir=str(sentinel_dir),
+        workdir=str(tmp_path),
+        jax_cache_dir=str(tmp_path / "jax-cache"),
+        env_fingerprint="fingerprint-123",
+    )
+
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", "-c", command],
+        capture_output=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        text=True,
+        timeout=3,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    pid = int(pid_path.read_text(encoding="utf-8").strip())
+    try:
+        assert result.returncode == 0, result.stderr
+        assert elapsed < 2
+        assert pid != 999999
+        os.kill(pid, 0)
+    finally:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 def test_launch_row_injects_native_execution_context_from_bundle_row(
@@ -1668,10 +1759,14 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
     driver.realize_env(bundle, _state(bundle))
 
     joined = "\n".join(transport.ssh_commands)
+    assert "command -v setsid >/dev/null" in transport.ssh_commands[0]
     assert "command -v runpodctl" in joined
     assert all(text in joined for text in ("RUNPOD_API_KEY=$(tr", "runpodctl get pod pod-123"))
     watchdog = next(command for command in transport.ssh_commands if "deadman.pid" in command)
     assert 'kill -0 "$(cat "$pid_file")"' in watchdog
+    assert "setsid -f bash -lc" in watchdog
+    assert "echo $$ >" in watchdog
+    assert 'rm -f "$pid_file"' in watchdog
     assert 'runpodctl remove pod "$pod_id"' in watchdog
     assert ">>" in watchdog
     assert "/logs/deadman.log" in watchdog

@@ -665,7 +665,8 @@ class RunPodOrchestrationDriver:
         declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
-            f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} {_sq(remote_run_dir + '/logs')}"
+            f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
+            f"{_sq(remote_run_dir + '/logs')} && command -v setsid >/dev/null"
         )
         self._ensure_deadman(bundle)
         reused_fingerprint = self._reused_remote_environment_fingerprint(
@@ -1725,7 +1726,7 @@ def build_remote_nohup_sentinel_command(
     return (
         f"mkdir -p {_sq(str(Path(done_file).parent))} {_sq(str(Path(log_file).parent))} && "
         f"rm -f {_sq(done_file)} {_sq(failed_file)} && "
-        f"nohup bash -lc {_sq(sentinel_command)} </dev/null >{_sq(log_file)} 2>&1 &"
+        f"setsid -f bash -lc {_sq(sentinel_command)} </dev/null >{_sq(log_file)} 2>&1"
     )
 
 
@@ -1822,8 +1823,11 @@ def build_launch_row_command(
         f"echo 'orphaned launch: started sentinel present, process dead, "
         f"no terminal sentinel' > {_sq(failed_file)}; exit 0; fi && "
         f"{seed_command}"
-        f"touch {_sq(started_file)} && "
-        f"nohup bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 &"
+        f"rm -f {_sq(pid_file)} && touch {_sq(started_file)} && "
+        f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
+        f"i=0; while [ ! -s {_sq(pid_file)} ] && [ \"$i\" -lt 40 ]; do "
+        'i=$((i+1)); sleep 0.05; done; '
+        f"[ -s {_sq(pid_file)} ]"
     )
 
 
@@ -1877,6 +1881,7 @@ def build_deadman_watchdog_command(
     warning = f"{remote_run_dir}/deadman-warning.txt"
     pid_file = f"{remote_run_dir}/deadman.pid"
     script = (
+        f"echo $$ > {_sq(pid_file)}; "
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
         f"sdir={_sq(remote_sentinel_dir)}; edir={_sq(events_dir)}; "
         f"silence={int(silence_seconds)}; warning={_sq(warning)}; "
@@ -1896,8 +1901,11 @@ def build_deadman_watchdog_command(
     return (
         f"pid_file={_sq(pid_file)}; "
         'if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then exit 0; fi; '
-        f"nohup bash -lc {_sq(script)} </dev/null "
-        f'>>{_sq(remote_run_dir + "/logs/deadman.log")} 2>&1 & echo $! > "$pid_file"'
+        'rm -f "$pid_file"; '
+        f"setsid -f bash -lc {_sq(script)} </dev/null "
+        f'>>{_sq(remote_run_dir + "/logs/deadman.log")} 2>&1; '
+        'i=0; while [ ! -s "$pid_file" ] && [ "$i" -lt 40 ]; do '
+        'i=$((i+1)); sleep 0.05; done; [ -s "$pid_file" ]'
     )
 
 
