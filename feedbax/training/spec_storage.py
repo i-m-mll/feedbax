@@ -73,6 +73,9 @@ def compile_training_run_matrix(
     """Purely lower an authored training matrix into generic compiled rows."""
     from feedbax.orchestration.assembly import CompiledExecutionRow, CompiledRunSet
     from feedbax.orchestration.bundle import RowLaunchSpec
+    from feedbax.orchestration.drivers.native_execution import (
+        NATIVE_TRAINING_COLLECTION_OUTPUTS,
+    )
 
     matrix = (
         authored
@@ -141,7 +144,7 @@ def compile_training_run_matrix(
                 immutable_inputs=list(context.resolved_inputs),
                 launch=RowLaunchSpec(
                     command=command,
-                    collect=["manifest.json", "training-diagnostics.json"],
+                    collect=list(NATIVE_TRAINING_COLLECTION_OUTPUTS),
                     payload_routing={
                         "kind": "registered-execution-payload",
                         "spec": "execution.payload",

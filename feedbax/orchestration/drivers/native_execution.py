@@ -10,6 +10,13 @@ from feedbax.orchestration.bundle import RunRowSpec
 from feedbax.training.diagnostics import NativeExecutionProducerContext
 
 
+NATIVE_TRAINING_COLLECTION_OUTPUTS = (
+    "manifest.json",
+    "training-diagnostics.json",
+    "checkpoints",
+)
+
+
 class NativeExecutionContextError(ValueError):
     """Raised when a native row cannot receive one canonical producer context."""
 
@@ -25,6 +32,24 @@ def is_native_training_command(command: Sequence[str]) -> bool:
         return False
     launcher = Path(command[index - 1]).name
     return launcher in {"feedbax", "feedbax.exe"}
+
+
+def uses_registered_native_execution(row: RunRowSpec) -> bool:
+    """Return whether orchestration owns native payload and output routing for a row."""
+
+    return (
+        row.launch.payload_routing.get("kind") == "registered-execution-payload"
+        and is_native_training_command(row.launch.command)
+    )
+
+
+def missing_native_training_collection_outputs(row: RunRowSpec) -> list[str]:
+    """Return required row-local native outputs absent from the collection contract."""
+
+    if not uses_registered_native_execution(row):
+        return []
+    declared = set(row.launch.collect)
+    return sorted(set(NATIVE_TRAINING_COLLECTION_OUTPUTS) - declared)
 
 
 def bind_native_execution_command(

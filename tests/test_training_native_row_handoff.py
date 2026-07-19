@@ -65,6 +65,7 @@ from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.native_execution import inject_native_execution_context
 from feedbax.orchestration.drivers.runpod import build_launch_row_command
 from feedbax.orchestration.state import RowState, RunSetState
+from feedbax.orchestration.stages import _verify_collected_native_checkpoint_custody
 from feedbax.training.diagnostics import (
     LearningRateDiagnostic,
     NativeExecutionProducerContext,
@@ -362,8 +363,8 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     provenance = row.execution.row_provenance
     assert provenance is not None
     payload = json.loads(Path(row.execution.payload.uri).read_text(encoding="utf-8"))
-    checkpoint_root = tmp_path / "checkpoint-custody"
     collection_root = bundle.run_set_dir / "rows" / row.row_id
+    checkpoint_root = collection_root / "checkpoints"
     context = _native_context(bundle, collection_root=collection_root)
 
     result = execute_training_run_spec(
@@ -464,13 +465,28 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         rows={row.row_id: RowState(status="completed")},
     )
     collected = driver.collect(bundle, row, state)
-    assert set(collected) == {"manifest.json", "training-diagnostics.json"}
+    assert set(collected) == {
+        "manifest.json",
+        "training-diagnostics.json",
+        "checkpoints",
+    }
     assert json.loads(Path(collected["manifest.json"]).read_text(encoding="utf-8"))[
         "id"
     ] == result.manifest.id
     assert json.loads(
         Path(collected["training-diagnostics.json"]).read_text(encoding="utf-8")
     )["manifest_id"] == result.manifest.id
+    collected_checkpoint_root = Path(collected["checkpoints"])
+    assert (collected_checkpoint_root / "latest.json").is_file()
+    assert (collected_checkpoint_root / "transactions").is_dir()
+    verification = _verify_collected_native_checkpoint_custody(row, collected)
+    assert verification["transaction_id"] == result.checkpoint_writes[-1].manifest.transaction_id
+    assert set(verification["slot_names"]) == {
+        "batch_counter",
+        "model",
+        "optimizer",
+        "prng",
+    }
 
     continuation = CheckpointContinuationRequest(
         source_completed_batches=1,

@@ -1560,7 +1560,7 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
         update={
             "launch": RowLaunchSpec(
                 command=["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"],
-                collect=["manifest.json", "training-diagnostics.json"],
+                collect=["manifest.json", "training-diagnostics.json", "checkpoints"],
             )
         }
     )
@@ -1573,6 +1573,7 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
     assert [call[0] for call in transport.rsync_calls] == [
         f"{remote}/rows/warm/manifest.json",
         f"{remote}/rows/warm/training-diagnostics.json",
+        f"{remote}/rows/warm/checkpoints",
         f"{remote}/events/warm.events.jsonl",
     ]
     assert collected["warm.events.jsonl"] == str(

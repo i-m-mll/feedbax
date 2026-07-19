@@ -1177,6 +1177,42 @@ def test_collection_error_for_completed_executor_remains_primary_and_retries(
     assert driver.calls.count("teardown") == 1
 
 
+def test_absent_declared_output_for_completed_executor_fails_collection(
+    tmp_path: Path,
+) -> None:
+    class MissingOutputDriver(FakeDriver):
+        def collect(
+            self,
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> dict[str, str]:
+            self._call(f"collect:{row.row_id}")
+            return {}
+
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("row-a", collect=["manifest.json"])],
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    driver = MissingOutputDriver()
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="declared collection outputs are absent",
+    ):
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            conformance_registry=_fixture_pass_registry(),
+        ).run()
+
+    assert store.load().stage("COLLECT").attempts == 5
+    assert driver.calls.count("collect:row-a") == 5
+    assert driver.calls.count("teardown") == 1
+
+
 def test_later_executor_failure_precedes_earlier_row_collection_error(tmp_path: Path) -> None:
     class MixedOutcomeDriver(FakeDriver):
         def probe(
@@ -1630,6 +1666,51 @@ def test_preflight_consumes_only_deployment_policy(tmp_path: Path) -> None:
 
     assert check.status == "pass"
     assert check.observed == bundle.deployment_policy.model_dump(mode="json")
+
+
+def test_preflight_rejects_registered_native_row_without_checkpoint_collection(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                command=["python", "-m", "feedbax", "execute-training-run-spec"],
+                collect=["manifest.json", "training-diagnostics.json"],
+            )
+        ],
+    )
+    row = bundle.rows[0]
+    bundle = bundle.model_copy(
+        update={
+            "rows": [
+                row.model_copy(
+                    update={
+                        "launch": row.launch.model_copy(
+                            update={
+                                "payload_routing": {
+                                    "kind": "registered-execution-payload"
+                                }
+                            }
+                        )
+                    }
+                )
+            ]
+        }
+    )
+
+    check = {entry.name: entry for entry in run_preflight_checks(bundle)}[
+        "native-output-custody"
+    ]
+
+    assert check.status == "fail"
+    assert check.detail == "row-a: missing ['checkpoints']"
+    assert check.observed["row-a"]["required_for_registered_native_training"] == [
+        "manifest.json",
+        "training-diagnostics.json",
+        "checkpoints",
+    ]
 
 
 @pytest.mark.parametrize(

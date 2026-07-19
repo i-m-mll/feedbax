@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.manifest import ParentRef
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -36,6 +37,11 @@ from feedbax.orchestration.conformance import (
     write_conformance_certificate,
 )
 from feedbax.orchestration.drivers.base import OrchestrationDriver, ProvisioningAttemptError
+from feedbax.orchestration.drivers.native_execution import (
+    NATIVE_TRAINING_COLLECTION_OUTPUTS,
+    missing_native_training_collection_outputs,
+    uses_registered_native_execution,
+)
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration import schedule_eval
@@ -46,6 +52,10 @@ from feedbax.orchestration.state import (
     RunSetStateStore,
     StageState,
     utc_now,
+)
+from feedbax.training.checkpoint_custody import (
+    load_checkpoint_custody_documents,
+    resolve_checkpoint_custody_ref,
 )
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
@@ -714,6 +724,7 @@ class StageEngine:
 
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected: dict[str, Mapping[str, str]] = {}
+        checkpoint_custody: dict[str, Mapping[str, Any]] = {}
         executor_failures = [
             {
                 "row_id": row.row_id,
@@ -741,19 +752,40 @@ class StageEngine:
                     }
                 )
             missing_outputs = _missing_declared_collection_outputs(row, outputs)
-            if missing_outputs and preserve_executor_failure:
-                secondary_evidence.append(
-                    {
-                        "kind": "absent_collection_outputs",
-                        "row_id": row.row_id,
-                        "missing_outputs": missing_outputs,
-                    }
-                )
+            if missing_outputs:
+                evidence = {
+                    "kind": "absent_collection_outputs",
+                    "row_id": row.row_id,
+                    "missing_outputs": missing_outputs,
+                }
+                if not preserve_executor_failure:
+                    raise OrchestrationStageError(
+                        f"declared collection outputs are absent for row "
+                        f"{row.row_id!r}: {missing_outputs!r}"
+                    )
+                secondary_evidence.append(evidence)
+            elif uses_registered_native_execution(row):
+                try:
+                    checkpoint_custody[row.row_id] = (
+                        _verify_collected_native_checkpoint_custody(row, outputs)
+                    )
+                except Exception as exc:
+                    if not preserve_executor_failure:
+                        raise
+                    secondary_evidence.append(
+                        {
+                            "kind": "checkpoint_custody_verification_after_executor_failure",
+                            "row_id": row.row_id,
+                            "detail": str(exc),
+                        }
+                    )
             collected[row.row_id] = outputs
             row_state = row_state.model_copy(update={"collected_outputs": outputs})
             state = state.with_row(row.row_id, row_state)
             self.store.save(state)
         stage_outputs: dict[str, Any] = {"rows": collected}
+        if checkpoint_custody:
+            stage_outputs["checkpoint_custody"] = checkpoint_custody
         if secondary_evidence:
             stage_outputs["secondary_evidence"] = secondary_evidence
         if executor_failures:
@@ -1413,6 +1445,53 @@ def _missing_declared_collection_outputs(
     return sorted(expected - set(collected))
 
 
+def _verify_collected_native_checkpoint_custody(
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+) -> Mapping[str, Any]:
+    """Authenticate the published native checkpoint transaction before teardown."""
+
+    checkpoint_root = Path(collected["checkpoints"])
+    documents = load_checkpoint_custody_documents(checkpoint_root)
+    latest = documents.latest_pointer.document
+    manifest = documents.manifest.document
+    manifest_sha256 = hashlib.sha256(documents.manifest_path.read_bytes()).hexdigest()
+    transaction_root_sha256 = (
+        manifest.content_integrity_digest.transaction_root_sha256
+    )
+    if (
+        latest.transaction_id != manifest.transaction_id
+        or latest.manifest_sha256 != manifest_sha256
+        or latest.transaction_root_sha256 != transaction_root_sha256
+    ):
+        raise OrchestrationStageError(
+            f"collected checkpoint custody authority mismatch for row {row.row_id!r}"
+        )
+    manifest_relative_path = documents.manifest_path.relative_to(
+        checkpoint_root.resolve()
+    ).as_posix()
+    if latest.manifest_relative_path != manifest_relative_path:
+        raise OrchestrationStageError(
+            f"collected checkpoint manifest path mismatch for row {row.row_id!r}"
+        )
+    resolved = resolve_checkpoint_custody_ref(
+        ParentRef(
+            kind="TrainingCheckpointTransactionManifest",
+            id=manifest.transaction_id,
+            role="training_checkpoint_custody",
+            uri=manifest_relative_path,
+            metadata={"manifest_sha256": manifest_sha256},
+        ),
+        allowed_root=checkpoint_root,
+    )
+    return {
+        "transaction_id": resolved.manifest.transaction_id,
+        "manifest_sha256": resolved.manifest_sha256,
+        "transaction_root_sha256": transaction_root_sha256,
+        "slot_names": sorted(resolved.slots),
+    }
+
+
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     checks: list[PreflightCheckEntry] = []
@@ -1447,6 +1526,29 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
             not policy_failures,
             detail="; ".join(policy_failures) if policy_failures else None,
             observed=policy_observed,
+        )
+    )
+
+    output_failures: list[str] = []
+    output_observed: dict[str, Any] = {}
+    for row in bundle.rows:
+        if not uses_registered_native_execution(row):
+            continue
+        missing = missing_native_training_collection_outputs(row)
+        output_observed[row.row_id] = {
+            "declared": list(row.launch.collect),
+            "required_for_registered_native_training": list(
+                NATIVE_TRAINING_COLLECTION_OUTPUTS
+            ),
+        }
+        if missing:
+            output_failures.append(f"{row.row_id}: missing {missing!r}")
+    checks.append(
+        _check(
+            "native-output-custody",
+            not output_failures,
+            detail="; ".join(output_failures) if output_failures else None,
+            observed=output_observed,
         )
     )
 
