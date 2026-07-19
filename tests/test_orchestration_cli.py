@@ -3,15 +3,36 @@ from __future__ import annotations
 import json
 import hashlib
 import sys
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from feedbax.bin import orchestrate
+import feedbax.contracts.training as training_contracts
+import feedbax.plugins.discovery as plugin_discovery
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
+)
+from feedbax.contracts.training import (
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_method_descriptor,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
 )
 from feedbax.orchestration import (
     AssemblyCompilerRegistry,
@@ -40,6 +61,18 @@ from feedbax.orchestration.conformance import CheckRegistry, pass_check
 from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
 from feedbax.orchestration.stages import PreflightFailed
 from feedbax.orchestration.state import RowState
+from feedbax.plugins.discovery import load_training_method_plugins
+from feedbax.training.preparation import ExecutionPreparationProviderRegistry
+from feedbax.training.spec_storage import (
+    TRAINING_RUN_MATRIX_COMPILER_ID,
+    TRAINING_RUN_MATRIX_COMPILER_VERSION,
+    register_training_run_matrix_compiler,
+)
+
+
+_PLUGIN_METHOD_REF = "tests/orchestration_plugin/v1"
+_PLUGIN_SCHEMA_ID = "tests.spec.orchestration_plugin"
+_PLUGIN_SCHEMA_VERSION = "tests.spec.orchestration_plugin.v1"
 
 
 class _FixtureCompiler:
@@ -161,10 +194,257 @@ def _write_bundle(bundle: RunBundle, path: Path) -> Path:
     return path
 
 
+def _register_orchestration_plugin_method(registry: Any) -> None:
+    contract = standard_supervised_method_contract().model_copy(
+        update={
+            "method_ref": _PLUGIN_METHOD_REF,
+            "method_payload_schema_version": _PLUGIN_SCHEMA_VERSION,
+        }
+    )
+    registry.register_descriptor(
+        replace(
+            standard_supervised_method_descriptor(),
+            method_ref=_PLUGIN_METHOD_REF,
+            payload_schema_id=_PLUGIN_SCHEMA_ID,
+            payload_schema_version=_PLUGIN_SCHEMA_VERSION,
+            contract_compiler=lambda _payload: contract,
+            rejected_payload_versions=(),
+            owner="tests.test_orchestration_cli",
+            package="tests",
+        )
+    )
+
+
+def _standard_training_run_payload() -> dict[str, Any]:
+    return TrainingRunSpec(
+        graph={
+            "inline": {
+                "nodes": {
+                    "gain": {
+                        "type": "Gain",
+                        "params": {"gain": 1.0},
+                        "input_ports": ["input"],
+                        "output_ports": ["output"],
+                    }
+                },
+                "wires": [],
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+                "input_bindings": {"input": ("gain", "input")},
+                "output_bindings": {"output": ("gain", "output")},
+            }
+        },
+        task=TaskSpec(type="ToyTask", params={"n_steps": 1}),
+        training_config=TrainingConfig(n_batches=1, batch_size=1, learning_rate=0.01),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(
+                type="target_state",
+                label="target",
+                selector="port:gain.output",
+                target_value=[0.0],
+            )
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=WorkerExecutionSpec(
+            method_contract=standard_supervised_method_contract(),
+            effective_phase=standard_supervised_effective_phase_spec(),
+        ),
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _plugin_training_run_payload() -> dict[str, Any]:
+    payload = _standard_training_run_payload()
+    payload["method_ref"] = {
+        "package": "tests",
+        "name": "orchestration_plugin",
+        "version": "v1",
+    }
+    method_payload = standard_supervised_method_payload().model_dump(
+        mode="json", exclude_none=True
+    )
+    method_payload["schema_id"] = _PLUGIN_SCHEMA_ID
+    method_payload["schema_version"] = _PLUGIN_SCHEMA_VERSION
+    method_payload["payload"]["optimizer"]["params"]["learning_rate"] = 0.01
+    payload["method_payload"] = method_payload
+    worker_execution = payload["worker_execution"]
+    worker_execution["method_contract"]["method_ref"] = _PLUGIN_METHOD_REF
+    worker_execution["method_contract"][
+        "method_payload_schema_version"
+    ] = _PLUGIN_SCHEMA_VERSION
+    worker_execution["effective_phase"]["method_ref"] = _PLUGIN_METHOD_REF
+    return payload
+
+
+def _matrix_request(
+    tmp_path: Path,
+    *,
+    training_run_payload: dict[str, Any],
+) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    matrix = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "orchestration plugin discovery",
+        "base": {"kind": "inline", "inline": training_run_payload},
+        "rows": [{"row_id": "plugin-row", "seed": 7}],
+    }
+    authored_bytes = json.dumps(matrix, sort_keys=True).encode("utf-8")
+    authored_path = tmp_path / "training-matrix.json"
+    authored_path.write_bytes(authored_bytes)
+    request = RunAssemblyRequest(
+        authored=SchemaArtifactRef(
+            schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            artifact_id=f"fixture:{hashlib.sha256(authored_bytes).hexdigest()}",
+            sha256=hashlib.sha256(authored_bytes).hexdigest(),
+            uri=str(authored_path),
+        ),
+        compiler=CompilerIdentity(
+            compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+            compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        deployment_policy=_deployment_policy(),
+        environment=EnvironmentDeclaration(python_version="3.12"),
+        launch_policy=LaunchPolicy(max_parallel_rows=1),
+        budget=BudgetPolicy(max_wall_clock_seconds=10.0),
+        orchestration_root=str(tmp_path / "orchestration"),
+    )
+    registry = AssemblyCompilerRegistry()
+    register_training_run_matrix_compiler(registry, allow_inline_base=True)
+    return request, registry
+
+
+def _plugin_matrix_request(tmp_path: Path) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    return _matrix_request(tmp_path, training_run_payload=_plugin_training_run_payload())
+
+
 def _save_state(bundle: RunBundle, state: RunSetState) -> None:
     bundle.run_set_dir.mkdir(parents=True, exist_ok=True)
     _write_bundle(bundle, bundle.run_set_dir / "bundle.json")
     RunSetStateStore(bundle.run_set_dir / "state.json").save(state)
+
+
+def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_assembly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    method_registry = training_contracts.DEFAULT_TRAINING_METHOD_REGISTRY
+    monkeypatch.setattr(
+        method_registry,
+        "_registrations",
+        method_registry._registrations.copy(),
+    )
+    monkeypatch.setattr(
+        method_registry,
+        "_descriptors",
+        method_registry._descriptors.copy(),
+    )
+    preparation_registry = ExecutionPreparationProviderRegistry()
+    plugin = SimpleNamespace(
+        register_feedbax_training_methods=_register_orchestration_plugin_method
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda **kwargs: load_training_method_plugins(
+            preparation_registry=preparation_registry,
+            entry_points=[SimpleNamespace(name="orchestration-method", load=lambda: plugin)],
+            **kwargs,
+        ),
+    )
+    request, assembly_registry = _plugin_matrix_request(tmp_path)
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(
+        orchestrate,
+        "build_default_assembly_registry",
+        lambda: assembly_registry,
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "build_default_check_registry",
+        lambda: CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
+    )
+
+    assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
+    assert _PLUGIN_METHOD_REF in method_registry.available_keys()
+
+
+@pytest.mark.parametrize("command", ["preflight", "launch"])
+def test_matrix_commands_load_training_plugins_before_request_validation(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _ = _assembly_request(tmp_path)
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    events: list[tuple[str, bool] | str] = []
+
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda *, fail_on_load_error: events.append(("plugins", fail_on_load_error)),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_load_assembly_request",
+        lambda _path: events.append("request") or request,
+    )
+
+    class FakeEngine:
+        def run(self, **_kwargs: Any) -> RunSetState:
+            return RunSetState(
+                run_set_id="plugin-order",
+                rows={"row": RowState(status="completed")},
+                stages={
+                    "PREFLIGHT": StageState(
+                        status="completed",
+                        checks=[{"name": "fixture_pass", "status": "pass"}],
+                    )
+                },
+            )
+
+    monkeypatch.setattr(orchestrate, "_request_engine", lambda *_args, **_kwargs: FakeEngine())
+
+    assert orchestrate.main([command, "--assembly-request", str(request_path)]) == 0
+    assert events == [("plugins", True), "request"]
+
+
+def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setattr(
+        plugin_discovery,
+        "feedbax_plugin_entry_points",
+        lambda _group: [
+            SimpleNamespace(
+                name="broken-orchestration-method",
+                load=lambda: (_ for _ in ()).throw(RuntimeError("broken plugin")),
+            )
+        ],
+    )
+    request, _ = _matrix_request(
+        tmp_path,
+        training_run_payload=_standard_training_run_payload(),
+    )
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("assembly engine must not be constructed"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "LocalOrchestrationDriver",
+        lambda *_args, **_kwargs: pytest.fail("provider driver must not be constructed"),
+    )
+
+    assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 1
+    assert capsys.readouterr().err.strip().endswith(
+        "Failed to load Feedbax training-method plugin "
+        "entry-point:broken-orchestration-method: broken plugin"
+    )
 
 
 def test_status_line_format_is_stable(tmp_path: Path) -> None:
