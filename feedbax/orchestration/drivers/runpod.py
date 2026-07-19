@@ -295,7 +295,15 @@ class SubprocessRunPodTransport:
         rsync_source = source
         if not source_is_local and _looks_remote_path(source):
             rsync_source = f"{host}:{source}"
-        args = ["rsync", "-az", "--no-owner", "--no-group", "--progress", "--stats"]
+        args = [
+            "rsync",
+            "-az",
+            "--no-owner",
+            "--no-group",
+            "--protect-args",
+            "--progress",
+            "--stats",
+        ]
         if delete:
             args.append("--delete")
         for exclude in excludes:

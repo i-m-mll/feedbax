@@ -531,7 +531,7 @@ def test_provision_projection_does_not_invent_declared_image() -> None:
     assert facts["immutable_image_id"] is None
 
 
-def test_subprocess_rsync_uses_portable_progress_flags(
+def test_subprocess_rsync_protects_remote_upload_arguments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -543,15 +543,107 @@ def test_subprocess_rsync_uses_portable_progress_flags(
         return CommandResult(0, "")
 
     monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    source = tmp_path / "checkpoint [draft]; $HOME"
+    source.mkdir()
+    transport = SubprocessRunPodTransport(
+        ssh_host="198.51.100.10",
+        ssh_port=2222,
+        ssh_key_path="/keys/runpod key",
+    )
+
+    transport.rsync(
+        str(source) + "/",
+        "/workspace/checkout [draft]; $HOME/",
+        delete=True,
+        excludes=("*.pyc",),
+    )
+
+    assert calls == [
+        [
+            "rsync",
+            "-az",
+            "--no-owner",
+            "--no-group",
+            "--protect-args",
+            "--progress",
+            "--stats",
+            "--delete",
+            "--exclude",
+            "*.pyc",
+            "-e",
+            "ssh -i '/keys/runpod key' -p 2222 -o StrictHostKeyChecking=no "
+            "-o UserKnownHostsFile=/dev/null",
+            str(source) + "/",
+            "root@198.51.100.10:/workspace/checkout [draft]; $HOME/",
+        ]
+    ]
+
+
+def test_subprocess_rsync_protects_remote_download_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run_command(args: list[str], *, timeout_seconds: float | None = None) -> CommandResult:
+        assert timeout_seconds == 17
+        calls.append(args)
+        return CommandResult(0, "")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
+    target = tmp_path / "collected outputs"
+    key_path = tmp_path / "runpod key"
+    transport = SubprocessRunPodTransport(
+        ssh_host="198.51.100.10",
+        ssh_port=2222,
+        ssh_key_path=key_path,
+    )
+
+    transport.rsync(
+        "/workspace/run [r5]; $(touch nope)/",
+        str(target) + "/",
+        timeout_seconds=17,
+    )
+
+    assert calls == [
+        [
+            "rsync",
+            "-az",
+            "--no-owner",
+            "--no-group",
+            "--protect-args",
+            "--progress",
+            "--stats",
+            "-e",
+            f"ssh -i '{key_path}' -p 2222 -o StrictHostKeyChecking=no "
+            "-o UserKnownHostsFile=/dev/null",
+            "root@198.51.100.10:/workspace/run [r5]; $(touch nope)/",
+            str(target) + "/",
+        ]
+    ]
+
+
+def test_subprocess_rsync_preserves_normal_path_endpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run_command(args: list[str], *, timeout_seconds: float | None = None) -> CommandResult:
+        calls.append(args)
+        return CommandResult(0, "")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.runpod._run_command", run_command)
     source = tmp_path / "checkpoint"
     source.mkdir()
     transport = SubprocessRunPodTransport(ssh_host="198.51.100.10", ssh_port=2222)
 
     transport.rsync(str(source) + "/", "/workspace/checkpoint/", delete=True)
 
-    assert len(calls) == 1
-    assert "--progress" in calls[0]
-    assert "--stats" in calls[0]
+    assert calls[0][-2:] == [
+        str(source) + "/",
+        "root@198.51.100.10:/workspace/checkpoint/",
+    ]
     assert all(not arg.startswith("--info=") for arg in calls[0])
 
 
@@ -888,14 +980,15 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))  # mkdir
     transport.queue_ssh(CommandResult(1, ""))  # fingerprint probe mismatch
-    local_repo = tmp_path / "feedbax"
+    local_repo = tmp_path / "local repos" / "feedbax [dev]"
+    local_repo.parent.mkdir()
     local_repo.mkdir()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             ssh_host="198.51.100.10",
             ssh_port=2222,
             local_repos={"feedbax": local_repo},
-            remote_repos={"feedbax": "/workspace/feedbax"},
+            remote_repos={"feedbax": "/workspace/dev repos/feedbax [dev]"},
             path_patches=(
                 (
                     "/workspace/feedbax/pyproject.toml",
@@ -918,7 +1011,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert transport.rsync_calls == [
         (
             str(local_repo) + "/",
-            "/workspace/feedbax/",
+            "/workspace/dev repos/feedbax [dev]/",
             True,
             (
                 ".git",
@@ -942,6 +1035,27 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "jax[cuda12]" in joined
     assert "entry_point.load()" in joined
     assert "lockfile digest mismatch" in joined
+
+
+def test_realize_env_fails_closed_when_repo_rsync_fails(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, ""))  # mkdir
+    transport.rsync_result = CommandResult(1, "", "remote path rejected")
+    local_repo = tmp_path / "feedbax"
+    local_repo.mkdir()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+            local_repos={"feedbax": local_repo},
+            remote_repos={"feedbax": "/workspace/feedbax"},
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodDriverError, match="rsync repo .*remote path rejected"):
+        driver.realize_env(bundle, _state(bundle))
 
 
 def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
