@@ -1293,6 +1293,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, *missing_context)
 
     try:
+        trace = _normalize_lr_trace_steps(trace, row.training_diagnostics)
         eval_context = require_schedule_context(
             (
                 {
@@ -1361,6 +1362,53 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
             detail=str(mismatches),
         )
     return fail_check(check_id, expected=expected, observed=observed, detail=str(mismatches))
+
+
+def _normalize_lr_trace_steps(
+    trace: Mapping[tuple[tuple[str, int], ...], Mapping[int, float]],
+    training_diagnostics: Mapping[str, Any] | None,
+) -> dict[tuple[tuple[str, int], ...], dict[int, float]]:
+    """Normalize an unambiguous continuation-local LR trace to cumulative steps."""
+    segment_raw = _path(training_diagnostics, "segment_completed_batches")
+    cumulative_raw = _path(training_diagnostics, "cumulative_completed_batches")
+    if segment_raw is _MISSING and cumulative_raw is _MISSING:
+        return {coordinates: dict(samples) for coordinates, samples in trace.items()}
+    if segment_raw is _MISSING or cumulative_raw is _MISSING:
+        raise ValueError(
+            "lr_trace continuation frame requires both segment_completed_batches and "
+            "cumulative_completed_batches"
+        )
+
+    segment_completed = int(segment_raw)
+    cumulative_completed = int(cumulative_raw)
+    if segment_completed < 0 or cumulative_completed < segment_completed:
+        raise ValueError(
+            "invalid lr_trace continuation frame: expected "
+            "0 <= segment_completed_batches <= cumulative_completed_batches"
+        )
+    resume_origin = cumulative_completed - segment_completed
+    if resume_origin == 0:
+        return {coordinates: dict(samples) for coordinates, samples in trace.items()}
+
+    steps = [step for samples in trace.values() for step in samples]
+    segment_local = all(0 <= step <= segment_completed for step in steps)
+    cumulative = all(resume_origin <= step <= cumulative_completed for step in steps)
+    if segment_local and cumulative:
+        raise ValueError(
+            "ambiguous lr_trace continuation coordinate frame: all samples fit both "
+            "segment-local and cumulative ranges"
+        )
+    if not segment_local and not cumulative:
+        raise ValueError(
+            "mixed or out-of-range lr_trace continuation coordinate frame: samples must be "
+            "wholly segment-local or wholly cumulative"
+        )
+    if cumulative:
+        return {coordinates: dict(samples) for coordinates, samples in trace.items()}
+    return {
+        coordinates: {step + resume_origin: value for step, value in samples.items()}
+        for coordinates, samples in trace.items()
+    }
 
 
 def _selected_lr_samples(
