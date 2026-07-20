@@ -132,12 +132,18 @@ def _row(**updates: object) -> ConformanceRowArtifacts:
     return ConformanceRowArtifacts(**base)
 
 
-def _identity_fixture(tmp_path: Path, *, inputs: list[dict[str, object]] | None = None):
-    authored = TrainingRunMatrixSpec(
-        name="fixture",
-        base={"kind": "inline", "inline": {"training": "fixture"}},
-        rows=[{"row_id": "row-a"}],
-    ).model_dump(mode="json", exclude_none=True)
+def _identity_fixture(
+    tmp_path: Path,
+    *,
+    authored: dict[str, object] | None = None,
+    inputs: list[dict[str, object]] | None = None,
+):
+    if authored is None:
+        authored = TrainingRunMatrixSpec(
+            name="fixture",
+            base={"kind": "inline", "inline": {"training": "fixture"}},
+            rows=[{"row_id": "row-a"}],
+        ).model_dump(mode="json", exclude_none=True)
     snapshot = build_resolved_semantics_snapshot({"training": "resolved"})
     canonical_inputs = list(inputs or [])
     intent_hash = training_run_intent_hash(authored)
@@ -751,6 +757,28 @@ def test_execution_identity_explicit_empty_inputs_passes(tmp_path: Path) -> None
     assert result.expected == result.observed
     assert result.expected["input_data_identities"] == []
     assert "execution_identity" in dict(build_core_check_registry().items())
+
+
+def test_execution_identity_hashes_authenticated_matrix_without_normalizing(
+    tmp_path: Path,
+) -> None:
+    authored = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "fixture",
+        "base": {"kind": "inline", "inline": {"training": "fixture"}},
+        "rows": [{"row_id": "row-a"}],
+    }
+    normalized = TrainingRunMatrixSpec.model_validate(authored).model_dump(
+        mode="json", exclude_none=True
+    )
+    assert training_run_intent_hash(authored) != training_run_intent_hash(normalized)
+    envelope, manifest = _identity_fixture(tmp_path, authored=authored)
+
+    result = check_execution_identity(_row(execution=envelope, manifest_payload=manifest))
+
+    assert result.status == "pass"
+    assert result.expected == result.observed
 
 
 def test_execution_identity_requires_envelope_and_raw_manifest_fields(tmp_path: Path) -> None:
