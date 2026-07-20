@@ -23,13 +23,17 @@ from feedbax.contracts.spec_storage import training_spec_sha256
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run_matrix.v1"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run_matrix.v2"
-TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v3"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.training_run_matrix.v3"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v4"
 AUTHORED_TRAINING_ROW_SCHEMA_ID = "feedbax.spec.authored_training_row"
 AUTHORED_TRAINING_ROW_SCHEMA_VERSION = f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v1"
 TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID = "feedbax.spec.training_row_lowering_result"
 TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION = (
     f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v1"
 )
+TRAINING_ROW_LOWERER_REF_SCHEMA_ID = "feedbax.spec.training_row_lowerer_ref"
+TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v1"
+TRAINING_ROW_LOWERER_REF_FIELD = "feedbax_row_lowerer"
 TRAINING_ROW_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_provenance"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v1"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
@@ -52,6 +56,8 @@ TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID = (
 TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION = (
     f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v1"
 )
+TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID = "feedbax.orchestration.training_run_matrix_authority"
+TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION = f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v1"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1 = "feedbax.runpod_preflight_evidence"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.runpod_preflight_evidence"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1}.v1"
@@ -63,7 +69,7 @@ class TrainingRunMatrixArtifactBinding(StrictModel):
     """Portable identity of the one governed matrix shared by every row."""
 
     schema_id: Literal["feedbax.spec.training_run_matrix"]
-    schema_version: Literal["feedbax.spec.training_run_matrix.v3"]
+    schema_version: Literal["feedbax.spec.training_run_matrix.v4"]
     artifact_id: str = Field(min_length=1)
     artifact_sha256: str
     canonical_sha256: str
@@ -181,8 +187,27 @@ class TrainingRunMatrixMonitorBinding(StrictModel):
     event_paths: list[str] = Field(min_length=1)
 
 
+def _validate_matrix_authority_sets(
+    rows: list[TrainingRunMatrixRowPreflightBinding],
+    resolved_inputs: list[TrainingRunMatrixInputCustodyBinding],
+    code_authorities: list[TrainingRunMatrixCodeAuthority],
+    monitor: TrainingRunMatrixMonitorBinding,
+) -> None:
+    row_ids = [row.row_id for row in rows]
+    if len(row_ids) != len(set(row_ids)):
+        raise ValueError("matrix preflight rows must be unique")
+    if monitor.event_paths != [f"events/{row_id}.events.jsonl" for row_id in row_ids]:
+        raise ValueError("matrix monitor event paths must exactly follow ordered rows")
+    input_keys = [(item.role, item.kind, item.identifier) for item in resolved_inputs]
+    if input_keys != sorted(input_keys) or len(input_keys) != len(set(input_keys)):
+        raise ValueError("matrix input custody must be complete, unique, and canonical")
+    repos = [item.repo for item in code_authorities]
+    if repos != sorted(repos) or len(repos) != len(set(repos)):
+        raise ValueError("matrix code authorities must be unique and canonically ordered")
+
+
 class TrainingRunMatrixPreflightBinding(StrictModel):
-    """Provider-neutral durable authority binding a matrix to preflight evidence."""
+    """Provider evidence bound to authenticated matrix authority."""
 
     schema_id: Literal["feedbax.orchestration.training_run_matrix_preflight_binding"] = (
         TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID
@@ -206,19 +231,46 @@ class TrainingRunMatrixPreflightBinding(StrictModel):
 
     @model_validator(mode="after")
     def _validate_complete_ordered_sets(self) -> "TrainingRunMatrixPreflightBinding":
-        row_ids = [row.row_id for row in self.rows]
-        if len(row_ids) != len(set(row_ids)):
-            raise ValueError("matrix preflight rows must be unique")
-        expected_paths = [f"events/{row_id}.events.jsonl" for row_id in row_ids]
-        if self.monitor.event_paths != expected_paths:
-            raise ValueError("matrix monitor event paths must exactly follow ordered rows")
-        input_keys = [(item.role, item.kind, item.identifier) for item in self.resolved_inputs]
-        if input_keys != sorted(input_keys) or len(input_keys) != len(set(input_keys)):
-            raise ValueError("matrix input custody must be complete, unique, and canonical")
-        repos = [item.repo for item in self.code_authorities]
-        if repos != sorted(repos) or len(repos) != len(set(repos)):
-            raise ValueError("matrix code authorities must be unique and canonically ordered")
+        _validate_matrix_authority_sets(
+            self.rows, self.resolved_inputs, self.code_authorities, self.monitor
+        )
         return self
+
+
+class TrainingRunMatrixAuthority(StrictModel):
+    """Durable provider-unverified authority for one governed matrix."""
+
+    schema_id: Literal["feedbax.orchestration.training_run_matrix_authority"] = (
+        TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.training_run_matrix_authority.v1"] = (
+        TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION
+    )
+    authority_state: Literal["provider_unverified"] = "provider_unverified"
+    matrix: TrainingRunMatrixArtifactBinding
+    rows: list[TrainingRunMatrixRowPreflightBinding] = Field(min_length=1)
+    resolved_inputs: list[TrainingRunMatrixInputCustodyBinding]
+    code_authorities: list[TrainingRunMatrixCodeAuthority] = Field(min_length=1)
+    monitor: TrainingRunMatrixMonitorBinding
+    bundle_sha256: str
+
+    @field_validator("bundle_sha256")
+    @classmethod
+    def _validate_hash(cls, value: str) -> str:
+        _validate_digest(value, "/matrix_authority")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_complete_ordered_sets(self) -> "TrainingRunMatrixAuthority":
+        _validate_matrix_authority_sets(
+            self.rows, self.resolved_inputs, self.code_authorities, self.monitor
+        )
+        return self
+
+
+def training_run_matrix_authority_sha256(authority: TrainingRunMatrixAuthority) -> str:
+    """Return the canonical digest of provider-unverified matrix authority."""
+    return training_spec_sha256(authority.model_dump(mode="json", exclude_none=True))
 
 
 def training_run_matrix_preflight_binding_sha256(
@@ -233,6 +285,26 @@ class RowLowererIdentity(StrictModel):
 
     lowerer_id: str = Field(min_length=1)
     lowerer_version: str = Field(min_length=1)
+
+
+class TrainingRowLowererRef(StrictModel):
+    """Content-pinned authority selecting a public authored-row lowerer."""
+
+    schema_id: Literal["feedbax.spec.training_row_lowerer_ref"] = (
+        TRAINING_ROW_LOWERER_REF_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.training_row_lowerer_ref.v1"] = (
+        TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION
+    )
+    lowerer_id: str = Field(min_length=1)
+    lowerer_version: str = Field(min_length=1)
+    implementation_sha256: str
+
+    @field_validator("implementation_sha256")
+    @classmethod
+    def _validate_implementation_sha256(cls, value: str) -> str:
+        _validate_digest(value, f"/{TRAINING_ROW_LOWERER_REF_FIELD}")
+        return value
 
 
 class AuthoredTrainingRow(StrictModel):
@@ -428,8 +500,23 @@ class MatrixCompositionDelta(StrictModel):
 class DurableSlotTransform(StrictModel):
     transform_id: str
     version: str
+    implementation_sha256: str
+    stage: Literal["source_pre", "target_post"]
+    target_row_id: str | None = None
     slot: str
     parameters: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("implementation_sha256")
+    @classmethod
+    def _implementation_hash(cls, value: str) -> str:
+        _validate_digest(value, "/dependencies/implementation_sha256")
+        return value
+
+    @model_validator(mode="after")
+    def _placement(self) -> "DurableSlotTransform":
+        if self.stage == "target_post" and self.target_row_id is None:
+            raise ValueError("target_post durable transforms require target_row_id")
+        return self
 
 
 class ForkFromSelectedCheckpoint(StrictModel):
@@ -510,7 +597,6 @@ ExecutionDependency: TypeAlias = Annotated[
 class MatrixForkSpec(StrictModel):
     """Fork-from-source-checkpoint launch semantics for a matrix."""
 
-    source_run_id: str | None = None
     lr_continuation: Literal["continue", "restart"]
     parity: Literal["require", "skip"] = "require"
     expected_slots: list[str] = Field(default_factory=list)

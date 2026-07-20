@@ -81,7 +81,7 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
             "name": "lr rows",
             "issue": "60c12f1",
             "base": {"kind": "inline", "inline": base},
-            "fork": {"source_run_id": "feedbax-training-run:source", "lr_continuation": "continue"},
+            "fork": {"lr_continuation": "continue"},
             "rows": [
                 {
                     "row_id": "lr_hi",

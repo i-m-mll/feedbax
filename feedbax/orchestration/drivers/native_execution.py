@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
+from feedbax.orchestration.native_execution import is_native_training_command
 from feedbax.training.diagnostics import NativeExecutionProducerContext
 
 
@@ -349,19 +350,6 @@ def seed_authenticated_checkpoint(
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit={result.returncode}"
         raise NativeExecutionContextError(f"authenticated checkpoint seed failed: {detail}")
-
-
-def is_native_training_command(command: Sequence[str]) -> bool:
-    """Return whether a command invokes Feedbax's native training executor."""
-
-    try:
-        index = command.index("execute-training-run-spec")
-    except ValueError:
-        return False
-    if index == 0:
-        return False
-    launcher = Path(command[index - 1]).name
-    return launcher in {"feedbax", "feedbax.exe"}
 
 
 def uses_registered_native_execution(row: RunRowSpec) -> bool:

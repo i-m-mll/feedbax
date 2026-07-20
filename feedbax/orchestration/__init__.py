@@ -98,6 +98,8 @@ __all__ = [
     "build_core_check_registry",
     "build_default_check_registry",
     "build_default_assembly_registry",
+    "MatrixAuthorityError",
+    "build_training_run_matrix_authority",
     "compute_environment_fingerprint",
     "default_orchestration_root",
     "format_batch_line",
@@ -109,6 +111,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = (
+    "feedbax.orchestration.matrix_authority",
     "feedbax.orchestration.bundle",
     "feedbax.orchestration.assembly",
     "feedbax.orchestration.conformance",
