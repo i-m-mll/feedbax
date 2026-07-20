@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 import json
 import math
@@ -276,15 +276,11 @@ def materialize_matrix_rows(
     materialized: list[MaterializedMatrixRow[PayloadT]] = []
     for row in spec.rows:
         payload = _apply_deltas(spec.base.model_dump(mode="python"), row.deltas)
-        for derivation in [*spec.derivations, *row.derivations]:
-            context = ExpressionContext(
-                items={
-                    **source_context.items,
-                    "row": ContextItem(kind="matrix_row", payload=deepcopy(payload)),
-                }
-            )
-            value = evaluate_query(derivation.query, context)
-            set_dotted_path(payload, derivation.output_path, value)
+        apply_row_derivations(
+            payload,
+            [*spec.derivations, *row.derivations],
+            source_context=source_context,
+        )
         materialized.append(
             MaterializedMatrixRow[spec.base.__class__](
                 row_id=row.row_id,
@@ -298,6 +294,31 @@ def materialize_matrix_rows(
             )
         )
     return materialized
+
+
+def apply_row_derivations(
+    payload: dict[str, Any],
+    derivations: Sequence[RowDerivation],
+    *,
+    source_context: ExpressionContext,
+    before_write: Callable[[dict[str, Any], str], None] | None = None,
+) -> None:
+    """Evaluate ordered derivations against the evolving delta-applied row payload.
+
+    ``before_write`` is an optional domain guard; without it, derivations retain the
+    existing matrix-core overwrite behavior.
+    """
+    for derivation in derivations:
+        if before_write is not None:
+            before_write(payload, derivation.output_path)
+        context = ExpressionContext(
+            items={
+                **source_context.items,
+                "row": ContextItem(kind="matrix_row", payload=deepcopy(payload)),
+            }
+        )
+        value = evaluate_query(derivation.query, context)
+        set_dotted_path(payload, derivation.output_path, value)
 
 
 def _apply_deltas(payload: dict[str, Any], deltas: list[OverridePatch]) -> dict[str, Any]:
@@ -365,6 +386,7 @@ def _require_json_value(value: Any, field: str) -> None:
 
 __all__ = [
     "ContentPinnedJsonBase",
+    "apply_row_derivations",
     "MaterializedMatrixRow",
     "MatrixAxis",
     "MatrixAxisCoordinate",

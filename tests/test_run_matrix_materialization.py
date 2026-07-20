@@ -154,6 +154,12 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path)
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
         "name": "sweep",
         "base": {"kind": "inline", "inline": _training_run_payload()},
+        "derivations": [
+            {
+                "output_path": "metadata.derived_learning_rate",
+                "query": ValueQuery(item="row", path="training_config.learning_rate"),
+            }
+        ],
         "axes": [
             {
                 "id": "lr",
@@ -168,6 +174,10 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(tmp_path: Path)
     materialized = materialize_run_matrix(payload, repo_root=tmp_path)
 
     assert [row.payload["training_config"]["learning_rate"] for row in materialized.rows] == [
+        0.1,
+        0.01,
+    ]
+    assert [row.payload["metadata"]["derived_learning_rate"] for row in materialized.rows] == [
         0.1,
         0.01,
     ]
@@ -195,7 +205,7 @@ def test_derivations_and_base_ref_sha_pin_are_fail_closed(tmp_path: Path) -> Non
         "sources": [{"alias": "src", "kind": "manifest", "uri": "source.json"}],
         "derivations": [
             {
-                "output_path": "training_config.learning_rate",
+                "output_path": "metadata.derived_learning_rate",
                 "query": Coalesce(queries=[ValueQuery(item="src", path="missing")], default=0.04),
             }
         ],
@@ -203,10 +213,64 @@ def test_derivations_and_base_ref_sha_pin_are_fail_closed(tmp_path: Path) -> Non
     }
 
     materialized = materialize_run_matrix(payload, repo_root=tmp_path)
-    assert materialized.rows[0].payload["training_config"]["learning_rate"] == 0.04
+    assert materialized.rows[0].payload["metadata"]["derived_learning_rate"] == 0.04
 
     payload["base"]["content_hash"] = "0" * 64
     with pytest.raises(RunMatrixError, match="canonical content hash mismatch"):
+        materialize_run_matrix(payload, repo_root=tmp_path)
+
+
+def test_derivations_use_each_delta_applied_row_and_preserve_authored_fields(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "per-row derivation",
+        "base": {
+            "kind": "inline",
+            "inline": {
+                **_training_run_payload(),
+                "metadata": {"derived_learning_rate": None},
+            },
+        },
+        "derivations": [
+            {
+                "output_path": "metadata.derived_learning_rate",
+                "query": ValueQuery(item="row", path="training_config.learning_rate"),
+            }
+        ],
+        "rows": [
+            {
+                "row_id": "fast",
+                "overrides": [
+                    {"path": "training_config.learning_rate", "op": "replace", "value": 0.02}
+                ],
+            },
+            {
+                "row_id": "slow",
+                "overrides": [
+                    {"path": "training_config.learning_rate", "op": "replace", "value": 0.002}
+                ],
+            },
+        ],
+    }
+
+    materialized = materialize_run_matrix(payload, repo_root=tmp_path)
+
+    assert [row.payload["metadata"]["derived_learning_rate"] for row in materialized.rows] == [
+        0.02,
+        0.002,
+    ]
+    assert materialized.base_payload["metadata"]["derived_learning_rate"] is None
+
+    payload["base"]["inline"]["metadata"]["derived_learning_rate"] = 0.01
+    with pytest.raises(RunMatrixError, match="cannot change authored non-null field"):
+        materialize_run_matrix(payload, repo_root=tmp_path)
+
+    payload["base"]["inline"]["metadata"]["derived_learning_rate"] = None
+    payload["derivations"][0]["query"] = {"item": "row", "path": "training_config.missing"}
+    with pytest.raises(RunMatrixError, match="derivation failed"):
         materialize_run_matrix(payload, repo_root=tmp_path)
 
 
