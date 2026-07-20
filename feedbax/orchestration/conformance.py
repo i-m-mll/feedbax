@@ -837,9 +837,7 @@ def _load_schema_artifact(
     if ref.schema_id == "feedbax.spec.training_run_matrix":
         from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 
-        validated = TrainingRunMatrixSpec.model_validate(validated).model_dump(
-            mode="json", exclude_none=True
-        )
+        TrainingRunMatrixSpec.model_validate(validated)
     elif ref.schema_id == "feedbax.spec.studio.training_assembly":
         from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
 
