@@ -30,6 +30,10 @@ from feedbax.orchestration.bundle import (
     RunRowSpec,
     canonical_run_bundle_sha256,
 )
+from feedbax.orchestration.collection_recovery import (
+    CollectionRecoveryBinding,
+    recover_collected_outputs,
+)
 from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
@@ -462,6 +466,7 @@ class RunPodOrchestrationDriver:
         sleep: Any = time.sleep,
         monotonic: Any = time.monotonic,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+        collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
     ) -> None:
         self.config = config or RunPodDriverConfig()
         self.transport = transport or SubprocessRunPodTransport(
@@ -471,6 +476,8 @@ class RunPodOrchestrationDriver:
         self._sleep = sleep
         self._monotonic = monotonic
         self.input_provider_bindings = tuple(input_provider_bindings)
+        self.collection_recovery_bindings = tuple(collection_recovery_bindings)
+        self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
@@ -1097,6 +1104,21 @@ class RunPodOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, str]:
         """Collect row outputs, events, and manifests to the local run-set directory."""
+        if self.collection_recovery_bindings and (
+            self._pod_id is not None or self._provided_endpoint
+        ):
+            raise RunPodDriverError(
+                "collection recovery refuses a configured live or provider-backed target"
+            )
+        recovered = recover_collected_outputs(
+            bundle,
+            row,
+            state,
+            bindings=self.collection_recovery_bindings,
+        )
+        if recovered is not None:
+            self._collection_recovery_evidence[row.row_id] = recovered.evidence
+            return recovered.outputs
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         remote_run_dir = self._remote_run_dir(bundle)
@@ -1115,7 +1137,22 @@ class RunPodOrchestrationDriver:
             else:
                 remote_source = f"{remote_run_dir}/{source}"
             target = dest_dir / Path(source).name
-            self.transport.rsync(remote_source, str(target), delete=False).check(
+            source_kind = self._remote_collection_source_kind(remote_source)
+            delete = False
+            if source_kind == "directory":
+                if os.path.lexists(target):
+                    if target.is_symlink() or not target.is_dir():
+                        raise RunPodDriverError(
+                            f"collection directory target is unsafe: {target}"
+                        )
+                else:
+                    target.mkdir()
+                remote_source = remote_source.rstrip("/") + "/"
+                rsync_target = str(target) + "/"
+                delete = True
+            else:
+                rsync_target = str(target)
+            self.transport.rsync(remote_source, rsync_target, delete=delete).check(
                 f"collect {row.row_id}:{source}"
             )
             collected[Path(source).name] = str(target)
@@ -1131,6 +1168,36 @@ class RunPodOrchestrationDriver:
         if payload_sha256:
             verify_collected_payload(dest_dir, str(payload_sha256))
         return collected
+
+    def collection_recovery_evidence(self, row_id: str) -> Mapping[str, object] | None:
+        """Return evidence for an explicit provider-free collection recovery."""
+        return self._collection_recovery_evidence.get(row_id)
+
+    def _remote_collection_source_kind(self, source: str) -> Literal["file", "directory"]:
+        """Classify one remote output without following its final path component."""
+        source_path = source.rstrip("/") or "/"
+        command = (
+            f"path={_sq(source_path)}; "
+            'if [ -L "$path" ]; then printf symlink; '
+            'elif [ -f "$path" ]; then printf file; '
+            'elif [ -d "$path" ]; then printf directory; '
+            'elif [ -e "$path" ]; then printf unsupported; '
+            "else printf missing; fi"
+        )
+        kind = self._ssh(command).stdout.strip()
+        if kind in {"file", "directory"}:
+            return kind
+        if kind == "missing":
+            raise RunPodDriverError(f"declared collection output is absent: {source}")
+        if kind == "symlink":
+            raise RunPodDriverError(f"declared collection output is a symlink: {source}")
+        if kind == "unsupported":
+            raise RunPodDriverError(
+                f"declared collection output is not a regular file or directory: {source}"
+            )
+        raise RunPodDriverError(
+            f"could not classify declared collection output {source!r}: {kind!r}"
+        )
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Remove the acquired pod unless teardown is disabled by policy."""

@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+import feedbax.orchestration.collection_recovery as collection_recovery
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.contracts.studio_training import (
@@ -40,6 +41,10 @@ from feedbax.orchestration.bundle import (
     RowLaunchSpec,
     SchemaArtifactRef,
 )
+from feedbax.orchestration.collection_recovery import (
+    CollectionRecoveryBinding,
+    CollectionRecoveryError,
+)
 from feedbax.orchestration.drivers.runpod import (
     CommandResult,
     RunPodDriverConfig,
@@ -55,6 +60,7 @@ from feedbax.orchestration.drivers.runpod import (
     project_runpod_provision_facts,
     rank_datacenters_for_gpu,
 )
+from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.base import ProvisioningAttemptError
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.training.interruption import CancellationDecision
@@ -68,7 +74,7 @@ from feedbax.orchestration.stages import (
     PreflightFailed,
     StageEngine,
 )
-from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
+from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore, StageState
 
 
 class FakeRunPodTransport:
@@ -2362,6 +2368,7 @@ def test_collect_rsyncs_requested_outputs_and_verifies_payload(tmp_path: Path) -
         }
     )
     transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, "file"))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
         transport=transport,
@@ -2391,6 +2398,9 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
         }
     )
     transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, "file"))
+    transport.queue_ssh(CommandResult(0, "file"))
+    transport.queue_ssh(CommandResult(0, "directory"))
     driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
 
     collected = driver.collect(bundle, row, _state(bundle))
@@ -2399,12 +2409,498 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
     assert [call[0] for call in transport.rsync_calls] == [
         f"{remote}/rows/warm/manifest.json",
         f"{remote}/rows/warm/training-diagnostics.json",
-        f"{remote}/rows/warm/checkpoints",
+        f"{remote}/rows/warm/checkpoints/",
         f"{remote}/events/warm.events.jsonl",
     ]
+    assert transport.rsync_calls[2][1].endswith("/collected/warm/checkpoints/")
+    assert transport.rsync_calls[2][2] is True
     assert collected["warm.events.jsonl"] == str(
         bundle.run_set_dir / "events/warm.events.jsonl"
     )
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "error"),
+    [
+        ("missing", "declared collection output is absent"),
+        ("symlink", "declared collection output is a symlink"),
+        ("unsupported", "not a regular file or directory"),
+    ],
+)
+def test_collect_rejects_unsafe_or_absent_remote_outputs(
+    source_kind: str,
+    error: str,
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_ssh(CommandResult(0, source_kind))
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        transport=transport,
+    )
+
+    with pytest.raises(RunPodDriverError, match=error):
+        driver.collect(bundle, bundle.rows[0], _state(bundle))
+
+    assert transport.rsync_calls == []
+
+
+def test_local_and_runpod_collect_directory_contents_at_declared_target(
+    tmp_path: Path,
+) -> None:
+    rsync_executable = next(
+        (path for path in ("/usr/bin/rsync", "/opt/homebrew/bin/rsync") if Path(path).is_file()),
+        None,
+    )
+    if rsync_executable is None:
+        pytest.skip("rsync is not installed")
+    source = tmp_path / "remote" / "checkpoints"
+    source.mkdir(parents=True)
+    (source / "latest.json").write_text('{"transaction_id":"tx-terminal"}\n')
+    transaction = source / "transactions" / "tx-terminal"
+    transaction.mkdir(parents=True)
+    (transaction / "manifest.json").write_text("{}\n")
+
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    local_bundle = _bundle(local_root)
+    local_row = local_bundle.rows[0].model_copy(
+        update={
+            "launch": local_bundle.rows[0].launch.model_copy(
+                update={"collect": [str(source)], "metadata": {}}
+            )
+        }
+    )
+    local_collected = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[]).collect(
+        local_bundle, local_row, _state(local_bundle)
+    )
+
+    class RealRsyncTransport(FakeRunPodTransport):
+        def ssh(self, command: str) -> CommandResult:
+            self.ssh_commands.append(command)
+            return CommandResult(0, "directory")
+
+        def rsync(
+            self,
+            source_path: str,
+            target_path: str,
+            *,
+            delete: bool = False,
+            excludes: tuple[str, ...] = (),
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            self.rsync_calls.append((source_path, target_path, delete, tuple(excludes)))
+            args = [rsync_executable, "-a"]
+            if delete:
+                args.append("--delete")
+            args.extend([source_path, target_path])
+            completed = subprocess.run(args, check=False, capture_output=True, text=True)
+            return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+    runpod_root = tmp_path / "runpod"
+    runpod_root.mkdir()
+    runpod_bundle = _bundle(runpod_root)
+    runpod_row = runpod_bundle.rows[0].model_copy(
+        update={
+            "launch": runpod_bundle.rows[0].launch.model_copy(
+                update={"collect": [str(source)], "metadata": {}}
+            )
+        }
+    )
+    stale_nested = (
+        runpod_bundle.run_set_dir / "collected" / "warm" / "checkpoints" / "checkpoints"
+    )
+    stale_nested.mkdir(parents=True)
+    (stale_nested / "latest.json").write_text('{"transaction_id":"tx-stale"}\n')
+    transport = RealRsyncTransport()
+    runpod_collected = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(), transport=transport
+    ).collect(runpod_bundle, runpod_row, _state(runpod_bundle))
+
+    for collected in (local_collected, runpod_collected):
+        checkpoint_root = Path(collected["checkpoints"])
+        assert (checkpoint_root / "latest.json").is_file()
+        assert (checkpoint_root / "transactions" / "tx-terminal" / "manifest.json").is_file()
+        assert not (checkpoint_root / "checkpoints").exists()
+    assert transport.rsync_calls == [
+        (
+            str(source) + "/",
+            str(Path(runpod_collected["checkpoints"])) + "/",
+            True,
+            (),
+        )
+    ]
+
+
+def _completed_recovery_state(bundle: RunBundle) -> RunSetState:
+    provision = {"driver": "runpod", "pod_id": "pod-gone"}
+    return RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState(status="completed") for row in bundle.rows},
+        provision_record=provision,
+        stages={
+            "COLLECT": StageState(status="running", attempts=6),
+            "PROVISION": StageState(status="completed", outputs=provision),
+            "TEARDOWN": StageState(
+                status="completed",
+                outputs={
+                    "driver": "runpod",
+                    "teardown": "removed",
+                    "pod_id": "pod-gone",
+                    "pod_absence": {
+                        "verified": True,
+                        "pod_id": "pod-gone",
+                        "terminal_observation": "not-found",
+                    },
+                    "final_pod_inventory": {
+                        "verified": True,
+                        "outcome": "empty",
+                        "pod_count": 0,
+                        "pod_ids": [],
+                        "scope": "provider-account",
+                        "observation_basis": "runpodctl pod list --output json",
+                    },
+                },
+            ),
+        },
+    )
+
+
+def test_collect_recovers_preserved_nested_directory_without_provider_calls(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, baseline=False)
+    row = bundle.rows[0].model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"],
+                collect=["manifest.json", "training-diagnostics.json", "checkpoints"],
+            )
+        }
+    )
+    bundle = bundle.model_copy(update={"rows": [row]})
+    preserved = bundle.run_set_dir / "collected" / row.row_id
+    nested = preserved / "checkpoints" / "checkpoints"
+    nested.mkdir(parents=True)
+    (preserved / "manifest.json").write_text('{"kind":"TrainingRunManifest"}\n')
+    (preserved / "training-diagnostics.json").write_text("{}\n")
+    (nested / "latest.json").write_text('{"transaction_id":"tx-terminal"}\n')
+    transaction = nested / "transactions" / "tx-terminal"
+    transaction.mkdir(parents=True)
+    (transaction / "manifest.json").write_text("{}\n")
+    state = _completed_recovery_state(bundle)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=transport,
+        collection_recovery_bindings=[
+            CollectionRecoveryBinding(row.row_id, preserved)
+        ],
+    )
+
+    collected = driver.collect(bundle, row, state)
+
+    recovered = Path(collected["checkpoints"])
+    assert recovered != preserved / "checkpoints"
+    assert (recovered / "latest.json").is_file()
+    assert (recovered / "transactions" / "tx-terminal" / "manifest.json").is_file()
+    assert not (recovered / "checkpoints").exists()
+    assert (nested / "latest.json").is_file()
+    assert transport.runpodctl_calls == []
+    assert transport.ssh_commands == []
+    assert transport.rsync_calls == []
+    evidence = driver.collection_recovery_evidence(row.row_id)
+    assert evidence is not None
+    assert evidence["provider_calls"] == 0
+    assert evidence["original_evidence_untouched"] is True
+
+
+@pytest.mark.parametrize("tamper", ["missing", "extra", "symlink", "ambiguous"])
+def test_collect_recovery_rejects_invalid_preserved_output_map(
+    tamper: str,
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path, baseline=False)
+    row = bundle.rows[0].model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"],
+                collect=["manifest.json", "training-diagnostics.json", "checkpoints"],
+            )
+        }
+    )
+    bundle = bundle.model_copy(update={"rows": [row]})
+    preserved = bundle.run_set_dir / "collected" / row.row_id
+    preserved.mkdir(parents=True)
+    (preserved / "manifest.json").write_text("{}\n")
+    (preserved / "training-diagnostics.json").write_text("{}\n")
+    checkpoints = preserved / "checkpoints"
+    checkpoints.mkdir()
+    (checkpoints / "latest.json").write_text("{}\n")
+    if tamper == "missing":
+        (preserved / "manifest.json").unlink()
+    elif tamper == "extra":
+        (preserved / "unexpected.json").write_text("{}\n")
+    elif tamper == "symlink":
+        (preserved / "manifest.json").unlink()
+        (preserved / "manifest.json").symlink_to(preserved / "training-diagnostics.json")
+    else:
+        nested = checkpoints / "checkpoints"
+        nested.mkdir()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[
+            CollectionRecoveryBinding(row.row_id, preserved)
+        ],
+    )
+
+    with pytest.raises(CollectionRecoveryError):
+        driver.collect(bundle, row, _completed_recovery_state(bundle))
+
+
+def test_collect_recovery_requires_verified_empty_final_inventory(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    preserved = bundle.run_set_dir / "collected" / bundle.rows[0].row_id
+    preserved.mkdir(parents=True)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[
+            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
+        ],
+    )
+    state = _completed_recovery_state(bundle).model_copy(
+        update={
+            "stages": {
+                "COLLECT": StageState(status="running", attempts=6),
+                "TEARDOWN": StageState(),
+            }
+        }
+    )
+
+    with pytest.raises(CollectionRecoveryError, match="exact pod absence"):
+        driver.collect(bundle, bundle.rows[0], state)
+
+
+def test_collect_recovery_refuses_configured_provider_target(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    preserved = bundle.run_set_dir / "collected" / bundle.rows[0].row_id
+    preserved.mkdir(parents=True)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-still-configured"),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[
+            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
+        ],
+    )
+
+    with pytest.raises(RunPodDriverError, match="refuses a configured live"):
+        driver.collect(bundle, bundle.rows[0], _completed_recovery_state(bundle))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("driver", "other"),
+        ("teardown", "skipped"),
+        ("pod_id", "other-pod"),
+    ],
+)
+def test_collect_recovery_binds_exact_runpod_teardown(
+    field: str,
+    value: str,
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    preserved = bundle.run_set_dir / "collected" / bundle.rows[0].row_id
+    preserved.mkdir(parents=True)
+    state = _completed_recovery_state(bundle)
+    teardown = state.stage("TEARDOWN")
+    state = state.with_stage(
+        "TEARDOWN",
+        teardown.model_copy(update={"outputs": {**teardown.outputs, field: value}}),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[
+            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
+        ],
+    )
+
+    with pytest.raises(CollectionRecoveryError, match="exact pod absence"):
+        driver.collect(bundle, bundle.rows[0], state)
+
+
+def test_collect_recovery_accepts_stopped_then_removed_teardown(tmp_path: Path) -> None:
+    bundle, row, preserved = _recovery_fixture(tmp_path)
+    state = _completed_recovery_state(bundle)
+    teardown = state.stage("TEARDOWN")
+    state = state.with_stage(
+        "TEARDOWN",
+        teardown.model_copy(
+            update={"outputs": {**teardown.outputs, "teardown": "stopped-then-removed"}}
+        ),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
+    )
+
+    collected = driver.collect(bundle, row, state)
+
+    assert Path(collected["checkpoints"], "latest.json").is_file()
+
+
+def test_collect_recovery_binds_teardown_to_provision_record(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    preserved = bundle.run_set_dir / "collected" / bundle.rows[0].row_id
+    preserved.mkdir(parents=True)
+    state = _completed_recovery_state(bundle).model_copy(
+        update={"provision_record": {"driver": "runpod", "pod_id": "other-pod"}}
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[
+            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
+        ],
+    )
+
+    with pytest.raises(CollectionRecoveryError, match="exact pod absence"):
+        driver.collect(bundle, bundle.rows[0], state)
+
+
+def test_collect_recovery_requires_canonical_inventory_basis(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    preserved = bundle.run_set_dir / "collected" / bundle.rows[0].row_id
+    preserved.mkdir(parents=True)
+    state = _completed_recovery_state(bundle)
+    teardown = state.stage("TEARDOWN")
+    inventory = {
+        **teardown.outputs["final_pod_inventory"],
+        "observation_basis": "untrusted-cache",
+    }
+    state = state.with_stage(
+        "TEARDOWN",
+        teardown.model_copy(
+            update={
+                "outputs": {
+                    **teardown.outputs,
+                    "final_pod_inventory": inventory,
+                }
+            }
+        ),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[
+            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
+        ],
+    )
+
+    with pytest.raises(CollectionRecoveryError, match="provider-account inventory"):
+        driver.collect(bundle, bundle.rows[0], state)
+
+
+def test_collect_recovery_rejects_source_root_replacement_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, row, preserved = _recovery_fixture(tmp_path)
+    original_copy = collection_recovery._copy_member_no_follow
+    raced = False
+
+    def replace_root(*args: Any, **kwargs: Any) -> Any:
+        nonlocal raced
+        if not raced:
+            raced = True
+            preserved.rename(preserved.with_name("raced-original"))
+            preserved.mkdir()
+        return original_copy(*args, **kwargs)
+
+    monkeypatch.setattr(collection_recovery, "_copy_member_no_follow", replace_root)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
+    )
+
+    with pytest.raises(CollectionRecoveryError, match="(replaced|identity changed) while copying"):
+        driver.collect(bundle, row, _completed_recovery_state(bundle))
+
+
+def test_collect_recovery_rejects_symlinked_destination_ancestor(tmp_path: Path) -> None:
+    bundle, row, preserved = _recovery_fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (bundle.run_set_dir / ".stage-attempts").symlink_to(outside, target_is_directory=True)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
+    )
+
+    with pytest.raises(CollectionRecoveryError, match="stage-attempts root"):
+        driver.collect(bundle, row, _completed_recovery_state(bundle))
+    assert list(outside.iterdir()) == []
+
+
+def test_collect_recovery_rejects_destination_replacement_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, row, preserved = _recovery_fixture(tmp_path)
+    original_copy = collection_recovery._copy_member_no_follow
+    raced = False
+
+    def replace_destination(*args: Any, **kwargs: Any) -> Any:
+        nonlocal raced
+        if not raced:
+            raced = True
+            attempts = bundle.run_set_dir / ".stage-attempts"
+            attempt = attempts / "collect-recovery-6"
+            attempt.rename(attempts / "raced-original")
+            attempt.mkdir()
+        return original_copy(*args, **kwargs)
+
+    monkeypatch.setattr(
+        collection_recovery,
+        "_copy_member_no_follow",
+        replace_destination,
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(),
+        transport=FakeRunPodTransport(),
+        collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
+    )
+
+    with pytest.raises(CollectionRecoveryError, match="replaced while copying"):
+        driver.collect(bundle, row, _completed_recovery_state(bundle))
+
+
+def _recovery_fixture(tmp_path: Path) -> tuple[RunBundle, Any, Path]:
+    bundle = _bundle(tmp_path, baseline=False)
+    row = bundle.rows[0].model_copy(
+        update={
+            "launch": RowLaunchSpec(
+                command=["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"],
+                collect=["manifest.json", "training-diagnostics.json", "checkpoints"],
+            )
+        }
+    )
+    bundle = bundle.model_copy(update={"rows": [row]})
+    preserved = bundle.run_set_dir / "collected" / row.row_id
+    checkpoints = preserved / "checkpoints" / "checkpoints"
+    checkpoints.mkdir(parents=True)
+    (preserved / "manifest.json").write_text("{}\n")
+    (preserved / "training-diagnostics.json").write_text("{}\n")
+    (checkpoints / "latest.json").write_text("{}\n")
+    return bundle, row, preserved
 
 
 def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) -> None:

@@ -777,6 +777,31 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
     assert driver.input_provider_bindings == bindings
 
 
+def test_collection_recovery_binding_requires_row_and_absolute_root(tmp_path: Path) -> None:
+    bindings = orchestrate._collection_recovery_bindings([f"r5={tmp_path}"])
+
+    assert bindings[0].row_id == "r5"
+    assert Path(bindings[0].root) == tmp_path
+    with pytest.raises(ValueError, match="ROW=ABSOLUTE_PATH"):
+        orchestrate._collection_recovery_bindings(["r5=relative"])
+
+
+def test_certify_cli_accepts_input_provider_binding(tmp_path: Path) -> None:
+    args = orchestrate.build_parser().parse_args(
+        [
+            "certify",
+            "--run-set",
+            "run-set",
+            "--input-provider",
+            f"checkpoint.source={tmp_path}",
+        ]
+    )
+
+    assert orchestrate._input_provider_bindings(args.input_provider)[0].name == (
+        "checkpoint.source"
+    )
+
+
 @pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5"])
 def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
     path = tmp_path / "bundle-v1.json"

@@ -790,6 +790,7 @@ class StageEngine:
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected: dict[str, Mapping[str, str]] = {}
         checkpoint_custody: dict[str, Mapping[str, Any]] = {}
+        collection_recovery: dict[str, Mapping[str, Any]] = {}
         executor_failures = [
             {
                 "row_id": row.row_id,
@@ -845,12 +846,19 @@ class StageEngine:
                         }
                     )
             collected[row.row_id] = outputs
+            recovery_evidence = getattr(self.driver, "collection_recovery_evidence", None)
+            if callable(recovery_evidence):
+                row_recovery = recovery_evidence(row.row_id)
+                if row_recovery is not None:
+                    collection_recovery[row.row_id] = dict(row_recovery)
             row_state = row_state.model_copy(update={"collected_outputs": outputs})
             state = state.with_row(row.row_id, row_state)
             self.store.save(state)
         stage_outputs: dict[str, Any] = {"rows": collected}
         if checkpoint_custody:
             stage_outputs["checkpoint_custody"] = checkpoint_custody
+        if collection_recovery:
+            stage_outputs["collection_recovery"] = collection_recovery
         if secondary_evidence:
             stage_outputs["secondary_evidence"] = secondary_evidence
         if executor_failures:
