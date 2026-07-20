@@ -25,6 +25,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 from feedbax.contracts.run_matrix import (
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TrainingRunMatrixArtifactBinding,
     TrainingRunMatrixCodeAuthority,
@@ -32,11 +36,17 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixMonitorBinding,
     TrainingRunMatrixPreflightBinding,
     TrainingRunMatrixRowPreflightBinding,
+    TrainingRunMatrixSpec,
+    TrainingRowProvenance,
     training_run_matrix_preflight_binding_sha256,
 )
+from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import (
+    TrainingRunExecutionCapsule,
+    canonicalize_immutable_input_identities,
+    training_run_execution_hash,
     training_run_intent_hash,
-    training_spec_canonical_bytes,
+    training_spec_sha256,
 )
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
@@ -65,6 +75,7 @@ from feedbax.orchestration.input_materialization import (
     preflight_input_provider_bindings,
 )
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
+from feedbax.training.run_matrix import _planned_run_id
 
 
 RUNPOD_CODE_EXCLUDES = (
@@ -92,9 +103,6 @@ METADATA_BATCH_KEYS = (
 RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
     "feedbax.runpod_environment_fingerprint.v1"
 )
-RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.runpod_preflight_evidence"
-RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = "feedbax.runpod_preflight_evidence.v1"
-RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2 = "feedbax.runpod_preflight_evidence.v2"
 _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
     {
         "input-provider-bindings",
@@ -726,18 +734,7 @@ class RunPodOrchestrationDriver:
         legacy = {**legacy_payload, "sha256": _sha256_json(legacy_payload)}
         if not _is_training_matrix_bundle(bundle):
             return legacy
-        binding = self._matrix_preflight_binding(
-            bundle,
-            nested_evidence_sha256=str(legacy["sha256"]),
-        )
-        payload = {
-            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
-            "v1": legacy,
-            "matrix_binding": binding.model_dump(mode="json", exclude_none=True),
-            "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
-        }
-        return {**payload, "sha256": _sha256_json(payload)}
+        return self._matrix_preflight_evidence(bundle, legacy)
 
     def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> None:
         """Restore only cryptographically bound completed preflight authority.
@@ -769,22 +766,7 @@ class RunPodOrchestrationDriver:
         if not isinstance(evidence, Mapping):
             raise RunPodDriverError("completed PREFLIGHT RunPod evidence has invalid shape")
         if matrix_bundle:
-            binding = self._matrix_preflight_binding(
-                bundle,
-                nested_evidence_sha256=str(expected_v1["sha256"]),
-            )
-            binding_payload = binding.model_dump(mode="json", exclude_none=True)
-            expected_v2_payload = {
-                "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-                "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
-                "v1": expected_v1,
-                "matrix_binding": binding_payload,
-                "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
-            }
-            expected_v2 = {
-                **expected_v2_payload,
-                "sha256": _sha256_json(expected_v2_payload),
-            }
+            expected_v2 = self._matrix_preflight_evidence(bundle, expected_v1)
             if evidence.get("sha256") != expected_v2["sha256"]:
                 raise RunPodDriverError("completed matrix PREFLIGHT evidence digest mismatch")
             if dict(evidence) != expected_v2:
@@ -795,6 +777,21 @@ class RunPodOrchestrationDriver:
             if dict(evidence) != expected_v1:
                 raise RunPodDriverError("completed PREFLIGHT evidence is not canonical")
         self._preflight_passed = True
+
+    def _matrix_preflight_evidence(
+        self, bundle: RunBundle, legacy: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        binding = self._matrix_preflight_binding(
+            bundle, nested_evidence_sha256=str(legacy["sha256"])
+        )
+        payload = {
+            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            "v1": dict(legacy),
+            "matrix_binding": binding.model_dump(mode="json", exclude_none=True),
+            "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
+        }
+        return {**payload, "sha256": _sha256_json(payload)}
 
     def _matrix_preflight_binding(
         self,
@@ -810,8 +807,7 @@ class RunPodOrchestrationDriver:
             first,
             label="training matrix",
         )
-        if matrix_payload.get("schema_id") != TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID:
-            raise RunPodDriverError("training matrix artifact has the wrong schema identity")
+        matrix = TrainingRunMatrixSpec.model_validate(matrix_payload)
         if training_run_intent_hash(matrix_payload) != first.intent_hash:
             raise RunPodDriverError("training matrix intent identity does not match custody")
         shared_matrix = TrainingRunMatrixArtifactBinding(
@@ -819,49 +815,19 @@ class RunPodOrchestrationDriver:
             schema_version=first.schema_version,
             artifact_id=first.artifact_id,
             artifact_sha256=first.sha256,
+            canonical_sha256=training_spec_sha256(
+                matrix.model_dump(mode="json", exclude_none=True)
+            ),
             intent_hash=first.intent_hash,
         )
-        rows: list[TrainingRunMatrixRowPreflightBinding] = []
         for row in bundle.rows:
-            execution = row.execution
-            if execution.authored_intent.model_dump(
+            if row.execution.authored_intent.model_dump(
                 mode="json", exclude_none=True
             ) != first.model_dump(mode="json", exclude_none=True):
                 raise RunPodDriverError("matrix rows do not share one authored matrix identity")
-            provenance = execution.row_provenance
-            if provenance is None:
-                raise RunPodDriverError(f"matrix row {row.row_id!r} lacks governed provenance")
-            payload = _read_canonical_schema_artifact(
-                execution.payload,
-                label=f"matrix row {row.row_id!r} runtime payload",
-            )
-            training_config = payload.get("training_config")
-            depth = (
-                training_config.get("n_batches") if isinstance(training_config, Mapping) else None
-            )
-            if isinstance(depth, bool) or not isinstance(depth, int) or depth <= 0:
-                raise RunPodDriverError(
-                    f"matrix row {row.row_id!r} lacks a positive locked training depth"
-                )
-            if not is_native_training_command(row.launch.command):
-                raise RunPodDriverError(
-                    f"matrix row {row.row_id!r} does not use the native event-emitting executor"
-                )
-            rows.append(
-                TrainingRunMatrixRowPreflightBinding(
-                    row_id=row.row_id,
-                    planned_run_id=provenance.planned_run_id,
-                    authored_payload_hash=provenance.authored_payload_hash,
-                    lowered_execution_payload_hash=(provenance.lowered_execution_payload_hash),
-                    runtime_payload_sha256=execution.payload.sha256,
-                    resolved_root_hash=execution.resolved_snapshot.root_hash,
-                    execution_hash=execution.execution_capsule.execution_hash,
-                    locked_training_depth=depth,
-                )
-            )
         return TrainingRunMatrixPreflightBinding(
             matrix=shared_matrix,
-            rows=rows,
+            rows=[_authenticate_matrix_row(row, run_set_id=bundle.run_set_id) for row in bundle.rows],
             resolved_inputs=[
                 _matrix_input_custody_binding(item) for item in bundle.resolved_inputs
             ],
@@ -945,7 +911,7 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError("completed PREFLIGHT bundle binding is missing or mismatched")
         self._validate_preflight_checks(bundle, checks)
         return {
-            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
             "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
             "run_set_id": bundle.run_set_id,
             "bundle_sha256": bundle_sha256,
@@ -2038,8 +2004,6 @@ def _read_canonical_schema_artifact(
         raise RunPodDriverError(f"{label} is not canonical JSON") from exc
     if not isinstance(payload, dict):
         raise RunPodDriverError(f"{label} must contain a JSON object")
-    if training_spec_canonical_bytes(payload) != data:
-        raise RunPodDriverError(f"{label} bytes are not canonical")
     if (
         payload.get("schema_id") != ref.schema_id
         or payload.get("schema_version") != ref.schema_version
@@ -2048,41 +2012,104 @@ def _read_canonical_schema_artifact(
     return payload
 
 
+def _authenticate_matrix_row(
+    row: RunRowSpec,
+    *,
+    run_set_id: str,
+) -> TrainingRunMatrixRowPreflightBinding:
+    """Derive one row binding only from verified custody and recomputed identities."""
+    execution = row.execution
+    payload = _read_canonical_schema_artifact(
+        execution.payload, label=f"matrix row {row.row_id!r} runtime payload"
+    )
+    snapshot = _read_canonical_schema_artifact(
+        execution.resolved_snapshot, label=f"matrix row {row.row_id!r} resolved snapshot"
+    )
+    resolved = decode_resolved_snapshot(snapshot)
+    capsule = TrainingRunExecutionCapsule.model_validate(
+        _read_canonical_schema_artifact(
+            execution.execution_capsule,
+            label=f"matrix row {row.row_id!r} execution capsule",
+        )
+    )
+    if not isinstance(resolved, Mapping) or resolved.get("payload") != payload:
+        raise RunPodDriverError(f"matrix row {row.row_id!r} resolved payload is mismatched")
+    stored = resolved.get("row_provenance")
+    if not isinstance(stored, Mapping) or execution.row_provenance is None:
+        raise RunPodDriverError(f"matrix row {row.row_id!r} lacks custodied provenance")
+    governed = TrainingRowProvenance.model_validate(stored)
+    if governed != execution.row_provenance:
+        raise RunPodDriverError(f"matrix row {row.row_id!r} bundle provenance is synthetic")
+    coordinates = governed.axis_coordinates.get("values")
+    if not isinstance(coordinates, dict):
+        raise RunPodDriverError(f"matrix row {row.row_id!r} lacks planning coordinates")
+    planned_run_id = _planned_run_id(
+        payload,
+        seed=governed.seed,
+        axis_coordinates=coordinates,
+        authored_payload_hash=governed.authored_payload_hash,
+        lowered_execution_payload_hash=governed.lowered_execution_payload_hash,
+        lowerer_identities=governed.lowerer_identities,
+    )
+    if (
+        governed.row_id != row.row_id
+        or governed.planned_run_id != planned_run_id
+        or resolved.get("run_set_id") != run_set_id
+        or resolved.get("row_id") != row.row_id
+        or resolved.get("planned_run_id") != planned_run_id
+        or resolved.get("seed") != governed.seed
+        or resolved.get("axis_coordinates") != governed.axis_coordinates
+        or resolved.get("overrides") != governed.overrides
+    ):
+        raise RunPodDriverError(f"matrix row {row.row_id!r} planned identity is mismatched")
+    payload_sha256 = training_spec_sha256(payload)
+    if payload_sha256 != governed.lowered_execution_payload_hash:
+        raise RunPodDriverError(f"matrix row {row.row_id!r} governed payload is mismatched")
+    inputs = canonicalize_immutable_input_identities(execution.immutable_inputs)
+    root_hash = str(snapshot["root_hash"])
+    execution_hash = training_run_execution_hash(root_hash, inputs)
+    if (
+        capsule.input_data_identities != inputs
+        or capsule.intent_hash != execution.authored_intent.intent_hash
+        or capsule.resolved_root_hash != root_hash
+        or capsule.execution_hash != execution_hash
+        or execution.resolved_snapshot.root_hash != root_hash
+        or execution.execution_capsule.execution_hash != execution_hash
+    ):
+        raise RunPodDriverError(f"matrix row {row.row_id!r} execution identity is mismatched")
+    training_config = payload.get("training_config")
+    depth = training_config.get("n_batches") if isinstance(training_config, Mapping) else None
+    if isinstance(depth, bool) or not isinstance(depth, int) or depth <= 0:
+        raise RunPodDriverError(f"matrix row {row.row_id!r} lacks a positive locked depth")
+    if not is_native_training_command(row.launch.command):
+        raise RunPodDriverError(f"matrix row {row.row_id!r} lacks the native event executor")
+    return TrainingRunMatrixRowPreflightBinding(
+        row_id=row.row_id,
+        planned_run_id=planned_run_id,
+        authored_payload_hash=governed.authored_payload_hash,
+        lowered_execution_payload_hash=payload_sha256,
+        runtime_payload_sha256=execution.payload.sha256,
+        resolved_root_hash=root_hash,
+        execution_hash=execution_hash,
+        locked_training_depth=depth,
+    )
+
+
 def _matrix_input_custody_binding(
     resolved: ResolvedAssemblyInput,
 ) -> TrainingRunMatrixInputCustodyBinding:
     identity = resolved.identity
     source = resolved.custody
-    artifact = source.artifact
-    materializer = source.materializer
-    parent = materializer.expected_parent_ref
-    manifest_sha256 = parent.metadata.get("manifest_sha256")
-    if not isinstance(manifest_sha256, str) or not parent.id or not parent.uri:
-        raise RunPodDriverError("resolved matrix input lacks canonical parent custody")
     return TrainingRunMatrixInputCustodyBinding(
         role=identity.role,
         kind=identity.kind,
         identifier=identity.identifier,
         identity_sha256=identity.digest.value,
-        schema_id=identity.schema_id,
-        schema_version=identity.schema_version,
-        provider_schema_id=source.provider.schema_id,
-        provider_schema_version=source.provider.schema_version,
-        provider_kind=source.provider.kind,
         provider_binding=source.provider_binding,
-        artifact_id=artifact.artifact_id,
-        artifact_sha256=artifact.sha256,
-        artifact_size_bytes=artifact.size_bytes,
-        artifact_media_type=artifact.media_type,
-        storage_backend=artifact.storage_backend,
-        format_id=source.format.format_id,
-        format_version=source.format.format_version,
-        materializer_id=materializer.materializer_id,
-        materializer_version=materializer.materializer_version,
-        parent_id=parent.id,
-        parent_uri=parent.uri,
-        parent_manifest_sha256=manifest_sha256,
-        transaction_root_sha256=materializer.expected_transaction_root_sha256,
+        artifact_sha256=source.artifact.sha256,
+        custody_sha256=training_spec_sha256(
+            source.model_dump(mode="json", exclude_none=True)
+        ),
     )
 
 

@@ -52,6 +52,10 @@ TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID = (
 TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION = (
     f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v1"
 )
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1 = "feedbax.runpod_preflight_evidence"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.runpod_preflight_evidence"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1}.v1"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2 = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v2"
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -62,9 +66,10 @@ class TrainingRunMatrixArtifactBinding(StrictModel):
     schema_version: Literal["feedbax.spec.training_run_matrix.v3"]
     artifact_id: str = Field(min_length=1)
     artifact_sha256: str
+    canonical_sha256: str
     intent_hash: str
 
-    @field_validator("artifact_sha256", "intent_hash")
+    @field_validator("artifact_sha256", "canonical_sha256", "intent_hash")
     @classmethod
     def _validate_hashes(cls, value: str) -> str:
         _validate_digest(value, "/matrix")
@@ -103,37 +108,20 @@ class TrainingRunMatrixRowPreflightBinding(StrictModel):
 
 
 class TrainingRunMatrixInputCustodyBinding(StrictModel):
-    """Root-free authenticated custody projection for one resolved input."""
+    """Root-free digest of one complete authenticated input-custody contract."""
 
     role: str = Field(min_length=1)
     kind: str = Field(min_length=1)
     identifier: str = Field(min_length=1)
     identity_sha256: str
-    schema_id: str | None = None
-    schema_version: str | None = None
-    provider_schema_id: str = Field(min_length=1)
-    provider_schema_version: str = Field(min_length=1)
-    provider_kind: str = Field(min_length=1)
     provider_binding: str = Field(min_length=1)
-    artifact_id: str = Field(min_length=1)
     artifact_sha256: str
-    artifact_size_bytes: int = Field(ge=0)
-    artifact_media_type: str = Field(min_length=1)
-    storage_backend: str = Field(min_length=1)
-    format_id: str = Field(min_length=1)
-    format_version: str = Field(min_length=1)
-    materializer_id: str = Field(min_length=1)
-    materializer_version: str = Field(min_length=1)
-    parent_id: str = Field(min_length=1)
-    parent_uri: str = Field(min_length=1)
-    parent_manifest_sha256: str
-    transaction_root_sha256: str
+    custody_sha256: str
 
     @field_validator(
         "identity_sha256",
         "artifact_sha256",
-        "parent_manifest_sha256",
-        "transaction_root_sha256",
+        "custody_sha256",
     )
     @classmethod
     def _validate_hashes(cls, value: str) -> str:
@@ -142,8 +130,6 @@ class TrainingRunMatrixInputCustodyBinding(StrictModel):
 
     @model_validator(mode="after")
     def _validate_binding(self) -> "TrainingRunMatrixInputCustodyBinding":
-        if (self.schema_id is None) != (self.schema_version is None):
-            raise ValueError("input schema_id and schema_version must be supplied together")
         if self.identity_sha256 != self.artifact_sha256:
             raise ValueError("input scientific identity does not match custodied artifact")
         return self

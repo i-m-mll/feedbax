@@ -13,9 +13,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRowLoweringResult,
-    TrainingRunMatrixSpec,
 )
-from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -40,7 +38,7 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodOrchestrationDriver,
 )
 from feedbax.orchestration.stages import STAGE_PREFLIGHT, StageEngine
-from feedbax.orchestration.state import RunSetState, RunSetStateStore
+from feedbax.orchestration.state import RunSetStateStore
 from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
@@ -85,20 +83,14 @@ def _authority_repo(root: Path) -> tuple[Path, str]:
 
 
 def _matrix_bundle(root: Path, *, revision: str) -> RunBundle:
-    matrix = TrainingRunMatrixSpec.model_validate(
-        {
-            "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
-            "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
-            "name": "authenticated matrix",
-            "base": {"kind": "inline", "inline": {"gain": 2}},
-            "rows": [
-                {"row_id": "first", "overrides": []},
-                {"row_id": "second", "overrides": []},
-            ],
-        }
-    )
-    authored = matrix.model_dump(mode="json", exclude_none=True)
-    authored_bytes = training_spec_canonical_bytes(authored)
+    authored = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "authenticated matrix",
+        "base": {"kind": "inline", "inline": {"gain": 2}},
+        "rows": [{"row_id": row, "overrides": []} for row in ("first", "second")],
+    }
+    authored_bytes = (json.dumps(authored, indent=2) + "\n").encode()
     authored_path = root / "matrix.json"
     authored_path.write_bytes(authored_bytes)
     lockfile = root / "uv.lock"
@@ -142,22 +134,12 @@ def _matrix_bundle(root: Path, *, revision: str) -> RunBundle:
                 "training_config": {"n_batches": 7},
                 "gain": authored_row.payload["gain"],
             },
-            lowerer_identities=[
-                {"lowerer_id": "tests.matrix", "lowerer_version": "tests.matrix.v1"}
-            ],
+            lowerer_identities=[{"lowerer_id": "tests.matrix", "lowerer_version": "v1"}],
         )
 
-    register_training_run_matrix_compiler(
-        registry,
-        allow_inline_base=True,
-        row_lowerer=lower,
-    )
-    return assemble_run_bundle(
-        request,
-        run_set_id="matrix-run-set",
-        context=AssemblyContext(custody_root=root / "custody", repo_root=root),
-        registry=registry,
-    )
+    register_training_run_matrix_compiler(registry, allow_inline_base=True, row_lowerer=lower)
+    context = AssemblyContext(custody_root=root / "custody", repo_root=root)
+    return assemble_run_bundle(request, run_set_id="matrix-run-set", context=context, registry=registry)
 
 
 def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
@@ -173,51 +155,43 @@ def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
     )
 
 
-def _completed_preflight(
-    bundle: RunBundle,
-    repo: Path,
-    root: Path,
-) -> tuple[RunSetState, RunSetStateStore]:
+def _completed_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
     store = RunSetStateStore(root / "state.json")
-    state = StageEngine(
+    return StageEngine(
         bundle=bundle,
         driver=_driver(bundle, repo, RecordingTransport()),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    return state, store
 
 
 def test_matrix_preflight_emits_canonical_v2_without_private_paths(tmp_path: Path) -> None:
     repo, revision = _authority_repo(tmp_path)
     bundle = _matrix_bundle(tmp_path, revision=revision)
-    state, _ = _completed_preflight(bundle, repo, tmp_path)
+    state = _completed_preflight(bundle, repo, tmp_path)
     evidence = state.stage(STAGE_PREFLIGHT).outputs["driver_evidence"]
-
     assert evidence["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2
     assert evidence["v1"]["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
     binding = evidence["matrix_binding"]
     assert [row["row_id"] for row in binding["rows"]] == ["first", "second"]
     assert [row["locked_training_depth"] for row in binding["rows"]] == [7, 7]
     assert binding["monitor"]["event_paths"] == [
-        "events/first.events.jsonl",
-        "events/second.events.jsonl",
+        f"events/{row}.events.jsonl" for row in ("first", "second")
     ]
-    assert binding["code_authorities"] == [
-        {
-            "repo": "science",
-            "declared_revision": revision,
-            "protected_ref": "refs/heads/main",
-            "protected_revision": revision,
-            "observed_revision": revision,
-            "clean": True,
-        }
-    ]
+    authority = binding["code_authorities"][0]
+    assert (authority["repo"], authority["protected_ref"], authority["clean"]) == (
+        "science", "refs/heads/main", True
+    )
+    assert authority["declared_revision"] == authority["protected_revision"] == revision
+    assert authority["observed_revision"] == revision
     assert str(tmp_path) not in json.dumps(evidence)
 
 
 @pytest.mark.parametrize(
     "invalid",
-    ["missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent"],
+    [
+        "missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent",
+        "row-identity",
+    ],
 )
 def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid: str) -> None:
     repo, revision = _authority_repo(tmp_path)
@@ -227,38 +201,35 @@ def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid
     )
     transport = RecordingTransport()
     driver = _driver(bundle, repo, transport)
-    if invalid == "missing-policy":
+    if invalid in {"missing-policy", "missing-ref", "raw-commit-ref"}:
+        refs = {
+            "missing-ref": "refs/heads/not-protected",
+            "raw-commit-ref": revision,
+        }
+        protected = {} if invalid == "missing-policy" else {"science": refs[invalid]}
         driver.config = RunPodDriverConfig(
             image=bundle.environment.image_id or "",
             local_repos={"science": repo},
+            protected_refs=protected,
         )
     elif invalid == "dirty":
         (repo / "untracked.txt").write_text("dirty\n", encoding="utf-8")
-    elif invalid == "missing-ref":
-        driver.config = RunPodDriverConfig(
-            image=bundle.environment.image_id or "",
-            local_repos={"science": repo},
-            protected_refs={"science": "refs/heads/not-protected"},
-        )
-    elif invalid == "raw-commit-ref":
-        driver.config = RunPodDriverConfig(
-            image=bundle.environment.image_id or "",
-            local_repos={"science": repo},
-            protected_refs={"science": revision},
-        )
     elif invalid == "intent":
         rows = []
         for row in bundle.rows:
-            authored = row.execution.authored_intent.model_copy(
-                update={"intent_hash": "a" * 64}
-            )
+            authored = row.execution.authored_intent.model_copy(update={"intent_hash": "a" * 64})
             execution = row.execution.model_copy(update={"authored_intent": authored})
             rows.append(row.model_copy(update={"execution": execution}))
         bundle = bundle.model_copy(update={"rows": rows})
         driver = _driver(bundle, repo, transport)
+    elif invalid == "row-identity":
+        row = bundle.rows[0]
+        provenance = row.execution.row_provenance.model_copy(update={"planned_run_id": "fake"})
+        execution = row.execution.model_copy(update={"row_provenance": provenance})
+        bundle = bundle.model_copy(update={"rows": [row.model_copy(update={"execution": execution}), *bundle.rows[1:]]})
+        driver = _driver(bundle, repo, transport)
 
     checks = driver.preflight_checks(bundle)
-
     assert [(check.name, check.status) for check in checks] == [
         ("training-matrix-authority", "fail")
     ]
@@ -274,7 +245,7 @@ def test_matrix_restore_rejects_missing_legacy_or_tampered_evidence(
 ) -> None:
     repo, revision = _authority_repo(tmp_path)
     bundle = _matrix_bundle(tmp_path, revision=revision)
-    state, _ = _completed_preflight(bundle, repo, tmp_path)
+    state = _completed_preflight(bundle, repo, tmp_path)
     preflight = state.stage(STAGE_PREFLIGHT)
     evidence = json.loads(json.dumps(preflight.outputs["driver_evidence"]))
     if tamper == "stale-code":
@@ -293,15 +264,10 @@ def test_matrix_restore_rejects_missing_legacy_or_tampered_evidence(
         elif tamper == "digest":
             evidence["matrix_binding_sha256"] = "0" * 64
         outputs = {**preflight.outputs, "driver_evidence": evidence}
-    state = state.with_stage(
-        STAGE_PREFLIGHT,
-        preflight.model_copy(update={"outputs": outputs}),
-    )
+    state = state.with_stage(STAGE_PREFLIGHT, preflight.model_copy(update={"outputs": outputs}))
     transport = RecordingTransport()
-
     with pytest.raises(
         RunPodDriverError, match="matrix PREFLIGHT|invalid shape|code authority"
     ):
         _driver(bundle, repo, transport).restore_completed_preflight(bundle, state)
-
     assert transport.operations == []
