@@ -1368,7 +1368,7 @@ def _normalize_lr_trace_steps(
     trace: Mapping[tuple[tuple[str, int], ...], Mapping[int, float]],
     training_diagnostics: Mapping[str, Any] | None,
 ) -> dict[tuple[tuple[str, int], ...], dict[int, float]]:
-    """Normalize an unambiguous continuation-local LR trace to cumulative steps."""
+    """Normalize completed-batch segment samples to their cumulative update steps."""
     segment_raw = _path(training_diagnostics, "segment_completed_batches")
     cumulative_raw = _path(training_diagnostics, "cumulative_completed_batches")
     if segment_raw is _MISSING and cumulative_raw is _MISSING:
@@ -1391,7 +1391,7 @@ def _normalize_lr_trace_steps(
         return {coordinates: dict(samples) for coordinates, samples in trace.items()}
 
     steps = [step for samples in trace.values() for step in samples]
-    segment_local = all(0 <= step <= segment_completed for step in steps)
+    segment_local = all(1 <= step <= segment_completed for step in steps)
     cumulative = all(resume_origin <= step <= cumulative_completed for step in steps)
     if segment_local and cumulative:
         raise ValueError(
@@ -1406,7 +1406,7 @@ def _normalize_lr_trace_steps(
     if cumulative:
         return {coordinates: dict(samples) for coordinates, samples in trace.items()}
     return {
-        coordinates: {step + resume_origin: value for step, value in samples.items()}
+        coordinates: {resume_origin + step - 1: value for step, value in samples.items()}
         for coordinates, samples in trace.items()
     }
 
