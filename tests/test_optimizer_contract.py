@@ -166,6 +166,22 @@ def test_warmup_cosine_schedule_pins_representative_values() -> None:
         ) == pytest.approx(expected)
 
 
+def test_warmup_cosine_holds_terminal_rate_after_authored_endpoint() -> None:
+    schedule = LrScheduleSpec(
+        kind="warmup_cosine",
+        learning_rate_0=0.03,
+        total_steps=3500,
+        constant_lr_iterations=1000,
+        warmup_init_fraction=0.1,
+        cosine_annealing_alpha=0.001,
+    )
+
+    for step in (3500, 3501, 4499, 4500):
+        assert float(
+            learning_rate_at_step(schedule, current_step=step, schedule_origin_step=0)
+        ) == pytest.approx(3e-5)
+
+
 def test_delayed_cosine_schedule_pins_representative_values() -> None:
     schedule = LrScheduleSpec(
         kind="delayed_cosine",

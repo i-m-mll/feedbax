@@ -1845,10 +1845,12 @@ def _evaluate_optimizer_schedule_at_preflight(
         schedule_eval.extract_optimizer_build_context(run_spec),
         label="optimizer_build_context",
     )
+    run_end_step = _schedule_run_end_step(run_spec, expected_context)
     samples, mismatches = schedule_eval.compare_schedule_samples(
         optimizer_spec,
         expected_context=expected_context,
         observed_context=observed_context,
+        run_end_step=run_end_step,
         rel_tol=1e-9,
     )
     optimizer = build_optimizer(
@@ -1868,6 +1870,21 @@ def _evaluate_optimizer_schedule_at_preflight(
     if mismatches:
         result["mismatches"] = mismatches
     return result
+
+
+def _schedule_run_end_step(
+    run_spec: Mapping[str, Any],
+    context: schedule_eval.ScheduleEvalContext,
+) -> int | None:
+    """Return the segment post-completion coordinate when the run depth is declared."""
+    for n_batches in (
+        _path(run_spec, "training_config", "n_batches"),
+        _path(run_spec, "training", "n_batches"),
+        _path(run_spec, "n_batches"),
+    ):
+        if n_batches is not None:
+            return context.current_step + int(n_batches)
+    return None
 
 
 def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:

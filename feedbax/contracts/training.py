@@ -105,7 +105,9 @@ class LrScheduleSpec(BaseModel):
         learning_rate_0: Peak learning rate. This maps from rlrmp
             ``controller_lr``.
         total_steps: Origin-relative step at which cosine schedules reach
-            their terminal value. This maps from rlrmp ``n_batches_condition``.
+            their terminal value. Cosine schedules hold that terminal value at
+            every later applied coordinate. This maps from rlrmp
+            ``n_batches_condition``.
         constant_lr_iterations: Warmup length for ``"warmup_cosine"`` and
             constant-prefix length for ``"delayed_cosine"``. This maps from
             rlrmp ``lr_warmup_batches``.
