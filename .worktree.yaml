@@ -5,4 +5,4 @@ post-merge:
   - paths: ["web/package.json", "web/pnpm-lock.yaml"]
     run: cd web && pnpm install
   - paths: ["pyproject.toml", "uv.lock"]
-    run: uv sync
+    run: uv sync --extra all
