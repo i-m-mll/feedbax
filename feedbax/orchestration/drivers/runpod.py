@@ -800,106 +800,12 @@ class RunPodOrchestrationDriver:
         nested_evidence_sha256: str,
     ) -> TrainingRunMatrixPreflightBinding:
         """Build authenticated matrix authority without provider-facing access."""
-        if not _is_training_matrix_bundle(bundle):
-            raise RunPodDriverError("run bundle is not a governed training matrix")
-        first = bundle.rows[0].execution.authored_intent
-        matrix_payload = _read_canonical_schema_artifact(
-            first,
-            label="training matrix",
-        )
-        matrix = TrainingRunMatrixSpec.model_validate(matrix_payload)
-        if tuple(row.row_id for row in bundle.rows) != expected_ordered_matrix_row_ids(matrix):
-            raise RunPodDriverError("matrix bundle rows are incomplete or out of order")
-        if training_run_intent_hash(matrix_payload) != first.intent_hash:
-            raise RunPodDriverError("training matrix intent identity does not match custody")
-        shared_matrix = TrainingRunMatrixArtifactBinding(
-            schema_id=first.schema_id,
-            schema_version=first.schema_version,
-            artifact_id=first.artifact_id,
-            artifact_sha256=first.sha256,
-            canonical_sha256=training_spec_sha256(
-                matrix.model_dump(mode="json", exclude_none=True)
-            ),
-            intent_hash=first.intent_hash,
-        )
-        for row in bundle.rows:
-            if row.execution.authored_intent.model_dump(
-                mode="json", exclude_none=True
-            ) != first.model_dump(mode="json", exclude_none=True):
-                raise RunPodDriverError("matrix rows do not share one authored matrix identity")
-        return TrainingRunMatrixPreflightBinding(
-            matrix=shared_matrix,
-            rows=[_authenticate_matrix_row(row, run_set_id=bundle.run_set_id) for row in bundle.rows],
-            resolved_inputs=[
-                _matrix_input_custody_binding(item) for item in bundle.resolved_inputs
-            ],
-            code_authorities=self._matrix_code_authorities(bundle),
-            monitor=TrainingRunMatrixMonitorBinding(
-                event_paths=[f"events/{row.row_id}.events.jsonl" for row in bundle.rows]
-            ),
-            bundle_sha256=canonical_run_bundle_sha256(bundle),
+        return build_training_run_matrix_preflight_binding(
+            bundle,
+            local_repos=self.config.local_repos,
+            protected_refs=self.config.protected_refs,
             nested_preflight_evidence_sha256=nested_evidence_sha256,
         )
-
-    def _matrix_code_authorities(
-        self,
-        bundle: RunBundle,
-    ) -> list[TrainingRunMatrixCodeAuthority]:
-        local_repos = {str(name): Path(path) for name, path in self.config.local_repos.items()}
-        protected_refs = {str(name): str(ref) for name, ref in self.config.protected_refs.items()}
-        if not local_repos or set(local_repos) != set(protected_refs):
-            raise RunPodDriverError(
-                "matrix preflight requires protected-ref policy for every explicit local repo"
-            )
-        declarations = list(bundle.environment.repo_revisions)
-        authorities: list[TrainingRunMatrixCodeAuthority] = []
-        for name, root in sorted(local_repos.items()):
-            matches = [
-                revision
-                for revision in declarations
-                if revision.path == name or _same_path(Path.cwd() / revision.path, root)
-            ]
-            if len(matches) != 1:
-                raise RunPodDriverError(
-                    f"matrix repo {name!r} requires exactly one matching revision declaration"
-                )
-            declaration = matches[0]
-            if declaration.dirty_allowed:
-                raise RunPodDriverError(f"matrix repo {name!r} cannot authorize dirty code")
-            observed = _git_output_checked(root, "rev-parse", "--verify", "HEAD^{commit}")
-            protected = _git_output_checked(
-                root,
-                "rev-parse",
-                "--verify",
-                f"{protected_refs[name]}^{{commit}}",
-            )
-            dirty = _git_output_checked(
-                root,
-                "status",
-                "--porcelain",
-                "--untracked-files=normal",
-            )
-            if dirty:
-                raise RunPodDriverError(f"matrix repo {name!r} is dirty")
-            if len({declaration.revision, protected, observed}) != 1:
-                raise RunPodDriverError(
-                    f"matrix repo {name!r} protected code authority is stale or mismatched"
-                )
-            authorities.append(
-                TrainingRunMatrixCodeAuthority(
-                    repo=name,
-                    declared_revision=declaration.revision,
-                    protected_ref=protected_refs[name],
-                    protected_revision=protected,
-                    observed_revision=observed,
-                    clean=True,
-                )
-            )
-        if len(declarations) != len(authorities):
-            raise RunPodDriverError(
-                "matrix revision declarations are not completely covered by local repos"
-            )
-        return authorities
 
     def _preflight_evidence_payload(
         self,
@@ -1957,6 +1863,124 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         "currency": "USD" if hourly_rate is not None else None,
         "provider_observation_basis": "runpodctl pod get response",
     }
+
+
+def build_training_run_matrix_preflight_binding(
+    bundle: RunBundle,
+    *,
+    local_repos: Mapping[str, str | Path],
+    protected_refs: Mapping[str, str],
+    nested_preflight_evidence_sha256: str = "0" * 64,
+) -> TrainingRunMatrixPreflightBinding:
+    """Authenticate matrix custody and code authority without provider access.
+
+    The default all-zero nested digest means that provider readiness has not
+    been observed. A provider preflight replaces it with the digest of its own
+    completed evidence while recomputing every other field through this same
+    function.
+    """
+    if not _is_training_matrix_bundle(bundle):
+        raise RunPodDriverError("run bundle is not a governed training matrix")
+    first = bundle.rows[0].execution.authored_intent
+    matrix_payload = _read_canonical_schema_artifact(first, label="training matrix")
+    matrix = TrainingRunMatrixSpec.model_validate(matrix_payload)
+    if tuple(row.row_id for row in bundle.rows) != expected_ordered_matrix_row_ids(matrix):
+        raise RunPodDriverError("matrix bundle rows are incomplete or out of order")
+    if training_run_intent_hash(matrix_payload) != first.intent_hash:
+        raise RunPodDriverError("training matrix intent identity does not match custody")
+    shared_matrix = TrainingRunMatrixArtifactBinding(
+        schema_id=first.schema_id,
+        schema_version=first.schema_version,
+        artifact_id=first.artifact_id,
+        artifact_sha256=first.sha256,
+        canonical_sha256=training_spec_sha256(
+            matrix.model_dump(mode="json", exclude_none=True)
+        ),
+        intent_hash=first.intent_hash,
+    )
+    for row in bundle.rows:
+        if row.execution.authored_intent.model_dump(
+            mode="json", exclude_none=True
+        ) != first.model_dump(mode="json", exclude_none=True):
+            raise RunPodDriverError("matrix rows do not share one authored matrix identity")
+    return TrainingRunMatrixPreflightBinding(
+        matrix=shared_matrix,
+        rows=[
+            _authenticate_matrix_row(row, run_set_id=bundle.run_set_id)
+            for row in bundle.rows
+        ],
+        resolved_inputs=[
+            _matrix_input_custody_binding(item) for item in bundle.resolved_inputs
+        ],
+        code_authorities=_matrix_code_authorities(bundle, local_repos, protected_refs),
+        monitor=TrainingRunMatrixMonitorBinding(
+            event_paths=[f"events/{row.row_id}.events.jsonl" for row in bundle.rows]
+        ),
+        bundle_sha256=canonical_run_bundle_sha256(bundle),
+        nested_preflight_evidence_sha256=nested_preflight_evidence_sha256,
+    )
+
+
+def _matrix_code_authorities(
+    bundle: RunBundle,
+    local_repos: Mapping[str, str | Path],
+    protected_refs: Mapping[str, str],
+) -> list[TrainingRunMatrixCodeAuthority]:
+    repos = {str(name): Path(path) for name, path in local_repos.items()}
+    refs = {str(name): str(ref) for name, ref in protected_refs.items()}
+    if not repos or set(repos) != set(refs):
+        raise RunPodDriverError(
+            "matrix preflight requires protected-ref policy for every explicit local repo"
+        )
+    declarations = list(bundle.environment.repo_revisions)
+    authorities: list[TrainingRunMatrixCodeAuthority] = []
+    for name, root in sorted(repos.items()):
+        matches = [
+            revision
+            for revision in declarations
+            if revision.path == name or _same_path(Path.cwd() / revision.path, root)
+        ]
+        if len(matches) != 1:
+            raise RunPodDriverError(
+                f"matrix repo {name!r} requires exactly one matching revision declaration"
+            )
+        declaration = matches[0]
+        if declaration.dirty_allowed:
+            raise RunPodDriverError(f"matrix repo {name!r} cannot authorize dirty code")
+        observed = _git_output_checked(root, "rev-parse", "--verify", "HEAD^{commit}")
+        protected = _git_output_checked(
+            root,
+            "rev-parse",
+            "--verify",
+            f"{refs[name]}^{{commit}}",
+        )
+        dirty = _git_output_checked(
+            root,
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+        )
+        if dirty:
+            raise RunPodDriverError(f"matrix repo {name!r} is dirty")
+        if len({declaration.revision, protected, observed}) != 1:
+            raise RunPodDriverError(
+                f"matrix repo {name!r} protected code authority is stale or mismatched"
+            )
+        authorities.append(
+            TrainingRunMatrixCodeAuthority(
+                repo=name,
+                declared_revision=declaration.revision,
+                protected_ref=refs[name],
+                protected_revision=protected,
+                observed_revision=observed,
+                clean=True,
+            )
+        )
+    if len(declarations) != len(authorities):
+        raise RunPodDriverError(
+            "matrix revision declarations are not completely covered by local repos"
+        )
+    return authorities
 
 
 def _preflight_check(

@@ -32,7 +32,10 @@ from feedbax.orchestration import (
     RunSetState,
     RunSetStateStore,
     StateLockError,
+    assemble_run_bundle,
     build_default_assembly_registry,
+    build_training_run_matrix_preflight_binding,
+    run_preflight_checks,
 )
 from feedbax.orchestration.bundle import default_orchestration_root
 from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
@@ -94,6 +97,15 @@ def build_parser() -> argparse.ArgumentParser:
     preflight = subparsers.add_parser("preflight", help="Run ASSEMBLE and PREFLIGHT only")
     preflight.add_argument(
         "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
+    )
+    preflight.add_argument(
+        "--authority-only",
+        action="store_true",
+        help="Emit matrix authority without provider readiness checks",
+    )
+    preflight.add_argument(
+        "--run-set-id",
+        help="Bind authority and later provider preflight to one run-set identity",
     )
     preflight.set_defaults(func=cmd_preflight)
 
@@ -157,9 +169,32 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
+    if args.authority_only:
+        if not args.run_set_id:
+            raise ValueError("--authority-only requires --run-set-id")
+        root = Path(request.orchestration_root or request_path.parent).expanduser()
+        bundle = assemble_run_bundle(
+            request,
+            run_set_id=args.run_set_id,
+            context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
+            registry=build_default_assembly_registry(),
+        )
+        checks = run_preflight_checks(bundle)
+        if any(check.status == "fail" for check in checks):
+            return EXIT_PREFLIGHT
+        metadata = bundle.environment.metadata
+        _write_json(
+            build_training_run_matrix_preflight_binding(
+                bundle,
+                local_repos=metadata.get("runpod_local_repos", {}),
+                protected_refs=metadata.get("runpod_protected_refs", {}),
+            )
+        )
+        return EXIT_SUCCESS
     engine = _request_engine(
         request,
         request_path=request_path,
+        run_set_id=args.run_set_id,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
     )
     try:

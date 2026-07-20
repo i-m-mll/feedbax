@@ -5,10 +5,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from feedbax.bin import orchestrate
 from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -29,6 +31,7 @@ from feedbax.orchestration.bundle import (
     RepoRevision,
     RunBundle,
     SchemaArtifactRef,
+    canonical_run_bundle_sha256,
 )
 from feedbax.orchestration.drivers.runpod import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
@@ -36,6 +39,7 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
+    build_training_run_matrix_preflight_binding,
 )
 from feedbax.orchestration.stages import STAGE_PREFLIGHT, StageEngine
 from feedbax.orchestration.state import RunSetStateStore
@@ -176,6 +180,110 @@ def test_matrix_preflight_emits_canonical_v2_without_private_paths(tmp_path: Pat
     assert authority["declared_revision"] == authority["protected_revision"] == revision
     assert authority["observed_revision"] == revision
     assert str(tmp_path) not in json.dumps(evidence)
+
+
+def test_provider_free_authority_matches_runpod_but_cannot_restore_readiness(
+    tmp_path: Path,
+) -> None:
+    repo, revision = _authority_repo(tmp_path)
+    bundle = _matrix_bundle(tmp_path, revision=revision)
+    authority = build_training_run_matrix_preflight_binding(
+        bundle,
+        local_repos={"science": repo},
+        protected_refs={"science": "refs/heads/main"},
+    )
+    driver = _driver(bundle, repo, RecordingTransport())
+    nested_digest = "f" * 64
+    assert authority.nested_preflight_evidence_sha256 == "0" * 64
+    assert authority.model_copy(
+        update={"nested_preflight_evidence_sha256": nested_digest}
+    ) == driver._matrix_preflight_binding(
+        bundle,
+        nested_evidence_sha256=nested_digest,
+    )
+
+    state = _completed_preflight(bundle, repo, tmp_path)
+    stage = state.stage(STAGE_PREFLIGHT)
+    state = state.with_stage(
+        STAGE_PREFLIGHT,
+        stage.model_copy(
+            update={
+                "outputs": {
+                    **stage.outputs,
+                    "driver_evidence": authority.model_dump(mode="json"),
+                }
+            }
+        ),
+    )
+    transport = RecordingTransport()
+    with pytest.raises(RunPodDriverError, match="matrix PREFLIGHT|invalid shape"):
+        _driver(bundle, repo, transport).restore_completed_preflight(bundle, state)
+    assert transport.operations == []
+
+
+def test_authority_only_cli_avoids_credentials_config_driver_and_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, revision = _authority_repo(tmp_path)
+    bundle = _matrix_bundle(tmp_path, revision=revision)
+    bundle = bundle.model_copy(
+        update={
+            "environment": bundle.environment.model_copy(
+                update={
+                    "metadata": {
+                        "runpod_local_repos": {"science": str(repo)},
+                        "runpod_protected_refs": {"science": "refs/heads/main"},
+                    }
+                }
+            )
+        }
+    )
+    request = SimpleNamespace(orchestration_root=str(tmp_path))
+    request_path = tmp_path / "request.json"
+    request_path.write_text("{}\n", encoding="utf-8")
+
+    def assemble(*_args: Any, **kwargs: Any) -> RunBundle:
+        assert kwargs["run_set_id"] == bundle.run_set_id
+        return bundle
+
+    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
+    monkeypatch.setattr(orchestrate, "_load_assembly_request", lambda _path: request)
+    monkeypatch.setattr(orchestrate, "assemble_run_bundle", assemble)
+    monkeypatch.setattr(orchestrate, "run_preflight_checks", lambda _bundle: [])
+    monkeypatch.setattr(
+        orchestrate,
+        "load_runpod_api_key",
+        lambda: pytest.fail("authority-only preflight loaded credentials"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_runpod_config_for_bundle",
+        lambda _bundle: pytest.fail("authority-only preflight constructed provider config"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "RunPodOrchestrationDriver",
+        lambda *_args, **_kwargs: pytest.fail(
+            "authority-only preflight constructed provider driver"
+        ),
+    )
+
+    assert orchestrate.main(
+        [
+            "preflight",
+            "--authority-only",
+            "--run-set-id",
+            bundle.run_set_id,
+            "--assembly-request",
+            str(request_path),
+        ]
+    ) == 0
+    evidence = json.loads(capsys.readouterr().out)
+    assert evidence["schema_version"].endswith("training_run_matrix_preflight_binding.v1")
+    assert evidence["bundle_sha256"] == canonical_run_bundle_sha256(bundle)
+    assert evidence["nested_preflight_evidence_sha256"] == "0" * 64
 
 
 @pytest.mark.parametrize("invalid", ["missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent", "row-identity", "missing-row", "reordered-rows"])
