@@ -17,6 +17,7 @@ from feedbax.contracts.manifest import (
     TrainingSweepAxis,
     TrainingSweepCombinationSpec,
 )
+from feedbax.contracts.spec_storage import training_spec_sha256
 
 
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix"
@@ -45,7 +46,186 @@ RUN_MATRIX_MATERIALIZATION_SCHEMA_ID = "feedbax.manifest.run_matrix_materializat
 RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V1 = "feedbax.run_matrix_materialization.v1"
 RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2 = f"{RUN_MATRIX_MATERIALIZATION_SCHEMA_ID}.v2"
 RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION = f"{RUN_MATRIX_MATERIALIZATION_SCHEMA_ID}.v3"
+TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID = (
+    "feedbax.orchestration.training_run_matrix_preflight_binding"
+)
+TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION = (
+    f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v1"
+)
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1 = "feedbax.runpod_preflight_evidence"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.runpod_preflight_evidence"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1}.v1"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2 = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID}.v2"
 _PATH_SAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class TrainingRunMatrixArtifactBinding(StrictModel):
+    """Portable identity of the one governed matrix shared by every row."""
+
+    schema_id: Literal["feedbax.spec.training_run_matrix"]
+    schema_version: Literal["feedbax.spec.training_run_matrix.v3"]
+    artifact_id: str = Field(min_length=1)
+    artifact_sha256: str
+    canonical_sha256: str
+    intent_hash: str
+
+    @field_validator("artifact_sha256", "canonical_sha256", "intent_hash")
+    @classmethod
+    def _validate_hashes(cls, value: str) -> str:
+        _validate_digest(value, "/matrix")
+        return value
+
+
+class TrainingRunMatrixRowPreflightBinding(StrictModel):
+    """Governed and custodied identities for one ordered matrix row."""
+
+    row_id: str = Field(min_length=1)
+    planned_run_id: str = Field(min_length=1)
+    authored_payload_hash: str
+    lowered_execution_payload_hash: str
+    runtime_payload_sha256: str
+    resolved_root_hash: str
+    execution_hash: str
+    locked_training_depth: int = Field(gt=0)
+
+    @field_validator(
+        "authored_payload_hash",
+        "lowered_execution_payload_hash",
+        "runtime_payload_sha256",
+        "resolved_root_hash",
+        "execution_hash",
+    )
+    @classmethod
+    def _validate_hashes(cls, value: str) -> str:
+        _validate_digest(value, "/rows")
+        return value
+
+    @model_validator(mode="after")
+    def _bind_lowered_payload_to_runtime(self) -> "TrainingRunMatrixRowPreflightBinding":
+        if self.lowered_execution_payload_hash != self.runtime_payload_sha256:
+            raise ValueError("lowered execution payload hash does not match runtime custody")
+        return self
+
+
+class TrainingRunMatrixInputCustodyBinding(StrictModel):
+    """Root-free digest of one complete authenticated input-custody contract."""
+
+    role: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    identifier: str = Field(min_length=1)
+    identity_sha256: str
+    provider_binding: str = Field(min_length=1)
+    artifact_sha256: str
+    custody_sha256: str
+
+    @field_validator(
+        "identity_sha256",
+        "artifact_sha256",
+        "custody_sha256",
+    )
+    @classmethod
+    def _validate_hashes(cls, value: str) -> str:
+        _validate_digest(value, "/resolved_inputs")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_binding(self) -> "TrainingRunMatrixInputCustodyBinding":
+        if self.identity_sha256 != self.artifact_sha256:
+            raise ValueError("input scientific identity does not match custodied artifact")
+        return self
+
+
+class TrainingRunMatrixCodeAuthority(StrictModel):
+    """Authenticated, root-free observation of one protected checkout."""
+
+    repo: str = Field(min_length=1)
+    declared_revision: str
+    protected_ref: str = Field(min_length=1)
+    protected_revision: str
+    observed_revision: str
+    clean: Literal[True] = True
+
+    @field_validator("declared_revision", "protected_revision", "observed_revision")
+    @classmethod
+    def _validate_revisions(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise ValueError("code authority revisions must be full lowercase Git commit ids")
+        return value
+
+    @field_validator("protected_ref")
+    @classmethod
+    def _validate_protected_ref(cls, value: str) -> str:
+        if not value.startswith("refs/heads/"):
+            raise ValueError("protected_ref must name an explicit local branch ref")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_authority(self) -> "TrainingRunMatrixCodeAuthority":
+        if len({self.declared_revision, self.protected_revision, self.observed_revision}) != 1:
+            raise ValueError("declared, protected-ref, and observed revisions must match")
+        return self
+
+
+class TrainingRunMatrixMonitorBinding(StrictModel):
+    """Exact per-row event and readiness protocol monitored after launch."""
+
+    run_event_schema_id: Literal["feedbax.run_event"] = "feedbax.run_event"
+    run_event_schema_version: Literal["feedbax.run_event.v2"] = "feedbax.run_event.v2"
+    ready_event_type: Literal["ready"] = "ready"
+    progress_event_type: Literal["progress"] = "progress"
+    heartbeat_event_type: Literal["heartbeat"] = "heartbeat"
+    terminal_event_types: tuple[Literal["complete"], Literal["failed"]] = (
+        "complete",
+        "failed",
+    )
+    event_paths: list[str] = Field(min_length=1)
+
+
+class TrainingRunMatrixPreflightBinding(StrictModel):
+    """Provider-neutral durable authority binding a matrix to preflight evidence."""
+
+    schema_id: Literal["feedbax.orchestration.training_run_matrix_preflight_binding"] = (
+        TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.training_run_matrix_preflight_binding.v1"] = (
+        TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION
+    )
+    matrix: TrainingRunMatrixArtifactBinding
+    rows: list[TrainingRunMatrixRowPreflightBinding] = Field(min_length=1)
+    resolved_inputs: list[TrainingRunMatrixInputCustodyBinding]
+    code_authorities: list[TrainingRunMatrixCodeAuthority] = Field(min_length=1)
+    monitor: TrainingRunMatrixMonitorBinding
+    bundle_sha256: str
+    nested_preflight_evidence_sha256: str
+
+    @field_validator("bundle_sha256", "nested_preflight_evidence_sha256")
+    @classmethod
+    def _validate_hashes(cls, value: str) -> str:
+        _validate_digest(value, "/preflight_binding")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_complete_ordered_sets(self) -> "TrainingRunMatrixPreflightBinding":
+        row_ids = [row.row_id for row in self.rows]
+        if len(row_ids) != len(set(row_ids)):
+            raise ValueError("matrix preflight rows must be unique")
+        expected_paths = [f"events/{row_id}.events.jsonl" for row_id in row_ids]
+        if self.monitor.event_paths != expected_paths:
+            raise ValueError("matrix monitor event paths must exactly follow ordered rows")
+        input_keys = [(item.role, item.kind, item.identifier) for item in self.resolved_inputs]
+        if input_keys != sorted(input_keys) or len(input_keys) != len(set(input_keys)):
+            raise ValueError("matrix input custody must be complete, unique, and canonical")
+        repos = [item.repo for item in self.code_authorities]
+        if repos != sorted(repos) or len(repos) != len(set(repos)):
+            raise ValueError("matrix code authorities must be unique and canonically ordered")
+        return self
+
+
+def training_run_matrix_preflight_binding_sha256(
+    binding: TrainingRunMatrixPreflightBinding,
+) -> str:
+    """Return the canonical digest of one matrix preflight binding."""
+    return training_spec_sha256(binding.model_dump(mode="json", exclude_none=True))
 
 
 class RowLowererIdentity(StrictModel):

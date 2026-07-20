@@ -463,6 +463,9 @@ def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
         remote_repos={
             str(name): str(path) for name, path in metadata.get("runpod_remote_repos", {}).items()
         },
+        protected_refs={
+            str(name): str(ref) for name, ref in metadata.get("runpod_protected_refs", {}).items()
+        },
         path_patches=path_patches,
     )
 
