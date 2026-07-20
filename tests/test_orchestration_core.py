@@ -2039,6 +2039,53 @@ def test_preflight_schedule_realization_passes_correct_resume_context(tmp_path: 
     assert len(row_observed["samples"]) >= 4
 
 
+def test_preflight_schedule_realization_certifies_post_terminal_hold_through_run_end(
+    tmp_path: Path,
+) -> None:
+    context = _schedule_context(
+        schedule_origin_step=0,
+        current_step=0,
+        optimizer_count_at_current_step=0,
+    )
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.03,
+            total_steps=3500,
+            constant_lr_iterations=1000,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.001,
+        ),
+    ).model_dump(mode="json")
+    bundle = _bundle(
+        tmp_path,
+        rows=[
+            _compiled_row(
+                "row-a",
+                run_spec={
+                    "optimizer": optimizer,
+                    "n_batches": 4500,
+                    "resume_context": context,
+                    "optimizer_build_context": context,
+                },
+            )
+        ],
+    )
+
+    checks = {check.name: check for check in run_preflight_checks(bundle)}
+
+    schedule_check = checks["schedule-realization"]
+    assert schedule_check.status == "pass"
+    samples = schedule_check.observed["row-a"][0]["samples"]
+    by_position = {sample["schedule_position"]: sample for sample in samples}
+    assert set((3500, 3501, 4499, 4500)).issubset(by_position)
+    for position in (3500, 3501, 4499, 4500):
+        assert by_position[position]["expected"] == pytest.approx(3e-5)
+        assert by_position[position]["observed"] == pytest.approx(3e-5)
+
+
 def test_preflight_schedule_realization_fails_when_resume_context_is_dropped(
     tmp_path: Path,
 ) -> None:
