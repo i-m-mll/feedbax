@@ -16,7 +16,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import (
+    ResolvedAssemblyInput,
+    RunBundle,
+    RunRowSpec,
+    environment_declaration_identity_projection,
+)
 from feedbax.orchestration.drivers.base import DriverRowProbe
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
@@ -368,18 +373,18 @@ def compute_environment_fingerprint(
     root = Path(cwd)
     interpreter, discovered_packages = _probe_dependency_inventory(python_executable)
     package_lines = list(freeze_lines) if freeze_lines is not None else discovered_packages
-    payload: dict[str, Any] = {
-        "declared_python_version": bundle.environment.python_version,
-        "dependency_inventory_source": (
-            "provided" if freeze_lines is not None else "importlib.metadata"
-        ),
-        "interpreter": interpreter,
-        "packages": sorted(package_lines),
-        "repo_revisions": [],
-        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
-        "overlay_steps": list(bundle.environment.overlay_steps),
-        "image_id": bundle.environment.image_id,
-    }
+    payload = environment_declaration_identity_projection(bundle.environment)
+    payload["declared_python_version"] = payload.pop("python_version")
+    payload["repo_revisions"] = []
+    payload.update(
+        {
+            "dependency_inventory_source": (
+                "provided" if freeze_lines is not None else "importlib.metadata"
+            ),
+            "interpreter": interpreter,
+            "packages": sorted(package_lines),
+        }
+    )
     for revision in bundle.environment.repo_revisions:
         repo_path = root / revision.path
         dirty = _git_dirty(repo_path)

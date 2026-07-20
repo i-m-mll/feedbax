@@ -36,6 +36,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+    structural_abi_content_sha256,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -1124,35 +1125,8 @@ def _migrate_structural_abi_fingerprint_to_content_v2(
     migrated["fingerprint_algorithm_version"] = (
         "feedbax.training_checkpoint.structural_abi.content.v2"
     )
-    migrated["fingerprint_sha256"] = _structural_abi_content_sha256(migrated)
+    migrated["fingerprint_sha256"] = structural_abi_content_sha256(migrated)
     return migrated
-
-
-def _structural_abi_content_sha256(payload: Mapping[str, Any]) -> str:
-    leaves: list[dict[str, Any]] = []
-    for raw_leaf in list(payload.get("leaves") or ()):
-        if not isinstance(raw_leaf, Mapping):
-            continue
-        leaf = {
-            key: raw_leaf[key]
-            for key in (
-                "path",
-                "leaf_type",
-                "shape",
-                "dtype",
-                "weak_type",
-                "static_repr_sha256",
-            )
-            if key in raw_leaf and raw_leaf[key] is not None
-        }
-        leaves.append(leaf)
-    content_payload = {
-        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
-        "treedef": payload.get("treedef"),
-        "leaf_count": payload.get("leaf_count"),
-        "leaves": leaves,
-    }
-    return sha256_bytes(canonical_json_bytes(content_payload))
 
 
 def _migrate_run_contract_binding_to_v2(payload: Mapping[str, Any]) -> dict[str, Any]:

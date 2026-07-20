@@ -213,6 +213,18 @@ class ExecutionIdentityEnvelope(StrictModel):
         return self
 
 
+def execution_identity_projection(
+    envelope: ExecutionIdentityEnvelope,
+) -> dict[str, Any]:
+    """Project one execution envelope onto durable manifest identity fields."""
+    return {
+        "intent_hash": envelope.authored_intent.intent_hash,
+        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
+        "execution_hash": envelope.execution_capsule.execution_hash,
+        "input_data_identities": canonicalize_immutable_input_identities(envelope.immutable_inputs),
+    }
+
+
 class RowLaunchSpec(StrictModel):
     """Operational launch instructions, excluded from scientific identity."""
 
@@ -268,6 +280,22 @@ class EnvironmentDeclaration(StrictModel):
     overlay_steps: list[str] = Field(default_factory=list)
     image_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def environment_declaration_identity_projection(
+    environment: EnvironmentDeclaration,
+) -> dict[str, Any]:
+    """Project the declared fields that determine environment identity."""
+    return {
+        "python_version": environment.python_version,
+        "repo_revisions": [
+            revision.model_dump(mode="json", exclude_none=True)
+            for revision in environment.repo_revisions
+        ],
+        "lockfile_hashes": dict(sorted(environment.lockfile_hashes.items())),
+        "overlay_steps": list(environment.overlay_steps),
+        "image_id": environment.image_id,
+    }
 
 
 class DeploymentResourceRequest(StrictModel):

@@ -61,6 +61,8 @@ from feedbax.contracts.checkpoints import (
     SlotLeafContentDigest,
     SlotLeafFingerprint,
     StructuralAbiFingerprint,
+    structural_abi_content_sha256,
+    structural_abi_leaf_content_projection,
 )
 from feedbax.contracts.manifest import (
     ArtifactRef,
@@ -2089,9 +2091,7 @@ def _validate_checkpoint_transaction_integrity_records(
             raise CheckpointReferenceResolutionError(
                 f"checkpoint slot {name!r} content root is stale"
             )
-        expected_fingerprint = _canonical_hash(
-            _structural_abi_content_payload(fingerprint.treedef, fingerprint.leaves)
-        )
+        expected_fingerprint = structural_abi_content_sha256(fingerprint)
         if fingerprint.fingerprint_sha256 != expected_fingerprint:
             raise CheckpointReferenceResolutionError(
                 f"checkpoint slot {name!r} structural ABI fingerprint is stale"
@@ -4665,13 +4665,15 @@ def _structural_abi_fingerprint_from_leaves(
     leaves: Sequence[SlotLeafFingerprint],
 ) -> StructuralAbiFingerprint:
     environment_provenance = _serializer_versions()
-    payload = _structural_abi_content_payload(treedef, leaves)
-    return StructuralAbiFingerprint(
+    fingerprint = StructuralAbiFingerprint(
         treedef=treedef,
         leaf_count=len(leaves),
         leaves=list(leaves),
         environment_provenance=environment_provenance,
-        fingerprint_sha256=_canonical_hash(payload),
+        fingerprint_sha256="",
+    )
+    return fingerprint.model_copy(
+        update={"fingerprint_sha256": structural_abi_content_sha256(fingerprint)}
     )
 
 
@@ -4712,7 +4714,7 @@ def _structural_abi_leaf_diffs(
                     path=actual_leaf.path,
                     field="leaf",
                     recorded="<missing>",
-                    actual=_leaf_structural_content_payload(actual_leaf),
+                    actual=structural_abi_leaf_content_projection(actual_leaf),
                 )
             )
             continue
@@ -4722,7 +4724,7 @@ def _structural_abi_leaf_diffs(
                 _StructuralAbiLeafDiff(
                     path=recorded_leaf.path,
                     field="leaf",
-                    recorded=_leaf_structural_content_payload(recorded_leaf),
+                    recorded=structural_abi_leaf_content_projection(recorded_leaf),
                     actual="<missing>",
                 )
             )
@@ -5518,40 +5520,12 @@ def _leaf_fingerprint(path: Any, leaf: Any) -> SlotLeafFingerprint:
     )
 
 
-def _structural_abi_content_payload(
-    treedef: str,
-    leaves: Sequence[SlotLeafFingerprint],
-) -> dict[str, Any]:
-    return {
-        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
-        "treedef": treedef,
-        "leaf_count": len(leaves),
-        "leaves": [_leaf_structural_content_payload(leaf) for leaf in leaves],
-    }
-
-
-def _leaf_structural_content_payload(leaf: SlotLeafFingerprint) -> dict[str, Any]:
-    payload = leaf.model_dump(mode="json", exclude_none=True)
-    return {
-        key: payload[key]
-        for key in (
-            "path",
-            "leaf_type",
-            "shape",
-            "dtype",
-            "weak_type",
-            "static_repr_sha256",
-        )
-        if key in payload
-    }
-
-
 def _semantic_structural_abi_sha256(fingerprint: StructuralAbiFingerprint) -> str:
     leaves = [
         leaf.model_copy(update={"leaf_type": _canonical_leaf_type(leaf.leaf_type)})
         for leaf in fingerprint.leaves
     ]
-    return _canonical_hash(_structural_abi_content_payload(fingerprint.treedef, leaves))
+    return structural_abi_content_sha256(fingerprint.model_copy(update={"leaves": leaves}))
 
 
 def _canonical_leaf_type(leaf_type: str) -> str:

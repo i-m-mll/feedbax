@@ -37,6 +37,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     canonical_run_bundle_sha256,
+    environment_declaration_identity_projection,
 )
 from feedbax.orchestration.collection_recovery import (
     CollectionRecoveryBinding,
@@ -1576,12 +1577,10 @@ class RunPodOrchestrationDriver:
         bundle: RunBundle,
         declaration_fingerprint: str,
     ) -> str:
-        declaration = {
-            "declaration_sha256": declaration_fingerprint,
-            "image_id": bundle.environment.image_id,
-            "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
-            "python_version": bundle.environment.python_version,
-        }
+        declaration = environment_declaration_identity_projection(bundle.environment)
+        declaration.pop("repo_revisions")
+        declaration.pop("overlay_steps")
+        declaration["declaration_sha256"] = declaration_fingerprint
         command = (
             "uv run --no-sync python -c "
             f"{_sq(_REMOTE_ENVIRONMENT_PROBE)} "
@@ -1940,12 +1939,13 @@ def validate_realized_runpod_environment_fingerprint(
         payload = json.loads(fingerprint)
     except json.JSONDecodeError as exc:
         raise RunPodDriverError("realized RunPod environment probe returned invalid JSON") from exc
+    declared_environment = environment_declaration_identity_projection(bundle.environment)
     expected = {
         "schema_version": RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION,
         "declaration_sha256": declaration_fingerprint,
-        "image_id": bundle.environment.image_id,
-        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
     }
+    for field_name in ("image_id", "lockfile_hashes"):
+        expected[field_name] = declared_environment[field_name]
     for field_name, expected_value in expected.items():
         if payload.get(field_name) != expected_value:
             raise RunPodDriverError(
@@ -1970,7 +1970,7 @@ def validate_realized_runpod_environment_fingerprint(
             "realized RunPod environment fingerprint lacks required runtime provenance"
         )
     if not _python_version_matches(
-        str(bundle.environment.python_version), str(runtime["python"])
+        str(declared_environment["python_version"]), str(runtime["python"])
     ):
         raise RunPodDriverError(
             "realized RunPod environment fingerprint Python version does not match declaration"
@@ -1994,16 +1994,7 @@ def _python_version_matches(declared: str, observed: str) -> bool:
 
 def compute_runpod_environment_fingerprint(bundle: RunBundle) -> str:
     """Compute the declared remote environment fingerprint."""
-    payload = {
-        "python_version": bundle.environment.python_version,
-        "repo_revisions": [
-            revision.model_dump(mode="json", exclude_none=True)
-            for revision in bundle.environment.repo_revisions
-        ],
-        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
-        "overlay_steps": list(bundle.environment.overlay_steps),
-        "image_id": bundle.environment.image_id,
-    }
+    payload = environment_declaration_identity_projection(bundle.environment)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

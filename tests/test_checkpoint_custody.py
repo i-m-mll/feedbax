@@ -26,6 +26,8 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkTransformRecord,
     CheckpointForkTransformStep,
     Granularity,
+    SlotLeafFingerprint,
+    StructuralAbiFingerprint,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
@@ -36,6 +38,8 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+    structural_abi_content_projection,
+    structural_abi_content_sha256,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -206,10 +210,109 @@ def _rewrite_controller_leaf_type(result, leaf_type: str) -> None:
         custody_module.SlotLeafFingerprint.model_validate(leaf)
         for leaf in fingerprint["leaves"]
     ]
-    fingerprint["fingerprint_sha256"] = custody_module._canonical_hash(
-        custody_module._structural_abi_content_payload(fingerprint["treedef"], leaves)
+    fingerprint["fingerprint_sha256"] = structural_abi_content_sha256(
+        {**fingerprint, "leaves": leaves}
     )
     _rewrite_manifest_and_latest(result, payload)
+
+
+def test_structural_abi_content_projection_field_classification() -> None:
+    leaf_identity_fields = {
+        "path",
+        "leaf_type",
+        "shape",
+        "dtype",
+        "weak_type",
+        "static_repr_sha256",
+    }
+    fingerprint_identity_fields = {
+        "fingerprint_algorithm_version",
+        "treedef",
+        "leaf_count",
+        "leaves",
+    }
+    assert set(SlotLeafFingerprint.model_fields) == leaf_identity_fields | {
+        "sharding",
+        "layout",
+    }
+    assert set(StructuralAbiFingerprint.model_fields) == fingerprint_identity_fields | {
+        "schema_id",
+        "schema_version",
+        "environment_provenance",
+        "provenance_status",
+        "fingerprint_sha256",
+        "metadata",
+    }
+
+    fingerprint = StructuralAbiFingerprint(
+        treedef="PyTreeDef(*)",
+        leaf_count=1,
+        leaves=[
+            SlotLeafFingerprint(
+                path="[0]",
+                leaf_type="jax.Array",
+                shape=(2,),
+                dtype="float32",
+                weak_type=False,
+                sharding="SingleDeviceSharding(device=CpuDevice(id=0))",
+                layout="Layout(device_local_layout=None, sharding=None)",
+            )
+        ],
+        fingerprint_sha256="not-part-of-content",
+        metadata={"note": "not-part-of-content"},
+    )
+
+    assert structural_abi_content_projection(fingerprint) == {
+        "fingerprint_algorithm_version": (
+            "feedbax.training_checkpoint.structural_abi.content.v2"
+        ),
+        "treedef": "PyTreeDef(*)",
+        "leaf_count": 1,
+        "leaves": [
+            {
+                "path": "[0]",
+                "leaf_type": "jax.Array",
+                "shape": [2],
+                "dtype": "float32",
+                "weak_type": False,
+            }
+        ],
+    }
+
+
+def test_structural_abi_content_projection_preserves_tolerant_migration_shape() -> None:
+    raw = {
+        "fingerprint_algorithm_version": (
+            "feedbax.training_checkpoint.structural_abi.content.v2"
+        ),
+        "treedef": "PyTreeDef(*)",
+        "leaf_count": 1,
+        "leaves": [
+            "ignored malformed historical leaf",
+            {
+                "path": "[0]",
+                "leaf_type": "jax.Array",
+                "shape": None,
+                "dtype": "float32",
+                "weak_type": False,
+                "sharding": "not-content",
+                "layout": "not-content",
+            },
+        ],
+        "environment_provenance": {"python_version": "3", "x64_enabled": False},
+        "metadata": {"note": "not-content"},
+    }
+
+    projection = structural_abi_content_projection(raw)
+    assert projection["leaves"] == [
+        {
+            "path": "[0]",
+            "leaf_type": "jax.Array",
+            "dtype": "float32",
+            "weak_type": False,
+        }
+    ]
+    assert structural_abi_content_sha256(raw) == custody_module._canonical_hash(projection)
 
 
 def _write_minimax_checkpoint(tmp_path: Path):
@@ -560,6 +663,9 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
         "feedbax.training.checkpoint_custody.pickle"
     )
     assert migrated_fingerprint["fingerprint_sha256"] != "legacy-mixed-serializer-hash"
+    assert migrated_fingerprint["fingerprint_sha256"] == structural_abi_content_sha256(
+        migrated_fingerprint
+    )
     migrated_binding = migrated.payload["run_contract_binding"]
     assert migrated_binding["algorithm_version"].endswith(".run_contract_binding.v2")
     assert (
