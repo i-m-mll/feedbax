@@ -197,6 +197,22 @@ def test_entry_point_can_register_training_method() -> None:
     assert DUMMY_METHOD_REF in registry.available_keys()
 
 
+def test_distinct_plugins_cannot_claim_the_same_training_method() -> None:
+    registry = default_training_method_registry()
+    plugins = [
+        SimpleNamespace(
+            name=name,
+            load=lambda: SimpleNamespace(
+                register_feedbax_training_methods=_register_dummy_training_method
+            ),
+        )
+        for name in ("first-training-method", "second-training-method")
+    ]
+
+    with pytest.raises(RuntimeError, match="second-training-method.*already registered"):
+        load_training_method_plugins(registry=registry, entry_points=plugins)
+
+
 def test_entry_point_load_failure_remains_non_strict_by_default(caplog) -> None:
     load_training_method_plugins(
         registry=default_training_method_registry(),
@@ -791,7 +807,7 @@ def test_unknown_method_ref_guides_plugin_registration() -> None:
     assert "--plugin <module>" in message
 
 
-def test_checkpoint_fork_validates_plugin_registered_training_method(
+def test_checkpoint_fork_deduplicates_installed_and_explicit_plugin_module(
     tmp_path: Path,
 ) -> None:
     spec_path = tmp_path / "dummy-run-spec.json"
@@ -816,7 +832,14 @@ def test_checkpoint_fork_validates_plugin_registered_training_method(
                 pass
 
 
+            registration_count = 0
+
+
             def register_feedbax_training_methods(registry):
+                global registration_count
+                registration_count += 1
+                if registration_count != 1:
+                    raise AssertionError("plugin registration repeated")
                 contract = standard_supervised_method_contract().model_copy(
                     update={{
                         "method_ref": {DUMMY_METHOD_REF!r},
@@ -837,6 +860,12 @@ def test_checkpoint_fork_validates_plugin_registered_training_method(
                 )
             """
         ),
+        encoding="utf-8",
+    )
+    dist_info = tmp_path / "dummy_training_plugin-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "entry_points.txt").write_text(
+        "[feedbax.plugins]\ndummy-training = dummy_training_plugin\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
@@ -869,6 +898,8 @@ def test_checkpoint_fork_validates_plugin_registered_training_method(
     output = json.loads(completed.stdout)
     error = output["targets"][0]["error"]
     assert "unknown method_ref" not in error
+    assert "plugin registration repeated" not in error
+    assert "already registered" not in error
 
 
 def test_checkpoint_fork_without_plugin_reports_unknown_method(tmp_path: Path) -> None:

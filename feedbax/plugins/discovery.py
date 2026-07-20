@@ -5,6 +5,7 @@ import importlib.metadata
 import logging
 import inspect
 from collections.abc import Iterable, Sequence
+from types import ModuleType
 from typing import Any, Optional, cast
 
 from .registry import ExperimentRegistry, get_default_registry
@@ -140,6 +141,7 @@ def load_training_method_plugins(
 
         row_lowerer_registry = DEFAULT_TRAINING_ROW_LOWERER_REGISTRY
 
+    registered_module_authorities: set[str] = set()
     for entry_point in (
         entry_points if entry_points is not None else feedbax_plugin_entry_points(entry_point_group)
     ):
@@ -161,9 +163,19 @@ def load_training_method_plugins(
             row_lowerer_registry,
             provenance=provenance,
         )
+        module_authority = _entry_point_module_authority(entry_point, plugin)
+        if module_authority is not None:
+            registered_module_authorities.add(module_authority)
 
     for module_name in modules or ():
         module = importlib.import_module(module_name)
+        module_authority = module.__name__
+        if module_authority in registered_module_authorities:
+            logger.info(
+                "Skipped duplicate Feedbax training-method plugin module %s",
+                module_authority,
+            )
+            continue
         _register_training_plugin(
             module,
             registry,
@@ -171,6 +183,7 @@ def load_training_method_plugins(
             row_lowerer_registry,
             provenance=f"module:{module_name}",
         )
+        registered_module_authorities.add(module_authority)
 
     unknown_provider_keys = set(preparation_registry.available_keys()) - set(
         registry.available_keys()
@@ -423,6 +436,17 @@ def _entry_point_provenance(entry_point: Any) -> str:
         if package_name:
             return f"package:{package_name}"
     return f"entry-point:{getattr(entry_point, 'name', '<unknown>')}"
+
+
+def _entry_point_module_authority(entry_point: Any, plugin: Any) -> str | None:
+    """Return the exact module authority loaded by a plugin entry point."""
+    if isinstance(plugin, ModuleType):
+        return plugin.__name__
+    module_name = getattr(entry_point, "module", None)
+    attribute_name = getattr(entry_point, "attr", None)
+    if isinstance(module_name, str) and module_name and not attribute_name:
+        return module_name
+    return None
 
 
 def _is_recipe_validation_error(exc: Exception) -> bool:
