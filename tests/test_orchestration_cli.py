@@ -828,7 +828,7 @@ def test_resume_loads_training_method_plugins_before_running(
     assert calls[1][0] == "run"
 
 
-@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5", "v6"])
 def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
     path = tmp_path / "bundle-v1.json"
     payload = _bundle(tmp_path).model_dump(mode="json")

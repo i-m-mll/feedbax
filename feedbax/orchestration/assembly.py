@@ -38,6 +38,7 @@ from feedbax.orchestration.bundle import (
     RunRowSpec,
     SchemaArtifactRef,
 )
+from feedbax.orchestration.revision import resolve_feedbax_revision
 
 if TYPE_CHECKING:
     from feedbax.contracts.migrations import SpecMigrationResult, SpecSchemaRegistry
@@ -405,6 +406,7 @@ def assemble_run_bundle(
     ]
     return RunBundle(
         run_set_id=run_set_id,
+        feedbax_revision=resolve_feedbax_revision(),
         deployment_policy=request.deployment_policy,
         migration_evidence=authored_result.migration_records,
         rows=[
