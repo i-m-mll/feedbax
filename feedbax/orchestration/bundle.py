@@ -30,7 +30,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_bundle.v2"
 RUN_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_bundle.v3"
 RUN_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_bundle.v4"
 RUN_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_bundle.v5"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v6"
+RUN_BUNDLE_SCHEMA_VERSION_V6 = "feedbax.orchestration.run_bundle.v6"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v7"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
@@ -458,8 +459,9 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v6"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v7"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
+    feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     deployment_policy: DeploymentPolicy
     migration_evidence: list[ArtifactMigrationRecord] = Field(default_factory=list)
     rows: list[RunRowSpec] = Field(min_length=1)

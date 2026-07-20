@@ -272,6 +272,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V3,
     RUN_BUNDLE_SCHEMA_VERSION_V4,
     RUN_BUNDLE_SCHEMA_VERSION_V5,
+    RUN_BUNDLE_SCHEMA_VERSION_V6,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -2918,6 +2919,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 RUN_BUNDLE_SCHEMA_VERSION_V3,
                 RUN_BUNDLE_SCHEMA_VERSION_V4,
                 RUN_BUNDLE_SCHEMA_VERSION_V5,
+                RUN_BUNDLE_SCHEMA_VERSION_V6,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",
@@ -4087,8 +4089,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             continue
         for old_version in family.policy.rejected_old_versions:
             remediation = (
-                "RunBundle v1-v5 lack explicit deployment review authorization and "
-                "v6 authenticated input custody/materialization authority; reassemble "
+                "RunBundle v1-v5 lack explicit deployment review authorization; v6 lacks "
+                "the required Feedbax revision pin and authenticated input custody/materialization "
+                "authority; reassemble "
                 "from a current RunAssemblyRequest with a DeploymentPolicy."
                 if family.kind == "RunBundle"
                 else (

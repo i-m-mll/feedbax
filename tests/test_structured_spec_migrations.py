@@ -151,6 +151,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V3,
     RUN_BUNDLE_SCHEMA_VERSION_V4,
     RUN_BUNDLE_SCHEMA_VERSION_V5,
+    RUN_BUNDLE_SCHEMA_VERSION_V6,
 )
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
@@ -514,6 +515,7 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
         RUN_BUNDLE_SCHEMA_VERSION_V3,
         RUN_BUNDLE_SCHEMA_VERSION_V4,
         RUN_BUNDLE_SCHEMA_VERSION_V5,
+        RUN_BUNDLE_SCHEMA_VERSION_V6,
     ],
 )
 def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
@@ -530,6 +532,15 @@ def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
     assert "migration_intentionally_absent=yes" in message
     assert "explicit deployment review authorization" in message
     assert "authenticated input custody/materialization authority" in message
+
+
+def test_run_bundle_v6_rejection_requires_feedbax_revision_pin() -> None:
+    with pytest.raises(UnsupportedSpecVersion) as excinfo:
+        default_spec_registry.migrate(
+            "RunBundle", {"schema_version": RUN_BUNDLE_SCHEMA_VERSION_V6}
+        )
+
+    assert "v6 lacks the required Feedbax revision pin" in str(excinfo.value)
 
 
 def test_legacy_assembly_request_requires_reauthorization() -> None:
