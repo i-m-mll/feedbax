@@ -77,7 +77,8 @@ CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_co
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v2"
 CHECKPOINT_FORK_PLAN_SCHEMA_ID = "feedbax.spec.training_checkpoint_fork_plan"
 CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.training_checkpoint_fork_plan.v1"
-CHECKPOINT_FORK_PLAN_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_fork_plan.v2"
+CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2 = "feedbax.spec.training_checkpoint_fork_plan.v2"
+CHECKPOINT_FORK_PLAN_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_fork_plan.v3"
 
 
 CheckpointDocumentT = TypeVar("CheckpointDocumentT")
@@ -386,8 +387,16 @@ class CheckpointForkTransformRecord(StrictModel):
 
     slot: str
     identity: str
+    version: str | None = Field(default=None, min_length=1)
+    implementation_sha256: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_implementation(self) -> "CheckpointForkTransformRecord":
+        if self.implementation_sha256 is not None:
+            _validate_sha256(self.implementation_sha256, path="/implementation_sha256")
+        return self
 
 
 class CheckpointForkBarrierMapping(StrictModel):
@@ -444,11 +453,25 @@ class CheckpointForkTransformStep(StrictModel):
         if len(slots) != len(set(slots)):
             raise ValueError("/records checkpoint fork transform slots must be unique")
         identities = {
-            (record.identity, _canonical_json(record.parameters)) for record in self.records
+            (
+                record.identity,
+                record.version,
+                record.implementation_sha256,
+                _canonical_json(record.parameters),
+            )
+            for record in self.records
         }
         if len(identities) != 1:
             raise ValueError(
                 "/records in one checkpoint fork transform step must share identity and parameters"
+            )
+        if any(
+            record.version is None or record.implementation_sha256 is None
+            for record in self.records
+        ):
+            raise ValueError(
+                "/records checkpoint fork plan transforms require version and "
+                "implementation_sha256 pins"
             )
         if self.stage == "source_pre":
             if len(self.records) != 1:
@@ -470,6 +493,7 @@ class CheckpointForkHistoryPolicy(StrictModel):
     mode: Literal["preserve", "continue_segment", "prepare_continuation"] = "preserve"
     continuation_request: CheckpointContinuationRequest | None = None
     segment_history_template_ref: str | None = None
+    segment_history_template_sha256: str | None = None
 
     @model_validator(mode="after")
     def _validate_policy(self) -> "CheckpointForkHistoryPolicy":
@@ -477,19 +501,32 @@ class CheckpointForkHistoryPolicy(StrictModel):
             if (
                 self.continuation_request is not None
                 or self.segment_history_template_ref is not None
+                or self.segment_history_template_sha256 is not None
             ):
                 raise ValueError("preserve history policy cannot declare continuation inputs")
         elif self.mode == "continue_segment":
-            if self.continuation_request is None or not self.segment_history_template_ref:
+            if (
+                self.continuation_request is None
+                or not self.segment_history_template_ref
+                or self.segment_history_template_sha256 is None
+            ):
                 raise ValueError(
                     "continue_segment history policy requires continuation_request and "
                     "segment_history_template_ref"
                 )
         elif self.continuation_request is None:
             raise ValueError("prepare_continuation history policy requires continuation_request")
-        elif self.segment_history_template_ref is not None:
+        elif (
+            self.segment_history_template_ref is not None
+            or self.segment_history_template_sha256 is not None
+        ):
             raise ValueError(
                 "prepare_continuation history policy cannot declare segment_history_template_ref"
+            )
+        if self.segment_history_template_sha256 is not None:
+            _validate_sha256(
+                self.segment_history_template_sha256,
+                path="/segment_history_template_sha256",
             )
         return self
 
@@ -498,6 +535,8 @@ class CheckpointForkSourcePreparation(StrictModel):
     """Portable source declaration for a fork plan."""
 
     checkpoint_root_ref: str = Field(min_length=1)
+    source_execution_hash: str | None = None
+    source_row_id: str | None = None
     expected_transaction_id: str | None = None
     expected_transaction_root_sha256: str | None = None
     transforms: list[CheckpointForkTransformStep] = Field(default_factory=list)
@@ -510,6 +549,10 @@ class CheckpointForkSourcePreparation(StrictModel):
             value = self.expected_transaction_root_sha256
             if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
                 raise ValueError("expected_transaction_root_sha256 must be a lowercase sha256")
+        if (self.source_execution_hash is None) != (self.source_row_id is None):
+            raise ValueError("source_execution_hash and source_row_id must be declared together")
+        if self.source_execution_hash is not None:
+            _validate_sha256(self.source_execution_hash, path="/source_execution_hash")
         return self
 
 

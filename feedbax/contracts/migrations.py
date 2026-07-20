@@ -20,6 +20,7 @@ from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_ID,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION,
     LEGACY_CHECKPOINT_LEAF_MANIFEST_SCHEMA_VERSION_V0,
@@ -90,6 +91,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
@@ -1019,6 +1021,28 @@ def _migrate_checkpoint_fork_plan_v1_to_v2_payload(
             raise ValueError(
                 f"checkpoint fork plan v1 has unsupported history mode {mode!r}"
             )
+    migrated["schema_id"] = CHECKPOINT_FORK_PLAN_SCHEMA_ID
+    migrated["schema_version"] = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2
+    return migrated
+
+
+def _migrate_checkpoint_fork_plan_v2_to_v3_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    targets = tuple(target for target in migrated.get("targets", ()) if isinstance(target, Mapping))
+    if any(isinstance(policy := target.get("history_policy"), Mapping) and
+           policy.get("mode") == "continue_segment" for target in targets):
+        raise ValueError(
+            "CheckpointForkPlan legacy continue_segment cannot migrate: v3 requires "
+            "segment_history_template_sha256, which cannot be synthesized; re-author/rebind"
+        )
+    source = migrated.get("source", {})
+    steps = list(source.get("transforms", ())) if isinstance(source, Mapping) else []
+    steps.extend(step for target in targets for step in target.get("transforms", ()))
+    if steps:
+        raise ValueError(
+            "CheckpointForkPlan v2 transforms cannot migrate safely because their "
+            "implementation version and sha256 were not pinned; re-author as v3"
+        )
     migrated["schema_id"] = CHECKPOINT_FORK_PLAN_SCHEMA_ID
     migrated["schema_version"] = CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
     return migrated
@@ -2016,6 +2040,32 @@ def _migrate_training_run_matrix_v2_to_v3_payload(payload: dict[str, Any]) -> di
     migrated.setdefault("deltas", [])
     migrated.setdefault("execution_dependencies", [])
     migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3
+    return migrated
+
+
+def _migrate_training_run_matrix_v3_to_v4_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Retire unresolved run ids and require transform implementation pins."""
+    migrated = deepcopy(payload)
+    fork = migrated.get("fork")
+    if isinstance(fork, dict):
+        source_run_id = fork.pop("source_run_id", None)
+        if source_run_id is not None:
+            raise ValueError(
+                "TrainingRunMatrixSpec v3 fork.source_run_id cannot migrate because it "
+                "does not identify checkpoint custody; declare a content-pinned "
+                "fork_from_selected_checkpoint execution dependency"
+            )
+    for dependency in migrated.get("execution_dependencies", ()):
+        if dependency.get("kind") != "fork_from_selected_checkpoint":
+            continue
+        for transform in dependency.get("slot_transforms", ()):
+            if "implementation_sha256" not in transform:
+                raise ValueError(
+                    "TrainingRunMatrixSpec v3 durable slot transforms cannot migrate "
+                    "without an implementation_sha256 pin"
+                )
+    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     return migrated
 
@@ -2645,6 +2695,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
             ),
             rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
             required_tests=(
@@ -2749,7 +2800,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "transform identities and compatibility projections."
             ),
             stance="migrate",
-            supported_old_versions=(CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,),
+            supported_old_versions=(
+                CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+                CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
+            ),
             rejected_old_versions=("feedbax.spec.training_checkpoint_fork_plan.v0",),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -4157,7 +4211,7 @@ default_spec_registry.register_migration(
     "CheckpointForkPlan",
     SchemaMigration(
         source_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
-        target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+        target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
         migration_id="checkpoint-fork-plan-v1-to-v2-future-continuation",
         migrate=_migrate_checkpoint_fork_plan_v1_to_v2_payload,
         description=(
@@ -4166,6 +4220,11 @@ default_spec_registry.register_migration(
         ),
     ),
 )
+default_spec_registry.register_migration("CheckpointForkPlan", SchemaMigration(
+        source_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2, target_version=CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
+        migration_id="checkpoint-fork-plan-v2-to-v3-transform-pins", migrate=_migrate_checkpoint_fork_plan_v2_to_v3_payload,
+        description="Preserve transform-free plans and reject unpinned transforms.",
+))
 default_spec_registry.register_migration(
     "ExecutionIdentityEnvelope",
     SchemaMigration(
@@ -4252,10 +4311,20 @@ default_spec_registry.register_migration(
     "TrainingRunMatrixSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
         migration_id="training-run-matrix-v2-to-v3-composition",
         migrate=_migrate_training_run_matrix_v2_to_v3_payload,
         description="Add ordered composition deltas and typed execution dependencies.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunMatrixSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-matrix-v3-to-v4-typed-fork-custody",
+        migrate=_migrate_training_run_matrix_v3_to_v4_payload,
+        description="Retire source run ids and require durable transform implementation pins.",
     ),
 )
 default_spec_registry.register_migration(

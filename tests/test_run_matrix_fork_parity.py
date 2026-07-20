@@ -13,8 +13,16 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkPlan,
     CheckpointForkSourcePreparation,
     CheckpointForkTarget,
+    CheckpointForkTransformRecord,
+    CheckpointForkTransformStep,
 )
-from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
+from feedbax.contracts.run_matrix import (
+    DurableSlotTransform,
+    ForkFromSelectedCheckpoint,
+    LineageGraftDependency,
+    StoppedRowStatus,
+    TrainingRunMatrixSpec,
+)
 from feedbax.contracts.training import (
     TrainingMethodRegistry,
     default_training_method_registry,
@@ -35,6 +43,7 @@ from feedbax.training.run_matrix import (
     _LoadedSourceManifest,
     _recorded_optimizer_step,
     _source_completed_step,
+    _validate_typed_checkpoint_dependencies,
     fork_matrix_checkpoints,
     main,
 )
@@ -190,7 +199,6 @@ def _standard_fork_inputs(tmp_path: Path):
                 "inline": run_spec.model_dump(mode="json", exclude_none=True),
             },
             "fork": {
-                "source_run_id": "feedbax-training-run:source",
                 "lr_continuation": "continue",
             },
             "rows": [{"row_id": "target", "overrides": []}],
@@ -283,7 +291,7 @@ def test_fork_matrix_checkpoints_skip_fork_writes_parity_table(tmp_path: Path) -
     assert table["matrix_spec_sha256"] == materialized.matrix_spec_sha256
     assert any(row["kind"] == "slot_parity" and row["ok"] for row in table["rows"])
     continuation = next(row for row in table["rows"] if row["kind"] == "lr_continuation")
-    assert continuation["source_run_id"] == spec.fork.source_run_id
+    assert "source_run_id" not in continuation
     assert continuation["target_run_id"] == materialized.rows[0].planned_run_id
     assert continuation["source_transaction_id"] == "tx-source"
     assert continuation["target_transaction_id"] == "tx-target"
@@ -502,7 +510,6 @@ def test_matrix_fork_maps_explicit_distinct_barrier_and_reloads_target(
                 "inline": target_spec.model_dump(mode="json", exclude_none=True),
             },
             "fork": {
-                "source_run_id": "feedbax-training-run:source",
                 "lr_continuation": "continue",
                 "parity": "skip",
             },
@@ -892,7 +899,6 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
                 "inline": run_spec.model_dump(mode="json", exclude_none=True),
             },
             "fork": {
-                "source_run_id": "feedbax-training-run:source",
                 "lr_continuation": "restart",
             },
             "rows": [{"row_id": "target", "overrides": []}],
@@ -901,7 +907,7 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
     materialized = materialize_run_matrix(matrix, repo_root=tmp_path)
     target_spec = materialized.rows[0].spec
     assert target_spec is not None
-    write_checkpoint_transaction(
+    source = write_checkpoint_transaction(
         tmp_path / "source",
         run_spec=target_spec,
         phase_program=target_spec.worker_execution.method_contract.phase_program,
@@ -910,8 +916,21 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
         slots=_minimax_slots(),
         completed_training_batches=0,
     )
+    dependency = ForkFromSelectedCheckpoint(
+        source_execution_hash="d" * 64,
+        source_row_id="source",
+        checkpoint_transaction_id=source.manifest.transaction_id,
+        checkpoint_root_hash=source.manifest.content_integrity_digest.transaction_root_sha256,
+    )
+    matrix = matrix.model_copy(update={"execution_dependencies": [dependency]})
     plan = CheckpointForkPlan(
-        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        source=CheckpointForkSourcePreparation(
+            checkpoint_root_ref="source",
+            source_execution_hash=dependency.source_execution_hash,
+            source_row_id=dependency.source_row_id,
+            expected_transaction_id=dependency.checkpoint_transaction_id,
+            expected_transaction_root_sha256=dependency.checkpoint_root_hash,
+        ),
         targets=[
             CheckpointForkTarget(
                 target_id="target",
@@ -927,6 +946,34 @@ def test_matrix_fork_executes_typed_plan_and_writes_parity(tmp_path: Path) -> No
             )
         ],
     )
+    record = CheckpointForkTransformRecord(
+        slot="model", identity="tests.target", version="1", implementation_sha256="f" * 64
+    )
+    placed_plan = plan.model_copy(update={"targets": [plan.targets[0].model_copy(update={
+        "transforms": [CheckpointForkTransformStep(
+            step_id="target", stage="target_post", records=[record]
+        )]
+    })]})
+    placed = DurableSlotTransform(
+        transform_id="tests.target", version="1", implementation_sha256="f" * 64,
+        stage="target_post", target_row_id="target", slot="model",
+    )
+    placed_dependency = dependency.model_copy(update={"slot_transforms": [placed]})
+    def verify(dependencies, checked_plan=placed_plan):
+        checked = matrix.model_copy(update={"execution_dependencies": dependencies})
+        _validate_typed_checkpoint_dependencies(checked, materialized, checked_plan)
+
+    verify([placed_dependency])
+    with pytest.raises(RunMatrixError, match="placement/order drifts"):
+        misplaced = placed.model_copy(update={"target_row_id": "other"})
+        verify([placed_dependency.model_copy(update={"slot_transforms": [misplaced]})])
+    with pytest.raises(RunMatrixError, match="unsupported checkpoint fork dependencies"):
+        stopped = StoppedRowStatus(row_id="stopped", completed_batches=1, reason="review probe")
+        lineage = LineageGraftDependency(
+            lineage_event_hash="a" * 64, interpretation="new_execution"
+        )
+        verify([dependency, stopped, lineage], plan)
+    assert not (tmp_path / "target").exists()
     parity = fork_matrix_checkpoints(
         matrix,
         materialized,

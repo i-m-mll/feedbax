@@ -11,6 +11,8 @@ from feedbax.contracts.checkpoints import (
     CHECKPOINT_FORK_PLAN_SCHEMA_ID,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
     CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
+    CheckpointForkPlan,
     CheckpointForkProvenance,
 )
 from feedbax.contracts.migrations import (
@@ -1156,17 +1158,25 @@ def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:
 
 
 def test_checkpoint_fork_plan_v1_migration_preserves_modes_and_guards_v2_mode() -> None:
-    for mode in (None, "preserve", "continue_segment"):
+    for mode in (None, "preserve"):
         policy = {} if mode is None else {"mode": mode}
         result = default_spec_registry.migrate(
             "CheckpointForkPlan",
             {
                 "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
-                "targets": [{"history_policy": policy}],
+                "source": {"checkpoint_root_ref": "source"},
+                "targets": [{
+                    "target_id": "target", "checkpoint_root_ref": "target", "run_spec_ref": "run",
+                    "slot_template_ref": "slots", "history_policy": policy,
+                    "compatibility": {"run_contract_algorithm_version": "v1", "run_contract_hash_domain": "test",
+                        "run_contract_projection_sha256": "a" * 64,
+                        "slot_structural_abi_sha256": {"model": "b" * 64}},
+                }],
             },
         )
         assert result.payload["schema_version"] == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
         assert result.payload["targets"][0]["history_policy"] == policy
+        CheckpointForkPlan.model_validate(result.payload)
 
     for mode in ("prepare_continuation", "unknown"):
         with pytest.raises(ValueError, match="unsupported history mode"):
@@ -1177,6 +1187,16 @@ def test_checkpoint_fork_plan_v1_migration_preserves_modes_and_guards_v2_mode() 
                     "targets": [{"history_policy": {"mode": mode}}],
                 },
             )
+    with pytest.raises(ValueError, match="re-author/rebind"):
+        default_spec_registry.migrate("CheckpointForkPlan", {
+            "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
+            "targets": [{"history_policy": {"mode": "continue_segment"}}],
+        })
+    with pytest.raises(ValueError, match="implementation version and sha256"):
+        default_spec_registry.migrate("CheckpointForkPlan", {
+            "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
+            "source": {"transforms": [{}]},
+        })
 
 
 def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:

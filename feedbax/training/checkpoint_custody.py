@@ -70,6 +70,14 @@ from feedbax.contracts.manifest import (
     feedbax_version,
     sha256_bytes,
 )
+from feedbax.contracts.run_matrix import (
+    ContinuationReconciliation,
+    ExecutionDependency,
+    ForkFromSelectedCheckpoint,
+    LineageGraftDependency,
+    StoppedRowStatus,
+    TaskIdentityGate,
+)
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
@@ -362,6 +370,8 @@ class CheckpointForkTransformRegistration:
     """Runtime implementation for one durable fork-transform identity."""
 
     identity: str
+    version: str
+    implementation_sha256: str
     transform: CheckpointForkPlanTransform
     owner: str = "feedbax"
 
@@ -370,31 +380,53 @@ class CheckpointForkTransformRegistry:
     """Exact runtime registry for durable checkpoint-fork transforms."""
 
     def __init__(self) -> None:
-        self._registrations: dict[str, CheckpointForkTransformRegistration] = {}
+        self._registrations: dict[
+            tuple[str, str], CheckpointForkTransformRegistration
+        ] = {}
 
     def register(self, registration: CheckpointForkTransformRegistration) -> None:
         if not registration.identity:
             raise ValueError("checkpoint fork transform identity must not be empty")
+        if not registration.version:
+            raise ValueError("checkpoint fork transform version must not be empty")
+        if len(registration.implementation_sha256) != 64 or any(
+            char not in "0123456789abcdef"
+            for char in registration.implementation_sha256
+        ):
+            raise ValueError("checkpoint fork transform implementation_sha256 is invalid")
         if not callable(registration.transform):
             raise TypeError(f"checkpoint fork transform {registration.identity!r} is not callable")
-        if registration.identity in self._registrations:
-            existing = self._registrations[registration.identity]
+        key = (registration.identity, registration.version)
+        if key in self._registrations:
+            existing = self._registrations[key]
             raise ValueError(
-                f"checkpoint fork transform {registration.identity!r} already registered "
+                f"checkpoint fork transform {key!r} already registered "
                 f"by {existing.owner!r}"
             )
-        self._registrations[registration.identity] = registration
+        self._registrations[key] = registration
 
-    def resolve(self, identity: str) -> CheckpointForkTransformRegistration:
+    def resolve(
+        self,
+        identity: str,
+        version: str,
+        implementation_sha256: str,
+    ) -> CheckpointForkTransformRegistration:
         try:
-            return self._registrations[identity]
+            registration = self._registrations[(identity, version)]
         except KeyError as exc:
             raise CheckpointCompatibilityError(
-                f"unregistered checkpoint fork transform {identity!r}; "
+                f"unregistered checkpoint fork transform {(identity, version)!r}; "
                 f"available identities={list(self.available_keys())!r}"
             ) from exc
+        if registration.implementation_sha256 != implementation_sha256:
+            raise CheckpointCompatibilityError(
+                f"checkpoint fork transform {(identity, version)!r} implementation drift; "
+                f"declared={implementation_sha256!r} "
+                f"registered={registration.implementation_sha256!r}"
+            )
+        return registration
 
-    def available_keys(self) -> tuple[str, ...]:
+    def available_keys(self) -> tuple[tuple[str, str], ...]:
         """Return registered durable identities in deterministic order."""
         return tuple(sorted(self._registrations))
 
@@ -2950,6 +2982,78 @@ def checkpoint_fork_plan_sha256(plan: CheckpointForkPlan) -> str:
     return sha256_bytes(canonical_json_bytes(checkpoint_fork_plan_canonical_projection(plan)))
 
 
+def validate_checkpoint_fork_execution_dependencies(
+    plan: CheckpointForkPlan,
+    dependencies: Sequence[ExecutionDependency],
+    *, allow_task_identity: bool = False,
+) -> None:
+    unsupported = [
+        item.kind
+        for item in dependencies
+        if isinstance(item, (LineageGraftDependency, StoppedRowStatus))
+        or isinstance(item, TaskIdentityGate) and not allow_task_identity
+    ]
+    if unsupported:
+        raise CheckpointCompatibilityError(f"unsupported checkpoint fork dependencies {unsupported!r}")
+    forks = [item for item in dependencies if isinstance(item, ForkFromSelectedCheckpoint)]
+    if len(forks) != 1:
+        raise CheckpointCompatibilityError("checkpoint fork requires one typed fork dependency")
+    fork = forks[0]
+    source = plan.source
+    if (
+        source.expected_transaction_id != fork.checkpoint_transaction_id
+        or source.expected_transaction_root_sha256 != fork.checkpoint_root_hash
+        or source.source_execution_hash != fork.source_execution_hash
+        or source.source_row_id != fork.source_row_id
+    ):
+        raise CheckpointCompatibilityError("checkpoint fork source authority drifts")
+    def placed(target: str | None, step: CheckpointForkTransformStep) -> list[dict[str, Any]]:
+        return [
+            {
+                "transform_id": record.identity,
+                "version": record.version,
+                "implementation_sha256": record.implementation_sha256,
+                "stage": step.stage,
+                "target_row_id": target,
+                "slot": record.slot,
+                "parameters": record.parameters,
+            }
+            for record in step.records
+        ]
+
+    projected = sum((placed(None, step) for step in source.transforms), [])
+    projected += sum(
+        (
+            placed(target.row_id or target.target_id, step)
+            for target in plan.targets
+            for step in target.transforms
+        ),
+        [],
+    )
+    declared = [item.model_dump(mode="json", exclude={"kind"}) for item in fork.slot_transforms]
+    if declared != projected:
+        raise CheckpointCompatibilityError("checkpoint fork transform placement/order drifts")
+    declared_continuations = [
+        (item.source_completed_batches, item.additional_batches, item.expected_target_total)
+        for item in dependencies
+        if isinstance(item, ContinuationReconciliation)
+    ]
+    planned_continuations = [
+        (request.source_completed_batches, request.additional_batches, request.target_total)
+        for target in plan.targets
+        if (request := target.history_policy.continuation_request) is not None
+    ]
+    if declared_continuations != planned_continuations:
+        raise CheckpointCompatibilityError("checkpoint fork continuation authority drifts")
+
+
+def checkpoint_fork_binding_content_sha256(values: Mapping[str, Any]) -> str:
+    return _canonical_hash({
+        slot: [item.model_dump(mode="json") for item in _leaf_content_digests(value)]
+        for slot, value in sorted(values.items())
+    })
+
+
 def derive_checkpoint_fork_compatibility_projection(
     run_spec: TrainingRunSpec,
     phase_program: PhaseProgramSpec,
@@ -3073,7 +3177,13 @@ def _apply_registered_fork_step(
     registry: CheckpointForkTransformRegistry,
 ) -> tuple[dict[str, Any], set[str]]:
     record = step.records[0]
-    registration = registry.resolve(record.identity)
+    assert record.version is not None
+    assert record.implementation_sha256 is not None
+    registration = registry.resolve(
+        record.identity,
+        record.version,
+        record.implementation_sha256,
+    )
     declared = {item.slot for item in step.records}
     target_only = set(step.target_only_slots)
 
@@ -3193,7 +3303,10 @@ def _prepare_checkpoint_fork_plan(
         *(step for target in plan.targets for step in target.transforms),
     ]
     for step in all_steps:
-        registry.resolve(step.records[0].identity)
+        record = step.records[0]
+        assert record.version is not None
+        assert record.implementation_sha256 is not None
+        registry.resolve(record.identity, record.version, record.implementation_sha256)
     for target in plan.targets:
         _require_plan_binding(bindings.run_specs, target.run_spec_ref, kind="run spec")
         _require_plan_binding(
@@ -3315,6 +3428,14 @@ def _prepare_checkpoint_fork_plan(
                 if policy.mode == "continue_segment"
                 else None
             )
+            if history_templates is not None:
+                actual = checkpoint_fork_binding_content_sha256(history_templates)
+                if actual != policy.segment_history_template_sha256:
+                    raise CheckpointCompatibilityError(
+                        "checkpoint continuation template content drift; "
+                        f"declared={policy.segment_history_template_sha256!r} "
+                        f"actual={actual!r}"
+                    )
             source_total = (
                 source.manifest.segment_lineage.start_batch
                 + source.manifest.segment_lineage.segment_batch_count
