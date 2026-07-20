@@ -57,6 +57,7 @@ from feedbax.orchestration import (
     assemble_run_bundle,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
+from feedbax.orchestration.drivers import runpod as runpod_driver_module
 from feedbax.orchestration.conformance import CheckRegistry, pass_check
 from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
 from feedbax.orchestration.stages import PreflightFailed
@@ -864,6 +865,47 @@ def test_launch_driver_override_conflict_fails_before_engine_creation(
     assert orchestrate.main(
         ["launch", "--assembly-request", str(path), "--driver", "runpod"]
     ) == orchestrate.EXIT_OTHER
+
+
+def test_launch_dry_run_binds_rows_without_credentials_or_stage_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request, _ = _assembly_request(tmp_path, driver="runpod")
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    bundle = _bundle(tmp_path / "bundle", driver="runpod")
+    monkeypatch.setattr(orchestrate, "assemble_run_bundle", lambda *_args, **_kwargs: bundle)
+    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrate,
+        "load_runpod_api_key",
+        lambda: pytest.fail("dry-run must not load RunPod credentials"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not create a stage engine"),
+    )
+    monkeypatch.setattr(
+        runpod_driver_module,
+        "SubprocessRunPodTransport",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not construct a transport"),
+    )
+
+    assert orchestrate.main(["launch", "--assembly-request", str(path), "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    assert "row=row-a dry-run=accepted" in output
+
+
+def test_launch_dry_run_rejects_local_deployment_policy(tmp_path: Path) -> None:
+    request, _ = _assembly_request(tmp_path, driver="local")
+    path = _write_request(request, tmp_path / "assembly-request.json")
+
+    assert orchestrate.main(["launch", "--assembly-request", str(path), "--dry-run"]) == (
+        orchestrate.EXIT_OTHER
+    )
 
 
 def test_launch_cli_exposes_deadman_request_overrides() -> None:

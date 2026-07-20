@@ -1625,8 +1625,7 @@ class RunPodOrchestrationDriver:
         )
 
     def _row_workdir(self, row: RunRowSpec) -> str:
-        workdir = row.launch.metadata.get("workdir")
-        return str(workdir) if workdir else self._primary_workdir()
+        return runpod_row_workdir(self.config, row)
 
     def _remote_run_dir(self, bundle: RunBundle) -> str:
         return f"{self.config.remote_run_root.rstrip('/')}/{bundle.run_set_id}"
@@ -2167,6 +2166,47 @@ def build_launch_row_command(
         f"i=0; while [ ! -s {_sq(pid_file)} ] && [ \"$i\" -lt 40 ]; do "
         'i=$((i+1)); sleep 0.05; done; '
         f"[ -s {_sq(pid_file)} ]"
+    )
+
+
+def runpod_row_workdir(config: RunPodDriverConfig, row: RunRowSpec) -> str:
+    """Resolve the same row workdir used by live and dry-run RunPod launches."""
+    workdir = row.launch.metadata.get("workdir")
+    if workdir:
+        return str(workdir)
+    remote_repos = config.remote_repos or {
+        "feedbax": f"{config.remote_repo_root}/feedbax"
+    }
+    return (
+        remote_repos.get("rlrmp2")
+        or remote_repos.get("rlrmp")
+        or remote_repos.get("feedbax")
+        or config.remote_repo_root
+    )
+
+
+def dry_run_launch_bundle(
+    bundle: RunBundle,
+    config: RunPodDriverConfig,
+    input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+) -> tuple[str, ...]:
+    """Bind all RunPod launch rows without constructing a transport."""
+    failures, _ = preflight_input_provider_bindings(bundle, input_provider_bindings)
+    if failures:
+        raise RunPodDriverError("; ".join(failures))
+    remote_run_dir = f"{config.remote_run_root.rstrip('/')}/{bundle.run_set_id}"
+    remote_sentinel_dir = f"{remote_run_dir}/sentinels"
+    return tuple(
+        build_launch_row_command(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=remote_run_dir,
+            remote_sentinel_dir=remote_sentinel_dir,
+            workdir=runpod_row_workdir(config, row),
+            env_fingerprint="dry-run-unrealized-environment",
+            jax_cache_dir=f"{config.volume_mount}/jax_cache",
+        )
+        for row in bundle.rows
     )
 
 
