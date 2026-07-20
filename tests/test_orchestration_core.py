@@ -555,7 +555,13 @@ def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_
             {
                 "capture_output": True,
                 "check": True,
-                "env": {**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+                    "env": {
+                        "GIT_CONFIG_GLOBAL": os.devnull,
+                        "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_OPTIONAL_LOCKS": "0",
+                        "LC_ALL": "C",
+                        "PATH": os.defpath,
+                    },
                 "text": True,
             },
         )
