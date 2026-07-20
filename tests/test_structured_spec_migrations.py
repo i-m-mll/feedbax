@@ -50,6 +50,8 @@ from feedbax.contracts.run_matrix import (
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -662,6 +664,12 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert (
         families["TrainingRunMatrixSpec"].current_version == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     )
+    matrix_preflight = families["TrainingRunMatrixPreflightBinding"]
+    assert matrix_preflight.identity == TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID
+    assert matrix_preflight.namespace == SchemaNamespaceKind.ORCHESTRATION
+    assert matrix_preflight.current_version == (
+        TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION
+    )
     assert families["RunEvent"].identity == RUN_EVENT_SCHEMA_ID
     assert families["RunEvent"].namespace == SchemaNamespaceKind.RUN_EVENT
     assert families["RunEvent"].current_version == RUN_EVENT_SCHEMA_VERSION
@@ -732,6 +740,19 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["SpecPayload"].namespace == SchemaNamespaceKind.MANIFEST
     assert not families["RegistryEntry"].durable
     assert not families["StudioSchemaRegistry"].durable
+
+
+def test_matrix_preflight_binding_rejects_old_versions() -> None:
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "TrainingRunMatrixPreflightBinding",
+            {
+                "schema_id": TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
+                "schema_version": (
+                    f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v0"
+                ),
+            },
+        )
 
 
 @pytest.mark.parametrize(

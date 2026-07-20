@@ -24,10 +24,25 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TrainingRunMatrixArtifactBinding,
+    TrainingRunMatrixCodeAuthority,
+    TrainingRunMatrixInputCustodyBinding,
+    TrainingRunMatrixMonitorBinding,
+    TrainingRunMatrixPreflightBinding,
+    TrainingRunMatrixRowPreflightBinding,
+    training_run_matrix_preflight_binding_sha256,
+)
+from feedbax.contracts.spec_storage import (
+    training_run_intent_hash,
+    training_spec_canonical_bytes,
+)
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
     RunBundle,
     RunRowSpec,
+    SchemaArtifactRef,
     canonical_run_bundle_sha256,
 )
 from feedbax.orchestration.collection_recovery import (
@@ -79,6 +94,7 @@ RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
 )
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.runpod_preflight_evidence"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = "feedbax.runpod_preflight_evidence.v1"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2 = "feedbax.runpod_preflight_evidence.v2"
 _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
     {
         "input-provider-bindings",
@@ -447,6 +463,7 @@ class RunPodDriverConfig:
     remote_artifacts_dir: str = "/workspace/_artifacts"
     local_repos: Mapping[str, Path | str] = field(default_factory=dict)
     remote_repos: Mapping[str, str] = field(default_factory=dict)
+    protected_refs: Mapping[str, str] = field(default_factory=dict)
     path_patches: tuple[tuple[str, str, str], ...] = ()
     overlay_steps: tuple[str, ...] = ("uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",)
     auto_teardown: bool = True
@@ -560,6 +577,18 @@ class RunPodOrchestrationDriver:
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Run named, non-mutating RunPod checks before any billable action."""
+        if _is_training_matrix_bundle(bundle):
+            try:
+                self._matrix_preflight_binding(bundle, nested_evidence_sha256="0" * 64)
+            except (OSError, ValueError, RunPodDriverError) as exc:
+                self._preflight_passed = False
+                return [
+                    _preflight_check(
+                        "training-matrix-authority",
+                        False,
+                        detail=str(exc),
+                    )
+                ]
         failures, observed = preflight_input_provider_bindings(
             bundle, self.input_provider_bindings
         )
@@ -693,8 +722,22 @@ class RunPodOrchestrationDriver:
         checks: Sequence[PreflightCheckEntry],
     ) -> Mapping[str, Any]:
         """Create durable authority for a completed, named RunPod preflight."""
-        evidence = self._preflight_evidence_payload(bundle, state, checks)
-        return {**evidence, "sha256": _sha256_json(evidence)}
+        legacy_payload = self._preflight_evidence_payload(bundle, state, checks)
+        legacy = {**legacy_payload, "sha256": _sha256_json(legacy_payload)}
+        if not _is_training_matrix_bundle(bundle):
+            return legacy
+        binding = self._matrix_preflight_binding(
+            bundle,
+            nested_evidence_sha256=str(legacy["sha256"]),
+        )
+        payload = {
+            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            "v1": legacy,
+            "matrix_binding": binding.model_dump(mode="json", exclude_none=True),
+            "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
+        }
+        return {**payload, "sha256": _sha256_json(payload)}
 
     def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> None:
         """Restore only cryptographically bound completed preflight authority.
@@ -717,17 +760,178 @@ class RunPodOrchestrationDriver:
             or not assemble_completed <= stage.started_at <= stage.completed_at
         ):
             raise RunPodDriverError("completed PREFLIGHT timestamps are internally inconsistent")
-        expected = self._preflight_evidence_payload(bundle, state, stage.checks)
-        if evidence is None:
+        expected_payload = self._preflight_evidence_payload(bundle, state, stage.checks)
+        expected_v1 = {**expected_payload, "sha256": _sha256_json(expected_payload)}
+        matrix_bundle = _is_training_matrix_bundle(bundle)
+        if evidence is None and not matrix_bundle:
             self._preflight_passed = True
             return
         if not isinstance(evidence, Mapping):
             raise RunPodDriverError("completed PREFLIGHT RunPod evidence has invalid shape")
-        if evidence.get("sha256") != _sha256_json(expected):
-            raise RunPodDriverError("completed PREFLIGHT evidence digest mismatch")
-        if dict(evidence) != {**expected, "sha256": _sha256_json(expected)}:
-            raise RunPodDriverError("completed PREFLIGHT evidence is not canonical")
+        if matrix_bundle:
+            binding = self._matrix_preflight_binding(
+                bundle,
+                nested_evidence_sha256=str(expected_v1["sha256"]),
+            )
+            binding_payload = binding.model_dump(mode="json", exclude_none=True)
+            expected_v2_payload = {
+                "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+                "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+                "v1": expected_v1,
+                "matrix_binding": binding_payload,
+                "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
+            }
+            expected_v2 = {
+                **expected_v2_payload,
+                "sha256": _sha256_json(expected_v2_payload),
+            }
+            if evidence.get("sha256") != expected_v2["sha256"]:
+                raise RunPodDriverError("completed matrix PREFLIGHT evidence digest mismatch")
+            if dict(evidence) != expected_v2:
+                raise RunPodDriverError("completed matrix PREFLIGHT evidence is not canonical")
+        else:
+            if evidence.get("sha256") != expected_v1["sha256"]:
+                raise RunPodDriverError("completed PREFLIGHT evidence digest mismatch")
+            if dict(evidence) != expected_v1:
+                raise RunPodDriverError("completed PREFLIGHT evidence is not canonical")
         self._preflight_passed = True
+
+    def _matrix_preflight_binding(
+        self,
+        bundle: RunBundle,
+        *,
+        nested_evidence_sha256: str,
+    ) -> TrainingRunMatrixPreflightBinding:
+        """Build authenticated matrix authority without provider-facing access."""
+        if not _is_training_matrix_bundle(bundle):
+            raise RunPodDriverError("run bundle is not a governed training matrix")
+        first = bundle.rows[0].execution.authored_intent
+        matrix_payload = _read_canonical_schema_artifact(
+            first,
+            label="training matrix",
+        )
+        if matrix_payload.get("schema_id") != TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID:
+            raise RunPodDriverError("training matrix artifact has the wrong schema identity")
+        if training_run_intent_hash(matrix_payload) != first.intent_hash:
+            raise RunPodDriverError("training matrix intent identity does not match custody")
+        shared_matrix = TrainingRunMatrixArtifactBinding(
+            schema_id=first.schema_id,
+            schema_version=first.schema_version,
+            artifact_id=first.artifact_id,
+            artifact_sha256=first.sha256,
+            intent_hash=first.intent_hash,
+        )
+        rows: list[TrainingRunMatrixRowPreflightBinding] = []
+        for row in bundle.rows:
+            execution = row.execution
+            if execution.authored_intent.model_dump(
+                mode="json", exclude_none=True
+            ) != first.model_dump(mode="json", exclude_none=True):
+                raise RunPodDriverError("matrix rows do not share one authored matrix identity")
+            provenance = execution.row_provenance
+            if provenance is None:
+                raise RunPodDriverError(f"matrix row {row.row_id!r} lacks governed provenance")
+            payload = _read_canonical_schema_artifact(
+                execution.payload,
+                label=f"matrix row {row.row_id!r} runtime payload",
+            )
+            training_config = payload.get("training_config")
+            depth = (
+                training_config.get("n_batches") if isinstance(training_config, Mapping) else None
+            )
+            if isinstance(depth, bool) or not isinstance(depth, int) or depth <= 0:
+                raise RunPodDriverError(
+                    f"matrix row {row.row_id!r} lacks a positive locked training depth"
+                )
+            if not is_native_training_command(row.launch.command):
+                raise RunPodDriverError(
+                    f"matrix row {row.row_id!r} does not use the native event-emitting executor"
+                )
+            rows.append(
+                TrainingRunMatrixRowPreflightBinding(
+                    row_id=row.row_id,
+                    planned_run_id=provenance.planned_run_id,
+                    authored_payload_hash=provenance.authored_payload_hash,
+                    lowered_execution_payload_hash=(provenance.lowered_execution_payload_hash),
+                    runtime_payload_sha256=execution.payload.sha256,
+                    resolved_root_hash=execution.resolved_snapshot.root_hash,
+                    execution_hash=execution.execution_capsule.execution_hash,
+                    locked_training_depth=depth,
+                )
+            )
+        return TrainingRunMatrixPreflightBinding(
+            matrix=shared_matrix,
+            rows=rows,
+            resolved_inputs=[
+                _matrix_input_custody_binding(item) for item in bundle.resolved_inputs
+            ],
+            code_authorities=self._matrix_code_authorities(bundle),
+            monitor=TrainingRunMatrixMonitorBinding(
+                event_paths=[f"events/{row.row_id}.events.jsonl" for row in bundle.rows]
+            ),
+            bundle_sha256=canonical_run_bundle_sha256(bundle),
+            nested_preflight_evidence_sha256=nested_evidence_sha256,
+        )
+
+    def _matrix_code_authorities(
+        self,
+        bundle: RunBundle,
+    ) -> list[TrainingRunMatrixCodeAuthority]:
+        local_repos = {str(name): Path(path) for name, path in self.config.local_repos.items()}
+        protected_refs = {str(name): str(ref) for name, ref in self.config.protected_refs.items()}
+        if not local_repos or set(local_repos) != set(protected_refs):
+            raise RunPodDriverError(
+                "matrix preflight requires protected-ref policy for every explicit local repo"
+            )
+        declarations = list(bundle.environment.repo_revisions)
+        authorities: list[TrainingRunMatrixCodeAuthority] = []
+        for name, root in sorted(local_repos.items()):
+            matches = [
+                revision
+                for revision in declarations
+                if revision.path == name or _same_path(Path.cwd() / revision.path, root)
+            ]
+            if len(matches) != 1:
+                raise RunPodDriverError(
+                    f"matrix repo {name!r} requires exactly one matching revision declaration"
+                )
+            declaration = matches[0]
+            if declaration.dirty_allowed:
+                raise RunPodDriverError(f"matrix repo {name!r} cannot authorize dirty code")
+            observed = _git_output_checked(root, "rev-parse", "--verify", "HEAD^{commit}")
+            protected = _git_output_checked(
+                root,
+                "rev-parse",
+                "--verify",
+                f"{protected_refs[name]}^{{commit}}",
+            )
+            dirty = _git_output_checked(
+                root,
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+            )
+            if dirty:
+                raise RunPodDriverError(f"matrix repo {name!r} is dirty")
+            if len({declaration.revision, protected, observed}) != 1:
+                raise RunPodDriverError(
+                    f"matrix repo {name!r} protected code authority is stale or mismatched"
+                )
+            authorities.append(
+                TrainingRunMatrixCodeAuthority(
+                    repo=name,
+                    declared_revision=declaration.revision,
+                    protected_ref=protected_refs[name],
+                    protected_revision=protected,
+                    observed_revision=observed,
+                    clean=True,
+                )
+            )
+        if len(declarations) != len(authorities):
+            raise RunPodDriverError(
+                "matrix revision declarations are not completely covered by local repos"
+            )
+        return authorities
 
     def _preflight_evidence_payload(
         self,
@@ -1805,6 +2009,106 @@ def _preflight_check(
 def _sha256_json(payload: Any) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_training_matrix_bundle(bundle: RunBundle) -> bool:
+    return any(
+        row.execution.authored_intent.schema_id == TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+        for row in bundle.rows
+    )
+
+
+def _read_canonical_schema_artifact(
+    ref: SchemaArtifactRef,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    if ref.uri is None:
+        raise RunPodDriverError(f"{label} is not locally materialized")
+    path = Path(ref.uri)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RunPodDriverError(f"{label} cannot be read from local custody") from exc
+    if hashlib.sha256(data).hexdigest() != ref.sha256:
+        raise RunPodDriverError(f"{label} custody digest mismatch")
+    try:
+        payload = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunPodDriverError(f"{label} is not canonical JSON") from exc
+    if not isinstance(payload, dict):
+        raise RunPodDriverError(f"{label} must contain a JSON object")
+    if training_spec_canonical_bytes(payload) != data:
+        raise RunPodDriverError(f"{label} bytes are not canonical")
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
+        raise RunPodDriverError(f"{label} schema identity does not match custody")
+    return payload
+
+
+def _matrix_input_custody_binding(
+    resolved: ResolvedAssemblyInput,
+) -> TrainingRunMatrixInputCustodyBinding:
+    identity = resolved.identity
+    source = resolved.custody
+    artifact = source.artifact
+    materializer = source.materializer
+    parent = materializer.expected_parent_ref
+    manifest_sha256 = parent.metadata.get("manifest_sha256")
+    if not isinstance(manifest_sha256, str) or not parent.id or not parent.uri:
+        raise RunPodDriverError("resolved matrix input lacks canonical parent custody")
+    return TrainingRunMatrixInputCustodyBinding(
+        role=identity.role,
+        kind=identity.kind,
+        identifier=identity.identifier,
+        identity_sha256=identity.digest.value,
+        schema_id=identity.schema_id,
+        schema_version=identity.schema_version,
+        provider_schema_id=source.provider.schema_id,
+        provider_schema_version=source.provider.schema_version,
+        provider_kind=source.provider.kind,
+        provider_binding=source.provider_binding,
+        artifact_id=artifact.artifact_id,
+        artifact_sha256=artifact.sha256,
+        artifact_size_bytes=artifact.size_bytes,
+        artifact_media_type=artifact.media_type,
+        storage_backend=artifact.storage_backend,
+        format_id=source.format.format_id,
+        format_version=source.format.format_version,
+        materializer_id=materializer.materializer_id,
+        materializer_version=materializer.materializer_version,
+        parent_id=parent.id,
+        parent_uri=parent.uri,
+        parent_manifest_sha256=manifest_sha256,
+        transaction_root_sha256=materializer.expected_transaction_root_sha256,
+    )
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _git_output_checked(root: Path, *args: str) -> str:
+    environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise RunPodDriverError("matrix code authority Git inspection failed") from exc
+    if result.returncode != 0:
+        raise RunPodDriverError("matrix code authority Git inspection failed")
+    return result.stdout.strip()
 
 
 def is_immutable_runpod_image_id(image_id: str | None) -> bool:

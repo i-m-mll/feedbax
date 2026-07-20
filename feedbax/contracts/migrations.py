@@ -90,6 +90,8 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+    TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
 )
 from feedbax.contracts.run_composition import (
     COMPOSITION_SCHEMA_ID,
@@ -2645,6 +2647,25 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=(
                 "tests/test_run_matrix_spec.py",
                 "tests/test_run_matrix_materialization.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "TrainingRunMatrixPreflightBinding",
+            TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
+            TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("feedbax.orchestration.drivers.runpod",),
+            consumed_by=("Feedbax orchestration pre-provision restoration",),
+            description=(
+                "Provider-neutral authenticated binding from a governed training matrix "
+                "and its ordered rows to non-billable preflight authority."
+            ),
+            rejected_old_versions=(
+                f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v0",
+            ),
+            required_tests=(
+                "tests/test_runpod_matrix_preflight_binding.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
