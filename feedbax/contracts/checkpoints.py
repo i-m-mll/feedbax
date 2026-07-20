@@ -8,12 +8,20 @@ state, slot integrity, and run-contract binding for training writers.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import ArtifactMigrationRecord, ArtifactRef, ParentRef, StrictModel
+from feedbax.contracts.manifest import (
+    ArtifactMigrationRecord,
+    ArtifactRef,
+    ParentRef,
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.worker import (
     ConsistencyPredicateSpec,
     MaterializedSlotAxisBinding,
@@ -267,6 +275,50 @@ class StructuralAbiFingerprint(StrictModel):
     provenance_status: Literal["recorded", "unverifiable_legacy"] = "recorded"
     fingerprint_sha256: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def structural_abi_leaf_content_projection(
+    leaf: SlotLeafFingerprint | Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the structural content fields for one fingerprint leaf."""
+    payload = leaf.model_dump(mode="json", exclude_none=True) if isinstance(leaf, SlotLeafFingerprint) else leaf
+    return {
+        key: payload[key]
+        for key in (
+            "path", "leaf_type", "shape", "dtype", "weak_type", "static_repr_sha256"
+        )
+        if key in payload and payload[key] is not None
+    }
+
+
+def structural_abi_content_projection(
+    fingerprint: StructuralAbiFingerprint | Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the canonical content projection for a structural ABI fingerprint.
+
+    Raw mappings are accepted so schema migrations can reproduce historical
+    fingerprints before the migrated envelope is validatable. Non-mapping leaf
+    entries retain the migration path's existing tolerant behavior and are ignored.
+    """
+    payload = fingerprint.model_dump(mode="json", exclude_none=True) if isinstance(fingerprint, StructuralAbiFingerprint) else fingerprint
+    leaves = [
+        structural_abi_leaf_content_projection(leaf)
+        for leaf in list(payload.get("leaves") or ())
+        if isinstance(leaf, (SlotLeafFingerprint, Mapping))
+    ]
+    return {
+        "fingerprint_algorithm_version": payload.get("fingerprint_algorithm_version"),
+        "treedef": payload.get("treedef"),
+        "leaf_count": payload.get("leaf_count"),
+        "leaves": leaves,
+    }
+
+
+def structural_abi_content_sha256(
+    fingerprint: StructuralAbiFingerprint | Mapping[str, Any],
+) -> str:
+    """Hash the canonical structural ABI content projection."""
+    return sha256_bytes(canonical_json_bytes(structural_abi_content_projection(fingerprint)))
 
 
 class CheckpointProvenanceNotice(StrictModel):

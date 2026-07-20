@@ -77,6 +77,7 @@ from feedbax.orchestration.bundle import (
     DeploymentPolicy,
     DeploymentResourceRequest,
     EnvironmentDeclaration,
+    ExecutionIdentityEnvelope,
     ImmutableInputArtifactRef,
     ImmutableInputIdentity,
     InputCustodySource,
@@ -88,6 +89,8 @@ from feedbax.orchestration.bundle import (
     RunRowSpec,
     RowLaunchSpec,
     SchemaArtifactRef,
+    environment_declaration_identity_projection,
+    execution_identity_projection,
 )
 from feedbax.orchestration.conformance import (
     CheckEntry,
@@ -461,6 +464,64 @@ def _bundle(
         context=context,
         registry=registry,
     )
+
+
+def test_environment_declaration_identity_projection_classifies_every_field() -> None:
+    identity_fields = {
+        "python_version",
+        "repo_revisions",
+        "lockfile_hashes",
+        "overlay_steps",
+        "image_id",
+    }
+    operational_fields = {"metadata"}
+    assert set(EnvironmentDeclaration.model_fields) == identity_fields | operational_fields
+
+    environment = EnvironmentDeclaration(
+        python_version="3.12",
+        repo_revisions=[RepoRevision(path="feedbax", revision="abc123")],
+        lockfile_hashes={"uv.lock": "b" * 64, "requirements.lock": "a" * 64},
+        overlay_steps=["uv sync --frozen"],
+        image_id="registry.example/feedbax@sha256:" + "c" * 64,
+        metadata={"operator_note": "not identity"},
+    )
+
+    assert environment_declaration_identity_projection(environment) == {
+        "python_version": "3.12",
+        "repo_revisions": [{"path": "feedbax", "revision": "abc123", "dirty_allowed": False}],
+        "lockfile_hashes": {"requirements.lock": "a" * 64, "uv.lock": "b" * 64},
+        "overlay_steps": ["uv sync --frozen"],
+        "image_id": "registry.example/feedbax@sha256:" + "c" * 64,
+    }
+
+
+def test_execution_identity_projection_classifies_every_envelope_field(tmp_path: Path) -> None:
+    projected_source_fields = {
+        "authored_intent",
+        "resolved_snapshot",
+        "execution_capsule",
+        "immutable_inputs",
+    }
+    nonprojected_fields = {"schema_id", "schema_version", "payload", "row_provenance"}
+    assert set(ExecutionIdentityEnvelope.model_fields) == (
+        projected_source_fields | nonprojected_fields
+    )
+
+    envelope = _bundle(tmp_path).rows[0].execution
+    projection = execution_identity_projection(envelope)
+
+    assert set(projection) == {
+        "intent_hash",
+        "resolved_semantics_root_hash",
+        "execution_hash",
+        "input_data_identities",
+    }
+    assert projection == {
+        "intent_hash": envelope.authored_intent.intent_hash,
+        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
+        "execution_hash": envelope.execution_capsule.execution_hash,
+        "input_data_identities": [],
+    }
 
 
 def test_assembly_records_the_loaded_feedbax_revision(

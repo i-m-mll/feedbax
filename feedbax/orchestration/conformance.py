@@ -24,12 +24,13 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.manifest import StrictModel, TrainingRunManifest, load_manifest
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
-from feedbax.contracts.spec_storage import (
-    canonicalize_immutable_input_identities,
-    training_run_execution_hash,
-)
+from feedbax.contracts.spec_storage import canonicalize_immutable_input_identities
 from feedbax.contracts.training import OptimizerSpec
-from feedbax.orchestration.bundle import ExecutionIdentityEnvelope, SchemaArtifactRef
+from feedbax.orchestration.bundle import (
+    ExecutionIdentityEnvelope,
+    SchemaArtifactRef,
+    execution_identity_projection,
+)
 from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES
 from feedbax.orchestration.schedule_eval import (
     _MISSING as _SCHEDULE_MISSING,
@@ -661,55 +662,31 @@ def check_execution_identity(row: ConformanceRowArtifacts) -> CheckEntry:
             detail=str(exc),
         )
 
-    identity_keys = (
-        "intent_hash",
-        "resolved_semantics_root_hash",
-        "execution_hash",
-        "input_data_identities",
-    )
-    missing = [key for key in identity_keys if key not in raw_manifest]
+    expected = execution_identity_projection(envelope)
+    missing = [key for key in expected if key not in raw_manifest]
     if missing:
         return missing_input_check(
             check_id,
             *(f"manifest.{key}" for key in missing),
         )
 
-    expected = {
-        "intent_hash": envelope.authored_intent.intent_hash,
-        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
-        "execution_hash": envelope.execution_capsule.execution_hash,
-        "input_data_identities": canonicalize_immutable_input_identities(envelope.immutable_inputs),
-    }
     try:
         _validate_envelope_artifacts(
             envelope,
             identity_adapter=row.execution_identity_adapter,
             schema_registry=row.schema_registry,
         )
-        computed_execution_hash = training_run_execution_hash(
-            envelope.resolved_snapshot.root_hash,
-            expected["input_data_identities"],
-        )
-        if computed_execution_hash != envelope.execution_capsule.execution_hash:
-            raise ValueError(
-                "envelope execution_hash mismatch: "
-                f"expected {computed_execution_hash}, "
-                f"observed {envelope.execution_capsule.execution_hash}"
-            )
         manifest = TrainingRunManifest.model_validate(raw_manifest)
-        observed = {
-            "intent_hash": manifest.intent_hash,
-            "resolved_semantics_root_hash": manifest.resolved_semantics_root_hash,
-            "execution_hash": manifest.execution_hash,
-            "input_data_identities": canonicalize_immutable_input_identities(
-                manifest.input_data_identities
-            ),
-        }
+        manifest_payload = manifest.model_dump(mode="json")
+        observed = {key: manifest_payload[key] for key in expected}
+        observed["input_data_identities"] = canonicalize_immutable_input_identities(
+            manifest.input_data_identities
+        )
     except Exception as exc:
         return fail_check(
             check_id,
             expected=expected,
-            observed={key: raw_manifest.get(key) for key in identity_keys},
+            observed={key: raw_manifest.get(key) for key in expected},
             detail=str(exc),
         )
 
@@ -751,20 +728,11 @@ def _validate_envelope_artifacts(
     if snapshot.get("root_hash") != envelope.resolved_snapshot.root_hash:
         raise ValueError("resolved_snapshot.root_hash does not bind the decoded snapshot")
 
-    canonical_inputs = canonicalize_immutable_input_identities(envelope.immutable_inputs)
-    bindings = {
-        "intent_hash": envelope.authored_intent.intent_hash,
-        "resolved_root_hash": envelope.resolved_snapshot.root_hash,
-        "input_data_identities": canonical_inputs,
-        "execution_hash": envelope.execution_capsule.execution_hash,
-    }
+    bindings = execution_identity_projection(envelope)
+    bindings["resolved_root_hash"] = bindings.pop("resolved_semantics_root_hash")
     observed_identities = adapter.capsule_identities(capsule)
-    observed_bindings = {
-        "intent_hash": observed_identities.intent_hash,
-        "resolved_root_hash": observed_identities.resolved_root_hash,
-        "input_data_identities": observed_identities.immutable_inputs,
-        "execution_hash": observed_identities.execution_hash,
-    }
+    observed_bindings = observed_identities.model_dump(mode="json")
+    observed_bindings["input_data_identities"] = observed_bindings.pop("immutable_inputs")
     mismatches = {
         key: {"expected": expected, "observed": observed_bindings.get(key)}
         for key, expected in bindings.items()
