@@ -802,6 +802,32 @@ def test_certify_cli_accepts_input_provider_binding(tmp_path: Path) -> None:
     )
 
 
+def test_resume_loads_training_method_plugins_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda **kwargs: calls.append(("plugins", kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_run_existing",
+        lambda *_args, **kwargs: (
+            calls.append(("run", kwargs))
+            or RunSetState(
+                run_set_id="resumed",
+                rows={"row-a": RowState(status="completed")},
+            )
+        ),
+    )
+
+    assert orchestrate.main(["resume", "--run-set", "resumed"]) == 0
+    assert calls[0] == ("plugins", {"fail_on_load_error": True})
+    assert calls[1][0] == "run"
+
+
 @pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5"])
 def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
     path = tmp_path / "bundle-v1.json"

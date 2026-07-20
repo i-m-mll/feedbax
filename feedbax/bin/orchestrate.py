@@ -264,6 +264,7 @@ def cmd_teardown(args: argparse.Namespace) -> int:
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
+    load_training_method_plugins(fail_on_load_error=True)
     with RunInterruptionController() as interruption:
         state = _run_existing(
             args.run_set,
