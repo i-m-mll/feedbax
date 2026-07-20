@@ -246,6 +246,32 @@ def test_optimizer_builder_resume_barrier_decouples_restored_count() -> None:
     assert _scheduled_learning_rate(next_state) == pytest.approx(0.01)
 
 
+def test_optimizer_builder_resume_barrier_pins_stage2_first_lr_bits() -> None:
+    spec = OptimizerSpec(
+        type="adamw",
+        lr_schedule=LrScheduleSpec(
+            origin={"kind": "segment_start"},
+            kind="warmup_cosine",
+            learning_rate_0=3e-4,
+            total_steps=3_500,
+            constant_lr_iterations=1_000,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.1,
+        ),
+    )
+    params = {"w": jnp.asarray(1.0)}
+    optimizer = build_optimizer(
+        spec,
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+    )
+    restored = _with_restored_injected_count(optimizer.init(params), 12_000)
+    next_state = _state_after_zero_update(optimizer, restored, params)
+    learning_rate = jnp.asarray(_scheduled_learning_rate(next_state), dtype=jnp.float32)
+    assert learning_rate.view(jnp.uint32).item() == 0x37FBA890
+
+
 def test_optimizer_builder_run_start_origin_reproduces_program_step_schedule() -> None:
     schedule = LrScheduleSpec(
         kind="warmup_cosine",

@@ -45,8 +45,10 @@ from feedbax.contracts.spec_storage import (
     training_spec_sha256,
 )
 from feedbax.contracts.training import (
+    LrScheduleSpec,
     LossTermSpec,
     ObjectiveSlotSpec,
+    OptimizerSpec,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     StandardSupervisedMethodPayload,
@@ -108,6 +110,7 @@ from feedbax.training.executor import (
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
     _feedbax_owned_training_manifest_metadata,
+    _bind_restored_schedule_context,
     _method_training_trace,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
@@ -189,6 +192,39 @@ def _run_spec() -> TrainingRunSpec:
     )
 
 
+def _scheduled_continuation_spec(*, source_completed_batches: int = 12_000) -> TrainingRunSpec:
+    spec = _run_spec()
+    payload = StandardSupervisedMethodPayload(
+        optimizer=OptimizerSpec(
+            type="adamw",
+            lr_schedule=LrScheduleSpec(
+                origin={"kind": "segment_start"},
+                kind="warmup_cosine",
+                learning_rate_0=3e-4,
+                total_steps=3_500,
+                constant_lr_iterations=1_000,
+                warmup_init_fraction=0.1,
+                cosine_annealing_alpha=0.1,
+            ),
+        )
+    )
+    return spec.model_copy(
+        update={
+            "method_payload": spec.method_payload.model_copy(
+                update={"payload": payload.model_dump(mode="json")}
+            ),
+            "checkpoint_progress": spec.checkpoint_progress.model_copy(
+                update={
+                    "continuation": CheckpointContinuationRequest(
+                        source_completed_batches=source_completed_batches,
+                        additional_batches=1,
+                    )
+                }
+            ),
+        }
+    )
+
+
 def _mapped_run_spec() -> TrainingRunSpec:
     spec = _run_spec()
     worker = spec.worker_execution.model_copy(deep=True)
@@ -200,6 +236,63 @@ def _mapped_run_spec() -> TrainingRunSpec:
         step.axes.append("ensemble")
     worker.mapping_levels = [MappingLevelSpec(axis="ensemble")]
     return spec.model_copy(update={"worker_execution": worker})
+
+
+def test_restored_schedule_context_uses_authenticated_optimizer_count(tmp_path: Path) -> None:
+    spec = _scheduled_continuation_spec(source_completed_batches=1)
+    source_spec = spec.model_copy(
+        update={
+            "checkpoint_progress": spec.checkpoint_progress.model_copy(
+                update={"continuation": None}
+            )
+        }
+    )
+    initial_slots = _initial_slots(arrays=True)
+    initial_slots["optimizer"] = {"count": jnp.asarray([0.0])}
+    checkpoint_root = tmp_path / "checkpoint"
+    execute_training_run_spec(
+        source_spec,
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "source-manifests",
+        checkpoint_root=checkpoint_root,
+    )
+    observed: list[tuple[int, int, int]] = []
+
+    def bind(_slots, schedule_origin, current_step, optimizer_count):
+        observed.append((schedule_origin, current_step, optimizer_count))
+        return {"optimizer_authority": observed[-1]}
+    resumed = execute_training_run_spec(
+        spec,
+        preparation=ExecutionPreparationResult(
+            initial_slots=initial_slots,
+            restored_schedule_context_binder=bind,
+        ),
+        manifest_root=tmp_path / "resume-manifests",
+        checkpoint_root=checkpoint_root,
+        resume=True,
+    )
+    assert observed == [(1, 1, 1)]
+    assert resumed.final_slots["optimizer"]["count"].tolist() == [2.0]
+
+
+@pytest.mark.parametrize(
+    ("count", "binder", "message"),
+    [
+        (11_999, lambda *_args: {}, "restored optimizer count disagrees"),
+        (12_000, None, "requires restored_schedule_context_binder"),
+    ],
+)
+def test_restored_schedule_context_fails_closed(count, binder, message) -> None:
+    spec = _scheduled_continuation_spec()
+    with pytest.raises(TrainingRunExecutorError, match=message):
+        _bind_restored_schedule_context(
+            run_spec=spec,
+            resolved_method=spec.resolved_method,
+            slots={"optimizer": {"count": jnp.asarray(count)}},
+            slot_axis_bindings={},
+            kernel_context={},
+            binder=binder,
+        )
 
 
 def _mapped_diagnostics_run_spec() -> TrainingRunSpec:

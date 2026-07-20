@@ -46,6 +46,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     GraphTopologySourceSpec,
+    OptimizerSpec,
     ResolvedTrainingMethod,
     TrainingMethodRegistry,
     TrainingManifestMetadataProjection,
@@ -91,6 +92,7 @@ from feedbax.training.interruption import CancellationDecision
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
+    RestoredScheduleContextBinder,
     _thaw_runtime_value,
     executor_owned_initial_slot_names,
     validate_materialized_execution_slots,
@@ -564,6 +566,7 @@ def execute_training_run_spec(
         kernel_context = preparation.kernel_context
         loss_service = preparation.loss_service
         resume_slot_transform = preparation.resume_slot_transform
+        restored_schedule_context_binder = preparation.restored_schedule_context_binder
     elif isinstance(preparation, MaterializedExecutionPreparation):
         raise TrainingRunExecutorError(
             "MaterializedExecutionPreparation is invalid when mapping_levels are absent"
@@ -573,6 +576,9 @@ def execute_training_run_spec(
         kernel_context = preparation.kernel_context
         loss_service = preparation.loss_service
         resume_slot_transform = preparation.resume_slot_transform
+        restored_schedule_context_binder = preparation.restored_schedule_context_binder
+    else:
+        restored_schedule_context_binder = None
     _validate_checkpoint_progress_policy(run_spec)
     producer_context = _validate_execution_context(execution_context)
     _validate_execution_payload_binding(
@@ -808,6 +814,15 @@ def execute_training_run_spec(
         if loaded_resume_checkpoint is not None
         else slots
     )
+    if loaded_resume_checkpoint is not None:
+        executor_context = _bind_restored_schedule_context(
+            run_spec=run_spec,
+            resolved_method=resolved_method,
+            slots=prepared_slots,
+            slot_axis_bindings=slot_axis_bindings,
+            kernel_context=executor_context,
+            binder=restored_schedule_context_binder,
+        )
     try:
         executor.preflight(
             prepared_slots,
@@ -1553,6 +1568,58 @@ def _synchronized_optimizer_step(
             f"/descriptor/optimizer_step_extractor mapped authorities diverged: {values!r}"
         )
     return values[0]
+
+
+def _bind_restored_schedule_context(
+    *,
+    run_spec: TrainingRunSpec,
+    resolved_method: ResolvedTrainingMethod[Any],
+    slots: Mapping[str, Any],
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    kernel_context: Mapping[str, Any],
+    binder: RestoredScheduleContextBinder | None,
+) -> dict[str, Any]:
+    continuation = run_spec.checkpoint_progress.continuation
+    descriptor = resolved_method.descriptor
+    if continuation is None or descriptor is None or descriptor.optimizer_spec_projector is None:
+        return dict(kernel_context)
+    optimizer_spec = OptimizerSpec.model_validate(
+        descriptor.optimizer_spec_projector(resolved_method.payload)
+    )
+    schedule = optimizer_spec.lr_schedule
+    if schedule is None or schedule.kind == "constant":
+        return dict(kernel_context)
+    if descriptor.optimizer_step_extractor is None:
+        raise TrainingRunExecutorError(
+            "scheduled continuation requires /descriptor/optimizer_step_extractor"
+        )
+    restored_count = _synchronized_optimizer_step(
+        descriptor.optimizer_step_extractor,
+        resolved_method.payload,
+        slots,
+        slot_axis_bindings,
+    )
+    current_step = continuation.source_completed_batches
+    if restored_count != current_step:
+        raise TrainingRunExecutorError(
+            "restored optimizer count disagrees with continuation source; "
+            f"optimizer_count={restored_count}, source_completed_batches={current_step}"
+        )
+    if binder is None:
+        raise TrainingRunExecutorError(
+            "nonconstant scheduled continuation requires restored_schedule_context_binder"
+        )
+    origin = schedule.origin
+    schedule_origin_step = current_step if origin.kind == "segment_start" else origin.batch or 0
+    patch = binder(slots, schedule_origin_step, current_step, restored_count)
+    if not isinstance(patch, Mapping):
+        raise TrainingRunExecutorError("restored_schedule_context_binder must return a mapping")
+    reserved = sorted(set(patch).intersection(_RESERVED_KERNEL_CONTEXT_KEYS))
+    if reserved:
+        raise TrainingRunExecutorError(
+            f"restored_schedule_context_binder returned executor-reserved keys: {reserved!r}"
+        )
+    return {**kernel_context, **patch}
 
 
 def _local_custody_path(uri: str) -> Path | None:
