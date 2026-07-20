@@ -256,7 +256,7 @@ def _restore_optimizer_count(state, count: int):
     return (*state[:-1], injected._replace(count=jnp.asarray(count), hyperparams_states=hyperparams_states))
 
 
-def _write_mapped_schedule_checkpoint(spec: TrainingRunSpec, root: Path):
+def _write_mapped_schedule_checkpoint(spec, root: Path, *, restored_count: int = 12_000):
     payload = StandardSupervisedMethodPayload.model_validate(spec.method_payload.payload)
     optimizer = build_optimizer(
         payload.optimizer,
@@ -265,7 +265,7 @@ def _write_mapped_schedule_checkpoint(spec: TrainingRunSpec, root: Path):
         optimizer_count_at_current_step=12_000,
         gradient_clip=payload.gradient_clip,
     )
-    restored = _restore_optimizer_count(optimizer.init(jnp.asarray(1.0)), 12_000)
+    restored = _restore_optimizer_count(optimizer.init(jnp.asarray(1.0)), restored_count)
     mapped_optimizer = jt.map(lambda leaf: jnp.stack([leaf] * 5), restored)
     slots = {
         "model": jnp.ones((5,)),
@@ -290,15 +290,24 @@ def _write_mapped_schedule_checkpoint(spec: TrainingRunSpec, root: Path):
 
 
 @pytest.mark.parametrize(
-    ("origin", "allow_inert", "inert"),
+    ("origin", "allow_inert", "restored_count", "binder_enabled", "error_type", "error"),
     [
-        (None, False, False),
-        ({"kind": "absolute", "batch": 0}, False, True),
-        ({"kind": "absolute", "batch": 0}, True, False),
+        (None, False, 12_000, True, None, None),
+        ({"kind": "absolute", "batch": 0}, False, 12_000, True, ValueError, "lies entirely before"),
+        ({"kind": "absolute", "batch": 0}, True, 12_000, True, None, None),
+        (None, False, 11_999, True, TrainingRunExecutorError, "restored optimizer count disagrees"),
+        (None, False, 12_000, False, TrainingRunExecutorError, "requires restored_schedule_context_binder"),
     ],
 )
 def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
-    tmp_path: Path, origin: dict[str, object] | None, allow_inert: bool, inert: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    origin: dict[str, object] | None,
+    allow_inert: bool,
+    restored_count: int,
+    binder_enabled: bool,
+    error_type: type[Exception] | None,
+    error: str | None,
 ) -> None:
     spec = _scheduled_continuation_spec(origin=origin, allow_inert=allow_inert)
     checkpoint_root = tmp_path / "checkpoint"
@@ -327,7 +336,11 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
         )
         return optax.apply_updates(model, updates), next_state, learning_rate
 
+    kernel_calls = 0
+
     def kernel(slots, coordinate, context):
+        nonlocal kernel_calls
+        kernel_calls += 1
         del coordinate
         model, optimizer_state, learning_rate = transition(
             slots["model"], slots["optimizer"], context["optimizer"]
@@ -348,7 +361,9 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
         worker.method_contract, update_kernels={"feedbax.training.standard_supervised.gradient_update": kernel}
     )
     spec = spec.model_copy(update={"worker_execution": worker})
-    template_optimizer = _write_mapped_schedule_checkpoint(spec, checkpoint_root)
+    template_optimizer = _write_mapped_schedule_checkpoint(
+        spec, checkpoint_root, restored_count=restored_count
+    )
     descriptor = replace(
         standard_supervised_method_descriptor(),
         contract_compiler=lambda _payload: spec.worker_execution.method_contract,
@@ -372,7 +387,7 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
         kernel_context={},
         loss_service=None,
         resume_slot_transform=None,
-        restored_schedule_context_binder=bind,
+        restored_schedule_context_binder=bind if binder_enabled else None,
         coordinate_order=tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5)),
     )
     def execute():
@@ -380,9 +395,18 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
             spec, preparation=preparation, registry=registry,
             manifest_root=tmp_path / "manifests", checkpoint_root=checkpoint_root, resume=True
         )
-    if inert:
-        with pytest.raises(ValueError, match="absolute schedule window lies entirely before"):
+    preflight_calls = 0
+    original_preflight = PhaseProgramExecutor.preflight
+    def counted_preflight(*args, **kwargs):
+        nonlocal preflight_calls
+        preflight_calls += 1
+        return original_preflight(*args, **kwargs)
+    monkeypatch.setattr(PhaseProgramExecutor, "preflight", counted_preflight)
+    if error_type is not None:
+        with pytest.raises(error_type, match=error):
             execute()
+        assert preflight_calls == 0
+        assert kernel_calls == 0
         return
     resumed = execute()
     _, bindings = resolve_execution_mapping(spec.worker_execution)
@@ -396,9 +420,18 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
     assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jt.leaves(resumed.final_slots) if isinstance(leaf, jax.Array))
 
 
-def test_noncallable_restored_schedule_binder_fails_at_preparation() -> None:
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: ExecutionPreparationResult({}, restored_schedule_context_binder=object()),
+        lambda: _mapped_plan(
+            lambda _request: None, restored_schedule_context_binder=object()
+        ),
+    ],
+)
+def test_noncallable_restored_schedule_binder_fails_at_preparation(factory) -> None:
     with pytest.raises(TypeError, match="must be callable"):
-        ExecutionPreparationResult({}, restored_schedule_context_binder=object())
+        factory()
 
 
 def _mapped_diagnostics_run_spec() -> TrainingRunSpec:
@@ -498,7 +531,7 @@ def _mapped_runtime_resume_preparation(
     )
 
 
-def _mapped_plan(materializer) -> ExecutionPreparationPlan:
+def _mapped_plan(materializer, *, restored_schedule_context_binder=None) -> ExecutionPreparationPlan:
     return ExecutionPreparationPlan(
         shared_slots={},
         kernel_context={},
@@ -506,6 +539,7 @@ def _mapped_plan(materializer) -> ExecutionPreparationPlan:
         resume_slot_transform=None,
         rng_roots={"model": jax.random.key(7)},
         materialize_instance=materializer,
+        restored_schedule_context_binder=restored_schedule_context_binder,
     )
 
 
@@ -2046,6 +2080,11 @@ def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> 
         copy(preparation)
     with pytest.raises(TypeError, match="cannot be copied"):
         deepcopy(preparation)
+
+    noncallable = _valid_materialized_preparation(spec)
+    object.__setattr__(noncallable, "restored_schedule_context_binder", object())
+    with pytest.raises(TrainingRunExecutorError, match="must be callable"):
+        execute_training_run_spec(spec, preparation=noncallable)
 
     immutable_mapping = type(preparation.initial_slots)
     nested = _valid_materialized_preparation(spec)
