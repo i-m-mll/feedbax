@@ -80,6 +80,8 @@ from feedbax.contracts.run_matrix import (
     RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION_V2,
     TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID,
     TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION,
+    TRAINING_ROW_LOWERER_REF_SCHEMA_ID,
+    TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_ID,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION,
     TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION_V1,
@@ -2225,6 +2227,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             durable=False,
             description="Typed axis-patched row input supplied to a declared lowerer.",
             rejected_old_versions=(f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v0",),
+        ),
+        _family(
+            "TrainingRowLowererRef",
+            TRAINING_ROW_LOWERER_REF_SCHEMA_ID,
+            TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("downstream TrainingRunMatrixSpec base payloads",),
+            consumed_by=("feedbax.training.row_lowering.TrainingRowLowererRegistry",),
+            description=(
+                "Content-pinned public authority selecting an exact authored-row lowerer."
+            ),
+            stance="reject",
+            rejected_old_versions=(f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_training_row_lowering.py",),
         ),
         _family(
             "TrainingRowLoweringResult",

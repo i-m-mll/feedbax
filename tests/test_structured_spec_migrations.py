@@ -563,6 +563,7 @@ def test_deployment_policy_preserves_pending_review_state() -> None:
     ("kind", "schema_id"),
     [
         ("AuthoredTrainingRow", "feedbax.spec.authored_training_row"),
+        ("TrainingRowLowererRef", "feedbax.spec.training_row_lowerer_ref"),
         ("TrainingRowLoweringResult", "feedbax.spec.training_row_lowering_result"),
         (
             "TrainingRowPlanningProvenance",

@@ -36,6 +36,7 @@ from feedbax.training.run_matrix import (
     MaterializedRunMatrix,
     RowPayloadValidator,
     TrainingRowLowerer,
+    _validate_training_payload,
     materialize_adapted_run_matrix,
     materialize_run_matrix,
 )
@@ -168,6 +169,20 @@ class TrainingRunMatrixCompiler:
         row_lowerer: TrainingRowLowerer | None = None,
     ) -> None:
         self.allow_inline_base = allow_inline_base
+        if row_lowerer is None:
+            from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY
+            from feedbax.training.row_lowering import (
+                DEFAULT_TRAINING_ROW_LOWERER_REGISTRY,
+            )
+
+            row_lowerer = DEFAULT_TRAINING_ROW_LOWERER_REGISTRY.lower
+            if row_validator is None:
+                def row_validator(payload: dict[str, Any], row_id: str) -> Any:
+                    return _validate_training_payload(
+                        payload,
+                        row_id=row_id,
+                        method_registry=DEFAULT_TRAINING_METHOD_REGISTRY,
+                    )
         self.row_validator = row_validator
         self.row_lowerer = row_lowerer
 
@@ -210,6 +225,10 @@ class TrainingRunIdentityAdapter:
                 TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION
             ),
         }
+        if row.provenance is not None and row.provenance.lowerer_identities:
+            versions["training_row_lowering_result"] = (
+                TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION
+            )
         _record_payload_schema_versions(row.payload, versions)
         return TrainingRunExecutionCapsule(
             materializer_commit=context.materializer_commit,
@@ -380,7 +399,7 @@ def emit_training_run_spec_storage(
             TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION
         ),
     }
-    if row_lowerer is not None:
+    if any(row.provenance.lowerer_identities for row in materialized.rows):
         relevant_versions["training_row_lowering_result"] = (
             TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION
         )

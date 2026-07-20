@@ -118,6 +118,12 @@ try:
         TrainingRowLowerer,
         materialize_adapted_run_matrix,
     )
+    from .row_lowering import (
+        DEFAULT_TRAINING_ROW_LOWERER_REGISTRY,
+        TrainingRowLowererRegistration,
+        TrainingRowLowererRegistry,
+        TrainingRowLowererRegistryError,
+    )
     from .authoring import (
         AUTHORING_RESERVED_METADATA_KEYS,
         TRAINING_METHOD_AUTHORING_LOWERER_ID,
@@ -170,6 +176,10 @@ __all__ = [
     "AuthoredTrainingRow",
     "RowLowererIdentity",
     "TrainingRowLowerer",
+    "TrainingRowLowererRegistration",
+    "TrainingRowLowererRegistry",
+    "TrainingRowLowererRegistryError",
+    "DEFAULT_TRAINING_ROW_LOWERER_REGISTRY",
     "TrainingRowLoweringResult",
     "TrainingRowPlanningProvenance",
     "TrainingRowProvenance",
