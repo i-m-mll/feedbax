@@ -23,15 +23,23 @@ import subprocess
 import sys
 
 
-def test_importing_plugins_does_not_eagerly_discover(monkeypatch):
+def test_importing_plugins_does_not_eagerly_discover(tmp_path: Path):
     """`import feedbax.plugins` discovers lazily in a fresh interpreter."""
     script = """
-import importlib.metadata; calls = []
+import importlib.metadata; import sys; from pathlib import Path; calls = []
+expected_root = Path(sys.argv[1]).resolve()
 entry_point = type("EntryPoint", (), {"name": "fake", "load": lambda self: calls.append("load") or (lambda registry: None)})(); importlib.metadata.entry_points = lambda **kwargs: [entry_point]
 import feedbax.plugins as plugins
+assert Path(plugins.__file__).resolve().is_relative_to(expected_root)
 assert calls == [] and plugins.EXPERIMENT_REGISTRY is plugins.EXPERIMENT_REGISTRY and calls == ["load"]
 """
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    repo_root = Path(__file__).resolve().parents[1]
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env["PYTHONPATH"] = str(repo_root)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(repo_root)], cwd=tmp_path, env=env,
+        capture_output=True, text=True,
+    )
     assert result.returncode == 0, result.stderr
 
 
