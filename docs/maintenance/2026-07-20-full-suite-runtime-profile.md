@@ -1,7 +1,7 @@
 # Feedbax full-suite runtime profile
 
-Date: 2026-07-20  
-Issue: [issue:32b6405]  
+Date: 2026-07-20
+Issue: [issue:32b6405]
 Protected baseline: `f86912f6ed3ca39b230dd01dc4a11dbaf344edd8`
 
 ## Executive finding
