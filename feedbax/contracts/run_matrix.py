@@ -23,13 +23,17 @@ from feedbax.contracts.spec_storage import training_spec_sha256
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run_matrix.v1"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run_matrix.v2"
-TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v3"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.training_run_matrix.v3"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v4"
 AUTHORED_TRAINING_ROW_SCHEMA_ID = "feedbax.spec.authored_training_row"
 AUTHORED_TRAINING_ROW_SCHEMA_VERSION = f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v1"
 TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID = "feedbax.spec.training_row_lowering_result"
 TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION = (
     f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v1"
 )
+TRAINING_ROW_LOWERER_REF_SCHEMA_ID = "feedbax.spec.training_row_lowerer_ref"
+TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v1"
+TRAINING_ROW_LOWERER_REF_FIELD = "feedbax_row_lowerer"
 TRAINING_ROW_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_provenance"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v1"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
@@ -65,7 +69,7 @@ class TrainingRunMatrixArtifactBinding(StrictModel):
     """Portable identity of the one governed matrix shared by every row."""
 
     schema_id: Literal["feedbax.spec.training_run_matrix"]
-    schema_version: Literal["feedbax.spec.training_run_matrix.v3"]
+    schema_version: Literal["feedbax.spec.training_run_matrix.v4"]
     artifact_id: str = Field(min_length=1)
     artifact_sha256: str
     canonical_sha256: str
@@ -283,6 +287,26 @@ class RowLowererIdentity(StrictModel):
     lowerer_version: str = Field(min_length=1)
 
 
+class TrainingRowLowererRef(StrictModel):
+    """Content-pinned authority selecting a public authored-row lowerer."""
+
+    schema_id: Literal["feedbax.spec.training_row_lowerer_ref"] = (
+        TRAINING_ROW_LOWERER_REF_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.training_row_lowerer_ref.v1"] = (
+        TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION
+    )
+    lowerer_id: str = Field(min_length=1)
+    lowerer_version: str = Field(min_length=1)
+    implementation_sha256: str
+
+    @field_validator("implementation_sha256")
+    @classmethod
+    def _validate_implementation_sha256(cls, value: str) -> str:
+        _validate_digest(value, f"/{TRAINING_ROW_LOWERER_REF_FIELD}")
+        return value
+
+
 class AuthoredTrainingRow(StrictModel):
     """Axis-patched authored row supplied to a registered row lowerer."""
 
@@ -476,8 +500,23 @@ class MatrixCompositionDelta(StrictModel):
 class DurableSlotTransform(StrictModel):
     transform_id: str
     version: str
+    implementation_sha256: str
+    stage: Literal["source_pre", "target_post"]
+    target_row_id: str | None = None
     slot: str
     parameters: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("implementation_sha256")
+    @classmethod
+    def _implementation_hash(cls, value: str) -> str:
+        _validate_digest(value, "/dependencies/implementation_sha256")
+        return value
+
+    @model_validator(mode="after")
+    def _placement(self) -> "DurableSlotTransform":
+        if self.stage == "target_post" and self.target_row_id is None:
+            raise ValueError("target_post durable transforms require target_row_id")
+        return self
 
 
 class ForkFromSelectedCheckpoint(StrictModel):
@@ -558,7 +597,6 @@ ExecutionDependency: TypeAlias = Annotated[
 class MatrixForkSpec(StrictModel):
     """Fork-from-source-checkpoint launch semantics for a matrix."""
 
-    source_run_id: str | None = None
     lr_continuation: Literal["continue", "restart"]
     parity: Literal["require", "skip"] = "require"
     expected_slots: list[str] = Field(default_factory=list)

@@ -74,6 +74,7 @@ from feedbax.training.checkpoint_custody import (
     CheckpointForkTransformRegistry,
     authenticate_checkpoint_custody_ref,
     authenticate_published_checkpoint_custody,
+    checkpoint_fork_binding_content_sha256,
     checkpoint_slot_names,
     derive_checkpoint_fork_compatibility_projection,
     detect_known_legacy_checkpoint_layout,
@@ -1722,6 +1723,8 @@ def _typed_fork_plan(
                     CheckpointForkTransformRecord(
                         slot="controller",
                         identity="tests.append-controller.v1",
+                        version="1",
+                        implementation_sha256="a" * 64,
                         parameters={"value": 3.0},
                     )
                 ],
@@ -1733,6 +1736,8 @@ def _typed_fork_plan(
                     CheckpointForkTransformRecord(
                         slot="controller",
                         identity="tests.scale-controller.v1",
+                        version="1",
+                        implementation_sha256="b" * 64,
                         parameters={"factor": 2.0},
                     )
                 ],
@@ -1804,11 +1809,17 @@ def test_typed_checkpoint_fork_plan_preflights_once_and_records_projection(
         return {**slots, "controller": slots["controller"] * parameters["factor"]}
 
     registry.register(
-        CheckpointForkTransformRegistration("tests.append-controller.v1", append_controller)
+        CheckpointForkTransformRegistration(
+            "tests.append-controller.v1", "1", "a" * 64, append_controller
+        )
     )
     registry.register(
-        CheckpointForkTransformRegistration("tests.scale-controller.v1", scale_controller)
+        CheckpointForkTransformRegistration(
+            "tests.scale-controller.v1", "1", "b" * 64, scale_controller
+        )
     )
+    with pytest.raises(CheckpointCompatibilityError, match="implementation drift"):
+        registry.resolve("tests.append-controller.v1", "1", "f" * 64)
     plan = _typed_fork_plan(run_spec, expected)
     results = fork_checkpoint_plan(
         plan,
@@ -1944,6 +1955,8 @@ def test_typed_checkpoint_fork_plan_requires_declared_target_only_slot(
                             CheckpointForkTransformRecord(
                                 slot="adaptive_state",
                                 identity="tests.add-adaptive-state.v1",
+                                version="1",
+                                implementation_sha256="c" * 64,
                             )
                         ],
                         target_only_slots={"adaptive_state": declaration},
@@ -1956,6 +1969,8 @@ def test_typed_checkpoint_fork_plan_requires_declared_target_only_slot(
     registry.register(
         CheckpointForkTransformRegistration(
             "tests.add-adaptive-state.v1",
+            "1",
+            "c" * 64,
             lambda slots, parameters: {
                 **slots,
                 "adaptive_state": jnp.zeros((2,), dtype=jnp.float32),
@@ -2322,6 +2337,63 @@ def test_checkpoint_fork_cli_batch_smoke_partial_failure(tmp_path: Path) -> None
     assert (good_a / "latest.json").is_file()
     assert not (bad / "latest.json").exists()
     assert (good_b / "latest.json").is_file()
+
+
+def test_checkpoint_fork_plan_cli_executes_from_fresh_process(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    slots = _minimax_slots()
+    changed = {**slots, "controller": slots["controller"] + 1}
+    assert checkpoint_fork_binding_content_sha256(slots) != checkpoint_fork_binding_content_sha256(changed)
+    source = write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=run_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+    base_plan = _typed_fork_plan(run_spec, slots, transformed=False)
+    plan = base_plan.model_copy(
+        update={"source": CheckpointForkSourcePreparation(
+            checkpoint_root_ref="source",
+            source_execution_hash="d" * 64,
+            source_row_id="source",
+            expected_transaction_id=source.manifest.transaction_id,
+            expected_transaction_root_sha256=source.manifest.content_integrity_digest.transaction_root_sha256,
+        )})
+    plan_path = tmp_path / "plan.json"
+    spec_path = tmp_path / "run.json"
+    slots_path = tmp_path / "slots.pkl"
+    bindings_path = tmp_path / "bindings.json"
+    plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
+    _write_run_spec(spec_path, run_spec)
+    with slots_path.open("wb") as stream:
+        pickle.dump(slots, stream)
+    bindings_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "feedbax.runtime.checkpoint_fork_plan_bindings",
+                "schema_version": "feedbax.runtime.checkpoint_fork_plan_bindings.v1",
+                "checkpoint_roots": dict(source="source", **{"target-a": "target-a", "target-b": "target-b"}),
+                "run_specs": {"run": "run.json"},
+                "slot_templates": {"slots": "slots.pkl"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dependencies = [{"kind": "fork_from_selected_checkpoint", "source_execution_hash": "d" * 64,
+        "source_row_id": "source", "checkpoint_transaction_id": source.manifest.transaction_id,
+        "checkpoint_root_hash": source.manifest.content_integrity_digest.transaction_root_sha256}]
+
+    command = [sys.executable, "-m", "feedbax", "checkpoint", "fork-plan"]
+    command += ["--plan", str(plan_path), "--bindings", str(bindings_path)]
+    command += ["--dependencies", json.dumps(dependencies)]
+    completed = subprocess.run(command, check=False, cwd=Path(__file__).parents[1],
+                               text=True, capture_output=True)
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["targets"]["target-a"]["transaction_id"]
+    assert (tmp_path / "target-a" / "latest.json").is_file()
 
 
 def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
