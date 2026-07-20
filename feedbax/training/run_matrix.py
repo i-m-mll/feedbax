@@ -37,6 +37,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
     AuthoredIntentMatrixBaseSpec,
+    ForkFromSelectedCheckpoint,
     InlineMatrixBaseSpec,
     RowLowererIdentity,
     RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
@@ -47,6 +48,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
     TrainingRunMatrixSpec,
+    TaskIdentityGate,
     apply_composition_deltas,
     apply_override_patches,
 )
@@ -66,6 +68,7 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
 )
 from feedbax.training.checkpoint_custody import (
+    CheckpointCompatibilityError,
     CheckpointForkPlanBindings,
     CheckpointForkTransformRegistry,
     ResumeSlotTransform,
@@ -73,6 +76,7 @@ from feedbax.training.checkpoint_custody import (
     fork_checkpoint_plan,
     fork_checkpoint_transaction,
     run_contract_binding,
+    validate_checkpoint_fork_execution_dependencies,
     _load_latest_checkpoint_transaction,
 )
 from feedbax.training.optimizers import learning_rate_at_step
@@ -232,6 +236,41 @@ def _validate_matrix_checkpoint_fork_plan(
         raise RunMatrixError(
             "checkpoint fork plan source and target root mappings must be distinct"
         )
+    _validate_typed_checkpoint_dependencies(spec, materialized, plan)
+
+
+def _validate_typed_checkpoint_dependencies(
+    spec: TrainingRunMatrixSpec,
+    materialized: MaterializedRunMatrix,
+    plan: CheckpointForkPlan,
+) -> None:
+    try:
+        validate_checkpoint_fork_execution_dependencies(plan, spec.execution_dependencies, allow_task_identity=True)
+    except CheckpointCompatibilityError as exc:
+        raise RunMatrixError(str(exc)) from exc
+    for gate in (
+        item for item in spec.execution_dependencies if isinstance(item, TaskIdentityGate)
+    ):
+        if gate.identity_kind == "dataset":
+            raise RunMatrixError(
+                "dataset task-identity gates require an explicit dataset identity resolver"
+            )
+        actual = {
+            training_spec_sha256(
+                (
+                    row.spec
+                    if gate.identity_kind == "training_run_spec"
+                    else getattr(row.spec, gate.identity_kind)
+                ).model_dump(mode="json", exclude_none=True)
+            )
+            for row in materialized.rows
+            if row.spec is not None
+        }
+        if actual != {gate.expected_identity_hash}:
+            raise RunMatrixError(
+                f"checkpoint fork {gate.identity_kind} task-identity gate mismatch; "
+                f"declared={gate.expected_identity_hash!r} actual={sorted(actual)!r}"
+            )
 
 
 class TrainingRowLowerer(Protocol):
@@ -504,7 +543,15 @@ def render_spec_lock_table(
             getattr(spec.base, "content_hash", None)
             or getattr(spec.base, "resolved_root_hash", "")
         ),
-        f"Fork source: {spec.fork.source_run_id if spec.fork else ''}",
+        "Fork source: "
+        + next(
+            (
+                dependency.source_row_id
+                for dependency in spec.execution_dependencies
+                if isinstance(dependency, ForkFromSelectedCheckpoint)
+            ),
+            "",
+        ),
         (f"LR continuation schedule: {spec.fork.lr_continuation if spec.fork else ''}"),
         f"Row count: {len(materialized.rows)}",
         *schedule_lines,
@@ -831,7 +878,14 @@ def fork_matrix_checkpoints(
                 "planned_run_id": row.planned_run_id,
                 "kind": "lr_continuation",
                 "transaction_id": transaction_id,
-                "source_run_id": spec.fork.source_run_id,
+                "source_row_id": next(
+                    (
+                        dependency.source_row_id
+                        for dependency in spec.execution_dependencies
+                        if isinstance(dependency, ForkFromSelectedCheckpoint)
+                    ),
+                    None,
+                ),
                 "target_run_id": row.planned_run_id,
                 "source_transaction_id": source_manifest.get("transaction_id"),
                 "target_transaction_id": transaction_id,

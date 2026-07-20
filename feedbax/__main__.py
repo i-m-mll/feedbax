@@ -11,6 +11,11 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from pydantic import TypeAdapter
+
+from feedbax.contracts.checkpoints import CheckpointForkPlan
+from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.run_matrix import ExecutionDependency
 from feedbax.contracts.training import DEFAULT_TRAINING_METHOD_REGISTRY, TrainingRunSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.orchestration.events import RunEventEmitter
@@ -32,7 +37,12 @@ from feedbax.training.manifest_preflight import (
     preflight_training_run_manifest_payloads,
     validate_training_run_spec,
 )
-from feedbax.training.checkpoint_custody import fork_checkpoint_transaction
+from feedbax.training.checkpoint_custody import (
+    CheckpointForkPlanBindings,
+    fork_checkpoint_plan,
+    fork_checkpoint_transaction,
+    validate_checkpoint_fork_execution_dependencies,
+)
 from feedbax.training.legacy_checkpoint_adoption import (
     ManifestDumpRequest,
     PathMappingRule,
@@ -50,6 +60,30 @@ def _read_json(path: str) -> dict[str, Any]:
 def _read_pickle(path: str) -> Any:
     with Path(path).open("rb") as stream:
         return pickle.load(stream)
+
+
+def _load_checkpoint_fork_plan_bindings(path: str) -> CheckpointForkPlanBindings:
+    manifest_path = Path(path).resolve()
+    payload = _read_json(str(manifest_path))
+    expected = "feedbax.runtime.checkpoint_fork_plan_bindings"
+    if (payload.get("schema_id"), payload.get("schema_version")) != (expected, f"{expected}.v1"):
+        raise ValueError("checkpoint fork binding manifest has unsupported schema identity")
+    base = manifest_path.parent
+
+    def resolved(raw: str) -> Path:
+        candidate = Path(raw)
+        return candidate if candidate.is_absolute() else base / candidate
+
+    def loaded(name: str, loader: Any) -> dict[str, Any]:
+        return {key: loader(str(resolved(value))) for key, value in payload.get(name, {}).items()}
+
+    return CheckpointForkPlanBindings(
+        checkpoint_roots={key: resolved(value) for key, value in payload["checkpoint_roots"].items()},
+        run_specs={key: TrainingRunSpec.model_validate(value) for key, value in loaded("run_specs", _read_json).items()},
+        slot_templates=loaded("slot_templates", _read_pickle),
+        segment_history_templates=loaded("segment_history_templates", _read_pickle),
+        population_member_ids=loaded("population_member_ids", _read_json),
+    )
 
 
 def _load_path_mapping(
@@ -385,6 +419,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     fork_parser.add_argument("--tool-version", help="Tool version to record in provenance")
+    plan_parser = checkpoint_subparsers.add_parser(
+        "fork-plan",
+        help="Execute one content-pinned portable checkpoint fork plan.",
+    )
+    plan_parser.add_argument("--plan", required=True, help="CheckpointForkPlan JSON")
+    plan_parser.add_argument(
+        "--dependencies", required=True, help="Typed execution-dependency JSON or JSON path"
+    )
+    plan_parser.add_argument("--bindings", required=True, help="Runtime bindings v1 JSON")
+    plan_parser.add_argument(
+        "--plugin",
+        action="append",
+        help="Import a module that registers methods or durable fork transforms.",
+    )
 
     harness_parser = subparsers.add_parser(
         "matrix-harness",
@@ -699,6 +747,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             return 0
     if args.command == "checkpoint":
+        if args.checkpoint_command == "fork-plan":
+            _load_training_method_plugins(args.plugin)
+            plan = CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate("CheckpointForkPlan", _read_json(args.plan)).payload
+            )
+            dependency_json = (
+                args.dependencies if args.dependencies.lstrip().startswith("[")
+                else Path(args.dependencies).read_text(encoding="utf-8")
+            )
+            dependencies = TypeAdapter(list[ExecutionDependency]).validate_json(dependency_json)
+            validate_checkpoint_fork_execution_dependencies(plan, dependencies)
+            bindings = _load_checkpoint_fork_plan_bindings(args.bindings)
+            results = fork_checkpoint_plan(plan, bindings)
+            json.dump(
+                {
+                    "targets": {
+                        target_id: {
+                            "transaction_id": result.manifest.transaction_id,
+                        }
+                        for target_id, result in sorted(results.items())
+                    },
+                },
+                fp=sys.stdout,
+                indent=2,
+                sort_keys=True,
+            )
+            print()
+            return 0
         if args.checkpoint_command == "fork":
             _load_training_method_plugins(args.plugin)
             expected_slots = _read_pickle(args.expected_slots) if args.expected_slots else None

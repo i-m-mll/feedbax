@@ -127,6 +127,11 @@ def test_run_matrix_spec_v1_migration_and_old_version_rejection_are_registered()
         "content_hash": "a" * 64,
         "pin_algorithm": "legacy_raw_sha256",
     }
+    with pytest.raises(ValueError, match="does not identify checkpoint custody"):
+        default_spec_registry.migrate("TrainingRunMatrixSpec", {
+            "schema_version": "feedbax.spec.training_run_matrix.v3",
+            "fork": {"source_run_id": "legacy-run"},
+        })
 
     with pytest.raises(ValueError, match="unpinned"):
         default_spec_registry.migrate(
