@@ -23,7 +23,13 @@ def resolve_feedbax_revision() -> str:
     if source is None:
         raise FeedbaxRevisionError("the imported Feedbax module has no source path")
     package_root = Path(source).resolve().parent
-    environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    environment = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+        "PATH": os.defpath,
+    }
     try:
         result = subprocess.run(
             ["git", "-C", str(package_root), "rev-parse", "--verify", "HEAD^{commit}"],
