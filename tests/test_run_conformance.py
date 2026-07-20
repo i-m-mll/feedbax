@@ -1231,6 +1231,113 @@ def test_lr_trace_uses_native_method_training_optimizer_for_constant_schedule() 
     assert result.expected["(('replica', 0),)"][500] == pytest.approx(3e-5)
 
 
+def test_lr_trace_normalizes_segment_local_continuation_steps() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=3e-3,
+            constant_lr_iterations=1_000,
+            total_steps=3_500,
+            cosine_annealing_alpha=0.01,
+            warmup_init_fraction=0.01,
+        ),
+    ).model_dump(mode="json")
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={
+                "optimizer": optimizer,
+                "resume_context": {
+                    "schedule_origin_step": 12_000,
+                    "current_step": 12_000,
+                    "optimizer_count_at_current_step": 0,
+                },
+            },
+            training_diagnostics={
+                "segment_completed_batches": 4_500,
+                "cumulative_completed_batches": 16_500,
+                "lr_trace": {
+                    500: 0.001512030023150146,
+                    2_500: 0.0010578848887234926,
+                    4_500: 0.000029999999242136255,
+                },
+            },
+        )
+    )
+
+    assert result.status == "pass"
+    assert result.observed == pytest.approx(
+        {
+            12_499: 0.001512030023150146,
+            14_499: 0.0010578848887234926,
+            16_499: 0.000029999999242136255,
+        }
+    )
+
+
+def test_lr_trace_preserves_cumulative_continuation_steps() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+    ).model_dump(mode="json")
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={
+                "optimizer": optimizer,
+                "resume_context": {
+                    "schedule_origin_step": 12_000,
+                    "current_step": 12_000,
+                    "optimizer_count_at_current_step": 12_000,
+                },
+            },
+            training_diagnostics={
+                "segment_completed_batches": 4_500,
+                "cumulative_completed_batches": 16_500,
+                "lr_trace": {12_500: 3e-5, 14_500: 3e-5, 16_500: 3e-5},
+            },
+        )
+    )
+
+    assert result.status == "pass"
+    assert result.observed == pytest.approx({12_500: 3e-5, 14_500: 3e-5, 16_500: 3e-5})
+
+
+@pytest.mark.parametrize(
+    ("segment_completed", "cumulative_completed", "steps", "detail"),
+    [
+        (4_500, 16_500, (500, 13_000, 4_500), "mixed or out-of-range"),
+        (4_500, 16_500, (0, 500, 4_500), "mixed or out-of-range"),
+        (200, 300, (150, 175, 200), "ambiguous"),
+    ],
+)
+def test_lr_trace_rejects_mixed_or_ambiguous_continuation_frames(
+    segment_completed: int,
+    cumulative_completed: int,
+    steps: tuple[int, int, int],
+    detail: str,
+) -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+    ).model_dump(mode="json")
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={"optimizer": optimizer},
+            training_diagnostics={
+                "segment_completed_batches": segment_completed,
+                "cumulative_completed_batches": cumulative_completed,
+                "lr_trace": {step: 3e-5 for step in steps},
+            },
+        )
+    )
+
+    assert result.status == "fail"
+    assert detail in str(result.detail)
+
+
 def test_lr_trace_rejects_conflicting_governed_optimizer_authorities() -> None:
     optimizer = OptimizerSpec(
         type="adamw",
