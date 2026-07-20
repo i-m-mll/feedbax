@@ -344,6 +344,7 @@ class TestMuscleConfig:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.optional_mjx
 class TestMJXPlant2Link:
     def test_builds(self, plant_2link):
         assert plant_2link is not None
@@ -403,6 +404,7 @@ class TestMJXPlant2Link:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.optional_mjx
 class TestBiarticularTorque:
     """Critical test: activating a biarticular muscle should produce torque
     at BOTH joints."""
@@ -468,6 +470,7 @@ class TestBiarticularTorque:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.optional_mjx
 class TestBatch2Link:
     def test_build_batch_2_bodies(self, bounds_2link, chain_2link, sim_config):
         key = jax.random.PRNGKey(0)
@@ -511,6 +514,7 @@ class TestBatch2Link:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.optional_mjx
 class TestBackwardCompat3Link:
     def test_3link_still_works(self):
         """Default ChainConfig(n_joints=3) should still produce a working

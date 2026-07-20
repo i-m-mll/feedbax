@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -186,7 +187,138 @@ def test_pytest_command_uses_xdist_by_default(monkeypatch) -> None:
 
     command = full_suite.pytest_command(["-q"])
 
-    assert command[2:] == ["pytest", "tests", "-n", "auto", "-q"]
+    assert command[2:] == [
+        "pytest",
+        "tests",
+        "-n",
+        "auto",
+        "-m",
+        "not optional_mjx and not optional_ppo",
+        "-q",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("flag", "profile", "expression"),
+    [
+        ("--include-mjx", "mjx", "not optional_ppo"),
+        ("--include-ppo", "ppo", "not optional_mjx"),
+        (
+            "--include-optional",
+            "all",
+            "optional_mjx or optional_ppo or (not optional_mjx and not optional_ppo)",
+        ),
+    ],
+)
+def test_optional_profile_flags_select_expected_markers(
+    monkeypatch, flag: str, profile: str, expression: str
+) -> None:
+    full_suite = load_full_suite_module()
+    monkeypatch.setattr(full_suite, "distribution_version", lambda name: None)
+
+    args, passthrough = full_suite.parse_args([flag, "-q"])
+    command = full_suite.pytest_command(passthrough, suite_profile=args.suite_profile)
+
+    assert args.suite_profile == profile
+    assert command[-3:] == ["-m", expression, "-q"]
+
+
+def test_green_memo_cannot_alias_different_test_selection(monkeypatch, tmp_path: Path) -> None:
+    full_suite = load_full_suite_module()
+    repo = make_full_suite_repo(tmp_path / "repo")
+    monkeypatch.setattr(full_suite, "distribution_version", lambda name: "0.0.0")
+
+    core = full_suite.build_fingerprint(repo)
+    mjx = full_suite.build_fingerprint(repo, suite_profile="mjx")
+    selected_node = full_suite.build_fingerprint(
+        repo,
+        pytest_args=("tests/test_rl_ppo.py::TestGAE::test_shapes",),
+    )
+    memo_dir = tmp_path / "memo"
+    full_suite.write_green_memo(memo_dir, core, ["pytest", "tests"])
+
+    assert full_suite.has_green_memo(memo_dir, core)
+    assert not full_suite.has_green_memo(memo_dir, mjx)
+    assert not full_suite.has_green_memo(memo_dir, selected_node)
+
+
+def test_green_memo_cannot_alias_serial_runner(monkeypatch, tmp_path: Path) -> None:
+    full_suite = load_full_suite_module()
+    repo = make_full_suite_repo(tmp_path / "repo")
+    memo_dir = tmp_path / "memo"
+    monkeypatch.setattr(full_suite, "distribution_version", lambda name: "0.0.0")
+
+    monkeypatch.delenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", raising=False)
+    parallel_args = full_suite.xdist_args()
+    parallel = full_suite.build_fingerprint(repo, runner_args=parallel_args)
+    full_suite.write_green_memo(memo_dir, parallel, ["pytest", "tests", *parallel_args])
+
+    monkeypatch.setenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", "1")
+    serial_args = full_suite.xdist_args()
+    serial = full_suite.build_fingerprint(repo, runner_args=serial_args)
+
+    assert parallel_args == ["-n", "auto"]
+    assert serial_args == []
+    assert full_suite.has_green_memo(memo_dir, parallel)
+    assert not full_suite.has_green_memo(memo_dir, serial)
+
+
+def test_nonempty_pytest_addopts_disables_green_memo(monkeypatch, tmp_path: Path) -> None:
+    full_suite = load_full_suite_module()
+    repo = make_full_suite_repo(tmp_path / "repo")
+    memo_dir = tmp_path / "memo"
+    monkeypatch.setattr(full_suite, "distribution_version", lambda name: "0.0.0")
+
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    canonical = full_suite.build_fingerprint(repo, runner_args=("-n", "auto"))
+    full_suite.write_green_memo(memo_dir, canonical, ["pytest", "tests", "-n", "auto"])
+
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-k subset")
+    fingerprint = full_suite.build_fingerprint(repo, runner_args=("-n", "auto"))
+
+    assert full_suite.has_green_memo(memo_dir, canonical)
+    assert not fingerprint.memo_allowed
+    assert "PYTEST_ADDOPTS is nonempty" in fingerprint.refusal_reasons
+    assert not full_suite.has_green_memo(memo_dir, fingerprint)
+
+
+def _assigned_pytest_marker(source: str) -> str | None:
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
+        ):
+            continue
+        value = node.value
+        if isinstance(value, ast.Attribute):
+            return value.attr
+    return None
+
+
+def _class_pytest_markers(source: str, class_name: str) -> set[str]:
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {
+                decorator.attr
+                for decorator in node.decorator_list
+                if isinstance(decorator, ast.Attribute)
+            }
+    raise AssertionError(f"class {class_name} not found")
+
+
+def test_representative_nodes_have_expected_optional_markers() -> None:
+    tests_dir = Path(__file__).parent
+    mjx_source = (tests_dir / "test_mjx_plant.py").read_text(encoding="utf-8")
+    ppo_source = (tests_dir / "test_batched_ppo.py").read_text(encoding="utf-8")
+    backend_source = (tests_dir / "test_backend.py").read_text(encoding="utf-8")
+
+    assert _assigned_pytest_marker(mjx_source) == "optional_mjx"
+    assert _assigned_pytest_marker(ppo_source) == "optional_ppo"
+    assert "optional_mjx" in _class_pytest_markers(backend_source, "TestMJXBackendState")
+    assert "optional_mjx" not in _class_pytest_markers(backend_source, "TestDiffraxBackendState")
 
 
 def test_jax_cache_env_exposes_base_root_without_exact_cache_dir(monkeypatch, tmp_path) -> None:

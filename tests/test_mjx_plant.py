@@ -19,6 +19,9 @@ from feedbax.mechanics.plant import PlantState
 from feedbax.runtime.state import CartesianState
 
 
+pytestmark = pytest.mark.optional_mjx
+
+
 @pytest.fixture
 def key():
     return jax.random.PRNGKey(42)

@@ -188,9 +188,11 @@ line-length = 88
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers"
+addopts = "--strict-markers -m 'not optional_mjx and not optional_ppo'"
 markers = [
     "slow: tests that are too expensive for every local or CI pass",
+    "optional_mjx: MJX simulation and integration tests run only when explicitly selected",
+    "optional_ppo: PPO rollout and training tests run only when explicitly selected",
     "feedbax_contract: Feedbax contract-surface tests for downstream consumers",
     "graph_spec_contract: GraphSpec schema, migration, and runtime contract tests",
     "provider_contract: provider API and manifest contract tests",
