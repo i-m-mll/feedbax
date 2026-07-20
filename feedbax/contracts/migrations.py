@@ -90,6 +90,8 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
+    TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
@@ -2654,6 +2656,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "TrainingRunMatrixAuthority",
+            TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
+            TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.run_matrix",
+            emitted_by=("feedbax.orchestration.matrix_authority",),
+            consumed_by=("RunPodOrchestrationDriver.preflight_evidence",),
+            description="Provider-unverified authenticated matrix authority.",
+            rejected_old_versions=(f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
+        ),
+        _family(
             "TrainingRunMatrixPreflightBinding",
             TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
             TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
@@ -2661,8 +2674,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.drivers.runpod",),
             consumed_by=("Feedbax orchestration pre-provision restoration",),
             description=(
-                "Provider-neutral authenticated binding from a governed training matrix "
-                "and its ordered rows to non-billable preflight authority."
+                "Provider-evidence-bound authenticated binding from a governed training "
+                "matrix and its ordered rows to provider-specific preflight authority."
             ),
             rejected_old_versions=(
                 f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v0",
