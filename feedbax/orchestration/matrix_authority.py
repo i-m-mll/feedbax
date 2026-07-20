@@ -57,8 +57,15 @@ def build_training_run_matrix_authority(
     *,
     local_repos: Mapping[str, str | Path],
     protected_refs: Mapping[str, str],
+    expected_bundle_sha256: str | None = None,
+    expected_run_set_id: str | None = None,
 ) -> TrainingRunMatrixAuthority:
     """Authenticate provider-unverified authority for an exact assembled matrix."""
+    bundle_sha256 = canonical_run_bundle_sha256(bundle)
+    if expected_bundle_sha256 is not None and expected_bundle_sha256 != bundle_sha256:
+        raise MatrixAuthorityError("run bundle identity does not match its expected SHA-256")
+    if expected_run_set_id is not None and expected_run_set_id != bundle.run_set_id:
+        raise MatrixAuthorityError("run bundle identity does not match its expected run-set id")
     if not is_training_matrix_bundle(bundle):
         raise MatrixAuthorityError("run bundle is not a governed training matrix")
     first = bundle.rows[0].execution.authored_intent
@@ -87,7 +94,7 @@ def build_training_run_matrix_authority(
         monitor=TrainingRunMatrixMonitorBinding(
             event_paths=[f"events/{row.row_id}.events.jsonl" for row in bundle.rows]
         ),
-        bundle_sha256=canonical_run_bundle_sha256(bundle),
+        bundle_sha256=bundle_sha256,
     )
 
 
