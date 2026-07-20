@@ -41,7 +41,11 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodOrchestrationDriver,
 )
 from feedbax.orchestration import matrix_authority
-from feedbax.orchestration.stages import STAGE_PREFLIGHT, StageEngine
+from feedbax.orchestration.stages import (
+    STAGE_PREFLIGHT,
+    StageEngine,
+    run_authority_preflight_checks,
+)
 from feedbax.orchestration.state import RunSetStateStore
 from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
@@ -96,7 +100,11 @@ def _authority_repo(root: Path) -> tuple[Path, str]:
 
 
 def _matrix_case(
-    root: Path, *, revision: str
+    root: Path,
+    *,
+    revision: str,
+    execution_payload: dict[str, Any] | None = None,
+    review_required: bool = False,
 ) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry, RunBundle]:
     authored = {
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -126,7 +134,7 @@ def _matrix_case(
             driver="runpod",
             venue="remote",
             cloud_authorized=True,
-            review_required=False,
+            review_required=review_required,
             review_authorized=False,
             resources=DeploymentResourceRequest(gpu_id="RTX", regions=["CA"]),
         ),
@@ -147,7 +155,8 @@ def _matrix_case(
 
     def lower(authored_row: Any) -> TrainingRowLoweringResult:
         return TrainingRowLoweringResult(
-            execution_payload={
+            execution_payload=execution_payload
+            or {
                 "schema_id": "example.training_payload",
                 "schema_version": "example.training_payload.v1",
                 "training_config": {"n_batches": 7},
@@ -162,6 +171,40 @@ def _matrix_case(
         request, run_set_id="matrix-run-set", context=context, registry=registry
     )
     return request, registry, bundle
+
+
+def _scheduled_training_payload(
+    *,
+    resume_context: dict[str, int] | None,
+    optimizer_build_context: dict[str, int] | None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if resume_context is not None:
+        metadata["resume_context"] = resume_context
+    if optimizer_build_context is not None:
+        metadata["optimizer_build_context"] = optimizer_build_context
+    return {
+        "schema_id": "feedbax.spec.training_run",
+        "schema_version": "feedbax.spec.training_run.v2",
+        "training_config": {"n_batches": 7},
+        "method_payload": {
+            "payload": {
+                "controller_optimizer": {
+                    "type": "adamw",
+                    "params": {"weight_decay": 0.0},
+                    "lr_schedule": {
+                        "kind": "warmup_cosine",
+                        "learning_rate_0": 0.1,
+                        "total_steps": 3500,
+                        "constant_lr_iterations": 500,
+                        "warmup_init_fraction": 0.1,
+                        "cosine_annealing_alpha": 0.2,
+                    },
+                }
+            }
+        },
+        "metadata": metadata,
+    }
 
 
 def _matrix_bundle(root: Path, *, revision: str) -> RunBundle:
@@ -296,7 +339,20 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _repo, revision = _authority_repo(tmp_path)
-    _request, _registry, bundle = _matrix_case(tmp_path, revision=revision)
+    context = {
+        "schedule_origin_step": 12_000,
+        "current_step": 12_000,
+        "optimizer_count_at_current_step": 12_000,
+    }
+    _request, _registry, bundle = _matrix_case(
+        tmp_path,
+        revision=revision,
+        execution_payload=_scheduled_training_payload(
+            resume_context=context,
+            optimizer_build_context=context,
+        ),
+        review_required=True,
+    )
     bundle_path = tmp_path / "assembled-bundle.json"
     bundle_path.write_text(bundle.model_dump_json(indent=2) + "\n", encoding="utf-8")
     bundle_sha256 = canonical_run_bundle_sha256(bundle)
@@ -326,6 +382,19 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
         lambda *_args, **_kwargs: pytest.fail("bundle authority constructed provider driver"),
     )
 
+    checks = {check.name: check for check in run_authority_preflight_checks(bundle)}
+    assert set(checks) == {
+        "schema-current",
+        "row-identity",
+        "budget-presence",
+        "driver-preconditions",
+        "environment-declaration",
+        "input-custody-authority",
+        "native-output-custody",
+        "schedule-realization",
+    }
+    assert all(check.status == "pass" for check in checks.values())
+
     assert orchestrate.main(
         [
             "preflight",
@@ -344,6 +413,54 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
     assert [row["row_id"] for row in authority["rows"]] == ["first", "second"]
     assert [row["locked_training_depth"] for row in authority["rows"]] == [7, 7]
     assert "nested_preflight_evidence_sha256" not in authority
+
+
+@pytest.mark.parametrize("invalid_context", ["missing", "mismatched"])
+def test_authority_only_bundle_cli_rejects_invalid_schedule_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_context: str,
+) -> None:
+    _repo, revision = _authority_repo(tmp_path)
+    expected = {
+        "schedule_origin_step": 12_000,
+        "current_step": 12_000,
+        "optimizer_count_at_current_step": 12_000,
+    }
+    observed = None if invalid_context == "missing" else {
+        "schedule_origin_step": 0,
+        "current_step": 0,
+        "optimizer_count_at_current_step": 0,
+    }
+    _request, _registry, bundle = _matrix_case(
+        tmp_path,
+        revision=revision,
+        execution_payload=_scheduled_training_payload(
+            resume_context=expected,
+            optimizer_build_context=observed,
+        ),
+        review_required=True,
+    )
+    bundle_path = tmp_path / "assembled-bundle.json"
+    bundle_path.write_text(bundle.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        orchestrate,
+        "build_training_run_matrix_authority",
+        lambda *_args, **_kwargs: pytest.fail("invalid schedule reached authority emission"),
+    )
+
+    assert orchestrate.main(
+        [
+            "preflight",
+            "--authority-only",
+            "--run-set-id",
+            bundle.run_set_id,
+            "--bundle",
+            str(bundle_path),
+            "--bundle-sha256",
+            canonical_run_bundle_sha256(bundle),
+        ]
+    ) == orchestrate.EXIT_PREFLIGHT
 
 
 @pytest.mark.parametrize("tamper", ["bundle", "matrix", "capsule", "run-set"])

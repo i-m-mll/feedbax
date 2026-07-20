@@ -105,6 +105,7 @@ __all__ = [
     "format_batch_line",
     "mint_run_set_id",
     "persist_compiled_row",
+    "run_authority_preflight_checks",
     "run_preflight_checks",
     "run_conformance_checks",
     "write_conformance_certificate",

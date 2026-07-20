@@ -1637,6 +1637,28 @@ def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
 
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
+    return _run_static_preflight_checks(
+        bundle,
+        include_deployment_policy=True,
+        include_manifest_payload_normalization=True,
+    )
+
+
+def run_authority_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
+    """Run provider-neutral checks for an already assembled authority bundle."""
+    return _run_static_preflight_checks(
+        bundle,
+        include_deployment_policy=False,
+        include_manifest_payload_normalization=False,
+    )
+
+
+def _run_static_preflight_checks(
+    bundle: RunBundle,
+    *,
+    include_deployment_policy: bool,
+    include_manifest_payload_normalization: bool,
+) -> list[PreflightCheckEntry]:
     checks: list[PreflightCheckEntry] = []
     checks.append(_check("schema-current", bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION))
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
@@ -1662,15 +1684,16 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
         )
     )
 
-    policy_failures, policy_observed = _preflight_deployment_policy(bundle)
-    checks.append(
-        _check(
-            "deployment-policy",
-            not policy_failures,
-            detail="; ".join(policy_failures) if policy_failures else None,
-            observed=policy_observed,
+    if include_deployment_policy:
+        policy_failures, policy_observed = _preflight_deployment_policy(bundle)
+        checks.append(
+            _check(
+                "deployment-policy",
+                not policy_failures,
+                detail="; ".join(policy_failures) if policy_failures else None,
+                observed=policy_observed,
+            )
         )
-    )
 
     output_failures: list[str] = []
     output_observed: dict[str, Any] = {}
@@ -1695,27 +1718,28 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
         )
     )
 
-    manifest_failures: list[str] = []
-    normalized: dict[str, Any] = {}
-    for row in bundle.rows:
-        run_spec = _row_payload(row)
-        if _is_training_run_payload(run_spec):
-            try:
-                payloads = preflight_training_run_manifest_payloads(
-                    run_spec,
-                    row_id=row.row_id,
-                )
-                normalized[row.row_id] = payloads.model_dump()
-            except Exception as exc:
-                manifest_failures.append(f"{row.row_id}: {exc}")
-    checks.append(
-        _check(
-            "manifest-payload-normalization",
-            not manifest_failures,
-            detail="; ".join(manifest_failures) if manifest_failures else None,
-            observed=normalized or "no-inline-run-specs",
+    if include_manifest_payload_normalization:
+        manifest_failures: list[str] = []
+        normalized: dict[str, Any] = {}
+        for row in bundle.rows:
+            run_spec = _row_payload(row)
+            if _is_training_run_payload(run_spec):
+                try:
+                    payloads = preflight_training_run_manifest_payloads(
+                        run_spec,
+                        row_id=row.row_id,
+                    )
+                    normalized[row.row_id] = payloads.model_dump()
+                except Exception as exc:
+                    manifest_failures.append(f"{row.row_id}: {exc}")
+        checks.append(
+            _check(
+                "manifest-payload-normalization",
+                not manifest_failures,
+                detail="; ".join(manifest_failures) if manifest_failures else None,
+                observed=normalized or "no-inline-run-specs",
+            )
         )
-    )
     schedule_failures, schedule_observed = _preflight_schedule_realization(bundle)
     checks.append(
         _check(
