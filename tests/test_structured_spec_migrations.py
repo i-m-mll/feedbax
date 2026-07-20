@@ -52,6 +52,8 @@ from feedbax.contracts.run_matrix import (
     TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+    TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
 )
@@ -677,6 +679,10 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert matrix_preflight.current_version == (
         TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION
     )
+    assert families["TrainingRunMatrixAuthority"].identity == TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID
+    assert families["TrainingRunMatrixAuthority"].current_version == (
+        TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION
+    )
     assert families["RunEvent"].identity == RUN_EVENT_SCHEMA_ID
     assert families["RunEvent"].namespace == SchemaNamespaceKind.RUN_EVENT
     assert families["RunEvent"].current_version == RUN_EVENT_SCHEMA_VERSION
@@ -752,6 +758,11 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
 @pytest.mark.parametrize(
     ("kind", "schema_id", "old_version"),
     [
+        (
+            "TrainingRunMatrixAuthority",
+            TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
+            f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v0",
+        ),
         (
             "TrainingRunMatrixPreflightBinding",
             TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
