@@ -47,6 +47,7 @@ from feedbax.orchestration.collection_recovery import (
 )
 from feedbax.orchestration.drivers.runpod import (
     CommandResult,
+    _PodAcquisition,
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
@@ -980,11 +981,222 @@ def test_create_pod_uses_current_runpodctl_pod_create_surface(tmp_path: Path) ->
         transport=transport,
     )
 
-    assert driver._create_pod(bundle) == "pod-123"
+    assert driver._create_pod(bundle) == _PodAcquisition(
+        pod_id="pod-123",
+        accepted_datacenter="EU-CZ-1",
+    )
     assert transport.runpodctl_calls == [first_call, expected_call]
     assert "dummy-key" not in repr(driver.config)
     assert "--gpuType" not in expected_call
     assert "--dataCenterId" not in expected_call
+
+
+def test_provision_record_preserves_accepted_datacenter_when_pod_get_omits_it(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    base_call = (
+        "pod", "create", "--name", "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image", bundle.environment.image_id, "--ports", "22/tcp,8080/http",
+        "--gpu-id", "NVIDIA GeForce RTX 4090",
+    )
+    transport.queue_runpodctl(
+        (*base_call, "--data-center-ids", "CA-MTL-1"),
+        CommandResult(1, "", "no capacity"),
+    )
+    transport.queue_runpodctl(
+        (*base_call, "--data-center-ids", "EU-CZ-1"),
+        CommandResult(0, '{"id":"pod-123"}'),
+    )
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-123", "--output", "json"),
+        CommandResult(
+            0,
+            json.dumps(
+                {
+                    "id": "pod-123",
+                    "ssh": {"ip": "203.0.113.10", "port": 22},
+                    "imageName": bundle.environment.image_id,
+                    "costPerHr": 0.74,
+                    "createdAt": "2026-07-19T18:05:00Z",
+                }
+            ),
+        ),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            datacenters=("CA-MTL-1", "EU-CZ-1"),
+            image=bundle.environment.image_id or "",
+        ),
+        transport=transport,
+    )
+    driver._preflight_passed = True
+
+    record = driver.provision(bundle, _state(bundle))
+    store = RunSetStateStore(tmp_path / "state.json")
+    store.save(_state(bundle).model_copy(update={"provision_record": record}))
+
+    assert store.load().provision_record["region"] == "EU-CZ-1"
+    assert record["provider_observation_basis"] == (
+        "accepted singleton runpodctl pod create datacenter; "
+        "runpodctl pod get response omitted datacenter"
+    )
+
+
+def test_accepted_datacenter_persists_into_realized_deployment_evidence(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    driver = RunPodOrchestrationDriver(transport=FakeRunPodTransport())
+    provision = driver._provision_record(
+        {
+            "id": "pod-123",
+            "ssh": {"ip": "203.0.113.10", "port": 22},
+            "imageName": bundle.environment.image_id,
+            "costPerHr": 0.74,
+            "createdAt": "2026-07-19T18:05:00Z",
+        },
+        provided_pod=False,
+        accepted_datacenter="CA-MTL-1",
+    )
+    declaration = {
+        "declaration_sha256": compute_runpod_environment_fingerprint(bundle),
+        "image_id": bundle.environment.image_id,
+        "lockfile_hashes": bundle.environment.lockfile_hashes,
+        "python_version": bundle.environment.python_version,
+    }
+    fingerprint_payload = json.loads(_realized_fingerprint(declaration))
+    fingerprint_payload["runtime"]["device_kind"] = "NVIDIA GeForce RTX 4090"
+    fingerprint = json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":"))
+    started_at = datetime(2026, 7, 19, 18, 6, tzinfo=timezone.utc)
+    completed_at = started_at + timedelta(seconds=1)
+    row_id = bundle.rows[0].row_id
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        provision_record=provision,
+        environment_fingerprint=fingerprint,
+        rows={
+            row_id: RowState(
+                status="completed",
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+        },
+    )
+    state = state.with_stage(
+        STAGE_PROVISION,
+        state.stage(STAGE_PROVISION).model_copy(
+            update={
+                "status": "completed",
+                "completed_at": started_at - timedelta(seconds=1),
+                "outputs": provision,
+            }
+        ),
+    ).with_stage(
+        STAGE_REALIZE_ENV,
+        state.stage(STAGE_REALIZE_ENV).model_copy(
+            update={
+                "status": "completed",
+                "completed_at": started_at,
+                "outputs": {"environment_fingerprint": fingerprint},
+            }
+        ),
+    )
+    store = RunSetStateStore(tmp_path / "certification-state.json")
+    store.save(state)
+
+    evidence = StageEngine(bundle=bundle, driver=driver)._realized_deployment_evidence(
+        bundle.rows[0],
+        store.load(),
+        observed_at=completed_at + timedelta(seconds=1),
+    )
+
+    assert evidence["region"] == "CA-MTL-1"
+    assert evidence["provider_observations"]["region_raw"] == "CA-MTL-1"
+    assert evidence["unavailable"].get("region") is None
+
+
+def test_provision_record_rejects_conflicting_accepted_datacenter() -> None:
+    driver = RunPodOrchestrationDriver(transport=FakeRunPodTransport())
+
+    with pytest.raises(RunPodDriverError, match="datacenter conflicts"):
+        driver._provision_record(
+            {
+                "id": "pod-123",
+                "dataCenterId": "US-OR-1",
+                "ssh": {"ip": "203.0.113.10", "port": 22},
+            },
+            provided_pod=False,
+            accepted_datacenter="EU-CZ-1",
+        )
+
+
+def test_provision_conflict_tears_down_and_is_not_retried(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    create_call = (
+        "pod", "create", "--name", "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image", bundle.environment.image_id, "--ports", "22/tcp,8080/http",
+        "--gpu-id", "NVIDIA GeForce RTX 4090",
+        "--data-center-ids", "EU-CZ-1",
+    )
+    transport.queue_runpodctl(create_call, CommandResult(0, '{"id":"pod-conflict"}'))
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-conflict", "--output", "json"),
+        CommandResult(
+            0,
+            json.dumps(
+                {
+                    "id": "pod-conflict",
+                    "dataCenterId": "US-OR-1",
+                    "ssh": {"ip": "203.0.113.10", "port": 22},
+                }
+            ),
+        ),
+    )
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-conflict", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            datacenters=("EU-CZ-1",),
+            image=bundle.environment.image_id or "",
+        ),
+        transport=transport,
+    )
+    driver._preflight_passed = True
+
+    with pytest.raises(ProvisioningAttemptError, match="datacenter conflicts") as raised:
+        driver.provision(bundle, _state(bundle))
+
+    assert raised.value.retryable is False
+    assert raised.value.attempt_record["cleanup"]["pod_absence"]["verified"] is True
+    assert ("remove", "pod", "pod-conflict") in transport.runpodctl_calls
+
+
+def test_provided_pod_does_not_inherit_configured_datacenter_authority() -> None:
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-provided",
+            datacenters=("EU-CZ-1",),
+        ),
+        transport=FakeRunPodTransport(),
+    )
+
+    record = driver._provision_record(
+        {
+            "id": "pod-provided",
+            "ssh": {"ip": "203.0.113.10", "port": 22},
+        },
+        provided_pod=True,
+    )
+
+    assert record["region"] is None
+    assert record["provider_observation_basis"] == "runpodctl pod get response"
 
 
 def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None:
