@@ -255,6 +255,7 @@ class TestMJXBackendInit:
 
 
 @requires_mujoco
+@pytest.mark.optional_mjx
 class TestMJXBackendState:
     def test_init_state(self, mjx_backend, mjx_plant, key):
         """init_state produces PhysicsState with aux=None."""
@@ -271,6 +272,7 @@ class TestMJXBackendState:
 
 
 @requires_mujoco
+@pytest.mark.optional_mjx
 class TestMJXBackendSubstep:
     def test_substep_returns_physics_state(
         self, mjx_backend_single, mjx_plant, key
@@ -303,6 +305,7 @@ class TestMJXBackendSubstep:
 
 
 @requires_mujoco
+@pytest.mark.optional_mjx
 class TestMJXBackendMultiSubstep:
     def test_multi_substep_accumulation(self, mjx_backend, mjx_plant, key):
         """Multiple substeps should accumulate more change than a single one."""
@@ -328,6 +331,7 @@ class TestMJXBackendMultiSubstep:
 
 
 @requires_mujoco
+@pytest.mark.optional_mjx
 class TestMJXSkeletonStep:
     """Tests for MJXSkeleton.step() method."""
 
@@ -436,6 +440,7 @@ class TestMechanicsDiffraxBackend:
 
 
 @requires_mujoco
+@pytest.mark.optional_mjx
 class TestMechanicsMJXBackend:
     def test_mjx_backend_runs(self, mjx_plant, sim_config, key):
         """Mechanics with MJXBackend runs without error."""

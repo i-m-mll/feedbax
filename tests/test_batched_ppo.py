@@ -23,6 +23,9 @@ from feedbax.training.rl.rewards import RewardConfig
 from feedbax.training.rl.tasks import TASK_REACH, TASK_HOLD
 
 
+pytestmark = pytest.mark.optional_ppo
+
+
 @pytest.fixture
 def key():
     return jax.random.PRNGKey(42)

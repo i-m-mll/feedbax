@@ -150,11 +150,17 @@ behavior.
   invocations in parallel — not in one checkout, not across worktrees, and
   never via concurrently-dispatched subagents. Delegating sessions must pass
   this constraint down to every subagent they dispatch.
-- Run the integration test bar through `scripts/full_suite.sh`. The wrapper uses
-  `uv run --no-sync python -m pytest tests -n auto`, configures the persistent
-  JAX compilation cache, and records green-tree memo entries only for a clean Git
-  tree with the same `uv.lock`, Python, JAX, and jaxlib fingerprint. Dirty trees
-  or unresolved fingerprint fields run the suite and do not record a green memo.
+- Run the integration test bar through `scripts/full_suite.sh`. The default core
+  profile excludes MJX simulation/integration and PPO rollout/training tests.
+  Use `scripts/full_suite.sh --include-mjx`, `--include-ppo`, or
+  `--include-optional` to add those explicit tiers. Direct pytest selections use
+  `-m optional_mjx` or `-m optional_ppo`; cheap PPO API and structural contract
+  tests remain in the core profile.
+- The wrapper uses `uv run --no-sync python -m pytest tests -n auto`, configures
+  the persistent JAX compilation cache, and records green-tree memo entries only
+  for a clean Git tree with the same test profile and passthrough pytest arguments,
+  `uv.lock`, Python, JAX, and jaxlib fingerprint. Dirty trees or unresolved
+  fingerprint fields run the suite and do not record a green memo.
 - The test JAX compilation cache defaults to the shared Git common-dir cache;
   override with
   `FEEDBAX_JAX_COMPILATION_CACHE_DIR` or disable with

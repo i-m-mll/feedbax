@@ -16,6 +16,9 @@ from feedbax.training.rl.ppo import (
 )
 
 
+pytestmark = pytest.mark.optional_ppo
+
+
 B = 2  # number of bodies in test batch
 N = 64  # parallel envs (small for CPU tests)
 TOTAL_STEPS = N * 16 * 3  # 3 PPO updates
