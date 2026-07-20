@@ -2674,8 +2674,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.drivers.runpod",),
             consumed_by=("Feedbax orchestration pre-provision restoration",),
             description=(
-                "Provider-neutral authenticated binding from a governed training matrix "
-                "and its ordered rows to non-billable preflight authority."
+                "Provider-evidence-bound authenticated binding from a governed training "
+                "matrix and its ordered rows to provider-specific preflight authority."
             ),
             rejected_old_versions=(
                 f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v0",
