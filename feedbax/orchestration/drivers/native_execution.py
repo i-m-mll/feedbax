@@ -441,6 +441,7 @@ def bind_native_execution_command(
     row: RunRowSpec,
     payload_path: Path | str,
     collection_root: Path | str,
+    one_update: bool = False,
 ) -> tuple[list[str], RunRowSpec]:
     """Bind one registered native row to its staged input and output roots."""
 
@@ -466,6 +467,11 @@ def bind_native_execution_command(
             "registered native row output bindings are orchestration-owned; remove "
             f"caller-supplied options {conflicting!r}"
         )
+    if one_update and "--one-update" in normalized:
+        raise NativeExecutionContextError(
+            "shadow native update count is orchestration-owned; remove caller-supplied "
+            "--one-update"
+        )
 
     staged_payload = str(payload_path)
     row_root = Path(collection_root)
@@ -485,6 +491,8 @@ def bind_native_execution_command(
             provenance.planned_run_id,
         ]
     )
+    if one_update:
+        normalized.append("--one-update")
     bound_row = row.model_copy(
         update={
             "execution": row.execution.model_copy(

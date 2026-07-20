@@ -102,6 +102,10 @@ from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
 )
+from feedbax.contracts.shadow_launch import (
+    SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+    SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+)
 from feedbax.contracts.run_composition import (
     COMPOSITION_SCHEMA_ID,
     COMPOSITION_SCHEMA_VERSION,
@@ -2733,6 +2737,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Provider-unverified authenticated matrix authority.",
             rejected_old_versions=(f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v0",),
             required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
+        ),
+        _family(
+            "ShadowLaunchEvidence",
+            SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+            SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.shadow_launch",
+            emitted_by=("feedbax.bin.orchestrate",),
+            consumed_by=("provider-free shadow-launch result readers only",),
+            description=(
+                "Output-only proof of one provider-free local continuation update; "
+                "it is not provider readiness authority."
+            ),
+            required_tests=("tests/test_orchestration_cli.py",),
+            rejected_old_versions=(f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",),
         ),
         _family(
             "TrainingRunMatrixPreflightBinding",

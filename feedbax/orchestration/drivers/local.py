@@ -78,11 +78,13 @@ class LocalOrchestrationDriver:
         python_executable: str | None = None,
         freeze_lines: Sequence[str] | None = None,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+        one_update: bool = False,
     ) -> None:
         self.cwd = Path(cwd or Path.cwd())
         self.python_executable = python_executable or sys.executable
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
         self.input_provider_bindings = tuple(input_provider_bindings)
+        self.one_update = one_update
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
@@ -222,6 +224,7 @@ class LocalOrchestrationDriver:
             row=row,
             payload_path=bundle.run_set_dir / "inputs" / f"{row.row_id}.json",
             collection_root=paths["row_dir"],
+            one_update=self.one_update,
         )
         command = inject_native_execution_context(
             command,
