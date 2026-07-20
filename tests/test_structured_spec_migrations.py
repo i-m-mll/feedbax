@@ -320,6 +320,24 @@ def test_structured_spec_registry_rejects_explicit_unsupported_old_version() -> 
     assert "pre-release payloads were never durable" in message
 
 
+def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
+    from feedbax.contracts.shadow_launch import (
+        SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+        SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+    )
+
+    family = default_spec_registry.resolve("ShadowLaunchEvidence")
+    assert family.identity == SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID
+    assert family.current_version == SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.rejected_old_versions == (f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",)
+    with pytest.raises(UnsupportedSpecVersion):
+        default_spec_registry.migrate(
+            "ShadowLaunchEvidence",
+            {"schema_version": f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0"},
+        )
+
+
 @pytest.mark.parametrize(
     ("kind", "schema_id", "current_version"),
     [

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.shadow_launch import ShadowLaunchEvidence, ShadowLaunchRowEvidence
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.orchestration import (
     STAGE_ORDER,
@@ -39,7 +40,11 @@ from feedbax.orchestration import (
     run_authority_preflight_checks,
     run_preflight_checks,
 )
-from feedbax.orchestration.bundle import default_orchestration_root, mint_run_set_id
+from feedbax.orchestration.bundle import (
+    canonical_run_bundle_sha256,
+    default_orchestration_root,
+    mint_run_set_id,
+)
 from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
 from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.drivers.runpod import (
@@ -148,6 +153,18 @@ def build_parser() -> argparse.ArgumentParser:
             "--input-provider", action="append", default=[], metavar="NAME=ABSOLUTE_PATH"
         )
     launch.set_defaults(func=cmd_launch)
+
+    shadow_launch = subparsers.add_parser(
+        "shadow-launch",
+        help="Exercise one provider-free local continuation update through COLLECT",
+    )
+    shadow_launch.add_argument(
+        "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
+    )
+    shadow_launch.add_argument(
+        "--input-provider", action="append", default=[], metavar="NAME=ABSOLUTE_PATH"
+    )
+    shadow_launch.set_defaults(func=cmd_shadow_launch)
 
     status = subparsers.add_parser("status", help="Print current run-set status")
     status.add_argument("--run-set", required=True, help="Run-set id")
@@ -302,6 +319,91 @@ def cmd_launch(args: argparse.Namespace) -> int:
         )
         state = engine.run()
     return _state_exit_code(state)
+
+
+def cmd_shadow_launch(args: argparse.Namespace) -> int:
+    """Run the one local governed scenario without entering provider readiness stages."""
+    load_training_method_plugins(fail_on_load_error=True)
+    request_path = Path(args.assembly_request)
+    request = _load_assembly_request(request_path)
+    _require_provider_free_shadow_request(request)
+    engine = _request_engine(
+        request,
+        request_path=request_path,
+        input_provider_bindings=_input_provider_bindings(args.input_provider),
+        native_one_update=True,
+    )
+    state = engine.run(stop_after_stage="COLLECT")
+    if engine.bundle is None:
+        raise RuntimeError("shadow launch did not persist an assembled bundle")
+    bundle_path = engine.bundle.run_set_dir / "bundle.json"
+    persisted_bundle = _load_bundle(bundle_path)
+    evidence = _shadow_launch_evidence(persisted_bundle, state)
+    _write_json(evidence)
+    return _state_exit_code(state)
+
+
+def _require_provider_free_shadow_request(request: RunAssemblyRequest) -> None:
+    policy = request.deployment_policy
+    if (
+        policy.driver != "local"
+        or policy.venue != "local"
+        or policy.cloud_authorized
+        or policy.review_authorized
+    ):
+        raise ValueError(
+            "shadow-launch requires an unauthorized local DeploymentPolicy; "
+            "provider-capable requests are not eligible"
+        )
+
+
+def _shadow_launch_evidence(bundle: RunBundle, state: RunSetState) -> ShadowLaunchEvidence:
+    """Validate the bounded local result and emit non-readiness evidence only."""
+    policy = bundle.deployment_policy
+    if policy.driver != "local" or policy.venue != "local" or policy.cloud_authorized:
+        raise ValueError("shadow-launch cannot emit evidence for a provider-capable bundle")
+    if len(bundle.rows) != 1:
+        raise ValueError("shadow-launch requires exactly one assembled row")
+    if state.stage("COLLECT").status != "completed":
+        raise ValueError("shadow-launch requires a completed COLLECT stage")
+    for stage in ("CERTIFY", "TEARDOWN", "REGISTER"):
+        if state.stage(stage).status != "pending":
+            raise ValueError(f"shadow-launch must stop before {stage}")
+
+    row = bundle.rows[0]
+    if state.rows.get(row.row_id) is None or state.rows[row.row_id].status != "completed":
+        raise ValueError(f"shadow-launch row {row.row_id!r} did not complete")
+    if "--resume" not in row.launch.command:
+        raise ValueError("shadow-launch requires a native continuation row")
+    if row.execution.row_provenance is None:
+        raise ValueError("shadow-launch row lacks planned-run provenance")
+
+    row_dir = bundle.run_set_dir / "rows" / row.row_id
+    diagnostics = json.loads((row_dir / "training-diagnostics.json").read_text(encoding="utf-8"))
+    if diagnostics.get("segment_completed_batches") != 1:
+        raise ValueError("shadow-launch requires exactly one completed continuation batch")
+    try:
+        native_result = json.loads((row_dir / "stdout.log").read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "shadow-launch requires one native executor JSON result; "
+            "multiple stdout log lines are not accepted"
+        ) from exc
+    if not isinstance(native_result, dict):
+        raise ValueError("shadow-launch native executor result must be a JSON object")
+    if native_result.get("payload_binding_status") != "verified":
+        raise ValueError("shadow-launch native payload binding was not verified")
+
+    return ShadowLaunchEvidence(
+        run_set_id=bundle.run_set_id,
+        bundle_sha256=canonical_run_bundle_sha256(bundle),
+        rows=(
+            ShadowLaunchRowEvidence(
+                row_id=row.row_id,
+                planned_run_id=row.execution.row_provenance.planned_run_id,
+            ),
+        ),
+    )
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -465,13 +567,19 @@ def _driver_for_bundle(
     bundle: RunBundle,
     bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
+    native_one_update: bool = False,
 ) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
     driver_name = bundle.deployment_policy.driver
     if driver_name == "local":
         if collection_recovery_bindings:
             raise ValueError("collection recovery is only supported for a torn-down RunPod run")
-        return LocalOrchestrationDriver(input_provider_bindings=bindings)
+        return LocalOrchestrationDriver(
+            input_provider_bindings=bindings,
+            one_update=native_one_update,
+        )
     if driver_name == "runpod":
+        if native_one_update:
+            raise ValueError("native one-update runtime binding is local shadow-launch only")
         return RunPodOrchestrationDriver(
             config=_runpod_config_for_bundle(bundle),
             input_provider_bindings=bindings,
@@ -499,6 +607,7 @@ def _request_engine(
     run_set_id: str | None = None,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
+    native_one_update: bool = False,
 ) -> StageEngine:
     root = Path(request.orchestration_root).expanduser() if request.orchestration_root else request_path.parent
     context = AssemblyContext(
@@ -509,7 +618,11 @@ def _request_engine(
         request,
         context=context,
         registry=build_default_assembly_registry(),
-        driver_factory=lambda bundle: _driver_for_bundle(bundle, input_provider_bindings),
+        driver_factory=lambda bundle: _driver_for_bundle(
+            bundle,
+            input_provider_bindings,
+            native_one_update=native_one_update,
+        ),
         run_set_id=run_set_id,
         conformance_registry=build_default_check_registry(),
         interruption_probe=interruption_probe,

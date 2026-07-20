@@ -75,6 +75,7 @@ from feedbax.orchestration.conformance import (
 from feedbax.orchestration.drivers.local import LocalDriverError, LocalOrchestrationDriver
 from feedbax.orchestration.drivers.native_execution import (
     NativeExecutionContextError,
+    bind_native_execution_command,
     inject_native_execution_context,
     native_resume_checkpoint_role,
     seed_authenticated_checkpoint,
@@ -796,6 +797,89 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     )
     assert runpod_context["environment_fingerprint"] == "environment:driver-route"
     assert runpod_context["collection_root"] == "/remote/run-set/rows/science-row"
+
+
+def test_local_shadow_runtime_binding_adds_one_update_without_mutating_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration.drivers import local as local_driver_module
+
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "shadow", gain=2))
+    row = bundle.rows[0]
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="environment:shadow-route",
+        rows={row.row_id: RowState()},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[], one_update=True)
+    driver.provision(bundle, state)
+    driver.stage_inputs(bundle, state)
+    captured: dict[str, Any] = {}
+
+    class _Process:
+        pid = 12346
+
+        def poll(self) -> None:
+            return None
+
+    def capture_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        return _Process()
+
+    monkeypatch.setattr(local_driver_module.subprocess, "Popen", capture_popen)
+    driver.launch_row(bundle, row, state)
+
+    assert captured["command"].count("--one-update") == 1
+    assert row.launch.command.count("--one-update") == 0
+
+
+def test_local_ordinary_runtime_binding_does_not_add_one_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration.drivers import local as local_driver_module
+
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "ordinary", gain=2))
+    row = bundle.rows[0]
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="environment:ordinary-route",
+        rows={row.row_id: RowState()},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
+    driver.provision(bundle, state)
+    driver.stage_inputs(bundle, state)
+    captured: dict[str, Any] = {}
+
+    class _Process:
+        pid = 12347
+
+        def poll(self) -> None:
+            return None
+
+    def capture_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        return _Process()
+
+    monkeypatch.setattr(local_driver_module.subprocess, "Popen", capture_popen)
+    driver.launch_row(bundle, row, state)
+
+    assert "--one-update" not in captured["command"]
+
+
+def test_shadow_runtime_binding_rejects_caller_owned_one_update(tmp_path: Path) -> None:
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path, gain=2))
+    row = bundle.rows[0]
+
+    with pytest.raises(NativeExecutionContextError, match="update count is orchestration-owned"):
+        bind_native_execution_command(
+            [*row.launch.command, "--one-update"],
+            row=row,
+            payload_path=tmp_path / "payload.json",
+            collection_root=tmp_path / "row",
+            one_update=True,
+        )
 
 
 def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) -> None:

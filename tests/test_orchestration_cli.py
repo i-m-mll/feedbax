@@ -410,6 +410,79 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
     assert events == [("plugins", True), "request"]
 
 
+def test_shadow_launch_rejects_provider_capable_request_before_engine_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _ = _assembly_request(tmp_path, driver="runpod")
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
+    monkeypatch.setattr(orchestrate, "_load_assembly_request", lambda _path: request)
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("provider-capable shadow launch must not build an engine"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "RunPodOrchestrationDriver",
+        lambda *_args, **_kwargs: pytest.fail("shadow launch must not construct RunPod"),
+    )
+
+    assert orchestrate.main(["shadow-launch", "--assembly-request", str(request_path)]) == 1
+
+
+def test_shadow_launch_evidence_requires_one_verified_native_continuation_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row_id = "golden-row"
+    run_set_dir = tmp_path / "shadow-run"
+    row_dir = run_set_dir / "rows" / row_id
+    row_dir.mkdir(parents=True)
+    (row_dir / "training-diagnostics.json").write_text(
+        json.dumps({"segment_completed_batches": 1}), encoding="utf-8"
+    )
+    (row_dir / "stdout.log").write_text(
+        json.dumps({"payload_binding_status": "verified"}) + "\n", encoding="utf-8"
+    )
+    bundle = SimpleNamespace(
+        deployment_policy=_deployment_policy(),
+        rows=[
+            SimpleNamespace(
+                row_id=row_id,
+                launch=SimpleNamespace(command=[sys.executable, "-m", "feedbax", "--resume"]),
+                execution=SimpleNamespace(
+                    row_provenance=SimpleNamespace(planned_run_id="feedbax-training-run:golden")
+                ),
+            )
+        ],
+        run_set_dir=run_set_dir,
+        run_set_id="shadow-run",
+    )
+    state = RunSetState(
+        run_set_id="shadow-run",
+        rows={row_id: RowState(status="completed")},
+        stages={"MONITOR": StageState(status="completed"), "COLLECT": StageState(status="completed")},
+    )
+    monkeypatch.setattr(orchestrate, "canonical_run_bundle_sha256", lambda _bundle: "a" * 64)
+
+    evidence = orchestrate._shadow_launch_evidence(bundle, state)
+
+    assert evidence.provider_readiness == "not_evaluated"
+    assert evidence.exercised_through_stage == "COLLECT"
+    assert evidence.rows[0].segment_completed_batches == 1
+    assert state.stage("CERTIFY").status == "pending"
+    assert state.stage("REGISTER").status == "pending"
+
+    (row_dir / "stdout.log").write_text(
+        json.dumps({"payload_binding_status": "verified"}) + "\nextra log line\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="multiple stdout log lines are not accepted"):
+        orchestrate._shadow_launch_evidence(bundle, state)
+
+
 def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
