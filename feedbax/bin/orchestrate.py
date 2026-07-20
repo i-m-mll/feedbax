@@ -36,6 +36,7 @@ from feedbax.orchestration import (
     assemble_run_bundle,
     build_default_assembly_registry,
     build_training_run_matrix_authority,
+    run_authority_preflight_checks,
     run_preflight_checks,
 )
 from feedbax.orchestration.bundle import default_orchestration_root
@@ -201,7 +202,11 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                 context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
                 registry=build_default_assembly_registry(),
             )
-        checks = run_preflight_checks(bundle)
+        checks = (
+            run_authority_preflight_checks(bundle)
+            if args.bundle
+            else run_preflight_checks(bundle)
+        )
         if any(check.status == "fail" for check in checks):
             return EXIT_PREFLIGHT
         metadata = bundle.environment.metadata
