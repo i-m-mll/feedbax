@@ -39,12 +39,13 @@ from feedbax.orchestration import (
     run_authority_preflight_checks,
     run_preflight_checks,
 )
-from feedbax.orchestration.bundle import default_orchestration_root
+from feedbax.orchestration.bundle import default_orchestration_root, mint_run_set_id
 from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
 from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     RunPodOrchestrationDriver,
+    dry_run_launch_bundle,
     load_runpod_api_key,
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
@@ -125,6 +126,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
     )
     launch.add_argument("--driver", choices=["local", "runpod"], help="Driver override")
+    launch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and bind RunPod launch rows without contacting RunPod",
+    )
     launch.add_argument(
         "--deadman",
         action=argparse.BooleanOptionalAction,
@@ -261,13 +267,38 @@ def cmd_launch(args: argparse.Namespace) -> int:
         request = RunAssemblyRequest.model_validate(
             {**request.model_dump(mode="json"), **overrides}
         )
+    input_provider_bindings = _input_provider_bindings(args.input_provider)
+    if args.dry_run:
+        if args.resume_run_set:
+            raise ValueError("--dry-run does not support --resume-run-set")
+        if request.deployment_policy.driver != "runpod":
+            raise ValueError("--dry-run requires deployment_policy.driver='runpod'")
+        root = (
+            Path(request.orchestration_root).expanduser()
+            if request.orchestration_root
+            else request_path.parent
+        )
+        bundle = assemble_run_bundle(
+            request,
+            run_set_id=mint_run_set_id(),
+            context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
+            registry=build_default_assembly_registry(),
+        )
+        commands = dry_run_launch_bundle(
+            bundle,
+            _runpod_config_for_bundle(bundle, load_credentials=False),
+            input_provider_bindings,
+        )
+        for row, _command in zip(bundle.rows, commands, strict=True):
+            print(f"row={row.row_id} dry-run=accepted")
+        return EXIT_SUCCESS
     with RunInterruptionController() as interruption:
         engine = _request_engine(
             request,
             request_path=request_path,
             run_set_id=args.resume_run_set,
             interruption_probe=interruption.poll,
-            input_provider_bindings=_input_provider_bindings(args.input_provider),
+            input_provider_bindings=input_provider_bindings,
         )
         state = engine.run()
     return _state_exit_code(state)
@@ -510,7 +541,9 @@ def _collection_recovery_bindings(
     return tuple(bindings)
 
 
-def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
+def _runpod_config_for_bundle(
+    bundle: RunBundle, *, load_credentials: bool = True
+) -> RunPodDriverConfig:
     metadata = bundle.environment.metadata
     resources = bundle.deployment_policy.resources
     raw_patches = metadata.get("runpod_path_patches", ())
@@ -523,7 +556,7 @@ def _runpod_config_for_bundle(bundle: RunBundle) -> RunPodDriverConfig:
         ssh_port=(int(metadata["runpod_ssh_port"]) if metadata.get("runpod_ssh_port") else None),
         gpu_id=resources.gpu_id,
         datacenters=tuple(resources.regions),
-        api_key=load_runpod_api_key(),
+        api_key=load_runpod_api_key() if load_credentials else None,
         min_balance_usd=float(metadata.get("runpod_min_balance_usd", 5.0)),
         image=bundle.environment.image_id or "runpod/pytorch:latest",
         local_repos={
