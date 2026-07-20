@@ -24,6 +24,7 @@ from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.orchestration import (
     STAGE_ORDER,
     LocalOrchestrationDriver,
+    MatrixAuthorityError,
     AssemblyContext,
     RunAssemblyRequest,
     RunBundle,
@@ -34,7 +35,7 @@ from feedbax.orchestration import (
     StateLockError,
     assemble_run_bundle,
     build_default_assembly_registry,
-    build_training_run_matrix_preflight_binding,
+    build_training_run_matrix_authority,
     run_preflight_checks,
 )
 from feedbax.orchestration.bundle import default_orchestration_root
@@ -166,7 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    load_training_method_plugins(fail_on_load_error=True)
+    if not args.authority_only:
+        load_training_method_plugins(fail_on_load_error=True)
     request_path = Path(args.assembly_request)
     request = _load_assembly_request(request_path)
     if args.authority_only:
@@ -183,13 +185,16 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         if any(check.status == "fail" for check in checks):
             return EXIT_PREFLIGHT
         metadata = bundle.environment.metadata
-        _write_json(
-            build_training_run_matrix_preflight_binding(
+        try:
+            authority = build_training_run_matrix_authority(
                 bundle,
                 local_repos=metadata.get("runpod_local_repos", {}),
                 protected_refs=metadata.get("runpod_protected_refs", {}),
             )
-        )
+        except MatrixAuthorityError as exc:
+            _print_error(exc)
+            return EXIT_PREFLIGHT
+        _write_json(authority)
         return EXIT_SUCCESS
     engine = _request_engine(
         request,

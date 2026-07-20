@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from types import SimpleNamespace
+import sys
 from typing import Any
 
 import pytest
@@ -39,8 +39,8 @@ from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
-    build_training_run_matrix_preflight_binding,
 )
+from feedbax.orchestration import matrix_authority
 from feedbax.orchestration.stages import STAGE_PREFLIGHT, StageEngine
 from feedbax.orchestration.state import RunSetStateStore
 from feedbax.training.spec_storage import (
@@ -48,6 +48,15 @@ from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
     register_training_run_matrix_compiler,
 )
+
+
+_ISOLATED_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "LC_ALL": "C",
+    "PATH": os.defpath,
+}
 
 
 class RecordingTransport:
@@ -66,7 +75,7 @@ def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=repo,
-        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        env=_ISOLATED_GIT_ENV,
         check=True,
         capture_output=True,
         text=True,
@@ -86,7 +95,9 @@ def _authority_repo(root: Path) -> tuple[Path, str]:
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
-def _matrix_bundle(root: Path, *, revision: str) -> RunBundle:
+def _matrix_case(
+    root: Path, *, revision: str
+) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry, RunBundle]:
     authored = {
         "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
         "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -124,6 +135,10 @@ def _matrix_bundle(root: Path, *, revision: str) -> RunBundle:
             repo_revisions=[RepoRevision(path="science", revision=revision, dirty_allowed=False)],
             lockfile_hashes={"uv.lock": hashlib.sha256(lockfile.read_bytes()).hexdigest()},
             image_id="example.invalid/feedbax@sha256:" + "a" * 64,
+            metadata={
+                "runpod_local_repos": {"science": str(root / "science")},
+                "runpod_protected_refs": {"science": "refs/heads/main"},
+            },
         ),
         budget=BudgetPolicy(max_wall_clock_seconds=30),
         orchestration_root=str(root / "runs"),
@@ -142,8 +157,15 @@ def _matrix_bundle(root: Path, *, revision: str) -> RunBundle:
         )
 
     register_training_run_matrix_compiler(registry, allow_inline_base=True, row_lowerer=lower)
-    context = AssemblyContext(custody_root=root / "custody", repo_root=root)
-    return assemble_run_bundle(request, run_set_id="matrix-run-set", context=context, registry=registry)
+    context = AssemblyContext(custody_root=root / "runs" / "custody", repo_root=root)
+    bundle = assemble_run_bundle(
+        request, run_set_id="matrix-run-set", context=context, registry=registry
+    )
+    return request, registry, bundle
+
+
+def _matrix_bundle(root: Path, *, revision: str) -> RunBundle:
+    return _matrix_case(root, revision=revision)[2]
 
 
 def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
@@ -182,80 +204,40 @@ def test_matrix_preflight_emits_canonical_v2_without_private_paths(tmp_path: Pat
     assert str(tmp_path) not in json.dumps(evidence)
 
 
-def test_provider_free_authority_matches_runpod_but_cannot_restore_readiness(
-    tmp_path: Path,
-) -> None:
-    repo, revision = _authority_repo(tmp_path)
-    bundle = _matrix_bundle(tmp_path, revision=revision)
-    authority = build_training_run_matrix_preflight_binding(
-        bundle,
-        local_repos={"science": repo},
-        protected_refs={"science": "refs/heads/main"},
+def test_top_level_matrix_authority_export_does_not_import_runpod() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from feedbax.orchestration import build_training_run_matrix_authority; "
+            "import sys; assert 'feedbax.orchestration.drivers.runpod' not in sys.modules",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    driver = _driver(bundle, repo, RecordingTransport())
-    nested_digest = "f" * 64
-    assert authority.nested_preflight_evidence_sha256 == "0" * 64
-    assert authority.model_copy(
-        update={"nested_preflight_evidence_sha256": nested_digest}
-    ) == driver._matrix_preflight_binding(
-        bundle,
-        nested_evidence_sha256=nested_digest,
-    )
-
-    state = _completed_preflight(bundle, repo, tmp_path)
-    stage = state.stage(STAGE_PREFLIGHT)
-    state = state.with_stage(
-        STAGE_PREFLIGHT,
-        stage.model_copy(
-            update={
-                "outputs": {
-                    **stage.outputs,
-                    "driver_evidence": authority.model_dump(mode="json"),
-                }
-            }
-        ),
-    )
-    transport = RecordingTransport()
-    with pytest.raises(RunPodDriverError, match="matrix PREFLIGHT|invalid shape"):
-        _driver(bundle, repo, transport).restore_completed_preflight(bundle, state)
-    assert transport.operations == []
+    assert result.returncode == 0, result.stderr
 
 
-def test_authority_only_cli_avoids_credentials_config_driver_and_transport(
+def test_authority_only_cli_is_isolated_and_matches_real_runpod_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     repo, revision = _authority_repo(tmp_path)
-    bundle = _matrix_bundle(tmp_path, revision=revision)
-    bundle = bundle.model_copy(
-        update={
-            "environment": bundle.environment.model_copy(
-                update={
-                    "metadata": {
-                        "runpod_local_repos": {"science": str(repo)},
-                        "runpod_protected_refs": {"science": "refs/heads/main"},
-                    }
-                }
-            )
-        }
-    )
-    request = SimpleNamespace(orchestration_root=str(tmp_path))
+    request, registry, bundle = _matrix_case(tmp_path, revision=revision)
     request_path = tmp_path / "request.json"
-    request_path.write_text("{}\n", encoding="utf-8")
-
-    def assemble(*_args: Any, **kwargs: Any) -> RunBundle:
-        assert kwargs["run_set_id"] == bundle.run_set_id
-        return bundle
-
-    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
-    monkeypatch.setattr(orchestrate, "_load_assembly_request", lambda _path: request)
-    monkeypatch.setattr(orchestrate, "assemble_run_bundle", assemble)
-    monkeypatch.setattr(orchestrate, "run_preflight_checks", lambda _bundle: [])
+    request_path.write_text(request.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(orchestrate, "build_default_assembly_registry", lambda: registry)
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda **_kwargs: pytest.fail("authority-only preflight loaded plugins"),
+    )
     monkeypatch.setattr(
         orchestrate,
         "load_runpod_api_key",
-        lambda: pytest.fail("authority-only preflight loaded credentials"),
+        lambda: pytest.fail("authority-only preflight read environment/config/keychain credentials"),
     )
     monkeypatch.setattr(
         orchestrate,
@@ -269,6 +251,16 @@ def test_authority_only_cli_avoids_credentials_config_driver_and_transport(
             "authority-only preflight constructed provider driver"
         ),
     )
+    real_run = subprocess.run
+    git_calls = 0
+
+    def isolated_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal git_calls
+        assert kwargs["env"] == _ISOLATED_GIT_ENV
+        git_calls += 1
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(matrix_authority.subprocess, "run", isolated_run)
 
     assert orchestrate.main(
         [
@@ -280,10 +272,22 @@ def test_authority_only_cli_avoids_credentials_config_driver_and_transport(
             str(request_path),
         ]
     ) == 0
-    evidence = json.loads(capsys.readouterr().out)
-    assert evidence["schema_version"].endswith("training_run_matrix_preflight_binding.v1")
-    assert evidence["bundle_sha256"] == canonical_run_bundle_sha256(bundle)
-    assert evidence["nested_preflight_evidence_sha256"] == "0" * 64
+    neutral = json.loads(capsys.readouterr().out)
+    assert neutral["authority_state"] == "provider_unverified"
+    assert "nested_preflight_evidence_sha256" not in neutral
+    assert neutral["bundle_sha256"] == canonical_run_bundle_sha256(bundle)
+    state = _completed_preflight(bundle, repo, tmp_path)
+    provider = state.stage(STAGE_PREFLIGHT).outputs["driver_evidence"]
+    for key in ("matrix", "rows", "resolved_inputs", "code_authorities", "monitor", "bundle_sha256"):
+        assert provider["matrix_binding"][key] == neutral[key]
+    stage = state.stage(STAGE_PREFLIGHT)
+    state = state.with_stage(
+        STAGE_PREFLIGHT,
+        stage.model_copy(update={"outputs": {**stage.outputs, "driver_evidence": neutral}}),
+    )
+    with pytest.raises(RunPodDriverError, match="matrix PREFLIGHT|invalid shape"):
+        _driver(bundle, repo, RecordingTransport()).restore_completed_preflight(bundle, state)
+    assert git_calls >= 6
 
 
 @pytest.mark.parametrize("invalid", ["missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent", "row-identity", "missing-row", "reordered-rows"])

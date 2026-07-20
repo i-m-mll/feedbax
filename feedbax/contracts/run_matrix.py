@@ -52,6 +52,8 @@ TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID = (
 TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION = (
     f"{TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID}.v1"
 )
+TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID = "feedbax.orchestration.training_run_matrix_authority"
+TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION = f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v1"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1 = "feedbax.runpod_preflight_evidence"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.orchestration.runpod_preflight_evidence"
 RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = f"{RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1}.v1"
@@ -181,8 +183,27 @@ class TrainingRunMatrixMonitorBinding(StrictModel):
     event_paths: list[str] = Field(min_length=1)
 
 
+def _validate_matrix_authority_sets(
+    rows: list[TrainingRunMatrixRowPreflightBinding],
+    resolved_inputs: list[TrainingRunMatrixInputCustodyBinding],
+    code_authorities: list[TrainingRunMatrixCodeAuthority],
+    monitor: TrainingRunMatrixMonitorBinding,
+) -> None:
+    row_ids = [row.row_id for row in rows]
+    if len(row_ids) != len(set(row_ids)):
+        raise ValueError("matrix preflight rows must be unique")
+    if monitor.event_paths != [f"events/{row_id}.events.jsonl" for row_id in row_ids]:
+        raise ValueError("matrix monitor event paths must exactly follow ordered rows")
+    input_keys = [(item.role, item.kind, item.identifier) for item in resolved_inputs]
+    if input_keys != sorted(input_keys) or len(input_keys) != len(set(input_keys)):
+        raise ValueError("matrix input custody must be complete, unique, and canonical")
+    repos = [item.repo for item in code_authorities]
+    if repos != sorted(repos) or len(repos) != len(set(repos)):
+        raise ValueError("matrix code authorities must be unique and canonically ordered")
+
+
 class TrainingRunMatrixPreflightBinding(StrictModel):
-    """Provider-neutral durable authority binding a matrix to preflight evidence."""
+    """Provider evidence bound to authenticated matrix authority."""
 
     schema_id: Literal["feedbax.orchestration.training_run_matrix_preflight_binding"] = (
         TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID
@@ -206,19 +227,46 @@ class TrainingRunMatrixPreflightBinding(StrictModel):
 
     @model_validator(mode="after")
     def _validate_complete_ordered_sets(self) -> "TrainingRunMatrixPreflightBinding":
-        row_ids = [row.row_id for row in self.rows]
-        if len(row_ids) != len(set(row_ids)):
-            raise ValueError("matrix preflight rows must be unique")
-        expected_paths = [f"events/{row_id}.events.jsonl" for row_id in row_ids]
-        if self.monitor.event_paths != expected_paths:
-            raise ValueError("matrix monitor event paths must exactly follow ordered rows")
-        input_keys = [(item.role, item.kind, item.identifier) for item in self.resolved_inputs]
-        if input_keys != sorted(input_keys) or len(input_keys) != len(set(input_keys)):
-            raise ValueError("matrix input custody must be complete, unique, and canonical")
-        repos = [item.repo for item in self.code_authorities]
-        if repos != sorted(repos) or len(repos) != len(set(repos)):
-            raise ValueError("matrix code authorities must be unique and canonically ordered")
+        _validate_matrix_authority_sets(
+            self.rows, self.resolved_inputs, self.code_authorities, self.monitor
+        )
         return self
+
+
+class TrainingRunMatrixAuthority(StrictModel):
+    """Durable provider-unverified authority for one governed matrix."""
+
+    schema_id: Literal["feedbax.orchestration.training_run_matrix_authority"] = (
+        TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.training_run_matrix_authority.v1"] = (
+        TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION
+    )
+    authority_state: Literal["provider_unverified"] = "provider_unverified"
+    matrix: TrainingRunMatrixArtifactBinding
+    rows: list[TrainingRunMatrixRowPreflightBinding] = Field(min_length=1)
+    resolved_inputs: list[TrainingRunMatrixInputCustodyBinding]
+    code_authorities: list[TrainingRunMatrixCodeAuthority] = Field(min_length=1)
+    monitor: TrainingRunMatrixMonitorBinding
+    bundle_sha256: str
+
+    @field_validator("bundle_sha256")
+    @classmethod
+    def _validate_hash(cls, value: str) -> str:
+        _validate_digest(value, "/matrix_authority")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_complete_ordered_sets(self) -> "TrainingRunMatrixAuthority":
+        _validate_matrix_authority_sets(
+            self.rows, self.resolved_inputs, self.code_authorities, self.monitor
+        )
+        return self
+
+
+def training_run_matrix_authority_sha256(authority: TrainingRunMatrixAuthority) -> str:
+    """Return the canonical digest of provider-unverified matrix authority."""
+    return training_spec_sha256(authority.model_dump(mode="json", exclude_none=True))
 
 
 def training_run_matrix_preflight_binding_sha256(
