@@ -157,11 +157,7 @@ def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
 
 def _completed_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
     store = RunSetStateStore(root / "state.json")
-    return StageEngine(
-        bundle=bundle,
-        driver=_driver(bundle, repo, RecordingTransport()),
-        store=store,
-    ).run(stop_after_stage=STAGE_PREFLIGHT)
+    return StageEngine(bundle=bundle, driver=_driver(bundle, repo, RecordingTransport()), store=store).run(stop_after_stage=STAGE_PREFLIGHT)
 
 
 def test_matrix_preflight_emits_canonical_v2_without_private_paths(tmp_path: Path) -> None:
@@ -174,25 +170,15 @@ def test_matrix_preflight_emits_canonical_v2_without_private_paths(tmp_path: Pat
     binding = evidence["matrix_binding"]
     assert [row["row_id"] for row in binding["rows"]] == ["first", "second"]
     assert [row["locked_training_depth"] for row in binding["rows"]] == [7, 7]
-    assert binding["monitor"]["event_paths"] == [
-        f"events/{row}.events.jsonl" for row in ("first", "second")
-    ]
+    assert binding["monitor"]["event_paths"] == [f"events/{row}.events.jsonl" for row in ("first", "second")]
     authority = binding["code_authorities"][0]
-    assert (authority["repo"], authority["protected_ref"], authority["clean"]) == (
-        "science", "refs/heads/main", True
-    )
+    assert (authority["repo"], authority["protected_ref"], authority["clean"]) == ("science", "refs/heads/main", True)
     assert authority["declared_revision"] == authority["protected_revision"] == revision
     assert authority["observed_revision"] == revision
     assert str(tmp_path) not in json.dumps(evidence)
 
 
-@pytest.mark.parametrize(
-    "invalid",
-    [
-        "missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent",
-        "row-identity",
-    ],
-)
+@pytest.mark.parametrize("invalid", ["missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent", "row-identity", "missing-row", "reordered-rows"])
 def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid: str) -> None:
     repo, revision = _authority_repo(tmp_path)
     bundle = _matrix_bundle(
@@ -228,17 +214,17 @@ def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid
         execution = row.execution.model_copy(update={"row_provenance": provenance})
         bundle = bundle.model_copy(update={"rows": [row.model_copy(update={"execution": execution}), *bundle.rows[1:]]})
         driver = _driver(bundle, repo, transport)
+    elif invalid in {"missing-row", "reordered-rows"}:
+        rows = bundle.rows[:-1] if invalid == "missing-row" else list(reversed(bundle.rows))
+        bundle = bundle.model_copy(update={"rows": rows})
+        driver = _driver(bundle, repo, transport)
 
     checks = driver.preflight_checks(bundle)
-    assert [(check.name, check.status) for check in checks] == [
-        ("training-matrix-authority", "fail")
-    ]
+    assert [(check.name, check.status) for check in checks] == [("training-matrix-authority", "fail")]
     assert transport.operations == []
 
 
-@pytest.mark.parametrize(
-    "tamper", ["missing", "v1-only", "row", "monitor", "digest", "stale-code"]
-)
+@pytest.mark.parametrize("tamper", ["missing", "v1-only", "row", "monitor", "digest", "stale-code"])
 def test_matrix_restore_rejects_missing_legacy_or_tampered_evidence(
     tmp_path: Path,
     tamper: str,
@@ -266,8 +252,6 @@ def test_matrix_restore_rejects_missing_legacy_or_tampered_evidence(
         outputs = {**preflight.outputs, "driver_evidence": evidence}
     state = state.with_stage(STAGE_PREFLIGHT, preflight.model_copy(update={"outputs": outputs}))
     transport = RecordingTransport()
-    with pytest.raises(
-        RunPodDriverError, match="matrix PREFLIGHT|invalid shape|code authority"
-    ):
+    with pytest.raises(RunPodDriverError, match="matrix PREFLIGHT|invalid shape|code authority"):
         _driver(bundle, repo, transport).restore_completed_preflight(bundle, state)
     assert transport.operations == []

@@ -866,6 +866,14 @@ def expand_sweep_coordinates(
     return _expand_coordinates(axes, combination)
 
 
+def expected_ordered_matrix_row_ids(matrix: TrainingRunMatrixSpec) -> tuple[str, ...]:
+    """Return the complete authored or expanded row identity in canonical order."""
+    if matrix.rows:
+        return tuple(row.row_id for row in matrix.rows)
+    coordinates = expand_sweep_coordinates(matrix.axes, matrix.combination)
+    return tuple(f"row-{index:04d}" for index in range(len(coordinates)))
+
+
 def variation_values(variation: TrainingSweepAxisVariation) -> list[Any]:
     """Return the authored concrete values for a sweep variation."""
     if variation.kind == "explicit":
@@ -1099,6 +1107,7 @@ def _materialize_sweep_rows(
     ]
     axis_by_id = {axis.id: axis for axis in axes_with_values}
     indexed_coordinates = expand_sweep_coordinates(axes_with_values, matrix.combination)
+    expected_row_ids = expected_ordered_matrix_row_ids(matrix)
     run_set_axes = TrainingRunSetAxes(
         axes=axes_with_values,
         combination=matrix.combination,
@@ -1124,7 +1133,7 @@ def _materialize_sweep_rows(
                 patch = _patch_object({"path": axis.path, "value": value, "op": "replace"})
                 patches.append(patch)
                 authored_payload = apply_override_patches(authored_payload, [patch])
-        row_id = f"row-{index:04d}"
+        row_id = expected_row_ids[index]
         override_payloads = [
             patch.model_dump(mode="json", exclude_none=True) for patch in patches
         ]

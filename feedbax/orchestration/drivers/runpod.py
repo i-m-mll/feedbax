@@ -75,7 +75,7 @@ from feedbax.orchestration.input_materialization import (
     preflight_input_provider_bindings,
 )
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
-from feedbax.training.run_matrix import _planned_run_id
+from feedbax.training.run_matrix import _planned_run_id, expected_ordered_matrix_row_ids
 
 
 RUNPOD_CODE_EXCLUDES = (
@@ -808,6 +808,8 @@ class RunPodOrchestrationDriver:
             label="training matrix",
         )
         matrix = TrainingRunMatrixSpec.model_validate(matrix_payload)
+        if tuple(row.row_id for row in bundle.rows) != expected_ordered_matrix_row_ids(matrix):
+            raise RunPodDriverError("matrix bundle rows are incomplete or out of order")
         if training_run_intent_hash(matrix_payload) != first.intent_hash:
             raise RunPodDriverError("training matrix intent identity does not match custody")
         shared_matrix = TrainingRunMatrixArtifactBinding(
