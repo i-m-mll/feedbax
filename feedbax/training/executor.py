@@ -21,6 +21,7 @@ import numpy as np
 from pydantic import ValidationError
 
 from feedbax.contracts.checkpoints import (
+    CheckpointSegmentLineage,
     CheckpointLineageRef,
     CheckpointTransactionManifest,
 )
@@ -82,6 +83,7 @@ from feedbax.training.phase_executor import (
     PhaseProgramExecutor,
     StepGuardResult,
 )
+from feedbax.training.schedule_clocks import resolve_schedule_window
 from feedbax.training.manifest_preflight import (
     build_training_run_manifest_spec_payloads,
     preflight_training_run_manifest_payloads,
@@ -1609,9 +1611,17 @@ def _bind_restored_schedule_context(
         raise TrainingRunExecutorError(
             "nonconstant scheduled continuation requires restored_schedule_context_binder"
         )
-    origin = schedule.origin
-    schedule_origin_step = current_step if origin.kind == "segment_start" else origin.batch or 0
-    patch = binder(slots, schedule_origin_step, current_step, restored_count)
+    window = resolve_schedule_window(
+        schedule.origin,
+        lineage=CheckpointSegmentLineage(
+            start_batch=current_step,
+            segment_batch_count=continuation.additional_batches or 0,
+            parent_transaction_id="restored" if current_step else None,
+        ),
+        duration=schedule.total_steps,
+        allow_inert=schedule.allow_inert,
+    )
+    patch = binder(slots, window.start_batch, current_step, restored_count)
     if not isinstance(patch, Mapping):
         raise TrainingRunExecutorError("restored_schedule_context_binder must return a mapping")
     reserved = sorted(set(patch).intersection(_RESERVED_KERNEL_CONTEXT_KEYS))

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import equinox as eqx
 import jax
+import jax.tree as jt
 import numpy as np
 import pytest
 import jax.numpy as jnp
@@ -78,6 +79,7 @@ from feedbax.contracts.worker import (
     MappingLevelSpec,
     MetricGuardSpec,
     PhaseTransitionSpec,
+    ProgressCoordinate,
     StateSlotSpec,
     SlotAxisBindingSpec,
 )
@@ -104,13 +106,13 @@ from feedbax.training.checkpoint_custody import (
     concatenate_checkpoint_histories,
     fork_checkpoint_transaction,
     load_latest_checkpoint,
+    write_checkpoint_transaction,
 )
 from feedbax.training.executor import (
     DiagnosticsEmissionConflictError,
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
     _feedbax_owned_training_manifest_metadata,
-    _bind_restored_schedule_context,
     _method_training_trace,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
@@ -131,6 +133,7 @@ from feedbax.training.preparation import (
     materialize_execution_preparation,
     validate_materialized_execution_preparation,
 )
+from feedbax.training.optimizers import build_optimizer
 from feedbax.training.phase_executor import PhaseProgramExecutor
 from feedbax.training.worker_validation import (
     WorkerContractValidationError,
@@ -192,13 +195,19 @@ def _run_spec() -> TrainingRunSpec:
     )
 
 
-def _scheduled_continuation_spec(*, source_completed_batches: int = 12_000) -> TrainingRunSpec:
-    spec = _run_spec()
+def _scheduled_continuation_spec(
+    *,
+    origin: dict[str, object] | None = None,
+    allow_inert: bool = False,
+) -> TrainingRunSpec:
+    spec = _mapped_run_spec()
     payload = StandardSupervisedMethodPayload(
+        gradient_clip=0.125,
         optimizer=OptimizerSpec(
             type="adamw",
             lr_schedule=LrScheduleSpec(
-                origin={"kind": "segment_start"},
+                origin=origin or {"kind": "segment_start"},
+                allow_inert=allow_inert,
                 kind="warmup_cosine",
                 learning_rate_0=3e-4,
                 total_steps=3_500,
@@ -216,7 +225,7 @@ def _scheduled_continuation_spec(*, source_completed_batches: int = 12_000) -> T
             "checkpoint_progress": spec.checkpoint_progress.model_copy(
                 update={
                     "continuation": CheckpointContinuationRequest(
-                        source_completed_batches=source_completed_batches,
+                        source_completed_batches=12_000,
                         additional_batches=1,
                     )
                 }
@@ -238,61 +247,158 @@ def _mapped_run_spec() -> TrainingRunSpec:
     return spec.model_copy(update={"worker_execution": worker})
 
 
-def test_restored_schedule_context_uses_authenticated_optimizer_count(tmp_path: Path) -> None:
-    spec = _scheduled_continuation_spec(source_completed_batches=1)
-    source_spec = spec.model_copy(
-        update={
-            "checkpoint_progress": spec.checkpoint_progress.model_copy(
-                update={"continuation": None}
-            )
-        }
+def _restore_optimizer_count(state, count: int):
+    injected = state[-1]
+    hyperparams_states = dict(injected.hyperparams_states)
+    hyperparams_states["learning_rate"] = hyperparams_states["learning_rate"]._replace(
+        count=jnp.asarray(count, dtype=jnp.int32)
     )
-    initial_slots = _initial_slots(arrays=True)
-    initial_slots["optimizer"] = {"count": jnp.asarray([0.0])}
-    checkpoint_root = tmp_path / "checkpoint"
-    execute_training_run_spec(
-        source_spec,
-        initial_slots=initial_slots,
-        manifest_root=tmp_path / "source-manifests",
-        checkpoint_root=checkpoint_root,
-    )
-    observed: list[tuple[int, int, int]] = []
+    return (*state[:-1], injected._replace(count=jnp.asarray(count), hyperparams_states=hyperparams_states))
 
-    def bind(_slots, schedule_origin, current_step, optimizer_count):
-        observed.append((schedule_origin, current_step, optimizer_count))
-        return {"optimizer_authority": observed[-1]}
-    resumed = execute_training_run_spec(
-        spec,
-        preparation=ExecutionPreparationResult(
-            initial_slots=initial_slots,
-            restored_schedule_context_binder=bind,
-        ),
-        manifest_root=tmp_path / "resume-manifests",
-        checkpoint_root=checkpoint_root,
-        resume=True,
+
+def _write_mapped_schedule_checkpoint(spec: TrainingRunSpec, root: Path):
+    payload = StandardSupervisedMethodPayload.model_validate(spec.method_payload.payload)
+    optimizer = build_optimizer(
+        payload.optimizer,
+        schedule_origin_step=12_000,
+        current_step=12_000,
+        optimizer_count_at_current_step=12_000,
+        gradient_clip=payload.gradient_clip,
     )
-    assert observed == [(1, 1, 1)]
-    assert resumed.final_slots["optimizer"]["count"].tolist() == [2.0]
+    restored = _restore_optimizer_count(optimizer.init(jnp.asarray(1.0)), 12_000)
+    mapped_optimizer = jt.map(lambda leaf: jnp.stack([leaf] * 5), restored)
+    slots = {
+        "model": jnp.ones((5,)),
+        "optimizer": mapped_optimizer,
+        "prng": jnp.zeros((5, 2), dtype=jnp.uint32),
+        "batch_counter": jnp.full((5,), 12_000, dtype=jnp.int32),
+    }
+    source_spec = spec.model_copy(
+        update={"checkpoint_progress": spec.checkpoint_progress.model_copy(update={"continuation": None})}
+    )
+    write_checkpoint_transaction(
+        root,
+        run_spec=source_spec,
+        phase_program=spec.worker_execution.effective_phase.phase_program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(run_id="source", phase="train_batch", program_step=12_000),
+        slots=slots,
+        completed_training_batches=12_000,
+        metadata={"optimizer_step": 12_000},
+    )
+    return mapped_optimizer
 
 
 @pytest.mark.parametrize(
-    ("count", "binder", "message"),
+    ("origin", "allow_inert", "inert"),
     [
-        (11_999, lambda *_args: {}, "restored optimizer count disagrees"),
-        (12_000, None, "requires restored_schedule_context_binder"),
+        (None, False, False),
+        ({"kind": "absolute", "batch": 0}, False, True),
+        ({"kind": "absolute", "batch": 0}, True, False),
     ],
 )
-def test_restored_schedule_context_fails_closed(count, binder, message) -> None:
-    spec = _scheduled_continuation_spec()
-    with pytest.raises(TrainingRunExecutorError, match=message):
-        _bind_restored_schedule_context(
-            run_spec=spec,
-            resolved_method=spec.resolved_method,
-            slots={"optimizer": {"count": jnp.asarray(count)}},
-            slot_axis_bindings={},
-            kernel_context={},
-            binder=binder,
+def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
+    tmp_path: Path, origin: dict[str, object] | None, allow_inert: bool, inert: bool
+) -> None:
+    spec = _scheduled_continuation_spec(origin=origin, allow_inert=allow_inert)
+    checkpoint_root = tmp_path / "checkpoint"
+    payload = StandardSupervisedMethodPayload.model_validate(spec.method_payload.payload)
+
+    def bind(_slots, origin, current, count):
+        return {
+            "optimizer": build_optimizer(
+                payload.optimizer,
+                schedule_origin_step=origin,
+                current_step=current,
+                optimizer_count_at_current_step=count,
+                gradient_clip=payload.gradient_clip,
+            )
+        }
+
+    @eqx.filter_jit
+    def transition(model, opt_state, optimizer):
+        updates, next_state = optimizer.update(jnp.full_like(model, 10.0), opt_state, model)
+        learning_rate = optax.tree_utils.tree_get(
+            next_state,
+            "learning_rate",
+            filtering=lambda path, _value: any(
+                getattr(item, "name", None) == "hyperparams" for item in path
+            ),
         )
+        return optax.apply_updates(model, updates), next_state, learning_rate
+
+    def kernel(slots, coordinate, context):
+        del coordinate
+        model, optimizer_state, learning_rate = transition(
+            slots["model"], slots["optimizer"], context["optimizer"]
+        )
+        return {
+            "model": model,
+            "optimizer": optimizer_state,
+            "prng": slots["prng"],
+            "train_loss": learning_rate,
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    def optimizer_step(_payload, runtime):
+        return int(runtime["optimizer"][-1].count)
+
+    worker = spec.worker_execution.model_copy(deep=True)
+    worker.effective_phase = validate_worker_contract(
+        worker.method_contract, update_kernels={"feedbax.training.standard_supervised.gradient_update": kernel}
+    )
+    spec = spec.model_copy(update={"worker_execution": worker})
+    template_optimizer = _write_mapped_schedule_checkpoint(spec, checkpoint_root)
+    descriptor = replace(
+        standard_supervised_method_descriptor(),
+        contract_compiler=lambda _payload: spec.worker_execution.method_contract,
+        optimizer_step_extractor=optimizer_step,
+        update_kernels_factory=lambda _payload: {"feedbax.training.standard_supervised.gradient_update": kernel},
+    )
+    registry = TrainingMethodRegistry()
+    registry.register_descriptor(descriptor)
+    prepared_slots = {
+        "model": jnp.zeros((5,)),
+        "optimizer": template_optimizer,
+        "prng": jnp.ones((5, 2), dtype=jnp.uint32),
+        "objective": jnp.zeros((5,)),
+        "train_loss": jnp.zeros((5,)),
+        "batch_counter": jnp.zeros((5,), dtype=jnp.int32),
+    }
+    preparation = _build_materialized_execution_preparation(
+        request=ExecutionPreparationRequest(run_spec=spec),
+        provider_identity="tests.restored_schedule",
+        initial_slots=prepared_slots,
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        restored_schedule_context_binder=bind,
+        coordinate_order=tuple((AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5)),
+    )
+    def execute():
+        return execute_training_run_spec(
+            spec, preparation=preparation, registry=registry,
+            manifest_root=tmp_path / "manifests", checkpoint_root=checkpoint_root, resume=True
+        )
+    if inert:
+        with pytest.raises(ValueError, match="absolute schedule window lies entirely before"):
+            execute()
+        return
+    resumed = execute()
+    _, bindings = resolve_execution_mapping(spec.worker_execution)
+    assert payload.gradient_clip == 0.125
+    assert _synchronized_optimizer_step(
+        optimizer_step, payload, resumed.final_slots, bindings
+    ) == 12_001
+    if origin is None:
+        assert jnp.asarray(resumed.final_slots["train_loss"]).view(jnp.uint32).tolist() == [0x37FBA890] * 5
+    assert not jnp.array_equal(resumed.final_slots["model"], jnp.ones((5,)))
+    assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jt.leaves(resumed.final_slots) if isinstance(leaf, jax.Array))
+
+
+def test_noncallable_restored_schedule_binder_fails_at_preparation() -> None:
+    with pytest.raises(TypeError, match="must be callable"):
+        ExecutionPreparationResult({}, restored_schedule_context_binder=object())
 
 
 def _mapped_diagnostics_run_spec() -> TrainingRunSpec:

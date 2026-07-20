@@ -87,7 +87,6 @@ class ExecutionPreparationRequest:
 
 RestoredScheduleContextBinder = Callable[[Mapping[str, Any], int, int, int], Mapping[str, Any]]
 
-
 @dataclass(frozen=True)
 class ExecutionPreparationResult:
     """Narrow set of runtime-only values a provider may supply to the executor."""
@@ -97,6 +96,10 @@ class ExecutionPreparationResult:
     loss_service: LossService | None = None
     resume_slot_transform: ResumeSlotTransform | None = None
     restored_schedule_context_binder: RestoredScheduleContextBinder | None = None
+
+    def __post_init__(self) -> None:
+        if self.restored_schedule_context_binder is not None and not callable(self.restored_schedule_context_binder):
+            raise TypeError("restored_schedule_context_binder must be callable when provided")
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,8 @@ class ExecutionPreparationPlan:
             raise TypeError("loss_service must be a LossService when provided")
         if self.resume_slot_transform is not None and not callable(self.resume_slot_transform):
             raise TypeError("resume_slot_transform must be callable when provided")
+        if self.restored_schedule_context_binder is not None and not callable(self.restored_schedule_context_binder):
+            raise TypeError("restored_schedule_context_binder must be callable when provided")
         object.__setattr__(
             self,
             "shared_slots",
@@ -512,6 +517,8 @@ def validate_materialized_execution_preparation(
         raise ExecutionPreparationError("materialized preparation mapping structure is stale")
     if dict(preparation_bindings) != bindings:
         raise ExecutionPreparationError("materialized preparation mapping structure is stale")
+    if preparation.restored_schedule_context_binder is not None and not callable(preparation.restored_schedule_context_binder):
+        raise ExecutionPreparationError("restored_schedule_context_binder must be callable")
     initial_slots = getattr(preparation, "initial_slots", None)
     if not isinstance(initial_slots, Mapping):
         raise ExecutionPreparationError("materialized preparation initial_slots are invalid")
