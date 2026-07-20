@@ -123,7 +123,11 @@ def _matrix() -> EvaluationRunMatrixSpec:
                     RowDerivation(
                         output_path="params.derived_gain",
                         query=ValueQuery(item="row", path="params.gain"),
-                    )
+                    ),
+                    RowDerivation(
+                        output_path="params.derived_gain_copy",
+                        query=ValueQuery(item="row", path="params.derived_gain"),
+                    ),
                 ],
             ),
             MatrixRow(
@@ -140,7 +144,11 @@ def test_evaluation_matrix_applies_deltas_before_per_row_derivation() -> None:
     rows = materialize_evaluation_run_matrix(_matrix())
 
     assert [row.row_id for row in rows] == ["control", "treatment"]
-    assert rows[0].payload.params == {"gain": 2.0, "derived_gain": 2.0}
+    assert rows[0].payload.params == {
+        "gain": 2.0,
+        "derived_gain": 2.0,
+        "derived_gain_copy": 2.0,
+    }
     assert rows[1].payload.params == {"gain": 3.0, "derived_gain": 0.0}
     assert rows[0].output_path == "control/output.json"
     assert rows[0].spec_path == "control/spec.json"

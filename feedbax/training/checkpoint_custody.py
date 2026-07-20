@@ -61,6 +61,8 @@ from feedbax.contracts.checkpoints import (
     SlotLeafContentDigest,
     SlotLeafFingerprint,
     StructuralAbiFingerprint,
+    structural_abi_content_sha256,
+    structural_abi_leaf_content_projection,
 )
 from feedbax.contracts.manifest import (
     ArtifactRef,
@@ -447,6 +449,38 @@ class CheckpointForkPlanBindings:
     population_member_ids: Mapping[str, Mapping[str, Sequence[str]]] = dataclass_field(
         default_factory=dict
     )
+
+
+@dataclass(frozen=True)
+class CheckpointForkDerivedDigestDifference:
+    """One exact stored-versus-candidate derived-digest difference."""
+
+    target_id: str
+    path: str
+    stored: str | None
+    candidate: str | None
+
+
+@dataclass(frozen=True)
+class CheckpointForkDerivedDigestComparison:
+    """Read-only candidate rebuild and deterministic stored-lock comparison."""
+
+    candidates: Mapping[str, CheckpointForkCompatibilityProjection]
+    differences: tuple[CheckpointForkDerivedDigestDifference, ...]
+
+    @property
+    def matches_stored_lock(self) -> bool:
+        """Whether every stored compatibility digest equals its candidate."""
+        return not self.differences
+
+
+@dataclass(frozen=True)
+class CheckpointForkPlanRelockResult:
+    """Explicit compatibility re-lock result with required re-qualification."""
+
+    plan: CheckpointForkPlan
+    comparison: CheckpointForkDerivedDigestComparison
+    requalification_requirements: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -2089,9 +2123,7 @@ def _validate_checkpoint_transaction_integrity_records(
             raise CheckpointReferenceResolutionError(
                 f"checkpoint slot {name!r} content root is stale"
             )
-        expected_fingerprint = _canonical_hash(
-            _structural_abi_content_payload(fingerprint.treedef, fingerprint.leaves)
-        )
+        expected_fingerprint = structural_abi_content_sha256(fingerprint)
         if fingerprint.fingerprint_sha256 != expected_fingerprint:
             raise CheckpointReferenceResolutionError(
                 f"checkpoint slot {name!r} structural ABI fingerprint is stale"
@@ -3088,64 +3120,155 @@ def derive_checkpoint_fork_compatibility_projection(
     )
 
 
-def _validate_checkpoint_fork_compatibility(
-    target: CheckpointForkTarget,
-    run_spec: TrainingRunSpec,
-    phase_program: PhaseProgramSpec,
-    slot_templates: Mapping[str, Any],
-    population_member_ids: Mapping[str, Sequence[str]],
-) -> None:
-    actual = derive_checkpoint_fork_compatibility_projection(
-        run_spec,
-        phase_program,
-        slot_templates,
-        population_member_ids=(
-            population_member_ids if target.population_member_ids_ref is not None else None
-        ),
-    )
-    declared = target.compatibility
-    for label, declared_value, actual_value in (
+def _checkpoint_fork_compatibility_differences(
+    target_id: str,
+    stored: CheckpointForkCompatibilityProjection,
+    candidate: CheckpointForkCompatibilityProjection,
+) -> tuple[CheckpointForkDerivedDigestDifference, ...]:
+    differences: list[CheckpointForkDerivedDigestDifference] = []
+    for path, stored_value, candidate_value in (
         (
-            "run-contract algorithm",
-            declared.run_contract_algorithm_version,
-            actual.run_contract_algorithm_version,
+            "/compatibility/run_contract_algorithm_version",
+            stored.run_contract_algorithm_version,
+            candidate.run_contract_algorithm_version,
         ),
         (
-            "run-contract hash domain",
-            declared.run_contract_hash_domain,
-            actual.run_contract_hash_domain,
+            "/compatibility/run_contract_hash_domain",
+            stored.run_contract_hash_domain,
+            candidate.run_contract_hash_domain,
         ),
         (
-            "run-contract projection sha256",
-            declared.run_contract_projection_sha256,
-            actual.run_contract_projection_sha256,
+            "/compatibility/run_contract_projection_sha256",
+            stored.run_contract_projection_sha256,
+            candidate.run_contract_projection_sha256,
         ),
         (
-            "population member ids sha256",
-            declared.population_member_ids_sha256,
-            actual.population_member_ids_sha256,
+            "/compatibility/population_member_ids_sha256",
+            stored.population_member_ids_sha256,
+            candidate.population_member_ids_sha256,
         ),
     ):
-        if declared_value != actual_value:
-            raise CheckpointCompatibilityError(
-                f"checkpoint fork target {target.target_id!r} {label} mismatch; "
-                f"declared={declared_value!r} actual={actual_value!r}"
+        if stored_value != candidate_value:
+            differences.append(
+                CheckpointForkDerivedDigestDifference(
+                    target_id=target_id,
+                    path=path,
+                    stored=stored_value,
+                    candidate=candidate_value,
+                )
             )
-    declared_slots = set(declared.slot_structural_abi_sha256)
-    actual_slots = set(actual.slot_structural_abi_sha256)
-    if declared_slots != actual_slots:
-        raise CheckpointCompatibilityError(
-            f"checkpoint fork target {target.target_id!r} compatibility slot coverage "
-            f"mismatch; declared={sorted(declared_slots)!r} actual={sorted(actual_slots)!r}"
+    stored_slots = stored.slot_structural_abi_sha256
+    candidate_slots = candidate.slot_structural_abi_sha256
+    for slot in sorted(set(stored_slots) | set(candidate_slots)):
+        stored_value = stored_slots.get(slot)
+        candidate_value = candidate_slots.get(slot)
+        if stored_value != candidate_value:
+            differences.append(
+                CheckpointForkDerivedDigestDifference(
+                    target_id=target_id,
+                    path=f"/compatibility/slot_structural_abi_sha256/{slot}",
+                    stored=stored_value,
+                    candidate=candidate_value,
+                )
+            )
+    return tuple(differences)
+
+
+def rebuild_checkpoint_fork_derived_digests(
+    plan: CheckpointForkPlan,
+    bindings: CheckpointForkPlanBindings,
+) -> CheckpointForkDerivedDigestComparison:
+    """Rebuild all target compatibility candidates without modifying ``plan``.
+
+    Candidate values come only from each target's existing run-contract and
+    structural-ABI authorities. Missing bindings are errors; this routine never
+    substitutes stored values for absent runtime inputs.
+    """
+    candidates: dict[str, CheckpointForkCompatibilityProjection] = {}
+    differences: list[CheckpointForkDerivedDigestDifference] = []
+    for target in plan.targets:
+        run_spec = _require_plan_binding(bindings.run_specs, target.run_spec_ref, kind="run spec")
+        slot_templates = _require_plan_binding(
+            bindings.slot_templates,
+            target.slot_template_ref,
+            kind="slot template",
         )
-    for slot in sorted(actual_slots):
-        declared_hash = declared.slot_structural_abi_sha256[slot]
-        actual_hash = actual.slot_structural_abi_sha256[slot]
-        if declared_hash != actual_hash:
-            raise CheckpointCompatibilityError(
-                f"checkpoint fork target {target.target_id!r} slot {slot!r} compatibility "
-                f"ABI mismatch; declared={declared_hash!r} actual={actual_hash!r}"
+        population_member_ids = (
+            _require_plan_binding(
+                bindings.population_member_ids,
+                target.population_member_ids_ref,
+                kind="population member ids",
             )
+            if target.population_member_ids_ref is not None
+            else None
+        )
+        candidate = derive_checkpoint_fork_compatibility_projection(
+            run_spec,
+            run_spec.worker_execution.method_contract.phase_program,
+            slot_templates,
+            population_member_ids=population_member_ids,
+        )
+        candidates[target.target_id] = candidate
+        differences.extend(
+            _checkpoint_fork_compatibility_differences(target.target_id, target.compatibility, candidate)
+        )
+    return CheckpointForkDerivedDigestComparison(
+        candidates=MappingProxyType(candidates),
+        differences=tuple(differences),
+    )
+
+
+def _checkpoint_fork_authored_projection(plan: CheckpointForkPlan) -> dict[str, Any]:
+    """Return every plan field except the per-target derived compatibility lock."""
+    projection = plan.model_dump(mode="json", exclude_none=True)
+    for target in projection["targets"]:
+        del target["compatibility"]
+    return projection
+
+
+def _replace_checkpoint_fork_compatibility_locks(
+    plan: CheckpointForkPlan,
+    targets: Sequence[CheckpointForkTarget],
+) -> CheckpointForkPlan:
+    """Accept replacement target rows only when authored plan fields are identical."""
+    relocked = plan.model_copy(update={"targets": list(targets)})
+    if _checkpoint_fork_authored_projection(relocked) != _checkpoint_fork_authored_projection(plan):
+        raise CheckpointCompatibilityError("checkpoint fork re-lock attempted an authored-field change")
+    return relocked
+
+
+def relock_checkpoint_fork_derived_digests(
+    plan: CheckpointForkPlan,
+    bindings: CheckpointForkPlanBindings,
+    *,
+    requalification_requirements: Sequence[str],
+) -> CheckpointForkPlanRelockResult:
+    """Explicitly replace stale derived locks and return re-qualification duties.
+
+    This is the sole lock-mutating API. It refuses a no-op refresh and preserves
+    all authored plan fields, including source, target routing, transforms,
+    policies, and metadata.
+    """
+    requirements = tuple(requirement.strip() for requirement in requalification_requirements)
+    if not requirements or any(not requirement for requirement in requirements):
+        raise CheckpointCompatibilityError(
+            "checkpoint fork re-lock requires non-empty re-qualification requirements"
+        )
+    comparison = rebuild_checkpoint_fork_derived_digests(plan, bindings)
+    if comparison.matches_stored_lock:
+        raise CheckpointCompatibilityError("checkpoint fork re-lock requires a derived-digest difference")
+    relocked = _replace_checkpoint_fork_compatibility_locks(
+        plan,
+        [
+            target.model_copy(update={"compatibility": comparison.candidates[target.target_id]})
+            for target in plan.targets
+        ],
+    )
+    return CheckpointForkPlanRelockResult(
+        plan=relocked,
+        comparison=comparison,
+        requalification_requirements=requirements,
+    )
 
 
 def _coerce_checkpoint_fork_plan(
@@ -3308,12 +3431,6 @@ def _prepare_checkpoint_fork_plan(
         assert record.implementation_sha256 is not None
         registry.resolve(record.identity, record.version, record.implementation_sha256)
     for target in plan.targets:
-        _require_plan_binding(bindings.run_specs, target.run_spec_ref, kind="run spec")
-        _require_plan_binding(
-            bindings.slot_templates,
-            target.slot_template_ref,
-            kind="slot template",
-        )
         policy = target.history_policy
         if policy.segment_history_template_ref is not None:
             _require_plan_binding(
@@ -3321,12 +3438,17 @@ def _prepare_checkpoint_fork_plan(
                 policy.segment_history_template_ref,
                 kind="segment history template",
             )
-        if target.population_member_ids_ref is not None:
-            _require_plan_binding(
-                bindings.population_member_ids,
-                target.population_member_ids_ref,
-                kind="population member ids",
+
+    digest_comparison = rebuild_checkpoint_fork_derived_digests(plan, bindings)
+    if not digest_comparison.matches_stored_lock:
+        raise CheckpointCompatibilityError(
+            "checkpoint fork compatibility lock differs from authoritative projections: "
+            + "; ".join(
+                f"target={item.target_id!r} path={item.path} "
+                f"stored={item.stored!r} candidate={item.candidate!r}"
+                for item in digest_comparison.differences
             )
+        )
 
     source = _load_latest_checkpoint_transaction(source_root)
     source_axes = {
@@ -3371,7 +3493,6 @@ def _prepare_checkpoint_fork_plan(
             target.slot_template_ref,
             kind="slot template",
         )
-        phase_program = run_spec.worker_execution.method_contract.phase_program
         population_ids = (
             {}
             if target.population_member_ids_ref is None
@@ -3381,13 +3502,7 @@ def _prepare_checkpoint_fork_plan(
                 kind="population member ids",
             )
         )
-        _validate_checkpoint_fork_compatibility(
-            target,
-            run_spec,
-            phase_program,
-            expected_slots,
-            population_ids,
-        )
+        phase_program = run_spec.worker_execution.method_contract.phase_program
         barrier, _ = _resolve_plan_barrier(source, target, phase_program)
         slots = dict(common_slots)
         changed_slots = set(common_changed)
@@ -4665,13 +4780,15 @@ def _structural_abi_fingerprint_from_leaves(
     leaves: Sequence[SlotLeafFingerprint],
 ) -> StructuralAbiFingerprint:
     environment_provenance = _serializer_versions()
-    payload = _structural_abi_content_payload(treedef, leaves)
-    return StructuralAbiFingerprint(
+    fingerprint = StructuralAbiFingerprint(
         treedef=treedef,
         leaf_count=len(leaves),
         leaves=list(leaves),
         environment_provenance=environment_provenance,
-        fingerprint_sha256=_canonical_hash(payload),
+        fingerprint_sha256="",
+    )
+    return fingerprint.model_copy(
+        update={"fingerprint_sha256": structural_abi_content_sha256(fingerprint)}
     )
 
 
@@ -4712,7 +4829,7 @@ def _structural_abi_leaf_diffs(
                     path=actual_leaf.path,
                     field="leaf",
                     recorded="<missing>",
-                    actual=_leaf_structural_content_payload(actual_leaf),
+                    actual=structural_abi_leaf_content_projection(actual_leaf),
                 )
             )
             continue
@@ -4722,7 +4839,7 @@ def _structural_abi_leaf_diffs(
                 _StructuralAbiLeafDiff(
                     path=recorded_leaf.path,
                     field="leaf",
-                    recorded=_leaf_structural_content_payload(recorded_leaf),
+                    recorded=structural_abi_leaf_content_projection(recorded_leaf),
                     actual="<missing>",
                 )
             )
@@ -5518,40 +5635,12 @@ def _leaf_fingerprint(path: Any, leaf: Any) -> SlotLeafFingerprint:
     )
 
 
-def _structural_abi_content_payload(
-    treedef: str,
-    leaves: Sequence[SlotLeafFingerprint],
-) -> dict[str, Any]:
-    return {
-        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
-        "treedef": treedef,
-        "leaf_count": len(leaves),
-        "leaves": [_leaf_structural_content_payload(leaf) for leaf in leaves],
-    }
-
-
-def _leaf_structural_content_payload(leaf: SlotLeafFingerprint) -> dict[str, Any]:
-    payload = leaf.model_dump(mode="json", exclude_none=True)
-    return {
-        key: payload[key]
-        for key in (
-            "path",
-            "leaf_type",
-            "shape",
-            "dtype",
-            "weak_type",
-            "static_repr_sha256",
-        )
-        if key in payload
-    }
-
-
 def _semantic_structural_abi_sha256(fingerprint: StructuralAbiFingerprint) -> str:
     leaves = [
         leaf.model_copy(update={"leaf_type": _canonical_leaf_type(leaf.leaf_type)})
         for leaf in fingerprint.leaves
     ]
-    return _canonical_hash(_structural_abi_content_payload(fingerprint.treedef, leaves))
+    return structural_abi_content_sha256(fingerprint.model_copy(update={"leaves": leaves}))
 
 
 def _canonical_leaf_type(leaf_type: str) -> str:

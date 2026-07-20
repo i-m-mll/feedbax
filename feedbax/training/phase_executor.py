@@ -350,6 +350,7 @@ class PhaseProgramExecutor:
         checkpoint_interval: int | None = None,
         progress_interval: int | None = None,
         include_completed_batches_in_progress: bool = False,
+        one_update: bool = False,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier.
 
@@ -359,6 +360,11 @@ class PhaseProgramExecutor:
         """
         self._validate_interval(checkpoint_interval, name="checkpoint_interval")
         self._validate_interval(progress_interval, name="progress_interval")
+        if not isinstance(one_update, bool):
+            raise WorkerContractValidationError(
+                "/runtime/one_update",
+                "one_update must be a boolean",
+            )
         progress: list[ProgressCoordinate] = []
         checkpoint_context = dict(context or {})
         mapped_kernels = {
@@ -491,6 +497,16 @@ class PhaseProgramExecutor:
                     last_progress_batch = completed_batches
                     if progress_callback is not None:
                         progress_callback(_copy_progress_coordinate(observed_coordinate))
+                if one_update:
+                    saved_checkpoint = self._save_phase_barrier(
+                        phase.name,
+                        coordinate,
+                        current_slots,
+                    )
+                    coordinate = coordinate.model_copy(
+                        update={"completed_barrier": saved_checkpoint.barrier}
+                    )
+                    return self._result(current_slots, coordinate, progress)
                 if checkpoint_interval is not None and self._interval_due(
                     completed_batches,
                     checkpoint_interval,

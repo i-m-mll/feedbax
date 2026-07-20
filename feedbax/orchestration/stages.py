@@ -50,6 +50,7 @@ from feedbax.orchestration.drivers.native_execution import (
 )
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
+from feedbax.orchestration.revision import FeedbaxRevisionError, assert_feedbax_revision_pin
 from feedbax.orchestration import schedule_eval
 from feedbax.orchestration.state import (
     PreflightCheckEntry,
@@ -1328,6 +1329,10 @@ class StageEngine:
         return [row for row in self.bundle.rows if state.rows[row.row_id].status == "pending"]
 
     def _launch_one(self, row: RunRowSpec, state: RunSetState) -> RunSetState:
+        try:
+            assert_feedbax_revision_pin(self.bundle.feedbax_revision)
+        except FeedbaxRevisionError as exc:
+            raise OrchestrationStageError(str(exc)) from exc
         outputs = self.driver.launch_row(self.bundle, row, state)
         output_status = outputs.get("status")
         status = "failed" if output_status == "failed" else "launched"
@@ -1661,6 +1666,12 @@ def _run_static_preflight_checks(
 ) -> list[PreflightCheckEntry]:
     checks: list[PreflightCheckEntry] = []
     checks.append(_check("schema-current", bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION))
+    try:
+        observed_revision = assert_feedbax_revision_pin(bundle.feedbax_revision)
+    except FeedbaxRevisionError as exc:
+        checks.append(_check("feedbax-revision-pin", False, detail=str(exc)))
+    else:
+        checks.append(_check("feedbax-revision-pin", True, observed=observed_revision))
     checks.append(_check("row-identity", True, observed=[row.row_id for row in bundle.rows]))
     checks.append(_check("budget-presence", bundle.budget.max_wall_clock_seconds > 0))
     checks.append(

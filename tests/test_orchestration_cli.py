@@ -57,6 +57,7 @@ from feedbax.orchestration import (
     assemble_run_bundle,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
+from feedbax.orchestration.drivers import runpod as runpod_driver_module
 from feedbax.orchestration.conformance import CheckRegistry, pass_check
 from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
 from feedbax.orchestration.stages import PreflightFailed
@@ -407,6 +408,79 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
 
     assert orchestrate.main([command, "--assembly-request", str(request_path)]) == 0
     assert events == [("plugins", True), "request"]
+
+
+def test_shadow_launch_rejects_provider_capable_request_before_engine_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _ = _assembly_request(tmp_path, driver="runpod")
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
+    monkeypatch.setattr(orchestrate, "_load_assembly_request", lambda _path: request)
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("provider-capable shadow launch must not build an engine"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "RunPodOrchestrationDriver",
+        lambda *_args, **_kwargs: pytest.fail("shadow launch must not construct RunPod"),
+    )
+
+    assert orchestrate.main(["shadow-launch", "--assembly-request", str(request_path)]) == 1
+
+
+def test_shadow_launch_evidence_requires_one_verified_native_continuation_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row_id = "golden-row"
+    run_set_dir = tmp_path / "shadow-run"
+    row_dir = run_set_dir / "rows" / row_id
+    row_dir.mkdir(parents=True)
+    (row_dir / "training-diagnostics.json").write_text(
+        json.dumps({"segment_completed_batches": 1}), encoding="utf-8"
+    )
+    (row_dir / "stdout.log").write_text(
+        json.dumps({"payload_binding_status": "verified"}) + "\n", encoding="utf-8"
+    )
+    bundle = SimpleNamespace(
+        deployment_policy=_deployment_policy(),
+        rows=[
+            SimpleNamespace(
+                row_id=row_id,
+                launch=SimpleNamespace(command=[sys.executable, "-m", "feedbax", "--resume"]),
+                execution=SimpleNamespace(
+                    row_provenance=SimpleNamespace(planned_run_id="feedbax-training-run:golden")
+                ),
+            )
+        ],
+        run_set_dir=run_set_dir,
+        run_set_id="shadow-run",
+    )
+    state = RunSetState(
+        run_set_id="shadow-run",
+        rows={row_id: RowState(status="completed")},
+        stages={"MONITOR": StageState(status="completed"), "COLLECT": StageState(status="completed")},
+    )
+    monkeypatch.setattr(orchestrate, "canonical_run_bundle_sha256", lambda _bundle: "a" * 64)
+
+    evidence = orchestrate._shadow_launch_evidence(bundle, state)
+
+    assert evidence.provider_readiness == "not_evaluated"
+    assert evidence.exercised_through_stage == "COLLECT"
+    assert evidence.rows[0].segment_completed_batches == 1
+    assert state.stage("CERTIFY").status == "pending"
+    assert state.stage("REGISTER").status == "pending"
+
+    (row_dir / "stdout.log").write_text(
+        json.dumps({"payload_binding_status": "verified"}) + "\nextra log line\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="multiple stdout log lines are not accepted"):
+        orchestrate._shadow_launch_evidence(bundle, state)
 
 
 def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
@@ -828,7 +902,7 @@ def test_resume_loads_training_method_plugins_before_running(
     assert calls[1][0] == "run"
 
 
-@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5", "v6"])
 def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
     path = tmp_path / "bundle-v1.json"
     payload = _bundle(tmp_path).model_dump(mode="json")
@@ -864,6 +938,47 @@ def test_launch_driver_override_conflict_fails_before_engine_creation(
     assert orchestrate.main(
         ["launch", "--assembly-request", str(path), "--driver", "runpod"]
     ) == orchestrate.EXIT_OTHER
+
+
+def test_launch_dry_run_binds_rows_without_credentials_or_stage_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request, _ = _assembly_request(tmp_path, driver="runpod")
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    bundle = _bundle(tmp_path / "bundle", driver="runpod")
+    monkeypatch.setattr(orchestrate, "assemble_run_bundle", lambda *_args, **_kwargs: bundle)
+    monkeypatch.setattr(orchestrate, "load_training_method_plugins", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        orchestrate,
+        "load_runpod_api_key",
+        lambda: pytest.fail("dry-run must not load RunPod credentials"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not create a stage engine"),
+    )
+    monkeypatch.setattr(
+        runpod_driver_module,
+        "SubprocessRunPodTransport",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not construct a transport"),
+    )
+
+    assert orchestrate.main(["launch", "--assembly-request", str(path), "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    assert "row=row-a dry-run=accepted" in output
+
+
+def test_launch_dry_run_rejects_local_deployment_policy(tmp_path: Path) -> None:
+    request, _ = _assembly_request(tmp_path, driver="local")
+    path = _write_request(request, tmp_path / "assembly-request.json")
+
+    assert orchestrate.main(["launch", "--assembly-request", str(path), "--dry-run"]) == (
+        orchestrate.EXIT_OTHER
+    )
 
 
 def test_launch_cli_exposes_deadman_request_overrides() -> None:

@@ -342,6 +342,7 @@ class TrainingRunExecutionResult:
     final_coordinate: ProgressCoordinate
     checkpoint_writes: tuple[CheckpointWriteResult, ...]
     history_events: tuple[dict[str, Any], ...]
+    payload_binding_status: Literal["verified", "not_bound"]
 
 
 class StreamingCheckpointStore(InMemoryCheckpointStore):
@@ -517,6 +518,7 @@ def execute_training_run_spec(
     resume: bool = False,
     resume_slot_transform: ResumeSlotTransform | None = None,
     stop_after_barrier: str | None = None,
+    one_update: bool = False,
     manifest_conflict_policy: ManifestConflictPolicy = "error",
     issues: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -582,8 +584,10 @@ def execute_training_run_spec(
     else:
         restored_schedule_context_binder = None
     _validate_checkpoint_progress_policy(run_spec)
+    if not isinstance(one_update, bool):
+        raise TrainingRunExecutorError("one_update must be a boolean")
     producer_context = _validate_execution_context(execution_context)
-    _validate_execution_payload_binding(
+    payload_binding_status = _validate_execution_payload_binding(
         spec,
         run_spec=run_spec,
         execution_context=producer_context,
@@ -918,6 +922,7 @@ def execute_training_run_spec(
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
             include_completed_batches_in_progress=method_contract.training_diagnostics is not None,
+            one_update=one_update,
         )
         if method_observation_buffer is not None:
             method_observation_buffer.flush()
@@ -1121,6 +1126,7 @@ def execute_training_run_spec(
             final_coordinate=interrupted.coordinate,
             checkpoint_writes=tuple(checkpoint_writes),
             history_events=tuple(history_events),
+            payload_binding_status=payload_binding_status,
         )
     except Exception as exc:
         if run_event_emitter is not None:
@@ -1145,6 +1151,7 @@ def execute_training_run_spec(
         final_coordinate=execution.coordinate,
         checkpoint_writes=tuple(checkpoint_writes),
         history_events=tuple(history_events),
+        payload_binding_status=payload_binding_status,
     )
 
 
@@ -1392,11 +1399,11 @@ def _validate_execution_payload_binding(
     *,
     run_spec: TrainingRunSpec,
     execution_context: NativeExecutionProducerContext | None,
-) -> None:
-    """Fail closed when executed payload bytes drift from the assembly envelope."""
+) -> Literal["verified", "not_bound"]:
+    """Fail closed when an assembly envelope disagrees with the executed payload."""
 
     if execution_context is None:
-        return
+        return "not_bound"
     payload = (
         run_spec.model_dump(mode="json", exclude_none=True)
         if isinstance(supplied_spec, TrainingRunSpec)
@@ -1428,10 +1435,10 @@ def _validate_execution_payload_binding(
                 f"sha256; artifact_id={artifact_digest}, sha256={ref.sha256}"
             )
     if ref.uri is None:
-        return
+        return "verified"
     custody_path = _local_custody_path(ref.uri)
     if custody_path is None:
-        return
+        return "verified"
     try:
         if not custody_path.is_file():
             raise TrainingRunExecutorError(
@@ -1462,6 +1469,7 @@ def _validate_execution_payload_binding(
             "/execution_context/execution/payload custody document differs from the "
             "executed TrainingRunSpec"
         )
+    return "verified"
 
 
 def _authoritative_training_spec_payload_ref(

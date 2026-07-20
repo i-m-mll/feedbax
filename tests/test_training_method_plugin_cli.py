@@ -392,7 +392,8 @@ def test_execute_cli_routes_resume_to_zero_level_plan(monkeypatch, tmp_path, cap
         cli_module,
         "execute_training_run_spec",
         lambda *_args, **_kwargs: SimpleNamespace(
-            run_id="run", status="completed", manifest_path=tmp_path / "manifest.json",
+            run_id="run", status="completed", payload_binding_status="not_bound",
+            manifest_path=tmp_path / "manifest.json",
             manifest=SimpleNamespace(model_dump=lambda **_kwargs: {}),
         ),
     )

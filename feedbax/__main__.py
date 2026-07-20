@@ -264,6 +264,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     execute_parser.add_argument("--resume", action="store_true")
     execute_parser.add_argument("--stop-after-barrier")
     execute_parser.add_argument(
+        "--one-update",
+        action="store_true",
+        help="Execute one native update, checkpoint it, and exit successfully.",
+    )
+    execute_parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Disable the default stderr progress printer.",
@@ -604,6 +609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     manifest_metadata_projection=metadata_projection,
                     resume=args.resume,
                     stop_after_barrier=args.stop_after_barrier,
+                    one_update=args.one_update,
                     progress_callback=(
                         None if args.no_progress else _console_progress_printer(started_at)
                     ),
@@ -620,6 +626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "run_id": result.run_id,
                 "status": result.status,
+                "payload_binding_status": result.payload_binding_status,
                 "manifest_path": str(result.manifest_path),
                 "manifest_payload": result.manifest.model_dump(mode="json", exclude_none=True),
             },

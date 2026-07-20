@@ -37,6 +37,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     canonical_run_bundle_sha256,
+    environment_declaration_identity_projection,
 )
 from feedbax.orchestration.collection_recovery import (
     CollectionRecoveryBinding,
@@ -1627,12 +1628,10 @@ class RunPodOrchestrationDriver:
         bundle: RunBundle,
         declaration_fingerprint: str,
     ) -> str:
-        declaration = {
-            "declaration_sha256": declaration_fingerprint,
-            "image_id": bundle.environment.image_id,
-            "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
-            "python_version": bundle.environment.python_version,
-        }
+        declaration = environment_declaration_identity_projection(bundle.environment)
+        declaration.pop("repo_revisions")
+        declaration.pop("overlay_steps")
+        declaration["declaration_sha256"] = declaration_fingerprint
         command = (
             "uv run --no-sync python -c "
             f"{_sq(_REMOTE_ENVIRONMENT_PROBE)} "
@@ -1676,8 +1675,7 @@ class RunPodOrchestrationDriver:
         )
 
     def _row_workdir(self, row: RunRowSpec) -> str:
-        workdir = row.launch.metadata.get("workdir")
-        return str(workdir) if workdir else self._primary_workdir()
+        return runpod_row_workdir(self.config, row)
 
     def _remote_run_dir(self, bundle: RunBundle) -> str:
         return f"{self.config.remote_run_root.rstrip('/')}/{bundle.run_set_id}"
@@ -1992,12 +1990,13 @@ def validate_realized_runpod_environment_fingerprint(
         payload = json.loads(fingerprint)
     except json.JSONDecodeError as exc:
         raise RunPodDriverError("realized RunPod environment probe returned invalid JSON") from exc
+    declared_environment = environment_declaration_identity_projection(bundle.environment)
     expected = {
         "schema_version": RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION,
         "declaration_sha256": declaration_fingerprint,
-        "image_id": bundle.environment.image_id,
-        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
     }
+    for field_name in ("image_id", "lockfile_hashes"):
+        expected[field_name] = declared_environment[field_name]
     for field_name, expected_value in expected.items():
         if payload.get(field_name) != expected_value:
             raise RunPodDriverError(
@@ -2022,7 +2021,7 @@ def validate_realized_runpod_environment_fingerprint(
             "realized RunPod environment fingerprint lacks required runtime provenance"
         )
     if not _python_version_matches(
-        str(bundle.environment.python_version), str(runtime["python"])
+        str(declared_environment["python_version"]), str(runtime["python"])
     ):
         raise RunPodDriverError(
             "realized RunPod environment fingerprint Python version does not match declaration"
@@ -2046,16 +2045,7 @@ def _python_version_matches(declared: str, observed: str) -> bool:
 
 def compute_runpod_environment_fingerprint(bundle: RunBundle) -> str:
     """Compute the declared remote environment fingerprint."""
-    payload = {
-        "python_version": bundle.environment.python_version,
-        "repo_revisions": [
-            revision.model_dump(mode="json", exclude_none=True)
-            for revision in bundle.environment.repo_revisions
-        ],
-        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
-        "overlay_steps": list(bundle.environment.overlay_steps),
-        "image_id": bundle.environment.image_id,
-    }
+    payload = environment_declaration_identity_projection(bundle.environment)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -2218,6 +2208,47 @@ def build_launch_row_command(
         f"i=0; while [ ! -s {_sq(pid_file)} ] && [ \"$i\" -lt 40 ]; do "
         'i=$((i+1)); sleep 0.05; done; '
         f"[ -s {_sq(pid_file)} ]"
+    )
+
+
+def runpod_row_workdir(config: RunPodDriverConfig, row: RunRowSpec) -> str:
+    """Resolve the same row workdir used by live and dry-run RunPod launches."""
+    workdir = row.launch.metadata.get("workdir")
+    if workdir:
+        return str(workdir)
+    remote_repos = config.remote_repos or {
+        "feedbax": f"{config.remote_repo_root}/feedbax"
+    }
+    return (
+        remote_repos.get("rlrmp2")
+        or remote_repos.get("rlrmp")
+        or remote_repos.get("feedbax")
+        or config.remote_repo_root
+    )
+
+
+def dry_run_launch_bundle(
+    bundle: RunBundle,
+    config: RunPodDriverConfig,
+    input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+) -> tuple[str, ...]:
+    """Bind all RunPod launch rows without constructing a transport."""
+    failures, _ = preflight_input_provider_bindings(bundle, input_provider_bindings)
+    if failures:
+        raise RunPodDriverError("; ".join(failures))
+    remote_run_dir = f"{config.remote_run_root.rstrip('/')}/{bundle.run_set_id}"
+    remote_sentinel_dir = f"{remote_run_dir}/sentinels"
+    return tuple(
+        build_launch_row_command(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=remote_run_dir,
+            remote_sentinel_dir=remote_sentinel_dir,
+            workdir=runpod_row_workdir(config, row),
+            env_fingerprint="dry-run-unrealized-environment",
+            jax_cache_dir=f"{config.volume_mount}/jax_cache",
+        )
+        for row in bundle.rows
     )
 
 

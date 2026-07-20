@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import pytest
 
 import feedbax.training.checkpoint_custody as custody_module
+from feedbax.training import CheckpointForkPlanRelockResult
 from feedbax.contracts.checkpoints import (
     BatchHistory,
     CheckpointContinuationRequest,
@@ -26,6 +27,8 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkTransformRecord,
     CheckpointForkTransformStep,
     Granularity,
+    SlotLeafFingerprint,
+    StructuralAbiFingerprint,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION,
     TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
@@ -36,6 +39,8 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+    structural_abi_content_projection,
+    structural_abi_content_sha256,
 )
 from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
 from feedbax.contracts.migrations import default_spec_registry
@@ -88,6 +93,8 @@ from feedbax.training.checkpoint_custody import (
     write_checkpoint_transaction,
     concatenate_checkpoint_histories,
     materialize_concatenated_checkpoint_histories,
+    rebuild_checkpoint_fork_derived_digests,
+    relock_checkpoint_fork_derived_digests,
 )
 
 
@@ -206,10 +213,109 @@ def _rewrite_controller_leaf_type(result, leaf_type: str) -> None:
         custody_module.SlotLeafFingerprint.model_validate(leaf)
         for leaf in fingerprint["leaves"]
     ]
-    fingerprint["fingerprint_sha256"] = custody_module._canonical_hash(
-        custody_module._structural_abi_content_payload(fingerprint["treedef"], leaves)
+    fingerprint["fingerprint_sha256"] = structural_abi_content_sha256(
+        {**fingerprint, "leaves": leaves}
     )
     _rewrite_manifest_and_latest(result, payload)
+
+
+def test_structural_abi_content_projection_field_classification() -> None:
+    leaf_identity_fields = {
+        "path",
+        "leaf_type",
+        "shape",
+        "dtype",
+        "weak_type",
+        "static_repr_sha256",
+    }
+    fingerprint_identity_fields = {
+        "fingerprint_algorithm_version",
+        "treedef",
+        "leaf_count",
+        "leaves",
+    }
+    assert set(SlotLeafFingerprint.model_fields) == leaf_identity_fields | {
+        "sharding",
+        "layout",
+    }
+    assert set(StructuralAbiFingerprint.model_fields) == fingerprint_identity_fields | {
+        "schema_id",
+        "schema_version",
+        "environment_provenance",
+        "provenance_status",
+        "fingerprint_sha256",
+        "metadata",
+    }
+
+    fingerprint = StructuralAbiFingerprint(
+        treedef="PyTreeDef(*)",
+        leaf_count=1,
+        leaves=[
+            SlotLeafFingerprint(
+                path="[0]",
+                leaf_type="jax.Array",
+                shape=(2,),
+                dtype="float32",
+                weak_type=False,
+                sharding="SingleDeviceSharding(device=CpuDevice(id=0))",
+                layout="Layout(device_local_layout=None, sharding=None)",
+            )
+        ],
+        fingerprint_sha256="not-part-of-content",
+        metadata={"note": "not-part-of-content"},
+    )
+
+    assert structural_abi_content_projection(fingerprint) == {
+        "fingerprint_algorithm_version": (
+            "feedbax.training_checkpoint.structural_abi.content.v2"
+        ),
+        "treedef": "PyTreeDef(*)",
+        "leaf_count": 1,
+        "leaves": [
+            {
+                "path": "[0]",
+                "leaf_type": "jax.Array",
+                "shape": [2],
+                "dtype": "float32",
+                "weak_type": False,
+            }
+        ],
+    }
+
+
+def test_structural_abi_content_projection_preserves_tolerant_migration_shape() -> None:
+    raw = {
+        "fingerprint_algorithm_version": (
+            "feedbax.training_checkpoint.structural_abi.content.v2"
+        ),
+        "treedef": "PyTreeDef(*)",
+        "leaf_count": 1,
+        "leaves": [
+            "ignored malformed historical leaf",
+            {
+                "path": "[0]",
+                "leaf_type": "jax.Array",
+                "shape": None,
+                "dtype": "float32",
+                "weak_type": False,
+                "sharding": "not-content",
+                "layout": "not-content",
+            },
+        ],
+        "environment_provenance": {"python_version": "3", "x64_enabled": False},
+        "metadata": {"note": "not-content"},
+    }
+
+    projection = structural_abi_content_projection(raw)
+    assert projection["leaves"] == [
+        {
+            "path": "[0]",
+            "leaf_type": "jax.Array",
+            "dtype": "float32",
+            "weak_type": False,
+        }
+    ]
+    assert structural_abi_content_sha256(raw) == custody_module._canonical_hash(projection)
 
 
 def _write_minimax_checkpoint(tmp_path: Path):
@@ -560,6 +666,9 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
         "feedbax.training.checkpoint_custody.pickle"
     )
     assert migrated_fingerprint["fingerprint_sha256"] != "legacy-mixed-serializer-hash"
+    assert migrated_fingerprint["fingerprint_sha256"] == structural_abi_content_sha256(
+        migrated_fingerprint
+    )
     migrated_binding = migrated.payload["run_contract_binding"]
     assert migrated_binding["algorithm_version"].endswith(".run_contract_binding.v2")
     assert (
@@ -1777,6 +1886,147 @@ def _typed_fork_plan(
     )
 
 
+def _checkpoint_fork_authored_payload(plan: CheckpointForkPlan) -> dict[str, object]:
+    payload = plan.model_dump(mode="json", exclude_none=True)
+    for target in payload["targets"]:
+        del target["compatibility"]
+    return payload
+
+
+def test_checkpoint_fork_derived_digest_rebuild_reports_exact_deterministic_differences() -> None:
+    run_spec = _run_spec(minimax=True)
+    plan = _typed_fork_plan(run_spec, _minimax_slots(), transformed=False)
+    population_member_ids = {"controller": ["member-a"]}
+    compatibility = derive_checkpoint_fork_compatibility_projection(
+        run_spec,
+        run_spec.worker_execution.method_contract.phase_program,
+        _minimax_slots(),
+        population_member_ids=population_member_ids,
+    )
+    target = plan.targets[0].model_copy(
+        update={"population_member_ids_ref": "members", "compatibility": compatibility}
+    )
+    stale_slots = {**compatibility.slot_structural_abi_sha256, "controller": "f" * 64}
+    del stale_slots["rng"]
+    stale_slots["stale_slot"] = "d" * 64
+    stale_compatibility = compatibility.model_copy(
+        update={
+            "run_contract_algorithm_version": "stale-algorithm",
+            "run_contract_hash_domain": "stale-domain",
+            "run_contract_projection_sha256": "e" * 64,
+            "population_member_ids_sha256": "c" * 64,
+            "slot_structural_abi_sha256": stale_slots,
+        }
+    )
+    stale_plan = plan.model_copy(
+        update={
+            "targets": [
+                target.model_copy(update={"compatibility": stale_compatibility}),
+                plan.targets[1],
+            ]
+        }
+    )
+    before = stale_plan.model_dump(mode="json")
+
+    comparison = rebuild_checkpoint_fork_derived_digests(
+        stale_plan,
+        CheckpointForkPlanBindings(
+            checkpoint_roots={},
+            run_specs={"run": run_spec},
+            slot_templates={"slots": _minimax_slots()},
+            population_member_ids={"members": population_member_ids},
+        ),
+    )
+
+    assert not comparison.matches_stored_lock
+    assert [difference.target_id for difference in comparison.differences] == [
+        "target-a", "target-a", "target-a", "target-a", "target-a", "target-a", "target-a",
+    ]
+    assert [difference.path for difference in comparison.differences] == [
+        "/compatibility/run_contract_algorithm_version",
+        "/compatibility/run_contract_hash_domain",
+        "/compatibility/run_contract_projection_sha256",
+        "/compatibility/population_member_ids_sha256",
+        "/compatibility/slot_structural_abi_sha256/controller",
+        "/compatibility/slot_structural_abi_sha256/rng",
+        "/compatibility/slot_structural_abi_sha256/stale_slot",
+    ]
+    assert comparison.differences[0].stored == "stale-algorithm"
+    assert comparison.differences[0].candidate == compatibility.run_contract_algorithm_version
+    assert comparison.differences[3].stored == "c" * 64
+    assert comparison.differences[3].candidate == compatibility.population_member_ids_sha256
+    assert comparison.differences[-2].stored is None
+    assert comparison.differences[-2].candidate == compatibility.slot_structural_abi_sha256["rng"]
+    assert comparison.differences[-1].stored == "d" * 64
+    assert comparison.differences[-1].candidate is None
+    assert stale_plan.model_dump(mode="json") == before
+
+
+def test_checkpoint_fork_derived_digest_rebuild_fails_closed_on_missing_binding() -> None:
+    plan = _typed_fork_plan(_run_spec(minimax=True), _minimax_slots(), transformed=False)
+
+    with pytest.raises(CheckpointCompatibilityError, match="unknown run spec 'run'"):
+        rebuild_checkpoint_fork_derived_digests(
+            plan,
+            CheckpointForkPlanBindings(
+                checkpoint_roots={}, run_specs={}, slot_templates={"slots": _minimax_slots()}
+            ),
+        )
+
+
+def test_checkpoint_fork_relock_changes_only_derived_locks_and_emits_requirements() -> None:
+    run_spec = _run_spec(minimax=True)
+    plan = _typed_fork_plan(run_spec, _minimax_slots(), transformed=False)
+    stale_plan = plan.model_copy(
+        update={
+            "targets": [
+                plan.targets[0].model_copy(
+                    update={
+                        "compatibility": plan.targets[0].compatibility.model_copy(
+                            update={"run_contract_projection_sha256": "e" * 64}
+                        )
+                    }
+                ),
+                plan.targets[1],
+            ]
+        }
+    )
+    bindings = CheckpointForkPlanBindings(
+        checkpoint_roots={}, run_specs={"run": run_spec}, slot_templates={"slots": _minimax_slots()}
+    )
+
+    with pytest.raises(CheckpointCompatibilityError, match="non-empty re-qualification"):
+        relock_checkpoint_fork_derived_digests(
+            stale_plan, bindings, requalification_requirements=[]
+        )
+    with pytest.raises(CheckpointCompatibilityError, match="derived-digest difference"):
+        relock_checkpoint_fork_derived_digests(
+            plan,
+            bindings,
+            requalification_requirements=["re-run target qualification"],
+        )
+    result = relock_checkpoint_fork_derived_digests(
+        stale_plan,
+        bindings,
+        requalification_requirements=["re-run target qualification"],
+    )
+
+    assert isinstance(result, CheckpointForkPlanRelockResult)
+    assert result.requalification_requirements == ("re-run target qualification",)
+    assert _checkpoint_fork_authored_payload(result.plan) == _checkpoint_fork_authored_payload(stale_plan)
+    assert result.plan.targets[0].compatibility == plan.targets[0].compatibility
+    assert rebuild_checkpoint_fork_derived_digests(result.plan, bindings).matches_stored_lock
+
+    with pytest.raises(CheckpointCompatibilityError, match="authored-field change"):
+        custody_module._replace_checkpoint_fork_compatibility_locks(
+            stale_plan,
+            [
+                stale_plan.targets[0].model_copy(update={"checkpoint_root_ref": "other-target"}),
+                stale_plan.targets[1],
+            ],
+        )
+
+
 def test_typed_checkpoint_fork_plan_preflights_once_and_records_projection(
     tmp_path: Path,
 ) -> None:
@@ -2073,7 +2323,10 @@ def test_typed_checkpoint_fork_plan_preflights_all_target_structures(
             ]
         }
     )
-    with pytest.raises(CheckpointCompatibilityError, match="target-b.*compatibility ABI mismatch"):
+    with pytest.raises(
+        CheckpointCompatibilityError,
+        match="target='target-b'.*/compatibility/slot_structural_abi_sha256/controller",
+    ):
         fork_checkpoint_plan(
             plan,
             CheckpointForkPlanBindings(
@@ -2107,7 +2360,7 @@ def test_typed_checkpoint_fork_plan_rejects_runtime_run_contract_drift(
     runtime_spec = _incompatible_slot_run_spec(declared_spec)
     with pytest.raises(
         CheckpointCompatibilityError,
-        match="target-a.*run-contract projection sha256 mismatch",
+        match="target='target-a'.*/compatibility/run_contract_projection_sha256",
     ):
         fork_checkpoint_plan(
             plan,

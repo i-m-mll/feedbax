@@ -15,9 +15,9 @@ from typing import Any, Callable, Protocol
 
 import equinox as eqx
 import jax.tree as jt
-from feedbax.contracts.expressions import evaluate_query
-from feedbax.contracts.extraction import load_expression_context, set_dotted_path
-from feedbax.contracts.matrix_core import ordered_index_product
+from feedbax.contracts.expressions import ExpressionContext
+from feedbax.contracts.extraction import load_expression_context
+from feedbax.contracts.matrix_core import apply_row_derivations, ordered_index_product
 from feedbax.contracts.manifest import (
     Provenance,
     SpecPayload,
@@ -39,6 +39,7 @@ from feedbax.contracts.run_matrix import (
     AuthoredIntentMatrixBaseSpec,
     ForkFromSelectedCheckpoint,
     InlineMatrixBaseSpec,
+    MatrixDerivation,
     RowLowererIdentity,
     RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
     RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
@@ -415,19 +416,15 @@ def _materialize_run_matrix(
         migrated = default_spec_registry.migrate("TrainingRunMatrixSpec", spec)
         matrix = TrainingRunMatrixSpec.model_validate(migrated.payload)
     base_payload = _resolve_base_payload(matrix, repo_root=repo_root)
-    if matrix.derivations:
-        ctx = load_expression_context(matrix.sources, repo_root)
-        for derivation in matrix.derivations:
-            set_dotted_path(
-                base_payload,
-                derivation.output_path,
-                evaluate_query(derivation.query, ctx),
-            )
+    source_context = (
+        load_expression_context(matrix.sources, repo_root) if matrix.sources else ExpressionContext()
+    )
 
     if matrix.rows:
         rows, axes_block = _materialize_explicit_rows(
             matrix,
             base_payload=base_payload,
+            source_context=source_context,
             row_validator=row_validator,
             row_lowerer=row_lowerer,
         )
@@ -439,6 +436,7 @@ def _materialize_run_matrix(
         rows, axes_block = _materialize_sweep_rows(
             matrix,
             base_payload=base_payload,
+            source_context=source_context,
             row_validator=row_validator,
             row_lowerer=row_lowerer,
         )
@@ -1061,6 +1059,7 @@ def _materialize_explicit_rows(
     matrix: TrainingRunMatrixSpec,
     *,
     base_payload: dict[str, Any],
+    source_context: ExpressionContext,
     row_validator: RowPayloadValidator | None,
     row_lowerer: TrainingRowLowerer | None,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
@@ -1069,6 +1068,12 @@ def _materialize_explicit_rows(
     coordinates: list[TrainingRunAxisCoordinate] = []
     for index, row in enumerate(matrix.rows):
         authored_payload = apply_override_patches(base_payload, row.overrides)
+        _apply_row_derivations(
+            matrix.derivations,
+            authored_payload,
+            source_context=source_context,
+            row_id=row.row_id,
+        )
         axis_coordinates = {
             "row_id": row.row_id,
             "overrides": [
@@ -1155,6 +1160,7 @@ def _materialize_sweep_rows(
     matrix: TrainingRunMatrixSpec,
     *,
     base_payload: dict[str, Any],
+    source_context: ExpressionContext,
     row_validator: RowPayloadValidator | None,
     row_lowerer: TrainingRowLowerer | None,
 ) -> tuple[list[MaterializedMatrixRow], TrainingRunSetAxes]:
@@ -1190,6 +1196,12 @@ def _materialize_sweep_rows(
                 patches.append(patch)
                 authored_payload = apply_override_patches(authored_payload, [patch])
         row_id = expected_row_ids[index]
+        _apply_row_derivations(
+            matrix.derivations,
+            authored_payload,
+            source_context=source_context,
+            row_id=row_id,
+        )
         override_payloads = [
             patch.model_dump(mode="json", exclude_none=True) for patch in patches
         ]
@@ -1249,6 +1261,51 @@ def _materialize_sweep_rows(
         )
     run_set_axes.runs = [row.coordinate for row in rows if row.coordinate is not None]
     return rows, run_set_axes
+
+
+def _apply_row_derivations(
+    derivations: Sequence[MatrixDerivation],
+    payload: dict[str, Any],
+    *,
+    source_context: ExpressionContext,
+    row_id: str,
+) -> None:
+    """Apply shared row derivations with training's authored-value guard."""
+    try:
+        apply_row_derivations(
+            payload,
+            derivations,
+            source_context=source_context,
+            before_write=_require_derivation_target_unset,
+        )
+    except RunMatrixError:
+        raise
+    except ValueError as exc:
+        raise RunMatrixError(
+            f"row {row_id!r} derivation failed: {exc}"
+        ) from exc
+
+
+def _require_derivation_target_unset(payload: Mapping[str, Any], path: str) -> None:
+    """Reject derivations that would replace a non-null authored value."""
+    current: Any = payload
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current, Mapping):
+            raise RunMatrixError(
+                f"derivation output path cannot traverse non-object authored field: {path!r}"
+            )
+        if part not in current or current[part] is None:
+            return
+        current = current[part]
+    if not isinstance(current, Mapping):
+        raise RunMatrixError(
+            f"derivation output path cannot traverse non-object authored field: {path!r}"
+        )
+    if parts[-1] in current and current[parts[-1]] is not None:
+        raise RunMatrixError(
+            f"derivation cannot change authored non-null field: {path!r}"
+        )
 
 
 def _lower_authored_row(

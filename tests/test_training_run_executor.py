@@ -2183,10 +2183,11 @@ def _execution_context(
     *,
     collection_root: Path | None = None,
     planned_run_id: str = "feedbax-training-run:planned-row",
+    run_spec: TrainingRunSpec | None = None,
 ) -> NativeExecutionProducerContext:
     resolved_root = "b" * 64
     execution_hash = training_run_execution_hash(resolved_root, [])
-    payload = _run_spec().model_dump(mode="json", exclude_none=True)
+    payload = (run_spec or _run_spec()).model_dump(mode="json", exclude_none=True)
     payload_sha256 = sha256_bytes(training_spec_canonical_bytes(payload))
     artifact = {
         "schema_id": "feedbax.tests.native_execution",
@@ -3266,6 +3267,34 @@ def test_native_execution_allows_non_local_payload_custody_binding(tmp_path: Pat
     )
 
     assert result.status == "completed"
+    assert result.payload_binding_status == "verified"
+
+
+def test_one_update_stops_after_one_native_update_without_mutating_spec(tmp_path: Path) -> None:
+    registry, _program = _interval_registry(total_updates=3)
+    base_spec = _run_spec()
+    spec = base_spec.model_copy(
+        update={
+            "training_config": base_spec.training_config.model_copy(update={"n_batches": 3})
+        }
+    )
+    authored_payload = spec.model_dump(mode="json", exclude_none=True)
+
+    result = execute_training_run_spec(
+        spec,
+        initial_slots=_initial_slots(arrays=True),
+        registry=registry,
+        manifest_root=tmp_path / "manifests",
+        checkpoint_root=tmp_path / "checkpoints",
+        one_update=True,
+    )
+
+    assert result.status == "completed"
+    assert result.final_coordinate.program_step == 1
+    assert result.diagnostics.completed_batches == 1
+    assert len(result.checkpoint_writes) == 1
+    assert spec.model_dump(mode="json", exclude_none=True) == authored_payload
+    assert result.payload_binding_status == "not_bound"
 
 
 def test_native_execution_rejects_non_planned_run_id_before_side_effects(
@@ -4483,11 +4512,15 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     cache_dir = tmp_path / "jax-cache"
     cache_dir.mkdir()
     (cache_dir / "preexisting-cache-entry").write_bytes(b"cache")
-    _write_json(spec_path, _run_spec().model_dump(mode="json"))
+    spec = _run_spec()
+    _write_json(spec_path, spec.model_dump(mode="json"))
     _write_json(slots_path, _initial_slots())
     _write_json(
         context_path,
-        _execution_context(planned_run_id="feedbax-training-run:planned-cli").model_dump(
+        _execution_context(
+            planned_run_id="feedbax-training-run:planned-cli",
+            run_spec=spec,
+        ).model_dump(
             mode="json", exclude_none=True
         ),
     )
@@ -4507,6 +4540,7 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
             "feedbax-training-run:planned-cli",
             "--execution-context",
             str(context_path),
+            "--one-update",
         ],
         check=False,
         stdout=subprocess.PIPE,
@@ -4527,9 +4561,11 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout)
     assert payload["run_id"] == "feedbax-training-run:planned-cli"
     assert payload["status"] == "completed"
+    assert payload["payload_binding_status"] == "verified"
     assert Path(payload["manifest_path"]) == row_dir / "manifest.json"
     assert Path(payload["manifest_path"]).is_file()
     assert (row_dir / "training-diagnostics.json").is_file()
+    assert json.loads((row_dir / "training-diagnostics.json").read_text())["completed_batches"] == 1
     assert payload["manifest_payload"]["id"] == "feedbax-training-run:planned-cli"
     assert "phase=train_batch" in proc.stderr
     assert "batch=1" in proc.stderr

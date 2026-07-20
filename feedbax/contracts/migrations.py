@@ -36,6 +36,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+    structural_abi_content_sha256,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
@@ -94,6 +95,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
@@ -101,6 +103,10 @@ from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+)
+from feedbax.contracts.shadow_launch import (
+    SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+    SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
 )
 from feedbax.contracts.run_composition import (
     COMPOSITION_SCHEMA_ID,
@@ -272,6 +278,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V3,
     RUN_BUNDLE_SCHEMA_VERSION_V4,
     RUN_BUNDLE_SCHEMA_VERSION_V5,
+    RUN_BUNDLE_SCHEMA_VERSION_V6,
 )
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
@@ -1118,35 +1125,8 @@ def _migrate_structural_abi_fingerprint_to_content_v2(
     migrated["fingerprint_algorithm_version"] = (
         "feedbax.training_checkpoint.structural_abi.content.v2"
     )
-    migrated["fingerprint_sha256"] = _structural_abi_content_sha256(migrated)
+    migrated["fingerprint_sha256"] = structural_abi_content_sha256(migrated)
     return migrated
-
-
-def _structural_abi_content_sha256(payload: Mapping[str, Any]) -> str:
-    leaves: list[dict[str, Any]] = []
-    for raw_leaf in list(payload.get("leaves") or ()):
-        if not isinstance(raw_leaf, Mapping):
-            continue
-        leaf = {
-            key: raw_leaf[key]
-            for key in (
-                "path",
-                "leaf_type",
-                "shape",
-                "dtype",
-                "weak_type",
-                "static_repr_sha256",
-            )
-            if key in raw_leaf and raw_leaf[key] is not None
-        }
-        leaves.append(leaf)
-    content_payload = {
-        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
-        "treedef": payload.get("treedef"),
-        "leaf_count": payload.get("leaf_count"),
-        "leaves": leaves,
-    }
-    return sha256_bytes(canonical_json_bytes(content_payload))
 
 
 def _migrate_run_contract_binding_to_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -2070,6 +2050,20 @@ def _migrate_training_run_matrix_v3_to_v4_payload(payload: dict[str, Any]) -> di
                     "without an implementation_sha256 pin"
                 )
     migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4
+    return migrated
+
+
+def _migrate_training_run_matrix_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adopt per-row derivations only when no base-only derivation exists."""
+    migrated = deepcopy(payload)
+    if migrated.get("derivations", []) != []:
+        raise ValueError(
+            "TrainingRunMatrixSpec v4 with /derivations cannot migrate to v5 because "
+            "base-only derivation semantics are ambiguous under per-row derivation; re-author "
+            "the matrix with row-local derivations"
+        )
+    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     return migrated
 
@@ -2714,6 +2708,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
+                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
             ),
             rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
             required_tests=(
@@ -2732,6 +2727,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Provider-unverified authenticated matrix authority.",
             rejected_old_versions=(f"{TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID}.v0",),
             required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
+        ),
+        _family(
+            "ShadowLaunchEvidence",
+            SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
+            SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.shadow_launch",
+            emitted_by=("feedbax.bin.orchestrate",),
+            consumed_by=("provider-free shadow-launch result readers only",),
+            description=(
+                "Output-only proof of one provider-free local continuation update; "
+                "it is not provider readiness authority."
+            ),
+            required_tests=("tests/test_orchestration_cli.py",),
+            rejected_old_versions=(f"{SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID}.v0",),
         ),
         _family(
             "TrainingRunMatrixPreflightBinding",
@@ -2918,6 +2927,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 RUN_BUNDLE_SCHEMA_VERSION_V3,
                 RUN_BUNDLE_SCHEMA_VERSION_V4,
                 RUN_BUNDLE_SCHEMA_VERSION_V5,
+                RUN_BUNDLE_SCHEMA_VERSION_V6,
             ),
             required_tests=(
                 "tests/test_orchestration_core.py",
@@ -4087,8 +4097,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             continue
         for old_version in family.policy.rejected_old_versions:
             remediation = (
-                "RunBundle v1-v5 lack explicit deployment review authorization and "
-                "v6 authenticated input custody/materialization authority; reassemble "
+                "RunBundle v1-v5 lack explicit deployment review authorization; v6 lacks "
+                "the required Feedbax revision pin and authenticated input custody/materialization "
+                "authority; reassemble "
                 "from a current RunAssemblyRequest with a DeploymentPolicy."
                 if family.kind == "RunBundle"
                 else (
@@ -4350,10 +4361,23 @@ default_spec_registry.register_migration(
     "TrainingRunMatrixSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
         migration_id="training-run-matrix-v3-to-v4-typed-fork-custody",
         migrate=_migrate_training_run_matrix_v3_to_v4_payload,
         description="Retire source run ids and require durable transform implementation pins.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunMatrixSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-matrix-v4-to-v5-per-row-derivations",
+        migrate=_migrate_training_run_matrix_v4_to_v5_payload,
+        description=(
+            "Accept only matrices without base-only derivations; legacy derivations must be "
+            "re-authored with explicit per-row semantics."
+        ),
     ),
 )
 default_spec_registry.register_migration(

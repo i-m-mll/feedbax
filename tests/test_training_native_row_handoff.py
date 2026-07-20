@@ -75,13 +75,17 @@ from feedbax.orchestration.conformance import (
 from feedbax.orchestration.drivers.local import LocalDriverError, LocalOrchestrationDriver
 from feedbax.orchestration.drivers.native_execution import (
     NativeExecutionContextError,
+    bind_native_execution_command,
     inject_native_execution_context,
     native_resume_checkpoint_role,
     seed_authenticated_checkpoint,
 )
 from feedbax.orchestration.drivers.runpod import (
+    RunPodDriverConfig,
     build_launch_row_command,
     build_native_resume_seed_command,
+    dry_run_launch_bundle,
+    runpod_row_workdir,
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.state import RowState, RunSetState
@@ -182,7 +186,7 @@ def _assemble_lowered_bundle(
     matrix = TrainingRunMatrixSpec.model_validate(
         {
             "schema_id": "feedbax.spec.training_run_matrix",
-            "schema_version": "feedbax.spec.training_run_matrix.v4",
+            "schema_version": "feedbax.spec.training_run_matrix.v5",
             "name": "native row handoff",
             "base": {"kind": "inline", "inline": {"compact": {"gain": gain}}},
             "rows": [{"row_id": "science-row", "seed": 7, "overrides": []}],
@@ -197,7 +201,7 @@ def _assemble_lowered_bundle(
     request = RunAssemblyRequest(
         authored=SchemaArtifactRef(
             schema_id="feedbax.spec.training_run_matrix",
-            schema_version="feedbax.spec.training_run_matrix.v4",
+            schema_version="feedbax.spec.training_run_matrix.v5",
             artifact_id=f"fixture:{root.name}:authored-matrix",
             sha256=hashlib.sha256(authored_bytes).hexdigest(),
             uri=str(authored_path),
@@ -388,6 +392,49 @@ def _without_resolved_inputs(bundle: RunBundle) -> RunBundle:
             [],
         )
     return RunBundle.model_validate(payload)
+
+
+def _bind_checkpoint_archive_provider(
+    bundle: RunBundle, root: Path
+) -> tuple[RunBundle, InputProviderRootBinding]:
+    provider = ImmutableArtifactBlobProvider(root)
+    resolved = bundle.resolved_inputs[0]
+    artifact = provider.store_bytes(
+        b"checkpoint-custody-archive",
+        role="training_checkpoint_custody_archive",
+        logical_name="checkpoint-custody.tar.gz",
+        media_type=resolved.custody.artifact.media_type,
+    )
+    identity = resolved.identity.model_copy(
+        update={"digest": resolved.identity.digest.model_copy(update={"value": artifact.sha256})}
+    )
+    resolved = resolved.model_copy(
+        update={
+            "identity": identity,
+            "custody": resolved.custody.model_copy(update={"artifact": artifact}),
+        }
+    )
+    execution = bundle.rows[0].execution
+    execution_hash = training_run_execution_hash(
+        execution.resolved_snapshot.root_hash,
+        canonicalize_immutable_input_identities([identity]),
+    )
+    row = bundle.rows[0].model_copy(
+        update={
+            "execution": execution.model_copy(
+                update={
+                    "immutable_inputs": [identity],
+                    "execution_capsule": execution.execution_capsule.model_copy(
+                        update={"execution_hash": execution_hash}
+                    ),
+                }
+            )
+        }
+    )
+    return (
+        bundle.model_copy(update={"resolved_inputs": [resolved], "rows": [row]}),
+        InputProviderRootBinding("checkpoint.inputs", provider.root),
+    )
 
 
 def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
@@ -752,6 +799,89 @@ def test_local_and_runpod_drivers_inject_the_canonical_native_context(
     assert runpod_context["collection_root"] == "/remote/run-set/rows/science-row"
 
 
+def test_local_shadow_runtime_binding_adds_one_update_without_mutating_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration.drivers import local as local_driver_module
+
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "shadow", gain=2))
+    row = bundle.rows[0]
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="environment:shadow-route",
+        rows={row.row_id: RowState()},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[], one_update=True)
+    driver.provision(bundle, state)
+    driver.stage_inputs(bundle, state)
+    captured: dict[str, Any] = {}
+
+    class _Process:
+        pid = 12346
+
+        def poll(self) -> None:
+            return None
+
+    def capture_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        return _Process()
+
+    monkeypatch.setattr(local_driver_module.subprocess, "Popen", capture_popen)
+    driver.launch_row(bundle, row, state)
+
+    assert captured["command"].count("--one-update") == 1
+    assert row.launch.command.count("--one-update") == 0
+
+
+def test_local_ordinary_runtime_binding_does_not_add_one_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration.drivers import local as local_driver_module
+
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "ordinary", gain=2))
+    row = bundle.rows[0]
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        environment_fingerprint="environment:ordinary-route",
+        rows={row.row_id: RowState()},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
+    driver.provision(bundle, state)
+    driver.stage_inputs(bundle, state)
+    captured: dict[str, Any] = {}
+
+    class _Process:
+        pid = 12347
+
+        def poll(self) -> None:
+            return None
+
+    def capture_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        return _Process()
+
+    monkeypatch.setattr(local_driver_module.subprocess, "Popen", capture_popen)
+    driver.launch_row(bundle, row, state)
+
+    assert "--one-update" not in captured["command"]
+
+
+def test_shadow_runtime_binding_rejects_caller_owned_one_update(tmp_path: Path) -> None:
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path, gain=2))
+    row = bundle.rows[0]
+
+    with pytest.raises(NativeExecutionContextError, match="update count is orchestration-owned"):
+        bind_native_execution_command(
+            [*row.launch.command, "--one-update"],
+            row=row,
+            payload_path=tmp_path / "payload.json",
+            collection_root=tmp_path / "row",
+            one_update=True,
+        )
+
+
 def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) -> None:
     bundle = _without_resolved_inputs(
         _assemble_lowered_bundle(tmp_path / "subprocess", gain=2)
@@ -921,6 +1051,90 @@ def test_runpod_native_resume_seeds_before_started_sentinel(tmp_path: Path) -> N
     assert "/remote/run set/rows/science-row/.checkpoint-seed-attempt" in command
     assert "/remote/run set/rows/science-row/checkpoints" in command
     assert command.index(".checkpoint-seed-attempt") < command.rindex(".started")
+
+
+def test_runpod_dry_run_uses_exact_remote_builder_without_transport(tmp_path: Path) -> None:
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=1,
+        additional_batches=1,
+        self_contained=False,
+    )
+    bundle, binding = _bind_checkpoint_archive_provider(
+        _assemble_lowered_bundle(
+            tmp_path / "dry-run",
+            gain=2,
+            completed_batches=2,
+            continuation=continuation,
+            input_kind="checkpoint-custody-archive",
+        ),
+        tmp_path / "provider",
+    )
+    config = RunPodDriverConfig(
+        remote_run_root="/remote/runs",
+        volume_mount="/remote/workspace",
+    )
+
+    commands = dry_run_launch_bundle(bundle, config, (binding,))
+
+    assert commands == (
+        build_launch_row_command(
+            bundle=bundle,
+            row=bundle.rows[0],
+            remote_run_dir=f"/remote/runs/{bundle.run_set_id}",
+            remote_sentinel_dir=f"/remote/runs/{bundle.run_set_id}/sentinels",
+            workdir=runpod_row_workdir(config, bundle.rows[0]),
+            env_fingerprint="dry-run-unrealized-environment",
+            jax_cache_dir="/remote/workspace/jax_cache",
+        ),
+    )
+
+
+def test_runpod_dry_run_and_remote_builder_reject_same_checkpoint_role_binding(
+    tmp_path: Path,
+) -> None:
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=1,
+        additional_batches=1,
+        self_contained=False,
+    )
+    bundle = _assemble_lowered_bundle(
+        tmp_path / "dry-run-role",
+        gain=2,
+        completed_batches=2,
+        continuation=continuation,
+        input_kind="checkpoint-custody-archive",
+    )
+    bundle, binding = _bind_checkpoint_archive_provider(
+        bundle, tmp_path / "provider"
+    )
+    identity = bundle.resolved_inputs[0].identity
+    row = bundle.rows[0].model_copy(
+        update={
+            "execution": bundle.rows[0].execution.model_copy(
+                update={
+                    "immutable_inputs": [
+                        identity.model_copy(update={"identifier": "wrong-checkpoint"})
+                    ]
+                }
+            )
+        }
+    )
+    mismatched = bundle.model_copy(update={"rows": [row]})
+
+    with pytest.raises(NativeExecutionContextError) as remote_error:
+        build_launch_row_command(
+            bundle=mismatched,
+            row=row,
+            remote_run_dir="/remote/run-set",
+            remote_sentinel_dir="/remote/run-set/sentinels",
+            workdir="/remote/feedbax",
+            env_fingerprint="",
+            jax_cache_dir="/remote/jax-cache",
+        )
+    with pytest.raises(NativeExecutionContextError) as dry_run_error:
+        dry_run_launch_bundle(mismatched, RunPodDriverConfig(), (binding,))
+
+    assert str(dry_run_error.value) == str(remote_error.value)
 
 
 @pytest.mark.parametrize("protocol", ["local", "remote"])

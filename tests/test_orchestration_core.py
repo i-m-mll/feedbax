@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -48,7 +49,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.orchestration import conformance, schedule_eval, stages
+from feedbax.orchestration import conformance, revision, schedule_eval, stages
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -67,11 +68,16 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION,
     RUN_BUNDLE_SCHEMA_VERSION_V1,
     RUN_BUNDLE_SCHEMA_VERSION_V2,
+    RUN_BUNDLE_SCHEMA_VERSION_V3,
+    RUN_BUNDLE_SCHEMA_VERSION_V4,
+    RUN_BUNDLE_SCHEMA_VERSION_V5,
+    RUN_BUNDLE_SCHEMA_VERSION_V6,
     BudgetPolicy,
     CheckpointCustodyArchiveMaterializer,
     DeploymentPolicy,
     DeploymentResourceRequest,
     EnvironmentDeclaration,
+    ExecutionIdentityEnvelope,
     ImmutableInputArtifactRef,
     ImmutableInputIdentity,
     InputCustodySource,
@@ -83,6 +89,8 @@ from feedbax.orchestration.bundle import (
     RunRowSpec,
     RowLaunchSpec,
     SchemaArtifactRef,
+    environment_declaration_identity_projection,
+    execution_identity_projection,
 )
 from feedbax.orchestration.conformance import (
     CheckEntry,
@@ -456,6 +464,165 @@ def _bundle(
         context=context,
         registry=registry,
     )
+
+
+def test_environment_declaration_identity_projection_classifies_every_field() -> None:
+    identity_fields = {
+        "python_version",
+        "repo_revisions",
+        "lockfile_hashes",
+        "overlay_steps",
+        "image_id",
+    }
+    operational_fields = {"metadata"}
+    assert set(EnvironmentDeclaration.model_fields) == identity_fields | operational_fields
+
+    environment = EnvironmentDeclaration(
+        python_version="3.12",
+        repo_revisions=[RepoRevision(path="feedbax", revision="abc123")],
+        lockfile_hashes={"uv.lock": "b" * 64, "requirements.lock": "a" * 64},
+        overlay_steps=["uv sync --frozen"],
+        image_id="registry.example/feedbax@sha256:" + "c" * 64,
+        metadata={"operator_note": "not identity"},
+    )
+
+    assert environment_declaration_identity_projection(environment) == {
+        "python_version": "3.12",
+        "repo_revisions": [{"path": "feedbax", "revision": "abc123", "dirty_allowed": False}],
+        "lockfile_hashes": {"requirements.lock": "a" * 64, "uv.lock": "b" * 64},
+        "overlay_steps": ["uv sync --frozen"],
+        "image_id": "registry.example/feedbax@sha256:" + "c" * 64,
+    }
+
+
+def test_execution_identity_projection_classifies_every_envelope_field(tmp_path: Path) -> None:
+    projected_source_fields = {
+        "authored_intent",
+        "resolved_snapshot",
+        "execution_capsule",
+        "immutable_inputs",
+    }
+    nonprojected_fields = {"schema_id", "schema_version", "payload", "row_provenance"}
+    assert set(ExecutionIdentityEnvelope.model_fields) == (
+        projected_source_fields | nonprojected_fields
+    )
+
+    envelope = _bundle(tmp_path).rows[0].execution
+    projection = execution_identity_projection(envelope)
+
+    assert set(projection) == {
+        "intent_hash",
+        "resolved_semantics_root_hash",
+        "execution_hash",
+        "input_data_identities",
+    }
+    assert projection == {
+        "intent_hash": envelope.authored_intent.intent_hash,
+        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
+        "execution_hash": envelope.execution_capsule.execution_hash,
+        "input_data_identities": [],
+    }
+
+
+def test_assembly_records_the_loaded_feedbax_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pinned_revision = "a" * 40
+    monkeypatch.setattr(
+        "feedbax.orchestration.assembly.resolve_feedbax_revision", lambda: pinned_revision
+    )
+
+    assert _bundle(tmp_path).feedbax_revision == pinned_revision
+
+
+def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_locks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved_revision = "a" * 40
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=f"{resolved_revision}\n", stderr="")
+
+    source = Path(revision.feedbax.__file__).resolve()
+    monkeypatch.setattr(revision.subprocess, "run", fake_run)
+
+    assert revision.resolve_feedbax_revision() == resolved_revision
+    assert calls == [
+        (
+            ["git", "-C", str(source.parent), "rev-parse", "--verify", "HEAD^{commit}"],
+            {
+                "capture_output": True,
+                "check": True,
+                    "env": {
+                        "GIT_CONFIG_GLOBAL": os.devnull,
+                        "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_OPTIONAL_LOCKS": "0",
+                        "LC_ALL": "C",
+                        "PATH": os.defpath,
+                    },
+                "text": True,
+            },
+        )
+    ]
+
+
+def test_run_bundle_v7_requires_feedbax_revision_pin(tmp_path: Path) -> None:
+    payload = _bundle(tmp_path).model_dump(mode="json")
+    payload.pop("feedbax_revision")
+
+    with pytest.raises(ValueError, match="feedbax_revision"):
+        RunBundle.model_validate(payload)
+
+
+def test_preflight_fails_closed_on_missing_or_mismatched_feedbax_revision(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    missing = bundle.model_copy(update={"feedbax_revision": ""})
+    mismatch = bundle.model_copy(update={"feedbax_revision": "a" * 40})
+
+    missing_check = {entry.name: entry for entry in run_preflight_checks(missing)}[
+        "feedbax-revision-pin"
+    ]
+    mismatch_check = {entry.name: entry for entry in run_preflight_checks(mismatch)}[
+        "feedbax-revision-pin"
+    ]
+    matching_check = {entry.name: entry for entry in run_preflight_checks(bundle)}[
+        "feedbax-revision-pin"
+    ]
+
+    assert missing_check.status == "fail"
+    assert "full lowercase Git commit" in missing_check.detail
+    assert mismatch_check.status == "fail"
+    assert "mismatch" in mismatch_check.detail
+    assert matching_check.status == "pass"
+    assert matching_check.observed == bundle.feedbax_revision
+
+
+def test_launch_rechecks_feedbax_revision_before_calling_driver(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path).model_copy(update={"feedbax_revision": "a" * 40})
+    driver = FakeDriver()
+    engine = StageEngine(bundle=bundle, driver=driver)
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+
+    with pytest.raises(OrchestrationStageError, match="Feedbax revision pin mismatch"):
+        engine._launch_one(bundle.rows[0], state)
+
+    assert driver.calls == []
+
+
+def test_launch_accepts_matching_feedbax_revision_pin(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    driver = FakeDriver()
+    engine = StageEngine(bundle=bundle, driver=driver)
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState()})
+
+    launched = engine._launch_one(bundle.rows[0], state)
+
+    assert driver.calls == ["launch:row-a"]
+    assert launched.rows["row-a"].status == "launched"
 
 
 def test_deployment_policy_does_not_change_assembled_scientific_identity(
@@ -923,7 +1090,14 @@ def test_state_atomic_write_locking_and_schema_registration(tmp_path: Path) -> N
         default_spec_registry.resolve("RunSetState").current_version == RUN_SET_STATE_SCHEMA_VERSION
     )
     old_payload = _bundle(tmp_path).model_dump(mode="json")
-    for old_version in (RUN_BUNDLE_SCHEMA_VERSION_V1, RUN_BUNDLE_SCHEMA_VERSION_V2):
+    for old_version in (
+        RUN_BUNDLE_SCHEMA_VERSION_V1,
+        RUN_BUNDLE_SCHEMA_VERSION_V2,
+        RUN_BUNDLE_SCHEMA_VERSION_V3,
+        RUN_BUNDLE_SCHEMA_VERSION_V4,
+        RUN_BUNDLE_SCHEMA_VERSION_V5,
+        RUN_BUNDLE_SCHEMA_VERSION_V6,
+    ):
         old_payload["schema_version"] = old_version
         with pytest.raises(UnsupportedSpecVersion, match="reassemble from a current"):
             default_spec_registry.migrate("RunBundle", old_payload)

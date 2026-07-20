@@ -30,7 +30,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_bundle.v2"
 RUN_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_bundle.v3"
 RUN_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_bundle.v4"
 RUN_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_bundle.v5"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v6"
+RUN_BUNDLE_SCHEMA_VERSION_V6 = "feedbax.orchestration.run_bundle.v6"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v7"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v1"
 EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
@@ -212,6 +213,18 @@ class ExecutionIdentityEnvelope(StrictModel):
         return self
 
 
+def execution_identity_projection(
+    envelope: ExecutionIdentityEnvelope,
+) -> dict[str, Any]:
+    """Project one execution envelope onto durable manifest identity fields."""
+    return {
+        "intent_hash": envelope.authored_intent.intent_hash,
+        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
+        "execution_hash": envelope.execution_capsule.execution_hash,
+        "input_data_identities": canonicalize_immutable_input_identities(envelope.immutable_inputs),
+    }
+
+
 class RowLaunchSpec(StrictModel):
     """Operational launch instructions, excluded from scientific identity."""
 
@@ -267,6 +280,22 @@ class EnvironmentDeclaration(StrictModel):
     overlay_steps: list[str] = Field(default_factory=list)
     image_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def environment_declaration_identity_projection(
+    environment: EnvironmentDeclaration,
+) -> dict[str, Any]:
+    """Project the declared fields that determine environment identity."""
+    return {
+        "python_version": environment.python_version,
+        "repo_revisions": [
+            revision.model_dump(mode="json", exclude_none=True)
+            for revision in environment.repo_revisions
+        ],
+        "lockfile_hashes": dict(sorted(environment.lockfile_hashes.items())),
+        "overlay_steps": list(environment.overlay_steps),
+        "image_id": environment.image_id,
+    }
 
 
 class DeploymentResourceRequest(StrictModel):
@@ -458,8 +487,9 @@ class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set."""
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v6"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v7"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
+    feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     deployment_policy: DeploymentPolicy
     migration_evidence: list[ArtifactMigrationRecord] = Field(default_factory=list)
     rows: list[RunRowSpec] = Field(min_length=1)
