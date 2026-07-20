@@ -222,6 +222,10 @@ class RunPodDriverError(RuntimeError):
     """Raised when the RunPod driver cannot complete a requested action."""
 
 
+class _ProvisioningIdentityError(RunPodDriverError):
+    """Raised when provider observations conflict during one acquisition."""
+
+
 def _canonical_runpod_timestamp(value: Any) -> str | None:
     """Return a canonical UTC instant for a RunPod client timestamp."""
     if not isinstance(value, str) or not value:
@@ -436,6 +440,14 @@ class EndpointClassification:
 
 
 @dataclass(frozen=True)
+class _PodAcquisition:
+    """Provider-observed identity returned by one accepted pod-create request."""
+
+    pod_id: str
+    accepted_datacenter: str | None
+
+
+@dataclass(frozen=True)
 class RunPodDriverConfig:
     """Configuration for the RunPod orchestration driver."""
 
@@ -529,15 +541,21 @@ class RunPodOrchestrationDriver:
         pod: Mapping[str, Any] | None = None
         self._last_provision_pod = None
         acquired = False
+        acquisition: _PodAcquisition | None = None
         pod_id: str | None = None
         try:
-            pod_id = self._create_pod(bundle)
+            acquisition = self._create_pod(bundle)
+            pod_id = acquisition.pod_id
             acquired = True
             self._pod_id = pod_id
             self._endpoint, pod = self._wait_for_endpoint(pod_id)
             self._configure_subprocess_endpoint(self._endpoint)
             self._require_gpu_ready()
-            return self._provision_record(pod, provided_pod=False)
+            return self._provision_record(
+                pod,
+                provided_pod=False,
+                accepted_datacenter=acquisition.accepted_datacenter,
+            )
         except Exception as exc:
             if isinstance(exc, ProvisioningAttemptError):
                 raise
@@ -562,7 +580,10 @@ class RunPodOrchestrationDriver:
             self._endpoint = None
             raise ProvisioningAttemptError(
                 str(exc),
-                retryable=not isinstance(exc, (ValueError, TypeError)),
+                retryable=not isinstance(
+                    exc,
+                    (ValueError, TypeError, _ProvisioningIdentityError),
+                ),
                 attempt_record=record,
             ) from exc
 
@@ -1421,7 +1442,7 @@ class RunPodOrchestrationDriver:
         ).check("runpodctl pod get")
         return _json_object(result.stdout)
 
-    def _create_pod(self, bundle: RunBundle) -> str:
+    def _create_pod(self, bundle: RunBundle) -> _PodAcquisition:
         name = f"{self.config.pod_name_prefix}-{bundle.run_set_id}"
         datacenters = self.config.datacenters or ("",)
         last_error = ""
@@ -1447,7 +1468,10 @@ class RunPodOrchestrationDriver:
                 payload = _json_object(result.stdout)
                 pod_id = str(payload.get("id") or payload.get("podId") or "")
                 if pod_id:
-                    return pod_id
+                    return _PodAcquisition(
+                        pod_id=pod_id,
+                        accepted_datacenter=dc or None,
+                    )
             classification, last_error = _classify_create_failure(result, self.config.api_key)
             if classification == "non-retryable":
                 raise ProvisioningAttemptError(
@@ -1526,11 +1550,38 @@ class RunPodOrchestrationDriver:
             )
         )
 
-    def _provision_record(self, pod: Mapping[str, Any], *, provided_pod: bool) -> dict[str, Any]:
+    def _provision_record(
+        self,
+        pod: Mapping[str, Any],
+        *,
+        provided_pod: bool,
+        accepted_datacenter: str | None = None,
+    ) -> dict[str, Any]:
         endpoint = self._endpoint or endpoint_classification(pod)
+        facts = project_runpod_provision_facts(pod)
+        observed_datacenter = facts["region"]
+        if (
+            accepted_datacenter is not None
+            and observed_datacenter is not None
+            and observed_datacenter != accepted_datacenter
+        ):
+            raise _ProvisioningIdentityError(
+                "RunPod pod response datacenter conflicts with the accepted create request: "
+                f"accepted {accepted_datacenter!r}, observed {observed_datacenter!r}"
+            )
+        if accepted_datacenter is not None:
+            facts["region"] = accepted_datacenter
+            facts["provider_observation_basis"] = (
+                "accepted singleton runpodctl pod create datacenter"
+                + (
+                    "; confirmed by runpodctl pod get response"
+                    if observed_datacenter is not None
+                    else "; runpodctl pod get response omitted datacenter"
+                )
+            )
         return {
             "driver": "runpod",
-            **project_runpod_provision_facts(pod),
+            **facts,
             "pod_id": self._pod_id,
             "provided_pod": provided_pod,
             "provided_endpoint": False,
