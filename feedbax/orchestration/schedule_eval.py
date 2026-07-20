@@ -161,9 +161,16 @@ def schedule_sample_steps(
     optimizer_spec: OptimizerSpec,
     context: ScheduleEvalContext,
     *,
+    run_end_step: int | None = None,
     minimum: int = 4,
 ) -> tuple[int, ...]:
-    """Choose schedule-relevant global sample steps at or after the current step."""
+    """Choose schedule-relevant global sample steps at or after the current step.
+
+    ``run_end_step`` is the post-completion coordinate: one beyond the final
+    applied update. When it extends past a cosine endpoint, the samples prove
+    the terminal rate at the endpoint, the first post-terminal coordinate, the
+    final applied update, and the reported completion coordinate.
+    """
     schedule = optimizer_spec.lr_schedule
     local_positions = {0, 1, 2, 3}
     if schedule is not None and schedule.total_steps is not None:
@@ -171,6 +178,14 @@ def schedule_sample_steps(
         warmup_or_hold = int(schedule.constant_lr_iterations)
         mid_decay = warmup_or_hold + max((terminal - warmup_or_hold) // 2, 1)
         local_positions = {0, warmup_or_hold, mid_decay, terminal}
+        if run_end_step is not None:
+            terminal_step = context.schedule_origin_step + terminal
+            if run_end_step > terminal_step:
+                local_positions.add(terminal + 1)
+            for sample_step in (run_end_step - 1, run_end_step):
+                local_position = sample_step - context.schedule_origin_step
+                if local_position >= 0:
+                    local_positions.add(local_position)
         cursor = terminal - 1
         while len(local_positions) < minimum and cursor > 0:
             local_positions.add(cursor)
@@ -179,7 +194,16 @@ def schedule_sample_steps(
     while len(local_positions) < minimum:
         local_positions.add(cursor)
         cursor += 1
-    return tuple(context.current_step + position for position in sorted(local_positions))
+    sample_steps = {
+        context.schedule_origin_step + position
+        for position in local_positions
+        if context.schedule_origin_step + position >= context.current_step
+    }
+    cursor = context.current_step
+    while len(sample_steps) < minimum:
+        sample_steps.add(cursor)
+        cursor += 1
+    return tuple(sorted(sample_steps))
 
 
 def evaluate_schedule_samples(
@@ -205,15 +229,21 @@ def compare_schedule_samples(
     *,
     expected_context: ScheduleEvalContext,
     observed_context: ScheduleEvalContext,
+    run_end_step: int | None = None,
     rel_tol: float = 1e-9,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return sampled LR triples and the subset whose values differ."""
-    sample_steps = schedule_sample_steps(optimizer_spec, expected_context)
+    """Return sampled LR evidence and the subset whose values differ."""
+    sample_steps = schedule_sample_steps(
+        optimizer_spec,
+        expected_context,
+        run_end_step=run_end_step,
+    )
     expected = evaluate_schedule_samples(optimizer_spec, expected_context, sample_steps)
     observed = evaluate_schedule_samples(optimizer_spec, observed_context, sample_steps)
     samples = [
         {
             "sample_step": step,
+            "schedule_position": step - expected_context.schedule_origin_step,
             "expected": expected[step],
             "observed": observed[step],
         }
