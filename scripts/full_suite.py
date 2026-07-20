@@ -21,7 +21,7 @@ from types import TracebackType
 from typing import Any, Self, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LOCK_PROTOCOL_VERSION = 1
 LOCK_BUSY_EXIT = 75
 LOCK_ENV_VAR = "FULL_SUITE_LOCK_DIR"
@@ -45,6 +45,12 @@ EXECUTION_RELEVANT_UNTRACKED_PATHS = (
     "tox.ini",
     "uv.lock",
 )
+SUITE_MARKER_EXPRESSIONS = {
+    "core": "not optional_mjx and not optional_ppo",
+    "mjx": "not optional_ppo",
+    "ppo": "not optional_mjx",
+    "all": "optional_mjx or optional_ppo or (not optional_mjx and not optional_ppo)",
+}
 
 
 class FullSuiteLockBusy(RuntimeError):
@@ -251,7 +257,13 @@ def clean_tree_hash(repo_root: Path) -> tuple[str | None, tuple[str, ...]]:
     return result.stdout.strip(), ()
 
 
-def build_fingerprint(repo_root: Path) -> SuiteFingerprint:
+def build_fingerprint(
+    repo_root: Path,
+    *,
+    suite_profile: str = "core",
+    pytest_args: Sequence[str] = (),
+    runner_args: Sequence[str] = (),
+) -> SuiteFingerprint:
     tree_hash, git_refusals = clean_tree_hash(repo_root)
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -263,9 +275,14 @@ def build_fingerprint(repo_root: Path) -> SuiteFingerprint:
         "jaxlib_version": distribution_version("jaxlib"),
         "pytest_version": distribution_version("pytest"),
         "pytest_xdist_version": distribution_version("pytest-xdist"),
+        "suite_profile": suite_profile,
+        "pytest_args": list(pytest_args),
+        "runner_args": list(runner_args),
     }
 
     refusal_reasons = list(git_refusals)
+    if os.environ.get("PYTEST_ADDOPTS"):
+        refusal_reasons.append("PYTEST_ADDOPTS is nonempty")
     for field in REQUIRED_FINGERPRINT_FIELDS:
         if not payload.get(field):
             refusal_reasons.append(f"{field} is unavailable")
@@ -322,8 +339,24 @@ def xdist_args() -> list[str]:
     return ["-n", os.environ.get("FEEDBAX_FULL_SUITE_XDIST_WORKERS", "auto")]
 
 
-def pytest_command(pytest_args: Sequence[str]) -> list[str]:
-    return [sys.executable, "-m", "pytest", "tests", *xdist_args(), *pytest_args]
+def pytest_command(
+    pytest_args: Sequence[str],
+    *,
+    suite_profile: str = "core",
+    runner_args: Sequence[str] | None = None,
+) -> list[str]:
+    marker_expression = SUITE_MARKER_EXPRESSIONS[suite_profile]
+    resolved_runner_args = xdist_args() if runner_args is None else runner_args
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "tests",
+        *resolved_runner_args,
+        "-m",
+        marker_expression,
+        *pytest_args,
+    ]
 
 
 def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str]]:
@@ -348,6 +381,29 @@ def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str
         default=None,
         help="Override the full-suite memo directory.",
     )
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument(
+        "--include-mjx",
+        action="store_const",
+        const="mjx",
+        dest="suite_profile",
+        help="Run the core suite plus optional MJX simulation tests.",
+    )
+    profile.add_argument(
+        "--include-ppo",
+        action="store_const",
+        const="ppo",
+        dest="suite_profile",
+        help="Run the core suite plus optional PPO rollout and training tests.",
+    )
+    profile.add_argument(
+        "--include-optional",
+        action="store_const",
+        const="all",
+        dest="suite_profile",
+        help="Run the core, MJX, and PPO test tiers.",
+    )
+    parser.set_defaults(suite_profile="core")
     namespace, pytest_args = parser.parse_known_args(argv)
     if pytest_args[:1] == ["--"]:
         pytest_args = pytest_args[1:]
@@ -363,10 +419,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     configure_jax_cache_env(cache_root)
 
-    command = pytest_command(passthrough)
+    runner_args = xdist_args()
+    command = pytest_command(
+        passthrough,
+        suite_profile=args.suite_profile,
+        runner_args=runner_args,
+    )
 
     if args.print_fingerprint:
-        fingerprint = build_fingerprint(repo_root)
+        fingerprint = build_fingerprint(
+            repo_root,
+            suite_profile=args.suite_profile,
+            pytest_args=passthrough,
+            runner_args=runner_args,
+        )
         print(
             json.dumps(
                 {
@@ -382,7 +448,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.dry_run:
-        fingerprint = build_fingerprint(repo_root)
+        fingerprint = build_fingerprint(
+            repo_root,
+            suite_profile=args.suite_profile,
+            pytest_args=passthrough,
+            runner_args=runner_args,
+        )
         would_skip = not args.force and not args.no_memo and has_green_memo(memo_dir, fingerprint)
         print(
             json.dumps(
@@ -402,7 +473,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     lock_path = full_suite_lock_path()
     try:
         with FullSuiteLock(lock_path, repo_root=repo_root):
-            fingerprint = build_fingerprint(repo_root)
+            fingerprint = build_fingerprint(
+                repo_root,
+                suite_profile=args.suite_profile,
+                pytest_args=passthrough,
+                runner_args=runner_args,
+            )
             would_skip = (
                 not args.force and not args.no_memo and has_green_memo(memo_dir, fingerprint)
             )
