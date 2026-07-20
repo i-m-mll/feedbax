@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import secrets
@@ -62,6 +64,13 @@ def default_orchestration_root(run_set_id: str) -> Path:
     if configured:
         return Path(configured).expanduser() / run_set_id
     return Path.home() / ".cache" / "feedbax" / "orchestration" / run_set_id
+
+
+def canonical_run_bundle_sha256(bundle: "RunBundle") -> str:
+    """Return the SHA-256 identity of the persisted run-bundle representation."""
+    payload = bundle.model_dump(mode="json", exclude_none=True)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class SchemaArtifactRef(StrictModel):

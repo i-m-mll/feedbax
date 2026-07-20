@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -13,6 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.manifest import (
+    ParentRef,
+    TrainingRunManifest,
+    load_manifest_bytes,
+)
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -24,6 +30,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION,
     RunBundle,
     RunRowSpec,
+    canonical_run_bundle_sha256,
     default_orchestration_root,
     mint_run_set_id,
 )
@@ -36,6 +43,11 @@ from feedbax.orchestration.conformance import (
     write_conformance_certificate,
 )
 from feedbax.orchestration.drivers.base import OrchestrationDriver, ProvisioningAttemptError
+from feedbax.orchestration.drivers.native_execution import (
+    NATIVE_TRAINING_COLLECTION_OUTPUTS,
+    missing_native_training_collection_outputs,
+    uses_registered_native_execution,
+)
 from feedbax.orchestration.events import RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration import schedule_eval
@@ -46,6 +58,9 @@ from feedbax.orchestration.state import (
     RunSetStateStore,
     StageState,
     utc_now,
+)
+from feedbax.training.checkpoint_custody import (
+    authenticate_published_checkpoint_custody,
 )
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
@@ -279,12 +294,19 @@ class StageEngine:
         *,
         break_stale_lock: bool = False,
         stop_after_stage: str | None = None,
+        retry_failed_certification: bool = False,
     ) -> RunSetState:
         """Run or resume the bundle through all stages."""
         initial = self._initial_state()
         with self.store.lock(break_stale=break_stale_lock):
             state = self.store.initialize(initial)
             state = self._hydrate_completed_assembly(state)
+            self._restore_completed_driver_preflight(state)
+            if retry_failed_certification:
+                retry_state = self._reset_failed_certification(state)
+                if retry_state is not state:
+                    self.store.save(retry_state)
+                state = retry_state
             try:
                 for stage_id in STAGE_ORDER:
                     if state.stage(stage_id).status == "completed":
@@ -303,6 +325,32 @@ class StageEngine:
                 ):
                     latest = self._run_teardown(latest, abort=True)
                 raise
+
+    @staticmethod
+    def _reset_failed_certification(state: RunSetState) -> RunSetState:
+        """Make a completed failing certificate eligible for one explicit retry."""
+        certify = state.stage(STAGE_CERTIFY)
+        if certify.status != "completed" or certify.outputs.get("overall") != "fail":
+            return state
+        return state.model_copy(
+            update={
+                "certificate_ref": None,
+                "stages": {
+                    **state.stages,
+                    STAGE_CERTIFY: certify.model_copy(
+                        update={
+                            "status": "pending",
+                            "checks": [],
+                            "started_at": None,
+                            "completed_at": None,
+                            "outputs": {},
+                            "error": None,
+                        }
+                    ),
+                },
+                "updated_at": utc_now(),
+            }
+        )
 
     def _initial_state(self) -> RunSetState:
         return RunSetState(
@@ -391,12 +439,11 @@ class StageEngine:
             request_sha256 = None
         run_set_dir.mkdir(parents=True, exist_ok=True)
         payload = self.bundle.model_dump(mode="json", exclude_none=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         bundle_path = run_set_dir / "bundle.json"
         _atomic_write_json(bundle_path, payload)
         outputs = {
             "bundle_path": str(bundle_path),
-            "bundle_sha256": hashlib.sha256(encoded).hexdigest(),
+            "bundle_sha256": canonical_run_bundle_sha256(self.bundle),
         }
         if request_path is not None:
             outputs.update(
@@ -424,10 +471,7 @@ class StageEngine:
         bundle_path = self.store.path.parent / "bundle.json"
         data = bundle_path.read_bytes()
         expected = state.stage(STAGE_ASSEMBLE).outputs.get("bundle_sha256")
-        canonical = json.dumps(json.loads(data), sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        actual = hashlib.sha256(canonical).hexdigest()
+        actual = canonical_run_bundle_sha256(RunBundle.model_validate_json(data))
         if expected != actual:
             raise OrchestrationStageError(
                 f"persisted ASSEMBLE bundle hash mismatch: expected={expected!r} actual={actual!r}"
@@ -436,6 +480,19 @@ class StageEngine:
         assert self.driver_factory is not None
         self.driver = self.driver_factory(self.bundle)
         return state
+
+    def _restore_completed_driver_preflight(self, state: RunSetState) -> None:
+        """Restore driver-local preflight authority before skipping a completed stage."""
+        if state.stage(STAGE_PREFLIGHT).status != "completed":
+            return
+        restore = getattr(self.driver, "restore_completed_preflight", None)
+        if callable(restore):
+            try:
+                restore(self.bundle, state)
+            except Exception as exc:
+                raise PreflightFailed(
+                    f"persisted driver PREFLIGHT evidence is invalid: {exc}"
+                ) from exc
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)
@@ -457,7 +514,11 @@ class StageEngine:
         if failed:
             names = ", ".join(check.name for check in failed)
             raise PreflightFailed(f"preflight failed: {names}")
-        return state, {"checks": [check.model_dump(mode="json") for check in checks]}
+        outputs: dict[str, Any] = {"checks": [check.model_dump(mode="json") for check in checks]}
+        evidence = getattr(self.driver, "preflight_evidence", None)
+        if callable(evidence):
+            outputs["driver_evidence"] = dict(evidence(self.bundle, state, checks))
+        return state, outputs
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
@@ -530,8 +591,22 @@ class StageEngine:
                 self._sleep(min(delay, max(0.0, deadline - self._wall_time())))
                 continue
             outputs["provisioning_attempts"] = attempts
+            counters = dict(state.budget_counters)
+            counters.pop("provisioning_stop_reason", None)
+            prior_stop_reason = state.provisioning_stop_reason
             state = state.model_copy(
-                update={"provision_record": outputs, "provisioning_attempts": attempts, "updated_at": utc_now()}
+                update={
+                    "provision_record": outputs,
+                    "provisioning_attempts": attempts,
+                    "provisioning_stop_reason": None,
+                    "budget_counters": counters,
+                    "abort_reason": (
+                        None
+                        if state.abort_reason == prior_stop_reason
+                        else state.abort_reason
+                    ),
+                    "updated_at": utc_now(),
+                }
             )
             return state, outputs
 
@@ -714,6 +789,8 @@ class StageEngine:
 
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected: dict[str, Mapping[str, str]] = {}
+        checkpoint_custody: dict[str, Mapping[str, Any]] = {}
+        collection_recovery: dict[str, Mapping[str, Any]] = {}
         executor_failures = [
             {
                 "row_id": row.row_id,
@@ -741,19 +818,47 @@ class StageEngine:
                     }
                 )
             missing_outputs = _missing_declared_collection_outputs(row, outputs)
-            if missing_outputs and preserve_executor_failure:
-                secondary_evidence.append(
-                    {
-                        "kind": "absent_collection_outputs",
-                        "row_id": row.row_id,
-                        "missing_outputs": missing_outputs,
-                    }
-                )
+            if missing_outputs:
+                evidence = {
+                    "kind": "absent_collection_outputs",
+                    "row_id": row.row_id,
+                    "missing_outputs": missing_outputs,
+                }
+                if not preserve_executor_failure:
+                    raise OrchestrationStageError(
+                        f"declared collection outputs are absent for row "
+                        f"{row.row_id!r}: {missing_outputs!r}"
+                    )
+                secondary_evidence.append(evidence)
+            elif uses_registered_native_execution(row):
+                try:
+                    checkpoint_custody[row.row_id] = (
+                        _verify_collected_native_checkpoint_custody(row, outputs)
+                    )
+                except Exception as exc:
+                    if not preserve_executor_failure:
+                        raise
+                    secondary_evidence.append(
+                        {
+                            "kind": "checkpoint_custody_verification_after_executor_failure",
+                            "row_id": row.row_id,
+                            "detail": str(exc),
+                        }
+                    )
             collected[row.row_id] = outputs
+            recovery_evidence = getattr(self.driver, "collection_recovery_evidence", None)
+            if callable(recovery_evidence):
+                row_recovery = recovery_evidence(row.row_id)
+                if row_recovery is not None:
+                    collection_recovery[row.row_id] = dict(row_recovery)
             row_state = row_state.model_copy(update={"collected_outputs": outputs})
             state = state.with_row(row.row_id, row_state)
             self.store.save(state)
         stage_outputs: dict[str, Any] = {"rows": collected}
+        if checkpoint_custody:
+            stage_outputs["checkpoint_custody"] = checkpoint_custody
+        if collection_recovery:
+            stage_outputs["collection_recovery"] = collection_recovery
         if secondary_evidence:
             stage_outputs["secondary_evidence"] = secondary_evidence
         if executor_failures:
@@ -944,7 +1049,9 @@ class StageEngine:
             "provider_observations": {
                 "hourly_rate_raw": provision.get("hourly_rate_raw"),
                 "immutable_image_id_raw": provision.get("immutable_image_id"),
-                "billing_started_at_raw": provision.get("billing_started_at"),
+                "billing_started_at_raw": provision.get(
+                    "billing_started_at_raw", provision.get("billing_started_at")
+                ),
                 "region_raw": provision.get("region"),
             },
             "unavailable": unavailable,
@@ -1413,6 +1520,121 @@ def _missing_declared_collection_outputs(
     return sorted(expected - set(collected))
 
 
+def _verify_collected_native_checkpoint_custody(
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+) -> Mapping[str, Any]:
+    """Authenticate the published native checkpoint transaction before teardown."""
+
+    checkpoint_root = Path(collected["checkpoints"])
+    authenticated = authenticate_published_checkpoint_custody(checkpoint_root)
+    manifest = authenticated.manifest
+    manifest_sha256 = authenticated.manifest_sha256
+    transaction_root_sha256 = manifest.content_integrity_digest.transaction_root_sha256
+    manifest_relative_path = authenticated.parent_ref.uri
+
+    training_manifest = load_manifest_bytes(
+        _read_collected_regular_file(
+            collected["manifest.json"],
+            context=f"collected training manifest for row {row.row_id!r}",
+        )
+    )
+    if not isinstance(training_manifest, TrainingRunManifest):
+        raise OrchestrationStageError(
+            f"collected native manifest is not a TrainingRunManifest for row {row.row_id!r}"
+        )
+    if not training_manifest.checkpoint_custody:
+        raise OrchestrationStageError(
+            f"collected training manifest has no terminal checkpoint for row {row.row_id!r}"
+        )
+    terminal_ref = training_manifest.checkpoint_custody[-1]
+    if not isinstance(terminal_ref, ParentRef):
+        raise OrchestrationStageError(
+            f"collected training manifest terminal checkpoint is not a ParentRef "
+            f"for row {row.row_id!r}"
+        )
+    expected_terminal_ref = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=manifest.transaction_id,
+        role="training_checkpoint_custody",
+        uri=manifest_relative_path,
+        metadata={"manifest_sha256": manifest_sha256},
+    )
+    if terminal_ref != expected_terminal_ref:
+        raise OrchestrationStageError(
+            f"collected checkpoint custody is not the terminal training manifest authority "
+            f"for row {row.row_id!r}"
+        )
+
+    return {
+        "transaction_id": authenticated.manifest.transaction_id,
+        "manifest_sha256": authenticated.manifest_sha256,
+        "transaction_root_sha256": transaction_root_sha256,
+        "slot_names": sorted(authenticated.slot_names),
+    }
+
+
+def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
+    """Read one collected file without following or accepting a replaced entry."""
+    path_obj = Path(path)
+    parent_descriptor: int | None = None
+    descriptor: int | None = None
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        parent_descriptor = os.open(path_obj.parent, directory_flags)
+        before = os.stat(
+            path_obj.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(before.st_mode):
+            raise OrchestrationStageError(f"{context} is not a regular file")
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path_obj.name, flags, dir_fd=parent_descriptor)
+        opened = os.fstat(descriptor)
+        after_open = os.stat(
+            path_obj.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or (after_open.st_dev, after_open.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise OrchestrationStageError(f"{context} is not one stable regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        completed = os.fstat(descriptor)
+        after_read = os.stat(
+            path_obj.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            (completed.st_dev, completed.st_ino) != (opened.st_dev, opened.st_ino)
+            or (after_read.st_dev, after_read.st_ino) != (opened.st_dev, opened.st_ino)
+            or completed.st_size != opened.st_size
+            or completed.st_mtime_ns != opened.st_mtime_ns
+        ):
+            raise OrchestrationStageError(f"{context} identity changed while reading")
+        return b"".join(chunks)
+    except OrchestrationStageError:
+        raise
+    except OSError as exc:
+        raise OrchestrationStageError(f"{context} is unsafe or unavailable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
 def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     checks: list[PreflightCheckEntry] = []
@@ -1447,6 +1669,29 @@ def run_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntry]:
             not policy_failures,
             detail="; ".join(policy_failures) if policy_failures else None,
             observed=policy_observed,
+        )
+    )
+
+    output_failures: list[str] = []
+    output_observed: dict[str, Any] = {}
+    for row in bundle.rows:
+        if not uses_registered_native_execution(row):
+            continue
+        missing = missing_native_training_collection_outputs(row)
+        output_observed[row.row_id] = {
+            "declared": list(row.launch.collect),
+            "required_for_registered_native_training": list(
+                NATIVE_TRAINING_COLLECTION_OUTPUTS
+            ),
+        }
+        if missing:
+            output_failures.append(f"{row.row_id}: missing {missing!r}")
+    checks.append(
+        _check(
+            "native-output-custody",
+            not output_failures,
+            detail="; ".join(output_failures) if output_failures else None,
+            observed=output_observed,
         )
     )
 

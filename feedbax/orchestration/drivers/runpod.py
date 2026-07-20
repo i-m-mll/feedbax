@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 import tomllib
@@ -19,15 +20,28 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
-from feedbax.orchestration.bundle import RunBundle, RunRowSpec
+from feedbax.orchestration.bundle import (
+    ResolvedAssemblyInput,
+    RunBundle,
+    RunRowSpec,
+    canonical_run_bundle_sha256,
+)
+from feedbax.orchestration.collection_recovery import (
+    CollectionRecoveryBinding,
+    recover_collected_outputs,
+)
 from feedbax.orchestration.drivers.base import DriverRowProbe, ProvisioningAttemptError
 from feedbax.orchestration.drivers.native_execution import (
     bind_native_execution_command,
     inject_native_execution_context,
     is_native_training_command,
+    native_resume_checkpoint_authority_json,
+    native_resume_checkpoint_source,
+    SECURE_CHECKPOINT_SEED_SCRIPT,
 )
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
@@ -63,10 +77,28 @@ METADATA_BATCH_KEYS = (
 RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
     "feedbax.runpod_environment_fingerprint.v1"
 )
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID = "feedbax.runpod_preflight_evidence"
+RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION = "feedbax.runpod_preflight_evidence.v1"
+_RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
+    {
+        "input-provider-bindings",
+        "runpod-image-immutable",
+        "runpod-image-tag-exists",
+        "runpod-lockfiles-declared",
+        "runpod-python-version-declared",
+        "runpod-gpu-policy-declared",
+        "runpod-credentials",
+        "runpod-balance-floor",
+        "runpod-deadman-credentials",
+    }
+)
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
 _SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_RUNPOD_GO_UTC_PATTERN = re.compile(
+    r"^(?P<instant>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) \+0000 UTC$"
+)
 _REMOTE_ENVIRONMENT_PROBE = r"""
 import hashlib
 import importlib.metadata
@@ -178,6 +210,21 @@ class RunPodDriverError(RuntimeError):
     """Raised when the RunPod driver cannot complete a requested action."""
 
 
+def _canonical_runpod_timestamp(value: Any) -> str | None:
+    """Return a canonical UTC instant for a RunPod client timestamp."""
+    if not isinstance(value, str) or not value:
+        return None
+    match = _RUNPOD_GO_UTC_PATTERN.fullmatch(value)
+    candidate = f"{match.group('instant')}+00:00" if match is not None else value
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 @dataclass(frozen=True)
 class CommandResult:
     """Captured command result from a RunPod transport."""
@@ -231,6 +278,7 @@ class SubprocessRunPodTransport:
     ssh_key_path: Path | str = Path("~/.runpod/ssh/RunPod-Key-Go")
     ssh_user: str = "root"
     runpodctl_executable: str = "runpodctl"
+    rsync_executable: str = "rsync"
 
     def runpodctl(
         self,
@@ -269,14 +317,25 @@ class SubprocessRunPodTransport:
         timeout_seconds: float | None = None,
     ) -> CommandResult:
         host = self._require_host()
+        rsync_executable, secluded_args = self._resolve_rsync_capability()
         rsync_target = target
         source_is_local = Path(source.rstrip("/")).exists()
         if source_is_local and _looks_remote_path(target):
-            rsync_target = f"{host}:{target}"
+            remote_target = target if secluded_args else shlex.quote(target)
+            rsync_target = f"{host}:{remote_target}"
         rsync_source = source
         if not source_is_local and _looks_remote_path(source):
-            rsync_source = f"{host}:{source}"
-        args = ["rsync", "-az", "--no-owner", "--no-group", "--progress", "--stats"]
+            remote_source = source if secluded_args else shlex.quote(source)
+            rsync_source = f"{host}:{remote_source}"
+        args = [
+            rsync_executable,
+            "-az",
+            "--no-owner",
+            "--no-group",
+        ]
+        if secluded_args:
+            args.append("--secluded-args")
+        args.extend(["--progress", "--stats"])
         if delete:
             args.append("--delete")
         for exclude in excludes:
@@ -290,6 +349,32 @@ class SubprocessRunPodTransport:
             ]
         )
         return _run_command(args, timeout_seconds=timeout_seconds)
+
+    def _resolve_rsync_capability(self) -> tuple[str, bool]:
+        executable = shutil.which(self.rsync_executable)
+        if executable is None:
+            raise RunPodDriverError(f"rsync executable is unavailable: {self.rsync_executable!r}")
+        version = _run_command([executable, "--version"])
+        if version.returncode != 0:
+            detail = (
+                version.stderr.strip() or version.stdout.strip() or f"exit={version.returncode}"
+            )
+            raise RunPodDriverError(f"rsync executable is unusable: {detail}")
+        secluded_probe = _run_command([executable, "--secluded-args", "--version"])
+        if secluded_probe.returncode == 0:
+            return executable, True
+        detail = secluded_probe.stderr.strip() or secluded_probe.stdout.strip()
+        unsupported_markers = (
+            "unrecognized option `--secluded-args'",
+            'unknown option "--secluded-args"',
+            "unknown option --secluded-args",
+        )
+        if any(marker in detail for marker in unsupported_markers):
+            return executable, False
+        raise RunPodDriverError(
+            "could not determine rsync secluded-argument support: "
+            + (detail or f"exit={secluded_probe.returncode}")
+        )
 
     def _require_host(self) -> str:
         if not self.ssh_host or self.ssh_port is None:
@@ -381,6 +466,7 @@ class RunPodOrchestrationDriver:
         sleep: Any = time.sleep,
         monotonic: Any = time.monotonic,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+        collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
     ) -> None:
         self.config = config or RunPodDriverConfig()
         self.transport = transport or SubprocessRunPodTransport(
@@ -390,6 +476,8 @@ class RunPodOrchestrationDriver:
         self._sleep = sleep
         self._monotonic = monotonic
         self.input_provider_bindings = tuple(input_provider_bindings)
+        self.collection_recovery_bindings = tuple(collection_recovery_bindings)
+        self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
@@ -444,7 +532,6 @@ class RunPodOrchestrationDriver:
             pod = pod or self._last_provision_pod
             if pod is not None:
                 record.update(project_runpod_provision_facts(pod))
-                record["billing_started_at"] = pod.get("createdAt") or pod.get("created_at")
             if acquired:
                 try:
                     record["cleanup"] = dict(self.teardown(bundle, state))
@@ -599,13 +686,181 @@ class RunPodOrchestrationDriver:
         self._preflight_passed = all(check.status == "pass" for check in checks)
         return checks
 
+    def preflight_evidence(
+        self,
+        bundle: RunBundle,
+        state: RunSetState,
+        checks: Sequence[PreflightCheckEntry],
+    ) -> Mapping[str, Any]:
+        """Create durable authority for a completed, named RunPod preflight."""
+        evidence = self._preflight_evidence_payload(bundle, state, checks)
+        return {**evidence, "sha256": _sha256_json(evidence)}
+
+    def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> None:
+        """Restore only cryptographically bound completed preflight authority.
+
+        This is deliberately offline: it validates persisted evidence without
+        querying RunPod or repeating mutable credential/balance observations.
+        """
+        stage = state.stage("PREFLIGHT")
+        evidence = stage.outputs.get("driver_evidence")
+        persisted_checks = stage.outputs.get("checks")
+        if persisted_checks != [check.model_dump(mode="json") for check in stage.checks]:
+            raise RunPodDriverError("completed PREFLIGHT checks are internally inconsistent")
+        if state.run_set_id != bundle.run_set_id:
+            raise RunPodDriverError("completed PREFLIGHT run-set binding is mismatched")
+        assemble_completed = state.stage("ASSEMBLE").completed_at
+        if (
+            assemble_completed is None
+            or stage.started_at is None
+            or stage.completed_at is None
+            or not assemble_completed <= stage.started_at <= stage.completed_at
+        ):
+            raise RunPodDriverError("completed PREFLIGHT timestamps are internally inconsistent")
+        expected = self._preflight_evidence_payload(bundle, state, stage.checks)
+        if evidence is None:
+            self._preflight_passed = True
+            return
+        if not isinstance(evidence, Mapping):
+            raise RunPodDriverError("completed PREFLIGHT RunPod evidence has invalid shape")
+        if evidence.get("sha256") != _sha256_json(expected):
+            raise RunPodDriverError("completed PREFLIGHT evidence digest mismatch")
+        if dict(evidence) != {**expected, "sha256": _sha256_json(expected)}:
+            raise RunPodDriverError("completed PREFLIGHT evidence is not canonical")
+        self._preflight_passed = True
+
+    def _preflight_evidence_payload(
+        self,
+        bundle: RunBundle,
+        state: RunSetState,
+        checks: Sequence[PreflightCheckEntry],
+    ) -> dict[str, Any]:
+        assemble_sha256 = state.stage("ASSEMBLE").outputs.get("bundle_sha256")
+        bundle_sha256 = canonical_run_bundle_sha256(bundle)
+        if not isinstance(assemble_sha256, str) or assemble_sha256 != bundle_sha256:
+            raise RunPodDriverError("completed PREFLIGHT bundle binding is missing or mismatched")
+        self._validate_preflight_checks(bundle, checks)
+        return {
+            "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+            "run_set_id": bundle.run_set_id,
+            "bundle_sha256": bundle_sha256,
+            "checks_sha256": _sha256_json([check.model_dump(mode="json") for check in checks]),
+            "driver_contract": self._preflight_driver_contract(),
+        }
+
+    def _preflight_driver_contract(self) -> dict[str, Any]:
+        """Project the complete effective RunPod config without exposing secrets."""
+        return {
+            "pod_id": self.config.pod_id,
+            "ssh_host": self.config.ssh_host,
+            "ssh_port": self.config.ssh_port,
+            "gpu_id": self.config.gpu_id,
+            "datacenters": list(self.config.datacenters),
+            "api_key_sha256": (
+                hashlib.sha256(self.config.api_key.encode("utf-8")).hexdigest()
+                if self.config.api_key
+                else None
+            ),
+            "min_balance_usd": self.config.min_balance_usd,
+            "image": self.config.image,
+            "pod_name_prefix": self.config.pod_name_prefix,
+            "max_acquire_seconds": self.config.max_acquire_seconds,
+            "poll_seconds": self.config.poll_seconds,
+            "env_step_timeout_seconds": self.config.env_step_timeout_seconds,
+            "failure_log_pull_timeout_seconds": self.config.failure_log_pull_timeout_seconds,
+            "teardown_absence_timeout_seconds": self.config.teardown_absence_timeout_seconds,
+            "volume_mount": self.config.volume_mount,
+            "remote_repo_root": self.config.remote_repo_root,
+            "remote_run_root": self.config.remote_run_root,
+            "remote_artifacts_dir": self.config.remote_artifacts_dir,
+            "local_repos_sha256": _sha256_json(
+                {str(name): str(path) for name, path in sorted(self.config.local_repos.items())}
+            ),
+            "remote_repos": {
+                str(name): str(path) for name, path in sorted(self.config.remote_repos.items())
+            },
+            "path_patches": [list(patch) for patch in self.config.path_patches],
+            "overlay_steps_sha256": _sha256_json(list(self.config.overlay_steps)),
+            "auto_teardown": self.config.auto_teardown,
+            "provided_endpoint": self._provided_endpoint,
+            "input_provider_bindings": sorted(
+                binding.name for binding in self.input_provider_bindings
+            ),
+        }
+
+    def _validate_preflight_checks(
+        self, bundle: RunBundle, checks: Sequence[PreflightCheckEntry]
+    ) -> None:
+        """Validate persisted RunPod checks without provider or input access."""
+        named = {check.name: check for check in checks if check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES}
+        if len(named) != len(_RUNPOD_PREFLIGHT_CHECK_NAMES) or any(
+            check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES
+            and sum(item.name == check.name for item in checks) != 1
+            for check in named.values()
+        ):
+            raise RunPodDriverError("completed PREFLIGHT lacks a unique RunPod check set")
+        if any(check.status != "pass" for check in checks):
+            raise RunPodDriverError("completed PREFLIGHT includes a failing check")
+
+        failures, resolved_observed = preflight_input_provider_bindings(
+            bundle, self.input_provider_bindings
+        )
+        if failures:
+            raise RunPodDriverError("current bundle no longer has valid resolved input declarations")
+        current_bindings = {binding.name for binding in self.input_provider_bindings}
+        required_bindings = {item.custody.provider_binding for item in bundle.resolved_inputs}
+        if current_bindings != required_bindings:
+            raise RunPodDriverError("current input-provider bindings do not cover the bundle")
+        expected_observed = resolved_observed or "no-resolved-inputs"
+        if named["input-provider-bindings"].observed != expected_observed:
+            raise RunPodDriverError("input-provider preflight observation does not match the bundle")
+
+        image = bundle.environment.image_id
+        if self.config.image != image:
+            raise RunPodDriverError("RunPod driver image does not match the bundle")
+        expected_checks = {
+            "runpod-image-immutable": image,
+            "runpod-image-tag-exists": image,
+            "runpod-lockfiles-declared": dict(sorted(bundle.environment.lockfile_hashes.items())),
+            "runpod-python-version-declared": bundle.environment.python_version,
+            "runpod-gpu-policy-declared": {
+                "gpu_id": self.config.gpu_id,
+                "datacenter_fallbacks": list(self.config.datacenters),
+                "provided_target": bool(self._provided_endpoint or self._pod_id),
+            },
+        }
+        for name, observed in expected_checks.items():
+            if named[name].observed != observed:
+                raise RunPodDriverError(f"{name} observation does not match current declarations")
+
+        credentials_required = not self._provided_endpoint or bundle.deadman_enabled
+        expected_credentials = "verified" if credentials_required else "not-required-provided-endpoint"
+        if named["runpod-credentials"].observed != expected_credentials:
+            raise RunPodDriverError("credential preflight observation is inconsistent")
+        balance_required = not self._provided_endpoint and not self._pod_id
+        balance = named["runpod-balance-floor"].observed
+        if balance_required:
+            if isinstance(balance, bool) or not isinstance(balance, (int, float)):
+                raise RunPodDriverError("balance preflight observation is not numeric")
+            if not math.isfinite(float(balance)) or balance < self.config.min_balance_usd:
+                raise RunPodDriverError("balance preflight observation does not meet the current threshold")
+        elif balance != "not-required-existing-target":
+            raise RunPodDriverError("balance preflight observation is inconsistent")
+        expected_deadman = "available" if self.config.api_key else "not-required-or-missing"
+        if named["runpod-deadman-credentials"].observed != expected_deadman:
+            raise RunPodDriverError("deadman credential observation is inconsistent")
+        if bundle.deadman_enabled and not self.config.api_key:
+            raise RunPodDriverError("deadman requires an available API key")
+
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
         require_deterministic_runpod_environment(bundle)
         declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
-            f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} {_sq(remote_run_dir + '/logs')}"
+            f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
+            f"{_sq(remote_run_dir + '/logs')} && command -v setsid >/dev/null"
         )
         self._ensure_deadman(bundle)
         reused_fingerprint = self._reused_remote_environment_fingerprint(
@@ -849,6 +1104,21 @@ class RunPodOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, str]:
         """Collect row outputs, events, and manifests to the local run-set directory."""
+        if self.collection_recovery_bindings and (
+            self._pod_id is not None or self._provided_endpoint
+        ):
+            raise RunPodDriverError(
+                "collection recovery refuses a configured live or provider-backed target"
+            )
+        recovered = recover_collected_outputs(
+            bundle,
+            row,
+            state,
+            bindings=self.collection_recovery_bindings,
+        )
+        if recovered is not None:
+            self._collection_recovery_evidence[row.row_id] = recovered.evidence
+            return recovered.outputs
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         remote_run_dir = self._remote_run_dir(bundle)
@@ -867,7 +1137,22 @@ class RunPodOrchestrationDriver:
             else:
                 remote_source = f"{remote_run_dir}/{source}"
             target = dest_dir / Path(source).name
-            self.transport.rsync(remote_source, str(target), delete=False).check(
+            source_kind = self._remote_collection_source_kind(remote_source)
+            delete = False
+            if source_kind == "directory":
+                if os.path.lexists(target):
+                    if target.is_symlink() or not target.is_dir():
+                        raise RunPodDriverError(
+                            f"collection directory target is unsafe: {target}"
+                        )
+                else:
+                    target.mkdir()
+                remote_source = remote_source.rstrip("/") + "/"
+                rsync_target = str(target) + "/"
+                delete = True
+            else:
+                rsync_target = str(target)
+            self.transport.rsync(remote_source, rsync_target, delete=delete).check(
                 f"collect {row.row_id}:{source}"
             )
             collected[Path(source).name] = str(target)
@@ -883,6 +1168,36 @@ class RunPodOrchestrationDriver:
         if payload_sha256:
             verify_collected_payload(dest_dir, str(payload_sha256))
         return collected
+
+    def collection_recovery_evidence(self, row_id: str) -> Mapping[str, object] | None:
+        """Return evidence for an explicit provider-free collection recovery."""
+        return self._collection_recovery_evidence.get(row_id)
+
+    def _remote_collection_source_kind(self, source: str) -> Literal["file", "directory"]:
+        """Classify one remote output without following its final path component."""
+        source_path = source.rstrip("/") or "/"
+        command = (
+            f"path={_sq(source_path)}; "
+            'if [ -L "$path" ]; then printf symlink; '
+            'elif [ -f "$path" ]; then printf file; '
+            'elif [ -d "$path" ]; then printf directory; '
+            'elif [ -e "$path" ]; then printf unsupported; '
+            "else printf missing; fi"
+        )
+        kind = self._ssh(command).stdout.strip()
+        if kind in {"file", "directory"}:
+            return kind
+        if kind == "missing":
+            raise RunPodDriverError(f"declared collection output is absent: {source}")
+        if kind == "symlink":
+            raise RunPodDriverError(f"declared collection output is a symlink: {source}")
+        if kind == "unsupported":
+            raise RunPodDriverError(
+                f"declared collection output is not a regular file or directory: {source}"
+            )
+        raise RunPodDriverError(
+            f"could not classify declared collection output {source!r}: {kind!r}"
+        )
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Remove the acquired pod unless teardown is disabled by policy."""
@@ -1140,7 +1455,6 @@ class RunPodOrchestrationDriver:
             "provided_endpoint": False,
             "ssh_host": endpoint.ip,
             "ssh_port": endpoint.port,
-            "billing_started_at": pod.get("createdAt") or pod.get("created_at"),
             "teardown_allowed": not provided_pod,
         }
 
@@ -1445,6 +1759,7 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ("machine", "costPerHr"),
         ("machine", "costPerHour"),
     )
+    billing_started_at_raw = first(("createdAt",), ("created_at",))
     try:
         parsed_hourly_rate = float(hourly_rate_raw) if hourly_rate_raw is not None else None
     except (TypeError, ValueError):
@@ -1465,6 +1780,8 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "hourly_rate": hourly_rate,
         "hourly_rate_raw": raw_rate_observation,
+        "billing_started_at": _canonical_runpod_timestamp(billing_started_at_raw),
+        "billing_started_at_raw": billing_started_at_raw,
         "currency": "USD" if hourly_rate is not None else None,
         "provider_observation_basis": "runpodctl pod get response",
     }
@@ -1483,6 +1800,11 @@ def _preflight_check(
         detail=detail,
         observed=observed,
     )
+
+
+def _sha256_json(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def is_immutable_runpod_image_id(image_id: str | None) -> bool:
@@ -1628,6 +1950,17 @@ def build_atomic_directory_publish_command(source: str, destination: str) -> str
     )
 
 
+def build_native_resume_seed_command(
+    source: str, attempt: str, target: str, resolved: ResolvedAssemblyInput
+) -> str:
+    """Build the shared secure clone plus atomic no-replace publication protocol."""
+
+    return (
+        f"python3 -c {_sq(SECURE_CHECKPOINT_SEED_SCRIPT)} {_sq(source)} {_sq(attempt)} "
+        f"{_sq(target)} {_sq(native_resume_checkpoint_authority_json(resolved))}"
+    )
+
+
 def build_remote_nohup_sentinel_command(
     *,
     workdir: str,
@@ -1652,8 +1985,24 @@ def build_remote_nohup_sentinel_command(
     return (
         f"mkdir -p {_sq(str(Path(done_file).parent))} {_sq(str(Path(log_file).parent))} && "
         f"rm -f {_sq(done_file)} {_sq(failed_file)} && "
-        f"nohup bash -lc {_sq(sentinel_command)} </dev/null >{_sq(log_file)} 2>&1 &"
+        f"setsid -f bash -lc {_sq(sentinel_command)} </dev/null >{_sq(log_file)} 2>&1"
     )
+
+
+def _normalize_explicit_native_launch_command(command: Sequence[str]) -> list[str]:
+    """Run an explicit native executor command in the realized uv environment."""
+    normalized = [str(part) for part in command]
+    if not is_native_training_command(normalized):
+        return normalized
+    if not normalized or Path(normalized[0]).name != "uv":
+        return ["uv", "run", "--no-sync", *normalized]
+    if len(normalized) < 2 or normalized[1] != "run":
+        raise RunPodDriverError(
+            "explicit native launch command beginning with uv must use 'uv run'"
+        )
+    if len(normalized) < 3 or normalized[2] != "--no-sync":
+        normalized.insert(2, "--no-sync")
+    return normalized
 
 
 def build_launch_row_command(
@@ -1674,6 +2023,7 @@ def build_launch_row_command(
     log_file = f"{remote_run_dir}/logs/{row.row_id}.log"
     events_dir = f"{remote_run_dir}/events"
     row_dir = f"{remote_run_dir}/rows/{row.row_id}"
+    checkpoint_source = native_resume_checkpoint_source(bundle, row)
     command_parts = (
         [str(part) for part in row.launch.command]
         if row.launch.command
@@ -1691,6 +2041,8 @@ def build_launch_row_command(
         environment_fingerprint=env_fingerprint,
         collection_root=row_dir,
     )
+    if row.launch.command:
+        command_parts = _normalize_explicit_native_launch_command(command_parts)
     command = " ".join(shlex.quote(part) for part in command_parts)
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "
@@ -1712,6 +2064,14 @@ def build_launch_row_command(
         f'if [ "$rc" -eq 0 ]; then success=1; touch {_sq(done_file)}; '
         f'else touch {_sq(failed_file)}; exit "$rc"; fi'
     )
+    seed_command = ""
+    if checkpoint_source is not None:
+        source = f"{remote_run_dir}/inputs/{checkpoint_source.custody.target_role}"
+        attempt = f"{row_dir}/.checkpoint-seed-attempt"
+        target = f"{row_dir}/checkpoints"
+        seed_command = (
+            f"{build_native_resume_seed_command(source, attempt, target, checkpoint_source)} && "
+        )
     return (
         f"mkdir -p {_sq(remote_sentinel_dir)} {_sq(remote_run_dir + '/logs')} "
         f"{_sq(events_dir)} {_sq(row_dir)} {_sq(jax_cache_dir)} && "
@@ -1721,8 +2081,12 @@ def build_launch_row_command(
         'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi; '
         f"echo 'orphaned launch: started sentinel present, process dead, "
         f"no terminal sentinel' > {_sq(failed_file)}; exit 0; fi && "
-        f"touch {_sq(started_file)} && "
-        f"nohup bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 &"
+        f"{seed_command}"
+        f"rm -f {_sq(pid_file)} && touch {_sq(started_file)} && "
+        f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
+        f"i=0; while [ ! -s {_sq(pid_file)} ] && [ \"$i\" -lt 40 ]; do "
+        'i=$((i+1)); sleep 0.05; done; '
+        f"[ -s {_sq(pid_file)} ]"
     )
 
 
@@ -1776,6 +2140,7 @@ def build_deadman_watchdog_command(
     warning = f"{remote_run_dir}/deadman-warning.txt"
     pid_file = f"{remote_run_dir}/deadman.pid"
     script = (
+        f"echo $$ > {_sq(pid_file)}; "
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
         f"sdir={_sq(remote_sentinel_dir)}; edir={_sq(events_dir)}; "
         f"silence={int(silence_seconds)}; warning={_sq(warning)}; "
@@ -1795,8 +2160,11 @@ def build_deadman_watchdog_command(
     return (
         f"pid_file={_sq(pid_file)}; "
         'if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then exit 0; fi; '
-        f"nohup bash -lc {_sq(script)} </dev/null "
-        f'>>{_sq(remote_run_dir + "/logs/deadman.log")} 2>&1 & echo $! > "$pid_file"'
+        'rm -f "$pid_file"; '
+        f"setsid -f bash -lc {_sq(script)} </dev/null "
+        f'>>{_sq(remote_run_dir + "/logs/deadman.log")} 2>&1; '
+        'i=0; while [ ! -s "$pid_file" ] && [ "$i" -lt 40 ]; do '
+        'i=$((i+1)); sleep 0.05; done; [ -s "$pid_file" ]'
     )
 
 

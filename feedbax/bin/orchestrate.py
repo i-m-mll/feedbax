@@ -35,6 +35,7 @@ from feedbax.orchestration import (
     build_default_assembly_registry,
 )
 from feedbax.orchestration.bundle import default_orchestration_root
+from feedbax.orchestration.collection_recovery import CollectionRecoveryBinding
 from feedbax.orchestration.conformance import build_default_check_registry
 from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
@@ -132,7 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("collect", "certify", "resume"):
         sub = subparsers.add_parser(name, help=f"Run the {name} orchestration action")
         sub.add_argument("--run-set", required=True, help="Run-set id")
-        if name == "resume":
+        if name in {"collect", "resume"}:
+            sub.add_argument(
+                "--recover-collected-root",
+                action="append",
+                default=[],
+                metavar="ROW=ABSOLUTE_PATH",
+                help="Recover a preserved run-owned row collection after verified teardown",
+            )
+        if name in {"certify", "resume"}:
             sub.add_argument("--input-provider", action="append", default=[])
         sub.set_defaults(func=globals()[f"cmd_{name}"])
 
@@ -224,12 +233,26 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
-    state = _run_existing(args.run_set, stop_after_stage="COLLECT")
+    state = _run_existing(
+        args.run_set,
+        stop_after_stage="COLLECT",
+        collection_recovery_bindings=_collection_recovery_bindings(
+            args.recover_collected_root
+        ),
+    )
     return _state_exit_code(state)
 
 
 def cmd_certify(args: argparse.Namespace) -> int:
-    state = _run_existing(args.run_set, stop_after_stage="CERTIFY")
+    load_training_method_plugins(fail_on_load_error=True)
+    run_options: dict[str, Any] = {
+        "stop_after_stage": "CERTIFY",
+        "retry_failed_certification": True,
+    }
+    input_bindings = _input_provider_bindings(args.input_provider)
+    if input_bindings:
+        run_options["input_provider_bindings"] = input_bindings
+    state = _run_existing(args.run_set, **run_options)
     if state.stage("CERTIFY").outputs.get("overall") == "fail":
         return EXIT_PREFLIGHT
     return _state_exit_code(state)
@@ -241,8 +264,16 @@ def cmd_teardown(args: argparse.Namespace) -> int:
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
+    load_training_method_plugins(fail_on_load_error=True)
     with RunInterruptionController() as interruption:
-        state = _run_existing(args.run_set, interruption_probe=interruption.poll, input_provider_bindings=_input_provider_bindings(args.input_provider))
+        state = _run_existing(
+            args.run_set,
+            interruption_probe=interruption.poll,
+            input_provider_bindings=_input_provider_bindings(args.input_provider),
+            collection_recovery_bindings=_collection_recovery_bindings(
+                args.recover_collected_root
+            ),
+        )
     return _state_exit_code(state)
 
 
@@ -280,10 +311,19 @@ def _run_engine(
     *,
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
+    retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
+    collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
 ) -> RunSetState:
-    driver = _driver_for_bundle(bundle, input_provider_bindings)
+    if collection_recovery_bindings:
+        driver = _driver_for_bundle(
+            bundle,
+            input_provider_bindings,
+            collection_recovery_bindings=collection_recovery_bindings,
+        )
+    else:
+        driver = _driver_for_bundle(bundle, input_provider_bindings)
     state = StageEngine(
         bundle=bundle,
         driver=driver,
@@ -292,6 +332,7 @@ def _run_engine(
     ).run(
         break_stale_lock=break_stale_lock,
         stop_after_stage=stop_after_stage,
+        retry_failed_certification=retry_failed_certification,
     )
     if state.abort_reason == "budget-exceeded":
         raise BudgetExceeded("budget exceeded")
@@ -303,30 +344,38 @@ def _run_existing(
     *,
     stop_after_stage: str | None = None,
     break_stale_lock: bool = False,
+    retry_failed_certification: bool = False,
     interruption_probe: Callable[[], CancellationDecision | None] | None = None,
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
+    collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
 ) -> RunSetState:
     bundle = _load_existing_bundle(run_set_id)
     return _run_engine(
         bundle,
         stop_after_stage=stop_after_stage,
         break_stale_lock=break_stale_lock,
+        retry_failed_certification=retry_failed_certification,
         interruption_probe=interruption_probe,
         input_provider_bindings=input_provider_bindings,
+        collection_recovery_bindings=collection_recovery_bindings,
     )
 
 
 def _driver_for_bundle(
     bundle: RunBundle,
     bindings: tuple[InputProviderRootBinding, ...] = (),
+    collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
 ) -> LocalOrchestrationDriver | RunPodOrchestrationDriver:
     driver_name = bundle.deployment_policy.driver
     if driver_name == "local":
+        if collection_recovery_bindings:
+            raise ValueError("collection recovery is only supported for a torn-down RunPod run")
         return LocalOrchestrationDriver(input_provider_bindings=bindings)
     if driver_name == "runpod":
         return RunPodOrchestrationDriver(
             config=_runpod_config_for_bundle(bundle),
             input_provider_bindings=bindings,
+            collection_recovery_bindings=collection_recovery_bindings,
         )
     raise RuntimeError(f"Unsupported orchestration driver: {driver_name!r}")
 
@@ -376,6 +425,19 @@ def _input_provider_bindings(values: list[str]) -> tuple[InputProviderRootBindin
             raise ValueError("--input-provider requires NAME=ABSOLUTE_PATH")
         validate_staged_binding_name(name)
         bindings.append(InputProviderRootBinding(name, root))
+    return tuple(bindings)
+
+
+def _collection_recovery_bindings(
+    values: list[str],
+) -> tuple[CollectionRecoveryBinding, ...]:
+    bindings = []
+    for value in values:
+        row_id, separator, raw_root = value.partition("=")
+        root = Path(raw_root)
+        if not separator or not row_id or not root.is_absolute():
+            raise ValueError("--recover-collected-root requires ROW=ABSOLUTE_PATH")
+        bindings.append(CollectionRecoveryBinding(row_id=row_id, root=root))
     return tuple(bindings)
 
 

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +14,8 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.manifest import ParentRef
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.run_matrix import (
     RowLowererIdentity,
@@ -18,6 +23,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.spec_storage import (
+    canonicalize_immutable_input_identities,
     training_run_execution_hash,
     training_spec_canonical_bytes,
 )
@@ -48,6 +54,11 @@ from feedbax.orchestration.bundle import (
     BudgetPolicy,
     DeploymentPolicy,
     EnvironmentDeclaration,
+    ImmutableInputArtifactRef,
+    ImmutableInputIdentity,
+    InputCustodySource,
+    InputFormatIdentity,
+    CheckpointCustodyArchiveMaterializer,
     ResolvedAssemblyInput,
     RunBundle,
     SchemaArtifactRef,
@@ -61,10 +72,23 @@ from feedbax.orchestration.conformance import (
     check_lr_trace,
     check_seeds,
 )
-from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
-from feedbax.orchestration.drivers.native_execution import inject_native_execution_context
-from feedbax.orchestration.drivers.runpod import build_launch_row_command
+from feedbax.orchestration.drivers.local import LocalDriverError, LocalOrchestrationDriver
+from feedbax.orchestration.drivers.native_execution import (
+    NativeExecutionContextError,
+    inject_native_execution_context,
+    native_resume_checkpoint_role,
+    seed_authenticated_checkpoint,
+)
+from feedbax.orchestration.drivers.runpod import (
+    build_launch_row_command,
+    build_native_resume_seed_command,
+)
+from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.state import RowState, RunSetState
+from feedbax.orchestration.stages import (
+    OrchestrationStageError,
+    _verify_collected_native_checkpoint_custody,
+)
 from feedbax.training.diagnostics import (
     LearningRateDiagnostic,
     NativeExecutionProducerContext,
@@ -72,6 +96,8 @@ from feedbax.training.diagnostics import (
     ScheduleContextDiagnostic,
 )
 from feedbax.training.executor import execute_training_run_spec
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.training.checkpoint_custody import produce_checkpoint_custody_archive
 from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
     TRAINING_RUN_MATRIX_COMPILER_VERSION,
@@ -151,6 +177,7 @@ def _assemble_lowered_bundle(
     gain: int,
     completed_batches: int = 1,
     continuation: CheckpointContinuationRequest | None = None,
+    input_kind: str = "registered-artifact",
 ) -> RunBundle:
     matrix = TrainingRunMatrixSpec.model_validate(
         {
@@ -189,7 +216,7 @@ def _assemble_lowered_bundle(
         inputs=[
             AssemblyInputDeclaration(
                 role="dataset",
-                kind="registered-artifact",
+                kind=input_kind,
                 locator="dataset:toy:v1",
             )
         ],
@@ -284,6 +311,71 @@ def _native_context(
     )
 
 
+def _write_authenticated_checkpoint_tree(
+    source: Path,
+    resolved: ResolvedAssemblyInput,
+    *,
+    slot_bytes: bytes = b"checkpoint-slot",
+    additional_slots: dict[str, bytes] | None = None,
+) -> ResolvedAssemblyInput:
+    """Write a minimal custody tree and bind its exact authority to one input."""
+
+    materializer = resolved.custody.materializer
+    parent = materializer.expected_parent_ref
+    manifest_path = source / parent.uri
+    slot_payloads = {"model": slot_bytes, **(additional_slots or {})}
+    slot_records = []
+    for name, data in slot_payloads.items():
+        relative_path = f"slots/{name}.bin"
+        slot_path = manifest_path.parent / relative_path
+        slot_path.parent.mkdir(parents=True, exist_ok=True)
+        slot_path.write_bytes(data)
+        slot_records.append(
+            {
+                "slot": name,
+                "relative_path": relative_path,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size_bytes": len(data),
+            }
+        )
+    manifest = {
+        "kind": "TrainingCheckpointTransactionManifest",
+        "transaction_id": parent.id,
+        "content_integrity_digest": {
+            "transaction_root_sha256": materializer.expected_transaction_root_sha256
+        },
+        "slots": slot_records,
+    }
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
+    manifest_path.write_bytes(manifest_bytes)
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    (source / "latest.json").write_text(
+        json.dumps(
+            {
+                "transaction_id": parent.id,
+                "manifest_relative_path": parent.uri,
+                "manifest_sha256": manifest_sha256,
+                "transaction_root_sha256": materializer.expected_transaction_root_sha256,
+            }
+        ),
+        encoding="utf-8",
+    )
+    authenticated_parent = parent.model_copy(
+        update={"metadata": {**parent.metadata, "manifest_sha256": manifest_sha256}}
+    )
+    return resolved.model_copy(
+        update={
+            "custody": resolved.custody.model_copy(
+                update={
+                    "materializer": materializer.model_copy(
+                        update={"expected_parent_ref": authenticated_parent}
+                    )
+                }
+            )
+        }
+    )
+
+
 def _without_resolved_inputs(bundle: RunBundle) -> RunBundle:
     """Return a valid no-input bundle for tests focused only on driver command binding."""
     payload = bundle.model_dump(mode="json")
@@ -362,8 +454,8 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     provenance = row.execution.row_provenance
     assert provenance is not None
     payload = json.loads(Path(row.execution.payload.uri).read_text(encoding="utf-8"))
-    checkpoint_root = tmp_path / "checkpoint-custody"
     collection_root = bundle.run_set_dir / "rows" / row.row_id
+    checkpoint_root = collection_root / "checkpoints"
     context = _native_context(bundle, collection_root=collection_root)
 
     result = execute_training_run_spec(
@@ -464,13 +556,43 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         rows={row.row_id: RowState(status="completed")},
     )
     collected = driver.collect(bundle, row, state)
-    assert set(collected) == {"manifest.json", "training-diagnostics.json"}
+    assert set(collected) == {
+        "manifest.json",
+        "training-diagnostics.json",
+        "checkpoints",
+    }
     assert json.loads(Path(collected["manifest.json"]).read_text(encoding="utf-8"))[
         "id"
     ] == result.manifest.id
     assert json.loads(
         Path(collected["training-diagnostics.json"]).read_text(encoding="utf-8")
     )["manifest_id"] == result.manifest.id
+    collected_checkpoint_root = Path(collected["checkpoints"])
+    assert (collected_checkpoint_root / "latest.json").is_file()
+    assert (collected_checkpoint_root / "transactions").is_dir()
+    verification = _verify_collected_native_checkpoint_custody(row, collected)
+    assert verification["transaction_id"] == result.checkpoint_writes[-1].manifest.transaction_id
+    assert set(verification["slot_names"]) == {
+        "batch_counter",
+        "model",
+        "optimizer",
+        "prng",
+    }
+
+    collected_manifest_path = Path(collected["manifest.json"])
+    collected_manifest_bytes = collected_manifest_path.read_bytes()
+    mismatched_manifest = json.loads(collected_manifest_bytes)
+    mismatched_manifest["checkpoint_custody"][-1]["id"] = "tx-stale-input"
+    collected_manifest_path.write_text(
+        json.dumps(mismatched_manifest, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        OrchestrationStageError,
+        match="not the terminal training manifest authority",
+    ):
+        _verify_collected_native_checkpoint_custody(row, collected)
+    collected_manifest_path.write_bytes(collected_manifest_bytes)
 
     continuation = CheckpointContinuationRequest(
         source_completed_batches=1,
@@ -692,3 +814,531 @@ def test_local_driver_executes_compiled_native_row_subprocess(tmp_path: Path) ->
     row_dir = bundle.run_set_dir / "rows" / row.row_id
     assert (row_dir / "manifest.json").is_file()
     assert (row_dir / "training-diagnostics.json").is_file()
+
+
+def test_native_resume_checkpoint_role_requires_one_authenticated_custody_input(
+    tmp_path: Path,
+) -> None:
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=1,
+        additional_batches=1,
+        self_contained=False,
+    )
+    bundle = _assemble_lowered_bundle(
+        tmp_path / "resume-role",
+        gain=2,
+        completed_batches=2,
+        continuation=continuation,
+        input_kind="checkpoint-custody-archive",
+    )
+    row = bundle.rows[0]
+
+    assert native_resume_checkpoint_role(bundle, row) == "dataset"
+
+    no_checkpoint_bundle = _assemble_lowered_bundle(
+        tmp_path / "missing-role",
+        gain=2,
+        completed_batches=2,
+        continuation=continuation,
+    )
+    with pytest.raises(NativeExecutionContextError, match="exactly one immutable"):
+        native_resume_checkpoint_role(no_checkpoint_bundle, no_checkpoint_bundle.rows[0])
+
+    ambiguous = bundle.model_copy(
+        update={"resolved_inputs": [bundle.resolved_inputs[0], bundle.resolved_inputs[0]]}
+    )
+    with pytest.raises(NativeExecutionContextError, match="exactly one resolved custody"):
+        native_resume_checkpoint_role(ambiguous, row)
+
+
+def test_local_native_resume_seeds_fresh_checkpoint_root_without_mutating_source(
+    tmp_path: Path,
+) -> None:
+    from feedbax.orchestration.drivers import local as local_driver_module
+
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=1,
+        additional_batches=1,
+        self_contained=False,
+    )
+    bundle = _assemble_lowered_bundle(
+        tmp_path / "local-resume",
+        gain=2,
+        completed_batches=2,
+        continuation=continuation,
+        input_kind="checkpoint-custody-archive",
+    )
+    row = bundle.rows[0]
+    source = bundle.run_set_dir / "inputs" / "dataset"
+    resolved = _write_authenticated_checkpoint_tree(source, bundle.resolved_inputs[0])
+    row_dir = bundle.run_set_dir / "rows" / row.row_id
+    row_dir.mkdir(parents=True)
+
+    local_driver_module._seed_native_resume_checkpoint_root(source, row_dir, resolved)
+
+    target = row_dir / "checkpoints"
+    assert (target / "latest.json").read_text(encoding="utf-8") == (
+        source / "latest.json"
+    ).read_text(encoding="utf-8")
+    assert (source / resolved.custody.materializer.expected_parent_ref.uri).is_file()
+    assert not (target.parent / ".checkpoint-seed-attempt").exists()
+
+    with pytest.raises(LocalDriverError, match="checkpoint target already exists"):
+        local_driver_module._seed_native_resume_checkpoint_root(source, target.parent, resolved)
+
+    target.rename(target.parent / "published-checkpoints")
+    (target.parent / ".checkpoint-seed-attempt").mkdir()
+    with pytest.raises(LocalDriverError, match="checkpoint attempt already exists"):
+        local_driver_module._seed_native_resume_checkpoint_root(source, target.parent, resolved)
+
+
+def test_runpod_native_resume_seeds_before_started_sentinel(tmp_path: Path) -> None:
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=1,
+        additional_batches=1,
+        self_contained=False,
+    )
+    bundle = _assemble_lowered_bundle(
+        tmp_path / "runpod-resume",
+        gain=2,
+        completed_batches=2,
+        continuation=continuation,
+        input_kind="checkpoint-custody-archive",
+    )
+    row = bundle.rows[0]
+
+    command = build_launch_row_command(
+        bundle=bundle,
+        row=row,
+        remote_run_dir="/remote/run set",
+        remote_sentinel_dir="/remote/run set/sentinels",
+        workdir="/remote/feedbax",
+        env_fingerprint="environment:resume-seed",
+        jax_cache_dir="/remote/jax cache",
+    )
+
+    assert "/remote/run set/inputs/dataset" in command
+    assert "/remote/run set/rows/science-row/.checkpoint-seed-attempt" in command
+    assert "/remote/run set/rows/science-row/checkpoints" in command
+    assert command.index(".checkpoint-seed-attempt") < command.rindex(".started")
+
+
+@pytest.mark.parametrize("protocol", ["local", "remote"])
+def test_secure_checkpoint_clone_rejects_symlink_entries(
+    tmp_path: Path,
+    protocol: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("secret", encoding="utf-8")
+    (source / "latest.json").symlink_to(outside)
+    attempt = tmp_path / f"{protocol}-attempt"
+    target = tmp_path / f"{protocol}-target"
+    bundle = _assemble_lowered_bundle(
+        tmp_path / f"{protocol}-symlink-bundle",
+        gain=2,
+        completed_batches=2,
+        continuation=CheckpointContinuationRequest(
+            source_completed_batches=1, additional_batches=1, self_contained=False
+        ),
+        input_kind="checkpoint-custody-archive",
+    )
+    resolved = bundle.resolved_inputs[0]
+
+    if protocol == "local":
+        with pytest.raises(NativeExecutionContextError, match="authenticated checkpoint seed"):
+            seed_authenticated_checkpoint(source, attempt, target, resolved)
+    else:
+        result = subprocess.run(
+            ["bash", "-lc", build_native_resume_seed_command(
+                str(source), str(attempt), str(target), resolved
+            )],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+    assert not target.exists()
+
+
+def test_remote_checkpoint_seed_protocol_clones_and_publishes(tmp_path: Path) -> None:
+    source = tmp_path / "source with spaces"
+    bundle = _assemble_lowered_bundle(
+        tmp_path / "remote-seed-bundle",
+        gain=2,
+        completed_batches=2,
+        continuation=CheckpointContinuationRequest(
+            source_completed_batches=1, additional_batches=1, self_contained=False
+        ),
+        input_kind="checkpoint-custody-archive",
+    )
+    resolved = _write_authenticated_checkpoint_tree(source, bundle.resolved_inputs[0])
+    attempt = tmp_path / "private attempt"
+    target = tmp_path / "fresh checkpoints"
+
+    subprocess.run(
+        [
+            "bash",
+            "-lc",
+            build_native_resume_seed_command(str(source), str(attempt), str(target), resolved),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert (target / "latest.json").read_bytes() == (source / "latest.json").read_bytes()
+    assert not attempt.exists()
+
+
+def _invoke_checkpoint_seed_protocol(
+    protocol: str,
+    source: Path,
+    attempt: Path,
+    target: Path,
+    resolved: ResolvedAssemblyInput,
+) -> None:
+    if protocol == "local":
+        seed_authenticated_checkpoint(source, attempt, target, resolved)
+        return
+    subprocess.run(
+        [
+            "bash",
+            "-lc",
+            build_native_resume_seed_command(str(source), str(attempt), str(target), resolved),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("protocol", ["local", "remote"])
+@pytest.mark.parametrize("replacement", [False, True], ids=["tampered", "replaced"])
+def test_checkpoint_seed_reauthenticates_stable_post_stage_source(
+    tmp_path: Path,
+    protocol: str,
+    replacement: bool,
+) -> None:
+    bundle = _assemble_lowered_bundle(
+        tmp_path / f"{protocol}-post-stage-bundle-{replacement}",
+        gain=2,
+        completed_batches=2,
+        continuation=CheckpointContinuationRequest(
+            source_completed_batches=1, additional_batches=1, self_contained=False
+        ),
+        input_kind="checkpoint-custody-archive",
+    )
+    source = tmp_path / f"{protocol}-post-stage-source-{replacement}"
+    resolved = _write_authenticated_checkpoint_tree(source, bundle.resolved_inputs[0])
+    parent = resolved.custody.materializer.expected_parent_ref
+    slot = source / Path(parent.uri).parent / "slots" / "model.bin"
+    if replacement:
+        source.rename(source.with_name(source.name + "-authenticated"))
+        _write_authenticated_checkpoint_tree(
+            source, bundle.resolved_inputs[0], slot_bytes=b"replacement-slot"
+        )
+    else:
+        slot.write_bytes(b"tampered-slot!")
+    attempt = tmp_path / f"{protocol}-post-stage-attempt-{replacement}"
+    target = tmp_path / f"{protocol}-post-stage-target-{replacement}"
+
+    with pytest.raises((NativeExecutionContextError, subprocess.CalledProcessError)):
+        _invoke_checkpoint_seed_protocol(protocol, source, attempt, target, resolved)
+
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("protocol", ["local", "remote"])
+def test_checkpoint_seed_rejects_attempt_path_swap(
+    tmp_path: Path,
+    protocol: str,
+) -> None:
+    bundle = _assemble_lowered_bundle(
+        tmp_path / f"{protocol}-attempt-swap-bundle",
+        gain=2,
+        completed_batches=2,
+        continuation=CheckpointContinuationRequest(
+            source_completed_batches=1, additional_batches=1, self_contained=False
+        ),
+        input_kind="checkpoint-custody-archive",
+    )
+    source = tmp_path / f"{protocol}-attempt-swap-source"
+    resolved = _write_authenticated_checkpoint_tree(
+        source,
+        bundle.resolved_inputs[0],
+        slot_bytes=b"x" * (64 * 1024 * 1024),
+    )
+    attempt = tmp_path / f"{protocol}-attempt-swap"
+    target = tmp_path / f"{protocol}-attempt-swap-target"
+    displaced = tmp_path / f"{protocol}-authenticated-attempt"
+    swapped = threading.Event()
+
+    def swap_attempt() -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if (attempt / "latest.json").is_file():
+                attempt.rename(displaced)
+                attempt.mkdir()
+                (attempt / "attacker.txt").write_text("replacement", encoding="utf-8")
+                swapped.set()
+                return
+            time.sleep(0.001)
+
+    thread = threading.Thread(target=swap_attempt)
+    thread.start()
+    try:
+        with pytest.raises((NativeExecutionContextError, subprocess.CalledProcessError)):
+            _invoke_checkpoint_seed_protocol(protocol, source, attempt, target, resolved)
+    finally:
+        thread.join()
+
+    assert swapped.is_set()
+    assert not target.exists()
+    assert (attempt / "attacker.txt").is_file()
+
+
+@pytest.mark.parametrize("protocol", ["local", "remote"])
+def test_checkpoint_seed_rejects_governed_leaf_replacement_after_digest_read(
+    tmp_path: Path,
+    protocol: str,
+) -> None:
+    bundle = _assemble_lowered_bundle(
+        tmp_path / f"{protocol}-leaf-swap-bundle",
+        gain=2,
+        completed_batches=2,
+        continuation=CheckpointContinuationRequest(
+            source_completed_batches=1, additional_batches=1, self_contained=False
+        ),
+        input_kind="checkpoint-custody-archive",
+    )
+    source = tmp_path / f"{protocol}-leaf-swap-source"
+    resolved = _write_authenticated_checkpoint_tree(
+        source,
+        bundle.resolved_inputs[0],
+        additional_slots={"zz_ballast": b"z" * (64 * 1024 * 1024)},
+    )
+    attempt = tmp_path / f"{protocol}-leaf-swap-attempt"
+    target = tmp_path / f"{protocol}-leaf-swap-target"
+    manifest_uri = resolved.custody.materializer.expected_parent_ref.uri
+    governed_leaf = attempt / Path(manifest_uri).parent / "slots" / "model.bin"
+    attacker_leaf = tmp_path / f"{protocol}-attacker-model.bin"
+    attacker_leaf.write_bytes(b"attacker-slot!!")
+    replaced = threading.Event()
+
+    def replace_after_read() -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not governed_leaf.is_file():
+            time.sleep(0.001)
+        if not governed_leaf.is_file():
+            return
+        initial_atime = governed_leaf.stat().st_atime_ns
+        while time.monotonic() < deadline:
+            if governed_leaf.stat().st_atime_ns != initial_atime:
+                os.replace(attacker_leaf, governed_leaf)
+                replaced.set()
+                return
+            time.sleep(0.001)
+
+    thread = threading.Thread(target=replace_after_read)
+    thread.start()
+    try:
+        with pytest.raises((NativeExecutionContextError, subprocess.CalledProcessError)):
+            _invoke_checkpoint_seed_protocol(protocol, source, attempt, target, resolved)
+    finally:
+        thread.join()
+
+    assert replaced.is_set()
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("protocol", ["local", "remote"])
+def test_secure_checkpoint_clone_rejects_concurrent_source_mutation(
+    tmp_path: Path,
+    protocol: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    changing = source / "checkpoint.bin"
+    changing.write_bytes(b"0" * (32 * 1024 * 1024))
+    attempt = tmp_path / f"{protocol}-attempt"
+    target = tmp_path / f"{protocol}-target"
+    bundle = _assemble_lowered_bundle(
+        tmp_path / f"{protocol}-mutation-bundle",
+        gain=2,
+        completed_batches=2,
+        continuation=CheckpointContinuationRequest(
+            source_completed_batches=1, additional_batches=1, self_contained=False
+        ),
+        input_kind="checkpoint-custody-archive",
+    )
+    resolved = bundle.resolved_inputs[0]
+    stop = threading.Event()
+    mutations = 0
+
+    def mutate() -> None:
+        nonlocal mutations
+        value = 0
+        while not stop.is_set():
+            with changing.open("r+b", buffering=0) as handle:
+                handle.write(bytes([value]))
+                os.fsync(handle.fileno())
+            value = 1 - value
+            mutations += 1
+
+    thread = threading.Thread(target=mutate)
+    thread.start()
+    try:
+        if protocol == "local":
+            with pytest.raises(NativeExecutionContextError, match="authenticated checkpoint seed"):
+                seed_authenticated_checkpoint(source, attempt, target, resolved)
+        else:
+            result = subprocess.run(
+                ["bash", "-lc", build_native_resume_seed_command(
+                    str(source), str(attempt), str(target), resolved
+                )],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0
+    finally:
+        stop.set()
+        thread.join()
+    assert mutations > 0
+    assert not target.exists()
+
+
+def test_local_driver_executes_authenticated_custody_continuation_with_parent_lineage(
+    tmp_path: Path,
+) -> None:
+    parent_bundle = _without_resolved_inputs(
+        _assemble_lowered_bundle(tmp_path / "authenticated-parent", gain=2)
+    )
+    parent_row = parent_bundle.rows[0]
+    parent_payload = json.loads(
+        Path(parent_row.execution.payload.uri).read_text(encoding="utf-8")
+    )
+    parent_result = execute_training_run_spec(
+        parent_payload,
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path / "parent-manifests",
+        checkpoint_root=tmp_path / "parent-checkpoints",
+        execution_context=_native_context(
+            parent_bundle,
+            collection_root=parent_bundle.run_set_dir / "rows" / parent_row.row_id,
+        ),
+    )
+    parent_write = parent_result.checkpoint_writes[0]
+    parent_ref = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=parent_write.manifest.transaction_id,
+        role="training_checkpoint_custody",
+        uri=parent_write.manifest_path.relative_to(parent_write.root).as_posix(),
+        metadata={"manifest_sha256": parent_write.latest_pointer.manifest_sha256},
+    )
+    provider_root = tmp_path / "checkpoint-provider"
+    artifact = produce_checkpoint_custody_archive(
+        parent_ref,
+        allowed_root=parent_write.root,
+        artifact_provider=ImmutableArtifactBlobProvider(provider_root),
+    ).artifact_ref
+    identity = ImmutableInputIdentity(
+        role="checkpoint",
+        kind="checkpoint-custody-archive",
+        identifier=parent_ref.id,
+        digest={"value": artifact.sha256},
+    )
+    resolved = ResolvedAssemblyInput(
+        identity=identity,
+        custody=InputCustodySource(
+            target_role="checkpoint",
+            provider=ImmutableArtifactBlobProviderSpec(),
+            provider_binding="checkpoint.inputs",
+            artifact=ImmutableInputArtifactRef(
+                **artifact.model_dump(
+                    include={
+                        "artifact_id",
+                        "sha256",
+                        "size_bytes",
+                        "media_type",
+                        "storage_backend",
+                    }
+                )
+            ),
+            format=InputFormatIdentity(
+                format_id="feedbax.archive.training_checkpoint_custody",
+                format_version="feedbax.archive.training_checkpoint_custody.v1",
+                media_type="application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip",
+            ),
+            materializer=CheckpointCustodyArchiveMaterializer(
+                expected_parent_ref=parent_ref,
+                expected_transaction_root_sha256=(
+                    parent_write.manifest.content_integrity_digest.transaction_root_sha256
+                ),
+            ),
+        ),
+    )
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=1,
+        additional_batches=1,
+        self_contained=False,
+    )
+    resumed_bundle = _assemble_lowered_bundle(
+        tmp_path / "authenticated-child",
+        gain=2,
+        completed_batches=2,
+        continuation=continuation,
+        input_kind="checkpoint-custody-archive",
+    )
+    payload = resumed_bundle.model_dump(mode="json")
+    canonical = canonicalize_immutable_input_identities([identity])
+    execution = payload["rows"][0]["execution"]
+    execution["immutable_inputs"] = canonical
+    execution["execution_capsule"]["execution_hash"] = training_run_execution_hash(
+        execution["resolved_snapshot"]["root_hash"], canonical
+    )
+    payload["resolved_inputs"] = [resolved.model_dump(mode="json")]
+    resumed_bundle = RunBundle.model_validate(payload)
+    resumed_row = resumed_bundle.rows[0]
+    state = RunSetState(
+        run_set_id=resumed_bundle.run_set_id,
+        environment_fingerprint="environment:authenticated-resume",
+        rows={resumed_row.row_id: RowState()},
+    )
+    driver = LocalOrchestrationDriver(
+        cwd=tmp_path,
+        freeze_lines=[],
+        input_provider_bindings=[
+            InputProviderRootBinding("checkpoint.inputs", provider_root)
+        ],
+    )
+    driver.provision(resumed_bundle, state)
+    driver.stage_inputs(resumed_bundle, state)
+    row_dir = resumed_bundle.run_set_dir / "rows" / resumed_row.row_id
+    row_dir.mkdir(parents=True)
+    from feedbax.orchestration.drivers import local as local_driver_module
+
+    local_driver_module._seed_native_resume_checkpoint_root(
+        resumed_bundle.run_set_dir / "inputs" / "checkpoint",
+        row_dir,
+        resolved,
+    )
+    resumed_payload = json.loads(
+        Path(resumed_row.execution.payload.uri).read_text(encoding="utf-8")
+    )
+    resumed_result = execute_training_run_spec(
+        resumed_payload,
+        initial_slots=_initial_slots(),
+        manifest_root=tmp_path / "child-manifests",
+        checkpoint_root=row_dir / "checkpoints",
+        resume=True,
+        execution_context=_native_context(
+            resumed_bundle,
+            collection_root=row_dir,
+            current_step=1,
+        ),
+    )
+
+    assert resumed_result.checkpoint_writes[0].manifest.parent_lineage[0].transaction_id == (
+        parent_ref.id
+    )

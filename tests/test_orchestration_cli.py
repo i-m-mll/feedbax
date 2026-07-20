@@ -608,6 +608,44 @@ def test_collect_and_teardown_are_idempotent_after_completed_run(
     assert orchestrate.main(["teardown", "--run-set", bundle.run_set_id, "--force"]) == 0
 
 
+def test_certify_explicitly_retries_a_completed_failed_certificate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    def run_existing(_run_set_id: str, **kwargs: Any) -> RunSetState:
+        calls.append(("run", kwargs))
+        return RunSetState(
+            run_set_id="failed-certificate",
+            rows={"row-a": RowState(status="completed")},
+            stages={
+                "CERTIFY": StageState(
+                    status="completed",
+                    outputs={"overall": "pass"},
+                )
+            },
+        )
+
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda **kwargs: calls.append(("plugins", kwargs)),
+    )
+    monkeypatch.setattr(orchestrate, "_run_existing", run_existing)
+
+    assert orchestrate.main(["certify", "--run-set", "failed-certificate"]) == 0
+    assert calls == [
+        ("plugins", {"fail_on_load_error": True}),
+        (
+            "run",
+            {
+                "stop_after_stage": "CERTIFY",
+                "retry_failed_certification": True,
+            },
+        ),
+    ]
+
+
 def test_two_row_local_driver_demo_through_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -737,6 +775,57 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
     assert driver.config.datacenters == ("CA-MTL-1", "US-OR-1")
     assert driver.config.path_patches[0][0] == "/workspace/feedbax/pyproject.toml"
     assert driver.input_provider_bindings == bindings
+
+
+def test_collection_recovery_binding_requires_row_and_absolute_root(tmp_path: Path) -> None:
+    bindings = orchestrate._collection_recovery_bindings([f"r5={tmp_path}"])
+
+    assert bindings[0].row_id == "r5"
+    assert Path(bindings[0].root) == tmp_path
+    with pytest.raises(ValueError, match="ROW=ABSOLUTE_PATH"):
+        orchestrate._collection_recovery_bindings(["r5=relative"])
+
+
+def test_certify_cli_accepts_input_provider_binding(tmp_path: Path) -> None:
+    args = orchestrate.build_parser().parse_args(
+        [
+            "certify",
+            "--run-set",
+            "run-set",
+            "--input-provider",
+            f"checkpoint.source={tmp_path}",
+        ]
+    )
+
+    assert orchestrate._input_provider_bindings(args.input_provider)[0].name == (
+        "checkpoint.source"
+    )
+
+
+def test_resume_loads_training_method_plugins_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda **kwargs: calls.append(("plugins", kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_run_existing",
+        lambda *_args, **kwargs: (
+            calls.append(("run", kwargs))
+            or RunSetState(
+                run_set_id="resumed",
+                rows={"row-a": RowState(status="completed")},
+            )
+        ),
+    )
+
+    assert orchestrate.main(["resume", "--run-set", "resumed"]) == 0
+    assert calls[0] == ("plugins", {"fail_on_load_error": True})
+    assert calls[1][0] == "run"
 
 
 @pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5"])

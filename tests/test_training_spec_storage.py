@@ -562,6 +562,11 @@ def test_lowered_payload_and_provenance_drive_storage_and_assembly(tmp_path: Pat
     assert compiled_row.resolved_semantics["payload"] == compiled_row.payload
     assert compiled_row.provenance is not None
     assert compiled_row.provenance.planned_run_id == stored_row["planned_run_id"]
+    assert compiled_row.launch.collect == [
+        "manifest.json",
+        "training-diagnostics.json",
+        "checkpoints",
+    ]
 
 
 def test_assembled_bundle_carries_the_same_typed_row_provenance(tmp_path: Path) -> None:

@@ -1168,6 +1168,67 @@ def test_lr_trace_discovers_controller_optimizer_and_compares_realized_samples()
     assert mismatched.observed[104] == pytest.approx(0.05)
 
 
+def test_lr_trace_uses_native_method_training_optimizer_for_constant_schedule() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+    ).model_dump(mode="json")
+    training_spec = {
+        "method_payload": {"payload": {"training": {"optimizer": optimizer}}},
+        "worker_execution": {
+            "mapping_levels": [{"axis": "replica"}],
+            "method_contract": {"axes": [{"name": "replica", "size": 2}]},
+        },
+    }
+    trace = [
+        {
+            "step": step,
+            "learning_rate": 3e-5,
+            "axis_coordinates": [{"axis": "replica", "index": replica}],
+        }
+        for replica in range(2)
+        for step in (500, 1_000, 1_500)
+    ]
+
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec=training_spec,
+            manifest_payload={"training_spec": {"inline": training_spec}},
+            training_diagnostics={"lr_trace": trace},
+        )
+    )
+
+    assert result.status == "pass"
+    assert result.expected["(('replica', 0),)"][500] == pytest.approx(3e-5)
+
+
+def test_lr_trace_rejects_conflicting_governed_optimizer_authorities() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"learning_rate": 3e-5},
+    ).model_dump(mode="json")
+    conflicting = OptimizerSpec(
+        type="adamw",
+        params={"learning_rate": 4e-5},
+    ).model_dump(mode="json")
+
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={
+                "optimizer": optimizer,
+                "method_payload": {"payload": {"training": {"optimizer": conflicting}}},
+            },
+            training_diagnostics={"lr_trace": {500: 3e-5, 1_000: 3e-5, 1_500: 3e-5}},
+        )
+    )
+
+    assert result.status == "fail"
+    assert result.expected == "one unambiguous governed optimizer spec"
+    assert result.observed == "ValueError"
+    assert "ambiguous governed optimizer specs" in str(result.detail)
+
+
 @pytest.mark.parametrize(
     "optimizer_location",
     [
