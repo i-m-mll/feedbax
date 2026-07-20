@@ -31,6 +31,9 @@ TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID = "feedbax.spec.training_row_lowering_res
 TRAINING_ROW_LOWERING_RESULT_SCHEMA_VERSION = (
     f"{TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID}.v1"
 )
+TRAINING_ROW_LOWERER_REF_SCHEMA_ID = "feedbax.spec.training_row_lowerer_ref"
+TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v1"
+TRAINING_ROW_LOWERER_REF_FIELD = "feedbax_row_lowerer"
 TRAINING_ROW_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_provenance"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v1"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
@@ -234,6 +237,26 @@ class RowLowererIdentity(StrictModel):
 
     lowerer_id: str = Field(min_length=1)
     lowerer_version: str = Field(min_length=1)
+
+
+class TrainingRowLowererRef(StrictModel):
+    """Content-pinned authority selecting a public authored-row lowerer."""
+
+    schema_id: Literal["feedbax.spec.training_row_lowerer_ref"] = (
+        TRAINING_ROW_LOWERER_REF_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.training_row_lowerer_ref.v1"] = (
+        TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION
+    )
+    lowerer_id: str = Field(min_length=1)
+    lowerer_version: str = Field(min_length=1)
+    implementation_sha256: str
+
+    @field_validator("implementation_sha256")
+    @classmethod
+    def _validate_implementation_sha256(cls, value: str) -> str:
+        _validate_digest(value, f"/{TRAINING_ROW_LOWERER_REF_FIELD}")
+        return value
 
 
 class AuthoredTrainingRow(StrictModel):

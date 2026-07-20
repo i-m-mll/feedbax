@@ -276,7 +276,7 @@ def _validate_typed_checkpoint_dependencies(
 class TrainingRowLowerer(Protocol):
     """Public typed boundary from authored row intent to execution payload."""
 
-    def __call__(self, row: AuthoredTrainingRow) -> TrainingRowLoweringResult:
+    def __call__(self, row: AuthoredTrainingRow) -> TrainingRowLoweringResult | None:
         """Lower one axis-patched authored row without mutating the input."""
 
 
@@ -363,6 +363,7 @@ def materialize_run_matrix(
     *,
     repo_root: Path,
     method_registry: TrainingMethodRegistry = DEFAULT_TRAINING_METHOD_REGISTRY,
+    row_lowerer: TrainingRowLowerer | None = None,
 ) -> MaterializedRunMatrix:
     """Materialize a ``TrainingRunMatrixSpec`` into validated row specs."""
     return _materialize_run_matrix(
@@ -373,6 +374,7 @@ def materialize_run_matrix(
             row_id=row_id,
             method_registry=method_registry,
         ),
+        row_lowerer=row_lowerer,
     )
 
 
@@ -1283,13 +1285,16 @@ def _lower_authored_row(
             overrides=copy.deepcopy(overrides),
         )
         raw_result = row_lowerer(authored_row.model_copy(deep=True))
-        result = (
-            raw_result
-            if isinstance(raw_result, TrainingRowLoweringResult)
-            else TrainingRowLoweringResult.model_validate(raw_result)
-        )
-        execution_payload = copy.deepcopy(result.execution_payload)
-        lowerer_identities = list(result.lowerer_identities)
+        if raw_result is None:
+            execution_payload = copy.deepcopy(authored_copy)
+        else:
+            result = (
+                raw_result
+                if isinstance(raw_result, TrainingRowLoweringResult)
+                else TrainingRowLoweringResult.model_validate(raw_result)
+            )
+            execution_payload = copy.deepcopy(result.execution_payload)
+            lowerer_identities = list(result.lowerer_identities)
     spec = (
         None
         if row_validator is None

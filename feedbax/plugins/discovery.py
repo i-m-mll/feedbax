@@ -24,6 +24,10 @@ EXECUTION_PREPARATION_REGISTRAR_NAMES = (
     "register_feedbax_execution_preparations",
     "register_execution_preparations",
 )
+TRAINING_ROW_LOWERER_REGISTRAR_NAMES = (
+    "register_feedbax_training_row_lowerers",
+    "register_training_row_lowerers",
+)
 CONFORMANCE_CHECK_REGISTRAR_NAMES = (
     "register_feedbax_conformance_checks",
     "register_conformance_checks",
@@ -98,6 +102,7 @@ def load_training_method_plugins(
     *,
     registry: Any | None = None,
     preparation_registry: Any | None = None,
+    row_lowerer_registry: Any | None = None,
     entry_point_group: str = DEFAULT_ENTRY_POINT_GROUP,
     entry_points: Iterable[Any] | None = None,
     modules: Sequence[str] | None = None,
@@ -130,6 +135,10 @@ def load_training_method_plugins(
             from feedbax.training.preparation import ExecutionPreparationProviderRegistry
 
             preparation_registry = ExecutionPreparationProviderRegistry()
+    if row_lowerer_registry is None:
+        from feedbax.training.row_lowering import DEFAULT_TRAINING_ROW_LOWERER_REGISTRY
+
+        row_lowerer_registry = DEFAULT_TRAINING_ROW_LOWERER_REGISTRY
 
     for entry_point in (
         entry_points if entry_points is not None else feedbax_plugin_entry_points(entry_point_group)
@@ -149,6 +158,7 @@ def load_training_method_plugins(
             plugin,
             registry,
             preparation_registry,
+            row_lowerer_registry,
             provenance=provenance,
         )
 
@@ -158,6 +168,7 @@ def load_training_method_plugins(
             module,
             registry,
             preparation_registry,
+            row_lowerer_registry,
             provenance=f"module:{module_name}",
         )
 
@@ -175,6 +186,7 @@ def _register_training_plugin(
     plugin: Any,
     registry: Any,
     preparation_registry: Any,
+    row_lowerer_registry: Any,
     *,
     provenance: str,
 ) -> None:
@@ -183,6 +195,11 @@ def _register_training_plugin(
     )
     _register_training_methods_from_plugin(plugin, registry, provenance=provenance)
     _register_analysis_recipes_from_plugin(plugin, provenance=provenance)
+    _register_training_row_lowerers_from_plugin(
+        plugin,
+        row_lowerer_registry,
+        provenance=provenance,
+    )
     descriptor_keys_after = set(
         registry.descriptor_keys() if hasattr(registry, "descriptor_keys") else ()
     )
@@ -215,6 +232,32 @@ def _register_training_plugin(
             f"Failed to register Feedbax execution preparations from {provenance}: {exc}"
         ) from exc
     logger.info("Registered Feedbax execution preparations from %s", provenance)
+
+
+def _register_training_row_lowerers_from_plugin(
+    plugin: Any,
+    registry: Any,
+    *,
+    provenance: str,
+) -> None:
+    """Invoke the optional public authored-row lowerer registrar."""
+    registrar = next(
+        (
+            candidate
+            for name in TRAINING_ROW_LOWERER_REGISTRAR_NAMES
+            if callable(candidate := getattr(plugin, name, None))
+        ),
+        None,
+    )
+    if registrar is None:
+        return
+    try:
+        registrar(registry)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to register Feedbax training row lowerers from {provenance}: {exc}"
+        ) from exc
+    logger.info("Registered Feedbax training row lowerers from %s", provenance)
 
 
 def _register_analysis_recipes_from_plugin(plugin: Any, *, provenance: str) -> None:
