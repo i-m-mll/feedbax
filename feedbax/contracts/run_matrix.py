@@ -11,6 +11,7 @@ from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.expressions import Coalesce, ValueExpr, ValueQuery
 from feedbax.contracts.extraction import SourceBinding
+from feedbax.contracts.matrix_core import RowDerivation
 from feedbax.contracts.manifest import (
     OverridePatch,
     StrictModel,
@@ -24,7 +25,8 @@ TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.training_run_matrix.v1"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.training_run_matrix.v2"
 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.training_run_matrix.v3"
-TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v4"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4 = "feedbax.spec.training_run_matrix.v4"
+TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix.v5"
 AUTHORED_TRAINING_ROW_SCHEMA_ID = "feedbax.spec.authored_training_row"
 AUTHORED_TRAINING_ROW_SCHEMA_VERSION = f"{AUTHORED_TRAINING_ROW_SCHEMA_ID}.v1"
 TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID = "feedbax.spec.training_row_lowering_result"
@@ -69,7 +71,7 @@ class TrainingRunMatrixArtifactBinding(StrictModel):
     """Portable identity of the one governed matrix shared by every row."""
 
     schema_id: Literal["feedbax.spec.training_run_matrix"]
-    schema_version: Literal["feedbax.spec.training_run_matrix.v4"]
+    schema_version: Literal["feedbax.spec.training_run_matrix.v5"]
     artifact_id: str = Field(min_length=1)
     artifact_sha256: str
     canonical_sha256: str
@@ -446,16 +448,7 @@ def _validate_base_reference(ref: str, digest: str, payload_path: str | None) ->
         _validate_dotted_path(payload_path, "/base/payload_path")
 
 
-class MatrixDerivation(StrictModel):
-    """One grammar-derived value written into the base payload before expansion."""
-
-    output_path: str
-    query: ValueExpr
-
-    @model_validator(mode="after")
-    def _validate_derivation(self) -> "MatrixDerivation":
-        _validate_dotted_path(self.output_path, "/derivations/output_path")
-        return self
+MatrixDerivation = RowDerivation
 
 
 class MatrixRow(StrictModel):
@@ -654,7 +647,10 @@ class TrainingRunMatrixSpec(StrictModel):
             raise ValueError("/sources aliases must be unique")
         if self.derivations and not self.sources:
             for derivation in self.derivations:
-                if not _query_can_evaluate_without_sources(derivation.query):
+                if not (
+                    _query_can_evaluate_without_sources(derivation.query)
+                    or _query_uses_only_row_context(derivation.query)
+                ):
                     raise ValueError("/derivations require /sources unless all queries have defaults")
         return self
 
@@ -833,4 +829,13 @@ def _query_can_evaluate_without_sources(query: ValueExpr) -> bool:
         return query.default is not None or all(
             "default" in child.model_fields_set for child in query.queries
         )
+    return False
+
+
+def _query_uses_only_row_context(query: ValueExpr) -> bool:
+    """Return whether a derivation can evaluate from its evolving row payload."""
+    if isinstance(query, ValueQuery):
+        return query.item == "row"
+    if isinstance(query, Coalesce):
+        return all(child.item == "row" for child in query.queries)
     return False

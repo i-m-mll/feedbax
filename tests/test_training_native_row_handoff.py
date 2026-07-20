@@ -185,7 +185,7 @@ def _assemble_lowered_bundle(
     matrix = TrainingRunMatrixSpec.model_validate(
         {
             "schema_id": "feedbax.spec.training_run_matrix",
-            "schema_version": "feedbax.spec.training_run_matrix.v4",
+            "schema_version": "feedbax.spec.training_run_matrix.v5",
             "name": "native row handoff",
             "base": {"kind": "inline", "inline": {"compact": {"gain": gain}}},
             "rows": [{"row_id": "science-row", "seed": 7, "overrides": []}],
@@ -200,7 +200,7 @@ def _assemble_lowered_bundle(
     request = RunAssemblyRequest(
         authored=SchemaArtifactRef(
             schema_id="feedbax.spec.training_run_matrix",
-            schema_version="feedbax.spec.training_run_matrix.v4",
+            schema_version="feedbax.spec.training_run_matrix.v5",
             artifact_id=f"fixture:{root.name}:authored-matrix",
             sha256=hashlib.sha256(authored_bytes).hexdigest(),
             uri=str(authored_path),

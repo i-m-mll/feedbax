@@ -94,6 +94,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_ID,
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
@@ -2071,6 +2072,20 @@ def _migrate_training_run_matrix_v3_to_v4_payload(payload: dict[str, Any]) -> di
                     "without an implementation_sha256 pin"
                 )
     migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
+    migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4
+    return migrated
+
+
+def _migrate_training_run_matrix_v4_to_v5_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adopt per-row derivations only when no base-only derivation exists."""
+    migrated = deepcopy(payload)
+    if migrated.get("derivations", []) != []:
+        raise ValueError(
+            "TrainingRunMatrixSpec v4 with /derivations cannot migrate to v5 because "
+            "base-only derivation semantics are ambiguous under per-row derivation; re-author "
+            "the matrix with row-local derivations"
+        )
+    migrated["schema_id"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
     migrated["schema_version"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
     return migrated
 
@@ -2715,6 +2730,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1,
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2,
                 TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
+                TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
             ),
             rejected_old_versions=("feedbax.spec.training_run_matrix.v0",),
             required_tests=(
@@ -4353,10 +4369,23 @@ default_spec_registry.register_migration(
     "TrainingRunMatrixSpec",
     SchemaMigration(
         source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V3,
-        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
         migration_id="training-run-matrix-v3-to-v4-typed-fork-custody",
         migrate=_migrate_training_run_matrix_v3_to_v4_payload,
         description="Retire source run ids and require durable transform implementation pins.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingRunMatrixSpec",
+    SchemaMigration(
+        source_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION_V4,
+        target_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        migration_id="training-run-matrix-v4-to-v5-per-row-derivations",
+        migrate=_migrate_training_run_matrix_v4_to_v5_payload,
+        description=(
+            "Accept only matrices without base-only derivations; legacy derivations must be "
+            "re-authored with explicit per-row semantics."
+        ),
     ),
 )
 default_spec_registry.register_migration(

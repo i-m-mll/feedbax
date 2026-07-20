@@ -83,7 +83,7 @@ def test_override_patch_remove_has_no_value_and_add_replace_require_value() -> N
         OverridePatch.model_validate({"path": "a.b", "op": "replace"})
 
 
-def test_run_matrix_spec_v1_migration_and_old_version_rejection_are_registered() -> None:
+def test_run_matrix_spec_migrations_accept_current_and_reject_unsupported_versions() -> None:
     result = default_spec_registry.migrate(
         "TrainingRunMatrixSpec",
         {
@@ -92,6 +92,33 @@ def test_run_matrix_spec_v1_migration_and_old_version_rejection_are_registered()
         },
     )
     assert not result.migrated
+
+    migrated_v4 = default_spec_registry.migrate(
+        "TrainingRunMatrixSpec",
+        {
+            "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            "schema_version": "feedbax.spec.training_run_matrix.v4",
+            "name": "no-base-derivations",
+            "base": {"kind": "inline", "inline": {"value": 1}},
+            "rows": [{"row_id": "row_a", "overrides": []}],
+        },
+    )
+    assert migrated_v4.migrated
+    assert migrated_v4.target_version == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    assert migrated_v4.payload["schema_version"] == TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
+    assert [record.migration_id for record in migrated_v4.migration_records] == [
+        "training-run-matrix-v4-to-v5-per-row-derivations"
+    ]
+
+    with pytest.raises(ValueError, match="base-only derivation semantics are ambiguous"):
+        default_spec_registry.migrate(
+            "TrainingRunMatrixSpec",
+            {
+                "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+                "schema_version": "feedbax.spec.training_run_matrix.v4",
+                "derivations": [{"output_path": "a", "query": {"item": "x"}}],
+            },
+        )
 
     migrated = default_spec_registry.migrate(
         "TrainingRunMatrixSpec",
@@ -159,4 +186,10 @@ def test_run_matrix_spec_v1_migration_and_old_version_rejection_are_registered()
         default_spec_registry.migrate(
             "TrainingRunMatrixSpec",
             {"schema_version": "feedbax.spec.training_run_matrix.v0"},
+        )
+
+    with pytest.raises(UnsupportedSpecVersion, match="No Feedbax structured spec migration path"):
+        default_spec_registry.migrate(
+            "TrainingRunMatrixSpec",
+            {"schema_version": "feedbax.spec.training_run_matrix.v999"},
         )
