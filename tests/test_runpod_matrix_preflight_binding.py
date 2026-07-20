@@ -290,6 +290,105 @@ def test_authority_only_cli_is_isolated_and_matches_real_runpod_evidence(
     assert git_calls >= 6
 
 
+def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _repo, revision = _authority_repo(tmp_path)
+    _request, _registry, bundle = _matrix_case(tmp_path, revision=revision)
+    bundle_path = tmp_path / "assembled-bundle.json"
+    bundle_path.write_text(bundle.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    bundle_sha256 = canonical_run_bundle_sha256(bundle)
+    monkeypatch.setattr(
+        orchestrate,
+        "assemble_run_bundle",
+        lambda *_args, **_kwargs: pytest.fail("bundle authority re-ran downstream lowering"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "load_training_method_plugins",
+        lambda **_kwargs: pytest.fail("bundle authority loaded plugins"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "load_runpod_api_key",
+        lambda: pytest.fail("bundle authority read credentials"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_runpod_config_for_bundle",
+        lambda _bundle: pytest.fail("bundle authority constructed provider config"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "RunPodOrchestrationDriver",
+        lambda *_args, **_kwargs: pytest.fail("bundle authority constructed provider driver"),
+    )
+
+    assert orchestrate.main(
+        [
+            "preflight",
+            "--authority-only",
+            "--run-set-id",
+            bundle.run_set_id,
+            "--bundle",
+            str(bundle_path),
+            "--bundle-sha256",
+            bundle_sha256,
+        ]
+    ) == 0
+    authority = json.loads(capsys.readouterr().out)
+    assert authority["authority_state"] == "provider_unverified"
+    assert authority["bundle_sha256"] == bundle_sha256
+    assert [row["row_id"] for row in authority["rows"]] == ["first", "second"]
+    assert [row["locked_training_depth"] for row in authority["rows"]] == [7, 7]
+    assert "nested_preflight_evidence_sha256" not in authority
+
+
+@pytest.mark.parametrize("tamper", ["bundle", "matrix", "capsule", "run-set"])
+def test_content_pinned_bundle_authority_tampering_fails_closed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    tamper: str,
+) -> None:
+    _repo, revision = _authority_repo(tmp_path)
+    _request, _registry, bundle = _matrix_case(tmp_path, revision=revision)
+    bundle_path = tmp_path / "assembled-bundle.json"
+    bundle_path.write_text(bundle.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    bundle_sha256 = canonical_run_bundle_sha256(bundle)
+    run_set_id = bundle.run_set_id
+    if tamper == "bundle":
+        payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+        payload["resolved_inputs"] = [{"counterfeit": True}]
+        bundle_path.write_text(json.dumps(payload), encoding="utf-8")
+    elif tamper == "matrix":
+        Path(bundle.rows[0].execution.authored_intent.uri).write_text(
+            '{"counterfeit": true}\n', encoding="utf-8"
+        )
+    elif tamper == "capsule":
+        Path(bundle.rows[0].execution.execution_capsule.uri).write_text(
+            '{"counterfeit": true}\n', encoding="utf-8"
+        )
+    else:
+        run_set_id = "counterfeit-run-set"
+
+    result = orchestrate.main(
+        [
+            "preflight",
+            "--authority-only",
+            "--run-set-id",
+            run_set_id,
+            "--bundle",
+            str(bundle_path),
+            "--bundle-sha256",
+            bundle_sha256,
+        ]
+    )
+    assert result != 0
+    assert "counterfeit" not in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("invalid", ["missing-policy", "synthetic", "dirty", "missing-ref", "raw-commit-ref", "intent", "row-identity", "missing-row", "reordered-rows"])
 def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid: str) -> None:
     repo, revision = _authority_repo(tmp_path)

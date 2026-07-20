@@ -96,8 +96,17 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     preflight = subparsers.add_parser("preflight", help="Run ASSEMBLE and PREFLIGHT only")
+    preflight_input = preflight.add_mutually_exclusive_group(required=True)
+    preflight_input.add_argument(
+        "--assembly-request", help="RunAssemblyRequest JSON path"
+    )
+    preflight_input.add_argument(
+        "--bundle",
+        help="Content-pinned, already assembled RunBundle JSON path (authority-only)",
+    )
     preflight.add_argument(
-        "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
+        "--bundle-sha256",
+        help="Expected canonical SHA-256 for --bundle authority input",
     )
     preflight.add_argument(
         "--authority-only",
@@ -168,19 +177,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_preflight(args: argparse.Namespace) -> int:
     if not args.authority_only:
+        if args.bundle:
+            raise ValueError("--bundle is supported only with --authority-only")
+        if args.bundle_sha256:
+            raise ValueError("--bundle-sha256 is supported only with --authority-only")
         load_training_method_plugins(fail_on_load_error=True)
-    request_path = Path(args.assembly_request)
-    request = _load_assembly_request(request_path)
     if args.authority_only:
         if not args.run_set_id:
             raise ValueError("--authority-only requires --run-set-id")
-        root = Path(request.orchestration_root or request_path.parent).expanduser()
-        bundle = assemble_run_bundle(
-            request,
-            run_set_id=args.run_set_id,
-            context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
-            registry=build_default_assembly_registry(),
-        )
+        if args.bundle:
+            if not args.bundle_sha256:
+                raise ValueError("--bundle authority input requires --bundle-sha256")
+            bundle = _load_bundle(args.bundle)
+        else:
+            if args.bundle_sha256:
+                raise ValueError("--bundle-sha256 requires --bundle")
+            request_path = Path(args.assembly_request)
+            request = _load_assembly_request(request_path)
+            root = Path(request.orchestration_root or request_path.parent).expanduser()
+            bundle = assemble_run_bundle(
+                request,
+                run_set_id=args.run_set_id,
+                context=AssemblyContext(custody_root=root / "custody", repo_root=Path.cwd()),
+                registry=build_default_assembly_registry(),
+            )
         checks = run_preflight_checks(bundle)
         if any(check.status == "fail" for check in checks):
             return EXIT_PREFLIGHT
@@ -190,12 +210,16 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                 bundle,
                 local_repos=metadata.get("runpod_local_repos", {}),
                 protected_refs=metadata.get("runpod_protected_refs", {}),
+                expected_bundle_sha256=args.bundle_sha256,
+                expected_run_set_id=args.run_set_id,
             )
         except MatrixAuthorityError as exc:
             _print_error(exc)
             return EXIT_PREFLIGHT
         _write_json(authority)
         return EXIT_SUCCESS
+    request_path = Path(args.assembly_request)
+    request = _load_assembly_request(request_path)
     engine = _request_engine(
         request,
         request_path=request_path,
