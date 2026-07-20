@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Callable, Mapping, Sequence, Set
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -85,6 +85,8 @@ class ExecutionPreparationRequest:
     resume: bool = False
 
 
+RestoredScheduleContextBinder = Callable[[Mapping[str, Any], int, int, int], Mapping[str, Any]]
+
 @dataclass(frozen=True)
 class ExecutionPreparationResult:
     """Narrow set of runtime-only values a provider may supply to the executor."""
@@ -93,6 +95,11 @@ class ExecutionPreparationResult:
     kernel_context: Mapping[str, Any] = field(default_factory=dict)
     loss_service: LossService | None = None
     resume_slot_transform: ResumeSlotTransform | None = None
+    restored_schedule_context_binder: RestoredScheduleContextBinder | None = None
+
+    def __post_init__(self) -> None:
+        if self.restored_schedule_context_binder is not None and not callable(self.restored_schedule_context_binder):
+            raise TypeError("restored_schedule_context_binder must be callable when provided")
 
 
 @dataclass(frozen=True)
@@ -163,6 +170,7 @@ class ExecutionPreparationPlan:
     resume_slot_transform: ResumeSlotTransform | None
     rng_roots: Mapping[str, Any]
     materialize_instance: ScalarInstanceMaterializer
+    restored_schedule_context_binder: RestoredScheduleContextBinder | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.materialize_instance):
@@ -171,6 +179,8 @@ class ExecutionPreparationPlan:
             raise TypeError("loss_service must be a LossService when provided")
         if self.resume_slot_transform is not None and not callable(self.resume_slot_transform):
             raise TypeError("resume_slot_transform must be callable when provided")
+        if self.restored_schedule_context_binder is not None and not callable(self.restored_schedule_context_binder):
+            raise TypeError("restored_schedule_context_binder must be callable when provided")
         object.__setattr__(
             self,
             "shared_slots",
@@ -210,6 +220,7 @@ class MaterializedExecutionPreparation:
     kernel_context: Mapping[str, Any]
     loss_service: LossService | None
     resume_slot_transform: ResumeSlotTransform | None
+    restored_schedule_context_binder: RestoredScheduleContextBinder | None
     mapping_levels: tuple[MaterializedMappingLevelSpec, ...]
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]]
     identity: MaterializedPreparationIdentity
@@ -416,6 +427,7 @@ def _build_materialized_execution_preparation(
     kernel_context: Mapping[str, Any],
     loss_service: LossService | None,
     resume_slot_transform: ResumeSlotTransform | None,
+    restored_schedule_context_binder: RestoredScheduleContextBinder | None = None,
     coordinate_order: tuple[tuple[AxisCoordinateSpec, ...], ...],
 ) -> MaterializedExecutionPreparation:
     """Build the sealed Part-2 handoff after scalar instances are stacked."""
@@ -458,6 +470,7 @@ def _build_materialized_execution_preparation(
         "kernel_context": _freeze_named_mapping(kernel_context, path="kernel_context"),
         "loss_service": loss_service,
         "resume_slot_transform": resume_slot_transform,
+        "restored_schedule_context_binder": restored_schedule_context_binder,
         "mapping_levels": levels,
         "slot_axis_bindings": immutable_bindings,
         "identity": identity,
@@ -504,6 +517,8 @@ def validate_materialized_execution_preparation(
         raise ExecutionPreparationError("materialized preparation mapping structure is stale")
     if dict(preparation_bindings) != bindings:
         raise ExecutionPreparationError("materialized preparation mapping structure is stale")
+    if preparation.restored_schedule_context_binder is not None and not callable(preparation.restored_schedule_context_binder):
+        raise ExecutionPreparationError("restored_schedule_context_binder must be callable")
     initial_slots = getattr(preparation, "initial_slots", None)
     if not isinstance(initial_slots, Mapping):
         raise ExecutionPreparationError("materialized preparation initial_slots are invalid")
@@ -739,6 +754,7 @@ def materialize_execution_preparation(
         kernel_context=plan.kernel_context,
         loss_service=plan.loss_service,
         resume_slot_transform=plan.resume_slot_transform,
+        restored_schedule_context_binder=plan.restored_schedule_context_binder,
         coordinate_order=coordinate_order,
     )
 
@@ -954,6 +970,7 @@ def lower_zero_level_preparation_plan(
         kernel_context=plan.kernel_context,
         loss_service=plan.loss_service,
         resume_slot_transform=plan.resume_slot_transform,
+        restored_schedule_context_binder=plan.restored_schedule_context_binder,
     )
 
 

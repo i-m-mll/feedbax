@@ -23,47 +23,24 @@ import subprocess
 import sys
 
 
-def test_importing_plugins_does_not_eagerly_discover(monkeypatch):
-    """`import feedbax.plugins` must not call `discover_experiment_packages`.
-
-    Re-imports `feedbax.plugins` from a clean `sys.modules` state with the
-    discovery function patched on the package namespace, and asserts that the
-    import itself does not invoke discovery — only first access of
-    ``EXPERIMENT_REGISTRY`` does.
-    """
-    # Drop the cached plugins package so its module body re-runs on import.
-    for name in list(sys.modules):
-        if name == "feedbax.plugins" or name.startswith("feedbax.plugins."):
-            del sys.modules[name]
-
-    calls = {"count": 0}
-
-    plugins = importlib.import_module("feedbax.plugins")
-
-    real_fn = plugins.discover_experiment_packages
-
-    def counting_discover(*args, **kwargs):
-        calls["count"] += 1
-        return real_fn(*args, **kwargs)
-
-    # Patch the name bound in the package namespace (what `_get_experiment_registry`
-    # actually calls) and reset the lazy cache so the next access runs discovery.
-    monkeypatch.setattr(plugins, "discover_experiment_packages", counting_discover)
-    monkeypatch.setattr(plugins, "_EXPERIMENT_REGISTRY", None)
-
-    # Importing the package alone must not have triggered discovery.
-    assert calls["count"] == 0, (
-        "Importing feedbax.plugins ran plugin discovery as an import-time side "
-        "effect; this re-enters a partially initialized feedbax.config "
-        "(issue ccfe63a)."
+def test_importing_plugins_does_not_eagerly_discover(tmp_path: Path):
+    """`import feedbax.plugins` discovers lazily in a fresh interpreter."""
+    script = """
+import importlib.metadata; import sys; from pathlib import Path; calls = []
+expected_root = Path(sys.argv[1]).resolve()
+entry_point = type("EntryPoint", (), {"name": "fake", "load": lambda self: calls.append("load") or (lambda registry: None)})(); importlib.metadata.entry_points = lambda **kwargs: [entry_point]
+import feedbax.plugins as plugins
+assert Path(plugins.__file__).resolve().is_relative_to(expected_root)
+assert calls == [] and plugins.EXPERIMENT_REGISTRY is plugins.EXPERIMENT_REGISTRY and calls == ["load"]
+"""
+    repo_root = Path(__file__).resolve().parents[1]
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env["PYTHONPATH"] = str(repo_root)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(repo_root)], cwd=tmp_path, env=env,
+        capture_output=True, text=True,
     )
-
-    # Accessing the name triggers discovery exactly once.
-    _ = plugins.EXPERIMENT_REGISTRY
-    assert calls["count"] == 1
-    # Cached on subsequent access.
-    _ = plugins.EXPERIMENT_REGISTRY
-    assert calls["count"] == 1
+    assert result.returncode == 0, result.stderr
 
 
 def test_config_globals_populated_from_base_config():
