@@ -499,11 +499,15 @@ def _exemption_matches_record(
 ) -> bool:
     if observed is None:
         return False
-    return observed == [
+    expected_values = [
         _normalize_schedule_value(expected.boundary),
         _normalize_schedule_value(expected.first_update),
         _normalize_schedule_value(expected.second_update),
     ]
+    return all(
+        math.isclose(expected_value, observed_value, rel_tol=SCHEDULE_REL_TOL, abs_tol=0.0)
+        for expected_value, observed_value in zip(expected_values, observed, strict=True)
+    )
 
 
 def _normalize_schedule_value(value: Any) -> float:

@@ -1611,8 +1611,8 @@ def _bind_restored_schedule_context(
         **kernel_context,
         "schedule_projection": projection.model_dump(mode="json"),
     }
-    if descriptor is None or descriptor.optimizer_spec_projector is None:
-        return projected_context
+    # Schedule projection already enforces both descriptor requirements.
+    assert descriptor is not None and descriptor.optimizer_spec_projector is not None
     optimizer_spec = OptimizerSpec.model_validate(
         descriptor.optimizer_spec_projector(resolved_method.payload)
     )

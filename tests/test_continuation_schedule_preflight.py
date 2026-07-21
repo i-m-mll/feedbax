@@ -257,6 +257,30 @@ def test_matching_typed_exemption_passes() -> None:
     assert observed["used_exemptions"] == [RAMP_ID]
 
 
+def test_typed_exemption_matches_values_within_schedule_tolerance() -> None:
+    exemption = ContinuationScheduleDiscontinuityExemption(
+        schedule_id=RAMP_ID,
+        boundary_batch=10,
+        expected_source_state=ScheduleStateWindowSpec(
+            boundary=1.0 + 1e-12, first_update=1.0 + 1e-12, second_update=1.0 + 1e-12
+        ),
+        expected_target_state=ScheduleStateWindowSpec(
+            boundary=0.0, first_update=0.5 + 5e-13, second_update=1.0 + 1e-12
+        ),
+        intended_first_update_behavior="increase",
+        reason="deliberate longer anneal",
+    )
+
+    failures, observed = _compare(
+        (1.0, 1.0, 1.0),
+        (0.0, 0.5, 1.0),
+        continuation=_continuation([exemption]),
+    )
+
+    assert failures == []
+    assert observed["used_exemptions"] == [RAMP_ID]
+
+
 def test_unused_exemption_fails() -> None:
     exemption = ContinuationScheduleDiscontinuityExemption(
         schedule_id=RAMP_ID,
