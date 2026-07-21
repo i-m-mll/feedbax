@@ -63,6 +63,8 @@ from feedbax.orchestration.drivers.runpod import (
     endpoint_classification,
     project_runpod_provision_facts,
     rank_datacenters_for_gpu,
+    runpod_remote_layout_vs_lock_error,
+    runpod_row_workdir,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.base import ProvisioningAttemptError
@@ -95,6 +97,7 @@ class FakeRunPodTransport:
         self.rsync_timeouts: list[float | None] = []
         self.rsync_result = CommandResult(0, "")
         self.environment_probe_result: CommandResult | None = None
+        self.image_exists_calls: list[str] = []
 
     def queue_runpodctl(self, args: tuple[str, ...], result: CommandResult) -> None:
         self.runpodctl_results.setdefault(args, []).append(result)
@@ -122,6 +125,7 @@ class FakeRunPodTransport:
         return CommandResult(0, "{}")
 
     def image_exists(self, image: str) -> bool:
+        self.image_exists_calls.append(image)
         return image == "runpod/pytorch:1.0.3@sha256:" + "a" * 64
 
     def ssh(self, command: str) -> CommandResult:
@@ -277,6 +281,40 @@ def _bundle(
         run_set_id="2026-01-02-deadbeef",
         context=AssemblyContext(custody_root=tmp_path / "custody"),
         registry=registry,
+    )
+
+
+def _layout_case(
+    tmp_path: Path,
+    lock_text: str,
+    *,
+    local_repos: dict[str, Path] | None = None,
+    remote_repos: dict[str, str] | None = None,
+    primary_repo: str = "consumer",
+    path_patches: tuple[tuple[str, str, str], ...] = (),
+    write_lock: bool = True,
+) -> tuple[RunBundle, RunPodDriverConfig]:
+    bundle = _bundle(tmp_path)
+    configured_local = local_repos or {primary_repo: tmp_path / primary_repo}
+    configured_remote = remote_repos or {primary_repo: f"/workspace/{primary_repo}"}
+    lock_path = configured_local[primary_repo] / "uv.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_bytes = lock_text.encode("utf-8")
+    if write_lock:
+        lock_path.write_bytes(lock_bytes)
+    environment = bundle.environment.model_copy(
+        update={"lockfile_hashes": {"uv.lock": hashlib.sha256(lock_bytes).hexdigest()}}
+    )
+    return (
+        bundle.model_copy(update={"environment": environment}),
+        RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos=configured_local,
+            remote_repos=configured_remote,
+            primary_repo=primary_repo,
+            path_patches=path_patches,
+        ),
     )
 
 
@@ -1218,6 +1256,7 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
             gpu_id="NVIDIA GeForce RTX 4090",
             datacenters=("CA-MTL-1",),
             image=bundle.environment.image_id,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -1273,6 +1312,7 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
             image=bundle.environment.image_id or "",
             max_acquire_seconds=1,
             poll_seconds=1,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
         sleep=clock.sleep,
@@ -1346,6 +1386,7 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
             image="runpod/pytorch:1.0.3",
             max_acquire_seconds=2,
             poll_seconds=1,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
         sleep=clock.sleep,
@@ -2015,6 +2056,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -2024,9 +2066,10 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     assert [check.name for check in checks] == [
         "input-provider-bindings",
         "continuation-schedule-consistency",
+        "runpod-lockfiles-declared",
+        "runpod-remote-layout-vs-lock",
         "runpod-image-immutable",
         "runpod-image-tag-exists",
-        "runpod-lockfiles-declared",
         "runpod-python-version-declared",
         "runpod-gpu-policy-declared",
         "runpod-credentials",
@@ -2078,6 +2121,214 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
     assert transport.operations == []
 
 
+def test_remote_layout_lock_without_path_sources_passes_after_digest_verification(
+    tmp_path: Path,
+) -> None:
+    bundle, config = _layout_case(tmp_path, "version = 1\n")
+
+    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is None
+    assert observed["path_sources"] == []
+
+
+@pytest.mark.parametrize(
+    ("lock_text", "expected"),
+    [
+        ("version = [\n", "malformed TOML"),
+        ('version = 1\n[[package]]\nname = "bad"\nsource = { virtual = "." }\n', "virtual"),
+        ('version = 1\n[[package]]\nname = "bad"\nsource = { editable = "/tmp/x" }\n', "absolute"),
+        (
+            'version = 1\n[[package]]\nname = "bad"\nsource = { editable = "../../escape" }\n',
+            "unmatched local target",
+        ),
+        ("version = 999\n", "unsupported lock version"),
+        (
+            'version = 1\n[[package]]\nname = "bad"\nsource = { local = "../repo" }\n',
+            "local",
+        ),
+        (
+            'version = 1\n[[package]]\nname = "bad"\n'
+            'source = { editable = ".", registry = "https://example.invalid" }\n',
+            "mixed source forms",
+        ),
+    ],
+)
+def test_remote_layout_rejects_invalid_lock_content(
+    tmp_path: Path,
+    lock_text: str,
+    expected: str,
+) -> None:
+    bundle, config = _layout_case(tmp_path, lock_text)
+
+    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is not None
+    assert expected in error
+
+
+def test_remote_layout_rejects_missing_or_hash_mismatched_lock(tmp_path: Path) -> None:
+    missing_bundle, config = _layout_case(tmp_path, "version = 1\n", write_lock=False)
+    config = config.__class__(**{**config.__dict__, "remote_repos": {"wrong": "/workspace/wrong"}})
+    missing_error, _ = runpod_remote_layout_vs_lock_error(missing_bundle, config)
+    assert missing_error is not None
+    assert "cannot read declared lockfile" in missing_error
+
+    lock_path = Path(config.local_repos["consumer"]) / "uv.lock"
+    lock_path.write_text("version = 2\n", encoding="utf-8")
+    mismatch_error, _ = runpod_remote_layout_vs_lock_error(missing_bundle, config)
+    assert mismatch_error is not None
+    assert "hash mismatch" in mismatch_error
+
+
+@pytest.mark.parametrize("form", ["editable", "path"])
+def test_remote_layout_handles_self_local_source(tmp_path: Path, form: str) -> None:
+    bundle, config = _layout_case(
+        tmp_path,
+        f'version = 1\n[[package]]\nname = "consumer"\nsource = {{ {form} = "." }}\n',
+    )
+
+    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is None
+    assert observed["path_sources"][0]["spelling"] == "."
+    assert observed["path_sources"][0]["planned_remote_target"] == "/workspace/consumer"
+    assert str(tmp_path) not in json.dumps(observed)
+
+
+def test_remote_layout_can_validate_explicit_staging_source_roots(tmp_path: Path) -> None:
+    live_root = tmp_path / "live" / "consumer"
+    staging_root = tmp_path / "sealed" / "consumer"
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "consumer"\nsource = { editable = "." }\n',
+        local_repos={"consumer": staging_root},
+    )
+    config = config.__class__(**{**config.__dict__, "local_repos": {"consumer": live_root}})
+
+    live_error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+    staged_error, _ = runpod_remote_layout_vs_lock_error(
+        bundle,
+        config,
+        source_roots={"consumer": staging_root},
+    )
+
+    assert live_error is not None
+    assert "cannot read declared lockfile" in live_error
+    assert staged_error is None
+
+
+def test_remote_layout_preserves_exact_spaced_sibling_spelling(tmp_path: Path) -> None:
+    consumer = tmp_path / "10 Projects" / "10 PhD" / "rlrmp2"
+    feedbax = tmp_path / "10 Projects" / "10 PhD" / "20 Feedbax" / "feedbax"
+    local = {"rlrmp2": consumer, "feedbax": feedbax}
+    remote = {
+        "rlrmp2": "/workspace/10 Projects/10 PhD/rlrmp2",
+        "feedbax": "/workspace/10 Projects/10 PhD/20 Feedbax/feedbax",
+    }
+    lock_text = (
+        'version = 1\n[[package]]\nname = "feedbax"\n'
+        'source = { editable = "../20 Feedbax/feedbax" }\n'
+    )
+    bundle, config = _layout_case(
+        tmp_path,
+        lock_text,
+        local_repos=local,
+        remote_repos=remote,
+        primary_repo="rlrmp2",
+    )
+
+    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is None
+    assert observed["path_sources"][0]["spelling"] == "../20 Feedbax/feedbax"
+
+
+def test_remote_layout_mismatch_names_spelling_and_both_planned_targets(
+    tmp_path: Path,
+) -> None:
+    consumer = tmp_path / "rlrmp2"
+    target = tmp_path / "feedbax"
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "feedbax"\nsource = { editable = "../feedbax" }\n',
+        local_repos={"rlrmp2": consumer, "feedbax": target},
+        remote_repos={"rlrmp2": "/workspace/rlrmp2", "feedbax": "/workspace/wrong-name"},
+        primary_repo="rlrmp2",
+    )
+
+    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is not None
+    assert "../feedbax" in error
+    assert str(target) in error
+    assert "/workspace/feedbax" in error
+    assert "/workspace/wrong-name" in error
+
+
+def test_remote_layout_rejects_ambiguous_repo_containment(tmp_path: Path) -> None:
+    consumer = tmp_path / "outer" / "consumer"
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "consumer"\nsource = { editable = "." }\n',
+        local_repos={"outer": tmp_path / "outer", "consumer": consumer},
+        remote_repos={"outer": "/workspace/outer", "consumer": "/workspace/consumer"},
+    )
+
+    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is not None
+    assert "ambiguous local target" in error
+
+
+def test_remote_layout_rejects_mapping_mismatch_duplicate_roots_and_lock_patch(
+    tmp_path: Path,
+) -> None:
+    bundle, config = _layout_case(tmp_path, "version = 1\n")
+    mismatch = config.__class__(
+        **{**config.__dict__, "remote_repos": {"other": "/workspace/other"}}
+    )
+    mismatch_error, _ = runpod_remote_layout_vs_lock_error(bundle, mismatch)
+    assert mismatch_error is not None
+    assert "repo key mismatch" in mismatch_error
+
+    duplicate = config.__class__(
+        **{
+            **config.__dict__,
+            "local_repos": {"consumer": tmp_path / "consumer", "other": tmp_path / "other"},
+            "remote_repos": {"consumer": "/workspace/same", "other": "/workspace/same"},
+        }
+    )
+    duplicate_error, _ = runpod_remote_layout_vs_lock_error(bundle, duplicate)
+    assert duplicate_error is not None
+    assert "duplicate remote repo root" in duplicate_error
+
+    patched = config.__class__(
+        **{
+            **config.__dict__,
+            "path_patches": (("/workspace/consumer/uv.lock", "old", "new"),),
+        }
+    )
+    patch_error, _ = runpod_remote_layout_vs_lock_error(bundle, patched)
+    assert patch_error is not None
+    assert "path_patches" in patch_error
+    assert "uv.lock" in patch_error
+
+
+def test_layout_failure_short_circuits_before_all_provider_queries(tmp_path: Path) -> None:
+    bundle, config = _layout_case(tmp_path, "version = [\n")
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=config, transport=transport)
+
+    checks = driver.preflight_checks(bundle)
+
+    assert checks[-1].name == "runpod-remote-layout-vs-lock"
+    assert checks[-1].status == "fail"
+    assert transport.image_exists_calls == []
+    assert transport.runpodctl_calls == []
+    assert transport.operations == []
+
+
 @pytest.mark.parametrize(
     ("environment_update", "failed_check"),
     [
@@ -2104,7 +2355,10 @@ def test_preflight_rejects_non_deterministic_environment_declarations(
     )
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(gpu_id="NVIDIA GeForce RTX 5090"),
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 5090",
+            local_repos={"feedbax": tmp_path},
+        ),
         transport=transport,
     )
 
@@ -2165,18 +2419,21 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
         driver.realize_env(bundle, _state(bundle))
 
 
-def test_rlrmp2_is_the_primary_environment_workdir() -> None:
+def test_explicit_primary_repo_controls_environment_and_row_workdirs(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             remote_repos={
                 "feedbax": "/workspace/feedbax",
                 "rlrmp2": "/workspace/rlrmp2",
-            }
+            },
+            primary_repo="feedbax",
         ),
         transport=FakeRunPodTransport(),
     )
 
-    assert driver._primary_workdir() == "/workspace/rlrmp2"
+    assert driver._primary_workdir() == "/workspace/feedbax"
+    assert runpod_row_workdir(driver.config, bundle.rows[0]) == "/workspace/feedbax"
 
 
 def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Path) -> None:
@@ -2187,6 +2444,7 @@ def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Pat
             ssh_host="198.51.100.10",
             ssh_port=2222,
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -2215,6 +2473,7 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
             gpu_id="NVIDIA GeForce RTX 4090",
             datacenters=tuple(bundle.deployment_policy.resources.regions),
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=first_transport,
     )
@@ -2237,6 +2496,7 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
                 gpu_id="NVIDIA GeForce RTX 4090",
                 datacenters=tuple(bundle.deployment_policy.resources.regions),
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=resume_transport,
         ),
@@ -2258,6 +2518,7 @@ def test_completed_preflight_without_schedule_check_is_rerun(tmp_path: Path) -> 
     config = RunPodDriverConfig(
         gpu_id="NVIDIA GeForce RTX 4090",
         image=bundle.environment.image_id or "",
+        local_repos={"feedbax": tmp_path},
     )
     state = StageEngine(
         bundle=bundle,
@@ -2312,6 +2573,7 @@ def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provisio
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=first_transport,
     )
@@ -2347,6 +2609,7 @@ def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provisio
         gpu_id="NVIDIA GeForce RTX 4090",
         min_balance_usd=6.0 if tamper == "driver" else 5.0,
         image=bundle.environment.image_id or "",
+        local_repos={"feedbax": tmp_path},
         auto_teardown=tamper != "teardown",
     )
     with pytest.raises(PreflightFailed, match="persisted driver PREFLIGHT evidence is invalid"):
@@ -2375,6 +2638,7 @@ def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_pat
             config=RunPodDriverConfig(
                 gpu_id="NVIDIA GeForce RTX 4090",
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=first_transport,
         ),
@@ -2420,6 +2684,7 @@ def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_pat
             config=RunPodDriverConfig(
                 gpu_id="NVIDIA GeForce RTX 4090",
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=resume_transport,
         ),
@@ -2432,6 +2697,42 @@ def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_pat
     assert resumed.abort_reason is None
     assert resumed.provisioning_stop_reason is None
     assert "provisioning_stop_reason" not in resumed.budget_counters
+
+
+def test_completed_preflight_rejects_evidence_predating_layout_check(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, baseline=False)
+    config = RunPodDriverConfig(
+        gpu_id="NVIDIA GeForce RTX 4090",
+        image=bundle.environment.image_id or "",
+        local_repos={"feedbax": tmp_path},
+    )
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    state = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(config=config, transport=transport),
+        store=RunSetStateStore(bundle.run_set_dir / "state.json"),
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+    preflight = state.stage(STAGE_PREFLIGHT)
+    old_checks = [
+        check for check in preflight.checks if check.name != "runpod-remote-layout-vs-lock"
+    ]
+    old_outputs = {
+        **preflight.outputs,
+        "checks": [check.model_dump(mode="json") for check in old_checks],
+    }
+    old_outputs.pop("driver_evidence", None)
+    old_state = state.with_stage(
+        STAGE_PREFLIGHT,
+        preflight.model_copy(update={"checks": old_checks, "outputs": old_outputs}),
+    )
+
+    with pytest.raises(RunPodDriverError, match="unique RunPod check set"):
+        RunPodOrchestrationDriver(
+            config=config, transport=FakeRunPodTransport()
+        ).restore_completed_preflight(bundle, old_state)
 
 
 def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path) -> None:
@@ -2449,12 +2750,13 @@ def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path)
                 gpu_id="NVIDIA GeForce RTX 4090",
                 datacenters=tuple(bundle.deployment_policy.resources.regions),
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=transport,
         ),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    assert len(state.stage(STAGE_PREFLIGHT).checks) == 21
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 22
     preflight = state.stage(STAGE_PREFLIGHT)
     preflight = preflight.model_copy(
         update={
@@ -2483,6 +2785,7 @@ def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path)
     script = r'''
 import json
 import sys
+from pathlib import Path
 
 from feedbax.bin import orchestrate
 from feedbax.orchestration.drivers.runpod import RunPodDriverConfig, RunPodOrchestrationDriver
@@ -2502,6 +2805,7 @@ def driver_for_bundle(bundle, bindings=()):
             gpu_id=bundle.deployment_policy.resources.gpu_id,
             datacenters=tuple(bundle.deployment_policy.resources.regions),
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": Path(bundle.run_set_dir).parent},
         ),
         transport=NoProviderTransport(),
         input_provider_bindings=bindings,
@@ -2550,6 +2854,7 @@ def test_legacy_completed_preflight_rejects_semantic_tampering_offline(
             config=RunPodDriverConfig(
                 gpu_id="NVIDIA GeForce RTX 4090",
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=first_transport,
         ),
@@ -2584,6 +2889,7 @@ def test_legacy_completed_preflight_rejects_semantic_tampering_offline(
             if tamper == "image"
             else bundle.environment.image_id or ""
         ),
+        local_repos={"feedbax": tmp_path},
     )
     resume_bundle = bundle.model_copy(update={"keep_alive": False}) if tamper == "bundle" else bundle
     resume_transport = FakeRunPodTransport()
