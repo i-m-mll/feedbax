@@ -4,17 +4,21 @@ import json
 import hashlib
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import feedbax.orchestration.collection_recovery as collection_recovery
+import feedbax.orchestration.drivers.runpod as runpod_module
+from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.contracts.studio_training import (
@@ -48,6 +52,7 @@ from feedbax.orchestration.collection_recovery import (
 from feedbax.orchestration.drivers.runpod import (
     CommandResult,
     _PodAcquisition,
+    _run_command,
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
@@ -60,6 +65,8 @@ from feedbax.orchestration.drivers.runpod import (
     endpoint_classification,
     project_runpod_provision_facts,
     rank_datacenters_for_gpu,
+    runpod_remote_layout_vs_lock_error,
+    runpod_row_workdir,
 )
 from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
 from feedbax.orchestration.drivers.base import ProvisioningAttemptError
@@ -92,6 +99,7 @@ class FakeRunPodTransport:
         self.rsync_timeouts: list[float | None] = []
         self.rsync_result = CommandResult(0, "")
         self.environment_probe_result: CommandResult | None = None
+        self.image_exists_calls: list[str] = []
 
     def queue_runpodctl(self, args: tuple[str, ...], result: CommandResult) -> None:
         self.runpodctl_results.setdefault(args, []).append(result)
@@ -119,6 +127,7 @@ class FakeRunPodTransport:
         return CommandResult(0, "{}")
 
     def image_exists(self, image: str) -> bool:
+        self.image_exists_calls.append(image)
         return image == "runpod/pytorch:1.0.3@sha256:" + "a" * 64
 
     def ssh(self, command: str) -> CommandResult:
@@ -201,6 +210,37 @@ class _RunPodFixtureCompiler:
         )
 
 
+def _git_seal_ready(root: Path, *tracked: str) -> None:
+    """Make an existing directory a sealable Git top-level.
+
+    Governed repo snapshots (lane E-ii) require every configured local repo to
+    be a Git working tree, while the layout-vs-lock check (lane E-i) requires it
+    to hold the declared lockfile. This commits the requested tracked files (or a
+    placeholder when none is supplied) so both checks are satisfied by the same
+    fixture root.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    if (root / ".git").exists():
+        return
+    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "runpod@example.invalid"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "RunPod Test"], check=True)
+    to_add = [name for name in tracked if (root / name).exists()]
+    if not to_add:
+        (root / ".sealed").write_text("sealed\n", encoding="utf-8")
+        to_add = [".sealed"]
+    for name in to_add:
+        subprocess.run(["git", "-C", str(root), "add", name], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "fixture"],
+        check=True,
+        capture_output=True,
+    )
+
+
 def _bundle(
     tmp_path: Path,
     *,
@@ -211,6 +251,7 @@ def _bundle(
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
     lockfile_sha256 = hashlib.sha256(lockfile.read_bytes()).hexdigest()
+    _git_seal_ready(tmp_path, "uv.lock")
     training_config = None
     if baseline:
         # The baseline extension lives inside a schema-valid authored field and
@@ -277,6 +318,42 @@ def _bundle(
     )
 
 
+def _layout_case(
+    tmp_path: Path,
+    lock_text: str,
+    *,
+    local_repos: dict[str, Path] | None = None,
+    remote_repos: dict[str, str] | None = None,
+    primary_repo: str = "consumer",
+    path_patches: tuple[tuple[str, str, str], ...] = (),
+    write_lock: bool = True,
+) -> tuple[RunBundle, RunPodDriverConfig]:
+    bundle = _bundle(tmp_path)
+    configured_local = local_repos or {primary_repo: tmp_path / primary_repo}
+    configured_remote = remote_repos or {primary_repo: f"/workspace/{primary_repo}"}
+    lock_path = configured_local[primary_repo] / "uv.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_bytes = lock_text.encode("utf-8")
+    if write_lock:
+        lock_path.write_bytes(lock_bytes)
+    for repo_root in configured_local.values():
+        _git_seal_ready(Path(repo_root), "uv.lock")
+    environment = bundle.environment.model_copy(
+        update={"lockfile_hashes": {"uv.lock": hashlib.sha256(lock_bytes).hexdigest()}}
+    )
+    return (
+        bundle.model_copy(update={"environment": environment}),
+        RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+            local_repos=configured_local,
+            remote_repos=configured_remote,
+            primary_repo=primary_repo,
+            path_patches=path_patches,
+        ),
+    )
+
+
 def _realized_fingerprint(declaration: dict[str, Any]) -> str:
     return json.dumps(
         {
@@ -315,6 +392,49 @@ def _state(bundle: RunBundle) -> RunSetState:
         run_set_id=bundle.run_set_id,
         rows={row.row_id: RowState() for row in bundle.rows},
         environment_fingerprint="fingerprint-123",
+    )
+
+
+def _sealed_state(
+    driver: RunPodOrchestrationDriver,
+    bundle: RunBundle,
+) -> RunSetState:
+    manifest = driver.seal_repo_snapshots(bundle)
+    return _state(bundle).model_copy(update={"repo_snapshot_manifest": manifest})
+
+
+def _init_snapshot_repo(root: Path) -> None:
+    root.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "runpod@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "RunPod Test"],
+        check=True,
+    )
+    (root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "fixture"],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _owned_state(bundle: RunBundle, pod_id: str = "pod-123") -> RunSetState:
+    return _state(bundle).model_copy(
+        update={
+            "provision_record": {
+                "driver": "runpod",
+                "pod_id": pod_id,
+                "provided_pod": False,
+                "provided_endpoint": False,
+                "teardown_allowed": True,
+                "status": "RUNNING",
+            }
+        }
     )
 
 
@@ -363,12 +483,25 @@ def _failed_attempt(
     )
 
 
-def _governed_engine(tmp_path: Path, outcomes: list[object], **kwargs: Any) -> tuple[StageEngine, GovernedProvisionDriver, RunSetStateStore]:
+def _governed_engine(
+    tmp_path: Path, outcomes: list[object], **kwargs: Any
+) -> tuple[StageEngine, GovernedProvisionDriver, RunSetStateStore]:
     bundle = _bundle(tmp_path)
     clock = FakeClock()
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     driver = GovernedProvisionDriver(outcomes)
-    return StageEngine(bundle=bundle, driver=driver, store=store, sleep=clock.sleep, wall_time=clock.monotonic, **kwargs), driver, store
+    return (
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            sleep=clock.sleep,
+            wall_time=clock.monotonic,
+            **kwargs,
+        ),
+        driver,
+        store,
+    )
 
 
 def test_stage_engine_governs_runpod_provisioning(tmp_path: Path) -> None:
@@ -402,7 +535,9 @@ def test_stage_engine_governs_runpod_provisioning(tmp_path: Path) -> None:
 def test_stage_engine_does_not_retry_governed_terminal_stops(
     tmp_path: Path, failure: ProvisioningAttemptError | None, reason: str, probe: Any
 ) -> None:
-    engine, driver, store = _governed_engine(tmp_path, [failure] if failure else [{"pod_id": "no"}], interruption_probe=probe)
+    engine, driver, store = _governed_engine(
+        tmp_path, [failure] if failure else [{"pod_id": "no"}], interruption_probe=probe
+    )
     with pytest.raises(OrchestrationStageError, match=reason):
         engine.run(stop_after_stage=STAGE_PROVISION)
     assert driver.calls == (0 if failure is None else 1)
@@ -412,7 +547,10 @@ def test_stage_engine_does_not_retry_governed_terminal_stops(
 def test_provisioning_resume_reuses_deadline_and_failed_cost(tmp_path: Path) -> None:
     engine, driver, store = _governed_engine(
         tmp_path,
-        [_failed_attempt(acquired=True, billing=True), _failed_attempt(acquired=True, billing=True)],
+        [
+            _failed_attempt(acquired=True, billing=True),
+            _failed_attempt(acquired=True, billing=True),
+        ],
     )
     engine.bundle = engine.bundle.model_copy(
         update={"budget": BudgetPolicy(max_wall_clock_seconds=30, max_spend_usd=3.0)}
@@ -842,9 +980,7 @@ def test_subprocess_runpodctl_applies_endpoint_poll_timeout(
         timeout_seconds=12.5,
     )
 
-    assert observed == [
-        (["runpodctl", "pod", "get", "pod-1", "--output", "json"], 12.5)
-    ]
+    assert observed == [(["runpodctl", "pod", "get", "pod-1", "--output", "json"], 12.5)]
 
 
 def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path) -> None:
@@ -874,7 +1010,9 @@ def test_provided_endpoint_certify_fails_without_provider_realization_facts(
         transport=transport,
     )
     provision_record = dict(driver.provision(bundle, _state(bundle)))
-    declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+    declaration_fingerprint = compute_runpod_environment_fingerprint(
+        bundle, driver.seal_repo_snapshots(bundle)
+    )
     fingerprint = _realized_fingerprint(
         {
             "declaration_sha256": declaration_fingerprint,
@@ -997,9 +1135,16 @@ def test_provision_record_preserves_accepted_datacenter_when_pod_get_omits_it(
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     base_call = (
-        "pod", "create", "--name", "feedbax-orchestration-2026-01-02-deadbeef",
-        "--image", bundle.environment.image_id, "--ports", "22/tcp,8080/http",
-        "--gpu-id", "NVIDIA GeForce RTX 4090",
+        "pod",
+        "create",
+        "--name",
+        "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image",
+        bundle.environment.image_id,
+        "--ports",
+        "22/tcp,8080/http",
+        "--gpu-id",
+        "NVIDIA GeForce RTX 4090",
     )
     transport.queue_runpodctl(
         (*base_call, "--data-center-ids", "CA-MTL-1"),
@@ -1062,7 +1207,9 @@ def test_accepted_datacenter_persists_into_realized_deployment_evidence(
         accepted_datacenter="CA-MTL-1",
     )
     declaration = {
-        "declaration_sha256": compute_runpod_environment_fingerprint(bundle),
+        "declaration_sha256": compute_runpod_environment_fingerprint(
+            bundle, driver.seal_repo_snapshots(bundle)
+        ),
         "image_id": bundle.environment.image_id,
         "lockfile_hashes": bundle.environment.lockfile_hashes,
         "python_version": bundle.environment.python_version,
@@ -1137,10 +1284,18 @@ def test_provision_conflict_tears_down_and_is_not_retried(tmp_path: Path) -> Non
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     create_call = (
-        "pod", "create", "--name", "feedbax-orchestration-2026-01-02-deadbeef",
-        "--image", bundle.environment.image_id, "--ports", "22/tcp,8080/http",
-        "--gpu-id", "NVIDIA GeForce RTX 4090",
-        "--data-center-ids", "EU-CZ-1",
+        "pod",
+        "create",
+        "--name",
+        "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image",
+        bundle.environment.image_id,
+        "--ports",
+        "22/tcp,8080/http",
+        "--gpu-id",
+        "NVIDIA GeForce RTX 4090",
+        "--data-center-ids",
+        "EU-CZ-1",
     )
     transport.queue_runpodctl(create_call, CommandResult(0, '{"id":"pod-conflict"}'))
     transport.queue_runpodctl(
@@ -1199,22 +1354,97 @@ def test_provided_pod_does_not_inherit_configured_datacenter_authority() -> None
     assert record["provider_observation_basis"] == "runpodctl pod get response"
 
 
+def test_keyboard_interrupt_during_provision_self_heals_owned_pod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("pod", "get", "pod-interrupt", "--output", "json"),
+        CommandResult(1, "", "pod not found"),
+    )
+    transport.queue_empty_global_inventory()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(image=bundle.environment.image_id or ""),
+        transport=transport,
+    )
+    driver._preflight_passed = True
+    monkeypatch.setattr(
+        driver,
+        "_create_pod",
+        lambda _bundle: _PodAcquisition("pod-interrupt", None),
+    )
+
+    def interrupted_endpoint(_pod_id: str) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(driver, "_wait_for_endpoint", interrupted_endpoint)
+
+    with pytest.raises(KeyboardInterrupt):
+        driver.provision(bundle, _state(bundle))
+
+    assert ("remove", "pod", "pod-interrupt") in transport.runpodctl_calls
+    assert driver.has_pending_owned_resource() is False
+
+
+def test_provision_cleanup_failure_does_not_mask_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(("remove", "pod", "pod-interrupt"), CommandResult(1, "", "busy"))
+    transport.queue_runpodctl(("stop", "pod", "pod-interrupt"), CommandResult(1, "", "still busy"))
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(image=bundle.environment.image_id or ""),
+        transport=transport,
+    )
+    driver._preflight_passed = True
+    monkeypatch.setattr(
+        driver,
+        "_create_pod",
+        lambda _bundle: _PodAcquisition("pod-interrupt", None),
+    )
+
+    def interrupted_endpoint(_pod_id: str) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(driver, "_wait_for_endpoint", interrupted_endpoint)
+
+    with pytest.raises(KeyboardInterrupt):
+        driver.provision(bundle, _state(bundle))
+
+    assert driver.has_pending_owned_resource() is True
+
+
 def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     call = (
-        "pod", "create", "--name", "feedbax-orchestration-2026-01-02-deadbeef",
-        "--image", "runpod/pytorch:1.0.3@sha256:" + "a" * 64,
-        "--ports", "22/tcp,8080/http", "--gpu-id", "NVIDIA GeForce RTX 4090",
-        "--data-center-ids", "CA-MTL-1",
+        "pod",
+        "create",
+        "--name",
+        "feedbax-orchestration-2026-01-02-deadbeef",
+        "--image",
+        "runpod/pytorch:1.0.3@sha256:" + "a" * 64,
+        "--ports",
+        "22/tcp,8080/http",
+        "--gpu-id",
+        "NVIDIA GeForce RTX 4090",
+        "--data-center-ids",
+        "CA-MTL-1",
     )
-    transport.queue_runpodctl(("user", "--output", "json"), CommandResult(0, '{"clientBalance":10}'))
+    transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, '{"clientBalance":10}')
+    )
     transport.queue_runpodctl(call, CommandResult(401, '{"statusCode":401,"code":"unauthorized"}'))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
             datacenters=("CA-MTL-1",),
             image=bundle.environment.image_id,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -1263,13 +1493,16 @@ def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
             '{"createdAt":"1970-01-01T00:00:01+00:00","costPerHr":1,"ssh":{"ip":"203.0.113.2","port":22}}',
         ),
     )
-    transport.queue_runpodctl(("user", "--output", "json"), CommandResult(0, '{"clientBalance": 10}'))
+    transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, '{"clientBalance": 10}')
+    )
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             gpu_id="NVIDIA RTX 2000 Ada Generation",
             image=bundle.environment.image_id or "",
             max_acquire_seconds=1,
             poll_seconds=1,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
         sleep=clock.sleep,
@@ -1343,6 +1576,7 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
             image="runpod/pytorch:1.0.3",
             max_acquire_seconds=2,
             poll_seconds=1,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
         sleep=clock.sleep,
@@ -1364,7 +1598,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     transport.queue_ssh(CommandResult(1, ""))  # fingerprint probe mismatch
     local_repo = tmp_path / "local repos" / "feedbax [dev]"
     local_repo.parent.mkdir()
-    local_repo.mkdir()
+    _init_snapshot_repo(local_repo)
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             ssh_host="198.51.100.10",
@@ -1382,31 +1616,22 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
         transport=transport,
     )
 
-    fingerprint = driver.realize_env(bundle, _state(bundle))
+    fingerprint = driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     fingerprint_payload = json.loads(fingerprint)
-    assert fingerprint_payload["schema_version"] == (
-        "feedbax.runpod_environment_fingerprint.v1"
-    )
+    assert fingerprint_payload["schema_version"] == ("feedbax.runpod_environment_fingerprint.v1")
     assert fingerprint_payload["runtime"]["jax_platform"] == "gpu"
     assert fingerprint_payload["feedbax_plugins"][0]["name"] == "rlrmp2"
-    assert transport.rsync_calls == [
-        (
-            str(local_repo) + "/",
-            "/workspace/dev repos/feedbax [dev]/",
-            True,
-            (
-                ".git",
-                ".venv",
-                "__pycache__",
-                ".pytest_cache",
-                ".mypy_cache",
-                ".ruff_cache",
-                "_artifacts",
-                "web/node_modules",
-            ),
-        )
-    ]
+    assert len(transport.rsync_calls) == 1
+    source, target, delete, excludes = transport.rsync_calls[0]
+    assert source.endswith("/")
+    assert source != str(local_repo) + "/"
+    assert Path(source).name == driver.repo_snapshot_manifest().repos[
+        "feedbax"
+    ].content_sha256
+    assert target == "/workspace/dev repos/feedbax [dev]/"
+    assert delete is True
+    assert excludes == ()
     joined = "\n".join(transport.ssh_commands)
     assert "perl -0pi" in joined
     assert "\\Q$ENV{PATCH_FROM}\\E" in joined
@@ -1419,13 +1644,94 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "lockfile digest mismatch" in joined
 
 
+def test_runpod_snapshot_digest_changes_environment_reuse_key(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    local_repo = tmp_path / "feedbax"
+    _init_snapshot_repo(local_repo)
+    config = RunPodDriverConfig(local_repos={"feedbax": local_repo})
+    (local_repo / "tracked.txt").write_text("dirty one\n", encoding="utf-8")
+    first_driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    first_manifest = first_driver.seal_repo_snapshots(bundle)
+    first_fingerprint = compute_runpod_environment_fingerprint(bundle, first_manifest)
+    (local_repo / "tracked.txt").write_text("dirty two\n", encoding="utf-8")
+    second_driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    second_manifest = second_driver.seal_repo_snapshots(bundle)
+    second_fingerprint = compute_runpod_environment_fingerprint(bundle, second_manifest)
+
+    first = first_manifest.repos["feedbax"]
+    second = second_manifest.repos["feedbax"]
+    assert first.commit == second.commit
+    assert first.dirty is second.dirty is True
+    assert first.content_sha256 != second.content_sha256
+    assert first_fingerprint != second_fingerprint
+
+
+def test_runpod_wholesale_snapshot_sync_deletes_stale_secret(tmp_path: Path) -> None:
+    rsync = shutil.which("rsync")
+    assert rsync is not None, "rsync is required for the governed-transfer contract test"
+
+    class LocalRsyncTransport(FakeRunPodTransport):
+        def rsync(
+            self,
+            source: str,
+            target: str,
+            *,
+            delete: bool = False,
+            excludes: tuple[str, ...] = (),
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            super().rsync(
+                source,
+                target,
+                delete=delete,
+                excludes=excludes,
+                timeout_seconds=timeout_seconds,
+            )
+            args = [rsync, "-a"]
+            if delete:
+                args.append("--delete")
+            args.extend([source, target])
+            completed = subprocess.run(args, capture_output=True, text=True)
+            return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+    bundle = _bundle(tmp_path)
+    local_repo = tmp_path / "feedbax"
+    _init_snapshot_repo(local_repo)
+    (local_repo / ".gitignore").write_text("*.secret\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(local_repo), "add", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(local_repo), "commit", "-m", "ignore secrets"],
+        check=True,
+        capture_output=True,
+    )
+    (local_repo / "local.secret").write_text("never ship\n", encoding="utf-8")
+    remote = tmp_path / "remote repo"
+    remote.mkdir()
+    (remote / "stale.secret").write_text("remove me\n", encoding="utf-8")
+    transport = LocalRsyncTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": local_repo}),
+        transport=transport,
+    )
+    manifest = driver.seal_repo_snapshots(bundle)
+    snapshot_root = driver._repo_snapshots.snapshots["feedbax"].staging_root
+
+    driver._rsync_repo(str(snapshot_root), str(remote))
+
+    assert not (remote / "stale.secret").exists()
+    assert not (remote / "local.secret").exists()
+    assert (remote / "tracked.txt").read_text(encoding="utf-8") == "tracked\n"
+    assert manifest.repos["feedbax"].file_count == 2
+    assert transport.rsync_calls == [(f"{snapshot_root}/", f"{remote}/", True, ())]
+
+
 def test_realize_env_fails_closed_when_repo_rsync_fails(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))  # mkdir
     transport.rsync_result = CommandResult(1, "", "remote path rejected")
     local_repo = tmp_path / "feedbax"
-    local_repo.mkdir()
+    _init_snapshot_repo(local_repo)
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             ssh_host="198.51.100.10",
@@ -1437,7 +1743,7 @@ def test_realize_env_fails_closed_when_repo_rsync_fails(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RunPodDriverError, match="rsync repo .*remote path rejected"):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, _sealed_state(driver, bundle))
 
 
 def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
@@ -1465,7 +1771,7 @@ def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
         monotonic=clock.monotonic,
     )
 
-    driver.realize_env(bundle, _state(bundle))
+    driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     assert clock.sleeps == [2, 2]
     fingerprint_write = next(
@@ -1497,7 +1803,7 @@ def test_realize_env_failed_sentinel_raises_with_remote_log_tail(tmp_path: Path)
     )
 
     with pytest.raises(RunPodDriverError, match="important failure detail"):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, _sealed_state(driver, bundle))
 
 
 def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
@@ -1522,14 +1828,19 @@ def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RunPodDriverError, match="uv sync timed out after 3s"):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     assert clock.now == 3
 
 
 def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
-    declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(transport=transport)
+    state = _sealed_state(driver, bundle)
+    declaration_fingerprint = compute_runpod_environment_fingerprint(
+        bundle, driver.repo_snapshot_manifest()
+    )
     declaration = {
         "declaration_sha256": declaration_fingerprint,
         "image_id": bundle.environment.image_id,
@@ -1537,13 +1848,10 @@ def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -
         "python_version": bundle.environment.python_version,
     }
     realized_fingerprint = _realized_fingerprint(declaration)
-    transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))
     transport.queue_ssh(CommandResult(0, declaration_fingerprint))
     transport.queue_ssh(CommandResult(0, realized_fingerprint))
-    driver = RunPodOrchestrationDriver(transport=transport)
-
-    assert driver.realize_env(bundle, _state(bundle)) == realized_fingerprint
+    assert driver.realize_env(bundle, state) == realized_fingerprint
     assert transport.rsync_calls == []
     assert all("uv sync --frozen" not in command for command in transport.ssh_commands)
     assert all("overlay-" not in command for command in transport.ssh_commands)
@@ -1589,13 +1897,8 @@ def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> 
     payload = bundle.rows[0].execution.payload
     assert transport.rsync_calls == [
         (
-            str(
-                bundle.run_set_dir
-                / ".stage-attempts/stage-inputs-0/inputs"
-            )
-            + "/",
-            "/workspace/feedbax_runs/2026-01-02-deadbeef/"
-            ".stage-attempts/stage-inputs-0/inputs/",
+            str(bundle.run_set_dir / ".stage-attempts/stage-inputs-0/inputs") + "/",
+            "/workspace/feedbax_runs/2026-01-02-deadbeef/.stage-attempts/stage-inputs-0/inputs/",
             True,
             (),
         ),
@@ -1612,7 +1915,11 @@ def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> 
 
 def test_stage_inputs_ignores_legacy_runpod_baseline_metadata(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path).model_copy(
-        update={"metadata": {"runpod_baselines": [{"checkpoint_path": "/custody", "completed_batches": 12000}]}}
+        update={
+            "metadata": {
+                "runpod_baselines": [{"checkpoint_path": "/custody", "completed_batches": 12000}]
+            }
+        }
     )
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
@@ -1654,9 +1961,7 @@ def test_stage_inputs_fails_closed_when_final_input_tree_exists(tmp_path: Path) 
 
     assert len(transport.rsync_calls) == 1
     assert ".stage-attempts/stage-inputs-0/inputs/" in transport.rsync_calls[0][1]
-    assert transport.rsync_calls[0][1] != (
-        "/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/"
-    )
+    assert transport.rsync_calls[0][1] != ("/workspace/feedbax_runs/2026-01-02-deadbeef/inputs/")
 
 
 def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path) -> None:
@@ -1985,7 +2290,7 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
         transport=transport,
     )
 
-    driver.realize_env(bundle, _state(bundle))
+    driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     joined = "\n".join(transport.ssh_commands)
     assert "command -v setsid >/dev/null" in transport.ssh_commands[0]
@@ -1995,6 +2300,8 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
     assert 'kill -0 "$(cat "$pid_file")"' in watchdog
     assert "setsid -f bash -lc" in watchdog
     assert "echo $$ >" in watchdog
+    assert "deadman.installed" in watchdog
+    assert 'newest=$(stat -c %Y "$installed"' in watchdog
     assert 'rm -f "$pid_file"' in watchdog
     assert 'runpodctl remove pod "$pod_id"' in watchdog
     assert ">>" in watchdog
@@ -2012,6 +2319,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -2019,10 +2327,13 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     checks = driver.preflight_checks(bundle)
 
     assert [check.name for check in checks] == [
+        "runpod-repo-snapshots",
         "input-provider-bindings",
+        "continuation-schedule-consistency",
+        "runpod-lockfiles-declared",
+        "runpod-remote-layout-vs-lock",
         "runpod-image-immutable",
         "runpod-image-tag-exists",
-        "runpod-lockfiles-declared",
         "runpod-python-version-declared",
         "runpod-gpu-policy-declared",
         "runpod-credentials",
@@ -2031,6 +2342,256 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     ]
     assert all(check.status == "pass" for check in checks)
     assert transport.runpodctl_calls == [("user", "--output", "json")]
+
+
+def test_declared_continuation_without_source_custody_fails_before_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=10,
+        additional_batches=4,
+    )
+    monkeypatch.setattr(
+        runpod_module,
+        "_authenticated_row_training_spec",
+        lambda _row: SimpleNamespace(
+            checkpoint_progress=SimpleNamespace(continuation=continuation)
+        ),
+    )
+    transport = FakeRunPodTransport()
+    monkeypatch.setattr(
+        transport,
+        "image_exists",
+        lambda _image: pytest.fail("provider transport must not run after schedule failure"),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+        ),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+
+    assert [check.name for check in checks] == [
+        "runpod-repo-snapshots",
+        "input-provider-bindings",
+        "continuation-schedule-consistency",
+    ]
+    assert checks[-1].status == "fail"
+    assert "no exact authenticated resume checkpoint source" in (checks[-1].detail or "")
+    assert transport.operations == []
+
+
+def test_remote_layout_lock_without_path_sources_passes_after_digest_verification(
+    tmp_path: Path,
+) -> None:
+    bundle, config = _layout_case(tmp_path, "version = 1\n")
+
+    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is None
+    assert observed["path_sources"] == []
+
+
+@pytest.mark.parametrize(
+    ("lock_text", "expected"),
+    [
+        ("version = [\n", "malformed TOML"),
+        ('version = 1\n[[package]]\nname = "bad"\nsource = { virtual = "." }\n', "virtual"),
+        ('version = 1\n[[package]]\nname = "bad"\nsource = { editable = "/tmp/x" }\n', "absolute"),
+        (
+            'version = 1\n[[package]]\nname = "bad"\nsource = { editable = "../../escape" }\n',
+            "unmatched local target",
+        ),
+        ("version = 999\n", "unsupported lock version"),
+        (
+            'version = 1\n[[package]]\nname = "bad"\nsource = { local = "../repo" }\n',
+            "local",
+        ),
+        (
+            'version = 1\n[[package]]\nname = "bad"\n'
+            'source = { editable = ".", registry = "https://example.invalid" }\n',
+            "mixed source forms",
+        ),
+    ],
+)
+def test_remote_layout_rejects_invalid_lock_content(
+    tmp_path: Path,
+    lock_text: str,
+    expected: str,
+) -> None:
+    bundle, config = _layout_case(tmp_path, lock_text)
+
+    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is not None
+    assert expected in error
+
+
+def test_remote_layout_rejects_missing_or_hash_mismatched_lock(tmp_path: Path) -> None:
+    missing_bundle, config = _layout_case(tmp_path, "version = 1\n", write_lock=False)
+    config = config.__class__(**{**config.__dict__, "remote_repos": {"wrong": "/workspace/wrong"}})
+    missing_error, _ = runpod_remote_layout_vs_lock_error(missing_bundle, config)
+    assert missing_error is not None
+    assert "cannot read declared lockfile" in missing_error
+
+    lock_path = Path(config.local_repos["consumer"]) / "uv.lock"
+    lock_path.write_text("version = 2\n", encoding="utf-8")
+    mismatch_error, _ = runpod_remote_layout_vs_lock_error(missing_bundle, config)
+    assert mismatch_error is not None
+    assert "hash mismatch" in mismatch_error
+
+
+@pytest.mark.parametrize("form", ["editable", "path"])
+def test_remote_layout_handles_self_local_source(tmp_path: Path, form: str) -> None:
+    bundle, config = _layout_case(
+        tmp_path,
+        f'version = 1\n[[package]]\nname = "consumer"\nsource = {{ {form} = "." }}\n',
+    )
+
+    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is None
+    assert observed["path_sources"][0]["spelling"] == "."
+    assert observed["path_sources"][0]["planned_remote_target"] == "/workspace/consumer"
+    assert str(tmp_path) not in json.dumps(observed)
+
+
+def test_remote_layout_can_validate_explicit_staging_source_roots(tmp_path: Path) -> None:
+    live_root = tmp_path / "live" / "consumer"
+    staging_root = tmp_path / "sealed" / "consumer"
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "consumer"\nsource = { editable = "." }\n',
+        local_repos={"consumer": staging_root},
+    )
+    config = config.__class__(**{**config.__dict__, "local_repos": {"consumer": live_root}})
+
+    live_error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+    staged_error, _ = runpod_remote_layout_vs_lock_error(
+        bundle,
+        config,
+        source_roots={"consumer": staging_root},
+    )
+
+    assert live_error is not None
+    assert "cannot read declared lockfile" in live_error
+    assert staged_error is None
+
+
+def test_remote_layout_preserves_exact_spaced_sibling_spelling(tmp_path: Path) -> None:
+    consumer = tmp_path / "10 Projects" / "10 PhD" / "rlrmp2"
+    feedbax = tmp_path / "10 Projects" / "10 PhD" / "20 Feedbax" / "feedbax"
+    local = {"rlrmp2": consumer, "feedbax": feedbax}
+    remote = {
+        "rlrmp2": "/workspace/10 Projects/10 PhD/rlrmp2",
+        "feedbax": "/workspace/10 Projects/10 PhD/20 Feedbax/feedbax",
+    }
+    lock_text = (
+        'version = 1\n[[package]]\nname = "feedbax"\n'
+        'source = { editable = "../20 Feedbax/feedbax" }\n'
+    )
+    bundle, config = _layout_case(
+        tmp_path,
+        lock_text,
+        local_repos=local,
+        remote_repos=remote,
+        primary_repo="rlrmp2",
+    )
+
+    error, observed = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is None
+    assert observed["path_sources"][0]["spelling"] == "../20 Feedbax/feedbax"
+
+
+def test_remote_layout_mismatch_names_spelling_and_both_planned_targets(
+    tmp_path: Path,
+) -> None:
+    consumer = tmp_path / "rlrmp2"
+    target = tmp_path / "feedbax"
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "feedbax"\nsource = { editable = "../feedbax" }\n',
+        local_repos={"rlrmp2": consumer, "feedbax": target},
+        remote_repos={"rlrmp2": "/workspace/rlrmp2", "feedbax": "/workspace/wrong-name"},
+        primary_repo="rlrmp2",
+    )
+
+    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is not None
+    assert "../feedbax" in error
+    assert str(target) in error
+    assert "/workspace/feedbax" in error
+    assert "/workspace/wrong-name" in error
+
+
+def test_remote_layout_rejects_ambiguous_repo_containment(tmp_path: Path) -> None:
+    consumer = tmp_path / "outer" / "consumer"
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "consumer"\nsource = { editable = "." }\n',
+        local_repos={"outer": tmp_path / "outer", "consumer": consumer},
+        remote_repos={"outer": "/workspace/outer", "consumer": "/workspace/consumer"},
+    )
+
+    error, _ = runpod_remote_layout_vs_lock_error(bundle, config)
+
+    assert error is not None
+    assert "ambiguous local target" in error
+
+
+def test_remote_layout_rejects_mapping_mismatch_duplicate_roots_and_lock_patch(
+    tmp_path: Path,
+) -> None:
+    bundle, config = _layout_case(tmp_path, "version = 1\n")
+    mismatch = config.__class__(
+        **{**config.__dict__, "remote_repos": {"other": "/workspace/other"}}
+    )
+    mismatch_error, _ = runpod_remote_layout_vs_lock_error(bundle, mismatch)
+    assert mismatch_error is not None
+    assert "repo key mismatch" in mismatch_error
+
+    duplicate = config.__class__(
+        **{
+            **config.__dict__,
+            "local_repos": {"consumer": tmp_path / "consumer", "other": tmp_path / "other"},
+            "remote_repos": {"consumer": "/workspace/same", "other": "/workspace/same"},
+        }
+    )
+    duplicate_error, _ = runpod_remote_layout_vs_lock_error(bundle, duplicate)
+    assert duplicate_error is not None
+    assert "duplicate remote repo root" in duplicate_error
+
+    patched = config.__class__(
+        **{
+            **config.__dict__,
+            "path_patches": (("/workspace/consumer/uv.lock", "old", "new"),),
+        }
+    )
+    patch_error, _ = runpod_remote_layout_vs_lock_error(bundle, patched)
+    assert patch_error is not None
+    assert "path_patches" in patch_error
+    assert "uv.lock" in patch_error
+
+
+def test_layout_failure_short_circuits_before_all_provider_queries(tmp_path: Path) -> None:
+    bundle, config = _layout_case(tmp_path, "version = [\n")
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(config=config, transport=transport)
+
+    checks = driver.preflight_checks(bundle)
+
+    assert checks[-1].name == "runpod-remote-layout-vs-lock"
+    assert checks[-1].status == "fail"
+    assert transport.image_exists_calls == []
+    assert transport.runpodctl_calls == []
+    assert transport.operations == []
 
 
 @pytest.mark.parametrize(
@@ -2053,13 +2614,14 @@ def test_preflight_rejects_non_deterministic_environment_declarations(
 ) -> None:
     bundle = _bundle(tmp_path)
     bundle = bundle.model_copy(
-        update={
-            "environment": bundle.environment.model_copy(update=environment_update)
-        }
+        update={"environment": bundle.environment.model_copy(update=environment_update)}
     )
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(gpu_id="NVIDIA GeForce RTX 5090"),
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 5090",
+            local_repos={"feedbax": tmp_path},
+        ),
         transport=transport,
     )
 
@@ -2096,7 +2658,11 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))
     transport.queue_ssh(CommandResult(1, ""))
-    declaration_sha256 = compute_runpod_environment_fingerprint(bundle)
+    driver = RunPodOrchestrationDriver(transport=transport)
+    state = _sealed_state(driver, bundle)
+    declaration_sha256 = compute_runpod_environment_fingerprint(
+        bundle, driver.repo_snapshot_manifest()
+    )
     mismatched = json.loads(
         _realized_fingerprint(
             {
@@ -2114,24 +2680,25 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
         mismatched["runtime"]["jax_platform"] = "cpu"
         expected_error = "JAX CUDA backend"
     transport.environment_probe_result = CommandResult(0, json.dumps(mismatched))
-    driver = RunPodOrchestrationDriver(transport=transport)
-
     with pytest.raises(RunPodDriverError, match=expected_error):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, state)
 
 
-def test_rlrmp2_is_the_primary_environment_workdir() -> None:
+def test_explicit_primary_repo_controls_environment_and_row_workdirs(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             remote_repos={
                 "feedbax": "/workspace/feedbax",
                 "rlrmp2": "/workspace/rlrmp2",
-            }
+            },
+            primary_repo="feedbax",
         ),
         transport=FakeRunPodTransport(),
     )
 
-    assert driver._primary_workdir() == "/workspace/rlrmp2"
+    assert driver._primary_workdir() == "/workspace/feedbax"
+    assert runpod_row_workdir(driver.config, bundle.rows[0]) == "/workspace/feedbax"
 
 
 def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Path) -> None:
@@ -2142,6 +2709,7 @@ def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Pat
             ssh_host="198.51.100.10",
             ssh_port=2222,
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -2170,6 +2738,7 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
             gpu_id="NVIDIA GeForce RTX 4090",
             datacenters=tuple(bundle.deployment_policy.resources.regions),
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=first_transport,
     )
@@ -2192,6 +2761,7 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
                 gpu_id="NVIDIA GeForce RTX 4090",
                 datacenters=tuple(bundle.deployment_policy.resources.regions),
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=resume_transport,
         ),
@@ -2201,6 +2771,55 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
     assert resumed.stage(STAGE_PROVISION).status == "completed"
     assert RestoredDriver.provision_calls == 1
     assert resume_transport.operations == []
+
+
+def test_completed_preflight_without_schedule_check_is_rerun(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    first_transport = FakeRunPodTransport()
+    first_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    config = RunPodDriverConfig(
+        gpu_id="NVIDIA GeForce RTX 4090",
+        image=bundle.environment.image_id or "",
+        local_repos={"feedbax": tmp_path},
+    )
+    state = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(config=config, transport=first_transport),
+        store=store,
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+    preflight = state.stage(STAGE_PREFLIGHT)
+    old_checks = [
+        check for check in preflight.checks if check.name != "continuation-schedule-consistency"
+    ]
+    old_outputs = {
+        **preflight.outputs,
+        "checks": [check.model_dump(mode="json") for check in old_checks],
+    }
+    store.save(
+        state.with_stage(
+            STAGE_PREFLIGHT,
+            preflight.model_copy(update={"checks": old_checks, "outputs": old_outputs}),
+        )
+    )
+    rerun_transport = FakeRunPodTransport()
+    rerun_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+
+    rerun = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(config=config, transport=rerun_transport),
+        store=store,
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+
+    assert any(
+        check.name == "continuation-schedule-consistency"
+        for check in rerun.stage(STAGE_PREFLIGHT).checks
+    )
+    assert rerun_transport.runpodctl_calls == [("user", "--output", "json")]
 
 
 @pytest.mark.parametrize(
@@ -2219,6 +2838,7 @@ def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provisio
         config=RunPodDriverConfig(
             gpu_id="NVIDIA GeForce RTX 4090",
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": tmp_path},
         ),
         transport=first_transport,
     )
@@ -2254,6 +2874,7 @@ def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provisio
         gpu_id="NVIDIA GeForce RTX 4090",
         min_balance_usd=6.0 if tamper == "driver" else 5.0,
         image=bundle.environment.image_id or "",
+        local_repos={"feedbax": tmp_path},
         auto_teardown=tamper != "teardown",
     )
     with pytest.raises(PreflightFailed, match="persisted driver PREFLIGHT evidence is invalid"):
@@ -2282,6 +2903,7 @@ def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_pat
             config=RunPodDriverConfig(
                 gpu_id="NVIDIA GeForce RTX 4090",
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=first_transport,
         ),
@@ -2327,6 +2949,7 @@ def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_pat
             config=RunPodDriverConfig(
                 gpu_id="NVIDIA GeForce RTX 4090",
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=resume_transport,
         ),
@@ -2339,6 +2962,42 @@ def test_fresh_runpod_driver_restores_legacy_completed_preflight_offline(tmp_pat
     assert resumed.abort_reason is None
     assert resumed.provisioning_stop_reason is None
     assert "provisioning_stop_reason" not in resumed.budget_counters
+
+
+def test_completed_preflight_rejects_evidence_predating_layout_check(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, baseline=False)
+    config = RunPodDriverConfig(
+        gpu_id="NVIDIA GeForce RTX 4090",
+        image=bundle.environment.image_id or "",
+        local_repos={"feedbax": tmp_path},
+    )
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    state = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(config=config, transport=transport),
+        store=RunSetStateStore(bundle.run_set_dir / "state.json"),
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+    preflight = state.stage(STAGE_PREFLIGHT)
+    old_checks = [
+        check for check in preflight.checks if check.name != "runpod-remote-layout-vs-lock"
+    ]
+    old_outputs = {
+        **preflight.outputs,
+        "checks": [check.model_dump(mode="json") for check in old_checks],
+    }
+    old_outputs.pop("driver_evidence", None)
+    old_state = state.with_stage(
+        STAGE_PREFLIGHT,
+        preflight.model_copy(update={"checks": old_checks, "outputs": old_outputs}),
+    )
+
+    with pytest.raises(RunPodDriverError, match="unique RunPod check set"):
+        RunPodOrchestrationDriver(
+            config=config, transport=FakeRunPodTransport()
+        ).restore_completed_preflight(bundle, old_state)
 
 
 def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path) -> None:
@@ -2356,19 +3015,18 @@ def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path)
                 gpu_id="NVIDIA GeForce RTX 4090",
                 datacenters=tuple(bundle.deployment_policy.resources.regions),
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=transport,
         ),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    assert len(state.stage(STAGE_PREFLIGHT).checks) == 20
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 23
     preflight = state.stage(STAGE_PREFLIGHT)
     preflight = preflight.model_copy(
         update={
             "outputs": {
-                key: value
-                for key, value in preflight.outputs.items()
-                if key != "driver_evidence"
+                key: value for key, value in preflight.outputs.items() if key != "driver_evidence"
             }
         }
     )
@@ -2387,9 +3045,10 @@ def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path)
     )
     store.save(state)
 
-    script = r'''
+    script = r"""
 import json
 import sys
+from pathlib import Path
 
 from feedbax.bin import orchestrate
 from feedbax.orchestration.drivers.runpod import RunPodDriverConfig, RunPodOrchestrationDriver
@@ -2409,6 +3068,7 @@ def driver_for_bundle(bundle, bindings=()):
             gpu_id=bundle.deployment_policy.resources.gpu_id,
             datacenters=tuple(bundle.deployment_policy.resources.regions),
             image=bundle.environment.image_id or "",
+            local_repos={"feedbax": Path(bundle.run_set_dir).parent},
         ),
         transport=NoProviderTransport(),
         input_provider_bindings=bindings,
@@ -2421,7 +3081,7 @@ print(json.dumps({
     "provisioning_stop_reason": result.provisioning_stop_reason,
     "provision_status": result.stage("PROVISION").status,
 }))
-'''
+"""
     env = {**os.environ, "FEEDBAX_ORCHESTRATION_ROOT": str(tmp_path)}
     result = subprocess.run(
         [sys.executable, "-c", script, bundle.run_set_id],
@@ -2457,6 +3117,7 @@ def test_legacy_completed_preflight_rejects_semantic_tampering_offline(
             config=RunPodDriverConfig(
                 gpu_id="NVIDIA GeForce RTX 4090",
                 image=bundle.environment.image_id or "",
+                local_repos={"feedbax": tmp_path},
             ),
             transport=first_transport,
         ),
@@ -2465,10 +3126,14 @@ def test_legacy_completed_preflight_rejects_semantic_tampering_offline(
     preflight = state.stage(STAGE_PREFLIGHT)
     copied_checks = list(preflight.checks)
     if tamper == "checks-both":
-        index = next(i for i, check in enumerate(copied_checks) if check.name == "runpod-image-immutable")
+        index = next(
+            i for i, check in enumerate(copied_checks) if check.name == "runpod-image-immutable"
+        )
         copied_checks[index] = copied_checks[index].model_copy(update={"observed": "tampered"})
     elif tamper == "balance":
-        index = next(i for i, check in enumerate(copied_checks) if check.name == "runpod-balance-floor")
+        index = next(
+            i for i, check in enumerate(copied_checks) if check.name == "runpod-balance-floor"
+        )
         copied_checks[index] = copied_checks[index].model_copy(update={"observed": "not-a-number"})
     elif tamper == "timestamps":
         preflight = preflight.model_copy(update={"completed_at": None})
@@ -2487,12 +3152,13 @@ def test_legacy_completed_preflight_rejects_semantic_tampering_offline(
     resume_config = RunPodDriverConfig(
         gpu_id="NVIDIA GeForce RTX 5090" if tamper == "config" else "NVIDIA GeForce RTX 4090",
         image=(
-            "runpod/pytorch:different"
-            if tamper == "image"
-            else bundle.environment.image_id or ""
+            "runpod/pytorch:different" if tamper == "image" else bundle.environment.image_id or ""
         ),
+        local_repos={"feedbax": tmp_path},
     )
-    resume_bundle = bundle.model_copy(update={"keep_alive": False}) if tamper == "bundle" else bundle
+    resume_bundle = (
+        bundle.model_copy(update={"keep_alive": False}) if tamper == "bundle" else bundle
+    )
     resume_transport = FakeRunPodTransport()
     with pytest.raises(PreflightFailed, match="persisted driver PREFLIGHT evidence is invalid"):
         StageEngine(
@@ -2626,9 +3292,7 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
     ]
     assert transport.rsync_calls[2][1].endswith("/collected/warm/checkpoints/")
     assert transport.rsync_calls[2][2] is True
-    assert collected["warm.events.jsonl"] == str(
-        bundle.run_set_dir / "events/warm.events.jsonl"
-    )
+    assert collected["warm.events.jsonl"] == str(bundle.run_set_dir / "events/warm.events.jsonl")
 
 
 @pytest.mark.parametrize(
@@ -2720,9 +3384,7 @@ def test_local_and_runpod_collect_directory_contents_at_declared_target(
             )
         }
     )
-    stale_nested = (
-        runpod_bundle.run_set_dir / "collected" / "warm" / "checkpoints" / "checkpoints"
-    )
+    stale_nested = runpod_bundle.run_set_dir / "collected" / "warm" / "checkpoints" / "checkpoints"
     stale_nested.mkdir(parents=True)
     (stale_nested / "latest.json").write_text('{"transaction_id":"tx-stale"}\n')
     transport = RealRsyncTransport()
@@ -2806,9 +3468,7 @@ def test_collect_recovers_preserved_nested_directory_without_provider_calls(
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(),
         transport=transport,
-        collection_recovery_bindings=[
-            CollectionRecoveryBinding(row.row_id, preserved)
-        ],
+        collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
     )
 
     collected = driver.collect(bundle, row, state)
@@ -2863,9 +3523,7 @@ def test_collect_recovery_rejects_invalid_preserved_output_map(
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(),
         transport=FakeRunPodTransport(),
-        collection_recovery_bindings=[
-            CollectionRecoveryBinding(row.row_id, preserved)
-        ],
+        collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
     )
 
     with pytest.raises(CollectionRecoveryError):
@@ -2879,9 +3537,7 @@ def test_collect_recovery_requires_verified_empty_final_inventory(tmp_path: Path
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(),
         transport=FakeRunPodTransport(),
-        collection_recovery_bindings=[
-            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
-        ],
+        collection_recovery_bindings=[CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)],
     )
     state = _completed_recovery_state(bundle).model_copy(
         update={
@@ -2903,9 +3559,7 @@ def test_collect_recovery_refuses_configured_provider_target(tmp_path: Path) -> 
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(pod_id="pod-still-configured"),
         transport=FakeRunPodTransport(),
-        collection_recovery_bindings=[
-            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
-        ],
+        collection_recovery_bindings=[CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)],
     )
 
     with pytest.raises(RunPodDriverError, match="refuses a configured live"):
@@ -2937,9 +3591,7 @@ def test_collect_recovery_binds_exact_runpod_teardown(
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(),
         transport=FakeRunPodTransport(),
-        collection_recovery_bindings=[
-            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
-        ],
+        collection_recovery_bindings=[CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)],
     )
 
     with pytest.raises(CollectionRecoveryError, match="exact pod absence"):
@@ -2977,9 +3629,7 @@ def test_collect_recovery_binds_teardown_to_provision_record(tmp_path: Path) -> 
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(),
         transport=FakeRunPodTransport(),
-        collection_recovery_bindings=[
-            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
-        ],
+        collection_recovery_bindings=[CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)],
     )
 
     with pytest.raises(CollectionRecoveryError, match="exact pod absence"):
@@ -3010,9 +3660,7 @@ def test_collect_recovery_requires_canonical_inventory_basis(tmp_path: Path) -> 
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(),
         transport=FakeRunPodTransport(),
-        collection_recovery_bindings=[
-            CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)
-        ],
+        collection_recovery_bindings=[CollectionRecoveryBinding(bundle.rows[0].row_id, preserved)],
     )
 
     with pytest.raises(CollectionRecoveryError, match="provider-account inventory"):
@@ -3129,7 +3777,7 @@ def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) ->
         transport=transport,
     )
 
-    result = driver.teardown(bundle, _state(bundle))
+    result = driver.teardown(bundle, _owned_state(bundle))
 
     assert result["teardown"] == "stopped-then-removed"
     assert result["pod_absence"] == {
@@ -3149,10 +3797,11 @@ def test_teardown_remove_failure_stops_then_removes_owned_pod(tmp_path: Path) ->
     }
     assert transport.runpodctl_calls.count(("remove", "pod", "pod-123")) == 2
     assert ("stop", "pod", "pod-123") in transport.runpodctl_calls
-    second_remove_index = transport.runpodctl_calls.index(
-        ("remove", "pod", "pod-123"), 1
+    second_remove_index = transport.runpodctl_calls.index(("remove", "pod", "pod-123"), 1)
+    assert 0 < transport.runpodctl_timeouts[second_remove_index] <= 60
+    assert all(
+        timeout is not None and 0 < timeout <= 60 for timeout in transport.runpodctl_timeouts
     )
-    assert transport.runpodctl_timeouts[second_remove_index] == 60
 
 
 @pytest.mark.parametrize(
@@ -3180,7 +3829,7 @@ def test_teardown_accepts_supported_empty_provider_inventory_shapes(
         transport=transport,
     )
 
-    result = driver.teardown(bundle, _state(bundle))
+    result = driver.teardown(bundle, _owned_state(bundle))
 
     assert result["pod_absence"]["verified"] is True
     assert result["final_pod_inventory"]["verified"] is True
@@ -3230,7 +3879,7 @@ def test_teardown_records_sanitized_unverified_provider_inventory(
         transport=transport,
     )
 
-    result = driver.teardown(bundle, _state(bundle))
+    result = driver.teardown(bundle, _owned_state(bundle))
 
     inventory = result["final_pod_inventory"]
     assert inventory["verified"] is False
@@ -3278,7 +3927,7 @@ def test_unverified_global_inventory_survives_teardown_and_blocks_register(
         ),
     )
 
-    state = engine._run_teardown(_state(bundle), abort=False)
+    state = engine._run_teardown(_owned_state(bundle), abort=False)
 
     assert state.stage("TEARDOWN").status == "completed"
     inventory = state.stage("TEARDOWN").outputs["final_pod_inventory"]
@@ -3294,19 +3943,15 @@ def test_unverified_global_inventory_survives_teardown_and_blocks_register(
 def test_teardown_fails_closed_when_remove_after_stop_fails(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
-    transport.queue_runpodctl(
-        ("remove", "pod", "pod-123"), CommandResult(1, "", "busy")
-    )
-    transport.queue_runpodctl(
-        ("remove", "pod", "pod-123"), CommandResult(1, "", "still busy")
-    )
+    transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "busy"))
+    transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "still busy"))
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(pod_id="pod-123"),
         transport=transport,
     )
 
     with pytest.raises(RunPodDriverError, match="remove pod after stop failed"):
-        driver.teardown(bundle, _state(bundle))
+        driver.teardown(bundle, _owned_state(bundle))
 
     assert transport.runpodctl_calls == [
         ("remove", "pod", "pod-123"),
@@ -3334,7 +3979,7 @@ def test_teardown_polls_until_exact_owned_pod_is_absent(tmp_path: Path) -> None:
         monotonic=clock.monotonic,
     )
 
-    result = driver.teardown(bundle, _state(bundle))
+    result = driver.teardown(bundle, _owned_state(bundle))
 
     assert result["teardown"] == "removed"
     assert result["pod_absence"]["polls"] == 2
@@ -3360,7 +4005,7 @@ def test_teardown_fails_when_exact_owned_pod_remains_present(tmp_path: Path) -> 
     )
 
     with pytest.raises(RunPodDriverError, match="remained present for 4s"):
-        driver.teardown(bundle, _state(bundle))
+        driver.teardown(bundle, _owned_state(bundle))
 
 
 @pytest.mark.parametrize(
@@ -3387,7 +4032,7 @@ def test_teardown_fails_closed_on_ambiguous_absence_query(
     )
 
     with pytest.raises(RunPodDriverError, match="ambiguous absence query"):
-        driver.teardown(bundle, _state(bundle))
+        driver.teardown(bundle, _owned_state(bundle))
 
 
 def test_teardown_keep_alive_skips_owned_pod_query(tmp_path: Path) -> None:
@@ -3398,10 +4043,176 @@ def test_teardown_keep_alive_skips_owned_pod_query(tmp_path: Path) -> None:
         transport=transport,
     )
 
-    result = driver.teardown(bundle, _state(bundle))
+    result = driver.teardown(bundle, _owned_state(bundle))
 
     assert result["teardown"] == "skipped"
+    assert result["ownership"]["kind"] == "orchestration_created"
     assert transport.runpodctl_calls == []
+
+
+def test_teardown_never_removes_supplied_pod_id(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-provided"),
+        transport=transport,
+    )
+    state = _state(bundle).model_copy(
+        update={
+            "provision_record": {
+                "pod_id": "pod-provided",
+                "provided_pod": True,
+                "provided_endpoint": False,
+                "teardown_allowed": False,
+            }
+        }
+    )
+
+    result = driver.teardown(bundle, state)
+
+    assert result["teardown"] == "skipped"
+    assert result["skip_reason"] == "provided_pod"
+    assert result["ownership"]["owned_by_run"] is False
+    assert transport.runpodctl_calls == []
+
+
+def test_auto_teardown_disabled_keeps_owned_pod_with_ownership_evidence(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123", auto_teardown=False),
+        transport=transport,
+    )
+
+    result = driver.teardown(bundle, _owned_state(bundle))
+
+    assert result["teardown"] == "skipped"
+    assert result["skip_reason"] == "auto_teardown_disabled"
+    assert result["ownership"]["owned_by_run"] is True
+    assert transport.runpodctl_calls == []
+
+
+def test_teardown_failure_persists_unresolved_owned_pod_and_primary_error(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    transport = FakeRunPodTransport()
+    transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "busy"))
+    transport.queue_runpodctl(
+        ("stop", "pod", "pod-123"), CommandResult(1, "", "provider unavailable")
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(pod_id="pod-123"),
+        transport=transport,
+    )
+    engine = StageEngine(bundle=bundle, driver=driver)
+    primary = RuntimeError("training failed first")
+
+    try:
+        raise primary
+    except RuntimeError as raised:
+        state = engine._run_teardown(_owned_state(bundle), abort=True)
+        assert raised is primary
+
+    teardown = state.stage("TEARDOWN")
+    assert teardown.status == "failed"
+    assert teardown.outputs["pod_absence"]["verified"] is False
+    assert teardown.outputs["unresolved_owned_pod"] == {
+        "pod_id": "pod-123",
+        "last_known_state": "RUNNING",
+        "reason": "runpodctl stop pod failed: provider unavailable",
+    }
+
+
+def test_teardown_cleanup_uses_one_hard_deadline(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    clock = FakeClock()
+
+    class DeadlineConsumingTransport(FakeRunPodTransport):
+        def runpodctl(
+            self,
+            *args: str,
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            result = super().runpodctl(*args, timeout_seconds=timeout_seconds)
+            if args[:2] == ("remove", "pod") and timeout_seconds is not None:
+                clock.now += timeout_seconds
+            return result
+
+    transport = DeadlineConsumingTransport()
+    transport.queue_runpodctl(("remove", "pod", "pod-123"), CommandResult(1, "", "busy"))
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-123",
+            teardown_absence_timeout_seconds=4,
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+    engine = StageEngine(bundle=bundle, driver=driver)
+
+    state = engine._run_teardown(_owned_state(bundle), abort=True)
+
+    assert clock.now == 4
+    assert transport.runpodctl_calls == [("remove", "pod", "pod-123")]
+    assert state.stage("TEARDOWN").status == "failed"
+    assert "cleanup deadline expired" in state.stage("TEARDOWN").error
+
+
+def test_run_command_timeout_kills_entire_child_process_group(tmp_path: Path) -> None:
+    grandchild_pid = tmp_path / "grandchild.pid"
+    script = (
+        "import pathlib, signal, subprocess, sys, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+        f"pathlib.Path({str(grandchild_pid)!r}).write_text(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+
+    result = _run_command([sys.executable, "-c", script], timeout_seconds=0.3)
+
+    assert result.returncode == 124
+    pid = int(grandchild_pid.read_text())
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail(f"child process group member {pid} survived TERM/KILL escalation")
+
+
+def test_interrupt_while_run_command_waits_does_not_wedge_parent(tmp_path: Path) -> None:
+    child_pid = tmp_path / "child.pid"
+    script = (
+        "import pathlib, sys\n"
+        "from feedbax.orchestration.drivers.runpod import _run_command\n"
+        f"pathlib.Path({str(child_pid)!r}).write_text('starting')\n"
+        "_run_command([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", script],
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, (str(Path.cwd()), os.environ.get("PYTHONPATH")))
+            ),
+        },
+    )
+    deadline = time.monotonic() + 5
+    while not child_pid.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert child_pid.exists()
+
+    parent.send_signal(signal.SIGINT)
+
+    assert parent.wait(timeout=5) != 0
 
 
 def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) -> None:
@@ -3422,7 +4233,7 @@ def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) ->
     )
     engine = StageEngine(bundle=bundle, driver=driver)
 
-    state = engine._run_teardown(_state(bundle), abort=True)
+    state = engine._run_teardown(_owned_state(bundle), abort=True)
 
     assert state.stage("TEARDOWN").status == "completed"
     pull_index = next(

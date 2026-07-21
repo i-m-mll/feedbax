@@ -103,6 +103,7 @@ from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.shadow_launch import (
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
@@ -115,6 +116,12 @@ from feedbax.contracts.run_composition import (
     EXECUTION_DEPENDENCY_SCHEMA_VERSION,
 )
 from feedbax.contracts.lineage import LINEAGE_EVENT_SCHEMA_ID, LINEAGE_EVENT_SCHEMA_VERSION
+from feedbax.contracts.nan_attribution import (
+    NAN_ATTRIBUTION_DETECTION_SCHEMA_ID,
+    NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
+    NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID,
+    NAN_ATTRIBUTION_RESTORATION_SCHEMA_VERSION,
+)
 from feedbax.contracts.resolved_snapshot_decoder import (
     SNAPSHOT_SCHEMA_ID,
     SNAPSHOT_SCHEMA_VERSION,
@@ -235,6 +242,8 @@ from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     RUN_CONTROL_SPEC_SCHEMA_ID,
     RUN_CONTROL_SPEC_SCHEMA_VERSION,
+    SCHEDULE_PROJECTION_SCHEMA_ID,
+    SCHEDULE_PROJECTION_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
@@ -258,6 +267,7 @@ from feedbax.execution.models import (
     EXECUTION_PLAN_SCHEMA_VERSION,
     EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
     EXECUTION_SPEC_SCHEMA_VERSION,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
 )
@@ -283,6 +293,11 @@ from feedbax.orchestration.bundle import (
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
+    RUN_SET_STATE_SCHEMA_VERSION_V1,
+)
+from feedbax.orchestration.repo_snapshot import (
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
 )
 from feedbax.orchestration.events import (
     MAPPED_METRIC_VALUE_SCHEMA_ID,
@@ -307,7 +322,8 @@ NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
 TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2 = "feedbax.manifest.training_diagnostics.v2"
-TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v3"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3 = "feedbax.manifest.training_diagnostics.v3"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = "feedbax.manifest.training_diagnostics.v4"
 CHECKPOINT_FORK_PROVENANCE_SCHEMA_ID = "feedbax.manifest.training_checkpoint.fork_provenance"
 CHECKPOINT_FORK_PROVENANCE_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.training_checkpoint.fork_provenance.v1"
@@ -1076,6 +1092,15 @@ def _migrate_training_diagnostics_v2_to_v3_payload(
 ) -> dict[str, Any]:
     migrated = dict(payload)
     migrated["method_trace"] = None
+    migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
+    return migrated
+
+
+def _migrate_training_diagnostics_v3_to_v4_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["failure_kind"] = None
     migrated["schema_version"] = TRAINING_DIAGNOSTICS_SCHEMA_VERSION
     return migrated
 
@@ -2423,10 +2448,52 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1,
                 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+                TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
             ),
             rejected_old_versions=(f"{TRAINING_DIAGNOSTICS_SCHEMA_ID}.v0",),
             required_tests=(
                 "tests/test_training_run_executor.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "NanAttributionDetection",
+            NAN_ATTRIBUTION_DETECTION_SCHEMA_ID,
+            NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.nan_attribution.NanAttributionDetection",
+            emitted_by=("feedbax.training.executor",),
+            consumed_by=(
+                "feedbax.training.executor",
+                "training failure analysis",
+            ),
+            description=(
+                "Bounded guard-point NaN and informational Inf attribution persisted "
+                "before restoration."
+            ),
+            rejected_old_versions=(f"{NAN_ATTRIBUTION_DETECTION_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_nan_attribution_contracts.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "NanAttributionRestorationOutcome",
+            NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID,
+            NAN_ATTRIBUTION_RESTORATION_SCHEMA_VERSION,
+            owner_module=(
+                "feedbax.contracts.nan_attribution.NanAttributionRestorationOutcome"
+            ),
+            emitted_by=("feedbax.training.executor",),
+            consumed_by=(
+                "feedbax.training.executor",
+                "training failure analysis",
+            ),
+            description=(
+                "Checkpoint restoration outcome linked to an immutable NaN detection artifact."
+            ),
+            rejected_old_versions=(f"{NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID}.v0",),
+            required_tests=(
+                "tests/test_nan_attribution_contracts.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -2665,6 +2732,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_training_authoring.py",
                 "tests/test_structured_spec_migrations.py",
             ),
+        ),
+        _family(
+            "ScheduleProjection",
+            SCHEDULE_PROJECTION_SCHEMA_ID,
+            SCHEDULE_PROJECTION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=(
+                "TrainingMethodScheduleProjector",
+                "feedbax.orchestration.schedule_eval.project_training_schedules",
+            ),
+            consumed_by=(
+                "feedbax.training.executor",
+                "feedbax.orchestration.schedule_eval",
+                "training failure diagnostics",
+            ),
+            description=(
+                "Complete sampled evaluation table for learning-rate and method-owned schedules."
+            ),
+            rejected_old_versions=(f"{SCHEDULE_PROJECTION_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_continuation_schedule_preflight.py",),
         ),
         _family(
             "TrainingRunSpec",
@@ -2935,6 +3022,27 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "RepoSnapshotManifest",
+            REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
+            REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.repo_snapshot",
+            emitted_by=(
+                "feedbax.orchestration.repo_snapshot.seal_repo_snapshots",
+            ),
+            consumed_by=(
+                "feedbax.orchestration.drivers.runpod.RunPodOrchestrationDriver",
+                "feedbax.execution.planning.prepare_execution_plan",
+            ),
+            description="Sealed tracked-working-tree transfer authority.",
+            rejected_old_versions=(
+                "feedbax.orchestration.repo_snapshot_manifest.v0",
+            ),
+            required_tests=(
+                "tests/test_repo_snapshot.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "RunSetState",
             RUN_SET_STATE_SCHEMA_ID,
             RUN_SET_STATE_SCHEMA_VERSION,
@@ -2945,8 +3053,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration drivers",
             ),
             description="Atomic run-set orchestration state document.",
-            rejected_old_versions=("feedbax.orchestration.run_set_state.v0",),
-            required_tests=("tests/test_orchestration_core.py",),
+            rejected_old_versions=(
+                "feedbax.orchestration.run_set_state.v0",
+                RUN_SET_STATE_SCHEMA_VERSION_V1,
+            ),
+            required_tests=(
+                "tests/test_orchestration_core.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "RunEvent",
@@ -2971,12 +3085,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "RunPodPreflightEvidence",
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
             owner_module="feedbax.orchestration.drivers.runpod",
             emitted_by=("RunPodOrchestrationDriver.preflight_evidence",),
             consumed_by=("RunPodOrchestrationDriver.restore_completed_preflight",),
             description="Matrix-bound RunPod preflight evidence envelope.",
-            rejected_old_versions=(RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,),
+            rejected_old_versions=(
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            ),
             required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
         ),
         _family(
@@ -3678,7 +3795,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "ExecutionReproducibility",
             EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
             EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
-            ("feedbax.manifest.execution_reproducibility.v0",),
+            (
+                "feedbax.manifest.execution_reproducibility.v0",
+                EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+            ),
             "Typed reproducibility payload embedded in an execution plan.",
         ),
         (
@@ -4565,10 +4685,20 @@ default_spec_registry.register_migration(
     "TrainingDiagnostics",
     SchemaMigration(
         source_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
-        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
         migration_id="training-diagnostics-v2-to-v3-method-trace",
         migrate=_migrate_training_diagnostics_v2_to_v3_payload,
         description="Add an explicitly unavailable method-authored training trace.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingDiagnostics",
+    SchemaMigration(
+        source_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+        target_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        migration_id="training-diagnostics-v3-to-v4-failure-kind",
+        migrate=_migrate_training_diagnostics_v3_to_v4_payload,
+        description="Add the typed NaN-guard failure kind for failed terminal diagnostics.",
     ),
 )
 default_spec_registry.register_migration(

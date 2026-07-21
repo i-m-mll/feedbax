@@ -286,14 +286,29 @@ it stops rows (driver `stop_row` if available, else records the breach), runs CO
 best-effort, and proceeds to TEARDOWN with terminal state `budget-exceeded`.
 
 Teardown policy: default `on_terminal` — when every row is terminal and COLLECT has verified
-the payload, TEARDOWN releases the compute. `keep_alive: true` is the explicit opt-out (for
-iterative sessions); `keep_alive` with no live MONITOR attached is surfaced as a warning by the
-status CLI. Provided endpoints not provisioned by the orchestrator are never torn down. On
-abort/interrupt, TEARDOWN runs if PROVISION had completed, inverting the current asymmetry in
-which a fully acquired pod is always left running.
+the payload, TEARDOWN releases the compute. A pod created by this run is removable when
+`auto_teardown` is enabled; `keep_alive: true` or disabled `auto_teardown` records a skipped
+teardown without removing it. A supplied pod ID and a supplied SSH endpoint are never owned or
+removed by the run, regardless of either flag. `stop_after_stage` is a successful, resumable
+pause: it does not trigger abort teardown when it stops before TEARDOWN. On exceptions,
+`SystemExit`, SIGINT, or SIGTERM after an owned pod is observable, the run collects failure
+evidence first and then performs bounded teardown. Success requires an exact provider query that
+verifies the pod is absent; otherwise TEARDOWN durably records the pod ID, its last known state,
+and the unresolved reason while preserving the primary failure. Main-thread signal handlers are
+installed only for the run call and restored afterward; off the main thread this signal layer is
+an intentional no-op. RunPod failure-log collection and provider teardown subprocesses have
+finite timeouts, so handled signals are deferred only through that bounded cleanup window.
+
+This observable-exit contract does not cover SIGKILL, loss of the local process before it learns
+the created pod ID, or an ambiguous provider create response. Acquisition intent and restart
+reconciliation cover those windows separately. No process-level guarantee can make cleanup
+unkillable; the contract is bounded best effort with either verified absence or durable
+unresolved-pod evidence.
 
 Dead-man switch (optional, per-bundle, driver-level): drivers that bill for idle compute may
-co-launch a watchdog process ON the compute target at LAUNCH. The watchdog watches the recency
+co-launch a watchdog process ON the compute target. The RunPod watchdog is currently installed
+during REALIZE_ENV, after provisioning and endpoint readiness, and therefore does not cover the
+pre-provision or ambiguous-create windows. From installation onward it watches the recency
 of run-event/heartbeat output (event-file mtimes and row sentinels — signals the runners must
 emit anyway) and, after a configurable silence window with no live rows, terminates the target
 from the inside (RunPod: `runpodctl remove pod $RUNPOD_POD_ID` with in-pod credentials). This

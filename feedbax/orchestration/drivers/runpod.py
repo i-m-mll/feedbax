@@ -10,25 +10,30 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import tempfile
 import time
 import tomllib
 import urllib.error
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
     TrainingRunMatrixPreflightBinding,
     training_run_matrix_preflight_binding_sha256,
 )
@@ -63,19 +68,24 @@ from feedbax.orchestration.matrix_authority import (
     build_training_run_matrix_authority,
     is_training_matrix_bundle,
 )
-from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
-
-
-RUNPOD_CODE_EXCLUDES = (
-    ".git",
-    ".venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    "_artifacts",
-    "web/node_modules",
+from feedbax.orchestration.repo_snapshot import (
+    RepoSnapshotError,
+    RepoSnapshotManifest,
+    SealedRepoSnapshots,
+    restore_repo_snapshots,
+    seal_repo_snapshots,
+    snapshot_manifest_digest,
+    verify_repo_snapshot,
 )
+from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
+from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
+from feedbax.training.checkpoint_custody import (
+    authenticated_run_contract_source_projection,
+    load_checkpoint_custody_documents,
+    validate_checkpoint_continuation_source_count,
+)
+
+
 LATEST_BATCH_KEYS = (
     "completed_training_batches",
     "completed_batches",
@@ -88,15 +98,16 @@ METADATA_BATCH_KEYS = (
     "completed_batch",
     "completedBatch",
 )
-RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
-    "feedbax.runpod_environment_fingerprint.v1"
-)
+RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = "feedbax.runpod_environment_fingerprint.v1"
 _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
     {
         "input-provider-bindings",
+        "runpod-repo-snapshots",
+        "continuation-schedule-consistency",
         "runpod-image-immutable",
         "runpod-image-tag-exists",
         "runpod-lockfiles-declared",
+        "runpod-remote-layout-vs-lock",
         "runpod-python-version-declared",
         "runpod-gpu-policy-declared",
         "runpod-credentials",
@@ -106,8 +117,26 @@ _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
 )
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SUPPORTED_LOCAL_LOCK_SOURCE_FORMS = frozenset({"editable", "path"})
+_UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS = frozenset({"directory", "virtual", "workspace"})
+_SUPPORTED_REMOTE_LOCK_SOURCE_FORMS = frozenset({"git", "registry", "url"})
+_SUPPORTED_UV_LOCK_VERSIONS = frozenset({1})
+_DEPENDENCY_FILE_NAMES = frozenset(
+    {
+        "uv.lock",
+        "pyproject.toml",
+        "poetry.lock",
+        "pdm.lock",
+        "pipfile",
+        "pipfile.lock",
+        "pixi.lock",
+        "environment.yml",
+        "environment.yaml",
+    }
+)
 _POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
 _SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_CHILD_TERMINATION_GRACE_SECONDS = 1.0
 _RUNPOD_GO_UTC_PATTERN = re.compile(
     r"^(?P<instant>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) \+0000 UTC$"
 )
@@ -220,6 +249,14 @@ if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
 
 class RunPodDriverError(RuntimeError):
     """Raised when the RunPod driver cannot complete a requested action."""
+
+
+class RunPodTeardownError(RunPodDriverError):
+    """A failed teardown with durable, sanitized unresolved-pod evidence."""
+
+    def __init__(self, message: str, *, teardown_outputs: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.teardown_outputs = dict(teardown_outputs)
 
 
 class _ProvisioningIdentityError(RunPodDriverError):
@@ -471,9 +508,12 @@ class RunPodDriverConfig:
     remote_artifacts_dir: str = "/workspace/_artifacts"
     local_repos: Mapping[str, Path | str] = field(default_factory=dict)
     remote_repos: Mapping[str, str] = field(default_factory=dict)
+    primary_repo: str | None = None
     protected_refs: Mapping[str, str] = field(default_factory=dict)
     path_patches: tuple[tuple[str, str, str], ...] = ()
-    overlay_steps: tuple[str, ...] = ("uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",)
+    overlay_steps: tuple[str, ...] = (
+        "uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",
+    )
     auto_teardown: bool = True
 
 
@@ -503,8 +543,10 @@ class RunPodOrchestrationDriver:
         self.input_provider_bindings = tuple(input_provider_bindings)
         self.collection_recovery_bindings = tuple(collection_recovery_bindings)
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
+        self._repo_snapshots: SealedRepoSnapshots | None = None
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
+        self._provided_pod = self.config.pod_id is not None
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
         self._endpoint: EndpointClassification | None = (
             EndpointClassification("ssh_object", self.config.ssh_host, self.config.ssh_port)
@@ -556,7 +598,7 @@ class RunPodOrchestrationDriver:
                 provided_pod=False,
                 accepted_datacenter=acquisition.accepted_datacenter,
             )
-        except Exception as exc:
+        except BaseException as exc:
             if isinstance(exc, ProvisioningAttemptError):
                 raise
             record: dict[str, Any] = {"driver": "runpod", "acquired": acquired, "pod_id": pod_id}
@@ -566,18 +608,22 @@ class RunPodOrchestrationDriver:
             if acquired:
                 try:
                     record["cleanup"] = dict(self.teardown(bundle, state))
-                except Exception as teardown_exc:
+                except RunPodTeardownError as teardown_exc:
+                    record["cleanup"] = dict(teardown_exc.teardown_outputs)
                     record["cleanup_error"] = str(teardown_exc)
-                    self._pod_id = None
-                    self._endpoint = None
+                    if not isinstance(exc, Exception):
+                        raise exc
                     raise ProvisioningAttemptError(
                         f"{exc}; automatic teardown failed: {teardown_exc}",
                         retryable=False,
                         attempt_record=record,
                         stop_reason="teardown-failure",
                     ) from exc
-            self._pod_id = None
-            self._endpoint = None
+            if not isinstance(exc, Exception):
+                raise
+            if not self.has_pending_owned_resource():
+                self._pod_id = None
+                self._endpoint = None
             raise ProvisioningAttemptError(
                 str(exc),
                 retryable=not isinstance(
@@ -610,6 +656,22 @@ class RunPodOrchestrationDriver:
                         detail=str(exc),
                     )
                 ]
+        try:
+            self.seal_repo_snapshots(bundle)
+        except RepoSnapshotError as exc:
+            self._preflight_passed = False
+            return [
+                _preflight_check(
+                    "runpod-repo-snapshots",
+                    False,
+                    detail=str(exc),
+                )
+            ]
+        snapshot_check = _preflight_check(
+            "runpod-repo-snapshots",
+            True,
+            observed=self.repo_snapshot_manifest().model_dump(mode="json"),
+        )
         failures, observed = preflight_input_provider_bindings(
             bundle, self.input_provider_bindings
         )
@@ -622,7 +684,51 @@ class RunPodOrchestrationDriver:
         if failures:
             self._preflight_passed = False
             return [binding_check]
-        checks: list[PreflightCheckEntry] = [binding_check]
+        checks: list[PreflightCheckEntry] = [snapshot_check, binding_check]
+        schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
+            bundle,
+            self.input_provider_bindings,
+        )
+        schedule_check = _preflight_check(
+            "continuation-schedule-consistency",
+            not schedule_failures,
+            detail="; ".join(schedule_failures) if schedule_failures else None,
+            observed=schedule_observed or "no-continuations",
+        )
+        checks.append(schedule_check)
+        if schedule_failures:
+            self._preflight_passed = False
+            return checks
+        lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
+        checks.append(
+            _preflight_check(
+                "runpod-lockfiles-declared",
+                lockfile_error is None,
+                detail=lockfile_error,
+                observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
+            )
+        )
+        if lockfile_error is not None:
+            self._preflight_passed = False
+            return checks
+
+        layout_error, layout_observed = runpod_remote_layout_vs_lock_error(
+            bundle,
+            self.config,
+            source_roots=self._local_repos(),
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-remote-layout-vs-lock",
+                layout_error is None,
+                detail=layout_error,
+                observed=layout_observed,
+            )
+        )
+        if layout_error is not None:
+            self._preflight_passed = False
+            return checks
+
         image = bundle.environment.image_id
         image_is_immutable = is_immutable_runpod_image_id(image)
         checks.append(
@@ -643,17 +749,6 @@ class RunPodOrchestrationDriver:
                 "runpod-image-tag-exists",
                 image_exists,
                 observed=image,
-            )
-        )
-        lockfile_error = runpod_lockfile_declaration_error(
-            bundle.environment.lockfile_hashes
-        )
-        checks.append(
-            _preflight_check(
-                "runpod-lockfiles-declared",
-                lockfile_error is None,
-                detail=lockfile_error,
-                observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
             )
         )
         checks.append(
@@ -749,12 +844,34 @@ class RunPodOrchestrationDriver:
             return legacy
         return self._matrix_preflight_evidence(bundle, legacy)
 
-    def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> None:
+    def seal_repo_snapshots(self, bundle: RunBundle) -> RepoSnapshotManifest:
+        """Seal configured tracked working trees before any provisioning action."""
+        self._repo_snapshots = seal_repo_snapshots(
+            self._local_repos(),
+            snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
+        )
+        return self._repo_snapshots.manifest
+
+    def repo_snapshot_manifest(self) -> RepoSnapshotManifest | None:
+        """Return the current sealed transfer authority, if available."""
+        return self._repo_snapshots.manifest if self._repo_snapshots is not None else None
+
+    def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> bool:
         """Restore only cryptographically bound completed preflight authority.
 
         This is deliberately offline: it validates persisted evidence without
         querying RunPod or repeating mutable credential/balance observations.
         """
+        if state.repo_snapshot_manifest is None:
+            raise RunPodDriverError("completed PREFLIGHT lacks sealed repo snapshot authority")
+        try:
+            self._repo_snapshots = restore_repo_snapshots(
+                self._local_repos(),
+                state.repo_snapshot_manifest,
+                snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
+            )
+        except RepoSnapshotError as exc:
+            raise RunPodDriverError(str(exc)) from exc
         stage = state.stage("PREFLIGHT")
         evidence = stage.outputs.get("driver_evidence")
         persisted_checks = stage.outputs.get("checks")
@@ -762,6 +879,17 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError("completed PREFLIGHT checks are internally inconsistent")
         if state.run_set_id != bundle.run_set_id:
             raise RunPodDriverError("completed PREFLIGHT run-set binding is mismatched")
+        if not any(
+            check.name == "continuation-schedule-consistency" for check in stage.checks
+        ):
+            return False
+        if (
+            is_training_matrix_bundle(bundle)
+            and isinstance(evidence, Mapping)
+            and evidence.get("schema_id") == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID
+            and evidence.get("schema_version") == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2
+        ):
+            return False
         assemble_completed = state.stage("ASSEMBLE").completed_at
         if (
             assemble_completed is None
@@ -775,7 +903,7 @@ class RunPodOrchestrationDriver:
         matrix_bundle = is_training_matrix_bundle(bundle)
         if evidence is None and not matrix_bundle:
             self._preflight_passed = True
-            return
+            return True
         if not isinstance(evidence, Mapping):
             raise RunPodDriverError("completed PREFLIGHT RunPod evidence has invalid shape")
         if matrix_bundle:
@@ -790,6 +918,7 @@ class RunPodOrchestrationDriver:
             if dict(evidence) != expected_v1:
                 raise RunPodDriverError("completed PREFLIGHT evidence is not canonical")
         self._preflight_passed = True
+        return True
 
     def _matrix_preflight_evidence(
         self, bundle: RunBundle, legacy: Mapping[str, Any]
@@ -799,7 +928,7 @@ class RunPodOrchestrationDriver:
         )
         payload = {
             "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
             "v1": dict(legacy),
             "matrix_binding": binding.model_dump(mode="json", exclude_none=True),
             "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
@@ -842,6 +971,9 @@ class RunPodOrchestrationDriver:
         if not isinstance(assemble_sha256, str) or assemble_sha256 != bundle_sha256:
             raise RunPodDriverError("completed PREFLIGHT bundle binding is missing or mismatched")
         self._validate_preflight_checks(bundle, checks)
+        snapshot_manifest = state.repo_snapshot_manifest or self.repo_snapshot_manifest()
+        if snapshot_manifest is None:
+            raise RunPodDriverError("completed PREFLIGHT lacks sealed repo snapshot authority")
         return {
             "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
             "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
@@ -849,6 +981,7 @@ class RunPodOrchestrationDriver:
             "bundle_sha256": bundle_sha256,
             "checks_sha256": _sha256_json([check.model_dump(mode="json") for check in checks]),
             "driver_contract": self._preflight_driver_contract(),
+            "repo_snapshot_manifest_sha256": snapshot_manifest_digest(snapshot_manifest),
         }
 
     def _preflight_driver_contract(self) -> dict[str, Any]:
@@ -882,6 +1015,7 @@ class RunPodOrchestrationDriver:
             "remote_repos": {
                 str(name): str(path) for name, path in sorted(self.config.remote_repos.items())
             },
+            "primary_repo": self.config.primary_repo,
             "path_patches": [list(patch) for patch in self.config.path_patches],
             "overlay_steps_sha256": _sha256_json(list(self.config.overlay_steps)),
             "auto_teardown": self.config.auto_teardown,
@@ -895,7 +1029,9 @@ class RunPodOrchestrationDriver:
         self, bundle: RunBundle, checks: Sequence[PreflightCheckEntry]
     ) -> None:
         """Validate persisted RunPod checks without provider or input access."""
-        named = {check.name: check for check in checks if check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES}
+        named = {
+            check.name: check for check in checks if check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES
+        }
         if len(named) != len(_RUNPOD_PREFLIGHT_CHECK_NAMES) or any(
             check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES
             and sum(item.name == check.name for item in checks) != 1
@@ -909,19 +1045,28 @@ class RunPodOrchestrationDriver:
             bundle, self.input_provider_bindings
         )
         if failures:
-            raise RunPodDriverError("current bundle no longer has valid resolved input declarations")
+            raise RunPodDriverError(
+                "current bundle no longer has valid resolved input declarations"
+            )
         current_bindings = {binding.name for binding in self.input_provider_bindings}
         required_bindings = {item.custody.provider_binding for item in bundle.resolved_inputs}
         if current_bindings != required_bindings:
             raise RunPodDriverError("current input-provider bindings do not cover the bundle")
         expected_observed = resolved_observed or "no-resolved-inputs"
         if named["input-provider-bindings"].observed != expected_observed:
-            raise RunPodDriverError("input-provider preflight observation does not match the bundle")
+            raise RunPodDriverError(
+                "input-provider preflight observation does not match the bundle"
+            )
 
         image = bundle.environment.image_id
         if self.config.image != image:
             raise RunPodDriverError("RunPod driver image does not match the bundle")
         expected_checks = {
+            "runpod-repo-snapshots": (
+                self.repo_snapshot_manifest().model_dump(mode="json")
+                if self.repo_snapshot_manifest() is not None
+                else None
+            ),
             "runpod-image-immutable": image,
             "runpod-image-tag-exists": image,
             "runpod-lockfiles-declared": dict(sorted(bundle.environment.lockfile_hashes.items())),
@@ -936,8 +1081,24 @@ class RunPodOrchestrationDriver:
             if named[name].observed != observed:
                 raise RunPodDriverError(f"{name} observation does not match current declarations")
 
+        layout_error, layout_observed = runpod_remote_layout_vs_lock_error(
+            bundle,
+            self.config,
+            source_roots=self._local_repos(),
+        )
+        if layout_error is not None:
+            raise RunPodDriverError(
+                f"current remote layout no longer satisfies the committed lock: {layout_error}"
+            )
+        if named["runpod-remote-layout-vs-lock"].observed != layout_observed:
+            raise RunPodDriverError(
+                "runpod-remote-layout-vs-lock observation does not match current layout"
+            )
+
         credentials_required = not self._provided_endpoint or bundle.deadman_enabled
-        expected_credentials = "verified" if credentials_required else "not-required-provided-endpoint"
+        expected_credentials = (
+            "verified" if credentials_required else "not-required-provided-endpoint"
+        )
         if named["runpod-credentials"].observed != expected_credentials:
             raise RunPodDriverError("credential preflight observation is inconsistent")
         balance_required = not self._provided_endpoint and not self._pod_id
@@ -946,7 +1107,9 @@ class RunPodOrchestrationDriver:
             if isinstance(balance, bool) or not isinstance(balance, (int, float)):
                 raise RunPodDriverError("balance preflight observation is not numeric")
             if not math.isfinite(float(balance)) or balance < self.config.min_balance_usd:
-                raise RunPodDriverError("balance preflight observation does not meet the current threshold")
+                raise RunPodDriverError(
+                    "balance preflight observation does not meet the current threshold"
+                )
         elif balance != "not-required-existing-target":
             raise RunPodDriverError("balance preflight observation is inconsistent")
         expected_deadman = "available" if self.config.api_key else "not-required-or-missing"
@@ -958,7 +1121,22 @@ class RunPodOrchestrationDriver:
     def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
         """Synchronize code and realize the remote Python environment."""
         require_deterministic_runpod_environment(bundle)
-        declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+        snapshot_manifest = state.repo_snapshot_manifest or self.repo_snapshot_manifest()
+        if snapshot_manifest is None:
+            raise RunPodDriverError(
+                "RunPod REALIZE_ENV requires repo snapshots sealed during PREFLIGHT"
+            )
+        try:
+            self._repo_snapshots = restore_repo_snapshots(
+                self._local_repos(),
+                snapshot_manifest,
+                snapshot_parent=bundle.run_set_dir / ".repo-snapshots",
+            )
+        except RepoSnapshotError as exc:
+            raise RunPodDriverError(str(exc)) from exc
+        declaration_fingerprint = compute_runpod_environment_fingerprint(
+            bundle, self._repo_snapshots.manifest
+        )
         remote_run_dir = self._remote_run_dir(bundle)
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir)} {_sq(self._remote_sentinel_dir(bundle))} "
@@ -971,10 +1149,20 @@ class RunPodOrchestrationDriver:
         if reused_fingerprint is not None:
             return reused_fingerprint
 
-        for name, local_root in self._local_repos().items():
+        for name, snapshot in self._repo_snapshots.snapshots.items():
             remote_root = self._remote_repos()[name]
-            self._ssh(f"mkdir -p {_sq(remote_root)}")
-            self._rsync_repo(str(Path(local_root)), remote_root)
+            self._ssh(
+                f"mkdir -p {_sq(remote_root)} && chmod -R u+w {_sq(remote_root)}"
+            )
+            try:
+                verify_repo_snapshot(
+                    snapshot.staging_root,
+                    content_sha256=snapshot.record.content_sha256,
+                    file_count=snapshot.record.file_count,
+                )
+            except RepoSnapshotError as exc:
+                raise RunPodDriverError(str(exc)) from exc
+            self._rsync_repo(str(snapshot.staging_root), remote_root)
 
         for remote_file, patch_from, patch_to in self.config.path_patches:
             self._ssh(build_literal_path_patch_command(remote_file, patch_from, patch_to))
@@ -1013,9 +1201,7 @@ class RunPodOrchestrationDriver:
                 failed_file=f"{sentinel_dir}/overlay-{index}.failed",
                 log_file=f"{logs_dir}/overlay-{index}.log",
             )
-        realized_fingerprint = self._probe_realized_environment(
-            bundle, declaration_fingerprint
-        )
+        realized_fingerprint = self._probe_realized_environment(bundle, declaration_fingerprint)
         self._ssh(
             f"printf %s {_sq(declaration_fingerprint)} > "
             f"{_sq(self._remote_declaration_fingerprint_path(bundle))} && "
@@ -1027,9 +1213,7 @@ class RunPodOrchestrationDriver:
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Publish one verified input tree without exposing partial final paths."""
         attempt = state.stage("STAGE_INPUTS").attempts
-        attempt_root = (
-            bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
-        )
+        attempt_root = bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
         try:
             staged_inputs = materialize_bundle_inputs(
                 bundle,
@@ -1072,9 +1256,7 @@ class RunPodOrchestrationDriver:
             )
 
         remote_run_dir = self._remote_run_dir(bundle)
-        remote_attempt_root = (
-            f"{remote_run_dir}/.stage-attempts/stage-inputs-{attempt}"
-        )
+        remote_attempt_root = f"{remote_run_dir}/.stage-attempts/stage-inputs-{attempt}"
         remote_attempt_inputs = f"{remote_attempt_root}/inputs"
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir + '/.stage-attempts')} && "
@@ -1244,9 +1426,7 @@ class RunPodOrchestrationDriver:
             if source_kind == "directory":
                 if os.path.lexists(target):
                     if target.is_symlink() or not target.is_dir():
-                        raise RunPodDriverError(
-                            f"collection directory target is unsafe: {target}"
-                        )
+                        raise RunPodDriverError(f"collection directory target is unsafe: {target}")
                 else:
                     target.mkdir()
                 remote_source = remote_source.rstrip("/") + "/"
@@ -1302,38 +1482,150 @@ class RunPodOrchestrationDriver:
         )
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
-        """Remove the acquired pod unless teardown is disabled by policy."""
-        if bundle.keep_alive or not self.config.auto_teardown or self._provided_endpoint:
-            return {"driver": "runpod", "teardown": "skipped"}
-        if not self._pod_id:
-            return {"driver": "runpod", "teardown": "no-pod"}
-        pod_id = self._pod_id
-        result = self.transport.runpodctl("remove", "pod", pod_id)
-        if result.returncode != 0:
-            self.transport.runpodctl("stop", "pod", pod_id).check("runpodctl stop pod")
-            self.transport.runpodctl(
-                "remove",
-                "pod",
-                pod_id,
-                timeout_seconds=self.config.teardown_absence_timeout_seconds,
-            ).check("runpodctl remove pod after stop")
-            action = "stopped-then-removed"
+        """Boundedly remove a run-owned pod or record why it remains unresolved."""
+        ownership = self.teardown_ownership(state)
+        if not ownership["owned_by_run"]:
+            return {
+                "driver": "runpod",
+                "teardown": "skipped",
+                "skip_reason": ownership["kind"],
+                "ownership": ownership,
+            }
+        if bundle.keep_alive or not self.config.auto_teardown:
+            return {
+                "driver": "runpod",
+                "teardown": "skipped",
+                "skip_reason": "keep_alive" if bundle.keep_alive else "auto_teardown_disabled",
+                "ownership": ownership,
+            }
+        pod_id = ownership["pod_id"]
+        if not isinstance(pod_id, str):
+            return {
+                "driver": "runpod",
+                "teardown": "no-pod",
+                "ownership": ownership,
+            }
+        deadline = self._monotonic() + self.config.teardown_absence_timeout_seconds
+        action = "remove-requested"
+        try:
+            result = self.transport.runpodctl(
+                "remove", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+            )
+            if result.returncode != 0:
+                self.transport.runpodctl(
+                    "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+                ).check("runpodctl stop pod")
+                self.transport.runpodctl(
+                    "remove",
+                    "pod",
+                    pod_id,
+                    timeout_seconds=self._teardown_remaining(deadline),
+                ).check("runpodctl remove pod after stop")
+                action = "stopped-then-removed"
+            else:
+                action = "removed"
+            absence = self._wait_for_pod_absence(pod_id, deadline=deadline)
+            self._pod_id = None
+            self._endpoint = None
+            remaining = deadline - self._monotonic()
+            final_inventory = (
+                self._observe_global_pod_inventory(timeout_seconds=remaining)
+                if remaining > 0
+                else {
+                    "scope": "provider-account",
+                    "verified": False,
+                    "observed_at": utc_now().isoformat(),
+                    "observation_basis": "runpodctl pod list --output json",
+                    "outcome": "cleanup-deadline-expired",
+                    "pod_count": None,
+                    "pod_ids": [],
+                }
+            )
+            return {
+                "driver": "runpod",
+                "teardown": action,
+                "pod_id": pod_id,
+                "ownership": ownership,
+                "pod_absence": absence,
+                "final_pod_inventory": final_inventory,
+            }
+        except Exception as exc:
+            reason = _redact_secret(str(exc), self.config.api_key)
+            outputs = {
+                "driver": "runpod",
+                "teardown": "unresolved",
+                "pod_id": pod_id,
+                "ownership": ownership,
+                "pod_absence": {
+                    "verified": False,
+                    "pod_id": pod_id,
+                    "terminal_observation": "unresolved",
+                    "reason": reason,
+                },
+                "unresolved_owned_pod": {
+                    "pod_id": pod_id,
+                    "last_known_state": self._last_known_pod_state(state),
+                    "reason": reason,
+                },
+            }
+            raise RunPodTeardownError(
+                f"owned pod {pod_id!r} teardown is unresolved: {reason}",
+                teardown_outputs=outputs,
+            ) from exc
+
+    def teardown_ownership(self, state: RunSetState) -> dict[str, Any]:
+        """Describe provider-resource ownership without performing side effects."""
+        record = state.provision_record or {}
+        pod_id = self._pod_id or record.get("pod_id")
+        provided_endpoint = self._provided_endpoint or record.get("provided_endpoint") is True
+        provided_pod = (
+            False
+            if record.get("teardown_allowed") is True
+            else self._provided_pod or record.get("provided_pod") is True
+        )
+        if provided_endpoint:
+            kind = "provided_endpoint"
+        elif provided_pod:
+            kind = "provided_pod"
+        elif isinstance(pod_id, str) and pod_id:
+            kind = "orchestration_created"
         else:
-            action = "removed"
-        absence = self._wait_for_pod_absence(pod_id)
-        self._pod_id = None
-        final_inventory = self._observe_global_pod_inventory()
+            kind = "none"
+        owned_by_run = kind == "orchestration_created"
         return {
-            "driver": "runpod",
-            "teardown": action,
-            "pod_id": pod_id,
-            "pod_absence": absence,
-            "final_pod_inventory": final_inventory,
+            "kind": kind,
+            "owned_by_run": owned_by_run,
+            "teardown_allowed": owned_by_run,
+            "pod_id": pod_id if isinstance(pod_id, str) else None,
         }
 
-    def _observe_global_pod_inventory(self) -> Mapping[str, Any]:
+    def has_pending_owned_resource(self) -> bool:
+        """Return whether this process still knows an owned pod needing cleanup."""
+        return bool(self._pod_id and not self._provided_pod and not self._provided_endpoint)
+
+    def _teardown_remaining(self, deadline: float) -> float:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise RunPodDriverError("RunPod teardown cleanup deadline expired")
+        return remaining
+
+    def _last_known_pod_state(self, state: RunSetState) -> str:
+        for record in (self._last_provision_pod, state.provision_record):
+            if not isinstance(record, Mapping):
+                continue
+            for key in ("status", "desiredStatus", "desired_status"):
+                value = record.get(key)
+                if isinstance(value, str) and value:
+                    return value[:128]
+        return "unknown"
+
+    def _observe_global_pod_inventory(
+        self, *, timeout_seconds: float | None = None
+    ) -> Mapping[str, Any]:
         """Return sanitized evidence from the provider-wide RunPod pod inventory."""
-        result = self.transport.runpodctl("pod", "list", "--output", "json")
+        result = self.transport.runpodctl(
+            "pod", "list", "--output", "json", timeout_seconds=timeout_seconds
+        )
         observed_at = utc_now().isoformat()
         basis = "runpodctl pod list --output json"
         if result.returncode != 0:
@@ -1378,9 +1670,15 @@ class RunPodOrchestrationDriver:
             "pod_ids": [],
         }
 
-    def _wait_for_pod_absence(self, pod_id: str) -> Mapping[str, Any]:
+    def _wait_for_pod_absence(
+        self, pod_id: str, *, deadline: float | None = None
+    ) -> Mapping[str, Any]:
         """Boundedly prove that one exact orchestration-owned pod is absent."""
-        deadline = self._monotonic() + self.config.teardown_absence_timeout_seconds
+        deadline = (
+            deadline
+            if deadline is not None
+            else self._monotonic() + self.config.teardown_absence_timeout_seconds
+        )
         polls = 0
         while self._monotonic() < deadline:
             remaining = deadline - self._monotonic()
@@ -1415,8 +1713,7 @@ class RunPodOrchestrationDriver:
             observed_id = str(payload.get("id") or payload.get("podId") or "")
             if observed_id != pod_id:
                 raise RunPodDriverError(
-                    f"ambiguous absence query for owned pod {pod_id!r}: "
-                    f"observed id {observed_id!r}"
+                    f"ambiguous absence query for owned pod {pod_id!r}: observed id {observed_id!r}"
                 )
             remaining = deadline - self._monotonic()
             if remaining > 0:
@@ -1516,8 +1813,7 @@ class RunPodOrchestrationDriver:
                 break
             self._sleep(min(self.config.poll_seconds, remaining))
         raise RunPodDriverError(
-            "timed out waiting for RunPod SSH endpoint after "
-            f"{self.config.max_acquire_seconds:g}s"
+            f"timed out waiting for RunPod SSH endpoint after {self.config.max_acquire_seconds:g}s"
         )
 
     def _require_gpu_ready(self) -> None:
@@ -1538,10 +1834,12 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError("dead-man switch requires a RunPod pod id")
         auth = "export RUNPOD_API_KEY=$(tr '\\0' '\\n' </proc/1/environ | sed -n 's/^FEEDBAX_RUNPOD_API_KEY=//p'); "
         self._ssh(
-            auth + f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
+            auth
+            + f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
         ).check("in-pod runpodctl presence and authentication")
         self._ssh(
-            auth + build_deadman_watchdog_command(
+            auth
+            + build_deadman_watchdog_command(
                 pod_id=self._pod_id,
                 remote_run_dir=self._remote_run_dir(bundle),
                 remote_sentinel_dir=self._remote_sentinel_dir(bundle),
@@ -1598,8 +1896,8 @@ class RunPodOrchestrationDriver:
             source.rstrip("/") + "/",
             target.rstrip("/") + "/",
             delete=True,
-            excludes=RUNPOD_CODE_EXCLUDES,
         ).check(f"rsync repo {source}")
+        self._ssh(f"chmod -R u+w {_sq(target)}")
 
     def _reused_remote_environment_fingerprint(
         self,
@@ -1612,10 +1910,14 @@ class RunPodOrchestrationDriver:
         )
         if result.returncode != 0 or result.stdout.strip() != declaration_fingerprint:
             return None
-        realized = self.transport.ssh(
-            f"test -f {_sq(self._remote_fingerprint_path(bundle))} && "
-            f"cat {_sq(self._remote_fingerprint_path(bundle))}"
-        ).check("read realized RunPod environment fingerprint").stdout.strip()
+        realized = (
+            self.transport.ssh(
+                f"test -f {_sq(self._remote_fingerprint_path(bundle))} && "
+                f"cat {_sq(self._remote_fingerprint_path(bundle))}"
+            )
+            .check("read realized RunPod environment fingerprint")
+            .stdout.strip()
+        )
         validate_realized_runpod_environment_fingerprint(
             realized,
             bundle=bundle,
@@ -1656,23 +1958,15 @@ class RunPodOrchestrationDriver:
             return None
 
     def _local_repos(self) -> Mapping[str, Path | str]:
-        if self.config.local_repos:
-            return self.config.local_repos
-        return {"feedbax": Path.cwd()}
+        return _local_repos(self.config)
 
     def _remote_repos(self) -> Mapping[str, str]:
-        if self.config.remote_repos:
-            return self.config.remote_repos
-        return {"feedbax": f"{self.config.remote_repo_root}/feedbax"}
+        return _remote_repos(self.config)
 
     def _primary_workdir(self) -> str:
         remote_repos = self._remote_repos()
-        return (
-            remote_repos.get("rlrmp2")
-            or remote_repos.get("rlrmp")
-            or remote_repos.get("feedbax")
-            or self.config.remote_repo_root
-        )
+        primary_repo = _primary_repo_name(self.config, remote_repos.keys())
+        return remote_repos[primary_repo]
 
     def _row_workdir(self, row: RunRowSpec) -> str:
         return runpod_row_workdir(self.config, row)
@@ -1904,9 +2198,7 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "provider": "runpod",
         "region": str(region) if region is not None else None,
-        "immutable_image_id": (
-            str(immutable_image_id) if immutable_image_id is not None else None
-        ),
+        "immutable_image_id": (str(immutable_image_id) if immutable_image_id is not None else None),
         "hourly_rate": hourly_rate,
         "hourly_rate_raw": raw_rate_observation,
         "billing_started_at": _canonical_runpod_timestamp(billing_started_at_raw),
@@ -1914,6 +2206,89 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         "currency": "USD" if hourly_rate is not None else None,
         "provider_observation_basis": "runpodctl pod get response",
     }
+
+
+def _preflight_continuation_schedule_consistency(
+    bundle: RunBundle,
+    input_provider_bindings: Sequence[InputProviderRootBinding],
+) -> tuple[list[str], dict[str, Any]]:
+    """Authenticate and compare continuation schedules without provider transport calls."""
+    failures: list[str] = []
+    observed: dict[str, Any] = {}
+    continuation_rows: list[tuple[RunRowSpec, TrainingRunSpec]] = []
+    for row in bundle.rows:
+        try:
+            run_spec = _authenticated_row_training_spec(row)
+        except (OSError, ValueError) as exc:
+            failures.append(f"{row.row_id}: {exc}")
+            continue
+        if run_spec is None or run_spec.checkpoint_progress.continuation is None:
+            continue
+        continuation_rows.append((row, run_spec))
+    if failures or not continuation_rows:
+        return failures, observed
+
+    with tempfile.TemporaryDirectory(prefix="feedbax-continuation-preflight-") as temp_dir:
+        try:
+            materialize_bundle_inputs(
+                bundle,
+                destination_root=Path(temp_dir),
+                provider_bindings=input_provider_bindings,
+            )
+        except Exception as exc:
+            return [f"authenticated source checkpoint materialization failed: {exc}"], observed
+        for row, target_run_spec in continuation_rows:
+            continuation = target_run_spec.checkpoint_progress.continuation
+            assert continuation is not None
+            try:
+                source = native_resume_checkpoint_source(bundle, row)
+                if source is None:
+                    raise ValueError(
+                        "declared continuation has no exact authenticated resume checkpoint source"
+                    )
+                checkpoint_root = Path(temp_dir) / "inputs" / source.custody.target_role
+                documents = load_checkpoint_custody_documents(checkpoint_root)
+                manifest = documents.manifest.document
+                validate_checkpoint_continuation_source_count(manifest, continuation)
+                source_run_spec, _source_phase_program = (
+                    authenticated_run_contract_source_projection(manifest)
+                )
+                row_failures, row_observed = compare_continuation_schedule_projections(
+                    source_run_spec=source_run_spec,
+                    target_run_spec=target_run_spec,
+                    source_manifest=manifest,
+                    continuation=continuation,
+                )
+            except Exception as exc:
+                failures.append(f"{row.row_id}: {exc}")
+                continue
+            observed[row.row_id] = row_observed
+            failures.extend(f"{row.row_id}: {failure}" for failure in row_failures)
+    return failures, observed
+
+
+def _authenticated_row_training_spec(row: RunRowSpec) -> TrainingRunSpec | None:
+    """Load one digest-authenticated inline TrainingRunSpec, when present."""
+    ref = row.execution.payload
+    if ref.schema_id != "feedbax.spec.training_run":
+        return None
+    if ref.uri is None:
+        raise ValueError("training execution payload has no local URI")
+    data = Path(ref.uri).read_bytes()
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != ref.sha256:
+        raise ValueError(
+            f"training execution payload digest mismatch; expected={ref.sha256} actual={actual}"
+        )
+    payload = json.loads(data)
+    if not isinstance(payload, Mapping):
+        raise ValueError("training execution payload must be a JSON object")
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
+        raise ValueError("training execution payload schema does not match its artifact ref")
+    return TrainingRunSpec.model_validate(payload)
 
 
 def _preflight_check(
@@ -1962,21 +2337,274 @@ def runpod_lockfile_declaration_error(lockfile_hashes: Mapping[str, str]) -> str
     return None
 
 
+def runpod_remote_layout_vs_lock_error(
+    bundle: RunBundle,
+    config: RunPodDriverConfig,
+    *,
+    source_roots: Mapping[str, Path | str] | None = None,
+) -> tuple[str | None, Mapping[str, Any]]:
+    """Verify local lock bytes and their path sources against the remote layout.
+
+    ``source_roots`` lets callers validate a sealed staging tree rather than the
+    configured live checkouts. Keys still represent repo identity and must match
+    the configured remote repo keys exactly.
+    """
+    local_repos = dict(source_roots if source_roots is not None else _local_repos(config))
+    remote_repos = dict(_remote_repos(config))
+    local_keys = set(local_repos)
+    remote_keys = set(remote_repos)
+    observed: dict[str, Any] = {
+        "local_repo_keys": sorted(local_keys),
+        "remote_repos": {name: remote_repos[name] for name in sorted(remote_repos)},
+        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
+        "path_sources": [],
+    }
+
+    try:
+        primary_repo = _primary_repo_name(config, local_keys)
+    except RunPodDriverError as exc:
+        return str(exc), observed
+    observed["primary_repo"] = primary_repo
+
+    local_roots = {name: Path(root).resolve() for name, root in local_repos.items()}
+    consumer_root = local_roots[primary_repo]
+    parsed_sources: list[tuple[str, str, str, Path]] = []
+    for lock_relative_path, expected_digest in sorted(bundle.environment.lockfile_hashes.items()):
+        lock_path = consumer_root / Path(lock_relative_path)
+        try:
+            lock_bytes = lock_path.read_bytes()
+        except OSError as exc:
+            return f"cannot read declared lockfile {lock_path}: {exc}", observed
+        actual_digest = hashlib.sha256(lock_bytes).hexdigest()
+        if actual_digest != expected_digest:
+            return (
+                f"declared lockfile hash mismatch for {lock_path}: "
+                f"expected {expected_digest}, observed {actual_digest}",
+                observed,
+            )
+        try:
+            document = tomllib.loads(lock_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            return f"malformed TOML in declared lockfile {lock_path}: {exc}", observed
+        try:
+            sources = _local_lock_sources(document, lock_path=lock_path)
+        except RunPodDriverError as exc:
+            return str(exc), observed
+
+        parsed_sources.extend(
+            (lock_relative_path, form, spelling, lock_path) for form, spelling in sources
+        )
+
+    if local_keys != remote_keys:
+        return (
+            "local/remote repo key mismatch: "
+            f"local={sorted(local_keys)!r}, remote={sorted(remote_keys)!r}",
+            observed,
+        )
+    normalized_remote_roots: dict[str, str] = {}
+    root_owners: dict[str, list[str]] = {}
+    for name, raw_root in remote_repos.items():
+        root = PurePosixPath(raw_root)
+        if not root.is_absolute():
+            return f"remote repo root for {name!r} must be absolute: {raw_root!r}", observed
+        normalized = posixpath.normpath(root.as_posix())
+        normalized_remote_roots[name] = normalized
+        root_owners.setdefault(normalized, []).append(name)
+    duplicates = {root: names for root, names in root_owners.items() if len(names) > 1}
+    if duplicates:
+        root, names = next(iter(sorted(duplicates.items())))
+        return f"duplicate remote repo root {root!r} for keys {sorted(names)!r}", observed
+
+    remote_consumer_root = normalized_remote_roots[primary_repo]
+    lock_paths = {
+        posixpath.normpath(posixpath.join(remote_consumer_root, relative_path))
+        for relative_path in bundle.environment.lockfile_hashes
+    }
+    for remote_file, _patch_from, _patch_to in config.path_patches:
+        normalized_file = posixpath.normpath(remote_file)
+        basename = PurePosixPath(normalized_file).name.lower()
+        dependency_target = (
+            normalized_file in lock_paths
+            or basename in _DEPENDENCY_FILE_NAMES
+            or basename.startswith("requirements")
+            and basename.endswith((".txt", ".in"))
+        )
+        if dependency_target:
+            return (
+                f"path_patches may not target a lock or dependency file: {remote_file!r}",
+                observed,
+            )
+
+    path_source_evidence: list[dict[str, str]] = []
+    for lock_relative_path, form, spelling, lock_path in parsed_sources:
+        source_path = PurePosixPath(spelling)
+        if source_path.is_absolute():
+            return (
+                f"absolute {form} source {spelling!r} in {lock_path} is unsupported",
+                observed,
+            )
+        if not spelling or spelling != source_path.as_posix():
+            return (
+                f"non-canonical {form} source spelling {spelling!r} in {lock_path}",
+                observed,
+            )
+        resolved_target = (consumer_root / Path(*source_path.parts)).resolve()
+        matches = [
+            name
+            for name, repo_root in local_roots.items()
+            if resolved_target == repo_root or resolved_target.is_relative_to(repo_root)
+        ]
+        if len(matches) != 1:
+            qualifier = "ambiguous" if matches else "unmatched"
+            return (
+                f"{qualifier} local target for lock source {spelling!r}: consumer "
+                f"{consumer_root} resolves to {resolved_target}; configured local repos are "
+                + ", ".join(f"{name}={root}" for name, root in sorted(local_roots.items())),
+                observed,
+            )
+        target_repo = matches[0]
+        subpath = resolved_target.relative_to(local_roots[target_repo])
+        planned_from_spelling = posixpath.normpath(posixpath.join(remote_consumer_root, spelling))
+        keyed_remote_target = posixpath.normpath(
+            posixpath.join(normalized_remote_roots[target_repo], subpath.as_posix())
+        )
+        if planned_from_spelling != keyed_remote_target:
+            return (
+                f"lock source {spelling!r} resolves locally to {resolved_target} in repo "
+                f"{target_repo!r}, but planned remote spelling from {remote_consumer_root!r} "
+                f"resolves to {planned_from_spelling!r}, not keyed target "
+                f"{keyed_remote_target!r}; planned remote repos are "
+                f"{dict(sorted(normalized_remote_roots.items()))!r}",
+                observed,
+            )
+        path_source_evidence.append(
+            {
+                "lockfile": lock_relative_path,
+                "form": form,
+                "spelling": spelling,
+                "target_repo": target_repo,
+                "target_subpath": subpath.as_posix(),
+                "planned_remote_target": keyed_remote_target,
+            }
+        )
+    observed["path_sources"] = sorted(
+        path_source_evidence,
+        key=lambda item: (item["lockfile"], item["form"], item["spelling"]),
+    )
+    return None, observed
+
+
+def _local_lock_sources(
+    document: Mapping[str, Any], *, lock_path: Path
+) -> tuple[tuple[str, str], ...]:
+    version = document.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise RunPodDriverError(
+            f"unsupported lock content in {lock_path}: integer version is required"
+        )
+    if version not in _SUPPORTED_UV_LOCK_VERSIONS:
+        raise RunPodDriverError(
+            f"unsupported lock version {version!r} in {lock_path}; "
+            f"supported versions are {sorted(_SUPPORTED_UV_LOCK_VERSIONS)!r}"
+        )
+    packages = document.get("package", [])
+    if not isinstance(packages, list) or any(not isinstance(item, Mapping) for item in packages):
+        raise RunPodDriverError(
+            f"unsupported lock content in {lock_path}: package must be an array of tables"
+        )
+
+    sources: list[tuple[str, str]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            local_forms = set(value) & (
+                _SUPPORTED_LOCAL_LOCK_SOURCE_FORMS | _UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+            )
+            if local_forms:
+                unsupported = local_forms & _UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+                if unsupported:
+                    form = sorted(unsupported)[0]
+                    raise RunPodDriverError(
+                        f"unsupported local source form {form!r} in {lock_path}"
+                    )
+                if len(local_forms) != 1:
+                    raise RunPodDriverError(
+                        f"ambiguous local source forms {sorted(local_forms)!r} in {lock_path}"
+                    )
+                form = next(iter(local_forms))
+                spelling = value[form]
+                if not isinstance(spelling, str):
+                    raise RunPodDriverError(
+                        f"unsupported {form!r} source value in {lock_path}: {spelling!r}"
+                    )
+                sources.append((form, spelling))
+            for key, child in value.items():
+                if key in local_forms:
+                    continue
+                if key == "source":
+                    if not isinstance(child, Mapping) or len(child) != 1:
+                        forms = (
+                            sorted(child) if isinstance(child, Mapping) else [type(child).__name__]
+                        )
+                        raise RunPodDriverError(
+                            f"unsupported mixed source forms {forms!r} in {lock_path}"
+                        )
+                    form = next(iter(child))
+                    known_forms = (
+                        _SUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+                        | _UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+                        | _SUPPORTED_REMOTE_LOCK_SOURCE_FORMS
+                    )
+                    if form not in known_forms:
+                        raise RunPodDriverError(f"unsupported source form {form!r} in {lock_path}")
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(document)
+    return tuple(dict.fromkeys(sources))
+
+
+def _local_repos(config: RunPodDriverConfig) -> Mapping[str, Path | str]:
+    return config.local_repos or {"feedbax": Path.cwd()}
+
+
+def _remote_repos(config: RunPodDriverConfig) -> Mapping[str, str]:
+    return config.remote_repos or {"feedbax": f"{config.remote_repo_root}/feedbax"}
+
+
+def _primary_repo_name(config: RunPodDriverConfig, repo_keys: Iterable[str]) -> str:
+    keys = set(repo_keys)
+    if config.primary_repo is not None:
+        if config.primary_repo not in keys:
+            raise RunPodDriverError(
+                f"primary_repo {config.primary_repo!r} is not a configured repo key: "
+                f"{sorted(keys)!r}"
+            )
+        return config.primary_repo
+    preferred = [name for name in ("rlrmp2", "rlrmp", "feedbax") if name in keys]
+    if len(preferred) == 1:
+        return preferred[0]
+    if len(keys) == 1:
+        return next(iter(keys))
+    raise RunPodDriverError(
+        "RunPod primary repo is ambiguous; set RunPodDriverConfig.primary_repo for keys "
+        f"{sorted(keys)!r}"
+    )
+
+
 def require_deterministic_runpod_environment(bundle: RunBundle) -> None:
     """Reject RunPod declarations that cannot realize an immutable environment."""
     if not is_immutable_runpod_image_id(bundle.environment.image_id):
         raise RunPodDriverError(
             "RunPod REALIZE_ENV requires environment.image_id pinned by @sha256:<64 hex>"
         )
-    lockfile_error = runpod_lockfile_declaration_error(
-        bundle.environment.lockfile_hashes
-    )
+    lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
     if lockfile_error is not None:
         raise RunPodDriverError(lockfile_error)
     if not bundle.environment.python_version:
-        raise RunPodDriverError(
-            "RunPod REALIZE_ENV requires environment.python_version"
-        )
+        raise RunPodDriverError("RunPod REALIZE_ENV requires environment.python_version")
 
 
 def validate_realized_runpod_environment_fingerprint(
@@ -2043,9 +2671,16 @@ def _python_version_matches(declared: str, observed: str) -> bool:
     )
 
 
-def compute_runpod_environment_fingerprint(bundle: RunBundle) -> str:
+def compute_runpod_environment_fingerprint(
+    bundle: RunBundle,
+    snapshot_manifest: RepoSnapshotManifest,
+) -> str:
     """Compute the declared remote environment fingerprint."""
     payload = environment_declaration_identity_projection(bundle.environment)
+    payload["repo_snapshot_content_sha256"] = {
+        name: record.content_sha256
+        for name, record in sorted(snapshot_manifest.repos.items())
+    }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -2065,10 +2700,7 @@ def build_literal_path_patch_command(
 
 def build_atomic_directory_publish_command(source: str, destination: str) -> str:
     """Build a fail-closed Linux atomic directory publish with no replacement."""
-    return (
-        f"python3 -c {_sq(_REMOTE_ATOMIC_DIRECTORY_PUBLISH)} "
-        f"{_sq(source)} {_sq(destination)}"
-    )
+    return f"python3 -c {_sq(_REMOTE_ATOMIC_DIRECTORY_PUBLISH)} {_sq(source)} {_sq(destination)}"
 
 
 def build_native_resume_seed_command(
@@ -2205,8 +2837,8 @@ def build_launch_row_command(
         f"{seed_command}"
         f"rm -f {_sq(pid_file)} && touch {_sq(started_file)} && "
         f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
-        f"i=0; while [ ! -s {_sq(pid_file)} ] && [ \"$i\" -lt 40 ]; do "
-        'i=$((i+1)); sleep 0.05; done; '
+        f'i=0; while [ ! -s {_sq(pid_file)} ] && [ "$i" -lt 40 ]; do '
+        "i=$((i+1)); sleep 0.05; done; "
         f"[ -s {_sq(pid_file)} ]"
     )
 
@@ -2216,15 +2848,8 @@ def runpod_row_workdir(config: RunPodDriverConfig, row: RunRowSpec) -> str:
     workdir = row.launch.metadata.get("workdir")
     if workdir:
         return str(workdir)
-    remote_repos = config.remote_repos or {
-        "feedbax": f"{config.remote_repo_root}/feedbax"
-    }
-    return (
-        remote_repos.get("rlrmp2")
-        or remote_repos.get("rlrmp")
-        or remote_repos.get("feedbax")
-        or config.remote_repo_root
-    )
+    remote_repos = _remote_repos(config)
+    return remote_repos[_primary_repo_name(config, remote_repos.keys())]
 
 
 def dry_run_launch_bundle(
@@ -2301,13 +2926,16 @@ def build_deadman_watchdog_command(
     """Build the optional in-pod dead-man watchdog command."""
     warning = f"{remote_run_dir}/deadman-warning.txt"
     pid_file = f"{remote_run_dir}/deadman.pid"
+    installed_file = f"{remote_run_dir}/deadman.installed"
     script = (
-        f"echo $$ > {_sq(pid_file)}; "
+        f"echo $$ > {_sq(pid_file)}; : > {_sq(installed_file)}; "
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
         f"sdir={_sq(remote_sentinel_dir)}; edir={_sq(events_dir)}; "
         f"silence={int(silence_seconds)}; warning={_sq(warning)}; "
+        f"installed={_sq(installed_file)}; "
         "while true; do "
-        "live=0; newest=0; now=$(date +%s); "
+        'live=0; now=$(date +%s); newest=$(stat -c %Y "$installed" 2>/dev/null '
+        '|| stat -f %m "$installed" 2>/dev/null || echo 0); '
         'for started in "$sdir"/*.started; do [ -e "$started" ] || continue; '
         'base=${started%.started}; [ -f "$base.done" ] || [ -f "$base.failed" ] || live=1; done; '
         'for path in "$edir"/*.jsonl "$sdir"/*; do [ -e "$path" ] || continue; '
@@ -2324,7 +2952,7 @@ def build_deadman_watchdog_command(
         'if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then exit 0; fi; '
         'rm -f "$pid_file"; '
         f"setsid -f bash -lc {_sq(script)} </dev/null "
-        f'>>{_sq(remote_run_dir + "/logs/deadman.log")} 2>&1; '
+        f">>{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1; "
         'i=0; while [ ! -s "$pid_file" ] && [ "$i" -lt 40 ]; do '
         'i=$((i+1)); sleep 0.05; done; [ -s "$pid_file" ]'
     )
@@ -2348,7 +2976,10 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise RunPodDriverError("registered row payload must be a JSON object")
-    if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
         raise RunPodDriverError("registered row payload schema does not match its reference")
     return dict(payload)
 
@@ -2389,18 +3020,41 @@ def _classify_create_failure(
 
 def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             args,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        return CommandResult(124, exc.stdout or "", f"timed out after {timeout_seconds:g}s")
     except OSError as exc:
         return CommandResult(127, "", str(exc))
-    return CommandResult(result.returncode, result.stdout, result.stderr)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        stdout, _stderr = _terminate_process_group(process)
+        return CommandResult(124, stdout, f"timed out after {timeout_seconds:g}s")
+    except BaseException:
+        _terminate_process_group(process)
+        raise
+    return CommandResult(process.returncode, stdout, stderr)
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Boundedly terminate one supervised child process group and drain output."""
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        return process.communicate(timeout=_CHILD_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.communicate(timeout=_CHILD_TERMINATION_GRACE_SECONDS)
 
 
 def _json_object(payload: str) -> dict[str, Any]:
@@ -2446,9 +3100,7 @@ def _parse_runpod_pod_inventory(payload: str) -> tuple[str, ...]:
         nested = pod.get("pod")
         if isinstance(nested, Mapping):
             candidates.append(nested.get("id"))
-        identities = {
-            value for value in candidates if isinstance(value, str) and value
-        }
+        identities = {value for value in candidates if isinstance(value, str) and value}
         if len(identities) != 1:
             raise ValueError("RunPod inventory entry has ambiguous pod identity")
         pod_id = identities.pop()

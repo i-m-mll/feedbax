@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -32,6 +33,7 @@ from feedbax.execution.models import (
     RepoSource,
     execution_artifact_ref,
 )
+from feedbax.orchestration.repo_snapshot import SealedRepoSnapshot, seal_repo_snapshots
 
 
 def default_feedbax_sources(feedbax_ref: str = "develop") -> list[RepoSource]:
@@ -63,14 +65,24 @@ def prepare_execution_plan(spec: ExecutionSpec) -> ExecutionPlan:
     run_directory = f"{workspace.rstrip('/')}/{spec.artifact_policy.manifest_root}/{job_id}"
     base_command = execution_command(spec, job_id=job_id, run_directory=run_directory)
     command = remote_command(spec, base_command)
-    bootstrap = _bootstrap_steps(spec, workspace, run_directory)
     health_checks = _health_checks(spec)
     launch = _launch_step(spec, command, run_directory)
     payload = cloud_payload(spec, job_id)
     training_record = training_run_spec_record(spec, run_directory)
     if training_record is not None and payload:
         payload = {**payload, "training_run_spec": training_record}
-    reproducibility = _reproducibility(spec, run_directory)
+    local_rsync_snapshots = _seal_local_rsync_sources(spec)
+    bootstrap = _bootstrap_steps(
+        spec,
+        workspace,
+        run_directory,
+        local_rsync_snapshots=local_rsync_snapshots,
+    )
+    reproducibility = _reproducibility(
+        spec,
+        run_directory,
+        local_rsync_snapshots=local_rsync_snapshots,
+    )
     warnings = _warnings(spec, reproducibility)
     return ExecutionPlan(
         job_id=job_id,
@@ -106,6 +118,8 @@ def _bootstrap_steps(
     spec: ExecutionSpec,
     workspace: str,
     run_directory: str,
+    *,
+    local_rsync_snapshots: dict[str, SealedRepoSnapshot] | None = None,
 ) -> list[PlanStep]:
     if spec.backend == "modal":
         return modal_bootstrap_steps(spec)
@@ -118,7 +132,14 @@ def _bootstrap_steps(
         )
     ]
     for source in spec.repos:
-        steps.extend(_repo_steps(source, workspace, spec))
+        steps.extend(
+            _repo_steps(
+                source,
+                workspace,
+                spec,
+                local_rsync_snapshots=local_rsync_snapshots or {},
+            )
+        )
     if spec.training_run_spec is not None and spec.training_run_spec.inline is not None:
         steps.append(
             PlanStep(
@@ -169,6 +190,8 @@ def _repo_steps(
     source: RepoSource,
     workspace: str,
     spec: ExecutionSpec,
+    *,
+    local_rsync_snapshots: dict[str, SealedRepoSnapshot],
 ) -> list[PlanStep]:
     target = source.remote_path(workspace)
     if source.install_mode == "pypi":
@@ -190,23 +213,44 @@ def _repo_steps(
                     critical=True,
                 )
             ]
-        local = str(Path(source.local_path).expanduser())
-        excludes = " ".join(
-            f"--exclude={shlex.quote(value)}"
-            for value in [".git", ".venv", "worktrees", "__pycache__", ".pytest_cache"]
+        snapshot = local_rsync_snapshots[source.name]
+        local = str(snapshot.staging_root)
+        verify = shlex.join(
+            [
+                "python",
+                "-m",
+                "feedbax.orchestration.repo_snapshot",
+                "verify",
+                "--root",
+                local,
+                "--content-sha256",
+                snapshot.record.content_sha256,
+                "--file-count",
+                str(snapshot.record.file_count),
+            ]
         )
         if spec.backend in {"ssh", "runpod"}:
             remote = rsync_remote(spec, target)
             port = rsync_transport(spec)
+            ssh = ssh_prefix_for_backend(spec)
+            remote_prepare = shlex.quote(
+                f"mkdir -p {shlex.quote(target)} && chmod -R u+w {shlex.quote(target)}"
+            )
+            remote_unseal = shlex.quote(f"chmod -R u+w {shlex.quote(target)}")
             command = (
-                f"rsync -az --stats --no-owner --no-group {excludes} {port} "
-                f"{shlex.quote(local.rstrip('/') + '/')} {remote}"
+                f"{ssh} {remote_prepare} && {verify} && "
+                f"rsync -az --delete --stats --no-owner --no-group {port} "
+                f"{shlex.quote(local.rstrip('/') + '/')} {remote} && "
+                f"{ssh} {remote_unseal}"
             )
         else:
+            quoted_target = shlex.quote(target)
             command = (
-                f"mkdir -p {shlex.quote(target)} && "
-                f"rsync -az --stats --no-owner --no-group {excludes} "
-                f"{shlex.quote(local.rstrip('/') + '/')} {shlex.quote(target.rstrip('/') + '/')}"
+                f"mkdir -p {quoted_target} && chmod -R u+w {quoted_target} && "
+                f"{verify} && "
+                "rsync -az --delete --stats --no-owner --no-group "
+                f"{shlex.quote(local.rstrip('/') + '/')} {shlex.quote(target.rstrip('/') + '/')} "
+                f"&& chmod -R u+w {quoted_target}"
             )
         return [
             PlanStep(
@@ -551,7 +595,12 @@ def _warnings(
     return warnings
 
 
-def _reproducibility(spec: ExecutionSpec, run_directory: str) -> dict[str, Any]:
+def _reproducibility(
+    spec: ExecutionSpec,
+    run_directory: str,
+    *,
+    local_rsync_snapshots: dict[str, SealedRepoSnapshot],
+) -> dict[str, Any]:
     record: dict[str, Any] = {
         "schema_id": EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
         "schema_version": EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
@@ -579,7 +628,31 @@ def _reproducibility(spec: ExecutionSpec, run_directory: str) -> dict[str, Any]:
     ]
     if local_embed_sources:
         record["local_embed_sources"] = local_embed_sources
+    if local_rsync_snapshots:
+        record["local_rsync_snapshots"] = [
+            {
+                "name": name,
+                "local_path": str(snapshot.source_root),
+                **snapshot.record.model_dump(mode="json"),
+            }
+            for name, snapshot in sorted(local_rsync_snapshots.items())
+        ]
     return record
+
+
+def _seal_local_rsync_sources(spec: ExecutionSpec) -> dict[str, SealedRepoSnapshot]:
+    repos = {
+        source.name: Path(source.local_path).expanduser()
+        for source in spec.repos
+        if source.install_mode == "local-rsync" and source.local_path is not None
+    }
+    if not repos:
+        return {}
+    sealed = seal_repo_snapshots(
+        repos,
+        snapshot_parent=Path(tempfile.gettempdir()) / "feedbax-repo-snapshots",
+    )
+    return dict(sealed.snapshots)
 
 
 def _primary_repo(spec: ExecutionSpec) -> Optional[str]:

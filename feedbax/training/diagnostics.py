@@ -21,7 +21,8 @@ TRAINING_DIAGNOSTICS_SCHEMA_ID = "feedbax.manifest.training_diagnostics"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V1 = "feedbax.manifest.training_diagnostics.v1"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2 = "feedbax.manifest.training_diagnostics.v2"
 TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3 = "feedbax.manifest.training_diagnostics.v3"
-TRAINING_DIAGNOSTICS_SCHEMA_VERSION = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4 = "feedbax.manifest.training_diagnostics.v4"
+TRAINING_DIAGNOSTICS_SCHEMA_VERSION = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID = "feedbax.spec.native_execution_context"
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION = (
     "feedbax.spec.native_execution_context.v1"
@@ -129,12 +130,17 @@ class TrainingDiagnostics(StrictModel):
     schema_version: Literal[
         "feedbax.manifest.training_diagnostics.v2",
         "feedbax.manifest.training_diagnostics.v3",
+        "feedbax.manifest.training_diagnostics.v4",
     ] = (
         TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
     )
     manifest_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
-    terminal_status: Literal["completed", "cancelled"]
+    terminal_status: Literal["completed", "cancelled", "failed"]
+    failure_kind: Literal["nan_guard"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     completed_batches: int = Field(ge=0)
     segment_completed_batches: int = Field(ge=0)
     cumulative_completed_batches: int = Field(ge=0)
@@ -168,11 +174,23 @@ class TrainingDiagnostics(StrictModel):
             raise ValueError(
                 "segment_completed_batches cannot exceed the cumulative batch count"
             )
+        if self.method_trace is not None and self.schema_version not in {
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
+        }:
+            raise ValueError("method_trace requires TrainingDiagnostics schema v3 or v4")
+        if self.terminal_status == "failed":
+            if self.schema_version != TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4:
+                raise ValueError("failed terminal status requires TrainingDiagnostics schema v4")
+            if self.failure_kind != "nan_guard":
+                raise ValueError("failed terminal status requires failure_kind='nan_guard'")
+        elif self.failure_kind is not None:
+            raise ValueError("failure_kind is only valid for failed terminal diagnostics")
         if (
-            self.method_trace is not None
-            and self.schema_version != TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
+            self.schema_version != TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4
+            and self.failure_kind is not None
         ):
-            raise ValueError("method_trace requires TrainingDiagnostics schema v3")
+            raise ValueError("failure_kind requires TrainingDiagnostics schema v4")
         return self
 
 
@@ -198,7 +216,11 @@ def load_method_training_trace(
     if (
         artifact.media_type != "application/json"
         or metadata.get("schema_id") != TRAINING_DIAGNOSTICS_SCHEMA_ID
-        or metadata.get("schema_version") != TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
+        or metadata.get("schema_version")
+        not in {
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
+        }
     ):
         raise MethodTrainingTraceLoadError("schema", "method trace artifact schema is unsupported")
     try:
@@ -213,8 +235,13 @@ def load_method_training_trace(
     except ValidationError as exc:
         kind = "truncated" if any(error["type"] == "json_invalid" for error in exc.errors()) else "schema"
         raise MethodTrainingTraceLoadError(kind, f"method trace payload is invalid: {exc}") from exc
-    if diagnostics.schema_version != TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3:
-        raise MethodTrainingTraceLoadError("schema", "method trace requires diagnostics schema v3")
+    if diagnostics.schema_version not in {
+        TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+        TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
+    }:
+        raise MethodTrainingTraceLoadError(
+            "schema", "method trace requires diagnostics schema v3 or v4"
+        )
     if diagnostics.manifest_id != manifest.id or diagnostics.run_id != manifest.job_id:
         raise MethodTrainingTraceLoadError("provenance", "method trace names a different manifest or run")
     try:

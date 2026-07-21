@@ -35,7 +35,7 @@ from feedbax.orchestration.bundle import (
 )
 from feedbax.orchestration.drivers.runpod import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
@@ -94,7 +94,8 @@ def _authority_repo(root: Path) -> tuple[Path, str]:
     _git(repo, "config", "user.email", "tests@example.invalid")
     _git(repo, "config", "user.name", "Feedbax Tests")
     (repo / "authority.txt").write_text("protected\n", encoding="utf-8")
-    _git(repo, "add", "authority.txt")
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    _git(repo, "add", "authority.txt", "uv.lock")
     _git(repo, "commit", "-m", "protected authority")
     return repo, _git(repo, "rev-parse", "HEAD")
 
@@ -116,7 +117,7 @@ def _matrix_case(
     authored_bytes = (json.dumps(authored, indent=2) + "\n").encode()
     authored_path = root / "matrix.json"
     authored_path.write_bytes(authored_bytes)
-    lockfile = root / "uv.lock"
+    lockfile = root / "science" / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
     request = RunAssemblyRequest(
         authored=SchemaArtifactRef(
@@ -218,6 +219,8 @@ def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
             ssh_port=22,
             image=bundle.environment.image_id or "",
             local_repos={"science": repo},
+            remote_repos={"science": "/workspace/science"},
+            primary_repo="science",
             protected_refs={"science": "refs/heads/main"},
         ),
         transport=transport,
@@ -229,12 +232,12 @@ def _completed_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
     return StageEngine(bundle=bundle, driver=_driver(bundle, repo, RecordingTransport()), store=store).run(stop_after_stage=STAGE_PREFLIGHT)
 
 
-def test_matrix_preflight_emits_canonical_v2_without_private_paths(tmp_path: Path) -> None:
+def test_matrix_preflight_emits_canonical_v3_without_private_paths(tmp_path: Path) -> None:
     repo, revision = _authority_repo(tmp_path)
     bundle = _matrix_bundle(tmp_path, revision=revision)
     state = _completed_preflight(bundle, repo, tmp_path)
     evidence = state.stage(STAGE_PREFLIGHT).outputs["driver_evidence"]
-    assert evidence["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2
+    assert evidence["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3
     assert evidence["v1"]["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
     binding = evidence["matrix_binding"]
     assert [row["row_id"] for row in binding["rows"]] == ["first", "second"]
@@ -525,6 +528,8 @@ def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid
         driver.config = RunPodDriverConfig(
             image=bundle.environment.image_id or "",
             local_repos={"science": repo},
+            remote_repos={"science": "/workspace/science"},
+            primary_repo="science",
             protected_refs=protected,
         )
     elif invalid == "dirty":

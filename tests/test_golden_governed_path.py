@@ -142,7 +142,7 @@ def _write_plugin(path: Path) -> None:
         import jax.numpy as jnp
         from pydantic import BaseModel
         from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
-        from feedbax.contracts.training import TrainingMethodDescriptor, standard_supervised_method_contract, standard_supervised_update_kernels
+        from feedbax.contracts.training import ScheduleProjection, TrainingMethodDescriptor, TrainingMethodScheduleProjector, standard_supervised_method_contract, standard_supervised_update_kernels
         from feedbax.training.preparation import ExecutionPreparationResult
         from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
 
@@ -155,6 +155,9 @@ def _write_plugin(path: Path) -> None:
 
         def kernels(payload):
             return standard_supervised_update_kernels(payload)
+
+        def project_schedules(payload, coordinates):
+            return ScheduleProjection(complete=True, schedules={{}})
 
         def prepare(request):
             assert request.method_payload.token == "golden"
@@ -169,7 +172,7 @@ def _write_plugin(path: Path) -> None:
         LOWER_SHA256 = training_row_lowerer_implementation_sha256(lower)
 
         def register_feedbax_training_methods(registry):
-            registry.register_descriptor(TrainingMethodDescriptor(method_ref={METHOD_REF!r}, payload_schema_id={METHOD_SCHEMA!r}, payload_schema_version={METHOD_VERSION!r}, payload_model=Payload, contract_compiler=compile_contract, update_kernels_factory=kernels, preparation_provider=prepare, owner="golden", package="tests.golden"))
+            registry.register_descriptor(TrainingMethodDescriptor(method_ref={METHOD_REF!r}, payload_schema_id={METHOD_SCHEMA!r}, payload_schema_version={METHOD_VERSION!r}, payload_model=Payload, contract_compiler=compile_contract, update_kernels_factory=kernels, preparation_provider=prepare, schedule_projector=TrainingMethodScheduleProjector(projector_id="tests.golden.schedule_projection", projector_version="tests.golden.schedule_projection.v1", projector=project_schedules), optimizer_spec_projector=lambda payload: payload.optimizer, owner="golden", package="tests.golden"))
 
         def register_feedbax_training_row_lowerers(registry):
             registry.register(TrainingRowLowererRegistration(authored_schema_id={AUTHORED_SCHEMA!r}, authored_schema_version={AUTHORED_VERSION!r}, lowerer_id={LOWERER_ID!r}, lowerer_version={LOWERER_VERSION!r}, implementation_sha256=LOWER_SHA256, lower=lower, owner="golden"))

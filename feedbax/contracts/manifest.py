@@ -684,6 +684,7 @@ class TrainingRunManifest(BaseManifest):
     completed_batches: Optional[int] = Field(default=None, ge=0)
     stopped: bool = False
     stop_reason: Optional[str] = None
+    failure_kind: Literal["nan_guard"] | None = None
     intent_hash: Optional[str] = None
     execution_hash: Optional[str] = None
     resolved_semantics_root_hash: Optional[str] = None
@@ -697,6 +698,10 @@ class TrainingRunManifest(BaseManifest):
 
         if self.stopped and self.completed_at is None:
             raise ValueError("stopped training runs require completed_at")
+        if self.failure_kind is not None and self.status != "failed":
+            raise ValueError("training-run failure_kind requires status='failed'")
+        if self.status == "failed" and self.failure_kind == "nan_guard" and not self.stopped:
+            raise ValueError("nan_guard failures must be marked stopped")
         if self.intent_hash is not None:
             validate_sha256(self.intent_hash, field_name="intent_hash")
         if self.resolved_semantics_root_hash is not None:

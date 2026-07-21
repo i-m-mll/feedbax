@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import numbers
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, TypeVar
 
@@ -64,6 +64,8 @@ TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_ID = (
 TRAINING_MANIFEST_METADATA_PROJECTION_SCHEMA_VERSION = (
     "feedbax.spec.training_manifest_metadata_projection.v1"
 )
+SCHEDULE_PROJECTION_SCHEMA_ID = "feedbax.spec.training.schedule_projection"
+SCHEDULE_PROJECTION_SCHEMA_VERSION = f"{SCHEDULE_PROJECTION_SCHEMA_ID}.v1"
 
 
 class BatchScheduleOriginSpec(BaseModel):
@@ -168,6 +170,58 @@ class LrScheduleSpec(BaseModel):
                 raise ValueError("/constant_lr_iterations must be < /total_steps for warmup_cosine")
         if self.kind == "delayed_cosine" and self.constant_lr_iterations >= self.total_steps:
             raise ValueError("/constant_lr_iterations must be < /total_steps for delayed_cosine")
+        return self
+
+
+class ScheduleProjectionSample(BaseModel):
+    """One normalized pre-update schedule value at a global batch coordinate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    coordinate: int = Field(ge=0)
+    value: float = Field(allow_inf_nan=False)
+
+
+class GovernedScheduleProjection(BaseModel):
+    """Sampled values and origin for one stable governed schedule identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    origin: BatchScheduleOriginSpec
+    samples: list[ScheduleProjectionSample] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_samples(self) -> "GovernedScheduleProjection":
+        coordinates = [sample.coordinate for sample in self.samples]
+        if coordinates != sorted(coordinates) or len(coordinates) != len(set(coordinates)):
+            raise ValueError("schedule projection coordinates must be unique and sorted")
+        return self
+
+
+class ScheduleProjection(BaseModel):
+    """Complete versioned evaluation table for all governed schedules."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal["feedbax.spec.training.schedule_projection"] = (
+        SCHEDULE_PROJECTION_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.training.schedule_projection.v1"] = (
+        SCHEDULE_PROJECTION_SCHEMA_VERSION
+    )
+    complete: Literal[True] = True
+    schedules: dict[str, GovernedScheduleProjection] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_inventory(self) -> "ScheduleProjection":
+        if any(not schedule_id for schedule_id in self.schedules):
+            raise ValueError("schedule projection IDs must be non-empty")
+        coordinate_sets = {
+            tuple(sample.coordinate for sample in schedule.samples)
+            for schedule in self.schedules.values()
+        }
+        if len(coordinate_sets) > 1:
+            raise ValueError("all projected schedules must use the same coordinates")
         return self
 
 
@@ -550,6 +604,37 @@ class TrainingMethodMetadataProjector(Generic[PayloadT]):
 
 
 @dataclass(frozen=True)
+class TrainingMethodScheduleProjector(Generic[PayloadT]):
+    """Stable runtime hook that evaluates every method-owned batch schedule."""
+
+    projector_id: str
+    projector_version: str
+    projector: Callable[[PayloadT, Sequence[int]], ScheduleProjection | Mapping[str, Any]]
+
+    def validate_structure(self) -> None:
+        """Validate the stable projector identity and callable boundary."""
+        identities = (self.projector_id, self.projector_version)
+        if any(not isinstance(value, str) or not value.strip() for value in identities):
+            raise ValueError("training method schedule projector identity must not be empty")
+        if not callable(self.projector):
+            raise TypeError("training method schedule projector projector must be callable")
+
+    def project(self, payload: PayloadT, coordinates: Sequence[int]) -> ScheduleProjection:
+        """Evaluate and validate the method-owned schedule inventory."""
+        self.validate_structure()
+        projection = ScheduleProjection.model_validate(self.projector(payload, coordinates))
+        expected = tuple(int(coordinate) for coordinate in coordinates)
+        for schedule_id, schedule in projection.schedules.items():
+            actual = tuple(sample.coordinate for sample in schedule.samples)
+            if actual != expected:
+                raise ValueError(
+                    f"method schedule {schedule_id!r} projected coordinates={actual!r}; "
+                    f"expected={expected!r}"
+                )
+        return projection
+
+
+@dataclass(frozen=True)
 class TrainingMethodDescriptor(Generic[PayloadT]):
     """Atomic runtime extension surface for one typed training method.
 
@@ -570,6 +655,7 @@ class TrainingMethodDescriptor(Generic[PayloadT]):
     row_compiler: TrainingRowLowerer | None = None
     authoring_hook: TrainingMethodAuthoringHook[PayloadT] | None = None
     metadata_projector: TrainingMethodMetadataProjector[PayloadT] | None = None
+    schedule_projector: TrainingMethodScheduleProjector[PayloadT] | None = None
     optimizer_spec_projector: TrainingMethodOptimizerSpecProjector[PayloadT] | None = None
     optimizer_step_extractor: TrainingMethodOptimizerStepExtractor[PayloadT] | None = None
     rejected_payload_versions: tuple[str, ...] = ()
@@ -731,6 +817,13 @@ class TrainingMethodRegistry:
                     "TrainingMethodMetadataProjector"
                 )
             descriptor.metadata_projector.validate_structure()
+        if descriptor.schedule_projector is not None:
+            if not isinstance(descriptor.schedule_projector, TrainingMethodScheduleProjector):
+                raise TypeError(
+                    "training method descriptor schedule_projector must be a "
+                    "TrainingMethodScheduleProjector"
+                )
+            descriptor.schedule_projector.validate_structure()
         self.register(descriptor.registration())
         self._descriptors[descriptor.method_ref] = descriptor
 
@@ -1094,6 +1187,11 @@ def standard_supervised_method_descriptor() -> TrainingMethodDescriptor[
         payload_model=StandardSupervisedMethodPayload,
         contract_compiler=lambda _payload: standard_supervised_method_contract(),
         update_kernels_factory=standard_supervised_update_kernels,
+        schedule_projector=TrainingMethodScheduleProjector(
+            projector_id="feedbax.training.standard_supervised.schedule_projection",
+            projector_version="v1",
+            projector=lambda _payload, _coordinates: ScheduleProjection(),
+        ),
         optimizer_spec_projector=lambda payload: payload.optimizer,
         optimizer_step_extractor=_standard_supervised_optimizer_step,
         rejected_payload_versions=("feedbax.spec.training_method.standard_supervised_payload.v0",),
