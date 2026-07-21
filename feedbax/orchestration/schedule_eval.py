@@ -7,7 +7,25 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from feedbax.contracts.training import OptimizerSpec
+from feedbax.contracts.checkpoints import (
+    CheckpointContinuationRequest,
+    CheckpointSegmentLineage,
+    CheckpointTransactionManifest,
+    ScheduleStateWindowSpec,
+)
+from feedbax.contracts.training import (
+    BatchScheduleOriginSpec,
+    GovernedScheduleProjection,
+    OptimizerSpec,
+    ResolvedTrainingMethod,
+    ScheduleProjection,
+    ScheduleProjectionSample,
+    TrainingRunSpec,
+)
+
+
+LEARNING_RATE_SCHEDULE_ID = "feedbax.learning_rate"
+SCHEDULE_REL_TOL = 1e-9
 
 
 @dataclass(frozen=True)
@@ -260,6 +278,243 @@ def compare_schedule_samples(
         )
     ]
     return samples, mismatches
+
+
+def project_training_schedules(
+    run_spec: TrainingRunSpec,
+    *,
+    coordinates: Sequence[int],
+    lineage: CheckpointSegmentLineage,
+    resolved_method: ResolvedTrainingMethod[Any] | None = None,
+) -> ScheduleProjection:
+    """Build the complete sampled schedule table consumed by runtime and preflight.
+
+    Coordinates use the pre-update side of the global training-batch boundary:
+    coordinate ``N`` is the schedule value applied by update ``N``.
+    """
+    normalized_coordinates = tuple(int(coordinate) for coordinate in coordinates)
+    if (
+        not normalized_coordinates
+        or normalized_coordinates != tuple(sorted(set(normalized_coordinates)))
+    ):
+        raise ValueError("schedule projection coordinates must be non-empty, unique, and sorted")
+    resolved = resolved_method or run_spec.resolved_method
+    descriptor = resolved.descriptor
+    if descriptor is None or descriptor.schedule_projector is None:
+        raise ValueError(
+            f"training method {run_spec.method_ref.key!r} has no complete schedule projector"
+        )
+    method_projection = descriptor.schedule_projector.project(
+        resolved.payload, normalized_coordinates
+    )
+    if descriptor.optimizer_spec_projector is None:
+        raise ValueError(
+            f"training method {run_spec.method_ref.key!r} has no optimizer spec projector"
+        )
+    optimizer = OptimizerSpec.model_validate(
+        descriptor.optimizer_spec_projector(resolved.payload)
+    )
+    if LEARNING_RATE_SCHEDULE_ID in method_projection.schedules:
+        raise ValueError(
+            f"method schedule projector must not emit reserved ID {LEARNING_RATE_SCHEDULE_ID!r}"
+        )
+    schedule = optimizer.lr_schedule
+    if schedule is None:
+        origin = BatchScheduleOriginSpec(kind="run_start")
+        learning_rate = optimizer.params.get("learning_rate")
+        if learning_rate is None:
+            return method_projection
+        lr_values = {
+            coordinate: _normalize_schedule_value(learning_rate)
+            for coordinate in normalized_coordinates
+        }
+    else:
+        from feedbax.training.schedule_clocks import resolve_schedule_window
+
+        origin = schedule.origin
+        window = resolve_schedule_window(
+            origin,
+            lineage=lineage,
+            duration=schedule.total_steps,
+            allow_inert=schedule.allow_inert,
+        )
+        context = ScheduleEvalContext(
+            schedule_origin_step=window.start_batch,
+            current_step=normalized_coordinates[0],
+            optimizer_count_at_current_step=normalized_coordinates[0],
+        )
+        lr_values = {
+            coordinate: _normalize_schedule_value(value)
+            for coordinate, value in evaluate_schedule_samples(
+                optimizer, context, normalized_coordinates
+            ).items()
+        }
+    schedules = dict(method_projection.schedules)
+    schedules[LEARNING_RATE_SCHEDULE_ID] = GovernedScheduleProjection(
+        origin=origin,
+        samples=[
+            ScheduleProjectionSample(coordinate=coordinate, value=lr_values[coordinate])
+            for coordinate in normalized_coordinates
+        ],
+    )
+    return ScheduleProjection(schedules=dict(sorted(schedules.items())))
+
+
+def compare_continuation_schedule_projections(
+    *,
+    source_run_spec: TrainingRunSpec,
+    target_run_spec: TrainingRunSpec,
+    source_manifest: CheckpointTransactionManifest,
+    continuation: CheckpointContinuationRequest,
+) -> tuple[list[str], dict[str, Any]]:
+    """Compare source-realized and target-declared schedules over ``N..N+2``."""
+    boundary = continuation.source_completed_batches
+    coordinates = (boundary, boundary + 1, boundary + 2)
+    source = project_training_schedules(
+        source_run_spec,
+        coordinates=coordinates,
+        lineage=source_manifest.segment_lineage,
+    )
+    target = project_training_schedules(
+        target_run_spec,
+        coordinates=coordinates,
+        lineage=CheckpointSegmentLineage(
+            parent_transaction_id=source_manifest.transaction_id,
+            start_batch=boundary,
+            segment_batch_count=continuation.additional_batches or 0,
+        ),
+    )
+    exemptions = {
+        exemption.schedule_id: exemption
+        for exemption in continuation.schedule_discontinuity_exemptions
+    }
+    used_exemptions: set[str] = set()
+    failures: list[str] = []
+    comparisons: list[dict[str, Any]] = []
+    for schedule_id in sorted(set(source.schedules) | set(target.schedules)):
+        source_schedule = source.schedules.get(schedule_id)
+        target_schedule = target.schedules.get(schedule_id)
+        record = _schedule_comparison_record(
+            schedule_id,
+            coordinates,
+            source_schedule,
+            target_schedule,
+        )
+        comparisons.append(record)
+        if not record["mismatch"]:
+            continue
+        exemption = exemptions.get(schedule_id)
+        if exemption is not None:
+            if _exemption_matches_record(
+                exemption.expected_source_state, record["source_values"]
+            ) and _exemption_matches_record(
+                exemption.expected_target_state, record["target_values"]
+            ):
+                record["exempted"] = True
+                used_exemptions.add(schedule_id)
+                continue
+            failures.append(
+                f"schedule {schedule_id!r} discontinuity exemption expected values do not "
+                f"match reality; source={record['source_values']!r} "
+                f"target={record['target_values']!r}"
+            )
+            used_exemptions.add(schedule_id)
+            continue
+        failures.append(
+            f"schedule {schedule_id!r} diverges at coordinates {coordinates!r}; "
+            f"source={record['source_values']!r} target={record['target_values']!r}; "
+            f"values_by_coordinate={record['values_by_coordinate']!r}; "
+            f"source_origin={record['source_origin']!r} "
+            f"target_origin={record['target_origin']!r}"
+        )
+    unused = sorted(set(exemptions) - used_exemptions)
+    if unused:
+        failures.append(f"unused schedule discontinuity exemptions: {unused!r}")
+    return failures, {
+        "boundary_side": "pre_update",
+        "dtype": "float64",
+        "relative_tolerance": SCHEDULE_REL_TOL,
+        "coordinates": list(coordinates),
+        "source_projection": source.model_dump(mode="json"),
+        "target_projection": target.model_dump(mode="json"),
+        "comparisons": comparisons,
+        "used_exemptions": sorted(used_exemptions),
+    }
+
+
+def _schedule_comparison_record(
+    schedule_id: str,
+    coordinates: Sequence[int],
+    source: GovernedScheduleProjection | None,
+    target: GovernedScheduleProjection | None,
+) -> dict[str, Any]:
+    source_values = _projection_values(source, coordinates)
+    target_values = _projection_values(target, coordinates)
+    source_origin = None if source is None else source.origin.model_dump(mode="json")
+    target_origin = None if target is None else target.origin.model_dump(mode="json")
+    values_match = source_values is not None and target_values is not None and all(
+        math.isclose(source_value, target_value, rel_tol=SCHEDULE_REL_TOL, abs_tol=0.0)
+        for source_value, target_value in zip(source_values, target_values, strict=True)
+    )
+    return {
+        "schedule_id": schedule_id,
+        "source_origin": source_origin,
+        "target_origin": target_origin,
+        "source_values": source_values,
+        "target_values": target_values,
+        "values_by_coordinate": [
+            {
+                "coordinate": coordinate,
+                "source": None if source_values is None else source_values[index],
+                "target": None if target_values is None else target_values[index],
+            }
+            for index, coordinate in enumerate(coordinates)
+        ],
+        "mismatch": not values_match or source_origin != target_origin,
+        "exempted": False,
+    }
+
+
+def _projection_values(
+    projection: GovernedScheduleProjection | None,
+    coordinates: Sequence[int],
+) -> list[float] | None:
+    if projection is None:
+        return None
+    values = {
+        sample.coordinate: _normalize_schedule_value(sample.value)
+        for sample in projection.samples
+    }
+    if set(values) != set(coordinates):
+        raise ValueError(
+            f"schedule projection coordinate inventory differs; "
+            f"expected={list(coordinates)!r} observed={sorted(values)!r}"
+        )
+    return [values[coordinate] for coordinate in coordinates]
+
+
+def _exemption_matches_record(
+    expected: ScheduleStateWindowSpec,
+    observed: list[float] | None,
+) -> bool:
+    if observed is None:
+        return False
+    expected_values = [
+        _normalize_schedule_value(expected.boundary),
+        _normalize_schedule_value(expected.first_update),
+        _normalize_schedule_value(expected.second_update),
+    ]
+    return all(
+        math.isclose(expected_value, observed_value, rel_tol=SCHEDULE_REL_TOL, abs_tol=0.0)
+        for expected_value, observed_value in zip(expected_values, observed, strict=True)
+    )
+
+
+def _normalize_schedule_value(value: Any) -> float:
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise ValueError(f"schedule value must be finite; observed={normalized!r}")
+    return normalized
 
 
 def _with_injected_count(value: Any, count: int) -> Any:

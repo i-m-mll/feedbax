@@ -103,6 +103,7 @@ from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.shadow_launch import (
     SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
@@ -235,6 +236,8 @@ from feedbax.contracts.training import (
     STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
     RUN_CONTROL_SPEC_SCHEMA_ID,
     RUN_CONTROL_SPEC_SCHEMA_VERSION,
+    SCHEDULE_PROJECTION_SCHEMA_ID,
+    SCHEDULE_PROJECTION_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
     TRAINING_RUN_SPEC_SCHEMA_VERSION_V1,
@@ -2667,6 +2670,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "ScheduleProjection",
+            SCHEDULE_PROJECTION_SCHEMA_ID,
+            SCHEDULE_PROJECTION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=(
+                "TrainingMethodScheduleProjector",
+                "feedbax.orchestration.schedule_eval.project_training_schedules",
+            ),
+            consumed_by=(
+                "feedbax.training.executor",
+                "feedbax.orchestration.schedule_eval",
+                "training failure diagnostics",
+            ),
+            description=(
+                "Complete sampled evaluation table for learning-rate and method-owned schedules."
+            ),
+            rejected_old_versions=(f"{SCHEDULE_PROJECTION_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_continuation_schedule_preflight.py",),
+        ),
+        _family(
             "TrainingRunSpec",
             TRAINING_RUN_SPEC_SCHEMA_ID,
             TRAINING_RUN_SPEC_SCHEMA_VERSION,
@@ -2971,12 +2994,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "RunPodPreflightEvidence",
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
             owner_module="feedbax.orchestration.drivers.runpod",
             emitted_by=("RunPodOrchestrationDriver.preflight_evidence",),
             consumed_by=("RunPodOrchestrationDriver.restore_completed_preflight",),
             description="Matrix-bound RunPod preflight evidence envelope.",
-            rejected_old_versions=(RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,),
+            rejected_old_versions=(
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+                RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            ),
             required_tests=("tests/test_runpod_matrix_preflight_binding.py",),
         ),
         _family(

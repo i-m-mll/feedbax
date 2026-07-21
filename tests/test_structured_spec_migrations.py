@@ -56,6 +56,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_AUTHORITY_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_ID,
     TRAINING_RUN_MATRIX_PREFLIGHT_BINDING_SCHEMA_VERSION,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -801,6 +802,11 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
             "RunPodPreflightEvidence",
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
             RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
+        ),
+        (
+            "RunPodPreflightEvidence",
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
+            RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
         ),
     ],
 )

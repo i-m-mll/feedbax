@@ -2943,16 +2943,7 @@ def _load_checkpoint_from_pointer(
             if loaded_slots.get(slot) is loaded_fingerprint_slots.get(slot)
         }
     if request is not None and not _continuation_was_applied(manifest, request):
-        lineage_total = (
-            manifest.segment_lineage.start_batch
-            + manifest.segment_lineage.segment_batch_count
-        )
-        if request.source_completed_batches != lineage_total:
-            raise CheckpointCompatibilityError(
-                "checkpoint continuation source offset mismatch; "
-                f"lineage_total={lineage_total} "
-                f"requested={request.source_completed_batches}"
-            )
+        validate_checkpoint_continuation_source_count(manifest, request)
         loaded_slots, _ = _allocate_segment_histories(loaded_slots, expected_slots)
         loaded_fingerprints = {}
     _validate_structural_abi(
@@ -2979,6 +2970,21 @@ def _load_checkpoint_from_pointer(
         ),
         previous_transaction_id=(manifest.transaction_id if allow_new_lineage_override else None),
     )
+
+
+def validate_checkpoint_continuation_source_count(
+    manifest: CheckpointTransactionManifest,
+    request: CheckpointContinuationRequest,
+) -> None:
+    """Validate the continuation boundary against authenticated segment lineage."""
+    lineage_total = (
+        manifest.segment_lineage.start_batch + manifest.segment_lineage.segment_batch_count
+    )
+    if request.source_completed_batches != lineage_total:
+        raise CheckpointCompatibilityError(
+            "checkpoint continuation source offset mismatch; "
+            f"lineage_total={lineage_total} requested={request.source_completed_batches}"
+        )
 
 
 def _manifest_from_latest_pointer(
@@ -4762,6 +4768,48 @@ def run_contract_canonical_projection(
         "training_run_spec": migrated_run_spec,
         "phase_program": phase_program.model_dump(mode="json", exclude_none=True),
     }
+
+
+def authenticated_run_contract_source_projection(
+    manifest: CheckpointTransactionManifest,
+) -> tuple[TrainingRunSpec, PhaseProgramSpec]:
+    """Load the coherent canonical source spec stored by binding algorithm v4.
+
+    This accepts no reconstruction path: a pre-v4 binding, absent projection,
+    mismatched projection digest, or invalid embedded contract fails closed.
+    """
+    binding = manifest.run_contract_binding
+    if binding.algorithm_version != _RUN_CONTRACT_BINDING_ALGORITHM_V4:
+        raise CheckpointCompatibilityError(
+            "continuation schedule preflight requires run-contract binding algorithm v4; "
+            f"observed={binding.algorithm_version!r}"
+        )
+    projection = binding.canonical_projection
+    if projection is None or binding.canonical_projection_sha256 is None:
+        raise CheckpointCompatibilityError(
+            "run-contract binding v4 lacks its authenticated canonical projection"
+        )
+    if _run_contract_hash(projection) != binding.canonical_projection_sha256:
+        raise CheckpointCompatibilityError("run-contract canonical projection digest mismatch")
+    expected_identity = {
+        "schema_id": "feedbax.manifest.training_checkpoint.run_contract_projection",
+        "schema_version": "feedbax.manifest.training_checkpoint.run_contract_projection.v1",
+        "algorithm_version": _RUN_CONTRACT_BINDING_ALGORITHM_V4,
+    }
+    observed_identity = {key: projection.get(key) for key in expected_identity}
+    if observed_identity != expected_identity:
+        raise CheckpointCompatibilityError(
+            "run-contract canonical projection identity is incoherent; "
+            f"observed={observed_identity!r}"
+        )
+    try:
+        run_spec = TrainingRunSpec.model_validate(projection["training_run_spec"])
+        phase_program = PhaseProgramSpec.model_validate(projection["phase_program"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CheckpointCompatibilityError(
+            f"run-contract canonical projection is invalid: {exc}"
+        ) from exc
+    return run_spec, phase_program
 
 
 def structural_abi_fingerprint(value: Any) -> StructuralAbiFingerprint:

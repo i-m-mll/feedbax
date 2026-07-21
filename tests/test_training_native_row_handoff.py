@@ -82,6 +82,7 @@ from feedbax.orchestration.drivers.native_execution import (
 )
 from feedbax.orchestration.drivers.runpod import (
     RunPodDriverConfig,
+    _preflight_continuation_schedule_consistency,
     build_launch_row_command,
     build_native_resume_seed_command,
     dry_run_launch_bundle,
@@ -1514,6 +1515,12 @@ def test_local_driver_executes_authenticated_custody_continuation_with_parent_li
     payload["resolved_inputs"] = [resolved.model_dump(mode="json")]
     resumed_bundle = RunBundle.model_validate(payload)
     resumed_row = resumed_bundle.rows[0]
+    schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
+        resumed_bundle,
+        [InputProviderRootBinding("checkpoint.inputs", provider_root)],
+    )
+    assert schedule_failures == []
+    assert schedule_observed[resumed_row.row_id]["coordinates"] == [1, 2, 3]
     state = RunSetState(
         run_set_id=resumed_bundle.run_set_id,
         environment_fingerprint="environment:authenticated-resume",

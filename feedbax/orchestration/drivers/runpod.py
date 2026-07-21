@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 import tomllib
 import urllib.error
@@ -24,11 +25,13 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID_V1,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
     TrainingRunMatrixPreflightBinding,
     training_run_matrix_preflight_binding_sha256,
 )
@@ -63,7 +66,13 @@ from feedbax.orchestration.matrix_authority import (
     build_training_run_matrix_authority,
     is_training_matrix_bundle,
 )
+from feedbax.orchestration.schedule_eval import compare_continuation_schedule_projections
 from feedbax.orchestration.state import PreflightCheckEntry, RunSetState, utc_now
+from feedbax.training.checkpoint_custody import (
+    authenticated_run_contract_source_projection,
+    load_checkpoint_custody_documents,
+    validate_checkpoint_continuation_source_count,
+)
 
 
 RUNPOD_CODE_EXCLUDES = (
@@ -94,6 +103,7 @@ RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
 _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
     {
         "input-provider-bindings",
+        "continuation-schedule-consistency",
         "runpod-image-immutable",
         "runpod-image-tag-exists",
         "runpod-lockfiles-declared",
@@ -623,6 +633,20 @@ class RunPodOrchestrationDriver:
             self._preflight_passed = False
             return [binding_check]
         checks: list[PreflightCheckEntry] = [binding_check]
+        schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
+            bundle,
+            self.input_provider_bindings,
+        )
+        schedule_check = _preflight_check(
+            "continuation-schedule-consistency",
+            not schedule_failures,
+            detail="; ".join(schedule_failures) if schedule_failures else None,
+            observed=schedule_observed or "no-continuations",
+        )
+        checks.append(schedule_check)
+        if schedule_failures:
+            self._preflight_passed = False
+            return checks
         image = bundle.environment.image_id
         image_is_immutable = is_immutable_runpod_image_id(image)
         checks.append(
@@ -749,7 +773,7 @@ class RunPodOrchestrationDriver:
             return legacy
         return self._matrix_preflight_evidence(bundle, legacy)
 
-    def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> None:
+    def restore_completed_preflight(self, bundle: RunBundle, state: RunSetState) -> bool:
         """Restore only cryptographically bound completed preflight authority.
 
         This is deliberately offline: it validates persisted evidence without
@@ -762,6 +786,17 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError("completed PREFLIGHT checks are internally inconsistent")
         if state.run_set_id != bundle.run_set_id:
             raise RunPodDriverError("completed PREFLIGHT run-set binding is mismatched")
+        if not any(
+            check.name == "continuation-schedule-consistency" for check in stage.checks
+        ):
+            return False
+        if (
+            is_training_matrix_bundle(bundle)
+            and isinstance(evidence, Mapping)
+            and evidence.get("schema_id") == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID
+            and evidence.get("schema_version") == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2
+        ):
+            return False
         assemble_completed = state.stage("ASSEMBLE").completed_at
         if (
             assemble_completed is None
@@ -775,7 +810,7 @@ class RunPodOrchestrationDriver:
         matrix_bundle = is_training_matrix_bundle(bundle)
         if evidence is None and not matrix_bundle:
             self._preflight_passed = True
-            return
+            return True
         if not isinstance(evidence, Mapping):
             raise RunPodDriverError("completed PREFLIGHT RunPod evidence has invalid shape")
         if matrix_bundle:
@@ -790,6 +825,7 @@ class RunPodOrchestrationDriver:
             if dict(evidence) != expected_v1:
                 raise RunPodDriverError("completed PREFLIGHT evidence is not canonical")
         self._preflight_passed = True
+        return True
 
     def _matrix_preflight_evidence(
         self, bundle: RunBundle, legacy: Mapping[str, Any]
@@ -799,7 +835,7 @@ class RunPodOrchestrationDriver:
         )
         payload = {
             "schema_id": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_ID,
-            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+            "schema_version": RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
             "v1": dict(legacy),
             "matrix_binding": binding.model_dump(mode="json", exclude_none=True),
             "matrix_binding_sha256": training_run_matrix_preflight_binding_sha256(binding),
@@ -1914,6 +1950,89 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
         "currency": "USD" if hourly_rate is not None else None,
         "provider_observation_basis": "runpodctl pod get response",
     }
+
+
+def _preflight_continuation_schedule_consistency(
+    bundle: RunBundle,
+    input_provider_bindings: Sequence[InputProviderRootBinding],
+) -> tuple[list[str], dict[str, Any]]:
+    """Authenticate and compare continuation schedules without provider transport calls."""
+    failures: list[str] = []
+    observed: dict[str, Any] = {}
+    continuation_rows: list[tuple[RunRowSpec, TrainingRunSpec]] = []
+    for row in bundle.rows:
+        try:
+            run_spec = _authenticated_row_training_spec(row)
+        except (OSError, ValueError) as exc:
+            failures.append(f"{row.row_id}: {exc}")
+            continue
+        if run_spec is None or run_spec.checkpoint_progress.continuation is None:
+            continue
+        continuation_rows.append((row, run_spec))
+    if failures or not continuation_rows:
+        return failures, observed
+
+    with tempfile.TemporaryDirectory(prefix="feedbax-continuation-preflight-") as temp_dir:
+        try:
+            materialize_bundle_inputs(
+                bundle,
+                destination_root=Path(temp_dir),
+                provider_bindings=input_provider_bindings,
+            )
+        except Exception as exc:
+            return [f"authenticated source checkpoint materialization failed: {exc}"], observed
+        for row, target_run_spec in continuation_rows:
+            continuation = target_run_spec.checkpoint_progress.continuation
+            assert continuation is not None
+            try:
+                source = native_resume_checkpoint_source(bundle, row)
+                if source is None:
+                    raise ValueError(
+                        "declared continuation has no exact authenticated resume checkpoint source"
+                    )
+                checkpoint_root = Path(temp_dir) / "inputs" / source.custody.target_role
+                documents = load_checkpoint_custody_documents(checkpoint_root)
+                manifest = documents.manifest.document
+                validate_checkpoint_continuation_source_count(manifest, continuation)
+                source_run_spec, _source_phase_program = (
+                    authenticated_run_contract_source_projection(manifest)
+                )
+                row_failures, row_observed = compare_continuation_schedule_projections(
+                    source_run_spec=source_run_spec,
+                    target_run_spec=target_run_spec,
+                    source_manifest=manifest,
+                    continuation=continuation,
+                )
+            except Exception as exc:
+                failures.append(f"{row.row_id}: {exc}")
+                continue
+            observed[row.row_id] = row_observed
+            failures.extend(f"{row.row_id}: {failure}" for failure in row_failures)
+    return failures, observed
+
+
+def _authenticated_row_training_spec(row: RunRowSpec) -> TrainingRunSpec | None:
+    """Load one digest-authenticated inline TrainingRunSpec, when present."""
+    ref = row.execution.payload
+    if ref.schema_id != "feedbax.spec.training_run":
+        return None
+    if ref.uri is None:
+        raise ValueError("training execution payload has no local URI")
+    data = Path(ref.uri).read_bytes()
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != ref.sha256:
+        raise ValueError(
+            f"training execution payload digest mismatch; expected={ref.sha256} actual={actual}"
+        )
+    payload = json.loads(data)
+    if not isinstance(payload, Mapping):
+        raise ValueError("training execution payload must be a JSON object")
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
+        raise ValueError("training execution payload schema does not match its artifact ref")
+    return TrainingRunSpec.model_validate(payload)
 
 
 def _preflight_check(
