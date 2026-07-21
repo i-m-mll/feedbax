@@ -1355,6 +1355,27 @@ def test_lr_trace_rejects_mixed_or_ambiguous_continuation_frames(
     assert detail in str(result.detail)
 
 
+def test_lr_trace_rejects_cumulative_sample_at_continuation_origin() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+    ).model_dump(mode="json")
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={"optimizer": optimizer},
+            training_diagnostics={
+                "segment_completed_batches": 9_000,
+                "cumulative_completed_batches": 21_000,
+                "lr_trace": {12_000: 3e-5, 12_500: 3e-5, 21_000: 3e-5},
+            },
+        )
+    )
+
+    assert result.status == "fail"
+    assert "mixed or out-of-range" in str(result.detail)
+
+
 def test_lr_trace_resolves_legacy_program_steps_from_immutable_event_coordinates() -> None:
     optimizer = OptimizerSpec(
         type="adamw",
@@ -1455,6 +1476,30 @@ def test_lr_trace_legacy_program_steps_require_complete_unambiguous_event_eviden
     )
     assert conflicting.status == "fail"
     assert "run events disagree" in str(conflicting.detail)
+
+    origin_boundary = check_lr_trace(
+        _row(
+            bundle_row_spec={"optimizer": optimizer},
+            training_diagnostics=diagnostics,
+            event_log=[
+                {
+                    "payload": {
+                        "coordinate": {
+                            "program_step": step,
+                            "completed_batches": completed_batches,
+                        }
+                    }
+                }
+                for step, completed_batches in (
+                    (5_000, 16_500),
+                    (7_000, 19_000),
+                    (9_000, 21_000),
+                )
+            ],
+        )
+    )
+    assert origin_boundary.status == "fail"
+    assert "maps outside the cumulative continuation range" in str(origin_boundary.detail)
 
     reversed_mapping = check_lr_trace(
         _row(
