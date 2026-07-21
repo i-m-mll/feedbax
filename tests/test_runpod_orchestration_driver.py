@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -208,6 +209,37 @@ class _RunPodFixtureCompiler:
         )
 
 
+def _git_seal_ready(root: Path, *tracked: str) -> None:
+    """Make an existing directory a sealable Git top-level.
+
+    Governed repo snapshots (lane E-ii) require every configured local repo to
+    be a Git working tree, while the layout-vs-lock check (lane E-i) requires it
+    to hold the declared lockfile. This commits the requested tracked files (or a
+    placeholder when none is supplied) so both checks are satisfied by the same
+    fixture root.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    if (root / ".git").exists():
+        return
+    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "runpod@example.invalid"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "RunPod Test"], check=True)
+    to_add = [name for name in tracked if (root / name).exists()]
+    if not to_add:
+        (root / ".sealed").write_text("sealed\n", encoding="utf-8")
+        to_add = [".sealed"]
+    for name in to_add:
+        subprocess.run(["git", "-C", str(root), "add", name], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "fixture"],
+        check=True,
+        capture_output=True,
+    )
+
+
 def _bundle(
     tmp_path: Path,
     *,
@@ -218,6 +250,7 @@ def _bundle(
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
     lockfile_sha256 = hashlib.sha256(lockfile.read_bytes()).hexdigest()
+    _git_seal_ready(tmp_path, "uv.lock")
     training_config = None
     if baseline:
         # The baseline extension lives inside a schema-valid authored field and
@@ -302,6 +335,8 @@ def _layout_case(
     lock_bytes = lock_text.encode("utf-8")
     if write_lock:
         lock_path.write_bytes(lock_bytes)
+    for repo_root in configured_local.values():
+        _git_seal_ready(Path(repo_root), "uv.lock")
     environment = bundle.environment.model_copy(
         update={"lockfile_hashes": {"uv.lock": hashlib.sha256(lock_bytes).hexdigest()}}
     )
@@ -356,6 +391,34 @@ def _state(bundle: RunBundle) -> RunSetState:
         run_set_id=bundle.run_set_id,
         rows={row.row_id: RowState() for row in bundle.rows},
         environment_fingerprint="fingerprint-123",
+    )
+
+
+def _sealed_state(
+    driver: RunPodOrchestrationDriver,
+    bundle: RunBundle,
+) -> RunSetState:
+    manifest = driver.seal_repo_snapshots(bundle)
+    return _state(bundle).model_copy(update={"repo_snapshot_manifest": manifest})
+
+
+def _init_snapshot_repo(root: Path) -> None:
+    root.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "runpod@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "RunPod Test"],
+        check=True,
+    )
+    (root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "fixture"],
+        check=True,
+        capture_output=True,
     )
 
 
@@ -915,7 +978,9 @@ def test_provided_endpoint_certify_fails_without_provider_realization_facts(
         transport=transport,
     )
     provision_record = dict(driver.provision(bundle, _state(bundle)))
-    declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+    declaration_fingerprint = compute_runpod_environment_fingerprint(
+        bundle, driver.seal_repo_snapshots(bundle)
+    )
     fingerprint = _realized_fingerprint(
         {
             "declaration_sha256": declaration_fingerprint,
@@ -1103,7 +1168,9 @@ def test_accepted_datacenter_persists_into_realized_deployment_evidence(
         accepted_datacenter="CA-MTL-1",
     )
     declaration = {
-        "declaration_sha256": compute_runpod_environment_fingerprint(bundle),
+        "declaration_sha256": compute_runpod_environment_fingerprint(
+            bundle, driver.seal_repo_snapshots(bundle)
+        ),
         "image_id": bundle.environment.image_id,
         "lockfile_hashes": bundle.environment.lockfile_hashes,
         "python_version": bundle.environment.python_version,
@@ -1408,7 +1475,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     transport.queue_ssh(CommandResult(1, ""))  # fingerprint probe mismatch
     local_repo = tmp_path / "local repos" / "feedbax [dev]"
     local_repo.parent.mkdir()
-    local_repo.mkdir()
+    _init_snapshot_repo(local_repo)
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             ssh_host="198.51.100.10",
@@ -1426,7 +1493,7 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
         transport=transport,
     )
 
-    fingerprint = driver.realize_env(bundle, _state(bundle))
+    fingerprint = driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     fingerprint_payload = json.loads(fingerprint)
     assert fingerprint_payload["schema_version"] == (
@@ -1434,23 +1501,16 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     )
     assert fingerprint_payload["runtime"]["jax_platform"] == "gpu"
     assert fingerprint_payload["feedbax_plugins"][0]["name"] == "rlrmp2"
-    assert transport.rsync_calls == [
-        (
-            str(local_repo) + "/",
-            "/workspace/dev repos/feedbax [dev]/",
-            True,
-            (
-                ".git",
-                ".venv",
-                "__pycache__",
-                ".pytest_cache",
-                ".mypy_cache",
-                ".ruff_cache",
-                "_artifacts",
-                "web/node_modules",
-            ),
-        )
-    ]
+    assert len(transport.rsync_calls) == 1
+    source, target, delete, excludes = transport.rsync_calls[0]
+    assert source.endswith("/")
+    assert source != str(local_repo) + "/"
+    assert Path(source).name == driver.repo_snapshot_manifest().repos[
+        "feedbax"
+    ].content_sha256
+    assert target == "/workspace/dev repos/feedbax [dev]/"
+    assert delete is True
+    assert excludes == ()
     joined = "\n".join(transport.ssh_commands)
     assert "perl -0pi" in joined
     assert "\\Q$ENV{PATCH_FROM}\\E" in joined
@@ -1463,13 +1523,94 @@ def test_realize_env_rsyncs_repos_literal_patches_and_bootstrap(tmp_path: Path) 
     assert "lockfile digest mismatch" in joined
 
 
+def test_runpod_snapshot_digest_changes_environment_reuse_key(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    local_repo = tmp_path / "feedbax"
+    _init_snapshot_repo(local_repo)
+    config = RunPodDriverConfig(local_repos={"feedbax": local_repo})
+    (local_repo / "tracked.txt").write_text("dirty one\n", encoding="utf-8")
+    first_driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    first_manifest = first_driver.seal_repo_snapshots(bundle)
+    first_fingerprint = compute_runpod_environment_fingerprint(bundle, first_manifest)
+    (local_repo / "tracked.txt").write_text("dirty two\n", encoding="utf-8")
+    second_driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+    second_manifest = second_driver.seal_repo_snapshots(bundle)
+    second_fingerprint = compute_runpod_environment_fingerprint(bundle, second_manifest)
+
+    first = first_manifest.repos["feedbax"]
+    second = second_manifest.repos["feedbax"]
+    assert first.commit == second.commit
+    assert first.dirty is second.dirty is True
+    assert first.content_sha256 != second.content_sha256
+    assert first_fingerprint != second_fingerprint
+
+
+def test_runpod_wholesale_snapshot_sync_deletes_stale_secret(tmp_path: Path) -> None:
+    rsync = shutil.which("rsync")
+    assert rsync is not None, "rsync is required for the governed-transfer contract test"
+
+    class LocalRsyncTransport(FakeRunPodTransport):
+        def rsync(
+            self,
+            source: str,
+            target: str,
+            *,
+            delete: bool = False,
+            excludes: tuple[str, ...] = (),
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            super().rsync(
+                source,
+                target,
+                delete=delete,
+                excludes=excludes,
+                timeout_seconds=timeout_seconds,
+            )
+            args = [rsync, "-a"]
+            if delete:
+                args.append("--delete")
+            args.extend([source, target])
+            completed = subprocess.run(args, capture_output=True, text=True)
+            return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+    bundle = _bundle(tmp_path)
+    local_repo = tmp_path / "feedbax"
+    _init_snapshot_repo(local_repo)
+    (local_repo / ".gitignore").write_text("*.secret\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(local_repo), "add", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(local_repo), "commit", "-m", "ignore secrets"],
+        check=True,
+        capture_output=True,
+    )
+    (local_repo / "local.secret").write_text("never ship\n", encoding="utf-8")
+    remote = tmp_path / "remote repo"
+    remote.mkdir()
+    (remote / "stale.secret").write_text("remove me\n", encoding="utf-8")
+    transport = LocalRsyncTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": local_repo}),
+        transport=transport,
+    )
+    manifest = driver.seal_repo_snapshots(bundle)
+    snapshot_root = driver._repo_snapshots.snapshots["feedbax"].staging_root
+
+    driver._rsync_repo(str(snapshot_root), str(remote))
+
+    assert not (remote / "stale.secret").exists()
+    assert not (remote / "local.secret").exists()
+    assert (remote / "tracked.txt").read_text(encoding="utf-8") == "tracked\n"
+    assert manifest.repos["feedbax"].file_count == 2
+    assert transport.rsync_calls == [(f"{snapshot_root}/", f"{remote}/", True, ())]
+
+
 def test_realize_env_fails_closed_when_repo_rsync_fails(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))  # mkdir
     transport.rsync_result = CommandResult(1, "", "remote path rejected")
     local_repo = tmp_path / "feedbax"
-    local_repo.mkdir()
+    _init_snapshot_repo(local_repo)
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             ssh_host="198.51.100.10",
@@ -1481,7 +1622,7 @@ def test_realize_env_fails_closed_when_repo_rsync_fails(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RunPodDriverError, match="rsync repo .*remote path rejected"):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, _sealed_state(driver, bundle))
 
 
 def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
@@ -1509,7 +1650,7 @@ def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
         monotonic=clock.monotonic,
     )
 
-    driver.realize_env(bundle, _state(bundle))
+    driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     assert clock.sleeps == [2, 2]
     fingerprint_write = next(
@@ -1541,7 +1682,7 @@ def test_realize_env_failed_sentinel_raises_with_remote_log_tail(tmp_path: Path)
     )
 
     with pytest.raises(RunPodDriverError, match="important failure detail"):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, _sealed_state(driver, bundle))
 
 
 def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
@@ -1566,14 +1707,19 @@ def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RunPodDriverError, match="uv sync timed out after 3s"):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     assert clock.now == 3
 
 
 def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
-    declaration_fingerprint = compute_runpod_environment_fingerprint(bundle)
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(transport=transport)
+    state = _sealed_state(driver, bundle)
+    declaration_fingerprint = compute_runpod_environment_fingerprint(
+        bundle, driver.repo_snapshot_manifest()
+    )
     declaration = {
         "declaration_sha256": declaration_fingerprint,
         "image_id": bundle.environment.image_id,
@@ -1581,13 +1727,10 @@ def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -
         "python_version": bundle.environment.python_version,
     }
     realized_fingerprint = _realized_fingerprint(declaration)
-    transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))
     transport.queue_ssh(CommandResult(0, declaration_fingerprint))
     transport.queue_ssh(CommandResult(0, realized_fingerprint))
-    driver = RunPodOrchestrationDriver(transport=transport)
-
-    assert driver.realize_env(bundle, _state(bundle)) == realized_fingerprint
+    assert driver.realize_env(bundle, state) == realized_fingerprint
     assert transport.rsync_calls == []
     assert all("uv sync --frozen" not in command for command in transport.ssh_commands)
     assert all("overlay-" not in command for command in transport.ssh_commands)
@@ -2029,7 +2172,7 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
         transport=transport,
     )
 
-    driver.realize_env(bundle, _state(bundle))
+    driver.realize_env(bundle, _sealed_state(driver, bundle))
 
     joined = "\n".join(transport.ssh_commands)
     assert "command -v setsid >/dev/null" in transport.ssh_commands[0]
@@ -2064,6 +2207,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     checks = driver.preflight_checks(bundle)
 
     assert [check.name for check in checks] == [
+        "runpod-repo-snapshots",
         "input-provider-bindings",
         "continuation-schedule-consistency",
         "runpod-lockfiles-declared",
@@ -2113,6 +2257,7 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
     checks = driver.preflight_checks(bundle)
 
     assert [check.name for check in checks] == [
+        "runpod-repo-snapshots",
         "input-provider-bindings",
         "continuation-schedule-consistency",
     ]
@@ -2395,7 +2540,11 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))
     transport.queue_ssh(CommandResult(1, ""))
-    declaration_sha256 = compute_runpod_environment_fingerprint(bundle)
+    driver = RunPodOrchestrationDriver(transport=transport)
+    state = _sealed_state(driver, bundle)
+    declaration_sha256 = compute_runpod_environment_fingerprint(
+        bundle, driver.repo_snapshot_manifest()
+    )
     mismatched = json.loads(
         _realized_fingerprint(
             {
@@ -2413,10 +2562,8 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
         mismatched["runtime"]["jax_platform"] = "cpu"
         expected_error = "JAX CUDA backend"
     transport.environment_probe_result = CommandResult(0, json.dumps(mismatched))
-    driver = RunPodOrchestrationDriver(transport=transport)
-
     with pytest.raises(RunPodDriverError, match=expected_error):
-        driver.realize_env(bundle, _state(bundle))
+        driver.realize_env(bundle, state)
 
 
 def test_explicit_primary_repo_controls_environment_and_row_workdirs(tmp_path: Path) -> None:
@@ -2756,7 +2903,7 @@ def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path)
         ),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    assert len(state.stage(STAGE_PREFLIGHT).checks) == 22
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 23
     preflight = state.stage(STAGE_PREFLIGHT)
     preflight = preflight.model_copy(
         update={

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -19,6 +20,7 @@ from feedbax.execution.models import (
     EXECUTION_PLAN_SCHEMA_VERSION,
     EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
     EXECUTION_SPEC_SCHEMA_VERSION,
     ExecutionCloudPayload,
     ExecutionCell,
@@ -298,6 +300,11 @@ def test_execution_plan_nested_payloads_require_schema_identity() -> None:
     }.items():
         with pytest.raises(UnsupportedSpecVersion, match=version):
             default_spec_registry.migrate(kind, {"schema_version": version})
+    with pytest.raises(UnsupportedSpecVersion, match=EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1):
+        default_spec_registry.migrate(
+            "ExecutionReproducibility",
+            {"schema_version": EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1},
+        )
 
 
 def test_runpod_plan_uses_ssh_worker_contract() -> None:
@@ -363,7 +370,26 @@ def test_runpod_training_plan_records_training_source_without_provider_contact()
     assert any(check.id == "gpu" for check in plan.health_checks)
 
 
-def test_runpod_plan_marks_local_rsync_as_dev_override() -> None:
+def test_runpod_plan_marks_local_rsync_as_dev_override(tmp_path: Path) -> None:
+    repo = tmp_path / "feedbax source"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "planning@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Planning Test"],
+        check=True,
+    )
+    (repo / "tracked file.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "tracked file.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "fixture"],
+        check=True,
+        capture_output=True,
+    )
+    (repo / "tracked file.py").write_text("VALUE = 2\n", encoding="utf-8")
     spec = ExecutionSpec(
         backend="runpod",
         command="python -m feedbax.bin.train",
@@ -372,7 +398,7 @@ def test_runpod_plan_marks_local_rsync_as_dev_override() -> None:
                 name="feedbax",
                 role="project",
                 install_mode="local-rsync",
-                local_path="/tmp/feedbax",
+                local_path=str(repo),
             )
         ],
     )
@@ -384,6 +410,27 @@ def test_runpod_plan_marks_local_rsync_as_dev_override() -> None:
     assert sync.command is not None
     assert "--no-owner --no-group" in sync.command
     assert "--stats" in sync.command
+    assert "--delete" in sync.command
+    assert "--exclude" not in sync.command
+    assert str(repo) not in sync.command
+    assert "feedbax.orchestration.repo_snapshot verify" in sync.command
+    snapshots = plan.reproducibility["local_rsync_snapshots"]
+    assert snapshots == [
+        {
+            "name": "feedbax",
+            "local_path": str(repo),
+            "commit": subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            "dirty": True,
+            "content_sha256": snapshots[0]["content_sha256"],
+            "file_count": 1,
+        }
+    ]
+    assert len(snapshots[0]["content_sha256"]) == 64
 
 
 def test_modal_plan_represents_parallel_cells_without_ssh() -> None:

@@ -261,6 +261,7 @@ from feedbax.execution.models import (
     EXECUTION_PLAN_SCHEMA_VERSION,
     EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
     EXECUTION_SPEC_SCHEMA_VERSION,
     LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
 )
@@ -286,6 +287,11 @@ from feedbax.orchestration.bundle import (
 from feedbax.orchestration.state import (
     RUN_SET_STATE_SCHEMA_ID,
     RUN_SET_STATE_SCHEMA_VERSION,
+    RUN_SET_STATE_SCHEMA_VERSION_V1,
+)
+from feedbax.orchestration.repo_snapshot import (
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
 )
 from feedbax.orchestration.events import (
     MAPPED_METRIC_VALUE_SCHEMA_ID,
@@ -2958,6 +2964,27 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "RepoSnapshotManifest",
+            REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
+            REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+            owner_module="feedbax.orchestration.repo_snapshot",
+            emitted_by=(
+                "feedbax.orchestration.repo_snapshot.seal_repo_snapshots",
+            ),
+            consumed_by=(
+                "feedbax.orchestration.drivers.runpod.RunPodOrchestrationDriver",
+                "feedbax.execution.planning.prepare_execution_plan",
+            ),
+            description="Sealed tracked-working-tree transfer authority.",
+            rejected_old_versions=(
+                "feedbax.orchestration.repo_snapshot_manifest.v0",
+            ),
+            required_tests=(
+                "tests/test_repo_snapshot.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "RunSetState",
             RUN_SET_STATE_SCHEMA_ID,
             RUN_SET_STATE_SCHEMA_VERSION,
@@ -2968,8 +2995,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "orchestration drivers",
             ),
             description="Atomic run-set orchestration state document.",
-            rejected_old_versions=("feedbax.orchestration.run_set_state.v0",),
-            required_tests=("tests/test_orchestration_core.py",),
+            rejected_old_versions=(
+                "feedbax.orchestration.run_set_state.v0",
+                RUN_SET_STATE_SCHEMA_VERSION_V1,
+            ),
+            required_tests=(
+                "tests/test_orchestration_core.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "RunEvent",
@@ -3704,7 +3737,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "ExecutionReproducibility",
             EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
             EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
-            ("feedbax.manifest.execution_reproducibility.v0",),
+            (
+                "feedbax.manifest.execution_reproducibility.v0",
+                EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
+            ),
             "Typed reproducibility payload embedded in an execution plan.",
         ),
         (

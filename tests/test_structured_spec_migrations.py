@@ -126,6 +126,7 @@ from feedbax.execution.models import (
     EXECUTION_CLOUD_PAYLOAD_SCHEMA_VERSION,
     EXECUTION_REPRODUCIBILITY_SCHEMA_ID,
     EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION,
+    EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
 )
 from feedbax.objectives.spec import validate_objective_spec
 from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RUN_EVENT_SCHEMA_VERSION
@@ -1437,6 +1438,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert reproducibility_policy is not None
     assert reproducibility_policy.rejected_old_versions == (
         "feedbax.manifest.execution_reproducibility.v0",
+        EXECUTION_REPRODUCIBILITY_SCHEMA_VERSION_V1,
     )
     assert local_execution_result_policy is not None
     assert local_execution_result_policy.rejected_old_versions == (
