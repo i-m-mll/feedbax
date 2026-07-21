@@ -302,7 +302,7 @@ class StageEngine:
         with self.store.lock(break_stale=break_stale_lock):
             state = self.store.initialize(initial)
             state = self._hydrate_completed_assembly(state)
-            self._restore_completed_driver_preflight(state)
+            state = self._restore_completed_driver_preflight(state)
             if retry_failed_certification:
                 retry_state = self._reset_failed_certification(state)
                 if retry_state is not state:
@@ -482,18 +482,42 @@ class StageEngine:
         self.driver = self.driver_factory(self.bundle)
         return state
 
-    def _restore_completed_driver_preflight(self, state: RunSetState) -> None:
+    def _restore_completed_driver_preflight(self, state: RunSetState) -> RunSetState:
         """Restore driver-local preflight authority before skipping a completed stage."""
         if state.stage(STAGE_PREFLIGHT).status != "completed":
-            return
+            return state
         restore = getattr(self.driver, "restore_completed_preflight", None)
         if callable(restore):
             try:
-                restore(self.bundle, state)
+                reusable = restore(self.bundle, state)
             except Exception as exc:
                 raise PreflightFailed(
                     f"persisted driver PREFLIGHT evidence is invalid: {exc}"
                 ) from exc
+            if reusable is False:
+                later_started = [
+                    stage_id
+                    for stage_id in STAGE_ORDER[STAGE_ORDER.index(STAGE_PREFLIGHT) + 1 :]
+                    if state.stage(stage_id).status != "pending"
+                ]
+                if later_started:
+                    raise PreflightFailed(
+                        "stale PREFLIGHT evidence cannot be rerun after later stages started; "
+                        f"stages={later_started!r}"
+                    )
+                reset = state.stage(STAGE_PREFLIGHT).model_copy(
+                    update={
+                        "status": "pending",
+                        "started_at": None,
+                        "completed_at": None,
+                        "outputs": {},
+                        "error": None,
+                        "checks": [],
+                    }
+                )
+                state = state.with_stage(STAGE_PREFLIGHT, reset)
+                self.store.save(state)
+        return state
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         checks = run_preflight_checks(self.bundle)

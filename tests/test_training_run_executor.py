@@ -2418,13 +2418,10 @@ def _history_registry(*, stop_after_program_step: int) -> tuple[TrainingMethodRe
         return coordinate.program_step < stop_after_program_step
 
     registry = TrainingMethodRegistry()
-    registry.register(
-        TrainingMethodRegistration(
-            method_ref="feedbax/standard_supervised/v1",
-            payload_schema_id=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
-            payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
-            payload_model=StandardSupervisedMethodPayload,
-            contract_factory=lambda: contract,
+    registry.register_descriptor(
+        replace(
+            standard_supervised_method_descriptor(),
+            contract_compiler=lambda _payload: contract,
             update_kernels_factory=lambda _payload: {
                 "feedbax.training.standard_supervised.gradient_update": gradient_update
             },
@@ -2436,6 +2433,32 @@ def _history_registry(*, stop_after_program_step: int) -> tuple[TrainingMethodRe
         )
     )
     return registry, program
+
+
+def _history_run_spec(
+    registry: TrainingMethodRegistry,
+    *,
+    continuation: CheckpointContinuationRequest | None = None,
+) -> TrainingRunSpec:
+    """Bind the history test's descriptor contract into its durable run spec."""
+    spec = _run_spec()
+    resolved = registry.resolve_execution(spec.method_ref, spec.method_payload)
+    effective_phase = validate_worker_contract(
+        resolved.contract,
+        update_kernels=resolved.update_kernels,
+        guard_predicates=resolved.guard_predicates,
+    )
+    return spec.model_copy(
+        update={
+            "worker_execution": WorkerExecutionSpec(
+                method_contract=resolved.contract,
+                effective_phase=effective_phase,
+            ),
+            "checkpoint_progress": spec.checkpoint_progress.model_copy(
+                update={"continuation": continuation}
+            ),
+        }
+    )
 
 
 def _nan_registry(
@@ -4114,7 +4137,7 @@ def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histo
     }
     source_registry, _program = _history_registry(stop_after_program_step=1)
     source = execute_training_run_spec(
-        _run_spec(),
+        _history_run_spec(source_registry),
         run_id="history-source",
         initial_slots=initial_slots,
         manifest_root=tmp_path / "source-runs",
@@ -4129,14 +4152,11 @@ def test_execute_training_run_spec_continuation_writes_segment_lineage_and_histo
         additional_batches=1,
         self_contained=self_contained,
     )
-    continuation_spec = _run_spec().model_copy(
-        update={
-            "checkpoint_progress": _run_spec().checkpoint_progress.model_copy(
-                update={"continuation": continuation}
-            )
-        }
-    )
     resume_registry, resume_program = _history_registry(stop_after_program_step=2)
+    continuation_spec = _history_run_spec(
+        resume_registry,
+        continuation=continuation,
+    )
     resumed = execute_training_run_spec(
         continuation_spec,
         run_id="history-continuation",

@@ -10,11 +10,14 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import feedbax.orchestration.collection_recovery as collection_recovery
+import feedbax.orchestration.drivers.runpod as runpod_module
+from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 from feedbax.contracts.studio_training import (
@@ -2020,6 +2023,7 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
 
     assert [check.name for check in checks] == [
         "input-provider-bindings",
+        "continuation-schedule-consistency",
         "runpod-image-immutable",
         "runpod-image-tag-exists",
         "runpod-lockfiles-declared",
@@ -2031,6 +2035,47 @@ def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -
     ]
     assert all(check.status == "pass" for check in checks)
     assert transport.runpodctl_calls == [("user", "--output", "json")]
+
+
+def test_declared_continuation_without_source_custody_fails_before_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=10,
+        additional_batches=4,
+    )
+    monkeypatch.setattr(
+        runpod_module,
+        "_authenticated_row_training_spec",
+        lambda _row: SimpleNamespace(
+            checkpoint_progress=SimpleNamespace(continuation=continuation)
+        ),
+    )
+    transport = FakeRunPodTransport()
+    monkeypatch.setattr(
+        transport,
+        "image_exists",
+        lambda _image: pytest.fail("provider transport must not run after schedule failure"),
+    )
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 4090",
+            image=bundle.environment.image_id or "",
+        ),
+        transport=transport,
+    )
+
+    checks = driver.preflight_checks(bundle)
+
+    assert [check.name for check in checks] == [
+        "input-provider-bindings",
+        "continuation-schedule-consistency",
+    ]
+    assert checks[-1].status == "fail"
+    assert "no exact authenticated resume checkpoint source" in (checks[-1].detail or "")
+    assert transport.operations == []
 
 
 @pytest.mark.parametrize(
@@ -2203,6 +2248,54 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
     assert resume_transport.operations == []
 
 
+def test_completed_preflight_without_schedule_check_is_rerun(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    first_transport = FakeRunPodTransport()
+    first_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+    config = RunPodDriverConfig(
+        gpu_id="NVIDIA GeForce RTX 4090",
+        image=bundle.environment.image_id or "",
+    )
+    state = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(config=config, transport=first_transport),
+        store=store,
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+    preflight = state.stage(STAGE_PREFLIGHT)
+    old_checks = [
+        check for check in preflight.checks if check.name != "continuation-schedule-consistency"
+    ]
+    old_outputs = {
+        **preflight.outputs,
+        "checks": [check.model_dump(mode="json") for check in old_checks],
+    }
+    store.save(
+        state.with_stage(
+            STAGE_PREFLIGHT,
+            preflight.model_copy(update={"checks": old_checks, "outputs": old_outputs}),
+        )
+    )
+    rerun_transport = FakeRunPodTransport()
+    rerun_transport.queue_runpodctl(
+        ("user", "--output", "json"), CommandResult(0, json.dumps({"clientBalance": 12.5}))
+    )
+
+    rerun = StageEngine(
+        bundle=bundle,
+        driver=RunPodOrchestrationDriver(config=config, transport=rerun_transport),
+        store=store,
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+
+    assert any(
+        check.name == "continuation-schedule-consistency"
+        for check in rerun.stage(STAGE_PREFLIGHT).checks
+    )
+    assert rerun_transport.runpodctl_calls == [("user", "--output", "json")]
+
+
 @pytest.mark.parametrize(
     "tamper", ["evidence-shape", "checks", "bundle", "timestamps", "driver", "teardown"]
 )
@@ -2361,7 +2454,7 @@ def test_separate_process_existing_run_restores_legacy_preflight(tmp_path: Path)
         ),
         store=store,
     ).run(stop_after_stage=STAGE_PREFLIGHT)
-    assert len(state.stage(STAGE_PREFLIGHT).checks) == 20
+    assert len(state.stage(STAGE_PREFLIGHT).checks) == 21
     preflight = state.stage(STAGE_PREFLIGHT)
     preflight = preflight.model_copy(
         update={

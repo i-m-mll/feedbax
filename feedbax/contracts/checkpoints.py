@@ -82,7 +82,10 @@ CheckpointSlotRole = Literal[
 
 
 CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_ID = "feedbax.spec.training_checkpoint_continuation"
-CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v2"
+CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION_V2 = (
+    "feedbax.spec.training_checkpoint_continuation.v2"
+)
+CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION = "feedbax.spec.training_checkpoint_continuation.v3"
 CHECKPOINT_FORK_PLAN_SCHEMA_ID = "feedbax.spec.training_checkpoint_fork_plan"
 CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.training_checkpoint_fork_plan.v1"
 CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2 = "feedbax.spec.training_checkpoint_fork_plan.v2"
@@ -124,6 +127,43 @@ class CheckpointDocumentLoadResult(Generic[CheckpointDocumentT]):
         return bool(self.migration_records)
 
 
+class ScheduleStateWindowSpec(StrictModel):
+    """Exact schedule values at the continuation boundary and next two updates."""
+
+    boundary: float = Field(allow_inf_nan=False)
+    first_update: float = Field(allow_inf_nan=False)
+    second_update: float = Field(allow_inf_nan=False)
+
+
+class ContinuationScheduleDiscontinuityExemption(StrictModel):
+    """One exact, typed exemption for an intentional schedule discontinuity."""
+
+    schedule_id: str = Field(min_length=1)
+    boundary_batch: int = Field(ge=0)
+    expected_source_state: ScheduleStateWindowSpec
+    expected_target_state: ScheduleStateWindowSpec
+    intended_first_update_behavior: Literal["hold", "increase", "decrease"]
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_first_update_behavior(self) -> "ContinuationScheduleDiscontinuityExemption":
+        boundary = self.expected_target_state.boundary
+        first_update = self.expected_target_state.first_update
+        actual = (
+            "increase"
+            if first_update > boundary
+            else "decrease"
+            if first_update < boundary
+            else "hold"
+        )
+        if self.intended_first_update_behavior != actual:
+            raise ValueError(
+                "/intended_first_update_behavior disagrees with expected target state; "
+                f"declared={self.intended_first_update_behavior!r} actual={actual!r}"
+            )
+        return self
+
+
 class CheckpointContinuationRequest(StrictModel):
     """Durable declaration for a segment-local continuation."""
 
@@ -132,6 +172,20 @@ class CheckpointContinuationRequest(StrictModel):
     source_completed_batches: int = Field(ge=0)
     additional_batches: int | None = Field(default=None, gt=0)
     self_contained: bool = False
+    schedule_discontinuity_exemptions: list[
+        ContinuationScheduleDiscontinuityExemption
+    ] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_v2_exemptions(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        payload = dict(value)
+        if payload.get("schema_version") == CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION_V2:
+            payload["schema_version"] = CHECKPOINT_CONTINUATION_REQUEST_SCHEMA_VERSION
+            payload.setdefault("schedule_discontinuity_exemptions", [])
+        return payload
 
     @model_validator(mode="after")
     def _validate_request(self) -> "CheckpointContinuationRequest":
@@ -150,6 +204,20 @@ class CheckpointContinuationRequest(StrictModel):
             )
         if self.additional_batches is None:
             raise ValueError("/additional_batches is required for segment-local continuation")
+        exemption_ids = [item.schedule_id for item in self.schedule_discontinuity_exemptions]
+        if len(exemption_ids) != len(set(exemption_ids)):
+            raise ValueError("/schedule_discontinuity_exemptions schedule_id values must be unique")
+        mismatched_boundaries = [
+            item.schedule_id
+            for item in self.schedule_discontinuity_exemptions
+            if item.boundary_batch != self.source_completed_batches
+        ]
+        if mismatched_boundaries:
+            raise ValueError(
+                "/schedule_discontinuity_exemptions boundary_batch must equal "
+                "/source_completed_batches; "
+                f"schedule_ids={mismatched_boundaries!r}"
+            )
         return self
 
     @property

@@ -35,7 +35,7 @@ from feedbax.orchestration.bundle import (
 )
 from feedbax.orchestration.drivers.runpod import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION,
-    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2,
+    RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3,
     RunPodDriverConfig,
     RunPodDriverError,
     RunPodOrchestrationDriver,
@@ -229,12 +229,12 @@ def _completed_preflight(bundle: RunBundle, repo: Path, root: Path) -> Any:
     return StageEngine(bundle=bundle, driver=_driver(bundle, repo, RecordingTransport()), store=store).run(stop_after_stage=STAGE_PREFLIGHT)
 
 
-def test_matrix_preflight_emits_canonical_v2_without_private_paths(tmp_path: Path) -> None:
+def test_matrix_preflight_emits_canonical_v3_without_private_paths(tmp_path: Path) -> None:
     repo, revision = _authority_repo(tmp_path)
     bundle = _matrix_bundle(tmp_path, revision=revision)
     state = _completed_preflight(bundle, repo, tmp_path)
     evidence = state.stage(STAGE_PREFLIGHT).outputs["driver_evidence"]
-    assert evidence["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V2
+    assert evidence["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V3
     assert evidence["v1"]["schema_version"] == RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION
     binding = evidence["matrix_binding"]
     assert [row["row_id"] for row in binding["rows"]] == ["first", "second"]

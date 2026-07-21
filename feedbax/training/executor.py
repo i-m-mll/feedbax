@@ -70,6 +70,7 @@ from feedbax.orchestration.events import (
     RunEventEmitter,
     normalize_serialized_metrics,
 )
+from feedbax.orchestration.schedule_eval import project_training_schedules
 from feedbax.training.checkpoint_custody import (
     CheckpointWriteResult,
     ResumeSlotTransform,
@@ -120,7 +121,9 @@ from feedbax.training.worker_validation import (
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
 CancellationProbe = Callable[[ProgressCoordinate], CancellationDecision | None]
-_RESERVED_KERNEL_CONTEXT_KEYS = frozenset({"run_spec", "method_payload"})
+_RESERVED_KERNEL_CONTEXT_KEYS = frozenset(
+    {"run_spec", "method_payload", "schedule_projection"}
+)
 _FEEDBAX_METADATA_NAMESPACE_PREFIX = "feedbax_"
 _METADATA_VALUE_ABSENT = object()
 _METHOD_OBSERVATION_BUFFER_CAP = 500
@@ -1591,14 +1594,31 @@ def _bind_restored_schedule_context(
 ) -> dict[str, Any]:
     continuation = run_spec.checkpoint_progress.continuation
     descriptor = resolved_method.descriptor
-    if continuation is None or descriptor is None or descriptor.optimizer_spec_projector is None:
+    if continuation is None:
         return dict(kernel_context)
+    current_step = continuation.source_completed_batches
+    projection = project_training_schedules(
+        run_spec,
+        coordinates=(current_step, current_step + 1, current_step + 2),
+        lineage=CheckpointSegmentLineage(
+            start_batch=current_step,
+            segment_batch_count=continuation.additional_batches or 0,
+            parent_transaction_id="restored" if current_step else None,
+        ),
+        resolved_method=resolved_method,
+    )
+    projected_context = {
+        **kernel_context,
+        "schedule_projection": projection.model_dump(mode="json"),
+    }
+    if descriptor is None or descriptor.optimizer_spec_projector is None:
+        return projected_context
     optimizer_spec = OptimizerSpec.model_validate(
         descriptor.optimizer_spec_projector(resolved_method.payload)
     )
     schedule = optimizer_spec.lr_schedule
     if schedule is None or schedule.kind == "constant":
-        return dict(kernel_context)
+        return projected_context
     if descriptor.optimizer_step_extractor is None:
         raise TrainingRunExecutorError(
             "scheduled continuation requires /descriptor/optimizer_step_extractor"
@@ -1609,7 +1629,6 @@ def _bind_restored_schedule_context(
         slots,
         slot_axis_bindings,
     )
-    current_step = continuation.source_completed_batches
     if restored_count != current_step:
         raise TrainingRunExecutorError(
             "restored optimizer count disagrees with continuation source; "
@@ -1637,7 +1656,7 @@ def _bind_restored_schedule_context(
         raise TrainingRunExecutorError(
             f"restored_schedule_context_binder returned executor-reserved keys: {reserved!r}"
         )
-    return {**kernel_context, **patch}
+    return {**projected_context, **patch}
 
 
 def _local_custody_path(uri: str) -> Path | None:
