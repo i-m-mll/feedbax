@@ -66,6 +66,7 @@ from feedbax.training.checkpoint_custody import (
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
     TrainingDiagnostics,
 )
@@ -2042,7 +2043,11 @@ def _is_typed_training_diagnostics(payload: Mapping[str, Any]) -> bool:
         payload.get("kind") != "TrainingDiagnostics"
         or payload.get("schema_id") != TRAINING_DIAGNOSTICS_SCHEMA_ID
         or payload.get("schema_version")
-        not in {TRAINING_DIAGNOSTICS_SCHEMA_VERSION, TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3}
+        not in {
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION,
+        }
     ):
         return False
     try:

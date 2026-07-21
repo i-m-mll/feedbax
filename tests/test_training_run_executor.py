@@ -9,6 +9,7 @@ import sys
 from copy import copy, deepcopy
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import equinox as eqx
 import jax
@@ -22,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 import feedbax.training.executor as training_executor
 import feedbax.training.phase_executor as phase_executor
 import feedbax.orchestration.events as orchestration_events
+import feedbax.__main__ as feedbax_main
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
@@ -32,6 +34,13 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     BatchHistory,
     CheckpointContinuationRequest,
+    CheckpointSegmentLineage,
+)
+from feedbax.contracts.nan_attribution import (
+    NAN_ATTRIBUTION_ARTIFACT_ROLE,
+    NAN_RESTORATION_ARTIFACT_ROLE,
+    NanAttributionDetection,
+    NanAttributionRestorationOutcome,
 )
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.staged_execution import (
@@ -77,6 +86,7 @@ from feedbax.contracts.worker import (
     CheckpointSlotSpec,
     MethodTrainingDiagnosticsSpec,
     MappingLevelSpec,
+    MaterializedSlotAxisBinding,
     MetricGuardSpec,
     PhaseTransitionSpec,
     ProgressCoordinate,
@@ -1011,7 +1021,7 @@ def test_mapped_batch_authority_preserves_host_integer_semantics(authority) -> N
     assert completed == expected
 
 
-def test_nan_metric_names_uses_one_transfer_for_nested_mapped_leaves(
+def test_nan_detector_keeps_inf_only_metrics_healthy_with_one_transfer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transfers = 0
@@ -1023,17 +1033,174 @@ def test_nan_metric_names_uses_one_transfer_for_nested_mapped_leaves(
         return device_get(value)
 
     monkeypatch.setattr(training_executor.jax, "device_get", counted_device_get)
-    observed = training_executor._nan_metric_names(
-        {
-            "healthy": {"replicas": jnp.arange(5.0), "nested": (jnp.inf, None)},
-            "replica_edge": {
-                "replicas": jnp.array([0.0, 1.0, 2.0, 3.0, jnp.nan]),
-                "label": "ignored",
-            },
-        }
+    spec = _run_spec()
+    observed = training_executor._nan_attribution_detection(
+        run_spec=spec,
+        run_id="inf-only",
+        resolved_method=spec.resolved_method,
+        schedule_lineage=CheckpointSegmentLineage(start_batch=0, segment_batch_count=1),
+        slots={"model": jnp.inf},
+        coordinate=ProgressCoordinate(
+            run_id="inf-only",
+            phase="train_batch",
+            metrics={"healthy": {"replicas": jnp.arange(5.0), "nested": (jnp.inf, None)}},
+        ),
+        slot_axis_bindings={},
     )
-    assert observed == ["replica_edge"]
+    assert observed is None
     assert transfers == 1
+
+
+def test_nan_detection_caps_offending_leaf_exemplars() -> None:
+    spec = _run_spec()
+    detection = training_executor._nan_attribution_detection(
+        run_spec=spec,
+        run_id="leaf-cap",
+        resolved_method=spec.resolved_method,
+        schedule_lineage=CheckpointSegmentLineage(start_batch=0, segment_batch_count=1),
+        slots={
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
+            "predicate_components": {f"component_{index}": jnp.nan for index in range(12)},
+        },
+        coordinate=ProgressCoordinate(
+            run_id="leaf-cap",
+            phase="train_batch",
+            metrics={"informational_inf": jnp.inf, "kernel_health": jnp.nan},
+        ),
+        slot_axis_bindings={},
+    )
+
+    assert detection is not None
+    slot = next(item for item in detection.slots if item.slot_name == "predicate_components")
+    assert slot.offending_leaf_count == 12
+    assert len(slot.exemplars) == training_executor._NAN_ATTRIBUTION_LEAF_EXEMPLAR_CAP
+    assert slot.truncated is True
+    informational = next(
+        metric for metric in detection.metrics if metric.metric_name == "informational_inf"
+    )
+    assert informational.non_finite.nan_count == 0
+    assert informational.non_finite.inf_count == 1
+
+
+def test_nan_detection_metric_cap_keeps_the_tripping_nan_metric() -> None:
+    spec = _run_spec()
+    metrics = {f"a_inf_{index:03d}": jnp.inf for index in range(64)}
+    metrics["z_tripping_nan"] = jnp.nan
+
+    detection = training_executor._nan_attribution_detection(
+        run_spec=spec,
+        run_id="metric-cap",
+        resolved_method=spec.resolved_method,
+        schedule_lineage=CheckpointSegmentLineage(start_batch=0, segment_batch_count=1),
+        slots={"batch_counter": jnp.array(0, dtype=jnp.int32)},
+        coordinate=ProgressCoordinate(
+            run_id="metric-cap",
+            phase="train_batch",
+            metrics=metrics,
+        ),
+        slot_axis_bindings={},
+    )
+
+    assert detection is not None
+    assert detection.total_offending_metrics == 65
+    assert detection.metrics_truncated is True
+    assert any(metric.metric_name == "z_tripping_nan" for metric in detection.metrics)
+
+
+def test_nan_attribution_bounds_large_mapped_axes_to_offending_positions() -> None:
+    counts = np.zeros(2048, dtype=np.int32)
+    counts[1500] = 1
+    binding = MaterializedSlotAxisBinding(
+        axis="ensemble",
+        role="replicate",
+        size=2048,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+
+    summary = training_executor._aggregate_nonfinite_projection(
+        (
+            {
+                "nan_count": 1,
+                "inf_count": 0,
+                "nan_counts_by_axis": counts,
+                "inf_counts_by_axis": np.zeros_like(counts),
+            },
+        ),
+        (binding,),
+    )
+
+    assert summary.axis_size == 2048
+    assert summary.axis_indices == (1500,)
+    assert summary.nan_mask == (True,)
+    assert summary.axis_truncated is True
+
+
+def test_nan_detection_captures_mapped_false_predicate_components() -> None:
+    spec = _run_spec()
+    binding = MaterializedSlotAxisBinding(
+        axis="ensemble",
+        role="replicate",
+        size=5,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+    detection = training_executor._nan_attribution_detection(
+        run_spec=spec,
+        run_id="predicate-attribution",
+        resolved_method=spec.resolved_method,
+        schedule_lineage=CheckpointSegmentLineage(start_batch=0, segment_batch_count=1),
+        slots={
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
+            "predicate_components": {
+                "clamp_step_valid": jnp.array([True, True, False, True, True])
+            },
+        },
+        coordinate=ProgressCoordinate(
+            run_id="predicate-attribution",
+            phase="train_batch",
+            metrics={"kernel_health": jnp.nan},
+        ),
+        slot_axis_bindings={"predicate_components": (binding,)},
+    )
+
+    assert detection is not None
+    slot = next(item for item in detection.slots if item.slot_name == "predicate_components")
+    assert slot.nonfinite_leaf_count == 0
+    assert slot.predicate_false_leaf_count == 1
+    exemplar = slot.predicate_exemplars[0]
+    assert "clamp_step_valid" in exemplar.leaf_path
+    assert exemplar.predicate.axis_role == "replicate"
+    assert exemplar.predicate.false_mask == (False, False, True, False, False)
+
+
+def test_nan_detection_survives_corrupt_batch_authority() -> None:
+    spec = _run_spec()
+    detection = training_executor._nan_attribution_detection(
+        run_spec=spec,
+        run_id="corrupt-batch-authority",
+        resolved_method=spec.resolved_method,
+        schedule_lineage=CheckpointSegmentLineage(
+            parent_transaction_id="tx-parent",
+            start_batch=7,
+            segment_batch_count=1,
+        ),
+        slots={"batch_counter": jnp.nan},
+        coordinate=ProgressCoordinate(
+            run_id="corrupt-batch-authority",
+            phase="train_batch",
+            metrics={"kernel_health": jnp.nan},
+        ),
+        slot_axis_bindings={},
+    )
+
+    assert detection is not None
+    assert detection.coordinate.completed_batches_as_observed is None
+    assert detection.coordinate.completed_batches_observation == "unavailable"
+    assert "non-integer" in detection.coordinate.completed_batches_observation_error
+    assert detection.schedule_coordinate_source == "segment_start_fallback"
 
 
 def test_native_mapped_nan_guard_fails_closed_after_batched_health_reduction(
@@ -1043,18 +1210,53 @@ def test_native_mapped_nan_guard_fails_closed_after_batched_health_reduction(
 
     def nan_kernel(slots, coordinate, context):
         updates = _mapped_scalar_kernel(slots, coordinate, context)
-        updates["train_loss"] = jnp.full_like(slots["train_loss"], jnp.nan)
+        updates["train_loss"] = jnp.where(slots["model"] == 4, jnp.nan, updates["train_loss"])
         return updates
 
+    prepared_slots = {
+        slot.name: jnp.zeros((5,), dtype=jnp.float32)
+        for slot in spec.worker_execution.method_contract.state_slots
+    }
+    prepared_slots["model"] = jnp.arange(5.0, dtype=jnp.float32)
+    preparation = _build_materialized_execution_preparation(
+        request=ExecutionPreparationRequest(run_spec=spec),
+        provider_identity="tests.mapped_nan_attribution",
+        initial_slots=prepared_slots,
+        kernel_context={},
+        loss_service=None,
+        resume_slot_transform=None,
+        coordinate_order=tuple(
+            (AxisCoordinateSpec(axis="ensemble", index=index),) for index in range(5)
+        ),
+    )
     with pytest.raises(FloatingPointError, match="train_loss"):
         execute_training_run_spec(
             spec,
-            preparation=_valid_materialized_preparation(spec),
+            preparation=preparation,
             registry=_mapped_test_registry(spec, nan_kernel),
             manifest_root=tmp_path / "manifest",
             checkpoint_root=tmp_path / "checkpoints",
             run_id="mapped-nan-health",
         )
+    manifest = load_manifest(
+        tmp_path
+        / "manifest"
+        / "manifests"
+        / "training_runs"
+        / "feedbax-training-run_mapped-nan-health.json"
+    )
+    assert isinstance(manifest, TrainingRunManifest)
+    detection_ref = next(
+        artifact for artifact in manifest.artifacts if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+    )
+    detection = NanAttributionDetection.model_validate_json(
+        Path(detection_ref.uri).read_text(encoding="utf-8")
+    )
+    train_loss = next(metric for metric in detection.metrics if metric.metric_name == "train_loss")
+    assert train_loss.non_finite.mode == "mapped"
+    assert train_loss.non_finite.axis_role == "replicate"
+    assert train_loss.non_finite.nan_count == 1
+    assert train_loss.non_finite.nan_mask == (False, False, False, False, True)
 
 
 def test_native_mapped_resume_retains_prepared_runtime_slots_and_checkpoint_authority(
@@ -2465,6 +2667,7 @@ def _nan_registry(
     *,
     nan_on_program_step: int,
     stop_after_program_step: int = 3,
+    batch_increment: int = 1,
 ) -> tuple[TrainingMethodRegistry, object]:
     registry, program = _chunked_registry(stop_after_program_step=stop_after_program_step)
     base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
@@ -2474,6 +2677,8 @@ def _nan_registry(
 
     def gradient_update(slots, coordinate, context):
         updates = dict(base_kernel(slots, coordinate, context))
+        if batch_increment != 1:
+            updates["batch_counter"] = slots["batch_counter"] + batch_increment
         if coordinate.program_step >= nan_on_program_step:
             updates["train_loss"] = jnp.array(float("nan"))
             updates["model"] = updates["model"] + jnp.array(float("nan"))
@@ -2591,6 +2796,12 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     assert manifest.task_spec.kind == "TaskSpec"
     assert manifest.checkpoint_custody
     assert manifest.summary_metrics["train_loss"] == 1.0
+    assert result.diagnostics.terminal_status == "completed"
+    assert result.diagnostics.failure_kind is None
+    assert not any(
+        artifact.role in {NAN_ATTRIBUTION_ARTIFACT_ROLE, NAN_RESTORATION_ARTIFACT_ROLE}
+        for artifact in manifest.artifacts
+    )
     assert any(artifact.role == "training_history" for artifact in manifest.artifacts)
 
     emitted_ref = result.manifest.checkpoint_custody[0]
@@ -4278,16 +4489,27 @@ def test_execute_training_run_spec_raises_on_nan_with_program_coordinate(
     tmp_path: Path,
 ) -> None:
     registry, _program = _nan_registry(nan_on_program_step=1)
+    events_path = tmp_path / "events.jsonl"
+    emitter = RunEventEmitter(
+        run_set_id="nan-set",
+        row_id="nan-raise",
+        path=events_path,
+        heartbeat_seconds=None,
+    )
 
-    with pytest.raises(FloatingPointError) as excinfo:
-        execute_training_run_spec(
-            _run_spec(),
-            run_id="nan-raise",
-            initial_slots=_initial_slots(arrays=True),
-            manifest_root=tmp_path / "runs",
-            checkpoint_root=tmp_path / "checkpoints",
-            registry=registry,
-        )
+    try:
+        with pytest.raises(FloatingPointError) as excinfo:
+            execute_training_run_spec(
+                _run_spec(),
+                run_id="nan-raise",
+                initial_slots=_initial_slots(arrays=True),
+                manifest_root=tmp_path / "runs",
+                checkpoint_root=tmp_path / "checkpoints",
+                registry=registry,
+                run_event_emitter=emitter,
+            )
+    finally:
+        emitter.close()
 
     message = str(excinfo.value)
     assert "NaN detected" in message
@@ -4295,6 +4517,96 @@ def test_execute_training_run_spec_raises_on_nan_with_program_coordinate(
     assert "inner_step 0" in message
     assert "train_loss" in message
     assert "on_nan='raise'" in message
+    manifest = load_manifest(
+        tmp_path / "runs" / "manifests" / "training_runs" / "feedbax-training-run_nan-raise.json"
+    )
+    assert isinstance(manifest, TrainingRunManifest)
+    assert manifest.status == "failed"
+    assert manifest.failure_kind == "nan_guard"
+    assert manifest.stopped is True
+    assert "train_loss" not in manifest.summary_metrics
+    assert set(manifest.summary_metrics) <= {"runtime_telemetry"}
+    detection_ref = next(
+        artifact for artifact in manifest.artifacts if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+    )
+    restoration_ref = next(
+        artifact for artifact in manifest.artifacts if artifact.role == NAN_RESTORATION_ARTIFACT_ROLE
+    )
+    detection = NanAttributionDetection.model_validate_json(
+        Path(detection_ref.uri).read_text(encoding="utf-8")
+    )
+    restoration = NanAttributionRestorationOutcome.model_validate_json(
+        Path(restoration_ref.uri).read_text(encoding="utf-8")
+    )
+    assert detection.on_nan == "raise"
+    assert detection.coordinate.completed_batches_as_observed == 2
+    assert detection.coordinate.provenance == "guard_pre_authoritative_extraction"
+    train_loss = next(metric for metric in detection.metrics if metric.metric_name == "train_loss")
+    assert train_loss.non_finite.mode == "shared"
+    assert train_loss.non_finite.nan_count == 1
+    assert restoration.status == "not_attempted"
+    diagnostics = TrainingDiagnostics.model_validate_json(
+        (tmp_path / "runs" / "diagnostics" / "nan-raise.json").read_text()
+    )
+    assert diagnostics.terminal_status == "failed"
+    assert diagnostics.failure_kind == "nan_guard"
+    assert diagnostics.completed_batches == 1
+    assert manifest.completed_batches == 1
+    terminal_event = RunEventReader(events_path).read_all()[-1]
+    assert terminal_event.type == "failed"
+    assert terminal_event.payload["failure_kind"] == "nan_guard"
+
+
+def test_nan_detection_projects_schedules_at_observed_batch_authority(
+    tmp_path: Path,
+) -> None:
+    registry, _program = _nan_registry(nan_on_program_step=0, batch_increment=2)
+    spec = _run_spec()
+    payload = StandardSupervisedMethodPayload.model_validate(spec.method_payload.payload)
+    payload = payload.model_copy(
+        update={
+            "optimizer": payload.optimizer.model_copy(
+                update={"params": {"learning_rate": 0.125}}
+            )
+        }
+    )
+    spec = spec.model_copy(
+        update={
+            "method_payload": spec.method_payload.model_copy(
+                update={"payload": payload.model_dump(mode="json")}
+            )
+        }
+    )
+
+    with pytest.raises(FloatingPointError):
+        execute_training_run_spec(
+            spec,
+            run_id="nan-schedule-coordinate",
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path / "runs",
+            checkpoint_root=tmp_path / "checkpoints",
+            registry=registry,
+        )
+
+    manifest = load_manifest(
+        tmp_path
+        / "runs"
+        / "manifests"
+        / "training_runs"
+        / "feedbax-training-run_nan-schedule-coordinate.json"
+    )
+    assert isinstance(manifest, TrainingRunManifest)
+    detection_ref = next(
+        artifact for artifact in manifest.artifacts if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+    )
+    detection = NanAttributionDetection.model_validate_json(
+        Path(detection_ref.uri).read_text(encoding="utf-8")
+    )
+    assert detection.coordinate.program_step == 1
+    assert detection.coordinate.completed_batches_as_observed == 2
+    learning_rate = detection.schedule_state.schedules["feedbax.learning_rate"]
+    assert learning_rate.samples[0].coordinate == 2
+    assert learning_rate.samples[0].value == pytest.approx(0.125)
 
 
 @pytest.mark.no_silent_substitution_contract
@@ -4304,22 +4616,65 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
     registry, program = _nan_registry(nan_on_program_step=1)
     spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
     checkpoint_root = tmp_path / "checkpoints"
-
-    result = execute_training_run_spec(
-        spec,
-        run_id="nan-restore",
-        initial_slots=_initial_slots(arrays=True),
-        manifest_root=tmp_path / "runs",
-        checkpoint_root=checkpoint_root,
-        registry=registry,
+    events_path = tmp_path / "events.jsonl"
+    emitter = RunEventEmitter(
+        run_set_id="nan-set",
+        row_id="nan-restore",
+        path=events_path,
+        heartbeat_seconds=None,
     )
+
+    try:
+        result = execute_training_run_spec(
+            spec,
+            run_id="nan-restore",
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path / "runs",
+            checkpoint_root=checkpoint_root,
+            registry=registry,
+            run_event_emitter=emitter,
+        )
+    finally:
+        emitter.close()
 
     assert result.final_coordinate.program_step == 1
     assert result.final_slots["model"].tolist() == [1.0]
     assert result.final_slots["optimizer"]["count"].tolist() == [2.0]
     assert result.final_slots["prng"].tolist() == [0, 1]
     assert "train_loss" not in result.final_slots
-    assert result.manifest.summary_metrics["train_loss"] == 1.0
+    assert result.status == "failed"
+    assert result.manifest.status == "failed"
+    assert result.manifest.failure_kind == "nan_guard"
+    assert result.manifest.stopped is True
+    assert "train_loss" not in result.manifest.summary_metrics
+    assert set(result.manifest.summary_metrics) <= {"runtime_telemetry"}
+    assert result.diagnostics.terminal_status == "failed"
+    assert result.diagnostics.failure_kind == "nan_guard"
+    detection_ref = next(
+        artifact
+        for artifact in result.manifest.artifacts
+        if artifact.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+    )
+    restoration_ref = next(
+        artifact
+        for artifact in result.manifest.artifacts
+        if artifact.role == NAN_RESTORATION_ARTIFACT_ROLE
+    )
+    assert NanAttributionDetection.model_validate_json(
+        Path(detection_ref.uri).read_text(encoding="utf-8")
+    ).on_nan == "halt_restore_checkpoint"
+    restoration = NanAttributionRestorationOutcome.model_validate_json(
+        Path(restoration_ref.uri).read_text(encoding="utf-8")
+    )
+    assert restoration.status == "restored"
+    assert restoration.restored_transaction is not None
+    assert restoration.restored_transaction.transaction_id == (
+        result.checkpoint_writes[0].manifest.transaction_id
+    )
+    terminal_event = RunEventReader(events_path).read_all()[-1]
+    assert terminal_event.type == "failed"
+    assert terminal_event.payload["status"] == "failed"
+    assert terminal_event.payload["failure_kind"] == "nan_guard"
     assert len(result.checkpoint_writes) == 1
 
     loaded = load_latest_checkpoint(
@@ -4340,6 +4695,148 @@ def test_execute_training_run_spec_halts_and_restores_all_checkpoint_slots_on_na
         result.final_slots["optimizer"]["count"].tolist()
     )
     assert loaded.slots["prng"].tolist() == result.final_slots["prng"].tolist()
+
+
+def test_nan_restore_failure_keeps_linked_detection_record(tmp_path: Path) -> None:
+    registry, _program = _nan_registry(nan_on_program_step=0)
+    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+
+    result = execute_training_run_spec(
+        spec,
+        run_id="nan-restore-missing",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+    )
+
+    assert result.status == "failed"
+    detection_ref = next(
+        item for item in result.manifest.artifacts if item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE
+    )
+    restoration_ref = next(
+        item for item in result.manifest.artifacts if item.role == NAN_RESTORATION_ARTIFACT_ROLE
+    )
+    restoration = NanAttributionRestorationOutcome.model_validate_json(
+        Path(restoration_ref.uri).read_text(encoding="utf-8")
+    )
+    assert restoration.status == "failed"
+    assert restoration.detection_artifact_sha256 == detection_ref.sha256
+    assert restoration.restore_failure is not None
+
+
+def test_nan_detection_persistence_failure_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, _program = _nan_registry(nan_on_program_step=1)
+    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    original_store = training_executor.store_json_artifact
+
+    def fail_detection(value, **kwargs):
+        if kwargs["role"] == NAN_ATTRIBUTION_ARTIFACT_ROLE:
+            raise OSError("simulated attribution-store failure")
+        return original_store(value, **kwargs)
+
+    monkeypatch.setattr(training_executor, "store_json_artifact", fail_detection)
+    result = execute_training_run_spec(
+        spec,
+        run_id="nan-persistence-failure",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+    )
+
+    assert result.status == "failed"
+    assert result.final_slots == {}
+    assert not any(
+        item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE for item in result.manifest.artifacts
+    )
+    restoration_ref = next(
+        item for item in result.manifest.artifacts if item.role == NAN_RESTORATION_ARTIFACT_ROLE
+    )
+    restoration = NanAttributionRestorationOutcome.model_validate_json(
+        Path(restoration_ref.uri).read_text(encoding="utf-8")
+    )
+    assert restoration.status == "not_attempted"
+    failure = result.manifest.provenance.metadata["failure"]
+    assert "simulated attribution-store failure" in failure["persistence_errors"][0]
+
+
+def test_nan_restoration_persistence_failure_keeps_detection_linked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, _program = _nan_registry(nan_on_program_step=1)
+    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    original_store = training_executor.store_json_artifact
+
+    def fail_restoration(value, **kwargs):
+        if kwargs["role"] == NAN_RESTORATION_ARTIFACT_ROLE:
+            raise OSError("simulated restoration-store failure")
+        return original_store(value, **kwargs)
+
+    monkeypatch.setattr(training_executor, "store_json_artifact", fail_restoration)
+    result = execute_training_run_spec(
+        spec,
+        run_id="nan-restoration-persistence-failure",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+    )
+
+    assert result.status == "failed"
+    assert any(
+        item.role == NAN_ATTRIBUTION_ARTIFACT_ROLE for item in result.manifest.artifacts
+    )
+    assert not any(
+        item.role == NAN_RESTORATION_ARTIFACT_ROLE for item in result.manifest.artifacts
+    )
+    failure = result.manifest.provenance.metadata["failure"]
+    assert "simulated restoration-store failure" in failure["persistence_errors"][0]
+
+
+def test_nan_manifest_conflict_uses_linked_failure_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, _program = _nan_registry(nan_on_program_step=1)
+    spec = _run_spec().model_copy(update={"on_nan": "halt_restore_checkpoint"})
+    original_preflight = training_executor._preflight_manifest_emission
+    calls = 0
+
+    def conflict_once(manifest, *, root, conflict_policy, path=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ManifestEmissionConflictError("simulated manifest conflict")
+        return original_preflight(
+            manifest,
+            root=root,
+            conflict_policy=conflict_policy,
+            path=path,
+        )
+
+    monkeypatch.setattr(training_executor, "_preflight_manifest_emission", conflict_once)
+    result = execute_training_run_spec(
+        spec,
+        run_id="nan-manifest-conflict",
+        initial_slots=_initial_slots(arrays=True),
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+    )
+
+    assert result.status == "failed"
+    assert result.manifest_path.parent.name == "training_failures"
+    assert result.manifest_path.exists()
+    assert {
+        item.role
+        for item in result.manifest.artifacts
+        if item.role in {NAN_ATTRIBUTION_ARTIFACT_ROLE, NAN_RESTORATION_ARTIFACT_ROLE}
+    } == {NAN_ATTRIBUTION_ARTIFACT_ROLE, NAN_RESTORATION_ARTIFACT_ROLE}
 
 
 def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
@@ -4608,6 +5105,52 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     ]
     ready = next(event for event in events if event["type"] == "ready")
     assert ready["payload"]["runtime_telemetry"] == telemetry
+
+
+def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    spec_path = tmp_path / "training-run-spec.json"
+    slots_path = tmp_path / "initial-slots.json"
+    manifest_path = tmp_path / "manifest.json"
+    _write_json(spec_path, _run_spec().model_dump(mode="json"))
+    _write_json(slots_path, _initial_slots())
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:cli-failed",
+        status="failed",
+        completed_at="2026-07-21T00:00:00Z",
+        stopped=True,
+        stop_reason="NaN guard tripped",
+        failure_kind="nan_guard",
+    )
+    monkeypatch.setattr(
+        feedbax_main,
+        "execute_training_run_spec",
+        lambda *args, **kwargs: SimpleNamespace(
+            run_id="cli-failed",
+            status="failed",
+            payload_binding_status="not_bound",
+            manifest_path=manifest_path,
+            manifest=manifest,
+        ),
+    )
+
+    exit_code = feedbax_main.main(
+        [
+            "execute-training-run-spec",
+            str(spec_path),
+            "--initial-slots",
+            str(slots_path),
+            "--run-id",
+            "cli-failed",
+            "--no-progress",
+        ]
+    )
+
+    assert exit_code == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
 
 
 def test_preflight_training_run_manifest_cli_reports_normalized_payload(

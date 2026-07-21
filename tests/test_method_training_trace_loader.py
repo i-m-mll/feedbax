@@ -11,6 +11,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
     MethodTrainingTrace,
     MethodTrainingTraceLoadError,
     MethodTrainingTraceRecord,
@@ -23,6 +24,8 @@ from tests.test_training_run_executor import _mapped_diagnostics_run_spec
 def _stored_trace(
     tmp_path: Path,
     corruption: str | None = None,
+    *,
+    diagnostics_schema_version: str = TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
 ) -> tuple[TrainingRunManifest, ImmutableArtifactBlobProvider, MethodTrainingTrace]:
     run_spec = _mapped_diagnostics_run_spec()
     contract = run_spec.worker_execution.method_contract
@@ -46,7 +49,7 @@ def _stored_trace(
         ],
     )
     diagnostics = TrainingDiagnostics(
-        schema_version=TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+        schema_version=diagnostics_schema_version,
         manifest_id="feedbax-training-run:trace",
         run_id="trace",
         terminal_status="completed",
@@ -77,7 +80,7 @@ def _stored_trace(
         media_type="application/json",
         metadata={
             "schema_id": TRAINING_DIAGNOSTICS_SCHEMA_ID,
-            "schema_version": TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+            "schema_version": diagnostics_schema_version,
         },
     )
     manifest = TrainingRunManifest(
@@ -93,8 +96,18 @@ def _stored_trace(
     return manifest, provider, trace
 
 
-def test_load_method_training_trace_round_trips_governed_payload(tmp_path: Path) -> None:
-    manifest, provider, expected = _stored_trace(tmp_path)
+@pytest.mark.parametrize(
+    "diagnostics_schema_version",
+    [TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3, TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4],
+)
+def test_load_method_training_trace_round_trips_governed_payload(
+    tmp_path: Path,
+    diagnostics_schema_version: str,
+) -> None:
+    manifest, provider, expected = _stored_trace(
+        tmp_path,
+        diagnostics_schema_version=diagnostics_schema_version,
+    )
 
     assert load_method_training_trace(manifest, provider) == expected
 

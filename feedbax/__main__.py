@@ -635,7 +635,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sort_keys=True,
         )
         print()
-        return 0
+        return 1 if result.status == "failed" else 0
     if args.command == "preflight-training-run-manifest":
         _load_training_method_plugins(args.plugin)
         training_payload = _read_json(args.training_payload) if args.training_payload else None

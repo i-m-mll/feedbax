@@ -29,6 +29,12 @@ from feedbax.contracts.migrations import (
     migrate_studio_task_binding_spec,
     migrate_structured_spec_payload,
 )
+from feedbax.contracts.nan_attribution import (
+    NAN_ATTRIBUTION_DETECTION_SCHEMA_ID,
+    NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
+    NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID,
+    NAN_ATTRIBUTION_RESTORATION_SCHEMA_VERSION,
+)
 from feedbax.orchestration.events import (
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
@@ -138,6 +144,7 @@ from feedbax.training.diagnostics import (
     NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_VERSION,
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
 )
 from feedbax.orchestration.bundle import (
     DEPLOYMENT_POLICY_SCHEMA_ID,
@@ -417,7 +424,7 @@ def test_execution_identity_envelope_v1_migrates_with_unavailable_provenance() -
         (
             "TrainingDiagnostics",
             TRAINING_DIAGNOSTICS_SCHEMA_ID,
-            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
         ),
     ],
 )
@@ -458,12 +465,14 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
             "lr_trace": [{"step": 1, "learning_rate": 0.1}],
         },
     )
-    assert diagnostics.payload["schema_version"].endswith(".v3")
+    assert diagnostics.payload["schema_version"].endswith(".v4")
     assert diagnostics.payload["lr_trace"][0]["axis_coordinates"] is None
     assert diagnostics.payload["method_trace"] is None
+    assert diagnostics.payload["failure_kind"] is None
     assert [record.migration_id for record in diagnostics.migration_records] == [
         "training-diagnostics-v1-to-v2-axis-coordinates",
         "training-diagnostics-v2-to-v3-method-trace",
+        "training-diagnostics-v3-to-v4-failure-kind",
     ]
 
     provenance = default_spec_registry.migrate(
@@ -477,7 +486,6 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
     assert provenance.payload["schema_version"].endswith(".v2")
     assert provenance.payload["slots"][0]["source_axes"] is None
     assert provenance.payload["slots"][0]["target_axes"] is None
-
     nested = {
         **provenance.payload,
         "source": {
@@ -523,6 +531,60 @@ def test_mapped_durability_families_migrate_scalar_documents_and_reject_metric_v
                 "schema_id": STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
                 "schema_version": f"{STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID}.v0",
             },
+        )
+
+
+def test_training_diagnostics_v3_migrates_explicit_failure_kind_field() -> None:
+    migrated = default_spec_registry.migrate(
+        "TrainingDiagnostics",
+        {
+            "schema_id": TRAINING_DIAGNOSTICS_SCHEMA_ID,
+            "schema_version": TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+            "terminal_status": "completed",
+        },
+    )
+
+    assert migrated.payload["schema_version"] == TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4
+    assert migrated.payload["failure_kind"] is None
+    assert [record.migration_id for record in migrated.migration_records] == [
+        "training-diagnostics-v3-to-v4-failure-kind"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "schema_id", "schema_version"),
+    [
+        (
+            "NanAttributionDetection",
+            NAN_ATTRIBUTION_DETECTION_SCHEMA_ID,
+            NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
+        ),
+        (
+            "NanAttributionRestorationOutcome",
+            NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID,
+            NAN_ATTRIBUTION_RESTORATION_SCHEMA_VERSION,
+        ),
+    ],
+)
+def test_nan_attribution_families_are_versioned_and_reject_unknown_versions(
+    kind: str,
+    schema_id: str,
+    schema_version: str,
+) -> None:
+    family = default_spec_registry.resolve(kind)
+    assert family.identity == schema_id
+    assert family.current_version == schema_version
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
+    assert default_spec_registry.migrate(
+        kind,
+        {"schema_id": schema_id, "schema_version": schema_version},
+    ).target_version == schema_version
+
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            kind,
+            {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
         )
 
 
