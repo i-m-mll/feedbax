@@ -1338,6 +1338,108 @@ def test_lr_trace_rejects_mixed_or_ambiguous_continuation_frames(
     assert detail in str(result.detail)
 
 
+def test_lr_trace_resolves_legacy_program_steps_from_immutable_event_coordinates() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+    ).model_dump(mode="json")
+    program_to_batches = {5_000: 17_000, 7_000: 19_000, 9_000: 21_000}
+    events = [
+        {
+            "type": "progress",
+            "payload": {
+                "coordinate": {
+                    "program_step": program_step,
+                    "completed_batches": completed_batches,
+                }
+            },
+        }
+        for program_step, completed_batches in program_to_batches.items()
+    ]
+    result = check_lr_trace(
+        _row(
+            bundle_row_spec={
+                "optimizer": optimizer,
+                "resume_context": {
+                    "schedule_origin_step": 12_000,
+                    "current_step": 16_500,
+                    "optimizer_count_at_current_step": 16_500,
+                },
+            },
+            training_diagnostics={
+                "segment_completed_batches": 4_500,
+                "cumulative_completed_batches": 21_000,
+                "lr_trace": {step: 3e-5 for step in program_to_batches},
+            },
+            event_log=events,
+        )
+    )
+
+    assert result.status == "pass"
+    assert result.observed == pytest.approx({
+        17_000: 3e-5,
+        19_000: 3e-5,
+        21_000: 3e-5,
+    })
+
+
+def test_lr_trace_legacy_program_steps_require_complete_unambiguous_event_evidence() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(kind="constant", learning_rate_0=3e-5),
+    ).model_dump(mode="json")
+    diagnostics = {
+        "segment_completed_batches": 4_500,
+        "cumulative_completed_batches": 21_000,
+        "lr_trace": {5_000: 3e-5, 7_000: 3e-5, 9_000: 3e-5},
+    }
+    row = _row(
+        bundle_row_spec={"optimizer": optimizer},
+        training_diagnostics=diagnostics,
+        event_log=[
+            {
+                "payload": {
+                    "coordinate": {
+                        "program_step": 5_000,
+                        "completed_batches": 17_000,
+                    }
+                }
+            }
+        ],
+    )
+
+    missing = check_lr_trace(row)
+    assert missing.status == "fail"
+    assert "lacks immutable completed-batch evidence" in str(missing.detail)
+
+    conflicting = check_lr_trace(
+        _row(
+            bundle_row_spec={"optimizer": optimizer},
+            training_diagnostics=diagnostics,
+            event_log=[
+                {
+                    "payload": {
+                        "coordinate": {
+                            "program_step": step,
+                            "completed_batches": completed_batches,
+                        }
+                    }
+                }
+                for step, completed_batches in (
+                    (5_000, 17_000),
+                    (5_000, 17_001),
+                    (7_000, 19_000),
+                    (9_000, 21_000),
+                )
+            ],
+        )
+    )
+    assert conflicting.status == "fail"
+    assert "run events disagree" in str(conflicting.detail)
+
+
 def test_lr_trace_rejects_conflicting_governed_optimizer_authorities() -> None:
     optimizer = OptimizerSpec(
         type="adamw",
