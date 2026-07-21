@@ -21,6 +21,8 @@ from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest
 RUN_SET_STATE_SCHEMA_ID = "feedbax.orchestration.run_set_state"
 RUN_SET_STATE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_set_state.v1"
 RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v2"
+REGISTRATION_HISTORY_SCHEMA_ID = "feedbax.orchestration.registration_history"
+REGISTRATION_HISTORY_SCHEMA_VERSION = "feedbax.orchestration.registration_history.v1"
 ROW_STATUSES = ("pending", "launched", "ready", "running", "completed", "failed", "stopped")
 STAGE_STATUSES = ("pending", "running", "completed", "failed", "skipped")
 
@@ -71,6 +73,28 @@ class RowState(StrictModel):
     event_discrepancies: list[dict[str, Any]] = Field(default_factory=list)
     collected_outputs: dict[str, str] = Field(default_factory=dict)
     error: str | None = None
+
+
+class RegistrationHistoryEntry(StrictModel):
+    """One immutable registration outcome superseded by explicit recertification."""
+
+    registration_payload: dict[str, Any]
+    registration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    certificate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_certificate_ref: str = Field(min_length=1)
+
+
+class RegistrationHistory(StrictModel):
+    """Versioned fail-to-pass registration history for one run set."""
+
+    schema_id: Literal[
+        "feedbax.orchestration.registration_history"
+    ] = REGISTRATION_HISTORY_SCHEMA_ID
+    schema_version: Literal[
+        "feedbax.orchestration.registration_history.v1"
+    ] = REGISTRATION_HISTORY_SCHEMA_VERSION
+    run_set_id: str = Field(min_length=1)
+    entries: list[RegistrationHistoryEntry] = Field(min_length=1, max_length=1)
 
 
 class RunSetState(StrictModel):
