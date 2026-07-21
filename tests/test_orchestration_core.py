@@ -4,9 +4,12 @@ import ast
 import hashlib
 import json
 import os
+import signal
 import shlex
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -107,7 +110,10 @@ from feedbax.orchestration.drivers.local import (
     _canonicalize_dependency_inventory,
     compute_environment_fingerprint,
 )
-from feedbax.orchestration.drivers.runpod import project_runpod_provision_facts
+from feedbax.orchestration.drivers.runpod import (
+    _run_command,
+    project_runpod_provision_facts,
+)
 from feedbax.orchestration.stages import (
     STAGE_CERTIFY,
     STAGE_ORDER,
@@ -119,6 +125,7 @@ from feedbax.orchestration.stages import (
     OrchestrationStageError,
     PreflightFailed,
     StageEngine,
+    _ScopedSignalSupervisor,
     run_preflight_checks,
 )
 from feedbax.orchestration.state import (
@@ -128,6 +135,7 @@ from feedbax.orchestration.state import (
     RowState,
     RunSetState,
     RunSetStateStore,
+    StageState,
     StateLockError,
 )
 from feedbax.training.diagnostics import TRAINING_DIAGNOSTICS_SCHEMA_ID, TrainingDiagnostics
@@ -430,9 +438,7 @@ def _assembly_parts(
         schema_id=STUDIO_TRAINING_ASSEMBLY_SCHEMA_ID,
         compiler_id=compiler_id,
         compiler_version=compiler_version,
-        compiler=_FixtureCompiler(
-            tuple(rows or [_compiled_row("row-a")]), expected_input_roles
-        ),
+        compiler=_FixtureCompiler(tuple(rows or [_compiled_row("row-a")]), expected_input_roles),
         identity_adapter=StudioTrainingIdentityAdapter(),
     )
     context = AssemblyContext(custody_root=tmp_path / "fixture-custody" / run_set_id)
@@ -557,13 +563,13 @@ def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_
             {
                 "capture_output": True,
                 "check": True,
-                    "env": {
-                        "GIT_CONFIG_GLOBAL": os.devnull,
-                        "GIT_CONFIG_NOSYSTEM": "1",
-                        "GIT_OPTIONAL_LOCKS": "0",
-                        "LC_ALL": "C",
-                        "PATH": os.defpath,
-                    },
+                "env": {
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_OPTIONAL_LOCKS": "0",
+                    "LC_ALL": "C",
+                    "PATH": os.defpath,
+                },
                 "text": True,
             },
         )
@@ -682,12 +688,17 @@ def test_v3_policy_migration_evidence_survives_without_authorizing_launch(tmp_pa
         compiler=_FixtureCompiler((_compiled_row("row-a", run_spec=migrated.payload),)),
         identity_adapter=TrainingRunIdentityAdapter(),
     )
-    bundle = assemble_run_bundle(request, run_set_id="v3-evidence", context=context, registry=registry)
+    bundle = assemble_run_bundle(
+        request, run_set_id="v3-evidence", context=context, registry=registry
+    )
     record = bundle.migration_evidence[-1]
 
     assert record.metadata["removed_execution_policy"]["normalized_values"]["allow_cloud"]
     assert bundle.deployment_policy.cloud_authorized is False
-    assert bundle.model_copy(update={"migration_evidence": []}).rows[0].execution == bundle.rows[0].execution
+    assert (
+        bundle.model_copy(update={"migration_evidence": []}).rows[0].execution
+        == bundle.rows[0].execution
+    )
     manifest_payload = preflight_training_run_manifest_payloads(source).training_spec
     assert (
         manifest_payload.migration_records[-1].metadata["removed_execution_policy"]
@@ -702,9 +713,7 @@ def test_v3_policy_migration_evidence_survives_without_authorizing_launch(tmp_pa
         ({"venue": "local"}, "requires venue='remote'"),
     ],
 )
-def test_deployment_policy_validation_fails_closed(
-    updates: dict[str, Any], message: str
-) -> None:
+def test_deployment_policy_validation_fails_closed(updates: dict[str, Any], message: str) -> None:
     payload = {
         **_deployment_policy("runpod").model_dump(mode="json"),
         **updates,
@@ -808,9 +817,7 @@ def test_resolved_input_role_cannot_collide_with_row_payload_filename(
             )
         }
     )
-    colliding = bundle.model_copy(
-        update={"rows": [row], "resolved_inputs": [resolved]}
-    )
+    colliding = bundle.model_copy(update={"rows": [row], "resolved_inputs": [resolved]})
 
     with pytest.raises(ValueError, match="collide with generated row payload filenames"):
         RunBundle.model_validate_json(colliding.model_dump_json())
@@ -849,7 +856,9 @@ def test_assemble_canonicalizes_resolved_input_records(tmp_path: Path) -> None:
 
 
 def test_conformance_records_declared_inapplicability() -> None:
-    registry = CheckRegistry({"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")})
+    registry = CheckRegistry(
+        {"lr_trace": lambda _row: CheckEntry(check_id="lr_trace", status="fail")}
+    )
 
     certificate = run_conformance_checks(
         run_set_id="declared-inapplicable",
@@ -1134,9 +1143,7 @@ def test_stage_engine_hands_typed_row_state_and_stop_authorization_to_conformanc
         run_set_id=bundle.run_set_id,
         rows={row.row_id: stopped},
     )
-    state = _with_local_realized_proof(state).model_copy(
-        update={"rows": {row.row_id: stopped}}
-    )
+    state = _with_local_realized_proof(state).model_copy(update={"rows": {row.row_id: stopped}})
 
     artifacts = StageEngine(
         bundle=bundle,
@@ -1191,8 +1198,7 @@ def test_passing_completed_certificate_is_not_reset(tmp_path: Path) -> None:
     )
 
     assert (
-        StageEngine(bundle=bundle, driver=FakeDriver())._reset_failed_certification(state)
-        is state
+        StageEngine(bundle=bundle, driver=FakeDriver())._reset_failed_certification(state) is state
     )
 
 
@@ -1591,9 +1597,7 @@ def test_runpod_go_timestamp_allows_realize_env_under_spend_cap(tmp_path: Path) 
     assert state.stage(STAGE_PROVISION).status == "completed"
     assert state.stage(STAGE_REALIZE_ENV).status == "completed"
     assert state.provision_record["billing_started_at"] == "2026-07-19T18:05:00.898000+00:00"
-    assert state.provision_record["billing_started_at_raw"] == (
-        "2026-07-19 18:05:00.898 +0000 UTC"
-    )
+    assert state.provision_record["billing_started_at_raw"] == ("2026-07-19 18:05:00.898 +0000 UTC")
     assert state.budget_counters["accrued_cost_usd"] == pytest.approx(0.99 * 59.102 / 3600)
 
 
@@ -1609,9 +1613,7 @@ def test_runpod_unusable_timestamp_still_fails_closed_before_realize_env(
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     provision_record = {
         **_remote_billing_record(),
-        **project_runpod_provision_facts(
-            {"createdAt": raw_timestamp, "costPerHr": 0.99}
-        ),
+        **project_runpod_provision_facts({"createdAt": raw_timestamp, "costPerHr": 0.99}),
     }
     driver = BillingFakeDriver(provision_record=provision_record)
     observed_at = datetime(2026, 7, 19, 18, 6, tzinfo=timezone.utc).timestamp()
@@ -1985,11 +1987,7 @@ def test_preflight_rejects_registered_native_row_without_checkpoint_collection(
                 row.model_copy(
                     update={
                         "launch": row.launch.model_copy(
-                            update={
-                                "payload_routing": {
-                                    "kind": "registered-execution-payload"
-                                }
-                            }
+                            update={"payload_routing": {"kind": "registered-execution-payload"}}
                         )
                     }
                 )
@@ -1997,9 +1995,7 @@ def test_preflight_rejects_registered_native_row_without_checkpoint_collection(
         }
     )
 
-    check = {entry.name: entry for entry in run_preflight_checks(bundle)}[
-        "native-output-custody"
-    ]
+    check = {entry.name: entry for entry in run_preflight_checks(bundle)}["native-output-custody"]
 
     assert check.status == "fail"
     assert check.detail == "row-a: missing ['checkpoints']"
@@ -2118,9 +2114,19 @@ def test_preflight_schedule_realization_discovers_controller_optimizer_metadata_
 def test_preflight_discovers_nested_method_training_optimizer(tmp_path: Path) -> None:
     payload = (run_spec := _identity_training_payload())["method_payload"]["payload"]
     payload.pop("optimizer")
-    payload["training"] = {"optimizer": {"type": "adamw", "params": {}, "lr_schedule": LrScheduleSpec(kind="constant", learning_rate_0=0.1).model_dump(mode="json")}}
+    payload["training"] = {
+        "optimizer": {
+            "type": "adamw",
+            "params": {},
+            "lr_schedule": LrScheduleSpec(kind="constant", learning_rate_0=0.1).model_dump(
+                mode="json"
+            ),
+        }
+    }
     bundle = _bundle(tmp_path, rows=[_compiled_row("row-a", run_spec=run_spec)])
-    assert {check.name: check for check in run_preflight_checks(bundle)}["schedule-realization"].status == "pass"
+    assert {check.name: check for check in run_preflight_checks(bundle)}[
+        "schedule-realization"
+    ].status == "pass"
 
 
 def test_preflight_schedule_realization_requires_controller_optimizer_metadata_contexts(
@@ -2873,9 +2879,7 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
         "certificate_sha256": certificate_digest,
         "failure_reason": "conformance-failed",
         "run_set_id": bundle.run_set_id,
-        "stage_inputs_sha256": failed_state.stage(STAGE_CERTIFY).outputs[
-            "stage_inputs_sha256"
-        ],
+        "stage_inputs_sha256": failed_state.stage(STAGE_CERTIFY).outputs["stage_inputs_sha256"],
         "status": "failed",
     }
     assert failed_state.stage("REGISTER").status == "failed"
@@ -3782,3 +3786,299 @@ def test_fingerprint_inventory_failure_is_not_replaced_with_empty_inventory(
             cwd=tmp_path,
             python_executable=str(broken_python),
         )
+
+
+def test_system_exit_runs_teardown_and_restores_signal_handlers(tmp_path: Path) -> None:
+    class SystemExitDriver(FakeDriver):
+        def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+            self._call("stage_inputs")
+            raise SystemExit(7)
+
+    bundle = _bundle(tmp_path)
+    driver = SystemExitDriver()
+    before = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+
+    with pytest.raises(SystemExit) as raised:
+        StageEngine(bundle=bundle, driver=driver).run()
+
+    assert raised.value.code == 7
+    assert driver.calls[-1] == "teardown"
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    assert state.stage(STAGE_TEARDOWN).status == "completed"
+    assert {signum: signal.getsignal(signum) for signum in before} == before
+
+
+def test_child_transport_timeout_runs_teardown_with_verified_absence(tmp_path: Path) -> None:
+    class TimeoutDriver(FakeDriver):
+        def provision(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+            self._call("provision")
+            return {"driver": "fixture", "pod_id": "pod-timeout"}
+
+        def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+            self._call("stage_inputs")
+            result = _run_command(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                timeout_seconds=0.1,
+            )
+            result.check("fixture transport")
+            raise AssertionError("unreachable")
+
+        def teardown(self, bundle: RunBundle, state: RunSetState) -> dict[str, Any]:
+            self._call("teardown")
+            return {
+                "teardown": "removed",
+                "pod_absence": {"verified": True, "pod_id": "pod-timeout"},
+            }
+
+    bundle = _bundle(tmp_path)
+    driver = TimeoutDriver()
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+
+    with pytest.raises(RuntimeError, match="timed out after 0.1s"):
+        StageEngine(bundle=bundle, driver=driver, store=store).run()
+
+    assert driver.calls[-1] == "teardown"
+    teardown = store.load().stage(STAGE_TEARDOWN)
+    assert teardown.status == "completed"
+    assert teardown.outputs["pod_absence"]["verified"] is True
+
+
+def test_run_returns_post_teardown_state_instead_of_stale_precleanup_state(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    driver = FakeDriver()
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    teardown_index = STAGE_ORDER.index(STAGE_TEARDOWN)
+    initial = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState(status="completed") for row in bundle.rows},
+        stages={
+            stage_id: StageState(status="completed" if index < teardown_index else "pending")
+            for index, stage_id in enumerate(STAGE_ORDER)
+        },
+    )
+    store.save(initial)
+
+    returned = StageEngine(bundle=bundle, driver=driver, store=store).run(
+        stop_after_stage=STAGE_TEARDOWN
+    )
+
+    assert returned.stage(STAGE_TEARDOWN).status == "completed"
+    assert returned.stage(STAGE_TEARDOWN).outputs["torn_down"] is True
+    assert returned == store.load()
+
+
+def test_scoped_signal_supervisor_is_noop_off_main_thread() -> None:
+    before = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    entered: list[bool] = []
+
+    def enter_supervisor() -> None:
+        with _ScopedSignalSupervisor():
+            entered.append(True)
+
+    thread = threading.Thread(target=enter_supervisor)
+    thread.start()
+    thread.join(timeout=2)
+
+    assert entered == [True]
+    assert {signum: signal.getsignal(signum) for signum in before} == before
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_real_signal_during_stage_runs_teardown_then_prior_handler(
+    tmp_path: Path,
+    signum: signal.Signals,
+) -> None:
+    bundle = _bundle(tmp_path)
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text(bundle.model_dump_json(), encoding="utf-8")
+    ready_path = tmp_path / "stage-inputs.ready"
+    teardown_path = tmp_path / "teardown.json"
+    reraised_path = tmp_path / "signal.reraised"
+    script_path = tmp_path / "signal_stage.py"
+    script_path.write_text(
+        """
+import json
+import signal
+import sys
+import time
+from pathlib import Path
+
+from feedbax.orchestration.bundle import RunBundle
+from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.stages import StageEngine
+
+bundle = RunBundle.model_validate_json(Path(sys.argv[1]).read_text())
+ready = Path(sys.argv[2])
+teardown = Path(sys.argv[3])
+reraised = Path(sys.argv[4])
+signum = int(sys.argv[5])
+
+def prior_handler(received, _frame):
+    reraised.write_text(str(received))
+    raise SystemExit(128 + received)
+
+signal.signal(signum, prior_handler)
+
+class Driver:
+    def provision(self, bundle, state):
+        return {"driver": "fixture", "pod_id": "pod-signal"}
+    def realize_env(self, bundle, state):
+        return "fixture-fingerprint"
+    def stage_inputs(self, bundle, state):
+        ready.write_text("ready")
+        time.sleep(30)
+        return {}
+    def teardown(self, bundle, state):
+        outputs = {
+            "teardown": "removed",
+            "pod_absence": {"verified": True, "pod_id": "pod-signal"},
+        }
+        teardown.write_text(json.dumps(outputs))
+        time.sleep(0.3)
+        return outputs
+    def launch_row(self, bundle, row, state):
+        return {}
+    def probe(self, bundle, row, state):
+        return DriverRowProbe(status="completed")
+    def stop_row(self, bundle, row, state):
+        return {}
+    def collect(self, bundle, row, state):
+        return {}
+
+StageEngine(bundle=bundle, driver=Driver()).run()
+""".lstrip(),
+        encoding="utf-8",
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(script_path),
+            str(bundle_path),
+            str(ready_path),
+            str(teardown_path),
+            str(reraised_path),
+            str(int(signum)),
+        ],
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, (str(Path.cwd()), os.environ.get("PYTHONPATH")))
+            ),
+        },
+    )
+    deadline = time.monotonic() + 8
+    while not ready_path.exists() and time.monotonic() < deadline:
+        if process.poll() is not None:
+            pytest.fail(f"signal fixture exited early with {process.returncode}")
+        time.sleep(0.02)
+    assert ready_path.exists()
+
+    process.send_signal(signum)
+
+    cleanup_deadline = time.monotonic() + 5
+    while not teardown_path.exists() and time.monotonic() < cleanup_deadline:
+        time.sleep(0.01)
+    assert teardown_path.exists()
+    process.send_signal(signum)
+
+    assert process.wait(timeout=8) == 128 + signum
+    assert json.loads(teardown_path.read_text())["pod_absence"]["verified"] is True
+    assert reraised_path.read_text() == str(int(signum))
+    persisted = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    assert persisted.stage(STAGE_TEARDOWN).status == "completed"
+    assert persisted.stage(STAGE_TEARDOWN).outputs["pod_absence"]["verified"] is True
+
+
+def test_first_real_sigint_during_exception_teardown_is_deferred(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text(bundle.model_dump_json(), encoding="utf-8")
+    cleanup_started_path = tmp_path / "cleanup.started"
+    teardown_path = tmp_path / "teardown.json"
+    reraised_path = tmp_path / "signal.reraised"
+    script_path = tmp_path / "signal_exception_teardown.py"
+    script_path.write_text(
+        """
+import json
+import signal
+import sys
+import time
+from pathlib import Path
+
+from feedbax.orchestration.bundle import RunBundle
+from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.stages import StageEngine
+
+bundle = RunBundle.model_validate_json(Path(sys.argv[1]).read_text())
+cleanup_started = Path(sys.argv[2])
+teardown = Path(sys.argv[3])
+reraised = Path(sys.argv[4])
+
+def prior_handler(received, _frame):
+    reraised.write_text(str(received))
+    raise SystemExit(128 + received)
+
+signal.signal(signal.SIGINT, prior_handler)
+
+class Driver:
+    def provision(self, bundle, state):
+        return {"driver": "fixture", "pod_id": "pod-exception-signal"}
+    def realize_env(self, bundle, state):
+        return "fixture-fingerprint"
+    def stage_inputs(self, bundle, state):
+        raise RuntimeError("ordinary stage failure")
+    def teardown(self, bundle, state):
+        cleanup_started.write_text("started")
+        time.sleep(0.3)
+        outputs = {
+            "teardown": "removed",
+            "pod_absence": {"verified": True, "pod_id": "pod-exception-signal"},
+        }
+        teardown.write_text(json.dumps(outputs))
+        return outputs
+    def launch_row(self, bundle, row, state):
+        return {}
+    def probe(self, bundle, row, state):
+        return DriverRowProbe(status="completed")
+    def stop_row(self, bundle, row, state):
+        return {}
+    def collect(self, bundle, row, state):
+        return {}
+
+StageEngine(bundle=bundle, driver=Driver()).run()
+""".lstrip(),
+        encoding="utf-8",
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(script_path),
+            str(bundle_path),
+            str(cleanup_started_path),
+            str(teardown_path),
+            str(reraised_path),
+        ],
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, (str(Path.cwd()), os.environ.get("PYTHONPATH")))
+            ),
+        },
+    )
+    deadline = time.monotonic() + 8
+    while not cleanup_started_path.exists() and time.monotonic() < deadline:
+        if process.poll() is not None:
+            pytest.fail(f"signal fixture exited early with {process.returncode}")
+        time.sleep(0.02)
+    assert cleanup_started_path.exists()
+
+    process.send_signal(signal.SIGINT)
+
+    assert process.wait(timeout=8) == 128 + signal.SIGINT
+    assert json.loads(teardown_path.read_text())["pod_absence"]["verified"] is True
+    assert reraised_path.read_text() == str(int(signal.SIGINT))
+    persisted = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    assert persisted.stage(STAGE_TEARDOWN).status == "completed"
+    assert persisted.stage(STAGE_TEARDOWN).outputs["pod_absence"]["verified"] is True

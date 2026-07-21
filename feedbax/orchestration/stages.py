@@ -6,13 +6,16 @@ import hashlib
 import json
 import math
 import os
+import signal
 import stat
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from feedbax.contracts.manifest import (
     ParentRef,
@@ -204,6 +207,76 @@ class _PrimaryExecutorFailure(OrchestrationStageError):
         self.stage_outputs = dict(stage_outputs)
 
 
+class _DeferredOperatorSignal(BaseException):
+    """Carry an operator signal across bounded cleanup without losing its identity."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"received signal {signum}")
+        self.signum = signum
+
+
+class _ScopedSignalSupervisor:
+    """Convert SIGINT/SIGTERM into an orderly abort for one run boundary.
+
+    Python only permits signal-handler installation on the main thread. Off the
+    main thread this context is intentionally a no-op, so callers retain normal
+    thread-level cancellation semantics instead of failing during setup.
+    """
+
+    def __init__(self) -> None:
+        self._installed = False
+        self._previous: dict[int, Any] = {}
+        self._received: int | None = None
+        self._deferring = False
+
+    def __enter__(self) -> "_ScopedSignalSupervisor":
+        if threading.current_thread() is not threading.main_thread():
+            return self
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            self._previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, self._handle)
+        self._installed = True
+        return self
+
+    def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> bool:
+        if not self._installed:
+            return False
+        for signum, previous in self._previous.items():
+            signal.signal(signum, previous)
+        if isinstance(exc, _DeferredOperatorSignal):
+            # Re-deliver only after cleanup and restoration. Default SIGTERM
+            # terminates normally; Python's default SIGINT handler re-raises
+            # KeyboardInterrupt. A custom prior handler retains its semantics.
+            signal.raise_signal(exc.signum)
+            if exc.signum == signal.SIGINT:
+                raise KeyboardInterrupt
+            raise SystemExit(128 + exc.signum)
+        return False
+
+    @contextmanager
+    def defer_signals(self) -> Iterator[None]:
+        """Defer operator signals until the bounded cleanup scope exits."""
+        self._deferring = True
+        try:
+            yield
+        finally:
+            self._deferring = False
+        if self._received is not None:
+            raise _DeferredOperatorSignal(self._received)
+
+    def _handle(self, signum: int, _frame: Any) -> None:
+        if self._deferring:
+            self._received = signum
+            return
+        if self._received is None:
+            self._received = signum
+            raise _DeferredOperatorSignal(signum)
+        # A signal arriving while the first one is unwinding remains deferred.
+        # Bounded transport/log/teardown operations ensure this cannot become an
+        # unbounded signal trap.
+        self._received = signum
+
+
 class StageEngine:
     """Execute a run bundle through the orchestration stage sequence."""
 
@@ -297,35 +370,51 @@ class StageEngine:
         stop_after_stage: str | None = None,
         retry_failed_certification: bool = False,
     ) -> RunSetState:
-        """Run or resume the bundle through all stages."""
+        """Run or resume the bundle through all stages.
+
+        Main-thread SIGINT/SIGTERM handling is scoped to this call. Observable
+        exits run bounded cleanup before the original exception or signal is
+        re-raised. SIGKILL and provider creation responses whose pod identity is
+        ambiguous are outside this process-level contract.
+        """
         initial = self._initial_state()
-        with self.store.lock(break_stale=break_stale_lock):
-            state = self.store.initialize(initial)
-            state = self._hydrate_completed_assembly(state)
-            state = self._restore_completed_driver_preflight(state)
-            if retry_failed_certification:
-                retry_state = self._reset_failed_certification(state)
-                if retry_state is not state:
-                    self.store.save(retry_state)
-                state = retry_state
-            try:
-                for stage_id in STAGE_ORDER:
-                    if state.stage(stage_id).status == "completed":
-                        continue
-                    state = self._run_stage(stage_id, state)
-                    if stop_after_stage == stage_id:
-                        return state
-                return state
-            except Exception:
-                latest = self.store.load() if self.store.path.exists() else state
-                if (
-                    self.bundle is not None
-                    and self.driver is not None
-                    and self._provision_completed(latest)
-                    and not self.bundle.keep_alive
-                ):
-                    latest = self._run_teardown(latest, abort=True)
-                raise
+        with _ScopedSignalSupervisor() as signal_supervisor:
+            with self.store.lock(break_stale=break_stale_lock):
+                state = self.store.initialize(initial)
+                state = self._hydrate_completed_assembly(state)
+                state = self._restore_completed_driver_preflight(state)
+                if retry_failed_certification:
+                    retry_state = self._reset_failed_certification(state)
+                    if retry_state is not state:
+                        self.store.save(retry_state)
+                    state = retry_state
+                try:
+                    for stage_id in STAGE_ORDER:
+                        if state.stage(stage_id).status == "completed":
+                            continue
+                        if stage_id == STAGE_TEARDOWN:
+                            with signal_supervisor.defer_signals():
+                                state = self._run_stage(stage_id, state)
+                        else:
+                            state = self._run_stage(stage_id, state)
+                        if stop_after_stage == stage_id:
+                            break
+                    return state
+                except BaseException:
+                    latest = self.store.load() if self.store.path.exists() else state
+                    if (
+                        self.bundle is not None
+                        and self.driver is not None
+                        and (
+                            self._provision_completed(latest)
+                            or bool(
+                                getattr(self.driver, "has_pending_owned_resource", lambda: False)()
+                            )
+                        )
+                    ):
+                        with signal_supervisor.defer_signals():
+                            self._run_teardown(latest, abort=True)
+                    raise
 
     @staticmethod
     def _reset_failed_certification(state: RunSetState) -> RunSetState:
@@ -394,7 +483,11 @@ class StageEngine:
                 governed_provision = stage_id == STAGE_PROVISION and bool(
                     getattr(self.driver, "govern_provisioning_retries", False)
                 )
-                if isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded)) or governed_provision or attempts >= limit:
+                if (
+                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded))
+                    or governed_provision
+                    or attempts >= limit
+                ):
                     raise
                 continue
             completed = state.stage(stage_id).model_copy(
@@ -526,9 +619,7 @@ class StageEngine:
         self.store.save(state)
         failed = [check for check in checks if check.status == "fail"]
         if failed:
-            raise PreflightFailed(
-                f"preflight failed: {', '.join(check.name for check in failed)}"
-            )
+            raise PreflightFailed(f"preflight failed: {', '.join(check.name for check in failed)}")
         driver_preflight = getattr(self.driver, "preflight_checks", None)
         if callable(driver_preflight):
             checks.extend(driver_preflight(self.bundle))
@@ -563,9 +654,11 @@ class StageEngine:
 
         counters = dict(state.budget_counters)
         started_at = float(counters.setdefault("provisioning_started_at", self._wall_time()))
-        deadline = float(counters.setdefault(
-            "provisioning_deadline_at", started_at + self.bundle.budget.max_wall_clock_seconds
-        ))
+        deadline = float(
+            counters.setdefault(
+                "provisioning_deadline_at", started_at + self.bundle.budget.max_wall_clock_seconds
+            )
+        )
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         self.store.save(state)
         attempts = list(state.provisioning_attempts)
@@ -596,7 +689,9 @@ class StageEngine:
                 )
                 if exc.stop_reason is not None:
                     self._stop_provisioning(state, attempts, exc.stop_reason)
-                    raise OrchestrationStageError(f"provisioning stopped: {exc.stop_reason}") from exc
+                    raise OrchestrationStageError(
+                        f"provisioning stopped: {exc.stop_reason}"
+                    ) from exc
                 cleanup = attempt.get("cleanup")
                 absence = cleanup.get("pod_absence") if isinstance(cleanup, Mapping) else None
                 if attempt.get("acquired") and not (
@@ -614,14 +709,18 @@ class StageEngine:
                     raise BudgetExceeded(f"provisioning stopped: {reason}") from exc
                 if not exc.retryable:
                     self._stop_provisioning(state, attempts, "non-retryable-error")
-                    raise OrchestrationStageError("provisioning stopped: non-retryable-error") from exc
+                    raise OrchestrationStageError(
+                        "provisioning stopped: non-retryable-error"
+                    ) from exc
                 if self._wall_time() >= deadline:
                     self._stop_provisioning(state, attempts, "wall-clock-exceeded")
                     raise BudgetExceeded("provisioning exceeded its wall-clock boundary") from exc
                 delay = float(getattr(self.driver, "provision_retry_delay_seconds", 0.0))
                 if delay <= 0.0:
                     self._stop_provisioning(state, attempts, "invalid-retry-delay")
-                    raise OrchestrationStageError("RunPod provisioning retry delay must be positive")
+                    raise OrchestrationStageError(
+                        "RunPod provisioning retry delay must be positive"
+                    )
                 self._sleep(min(delay, max(0.0, deadline - self._wall_time())))
                 continue
             outputs["provisioning_attempts"] = attempts
@@ -635,9 +734,7 @@ class StageEngine:
                     "provisioning_stop_reason": None,
                     "budget_counters": counters,
                     "abort_reason": (
-                        None
-                        if state.abort_reason == prior_stop_reason
-                        else state.abort_reason
+                        None if state.abort_reason == prior_stop_reason else state.abort_reason
                     ),
                     "updated_at": utc_now(),
                 }
@@ -828,8 +925,7 @@ class StageEngine:
         executor_failures = [
             {
                 "row_id": row.row_id,
-                "error": state.rows[row.row_id].error
-                or "executor reported failure without detail",
+                "error": state.rows[row.row_id].error or "executor reported failure without detail",
             }
             for row in self.bundle.rows
             if state.rows[row.row_id].status == "failed"
@@ -866,8 +962,8 @@ class StageEngine:
                 secondary_evidence.append(evidence)
             elif uses_registered_native_execution(row):
                 try:
-                    checkpoint_custody[row.row_id] = (
-                        _verify_collected_native_checkpoint_custody(row, outputs)
+                    checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
+                        row, outputs
                     )
                 except Exception as exc:
                     if not preserve_executor_failure:
@@ -1065,9 +1161,9 @@ class StageEngine:
             "hourly_rate": provision.get("hourly_rate"),
             "accrued_cost": None,
             "currency": provision.get("currency"),
-            "cost_basis": "local-not-billable" if venue == "local" else (
-                "billing-start-to-certify-observation"
-            ),
+            "cost_basis": "local-not-billable"
+            if venue == "local"
+            else ("billing-start-to-certify-observation"),
             "observation_basis": {
                 "provider": provision.get(
                     "provider_observation_basis", "durable orchestration provision record"
@@ -1256,8 +1352,7 @@ class StageEngine:
             and isinstance(inventory, Mapping)
             and inventory.get("scope") == "provider-account"
             and inventory.get("verified") is True
-            and inventory.get("observation_basis")
-            == "runpodctl pod list --output json"
+            and inventory.get("observation_basis") == "runpodctl pod list --output json"
             and inventory.get("outcome") == "empty"
             and type(inventory.get("pod_count")) is int
             and inventory.get("pod_count") == 0
@@ -1311,8 +1406,6 @@ class StageEngine:
                 tmp_path.unlink()
 
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
-        if self.bundle.keep_alive:
-            return state
         stage = state.stage(STAGE_TEARDOWN)
         if stage.status == "completed":
             return state
@@ -1330,14 +1423,25 @@ class StageEngine:
                     # Failure diagnostics are best-effort and must never mask
                     # the error that caused abort teardown.
                     failure_log_collection = {"status": "failed", "error": str(exc)}
-        try:
-            outputs = dict(self.driver.teardown(self.bundle, state))
+        if self.bundle.keep_alive:
+            describe_ownership = getattr(self.driver, "teardown_ownership", None)
+            ownership = dict(describe_ownership(state)) if describe_ownership else {}
+            outputs = {
+                "teardown": "skipped",
+                "skip_reason": "keep_alive",
+                **({"ownership": ownership} if ownership else {}),
+            }
             status = "completed"
             error = None
-        except Exception as exc:
-            outputs = {}
-            status = "failed"
-            error = str(exc)
+        else:
+            try:
+                outputs = dict(self.driver.teardown(self.bundle, state))
+                status = "completed"
+                error = None
+            except Exception as exc:
+                outputs = dict(getattr(exc, "teardown_outputs", {}))
+                status = "failed"
+                error = str(exc)
         teardown_outputs: dict[str, Any] = {**outputs, "abort_path": abort}
         if failure_log_collection is not None:
             teardown_outputs["failure_log_collection"] = failure_log_collection
@@ -1747,9 +1851,7 @@ def _run_static_preflight_checks(
         missing = missing_native_training_collection_outputs(row)
         output_observed[row.row_id] = {
             "declared": list(row.launch.collect),
-            "required_for_registered_native_training": list(
-                NATIVE_TRAINING_COLLECTION_OUTPUTS
-            ),
+            "required_for_registered_native_training": list(NATIVE_TRAINING_COLLECTION_OUTPUTS),
         }
         if missing:
             output_failures.append(f"{row.row_id}: missing {missing!r}")
@@ -1805,8 +1907,7 @@ def _preflight_deployment_policy(
     expected_venue = "local" if policy.driver == "local" else "remote"
     if policy.venue != expected_venue:
         failures.append(
-            f"driver {policy.driver!r} requires venue={expected_venue!r}, "
-            f"observed {policy.venue!r}"
+            f"driver {policy.driver!r} requires venue={expected_venue!r}, observed {policy.venue!r}"
         )
     if policy.driver == "runpod" and not policy.cloud_authorized:
         failures.append("runpod deployment requires explicit cloud authorization")
