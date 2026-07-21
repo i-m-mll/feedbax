@@ -678,6 +678,7 @@ def _runpod_config_for_bundle(
         remote_repos={
             str(name): str(path) for name, path in metadata.get("runpod_remote_repos", {}).items()
         },
+        primary_repo=_optional_string(metadata.get("runpod_primary_repo")),
         protected_refs={
             str(name): str(ref) for name, ref in metadata.get("runpod_protected_refs", {}).items()
         },

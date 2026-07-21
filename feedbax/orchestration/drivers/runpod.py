@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -18,7 +19,7 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -97,6 +98,7 @@ _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
         "runpod-image-immutable",
         "runpod-image-tag-exists",
         "runpod-lockfiles-declared",
+        "runpod-remote-layout-vs-lock",
         "runpod-python-version-declared",
         "runpod-gpu-policy-declared",
         "runpod-credentials",
@@ -106,6 +108,23 @@ _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
 )
 _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SUPPORTED_LOCAL_LOCK_SOURCE_FORMS = frozenset({"editable", "path"})
+_UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS = frozenset({"directory", "virtual", "workspace"})
+_SUPPORTED_REMOTE_LOCK_SOURCE_FORMS = frozenset({"git", "registry", "url"})
+_SUPPORTED_UV_LOCK_VERSIONS = frozenset({1})
+_DEPENDENCY_FILE_NAMES = frozenset(
+    {
+        "uv.lock",
+        "pyproject.toml",
+        "poetry.lock",
+        "pdm.lock",
+        "pipfile",
+        "pipfile.lock",
+        "pixi.lock",
+        "environment.yml",
+        "environment.yaml",
+    }
+)
 _POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
 _SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _RUNPOD_GO_UTC_PATTERN = re.compile(
@@ -471,6 +490,7 @@ class RunPodDriverConfig:
     remote_artifacts_dir: str = "/workspace/_artifacts"
     local_repos: Mapping[str, Path | str] = field(default_factory=dict)
     remote_repos: Mapping[str, str] = field(default_factory=dict)
+    primary_repo: str | None = None
     protected_refs: Mapping[str, str] = field(default_factory=dict)
     path_patches: tuple[tuple[str, str, str], ...] = ()
     overlay_steps: tuple[str, ...] = ("uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",)
@@ -623,6 +643,36 @@ class RunPodOrchestrationDriver:
             self._preflight_passed = False
             return [binding_check]
         checks: list[PreflightCheckEntry] = [binding_check]
+        lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
+        checks.append(
+            _preflight_check(
+                "runpod-lockfiles-declared",
+                lockfile_error is None,
+                detail=lockfile_error,
+                observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
+            )
+        )
+        if lockfile_error is not None:
+            self._preflight_passed = False
+            return checks
+
+        layout_error, layout_observed = runpod_remote_layout_vs_lock_error(
+            bundle,
+            self.config,
+            source_roots=self._local_repos(),
+        )
+        checks.append(
+            _preflight_check(
+                "runpod-remote-layout-vs-lock",
+                layout_error is None,
+                detail=layout_error,
+                observed=layout_observed,
+            )
+        )
+        if layout_error is not None:
+            self._preflight_passed = False
+            return checks
+
         image = bundle.environment.image_id
         image_is_immutable = is_immutable_runpod_image_id(image)
         checks.append(
@@ -643,17 +693,6 @@ class RunPodOrchestrationDriver:
                 "runpod-image-tag-exists",
                 image_exists,
                 observed=image,
-            )
-        )
-        lockfile_error = runpod_lockfile_declaration_error(
-            bundle.environment.lockfile_hashes
-        )
-        checks.append(
-            _preflight_check(
-                "runpod-lockfiles-declared",
-                lockfile_error is None,
-                detail=lockfile_error,
-                observed=dict(sorted(bundle.environment.lockfile_hashes.items())),
             )
         )
         checks.append(
@@ -882,6 +921,7 @@ class RunPodOrchestrationDriver:
             "remote_repos": {
                 str(name): str(path) for name, path in sorted(self.config.remote_repos.items())
             },
+            "primary_repo": self.config.primary_repo,
             "path_patches": [list(patch) for patch in self.config.path_patches],
             "overlay_steps_sha256": _sha256_json(list(self.config.overlay_steps)),
             "auto_teardown": self.config.auto_teardown,
@@ -935,6 +975,20 @@ class RunPodOrchestrationDriver:
         for name, observed in expected_checks.items():
             if named[name].observed != observed:
                 raise RunPodDriverError(f"{name} observation does not match current declarations")
+
+        layout_error, layout_observed = runpod_remote_layout_vs_lock_error(
+            bundle,
+            self.config,
+            source_roots=self._local_repos(),
+        )
+        if layout_error is not None:
+            raise RunPodDriverError(
+                f"current remote layout no longer satisfies the committed lock: {layout_error}"
+            )
+        if named["runpod-remote-layout-vs-lock"].observed != layout_observed:
+            raise RunPodDriverError(
+                "runpod-remote-layout-vs-lock observation does not match current layout"
+            )
 
         credentials_required = not self._provided_endpoint or bundle.deadman_enabled
         expected_credentials = "verified" if credentials_required else "not-required-provided-endpoint"
@@ -1656,23 +1710,15 @@ class RunPodOrchestrationDriver:
             return None
 
     def _local_repos(self) -> Mapping[str, Path | str]:
-        if self.config.local_repos:
-            return self.config.local_repos
-        return {"feedbax": Path.cwd()}
+        return _local_repos(self.config)
 
     def _remote_repos(self) -> Mapping[str, str]:
-        if self.config.remote_repos:
-            return self.config.remote_repos
-        return {"feedbax": f"{self.config.remote_repo_root}/feedbax"}
+        return _remote_repos(self.config)
 
     def _primary_workdir(self) -> str:
         remote_repos = self._remote_repos()
-        return (
-            remote_repos.get("rlrmp2")
-            or remote_repos.get("rlrmp")
-            or remote_repos.get("feedbax")
-            or self.config.remote_repo_root
-        )
+        primary_repo = _primary_repo_name(self.config, remote_repos.keys())
+        return remote_repos[primary_repo]
 
     def _row_workdir(self, row: RunRowSpec) -> str:
         return runpod_row_workdir(self.config, row)
@@ -1962,6 +2008,263 @@ def runpod_lockfile_declaration_error(lockfile_hashes: Mapping[str, str]) -> str
     return None
 
 
+def runpod_remote_layout_vs_lock_error(
+    bundle: RunBundle,
+    config: RunPodDriverConfig,
+    *,
+    source_roots: Mapping[str, Path | str] | None = None,
+) -> tuple[str | None, Mapping[str, Any]]:
+    """Verify local lock bytes and their path sources against the remote layout.
+
+    ``source_roots`` lets callers validate a sealed staging tree rather than the
+    configured live checkouts. Keys still represent repo identity and must match
+    the configured remote repo keys exactly.
+    """
+    local_repos = dict(source_roots if source_roots is not None else _local_repos(config))
+    remote_repos = dict(_remote_repos(config))
+    local_keys = set(local_repos)
+    remote_keys = set(remote_repos)
+    observed: dict[str, Any] = {
+        "local_repo_keys": sorted(local_keys),
+        "remote_repos": {name: remote_repos[name] for name in sorted(remote_repos)},
+        "lockfile_hashes": dict(sorted(bundle.environment.lockfile_hashes.items())),
+        "path_sources": [],
+    }
+
+    try:
+        primary_repo = _primary_repo_name(config, local_keys)
+    except RunPodDriverError as exc:
+        return str(exc), observed
+    observed["primary_repo"] = primary_repo
+
+    local_roots = {name: Path(root).resolve() for name, root in local_repos.items()}
+    consumer_root = local_roots[primary_repo]
+    parsed_sources: list[tuple[str, str, str, Path]] = []
+    for lock_relative_path, expected_digest in sorted(bundle.environment.lockfile_hashes.items()):
+        lock_path = consumer_root / Path(lock_relative_path)
+        try:
+            lock_bytes = lock_path.read_bytes()
+        except OSError as exc:
+            return f"cannot read declared lockfile {lock_path}: {exc}", observed
+        actual_digest = hashlib.sha256(lock_bytes).hexdigest()
+        if actual_digest != expected_digest:
+            return (
+                f"declared lockfile hash mismatch for {lock_path}: "
+                f"expected {expected_digest}, observed {actual_digest}",
+                observed,
+            )
+        try:
+            document = tomllib.loads(lock_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            return f"malformed TOML in declared lockfile {lock_path}: {exc}", observed
+        try:
+            sources = _local_lock_sources(document, lock_path=lock_path)
+        except RunPodDriverError as exc:
+            return str(exc), observed
+
+        parsed_sources.extend(
+            (lock_relative_path, form, spelling, lock_path) for form, spelling in sources
+        )
+
+    if local_keys != remote_keys:
+        return (
+            "local/remote repo key mismatch: "
+            f"local={sorted(local_keys)!r}, remote={sorted(remote_keys)!r}",
+            observed,
+        )
+    normalized_remote_roots: dict[str, str] = {}
+    root_owners: dict[str, list[str]] = {}
+    for name, raw_root in remote_repos.items():
+        root = PurePosixPath(raw_root)
+        if not root.is_absolute():
+            return f"remote repo root for {name!r} must be absolute: {raw_root!r}", observed
+        normalized = posixpath.normpath(root.as_posix())
+        normalized_remote_roots[name] = normalized
+        root_owners.setdefault(normalized, []).append(name)
+    duplicates = {root: names for root, names in root_owners.items() if len(names) > 1}
+    if duplicates:
+        root, names = next(iter(sorted(duplicates.items())))
+        return f"duplicate remote repo root {root!r} for keys {sorted(names)!r}", observed
+
+    remote_consumer_root = normalized_remote_roots[primary_repo]
+    lock_paths = {
+        posixpath.normpath(posixpath.join(remote_consumer_root, relative_path))
+        for relative_path in bundle.environment.lockfile_hashes
+    }
+    for remote_file, _patch_from, _patch_to in config.path_patches:
+        normalized_file = posixpath.normpath(remote_file)
+        basename = PurePosixPath(normalized_file).name.lower()
+        dependency_target = (
+            normalized_file in lock_paths
+            or basename in _DEPENDENCY_FILE_NAMES
+            or basename.startswith("requirements")
+            and basename.endswith((".txt", ".in"))
+        )
+        if dependency_target:
+            return (
+                f"path_patches may not target a lock or dependency file: {remote_file!r}",
+                observed,
+            )
+
+    path_source_evidence: list[dict[str, str]] = []
+    for lock_relative_path, form, spelling, lock_path in parsed_sources:
+        source_path = PurePosixPath(spelling)
+        if source_path.is_absolute():
+            return (
+                f"absolute {form} source {spelling!r} in {lock_path} is unsupported",
+                observed,
+            )
+        if not spelling or spelling != source_path.as_posix():
+            return (
+                f"non-canonical {form} source spelling {spelling!r} in {lock_path}",
+                observed,
+            )
+        resolved_target = (consumer_root / Path(*source_path.parts)).resolve()
+        matches = [
+            name
+            for name, repo_root in local_roots.items()
+            if resolved_target == repo_root or resolved_target.is_relative_to(repo_root)
+        ]
+        if len(matches) != 1:
+            qualifier = "ambiguous" if matches else "unmatched"
+            return (
+                f"{qualifier} local target for lock source {spelling!r}: consumer "
+                f"{consumer_root} resolves to {resolved_target}; configured local repos are "
+                + ", ".join(f"{name}={root}" for name, root in sorted(local_roots.items())),
+                observed,
+            )
+        target_repo = matches[0]
+        subpath = resolved_target.relative_to(local_roots[target_repo])
+        planned_from_spelling = posixpath.normpath(posixpath.join(remote_consumer_root, spelling))
+        keyed_remote_target = posixpath.normpath(
+            posixpath.join(normalized_remote_roots[target_repo], subpath.as_posix())
+        )
+        if planned_from_spelling != keyed_remote_target:
+            return (
+                f"lock source {spelling!r} resolves locally to {resolved_target} in repo "
+                f"{target_repo!r}, but planned remote spelling from {remote_consumer_root!r} "
+                f"resolves to {planned_from_spelling!r}, not keyed target "
+                f"{keyed_remote_target!r}; planned remote repos are "
+                f"{dict(sorted(normalized_remote_roots.items()))!r}",
+                observed,
+            )
+        path_source_evidence.append(
+            {
+                "lockfile": lock_relative_path,
+                "form": form,
+                "spelling": spelling,
+                "target_repo": target_repo,
+                "target_subpath": subpath.as_posix(),
+                "planned_remote_target": keyed_remote_target,
+            }
+        )
+    observed["path_sources"] = sorted(
+        path_source_evidence,
+        key=lambda item: (item["lockfile"], item["form"], item["spelling"]),
+    )
+    return None, observed
+
+
+def _local_lock_sources(
+    document: Mapping[str, Any], *, lock_path: Path
+) -> tuple[tuple[str, str], ...]:
+    version = document.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise RunPodDriverError(
+            f"unsupported lock content in {lock_path}: integer version is required"
+        )
+    if version not in _SUPPORTED_UV_LOCK_VERSIONS:
+        raise RunPodDriverError(
+            f"unsupported lock version {version!r} in {lock_path}; "
+            f"supported versions are {sorted(_SUPPORTED_UV_LOCK_VERSIONS)!r}"
+        )
+    packages = document.get("package", [])
+    if not isinstance(packages, list) or any(not isinstance(item, Mapping) for item in packages):
+        raise RunPodDriverError(
+            f"unsupported lock content in {lock_path}: package must be an array of tables"
+        )
+
+    sources: list[tuple[str, str]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            local_forms = set(value) & (
+                _SUPPORTED_LOCAL_LOCK_SOURCE_FORMS | _UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+            )
+            if local_forms:
+                unsupported = local_forms & _UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+                if unsupported:
+                    form = sorted(unsupported)[0]
+                    raise RunPodDriverError(
+                        f"unsupported local source form {form!r} in {lock_path}"
+                    )
+                if len(local_forms) != 1:
+                    raise RunPodDriverError(
+                        f"ambiguous local source forms {sorted(local_forms)!r} in {lock_path}"
+                    )
+                form = next(iter(local_forms))
+                spelling = value[form]
+                if not isinstance(spelling, str):
+                    raise RunPodDriverError(
+                        f"unsupported {form!r} source value in {lock_path}: {spelling!r}"
+                    )
+                sources.append((form, spelling))
+            for key, child in value.items():
+                if key in local_forms:
+                    continue
+                if key == "source":
+                    if not isinstance(child, Mapping) or len(child) != 1:
+                        forms = (
+                            sorted(child) if isinstance(child, Mapping) else [type(child).__name__]
+                        )
+                        raise RunPodDriverError(
+                            f"unsupported mixed source forms {forms!r} in {lock_path}"
+                        )
+                    form = next(iter(child))
+                    known_forms = (
+                        _SUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+                        | _UNSUPPORTED_LOCAL_LOCK_SOURCE_FORMS
+                        | _SUPPORTED_REMOTE_LOCK_SOURCE_FORMS
+                    )
+                    if form not in known_forms:
+                        raise RunPodDriverError(f"unsupported source form {form!r} in {lock_path}")
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(document)
+    return tuple(dict.fromkeys(sources))
+
+
+def _local_repos(config: RunPodDriverConfig) -> Mapping[str, Path | str]:
+    return config.local_repos or {"feedbax": Path.cwd()}
+
+
+def _remote_repos(config: RunPodDriverConfig) -> Mapping[str, str]:
+    return config.remote_repos or {"feedbax": f"{config.remote_repo_root}/feedbax"}
+
+
+def _primary_repo_name(config: RunPodDriverConfig, repo_keys: Iterable[str]) -> str:
+    keys = set(repo_keys)
+    if config.primary_repo is not None:
+        if config.primary_repo not in keys:
+            raise RunPodDriverError(
+                f"primary_repo {config.primary_repo!r} is not a configured repo key: "
+                f"{sorted(keys)!r}"
+            )
+        return config.primary_repo
+    preferred = [name for name in ("rlrmp2", "rlrmp", "feedbax") if name in keys]
+    if len(preferred) == 1:
+        return preferred[0]
+    if len(keys) == 1:
+        return next(iter(keys))
+    raise RunPodDriverError(
+        "RunPod primary repo is ambiguous; set RunPodDriverConfig.primary_repo for keys "
+        f"{sorted(keys)!r}"
+    )
+
+
 def require_deterministic_runpod_environment(bundle: RunBundle) -> None:
     """Reject RunPod declarations that cannot realize an immutable environment."""
     if not is_immutable_runpod_image_id(bundle.environment.image_id):
@@ -2216,15 +2519,8 @@ def runpod_row_workdir(config: RunPodDriverConfig, row: RunRowSpec) -> str:
     workdir = row.launch.metadata.get("workdir")
     if workdir:
         return str(workdir)
-    remote_repos = config.remote_repos or {
-        "feedbax": f"{config.remote_repo_root}/feedbax"
-    }
-    return (
-        remote_repos.get("rlrmp2")
-        or remote_repos.get("rlrmp")
-        or remote_repos.get("feedbax")
-        or config.remote_repo_root
-    )
+    remote_repos = _remote_repos(config)
+    return remote_repos[_primary_repo_name(config, remote_repos.keys())]
 
 
 def dry_run_launch_bundle(

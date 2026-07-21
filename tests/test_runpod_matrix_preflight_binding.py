@@ -94,7 +94,8 @@ def _authority_repo(root: Path) -> tuple[Path, str]:
     _git(repo, "config", "user.email", "tests@example.invalid")
     _git(repo, "config", "user.name", "Feedbax Tests")
     (repo / "authority.txt").write_text("protected\n", encoding="utf-8")
-    _git(repo, "add", "authority.txt")
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    _git(repo, "add", "authority.txt", "uv.lock")
     _git(repo, "commit", "-m", "protected authority")
     return repo, _git(repo, "rev-parse", "HEAD")
 
@@ -116,7 +117,7 @@ def _matrix_case(
     authored_bytes = (json.dumps(authored, indent=2) + "\n").encode()
     authored_path = root / "matrix.json"
     authored_path.write_bytes(authored_bytes)
-    lockfile = root / "uv.lock"
+    lockfile = root / "science" / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
     request = RunAssemblyRequest(
         authored=SchemaArtifactRef(
@@ -218,6 +219,8 @@ def _driver(bundle: RunBundle, repo: Path, transport: RecordingTransport):
             ssh_port=22,
             image=bundle.environment.image_id or "",
             local_repos={"science": repo},
+            remote_repos={"science": "/workspace/science"},
+            primary_repo="science",
             protected_refs={"science": "refs/heads/main"},
         ),
         transport=transport,
@@ -525,6 +528,8 @@ def test_invalid_matrix_authority_stops_before_transport(tmp_path: Path, invalid
         driver.config = RunPodDriverConfig(
             image=bundle.environment.image_id or "",
             local_repos={"science": repo},
+            remote_repos={"science": "/workspace/science"},
+            primary_repo="science",
             protected_refs=protected,
         )
     elif invalid == "dirty":
