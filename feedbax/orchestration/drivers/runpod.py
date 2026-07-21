@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 import tomllib
@@ -88,9 +89,7 @@ METADATA_BATCH_KEYS = (
     "completed_batch",
     "completedBatch",
 )
-RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = (
-    "feedbax.runpod_environment_fingerprint.v1"
-)
+RUNPOD_ENVIRONMENT_FINGERPRINT_SCHEMA_VERSION = "feedbax.runpod_environment_fingerprint.v1"
 _RUNPOD_PREFLIGHT_CHECK_NAMES = frozenset(
     {
         "input-provider-bindings",
@@ -108,6 +107,7 @@ _IMMUTABLE_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _POD_NOT_FOUND_MARKERS = ("not found", "does not exist", "404")
 _SAFE_POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_CHILD_TERMINATION_GRACE_SECONDS = 1.0
 _RUNPOD_GO_UTC_PATTERN = re.compile(
     r"^(?P<instant>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) \+0000 UTC$"
 )
@@ -220,6 +220,14 @@ if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
 
 class RunPodDriverError(RuntimeError):
     """Raised when the RunPod driver cannot complete a requested action."""
+
+
+class RunPodTeardownError(RunPodDriverError):
+    """A failed teardown with durable, sanitized unresolved-pod evidence."""
+
+    def __init__(self, message: str, *, teardown_outputs: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.teardown_outputs = dict(teardown_outputs)
 
 
 class _ProvisioningIdentityError(RunPodDriverError):
@@ -473,7 +481,9 @@ class RunPodDriverConfig:
     remote_repos: Mapping[str, str] = field(default_factory=dict)
     protected_refs: Mapping[str, str] = field(default_factory=dict)
     path_patches: tuple[tuple[str, str, str], ...] = ()
-    overlay_steps: tuple[str, ...] = ("uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",)
+    overlay_steps: tuple[str, ...] = (
+        "uv pip install \"jax[cuda12]==$(uv run --no-sync python -c 'import jax; print(jax.__version__)')\"",
+    )
     auto_teardown: bool = True
 
 
@@ -505,6 +515,7 @@ class RunPodOrchestrationDriver:
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
         self._preflight_passed = False
         self._pod_id = self.config.pod_id
+        self._provided_pod = self.config.pod_id is not None
         self._provided_endpoint = bool(self.config.ssh_host and self.config.ssh_port)
         self._endpoint: EndpointClassification | None = (
             EndpointClassification("ssh_object", self.config.ssh_host, self.config.ssh_port)
@@ -556,7 +567,7 @@ class RunPodOrchestrationDriver:
                 provided_pod=False,
                 accepted_datacenter=acquisition.accepted_datacenter,
             )
-        except Exception as exc:
+        except BaseException as exc:
             if isinstance(exc, ProvisioningAttemptError):
                 raise
             record: dict[str, Any] = {"driver": "runpod", "acquired": acquired, "pod_id": pod_id}
@@ -566,18 +577,22 @@ class RunPodOrchestrationDriver:
             if acquired:
                 try:
                     record["cleanup"] = dict(self.teardown(bundle, state))
-                except Exception as teardown_exc:
+                except RunPodTeardownError as teardown_exc:
+                    record["cleanup"] = dict(teardown_exc.teardown_outputs)
                     record["cleanup_error"] = str(teardown_exc)
-                    self._pod_id = None
-                    self._endpoint = None
+                    if not isinstance(exc, Exception):
+                        raise exc
                     raise ProvisioningAttemptError(
                         f"{exc}; automatic teardown failed: {teardown_exc}",
                         retryable=False,
                         attempt_record=record,
                         stop_reason="teardown-failure",
                     ) from exc
-            self._pod_id = None
-            self._endpoint = None
+            if not isinstance(exc, Exception):
+                raise
+            if not self.has_pending_owned_resource():
+                self._pod_id = None
+                self._endpoint = None
             raise ProvisioningAttemptError(
                 str(exc),
                 retryable=not isinstance(
@@ -610,9 +625,7 @@ class RunPodOrchestrationDriver:
                         detail=str(exc),
                     )
                 ]
-        failures, observed = preflight_input_provider_bindings(
-            bundle, self.input_provider_bindings
-        )
+        failures, observed = preflight_input_provider_bindings(bundle, self.input_provider_bindings)
         binding_check = _preflight_check(
             "input-provider-bindings",
             not failures,
@@ -645,9 +658,7 @@ class RunPodOrchestrationDriver:
                 observed=image,
             )
         )
-        lockfile_error = runpod_lockfile_declaration_error(
-            bundle.environment.lockfile_hashes
-        )
+        lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
         checks.append(
             _preflight_check(
                 "runpod-lockfiles-declared",
@@ -895,7 +906,9 @@ class RunPodOrchestrationDriver:
         self, bundle: RunBundle, checks: Sequence[PreflightCheckEntry]
     ) -> None:
         """Validate persisted RunPod checks without provider or input access."""
-        named = {check.name: check for check in checks if check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES}
+        named = {
+            check.name: check for check in checks if check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES
+        }
         if len(named) != len(_RUNPOD_PREFLIGHT_CHECK_NAMES) or any(
             check.name in _RUNPOD_PREFLIGHT_CHECK_NAMES
             and sum(item.name == check.name for item in checks) != 1
@@ -909,14 +922,18 @@ class RunPodOrchestrationDriver:
             bundle, self.input_provider_bindings
         )
         if failures:
-            raise RunPodDriverError("current bundle no longer has valid resolved input declarations")
+            raise RunPodDriverError(
+                "current bundle no longer has valid resolved input declarations"
+            )
         current_bindings = {binding.name for binding in self.input_provider_bindings}
         required_bindings = {item.custody.provider_binding for item in bundle.resolved_inputs}
         if current_bindings != required_bindings:
             raise RunPodDriverError("current input-provider bindings do not cover the bundle")
         expected_observed = resolved_observed or "no-resolved-inputs"
         if named["input-provider-bindings"].observed != expected_observed:
-            raise RunPodDriverError("input-provider preflight observation does not match the bundle")
+            raise RunPodDriverError(
+                "input-provider preflight observation does not match the bundle"
+            )
 
         image = bundle.environment.image_id
         if self.config.image != image:
@@ -937,7 +954,9 @@ class RunPodOrchestrationDriver:
                 raise RunPodDriverError(f"{name} observation does not match current declarations")
 
         credentials_required = not self._provided_endpoint or bundle.deadman_enabled
-        expected_credentials = "verified" if credentials_required else "not-required-provided-endpoint"
+        expected_credentials = (
+            "verified" if credentials_required else "not-required-provided-endpoint"
+        )
         if named["runpod-credentials"].observed != expected_credentials:
             raise RunPodDriverError("credential preflight observation is inconsistent")
         balance_required = not self._provided_endpoint and not self._pod_id
@@ -946,7 +965,9 @@ class RunPodOrchestrationDriver:
             if isinstance(balance, bool) or not isinstance(balance, (int, float)):
                 raise RunPodDriverError("balance preflight observation is not numeric")
             if not math.isfinite(float(balance)) or balance < self.config.min_balance_usd:
-                raise RunPodDriverError("balance preflight observation does not meet the current threshold")
+                raise RunPodDriverError(
+                    "balance preflight observation does not meet the current threshold"
+                )
         elif balance != "not-required-existing-target":
             raise RunPodDriverError("balance preflight observation is inconsistent")
         expected_deadman = "available" if self.config.api_key else "not-required-or-missing"
@@ -1013,9 +1034,7 @@ class RunPodOrchestrationDriver:
                 failed_file=f"{sentinel_dir}/overlay-{index}.failed",
                 log_file=f"{logs_dir}/overlay-{index}.log",
             )
-        realized_fingerprint = self._probe_realized_environment(
-            bundle, declaration_fingerprint
-        )
+        realized_fingerprint = self._probe_realized_environment(bundle, declaration_fingerprint)
         self._ssh(
             f"printf %s {_sq(declaration_fingerprint)} > "
             f"{_sq(self._remote_declaration_fingerprint_path(bundle))} && "
@@ -1027,9 +1046,7 @@ class RunPodOrchestrationDriver:
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Publish one verified input tree without exposing partial final paths."""
         attempt = state.stage("STAGE_INPUTS").attempts
-        attempt_root = (
-            bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
-        )
+        attempt_root = bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
         try:
             staged_inputs = materialize_bundle_inputs(
                 bundle,
@@ -1072,9 +1089,7 @@ class RunPodOrchestrationDriver:
             )
 
         remote_run_dir = self._remote_run_dir(bundle)
-        remote_attempt_root = (
-            f"{remote_run_dir}/.stage-attempts/stage-inputs-{attempt}"
-        )
+        remote_attempt_root = f"{remote_run_dir}/.stage-attempts/stage-inputs-{attempt}"
         remote_attempt_inputs = f"{remote_attempt_root}/inputs"
         self._ssh(
             f"mkdir -p {_sq(remote_run_dir + '/.stage-attempts')} && "
@@ -1244,9 +1259,7 @@ class RunPodOrchestrationDriver:
             if source_kind == "directory":
                 if os.path.lexists(target):
                     if target.is_symlink() or not target.is_dir():
-                        raise RunPodDriverError(
-                            f"collection directory target is unsafe: {target}"
-                        )
+                        raise RunPodDriverError(f"collection directory target is unsafe: {target}")
                 else:
                     target.mkdir()
                 remote_source = remote_source.rstrip("/") + "/"
@@ -1302,38 +1315,150 @@ class RunPodOrchestrationDriver:
         )
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
-        """Remove the acquired pod unless teardown is disabled by policy."""
-        if bundle.keep_alive or not self.config.auto_teardown or self._provided_endpoint:
-            return {"driver": "runpod", "teardown": "skipped"}
-        if not self._pod_id:
-            return {"driver": "runpod", "teardown": "no-pod"}
-        pod_id = self._pod_id
-        result = self.transport.runpodctl("remove", "pod", pod_id)
-        if result.returncode != 0:
-            self.transport.runpodctl("stop", "pod", pod_id).check("runpodctl stop pod")
-            self.transport.runpodctl(
-                "remove",
-                "pod",
-                pod_id,
-                timeout_seconds=self.config.teardown_absence_timeout_seconds,
-            ).check("runpodctl remove pod after stop")
-            action = "stopped-then-removed"
+        """Boundedly remove a run-owned pod or record why it remains unresolved."""
+        ownership = self.teardown_ownership(state)
+        if not ownership["owned_by_run"]:
+            return {
+                "driver": "runpod",
+                "teardown": "skipped",
+                "skip_reason": ownership["kind"],
+                "ownership": ownership,
+            }
+        if bundle.keep_alive or not self.config.auto_teardown:
+            return {
+                "driver": "runpod",
+                "teardown": "skipped",
+                "skip_reason": "keep_alive" if bundle.keep_alive else "auto_teardown_disabled",
+                "ownership": ownership,
+            }
+        pod_id = ownership["pod_id"]
+        if not isinstance(pod_id, str):
+            return {
+                "driver": "runpod",
+                "teardown": "no-pod",
+                "ownership": ownership,
+            }
+        deadline = self._monotonic() + self.config.teardown_absence_timeout_seconds
+        action = "remove-requested"
+        try:
+            result = self.transport.runpodctl(
+                "remove", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+            )
+            if result.returncode != 0:
+                self.transport.runpodctl(
+                    "stop", "pod", pod_id, timeout_seconds=self._teardown_remaining(deadline)
+                ).check("runpodctl stop pod")
+                self.transport.runpodctl(
+                    "remove",
+                    "pod",
+                    pod_id,
+                    timeout_seconds=self._teardown_remaining(deadline),
+                ).check("runpodctl remove pod after stop")
+                action = "stopped-then-removed"
+            else:
+                action = "removed"
+            absence = self._wait_for_pod_absence(pod_id, deadline=deadline)
+            self._pod_id = None
+            self._endpoint = None
+            remaining = deadline - self._monotonic()
+            final_inventory = (
+                self._observe_global_pod_inventory(timeout_seconds=remaining)
+                if remaining > 0
+                else {
+                    "scope": "provider-account",
+                    "verified": False,
+                    "observed_at": utc_now().isoformat(),
+                    "observation_basis": "runpodctl pod list --output json",
+                    "outcome": "cleanup-deadline-expired",
+                    "pod_count": None,
+                    "pod_ids": [],
+                }
+            )
+            return {
+                "driver": "runpod",
+                "teardown": action,
+                "pod_id": pod_id,
+                "ownership": ownership,
+                "pod_absence": absence,
+                "final_pod_inventory": final_inventory,
+            }
+        except Exception as exc:
+            reason = _redact_secret(str(exc), self.config.api_key)
+            outputs = {
+                "driver": "runpod",
+                "teardown": "unresolved",
+                "pod_id": pod_id,
+                "ownership": ownership,
+                "pod_absence": {
+                    "verified": False,
+                    "pod_id": pod_id,
+                    "terminal_observation": "unresolved",
+                    "reason": reason,
+                },
+                "unresolved_owned_pod": {
+                    "pod_id": pod_id,
+                    "last_known_state": self._last_known_pod_state(state),
+                    "reason": reason,
+                },
+            }
+            raise RunPodTeardownError(
+                f"owned pod {pod_id!r} teardown is unresolved: {reason}",
+                teardown_outputs=outputs,
+            ) from exc
+
+    def teardown_ownership(self, state: RunSetState) -> dict[str, Any]:
+        """Describe provider-resource ownership without performing side effects."""
+        record = state.provision_record or {}
+        pod_id = self._pod_id or record.get("pod_id")
+        provided_endpoint = self._provided_endpoint or record.get("provided_endpoint") is True
+        provided_pod = (
+            False
+            if record.get("teardown_allowed") is True
+            else self._provided_pod or record.get("provided_pod") is True
+        )
+        if provided_endpoint:
+            kind = "provided_endpoint"
+        elif provided_pod:
+            kind = "provided_pod"
+        elif isinstance(pod_id, str) and pod_id:
+            kind = "orchestration_created"
         else:
-            action = "removed"
-        absence = self._wait_for_pod_absence(pod_id)
-        self._pod_id = None
-        final_inventory = self._observe_global_pod_inventory()
+            kind = "none"
+        owned_by_run = kind == "orchestration_created"
         return {
-            "driver": "runpod",
-            "teardown": action,
-            "pod_id": pod_id,
-            "pod_absence": absence,
-            "final_pod_inventory": final_inventory,
+            "kind": kind,
+            "owned_by_run": owned_by_run,
+            "teardown_allowed": owned_by_run,
+            "pod_id": pod_id if isinstance(pod_id, str) else None,
         }
 
-    def _observe_global_pod_inventory(self) -> Mapping[str, Any]:
+    def has_pending_owned_resource(self) -> bool:
+        """Return whether this process still knows an owned pod needing cleanup."""
+        return bool(self._pod_id and not self._provided_pod and not self._provided_endpoint)
+
+    def _teardown_remaining(self, deadline: float) -> float:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise RunPodDriverError("RunPod teardown cleanup deadline expired")
+        return remaining
+
+    def _last_known_pod_state(self, state: RunSetState) -> str:
+        for record in (self._last_provision_pod, state.provision_record):
+            if not isinstance(record, Mapping):
+                continue
+            for key in ("status", "desiredStatus", "desired_status"):
+                value = record.get(key)
+                if isinstance(value, str) and value:
+                    return value[:128]
+        return "unknown"
+
+    def _observe_global_pod_inventory(
+        self, *, timeout_seconds: float | None = None
+    ) -> Mapping[str, Any]:
         """Return sanitized evidence from the provider-wide RunPod pod inventory."""
-        result = self.transport.runpodctl("pod", "list", "--output", "json")
+        result = self.transport.runpodctl(
+            "pod", "list", "--output", "json", timeout_seconds=timeout_seconds
+        )
         observed_at = utc_now().isoformat()
         basis = "runpodctl pod list --output json"
         if result.returncode != 0:
@@ -1378,9 +1503,11 @@ class RunPodOrchestrationDriver:
             "pod_ids": [],
         }
 
-    def _wait_for_pod_absence(self, pod_id: str) -> Mapping[str, Any]:
+    def _wait_for_pod_absence(
+        self, pod_id: str, *, deadline: float | None = None
+    ) -> Mapping[str, Any]:
         """Boundedly prove that one exact orchestration-owned pod is absent."""
-        deadline = self._monotonic() + self.config.teardown_absence_timeout_seconds
+        deadline = deadline or self._monotonic() + self.config.teardown_absence_timeout_seconds
         polls = 0
         while self._monotonic() < deadline:
             remaining = deadline - self._monotonic()
@@ -1415,8 +1542,7 @@ class RunPodOrchestrationDriver:
             observed_id = str(payload.get("id") or payload.get("podId") or "")
             if observed_id != pod_id:
                 raise RunPodDriverError(
-                    f"ambiguous absence query for owned pod {pod_id!r}: "
-                    f"observed id {observed_id!r}"
+                    f"ambiguous absence query for owned pod {pod_id!r}: observed id {observed_id!r}"
                 )
             remaining = deadline - self._monotonic()
             if remaining > 0:
@@ -1516,8 +1642,7 @@ class RunPodOrchestrationDriver:
                 break
             self._sleep(min(self.config.poll_seconds, remaining))
         raise RunPodDriverError(
-            "timed out waiting for RunPod SSH endpoint after "
-            f"{self.config.max_acquire_seconds:g}s"
+            f"timed out waiting for RunPod SSH endpoint after {self.config.max_acquire_seconds:g}s"
         )
 
     def _require_gpu_ready(self) -> None:
@@ -1538,10 +1663,12 @@ class RunPodOrchestrationDriver:
             raise RunPodDriverError("dead-man switch requires a RunPod pod id")
         auth = "export RUNPOD_API_KEY=$(tr '\\0' '\\n' </proc/1/environ | sed -n 's/^FEEDBAX_RUNPOD_API_KEY=//p'); "
         self._ssh(
-            auth + f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
+            auth
+            + f"command -v runpodctl >/dev/null && runpodctl get pod {_sq(self._pod_id)} >/dev/null"
         ).check("in-pod runpodctl presence and authentication")
         self._ssh(
-            auth + build_deadman_watchdog_command(
+            auth
+            + build_deadman_watchdog_command(
                 pod_id=self._pod_id,
                 remote_run_dir=self._remote_run_dir(bundle),
                 remote_sentinel_dir=self._remote_sentinel_dir(bundle),
@@ -1612,10 +1739,14 @@ class RunPodOrchestrationDriver:
         )
         if result.returncode != 0 or result.stdout.strip() != declaration_fingerprint:
             return None
-        realized = self.transport.ssh(
-            f"test -f {_sq(self._remote_fingerprint_path(bundle))} && "
-            f"cat {_sq(self._remote_fingerprint_path(bundle))}"
-        ).check("read realized RunPod environment fingerprint").stdout.strip()
+        realized = (
+            self.transport.ssh(
+                f"test -f {_sq(self._remote_fingerprint_path(bundle))} && "
+                f"cat {_sq(self._remote_fingerprint_path(bundle))}"
+            )
+            .check("read realized RunPod environment fingerprint")
+            .stdout.strip()
+        )
         validate_realized_runpod_environment_fingerprint(
             realized,
             bundle=bundle,
@@ -1904,9 +2035,7 @@ def project_runpod_provision_facts(pod: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "provider": "runpod",
         "region": str(region) if region is not None else None,
-        "immutable_image_id": (
-            str(immutable_image_id) if immutable_image_id is not None else None
-        ),
+        "immutable_image_id": (str(immutable_image_id) if immutable_image_id is not None else None),
         "hourly_rate": hourly_rate,
         "hourly_rate_raw": raw_rate_observation,
         "billing_started_at": _canonical_runpod_timestamp(billing_started_at_raw),
@@ -1968,15 +2097,11 @@ def require_deterministic_runpod_environment(bundle: RunBundle) -> None:
         raise RunPodDriverError(
             "RunPod REALIZE_ENV requires environment.image_id pinned by @sha256:<64 hex>"
         )
-    lockfile_error = runpod_lockfile_declaration_error(
-        bundle.environment.lockfile_hashes
-    )
+    lockfile_error = runpod_lockfile_declaration_error(bundle.environment.lockfile_hashes)
     if lockfile_error is not None:
         raise RunPodDriverError(lockfile_error)
     if not bundle.environment.python_version:
-        raise RunPodDriverError(
-            "RunPod REALIZE_ENV requires environment.python_version"
-        )
+        raise RunPodDriverError("RunPod REALIZE_ENV requires environment.python_version")
 
 
 def validate_realized_runpod_environment_fingerprint(
@@ -2065,10 +2190,7 @@ def build_literal_path_patch_command(
 
 def build_atomic_directory_publish_command(source: str, destination: str) -> str:
     """Build a fail-closed Linux atomic directory publish with no replacement."""
-    return (
-        f"python3 -c {_sq(_REMOTE_ATOMIC_DIRECTORY_PUBLISH)} "
-        f"{_sq(source)} {_sq(destination)}"
-    )
+    return f"python3 -c {_sq(_REMOTE_ATOMIC_DIRECTORY_PUBLISH)} {_sq(source)} {_sq(destination)}"
 
 
 def build_native_resume_seed_command(
@@ -2205,8 +2327,8 @@ def build_launch_row_command(
         f"{seed_command}"
         f"rm -f {_sq(pid_file)} && touch {_sq(started_file)} && "
         f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
-        f"i=0; while [ ! -s {_sq(pid_file)} ] && [ \"$i\" -lt 40 ]; do "
-        'i=$((i+1)); sleep 0.05; done; '
+        f'i=0; while [ ! -s {_sq(pid_file)} ] && [ "$i" -lt 40 ]; do '
+        "i=$((i+1)); sleep 0.05; done; "
         f"[ -s {_sq(pid_file)} ]"
     )
 
@@ -2216,9 +2338,7 @@ def runpod_row_workdir(config: RunPodDriverConfig, row: RunRowSpec) -> str:
     workdir = row.launch.metadata.get("workdir")
     if workdir:
         return str(workdir)
-    remote_repos = config.remote_repos or {
-        "feedbax": f"{config.remote_repo_root}/feedbax"
-    }
+    remote_repos = config.remote_repos or {"feedbax": f"{config.remote_repo_root}/feedbax"}
     return (
         remote_repos.get("rlrmp2")
         or remote_repos.get("rlrmp")
@@ -2301,13 +2421,16 @@ def build_deadman_watchdog_command(
     """Build the optional in-pod dead-man watchdog command."""
     warning = f"{remote_run_dir}/deadman-warning.txt"
     pid_file = f"{remote_run_dir}/deadman.pid"
+    installed_file = f"{remote_run_dir}/deadman.installed"
     script = (
-        f"echo $$ > {_sq(pid_file)}; "
+        f"echo $$ > {_sq(pid_file)}; : > {_sq(installed_file)}; "
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
         f"sdir={_sq(remote_sentinel_dir)}; edir={_sq(events_dir)}; "
         f"silence={int(silence_seconds)}; warning={_sq(warning)}; "
+        f"installed={_sq(installed_file)}; "
         "while true; do "
-        "live=0; newest=0; now=$(date +%s); "
+        'live=0; now=$(date +%s); newest=$(stat -c %Y "$installed" 2>/dev/null '
+        '|| stat -f %m "$installed" 2>/dev/null || echo 0); '
         'for started in "$sdir"/*.started; do [ -e "$started" ] || continue; '
         'base=${started%.started}; [ -f "$base.done" ] || [ -f "$base.failed" ] || live=1; done; '
         'for path in "$edir"/*.jsonl "$sdir"/*; do [ -e "$path" ] || continue; '
@@ -2324,7 +2447,7 @@ def build_deadman_watchdog_command(
         'if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then exit 0; fi; '
         'rm -f "$pid_file"; '
         f"setsid -f bash -lc {_sq(script)} </dev/null "
-        f'>>{_sq(remote_run_dir + "/logs/deadman.log")} 2>&1; '
+        f">>{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1; "
         'i=0; while [ ! -s "$pid_file" ] && [ "$i" -lt 40 ]; do '
         'i=$((i+1)); sleep 0.05; done; [ -s "$pid_file" ]'
     )
@@ -2348,7 +2471,10 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise RunPodDriverError("registered row payload must be a JSON object")
-    if payload.get("schema_id") != ref.schema_id or payload.get("schema_version") != ref.schema_version:
+    if (
+        payload.get("schema_id") != ref.schema_id
+        or payload.get("schema_version") != ref.schema_version
+    ):
         raise RunPodDriverError("registered row payload schema does not match its reference")
     return dict(payload)
 
@@ -2389,18 +2515,41 @@ def _classify_create_failure(
 
 def _run_command(args: Sequence[str], *, timeout_seconds: float | None = None) -> CommandResult:
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             args,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        return CommandResult(124, exc.stdout or "", f"timed out after {timeout_seconds:g}s")
     except OSError as exc:
         return CommandResult(127, "", str(exc))
-    return CommandResult(result.returncode, result.stdout, result.stderr)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        stdout, _stderr = _terminate_process_group(process)
+        return CommandResult(124, stdout, f"timed out after {timeout_seconds:g}s")
+    except BaseException:
+        _terminate_process_group(process)
+        raise
+    return CommandResult(process.returncode, stdout, stderr)
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Boundedly terminate one supervised child process group and drain output."""
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        return process.communicate(timeout=_CHILD_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.communicate(timeout=_CHILD_TERMINATION_GRACE_SECONDS)
 
 
 def _json_object(payload: str) -> dict[str, Any]:
@@ -2446,9 +2595,7 @@ def _parse_runpod_pod_inventory(payload: str) -> tuple[str, ...]:
         nested = pod.get("pod")
         if isinstance(nested, Mapping):
             candidates.append(nested.get("id"))
-        identities = {
-            value for value in candidates if isinstance(value, str) and value
-        }
+        identities = {value for value in candidates if isinstance(value, str) and value}
         if len(identities) != 1:
             raise ValueError("RunPod inventory entry has ambiguous pod identity")
         pod_id = identities.pop()
