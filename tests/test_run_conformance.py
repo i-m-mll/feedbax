@@ -1461,7 +1461,34 @@ def test_lr_trace_legacy_program_steps_require_complete_unambiguous_event_eviden
         )
     )
     assert reversed_mapping.status == "fail"
-    assert "strictly increasing completed-batch" in str(reversed_mapping.detail)
+    assert "strictly increasing in program_step order" in str(reversed_mapping.detail)
+
+    contradictory_unsampled_event = check_lr_trace(
+        _row(
+            bundle_row_spec={"optimizer": optimizer},
+            training_diagnostics=diagnostics,
+            event_log=[
+                {
+                    "payload": {
+                        "coordinate": {
+                            "program_step": step,
+                            "completed_batches": completed_batches,
+                        }
+                    }
+                }
+                for step, completed_batches in (
+                    (5_000, 17_000),
+                    (6_000, 20_000),
+                    (7_000, 19_000),
+                    (9_000, 21_000),
+                )
+            ],
+        )
+    )
+    assert contradictory_unsampled_event.status == "fail"
+    assert "strictly increasing in program_step order" in str(
+        contradictory_unsampled_event.detail
+    )
 
 
 @pytest.mark.parametrize(

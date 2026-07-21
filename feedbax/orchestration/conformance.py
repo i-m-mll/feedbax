@@ -1464,6 +1464,17 @@ def _event_completed_batches_by_program_step(
                 "run events disagree on completed_batches for program_step "
                 f"{program_step_int}: {previous} != {completed_batches_int}"
             )
+    ordered_mapping = sorted(completed_batches_by_program_step.items())
+    if any(
+        current_batches <= previous_batches
+        for (_, previous_batches), (_, current_batches) in zip(
+            ordered_mapping,
+            ordered_mapping[1:],
+        )
+    ):
+        raise ValueError(
+            "run-event completed_batches must be strictly increasing in program_step order"
+        )
     return completed_batches_by_program_step
 
 
