@@ -9,7 +9,7 @@ import pickle
 import time
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
@@ -44,11 +44,28 @@ from feedbax.contracts.manifest import (
     utc_now,
     write_manifest,
 )
+from feedbax.contracts.nan_attribution import (
+    MAX_ATTRIBUTION_AXIS_SIZE,
+    MAX_SCHEDULES,
+    NAN_ATTRIBUTION_ARTIFACT_ROLE,
+    NAN_RESTORATION_ARTIFACT_ROLE,
+    AxisNonFiniteSummary,
+    AxisPredicateSummary,
+    MetricNonFiniteSummary,
+    NanAttributionDetection,
+    NanAttributionRestorationOutcome,
+    NanGuardCoordinate,
+    RestoredCheckpointIdentity,
+    SlotLeafNonFiniteExemplar,
+    SlotLeafPredicateExemplar,
+    SlotNonFiniteSummary,
+)
 from feedbax.contracts.training import (
     DEFAULT_TRAINING_METHOD_REGISTRY,
     GraphTopologySourceSpec,
     OptimizerSpec,
     ResolvedTrainingMethod,
+    ScheduleProjection,
     TrainingMethodRegistry,
     TrainingManifestMetadataProjection,
     TrainingRunSpec,
@@ -109,6 +126,7 @@ from feedbax.training.diagnostics import (
     NativeExecutionProducerContext,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2,
     TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
+    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
     TrainingDiagnostics,
 )
 from feedbax.training.worker_validation import (
@@ -127,6 +145,10 @@ _RESERVED_KERNEL_CONTEXT_KEYS = frozenset(
 _FEEDBAX_METADATA_NAMESPACE_PREFIX = "feedbax_"
 _METADATA_VALUE_ABSENT = object()
 _METHOD_OBSERVATION_BUFFER_CAP = 500
+_NAN_ATTRIBUTION_METRIC_CAP = 64
+_NAN_ATTRIBUTION_SLOT_CAP = 64
+_NAN_ATTRIBUTION_LEAF_EXEMPLAR_CAP = 8
+_NAN_ATTRIBUTION_LEAF_PATH_CAP = 256
 
 
 class TrainingRunExecutorError(ValueError):
@@ -139,6 +161,35 @@ class ManifestEmissionConflictError(TrainingRunExecutorError):
 
 class DiagnosticsEmissionConflictError(TrainingRunExecutorError):
     """Raised when native diagnostics already exist with different content."""
+
+
+class _NanGuardFailure(Exception):
+    """Internal control signal carrying durable NaN-guard failure evidence."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        mode: Literal["raise", "halt_restore_checkpoint"],
+        coordinate: ProgressCoordinate,
+        detection: NanAttributionDetection,
+        detection_ref: ArtifactRef | None,
+        restoration: NanAttributionRestorationOutcome,
+        restoration_ref: ArtifactRef | None,
+        restored_slots: Mapping[str, Any] | None = None,
+        restored_coordinate: ProgressCoordinate | None = None,
+        persistence_errors: Sequence[str] = (),
+    ) -> None:
+        super().__init__(message)
+        self.mode = mode
+        self.coordinate = coordinate
+        self.detection = detection
+        self.detection_ref = detection_ref
+        self.restoration = restoration
+        self.restoration_ref = restoration_ref
+        self.restored_slots = None if restored_slots is None else dict(restored_slots)
+        self.restored_coordinate = restored_coordinate
+        self.persistence_errors = tuple(persistence_errors)
 
 
 class _ImmediateCancellation(Exception):
@@ -917,10 +968,23 @@ def execute_training_run_spec(
             ),
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
+                run_id=resolved_run_id,
+                artifact_root=root_path,
                 custody_root=custody_root,
                 program=program,
                 expected_slots=slots,
                 resume_slot_transform=resume_slot_transform,
+                resolved_method=resolved_method,
+                slot_axis_bindings=slot_axis_bindings,
+                schedule_lineage=CheckpointSegmentLineage(
+                    parent_transaction_id=(
+                        segment_parent_transaction_id if segment_start_batch > 0 else None
+                    ),
+                    start_batch=segment_start_batch,
+                    segment_batch_count=(
+                        segment_batch_count if segment_batch_count is not None else total_batches
+                    ),
+                ),
             ),
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
@@ -1031,6 +1095,57 @@ def execute_training_run_spec(
                     ),
                 },
             )
+    except _NanGuardFailure as failure:
+        try:
+            failed_result = _finalize_nan_guard_failure(
+                failure,
+                run_spec=run_spec,
+                run_id=resolved_run_id,
+                manifest_id=exact_manifest_id,
+                root_path=root_path,
+                collection_root=collection_root,
+                program=program,
+                checkpoint_store=checkpoint_store,
+                method_observation_buffer=method_observation_buffer,
+                method_observation_origin_batch=method_observation_origin_batch,
+                live_history_events=live_history_events,
+                method_observations=method_observations,
+                method_contract=method_contract,
+                slot_axis_bindings=slot_axis_bindings,
+                segment_start_batch=segment_start_batch,
+                embedded_training_spec_payload=embedded_training_spec_payload,
+                training_spec_payload_kind=training_spec_payload_kind,
+                training_spec_payload_schema_id=training_spec_payload_schema_id,
+                training_spec_payload_schema_version=training_spec_payload_schema_version,
+                effective_training_spec_ref=effective_training_spec_ref,
+                task_binding_spec=task_binding_spec,
+                issues=issues,
+                runtime_telemetry=runtime_telemetry,
+                producer_context=producer_context,
+                projection_custody=projection_custody,
+                manifest_conflict_policy=manifest_conflict_policy,
+                diagnostics_path=diagnostics_path,
+                payload_binding_status=payload_binding_status,
+                run_event_emitter=run_event_emitter,
+            )
+        except Exception as finalization_error:
+            if run_event_emitter is not None:
+                run_event_emitter.emit_terminal(
+                    "failed",
+                    {
+                        "run_id": resolved_run_id,
+                        "status": "failed",
+                        "failure_kind": "nan_guard",
+                        "stopped": True,
+                        "stop_reason": str(failure),
+                        "error": str(finalization_error),
+                        "error_type": type(finalization_error).__name__,
+                    },
+                )
+            raise
+        if failure.mode == "raise":
+            raise FloatingPointError(str(failure)) from failure
+        return failed_result
     except _ImmediateCancellation as interrupted:
         checkpoint_writes = checkpoint_store.writes
         barrier_artifacts = checkpoint_store.barrier_artifacts
@@ -1155,6 +1270,197 @@ def execute_training_run_spec(
         checkpoint_writes=tuple(checkpoint_writes),
         history_events=tuple(history_events),
         payload_binding_status=payload_binding_status,
+    )
+
+
+def _finalize_nan_guard_failure(
+    failure: _NanGuardFailure,
+    *,
+    run_spec: TrainingRunSpec,
+    run_id: str,
+    manifest_id: str,
+    root_path: Path,
+    collection_root: Path | None,
+    program: Any,
+    checkpoint_store: StreamingCheckpointStore,
+    method_observation_buffer: _MethodObservationBuffer | None,
+    method_observation_origin_batch: int,
+    live_history_events: list[dict[str, Any]],
+    method_observations: list[dict[str, Any]],
+    method_contract: MethodContractSpec,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    segment_start_batch: int,
+    embedded_training_spec_payload: Mapping[str, Any],
+    training_spec_payload_kind: str,
+    training_spec_payload_schema_id: str | None,
+    training_spec_payload_schema_version: str | None,
+    effective_training_spec_ref: str | None,
+    task_binding_spec: Mapping[str, Any] | None,
+    issues: Sequence[str] | None,
+    runtime_telemetry: Mapping[str, Any],
+    producer_context: NativeExecutionProducerContext | None,
+    projection_custody: TrainingManifestMetadataProjectionCustody | None,
+    manifest_conflict_policy: ManifestConflictPolicy,
+    diagnostics_path: Path,
+    payload_binding_status: Literal["verified", "not_bound"],
+    run_event_emitter: RunEventEmitter | None,
+) -> TrainingRunExecutionResult:
+    """Emit every durable failed-run surface for either NaN policy."""
+
+    if method_observation_buffer is not None:
+        method_observation_buffer.flush()
+        method_observation_buffer.assert_empty()
+    checkpoint_writes = checkpoint_store.writes
+    barrier_artifacts = checkpoint_store.barrier_artifacts
+    final_slots = failure.restored_slots or {}
+    final_coordinate = failure.restored_coordinate or failure.coordinate
+    diagnostics = _build_training_diagnostics(
+        manifest_id=manifest_id,
+        run_id=run_id,
+        status="failed",
+        failure_kind="nan_guard",
+        final_coordinate=final_coordinate,
+        final_slots=final_slots,
+        program=program,
+        checkpoint_writes=checkpoint_writes,
+        segment_start_batch=segment_start_batch,
+        method_observation_origin_batch=method_observation_origin_batch,
+        history_events=live_history_events,
+        method_observations=method_observations,
+        execution_context=producer_context,
+        method_contract=method_contract,
+        slot_axis_bindings=slot_axis_bindings,
+    )
+    diagnostics_ref = _training_diagnostics_ref(diagnostics, diagnostics_path)
+    attribution_refs = tuple(
+        ref for ref in (failure.detection_ref, failure.restoration_ref) if ref is not None
+    )
+    failure_details = {
+        "kind": "nan_guard",
+        "on_nan": failure.mode,
+        "detection_artifact_sha256": (
+            failure.detection_ref.sha256 if failure.detection_ref is not None else None
+        ),
+        "restoration_artifact_sha256": (
+            failure.restoration_ref.sha256 if failure.restoration_ref is not None else None
+        ),
+        "persistence_errors": list(failure.persistence_errors),
+    }
+    manifest = _build_manifest(
+        run_spec,
+        run_id=run_id,
+        manifest_id=manifest_id,
+        root_path=root_path,
+        training_spec_payload=dict(embedded_training_spec_payload),
+        training_spec_payload_kind=training_spec_payload_kind,
+        training_spec_payload_schema_id=training_spec_payload_schema_id,
+        training_spec_payload_schema_version=training_spec_payload_schema_version,
+        training_spec_payload_ref=effective_training_spec_ref,
+        task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
+        checkpoint_writes=checkpoint_writes,
+        barrier_artifacts=barrier_artifacts,
+        history_events=live_history_events,
+        final_metrics={},
+        issues=issues,
+        status="failed",
+        runtime_telemetry=runtime_telemetry,
+        execution_context=producer_context,
+        diagnostics_ref=diagnostics_ref,
+        completed_batches=diagnostics.completed_batches,
+        projection_custody=projection_custody,
+        extra_artifacts=attribution_refs,
+        failure_kind="nan_guard",
+        stopped=True,
+        stop_reason=str(failure),
+        failure_details=failure_details,
+    )
+    manifest_output_path = collection_root / "manifest.json" if collection_root is not None else None
+    try:
+        _preflight_manifest_emission(
+            manifest,
+            root=root_path,
+            conflict_policy=manifest_conflict_policy,
+            path=manifest_output_path,
+        )
+    except ManifestEmissionConflictError:
+        manifest_output_path = _nan_failure_fallback_manifest_path(
+            root_path,
+            manifest,
+            failure,
+        )
+        _preflight_manifest_emission(
+            manifest,
+            root=root_path,
+            conflict_policy="reuse-identical",
+            path=manifest_output_path,
+        )
+    _emit_training_diagnostics(diagnostics, path=diagnostics_path)
+    try:
+        manifest_path = _emit_manifest(
+            manifest,
+            root=root_path,
+            conflict_policy=manifest_conflict_policy,
+            path=manifest_output_path,
+        )
+    except (ManifestEmissionConflictError, OSError):
+        fallback_path = _nan_failure_fallback_manifest_path(root_path, manifest, failure)
+        manifest_path = _emit_manifest(
+            manifest,
+            root=root_path,
+            conflict_policy="reuse-identical",
+            path=fallback_path,
+        )
+    if run_event_emitter is not None:
+        run_event_emitter.emit_terminal(
+            "failed",
+            {
+                "run_id": run_id,
+                "status": "failed",
+                "failure_kind": "nan_guard",
+                "stopped": True,
+                "stop_reason": str(failure),
+                "coordinate": failure.coordinate.model_copy(
+                    update={"metrics": {}}
+                ).model_dump(mode="json", exclude_none=True),
+                "program_step": failure.coordinate.program_step,
+                "manifest_path": str(manifest_path),
+                "manifest_id": manifest.id,
+                "attribution_artifacts": [
+                    ref.model_dump(mode="json", exclude_none=True) for ref in attribution_refs
+                ],
+                "persistence_errors": list(failure.persistence_errors),
+            },
+        )
+    return TrainingRunExecutionResult(
+        run_id=run_id,
+        status="failed",
+        manifest=manifest,
+        manifest_path=manifest_path,
+        diagnostics=diagnostics,
+        diagnostics_path=diagnostics_path,
+        final_slots=dict(final_slots),
+        final_coordinate=final_coordinate,
+        checkpoint_writes=tuple(checkpoint_writes),
+        history_events=tuple(live_history_events),
+        payload_binding_status=payload_binding_status,
+    )
+
+
+def _nan_failure_fallback_manifest_path(
+    root: Path,
+    manifest: TrainingRunManifest,
+    failure: _NanGuardFailure,
+) -> Path:
+    detection_sha256 = (
+        failure.detection_ref.sha256
+        if failure.detection_ref is not None and failure.detection_ref.sha256 is not None
+        else sha256_bytes(canonical_json_bytes(failure.detection.model_dump(mode="json")))
+    )
+    return (
+        root
+        / "manifests"
+        / "training_failures"
+        / f"{safe_manifest_key(manifest.id)}-{detection_sha256}.json"
     )
 
 
@@ -1761,62 +2067,180 @@ def _normalize_batch_progress_slot(
 def _executor_nan_guard(
     *,
     run_spec: TrainingRunSpec,
+    run_id: str,
+    artifact_root: Path,
     custody_root: Path,
     program: Any,
     expected_slots: Mapping[str, Any],
     resume_slot_transform: ResumeSlotTransform | None,
+    resolved_method: ResolvedTrainingMethod[Any],
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    schedule_lineage: CheckpointSegmentLineage,
 ) -> Callable[[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], StepGuardResult | None]:
     def guard(
         slots: Mapping[str, Any],
         coordinate: ProgressCoordinate,
         _context: Mapping[str, Any],
     ) -> StepGuardResult | None:
-        nan_metrics = _nan_metric_names(coordinate.metrics)
-        if not nan_metrics:
+        detection = _nan_attribution_detection(
+            run_spec=run_spec,
+            run_id=run_id,
+            resolved_method=resolved_method,
+            schedule_lineage=schedule_lineage,
+            slots=slots,
+            coordinate=coordinate,
+            slot_axis_bindings=slot_axis_bindings,
+        )
+        if detection is None:
             return None
 
         program_step = coordinate.program_step
         step = coordinate.inner_step
+        nan_metrics = [
+            metric.metric_name for metric in detection.metrics if metric.non_finite.nan_count > 0
+        ]
         message = (
             f"NaN detected after program_step {program_step} inner_step {step}; "
             f"metrics={nan_metrics!r}; on_nan={run_spec.on_nan!r}"
         )
-        if run_spec.on_nan == "raise":
-            raise FloatingPointError(message)
-
+        persistence_errors: list[str] = []
+        detection_payload = detection.model_dump(mode="json")
+        detection_digest = sha256_bytes(
+            json.dumps(detection_payload, indent=2, sort_keys=True).encode() + b"\n"
+        )
+        detection_ref: ArtifactRef | None = None
         try:
-            loaded = load_latest_checkpoint(
-                custody_root,
-                expected_run_spec=run_spec,
-                expected_phase_program=program,
-                expected_slots=expected_slots,
-                resume_slot_transform=resume_slot_transform,
+            detection_ref = store_json_artifact(
+                detection_payload,
+                root=artifact_root,
+                role=NAN_ATTRIBUTION_ARTIFACT_ROLE,
+                logical_name=f"feedbax_nan_detection_{run_id}.json",
+                metadata={
+                    "schema_id": detection.schema_id,
+                    "schema_version": detection.schema_version,
+                },
             )
         except Exception as exc:
-            raise FloatingPointError(
-                f"{message}; no custody-consistent checkpoint could be restored"
-            ) from exc
+            persistence_errors.append(
+                f"detection persistence failed: {type(exc).__name__}: {exc}"
+            )
 
-        metric_slots = set(coordinate.metrics)
-        restored_slots = {
-            slot: value
-            for slot, value in slots.items()
-            if slot not in loaded.slots and slot not in metric_slots
-        }
-        restored_slots.update(loaded.slots)
-        return StepGuardResult(
-            halt=True,
-            slots=restored_slots,
-            coordinate=loaded.manifest.completed_coordinate,
+        loaded = None
+        restore_failure: Exception | None = None
+        not_attempted_reason: str | None = None
+        if detection_ref is None:
+            not_attempted_reason = "detection record persistence failed closed"
+        elif run_spec.on_nan == "raise":
+            not_attempted_reason = "on_nan='raise' does not restore a checkpoint"
+        else:
+            try:
+                loaded = load_latest_checkpoint(
+                    custody_root,
+                    expected_run_spec=run_spec,
+                    expected_phase_program=program,
+                    expected_slots=expected_slots,
+                    resume_slot_transform=resume_slot_transform,
+                )
+            except Exception as exc:
+                restore_failure = exc
+
+        restored_slots: dict[str, Any] | None = None
+        restored_coordinate: ProgressCoordinate | None = None
+        if loaded is not None:
+            metric_slots = set(coordinate.metrics)
+            restored_slots = {
+                slot: value
+                for slot, value in slots.items()
+                if slot not in loaded.slots and slot not in metric_slots
+            }
+            restored_slots.update(loaded.slots)
+            restored_coordinate = loaded.manifest.completed_coordinate
+            completed_batches = loaded.manifest.completed_training_batches
+            if completed_batches is None:
+                completed_batches = (
+                    restored_coordinate.completed_batches
+                    if restored_coordinate.completed_batches is not None
+                    else restored_coordinate.program_step
+                )
+            restoration = NanAttributionRestorationOutcome(
+                run_id=run_id,
+                detection_artifact_sha256=detection_digest,
+                status="restored",
+                restored_transaction=RestoredCheckpointIdentity(
+                    transaction_id=loaded.manifest.transaction_id,
+                    completed_batches=completed_batches,
+                    coordinate=restored_coordinate,
+                ),
+            )
+        elif restore_failure is not None:
+            restoration = NanAttributionRestorationOutcome(
+                run_id=run_id,
+                detection_artifact_sha256=detection_digest,
+                status="failed",
+                restore_failure=(
+                    f"{type(restore_failure).__name__}: {restore_failure}"
+                )[:2048],
+            )
+            message = f"{message}; no custody-consistent checkpoint could be restored"
+        else:
+            assert not_attempted_reason is not None
+            restoration = NanAttributionRestorationOutcome(
+                run_id=run_id,
+                detection_artifact_sha256=detection_digest,
+                status="not_attempted",
+                not_attempted_reason=not_attempted_reason,
+            )
+
+        restoration_ref: ArtifactRef | None = None
+        try:
+            restoration_ref = store_json_artifact(
+                restoration.model_dump(mode="json"),
+                root=artifact_root,
+                role=NAN_RESTORATION_ARTIFACT_ROLE,
+                logical_name=f"feedbax_nan_restoration_{run_id}.json",
+                metadata={
+                    "schema_id": restoration.schema_id,
+                    "schema_version": restoration.schema_version,
+                    "detection_artifact_sha256": detection_digest,
+                },
+            )
+        except Exception as exc:
+            persistence_errors.append(
+                f"restoration persistence failed: {type(exc).__name__}: {exc}"
+            )
+        if persistence_errors:
+            message = f"{message}; {'; '.join(persistence_errors)}"
+        raise _NanGuardFailure(
+            message,
+            mode=run_spec.on_nan,
+            coordinate=coordinate,
+            detection=detection,
+            detection_ref=detection_ref,
+            restoration=restoration,
+            restoration_ref=restoration_ref,
+            restored_slots=restored_slots,
+            restored_coordinate=restored_coordinate,
+            persistence_errors=persistence_errors,
         )
 
     return guard
 
 
-def _nan_metric_names(metrics: Mapping[str, Any]) -> list[str]:
+def _nan_attribution_detection(
+    *,
+    run_spec: TrainingRunSpec,
+    run_id: str,
+    resolved_method: ResolvedTrainingMethod[Any],
+    schedule_lineage: CheckpointSegmentLineage,
+    slots: Mapping[str, Any],
+    coordinate: ProgressCoordinate,
+    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+) -> NanAttributionDetection | None:
+    """Detect metric NaNs, then materialize bounded attribution only on a trip."""
+
     names: list[str] = []
     flags: list[jax.Array] = []
-    for name, value in sorted(metrics.items()):
+    for name, value in sorted(coordinate.metrics.items()):
         leaf_flags: list[jax.Array] = []
         for leaf in jt.leaves(value, is_leaf=lambda item: item is None):
             if leaf is None:
@@ -1831,9 +2255,319 @@ def _nan_metric_names(metrics: Mapping[str, Any]) -> list[str]:
             names.append(name)
             flags.append(jnp.any(jnp.stack(leaf_flags)))
     if not flags:
-        return []
+        return None
     observed = jax.device_get(jnp.stack(flags))
-    return [name for name, flag in zip(names, observed, strict=True) if flag]
+    tripped_names = [name for name, flag in zip(names, observed, strict=True) if flag]
+    if not tripped_names:
+        return None
+
+    projected_metrics = {
+        name: _project_nonfinite_leaves(
+            coordinate.metrics[name], slot_axis_bindings.get(name, ())
+        )
+        for name in sorted(coordinate.metrics)
+    }
+    projected_slots = {
+        name: _project_nonfinite_leaves(value, slot_axis_bindings.get(name, ()))
+        for name, value in sorted(slots.items())
+    }
+    host_metrics, host_slots = jax.device_get((projected_metrics, projected_slots))
+    all_metric_summaries = tuple(
+        MetricNonFiniteSummary(
+            metric_name=_bounded_attribution_name(name),
+            non_finite=_aggregate_nonfinite_projection(
+                host_metrics[name], slot_axis_bindings.get(name, ())
+            ),
+        )
+        for name in sorted(host_metrics)
+        if _projection_nonfinite_count(host_metrics[name]) > 0
+    )
+    all_metric_summaries = tuple(
+        sorted(
+            all_metric_summaries,
+            key=lambda item: (item.non_finite.nan_count == 0, item.metric_name),
+        )
+    )
+    metric_summaries = all_metric_summaries[:_NAN_ATTRIBUTION_METRIC_CAP]
+    offending_slots = [
+        _slot_nonfinite_summary(name, host_slots[name], slot_axis_bindings.get(name, ()))
+        for name in sorted(host_slots)
+        if _projection_attribution_count(host_slots[name]) > 0
+    ]
+    batch_progress = run_spec.worker_execution.effective_phase.phase_program.batch_progress
+    if batch_progress is None:
+        observed_completed_batches = None
+        observation_error = "phase program does not declare batch_progress authority"
+    else:
+        try:
+            observed_completed_batches = _terminal_completed_batches(
+                program=run_spec.worker_execution.effective_phase.phase_program,
+                final_slots=slots,
+                fallback=schedule_lineage.start_batch,
+                require_authority=True,
+                slot_axis_bindings=slot_axis_bindings,
+            )
+            observation_error = None
+        except TrainingRunExecutorError as exc:
+            observed_completed_batches = None
+            observation_error = str(exc)
+    schedule_coordinate = (
+        observed_completed_batches
+        if observed_completed_batches is not None
+        else schedule_lineage.start_batch
+    )
+    try:
+        schedule_descriptor = (
+            resolved_method.descriptor
+            or DEFAULT_TRAINING_METHOD_REGISTRY.descriptor(run_spec.method_ref)
+        )
+        schedule_method = (
+            resolved_method
+            if resolved_method.descriptor is not None
+            else replace(resolved_method, descriptor=schedule_descriptor)
+        )
+        full_schedule_state = project_training_schedules(
+            run_spec,
+            coordinates=(schedule_coordinate,),
+            lineage=schedule_lineage,
+            resolved_method=schedule_method,
+        )
+        schedule_items = sorted(full_schedule_state.schedules.items())
+        schedule_projection_error = None
+    except Exception as exc:
+        schedule_items = []
+        schedule_projection_error = f"{type(exc).__name__}: {exc}"[:2048]
+    schedule_state = ScheduleProjection(
+        schedules=dict(schedule_items[:MAX_SCHEDULES]),
+    )
+    return NanAttributionDetection(
+        run_id=run_id,
+        on_nan=run_spec.on_nan,
+        coordinate=NanGuardCoordinate(
+            completed_batches_as_observed=observed_completed_batches,
+            completed_batches_observation=(
+                "declared_authority"
+                if observed_completed_batches is not None
+                else "unavailable"
+            ),
+            completed_batches_observation_error=observation_error,
+            program_step=coordinate.program_step,
+            outer_step=coordinate.outer_step,
+            inner_step=coordinate.inner_step,
+        ),
+        metrics=metric_summaries,
+        total_offending_metrics=len(all_metric_summaries),
+        metrics_truncated=len(all_metric_summaries) > _NAN_ATTRIBUTION_METRIC_CAP,
+        slots=tuple(offending_slots[:_NAN_ATTRIBUTION_SLOT_CAP]),
+        total_offending_slots=len(offending_slots),
+        slots_truncated=len(offending_slots) > _NAN_ATTRIBUTION_SLOT_CAP,
+        schedule_state=schedule_state,
+        schedule_coordinate_source=(
+            "observed_batch_authority"
+            if observed_completed_batches is not None
+            else "segment_start_fallback"
+        ),
+        schedule_projection_error=schedule_projection_error,
+        total_schedules=len(schedule_items),
+        schedule_state_truncated=len(schedule_items) > MAX_SCHEDULES,
+    )
+
+
+def _project_nonfinite_leaves(
+    value: Any,
+    bindings: Sequence[MaterializedSlotAxisBinding],
+) -> tuple[dict[str, Any], ...]:
+    mapped = next((binding for binding in bindings if binding.mode == "mapped"), None)
+    projected: list[dict[str, Any]] = []
+    for path, leaf in jt.flatten_with_path(value, is_leaf=lambda item: item is None)[0]:
+        if leaf is None:
+            continue
+        try:
+            array = jnp.asarray(leaf)
+        except (TypeError, ValueError):
+            continue
+        is_boolean = jnp.issubdtype(array.dtype, jnp.bool_)
+        if not is_boolean and not jnp.issubdtype(array.dtype, jnp.number):
+            continue
+        nan = jnp.zeros(array.shape, dtype=bool) if is_boolean else jnp.isnan(array)
+        inf = jnp.zeros(array.shape, dtype=bool) if is_boolean else jnp.isinf(array)
+        predicate_false = jnp.logical_not(array) if is_boolean else jnp.zeros(array.shape, dtype=bool)
+        entry: dict[str, Any] = {
+            "path": _bounded_leaf_path(path),
+            "is_boolean": is_boolean,
+            "nan_count": jnp.sum(nan, dtype=jnp.int32),
+            "inf_count": jnp.sum(inf, dtype=jnp.int32),
+            "false_count": jnp.sum(predicate_false, dtype=jnp.int32),
+        }
+        if mapped is not None:
+            assert mapped.array_axis is not None
+            reduction_axes = tuple(axis for axis in range(array.ndim) if axis != mapped.array_axis)
+            entry["nan_counts_by_axis"] = jnp.sum(
+                nan, axis=reduction_axes, dtype=jnp.int32
+            )
+            entry["inf_counts_by_axis"] = jnp.sum(
+                inf, axis=reduction_axes, dtype=jnp.int32
+            )
+            entry["false_counts_by_axis"] = jnp.sum(
+                predicate_false, axis=reduction_axes, dtype=jnp.int32
+            )
+        projected.append(entry)
+    return tuple(projected)
+
+
+def _aggregate_nonfinite_projection(
+    projected: Sequence[Mapping[str, Any]],
+    bindings: Sequence[MaterializedSlotAxisBinding],
+) -> AxisNonFiniteSummary:
+    nan_count = _projection_nan_count(projected)
+    inf_count = sum(int(item["inf_count"]) for item in projected)
+    mapped = next((binding for binding in bindings if binding.mode == "mapped"), None)
+    if mapped is None:
+        return AxisNonFiniteSummary(
+            mode="shared",
+            nan_count=nan_count,
+            inf_count=inf_count,
+        )
+    nan_counts = np.zeros(mapped.size, dtype=np.int64)
+    inf_counts = np.zeros(mapped.size, dtype=np.int64)
+    for item in projected:
+        nan_counts += np.asarray(item["nan_counts_by_axis"], dtype=np.int64)
+        inf_counts += np.asarray(item["inf_counts_by_axis"], dtype=np.int64)
+    axis_indices = _bounded_axis_indices(nan_counts, inf_counts)
+    return AxisNonFiniteSummary(
+        mode="mapped",
+        axis_role=mapped.role,
+        array_axis=mapped.array_axis,
+        axis_size=mapped.size,
+        axis_indices=axis_indices,
+        axis_truncated=len(axis_indices) < mapped.size,
+        nan_count=nan_count,
+        inf_count=inf_count,
+        nan_mask=tuple(bool(nan_counts[index]) for index in axis_indices),
+        inf_mask=tuple(bool(inf_counts[index]) for index in axis_indices),
+        nan_counts_by_axis=tuple(int(nan_counts[index]) for index in axis_indices),
+        inf_counts_by_axis=tuple(int(inf_counts[index]) for index in axis_indices),
+    )
+
+
+def _slot_nonfinite_summary(
+    name: str,
+    projected: Sequence[Mapping[str, Any]],
+    bindings: Sequence[MaterializedSlotAxisBinding],
+) -> SlotNonFiniteSummary:
+    nonfinite = [
+        item for item in projected if int(item["nan_count"]) or int(item["inf_count"])
+    ]
+    predicate_false = [
+        item for item in projected if bool(item["is_boolean"]) and int(item["false_count"])
+    ]
+    offending_paths = {
+        str(item["path"]) for item in (*nonfinite, *predicate_false)
+    }
+    exemplars = tuple(
+        SlotLeafNonFiniteExemplar(
+            leaf_path=str(item["path"]),
+            nan_count=int(item["nan_count"]),
+            inf_count=int(item["inf_count"]),
+            non_finite=_aggregate_nonfinite_projection((item,), bindings),
+        )
+        for item in nonfinite[:_NAN_ATTRIBUTION_LEAF_EXEMPLAR_CAP]
+    )
+    predicate_exemplars = tuple(
+        SlotLeafPredicateExemplar(
+            leaf_path=str(item["path"]),
+            false_count=int(item["false_count"]),
+            predicate=_aggregate_predicate_projection((item,), bindings),
+        )
+        for item in predicate_false[:_NAN_ATTRIBUTION_LEAF_EXEMPLAR_CAP]
+    )
+    return SlotNonFiniteSummary(
+        slot_name=_bounded_attribution_name(name),
+        total_leaf_count=len(projected),
+        offending_leaf_count=len(offending_paths),
+        nonfinite_leaf_count=len(nonfinite),
+        predicate_false_leaf_count=len(predicate_false),
+        nan_count=sum(int(item["nan_count"]) for item in projected),
+        inf_count=sum(int(item["inf_count"]) for item in projected),
+        exemplars=exemplars,
+        predicate_exemplars=predicate_exemplars,
+        truncated=(
+            len(nonfinite) > _NAN_ATTRIBUTION_LEAF_EXEMPLAR_CAP
+            or len(predicate_false) > _NAN_ATTRIBUTION_LEAF_EXEMPLAR_CAP
+        ),
+    )
+
+
+def _aggregate_predicate_projection(
+    projected: Sequence[Mapping[str, Any]],
+    bindings: Sequence[MaterializedSlotAxisBinding],
+) -> AxisPredicateSummary:
+    false_count = sum(int(item["false_count"]) for item in projected)
+    mapped = next((binding for binding in bindings if binding.mode == "mapped"), None)
+    if mapped is None:
+        return AxisPredicateSummary(mode="shared", false_count=false_count)
+    false_counts = np.zeros(mapped.size, dtype=np.int64)
+    for item in projected:
+        false_counts += np.asarray(item["false_counts_by_axis"], dtype=np.int64)
+    axis_indices = _bounded_axis_indices(false_counts)
+    return AxisPredicateSummary(
+        mode="mapped",
+        axis_role=mapped.role,
+        array_axis=mapped.array_axis,
+        axis_size=mapped.size,
+        axis_indices=axis_indices,
+        axis_truncated=len(axis_indices) < mapped.size,
+        false_count=false_count,
+        false_mask=tuple(bool(false_counts[index]) for index in axis_indices),
+        false_counts_by_axis=tuple(int(false_counts[index]) for index in axis_indices),
+    )
+
+
+def _projection_nan_count(projected: Sequence[Mapping[str, Any]]) -> int:
+    return sum(int(item["nan_count"]) for item in projected)
+
+
+def _projection_nonfinite_count(projected: Sequence[Mapping[str, Any]]) -> int:
+    return sum(int(item["nan_count"]) + int(item["inf_count"]) for item in projected)
+
+
+def _projection_attribution_count(projected: Sequence[Mapping[str, Any]]) -> int:
+    return _projection_nonfinite_count(projected) + sum(
+        int(item["false_count"]) for item in projected if bool(item["is_boolean"])
+    )
+
+
+def _bounded_axis_indices(*counts: np.ndarray) -> tuple[int, ...]:
+    size = len(counts[0])
+    if size <= MAX_ATTRIBUTION_AXIS_SIZE:
+        return tuple(range(size))
+    offending = np.flatnonzero(np.logical_or.reduce([value > 0 for value in counts]))
+    return tuple(int(index) for index in offending[:MAX_ATTRIBUTION_AXIS_SIZE])
+
+
+def _bounded_leaf_path(path: tuple[Any, ...]) -> str:
+    if not path:
+        return "<root>"
+    parts: list[str] = []
+    for entry in path:
+        key = getattr(entry, "key", None)
+        if key is not None:
+            parts.append(f"[{key!r}]")
+            continue
+        index = getattr(entry, "idx", None)
+        if index is not None:
+            parts.append(f"[{index}]")
+            continue
+        name = getattr(entry, "name", None)
+        parts.append(f".{name}" if name is not None else f"[{entry!r}]")
+    rendered = "".join(parts)
+    if len(rendered) <= _NAN_ATTRIBUTION_LEAF_PATH_CAP:
+        return rendered
+    return rendered[: _NAN_ATTRIBUTION_LEAF_PATH_CAP - 3] + "..."
+
+
+def _bounded_attribution_name(name: str) -> str:
+    return name if len(name) <= 256 else name[:253] + "..."
 
 
 def _checkpoint_root(
@@ -2090,7 +2824,8 @@ def _build_training_diagnostics(
     *,
     manifest_id: str,
     run_id: str,
-    status: Literal["completed", "cancelled"],
+    status: Literal["completed", "cancelled", "failed"],
+    failure_kind: Literal["nan_guard"] | None = None,
     final_coordinate: ProgressCoordinate,
     final_slots: Mapping[str, Any],
     program: Any,
@@ -2119,16 +2854,19 @@ def _build_training_diagnostics(
     checkpoint_completed_batches = (
         transactions[-1].cumulative_completed_batches if transactions else None
     )
+    terminal_fallback = (
+        checkpoint_completed_batches
+        if checkpoint_completed_batches is not None
+        else segment_start_batch
+        if status == "failed"
+        else final_coordinate.completed_batches
+        if final_coordinate.completed_batches is not None
+        else final_coordinate.program_step
+    )
     cumulative_completed_batches = _terminal_completed_batches(
         program=program,
         final_slots=final_slots,
-        fallback=(
-            final_coordinate.completed_batches
-            if final_coordinate.completed_batches is not None
-            else checkpoint_completed_batches
-            if checkpoint_completed_batches is not None
-            else final_coordinate.program_step
-        ),
+        fallback=terminal_fallback,
         require_authority=status == "completed",
         slot_axis_bindings=slot_axis_bindings,
     )
@@ -2150,30 +2888,37 @@ def _build_training_diagnostics(
         declared=(diagnostic_input.lr_trace if diagnostic_input is not None else ()),
     )
     declaration = method_contract.training_diagnostics
-    method_trace = _method_training_trace(
-        declaration,
-        method_ref=method_contract.method_ref,
-        method_observations=method_observations,
-        observation_origin_batch=method_observation_origin_batch,
-        completed_batches=cumulative_completed_batches,
-        replica_count=next(
-            (
-                axis.size
-                for axis in method_contract.axes
-                if declaration is not None and axis.name == declaration.replica_axis
+    method_trace = (
+        None
+        if status == "failed"
+        else _method_training_trace(
+            declaration,
+            method_ref=method_contract.method_ref,
+            method_observations=method_observations,
+            observation_origin_batch=method_observation_origin_batch,
+            completed_batches=cumulative_completed_batches,
+            replica_count=next(
+                (
+                    axis.size
+                    for axis in method_contract.axes
+                    if declaration is not None and axis.name == declaration.replica_axis
+                ),
+                None,
             ),
-            None,
-        ),
+        )
     )
     return TrainingDiagnostics(
         schema_version=(
-            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
+            TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4
+            if status == "failed"
+            else TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3
             if method_trace is not None
             else TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V2
         ),
         manifest_id=manifest_id,
         run_id=run_id,
         terminal_status=status,
+        failure_kind=failure_kind,
         completed_batches=cumulative_completed_batches,
         segment_completed_batches=segment_completed_batches,
         cumulative_completed_batches=cumulative_completed_batches,
@@ -2538,8 +3283,13 @@ def _build_manifest(
     diagnostics_ref: ArtifactRef,
     completed_batches: int,
     projection_custody: TrainingManifestMetadataProjectionCustody | None,
+    extra_artifacts: Sequence[ArtifactRef] = (),
+    failure_kind: Literal["nan_guard"] | None = None,
+    stopped: bool = False,
+    stop_reason: str | None = None,
+    failure_details: Mapping[str, Any] | None = None,
 ) -> TrainingRunManifest:
-    artifacts = [*barrier_artifacts, diagnostics_ref]
+    artifacts = [*barrier_artifacts, diagnostics_ref, *extra_artifacts]
     if history_events:
         artifacts.append(
             store_json_artifact(
@@ -2594,6 +3344,9 @@ def _build_manifest(
         task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
         completed_batches=completed_batches,
+        stopped=stopped,
+        stop_reason=stop_reason,
+        failure_kind=failure_kind,
         intent_hash=(
             execution_identity.authored_intent.intent_hash
             if execution_identity is not None
@@ -2640,6 +3393,7 @@ def _build_manifest(
                     if cancellation is not None
                     else {}
                 ),
+                **({"failure": dict(failure_details)} if failure_details is not None else {}),
             },
         ),
         artifacts=artifacts,
