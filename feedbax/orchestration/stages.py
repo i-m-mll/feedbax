@@ -492,17 +492,89 @@ class StageEngine:
             raise OrchestrationStageError(
                 "failed CERTIFY retry prior registration or certificate identity mismatch"
             )
-        history = RegistrationHistory(
-            run_set_id=state.run_set_id,
+        self._write_or_verify_registration_history(
+            self._registration_history(
+                run_set_id=state.run_set_id,
+                registration_payload=registration_payload,
+                registration_bytes=registration_bytes,
+            ),
+            mismatch_label="failed CERTIFY retry",
+        )
+
+    def _recover_post_pass_registration_history(
+        self,
+        *,
+        state: RunSetState,
+        current: Mapping[str, Any],
+    ) -> None:
+        """Recover history when recertification passed before history capture existed."""
+        if current.get("status") != "completed" or current.get("certificate_overall") != "pass":
+            return
+        history_path = self.bundle.run_set_dir / "registration-history.json"
+        if history_path.exists():
+            return
+        prior = state.registration_payload
+        register_path = self.bundle.run_set_dir / "registration.json"
+        if prior is None and not register_path.exists():
+            return
+        if not isinstance(prior, Mapping) or not register_path.exists():
+            raise OrchestrationStageError(
+                "post-pass registration recovery requires the durable failed state and payload"
+            )
+        registration_bytes = register_path.read_bytes()
+        try:
+            persisted = json.loads(registration_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise OrchestrationStageError(
+                "post-pass registration recovery requires valid failed registration JSON"
+            ) from exc
+        stable_fields = ("run_set_id", "abort_reason", "stage_inputs_sha256", "certificate_ref")
+        if (
+            persisted != dict(prior)
+            or prior.get("status") != "failed"
+            or prior.get("certificate_overall") != "fail"
+            or current.get("status") != "completed"
+            or current.get("certificate_overall") != "pass"
+            or prior.get("certificate_sha256") == current.get("certificate_sha256")
+            or any(prior.get(field) != current.get(field) for field in stable_fields)
+        ):
+            raise OrchestrationStageError(
+                "post-pass registration recovery state or registration mismatch"
+            )
+        self._write_or_verify_registration_history(
+            self._registration_history(
+                run_set_id=state.run_set_id,
+                registration_payload=prior,
+                registration_bytes=registration_bytes,
+            ),
+            mismatch_label="post-pass registration recovery",
+        )
+
+    @staticmethod
+    def _registration_history(
+        *,
+        run_set_id: str,
+        registration_payload: Mapping[str, Any],
+        registration_bytes: bytes,
+    ) -> RegistrationHistory:
+        return RegistrationHistory(
+            run_set_id=run_set_id,
             entries=[
                 RegistrationHistoryEntry(
                     registration_payload=dict(registration_payload),
                     registration_sha256=hashlib.sha256(registration_bytes).hexdigest(),
-                    certificate_sha256=certificate_sha256,
-                    original_certificate_ref=certificate_ref,
+                    certificate_sha256=str(registration_payload.get("certificate_sha256")),
+                    original_certificate_ref=str(registration_payload.get("certificate_ref")),
                 )
             ],
         )
+
+    def _write_or_verify_registration_history(
+        self,
+        history: RegistrationHistory,
+        *,
+        mismatch_label: str,
+    ) -> None:
         history_path = self.bundle.run_set_dir / "registration-history.json"
         if history_path.exists():
             try:
@@ -511,11 +583,11 @@ class StageEngine:
                 )
             except Exception as exc:
                 raise OrchestrationStageError(
-                    "failed CERTIFY retry registration history is invalid"
+                    f"{mismatch_label} registration history is invalid"
                 ) from exc
             if existing != history:
                 raise OrchestrationStageError(
-                    "failed CERTIFY retry registration history mismatch"
+                    f"{mismatch_label} registration history mismatch"
                 )
             return
         self._write_json_atomically(history_path, history.model_dump(mode="json"))
@@ -1407,6 +1479,7 @@ class StageEngine:
                 }
                 for row_id, row in sorted(state.rows.items())
             }
+        self._recover_post_pass_registration_history(state=state, current=payload)
         state = state.model_copy(update={"registration_payload": payload, "updated_at": utc_now()})
         register_path = self.bundle.run_set_dir / "registration.json"
         self._write_or_verify_registration(

@@ -3025,6 +3025,125 @@ def test_explicit_recertification_rejects_tampered_registration_history(
         engine.run(retry_failed_certification=True)
 
 
+def _recertified_state_without_registration_history(
+    tmp_path: Path,
+) -> tuple[RunBundle, RunSetStateStore, StageEngine, RunSetState, bytes]:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    failing_registry = CheckRegistry(
+        {
+            "fixture_fail": lambda row: CheckEntry(
+                check_id="fixture_fail",
+                status="fail",
+                expected="pass",
+                observed="fail",
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=failing_registry,
+        ).run()
+    failed_registration_bytes = (bundle.run_set_dir / "registration.json").read_bytes()
+
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+    state = store.load()
+    state, certify_outputs = engine._stage_certify(state)
+    state = state.with_stage(
+        STAGE_CERTIFY,
+        state.stage(STAGE_CERTIFY).model_copy(
+            update={"status": "completed", "outputs": dict(certify_outputs)}
+        ),
+    )
+    store.save(state)
+    assert not (bundle.run_set_dir / "registration-history.json").exists()
+    return bundle, store, engine, state, failed_registration_bytes
+
+
+def test_register_recovers_history_after_prior_successful_recertification(
+    tmp_path: Path,
+) -> None:
+    bundle, _store, engine, state, failed_registration_bytes = (
+        _recertified_state_without_registration_history(tmp_path)
+    )
+    failed_registration = json.loads(failed_registration_bytes)
+    assert state.stage(STAGE_CERTIFY).outputs["overall"] == "pass"
+    assert (
+        state.stage(STAGE_CERTIFY).outputs["certificate_sha256"]
+        != failed_registration["certificate_sha256"]
+    )
+
+    recovered = engine.run()
+
+    history = json.loads(
+        (bundle.run_set_dir / "registration-history.json").read_text(encoding="utf-8")
+    )
+    assert history["entries"] == [
+        {
+            "certificate_sha256": failed_registration["certificate_sha256"],
+            "original_certificate_ref": failed_registration["certificate_ref"],
+            "registration_payload": failed_registration,
+            "registration_sha256": hashlib.sha256(failed_registration_bytes).hexdigest(),
+        }
+    ]
+    assert recovered.registration_payload
+    assert recovered.registration_payload["status"] == "completed"
+    assert recovered.registration_payload["certificate_overall"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "missing-state",
+        "state-mismatch",
+        "missing-registration",
+        "registration-mismatch",
+    ],
+)
+def test_register_post_pass_recovery_requires_exact_failed_state_and_registration(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    bundle, store, engine, state, failed_registration_bytes = (
+        _recertified_state_without_registration_history(tmp_path)
+    )
+    if tamper == "missing-state":
+        state = state.model_copy(update={"registration_payload": None})
+    elif tamper == "state-mismatch":
+        assert state.registration_payload
+        state = state.model_copy(
+            update={
+                "registration_payload": {
+                    **state.registration_payload,
+                    "certificate_sha256": "0" * 64,
+                }
+            }
+        )
+    elif tamper == "missing-registration":
+        (bundle.run_set_dir / "registration.json").unlink()
+    else:
+        persisted = json.loads(failed_registration_bytes)
+        persisted["status"] = "completed"
+        (bundle.run_set_dir / "registration.json").write_text(
+            json.dumps(persisted), encoding="utf-8"
+        )
+    store.save(state)
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="post-pass registration recovery",
+    ):
+        engine.run()
+
+
 @pytest.mark.parametrize(
     "inventory",
     [
