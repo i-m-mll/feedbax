@@ -2913,6 +2913,118 @@ def test_register_writes_failed_certificate_payload_and_reentry_is_idempotent(
         ).run()
 
 
+def test_explicit_recertification_preserves_failed_registration_history(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    failing_registry = CheckRegistry(
+        {
+            "fixture_fail": lambda row: CheckEntry(
+                check_id="fixture_fail",
+                status="fail",
+                expected="pass",
+                observed="fail",
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=failing_registry,
+        ).run()
+
+    register_path = bundle.run_set_dir / "registration.json"
+    history_path = bundle.run_set_dir / "registration-history.json"
+    failed_registration_bytes = register_path.read_bytes()
+    failed_registration = json.loads(failed_registration_bytes)
+    failed_certificate_sha256 = failed_registration["certificate_sha256"]
+
+    passed = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    ).run(retry_failed_certification=True)
+
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history == {
+        "entries": [
+            {
+                "certificate_sha256": failed_certificate_sha256,
+                "original_certificate_ref": failed_registration["certificate_ref"],
+                "registration_payload": failed_registration,
+                "registration_sha256": hashlib.sha256(failed_registration_bytes).hexdigest(),
+            }
+        ],
+        "run_set_id": bundle.run_set_id,
+        "schema_id": "feedbax.orchestration.registration_history",
+        "schema_version": "feedbax.orchestration.registration_history.v1",
+    }
+    assert passed.registration_payload
+    assert passed.registration_payload["status"] == "completed"
+    assert passed.registration_payload["certificate_overall"] == "pass"
+    assert passed.registration_payload["certificate_sha256"] != failed_certificate_sha256
+    assert json.loads(register_path.read_text(encoding="utf-8")) == passed.registration_payload
+
+    history_bytes = history_path.read_bytes()
+    registration_bytes = register_path.read_bytes()
+    reentered = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    ).run()
+
+    assert reentered.registration_payload == passed.registration_payload
+    assert history_path.read_bytes() == history_bytes
+    assert register_path.read_bytes() == registration_bytes
+
+
+def test_explicit_recertification_rejects_tampered_registration_history(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    failing_registry = CheckRegistry(
+        {
+            "fixture_fail": lambda row: CheckEntry(
+                check_id="fixture_fail",
+                status="fail",
+                expected="pass",
+                observed="fail",
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="phase=completed"):
+        StageEngine(
+            bundle=bundle,
+            driver=FakeDriver(),
+            store=store,
+            conformance_registry=failing_registry,
+        ).run()
+
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=_fixture_pass_registry(),
+    )
+    engine._preserve_failed_registration_history(store.load())
+    history_path = bundle.run_set_dir / "registration-history.json"
+    tampered = json.loads(history_path.read_text(encoding="utf-8"))
+    tampered["entries"][0]["certificate_sha256"] = "0" * 64
+    history_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    with pytest.raises(
+        OrchestrationStageError,
+        match="registration history mismatch",
+    ):
+        engine.run(retry_failed_certification=True)
+
+
 @pytest.mark.parametrize(
     "inventory",
     [
